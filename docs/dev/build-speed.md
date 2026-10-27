@@ -420,8 +420,8 @@ with CI's `--profile ci --partition slice:N/4`:
 | finite invitation backlog beyond the display cache | 18.4 s | 3.4 s |
 | Q4 three event keys, actual floor | 9.0 s | 4.3 s |
 | slice 1/4 wall (test-seconds) | 95.2 s (597) | 83.3 s (506) |
-| slice 2/4 | 77.2 s | 68.1 s |
-| slice 3/4 | 84.6 s | 71.3 s |
+| slice 2/4 | 77.2 s (478) | 68.1 s (416) |
+| slice 3/4 | 84.6 s (529) | 71.3 s (439) |
 | slice 4/4 | 90.2 s (585) | 72.7 s (464) |
 
 Build cost: curve25519-dalek compiles in 0.7 s instead of 0.5 s, ed25519-dalek in 0.1 s

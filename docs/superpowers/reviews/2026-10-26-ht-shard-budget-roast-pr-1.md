@@ -1,0 +1,54 @@
+super-roast verdict: clean (15 nits)
+mode: pr        iteration: 1 of 3
+profile (assumed): herdr-threads is a single-developer, public Rust CLI/daemon plugin for coordinating coding agents in Herdr panes; it has no external users beyond the developer's own agent sessions, holds no real money or customer data, and is released by hand-run tags. The change under review touches only CI matrix shape, a Cargo profile override for two Ed25519 crates in dev/test, a workflow-shape test and developer docs; no shipped binary or release profile changes. Blast radius is low and rollback is a one-line matrix revert, so resilience, runner-cost and documentation-consistency findings are weighted down; correctness floors still apply in full.
+inputs: fix/ht-shard-budget@ec95d124c vs main@4f639d7f6
+coverage: scouts 13/13 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, deploy-safety, testing, test-isolation-environment, test-suite-cost, dependency, hygiene-docs, test-causality-lifecycle) · raw 27 → deduped 19 → panel 4 · spot 15 · promoted 0 · judge completion 100% · remainder-capped: 0 · review readiness: coverage complete, provenance available — basis: "git diff 4f639d7f6..ec95d124c: 6 files (Cargo.toml, .github/workflows/ci.yml, .github/workflows/full-suite.yml, tests/release/workflows_test.sh, docs/dev/build-speed.md) fully inspected"
+independence: same-family (Claude) — seat-differentiated panel · rung: Workflow
+seat-agreement: panels 4 · rr 1.00 · rg 1.00 · fg 1.00 · unanimous 1.00 · ground-loo 1.00 (n=4) · reproduce 0/4/0 · refute 0/4/0 · ground 0/4/0
+lane-yield (found/confirmed/unique/refuted): correctness 2/0/0/2 · security 0/0/0/0 · premortem 3/0/0/3 · simplicity-design 4/0/0/4 · hot-path-perf 3/0/0/3 · concurrency-async 0/0/0/0 · deploy-safety 2/0/0/2 · testing 3/0/0/2 · test-isolation-environment 1/0/0/1 · test-suite-cost 2/0/0/2 · dependency 0/0/0/0 · hygiene-docs 7/0/0/5 · test-causality-lifecycle 0/0/0/0
+
+## Confirmed findings
+- none
+
+## Not verified (beyond panel cap)
+- none
+
+## Not verified (dedupe failed or judge lost)
+- none
+
+## Beyond remainder cap (count only)
+- none
+
+## Rejected (with reason)
+- [FYI] docs/dev/build-speed.md:441; .github/workflows/ci.yml:172 — The "~250 s per shard" result is stated as fact but rests on projections from one run; nothing enforces 250 s (guard is 300 s).
+  verdict: rejected (reproduce ✗ / refute ✗ / ground ✗, unanimous)
+  reason: The doc labels the five-slice numbers as projections ("projects 179/174/182/182/175 s", "about 210 s ... with every duration 15% longer") and records the run-to-run swing and the split-shift risk itself. The finding's 255 s figure reapplies the 1.24 max/mean ratio of the old 4-way split on top of a per-slice projection that is already nearly flat (174-182 s), which double-counts imbalance. The 300 s guard is the pre-existing budget and is unchanged; ~250 s is a target, not a gate. A five-slice CI run on this head cannot exist before a push, and AGENTS.md forbids the agent from pushing. Residual: the ci.yml:59 comment "five slices keep each under ~250 s" could say "projected". Wording nit only.
+- [FYI] .github/workflows/ci.yml:168; docs/dev/build-speed.md:434 — Round-robin slicing has no duration awareness, so a later heavy test can push a shard back over 300 s.
+  verdict: rejected (reproduce ✗ / refute ✗ / ground ✗, unanimous)
+  reason: The stated intent is to bring shards under ~250 s by adding a slice, not to introduce duration-aware partitioning. The projected slowest slice is ~210 s at +15%, which leaves ~40 s under target and ~90 s under the hard fail. The Ed25519 opt-level change removes the dominant heavy test (77-86 s to ~3.6 s), so heavy tests no longer dominate any slice. The cited 233/277/326/333 s run is the 4-slice state this change replaces. Future drift from added tests is generic and is caught by the existing 300 s guard. The finding concedes that hash partitioning or isolating heavy tests is unestablished.
+- [FYI] .github/workflows/ci.yml:163 — Taking the denominator from `strategy.job-total` silently drops tests if a second matrix dimension or `include` is ever added.
+  verdict: rejected (reproduce ✗ / refute ✗ / ground ✗, unanimous)
+  reason: The scenario requires a future edit the diff does not make. The matrix is one-dimensional at head, so job-total is 5 and all slices run. tests/release/workflows_test.sh pins `runs-on` to the literal `ubuntu-24.04` and the shard list to `[1,2,3,4,5]`, which catches the finding's own `runner:` example; only a bare `include` would slip past. The job and step names print `N/${{ strategy.job-total }}`, so a 1/10 split would be visible in every check name. The base's literal `/4` had the same coupling class; single-sourcing is a net improvement. A `max(shard) == job-total` assertion is a hardening suggestion, not a defect.
+- [FYI] .github/workflows/ci.yml:60 — The fifth shard repeats the per-shard setup and untimed `cargo test --no-run` build (~6-9 min) on another runner; `cargo nextest archive` would build once.
+  verdict: rejected (reproduce ✗ / refute ✗ / ground ✗, unanimous)
+  reason: The repeated build is an explicitly documented tradeoff in docs/dev/build-speed.md:446 ("Each extra runner repeats the test build outside the timer; the repository is public, so the runner is free"). Wall-clock is unchanged because shards run in parallel; only runner-minutes rise. No stated requirement bounds runner-minutes or queue occupancy, and the finding calls the queue impact dependent on unstated concurrency limits. The nextest-archive pipeline is a different architecture (build job, artifact upload/download, path remapping) outside this task's scope. The ground seat confirmed nexte.st documents `--archive-file`; that supports the alternative as a follow-up, not as a defect here.
+
+## Unverified nits (spot-checked)
+- [Nit] docs/release.md:130 — Still says ordinary CI keeps "four test shards" and "all existing required job names"; the diff makes both false (five shards, jobs renamed Tests N/5). (spot check: CONFIRM Nit; one refute seat, not panel-strength.) docs_test.sh does not check the shard count, and main has no branch protection, so nothing breaks; the process doc is simply stale. Fix shape: change "four" to "five" and drop or reword the "existing required job names" clause.
+- [Nit] docs/dev/build-speed.md:430 — The opt-level 2 comparison cites slice 2/4 test-seconds (416 to 423) that the measurement table never records. (spot check: CONFIRM Nit.) The table gives test-seconds only for slices 1/4 and 4/4; 416 appears nowhere else. Supports a rejected alternative only. Fix shape: add the 2/4 test-seconds to the table rows or drop the unsourced numbers.
+- [FYI] .github/workflows/ci.yml:60; docs/dev/build-speed.md:446 — "Runner is free" covers billing only; the extra leg takes one more concurrent-job slot. (spot check: REJECT FYI.) The seat verified the GitHub limits page: Free plan allows 20 concurrent standard jobs; this workflow's per-push count is 17 at head. Immaterial under this profile (single operator, public repo).
+- [FYI] Cargo.toml:104 — Comment inlines "~5 ms per signature" and "14 of its 18 s", which do not match the cited doc (14.3 of 20.5 s; 19.3 s before; ~5 ms not measured there). (spot check: REJECT FYI.) Comment only, no runtime effect; the neighbouring overrides leave numbers to the doc, so dropping the figures from the comment is the cheap fix if anyone touches it.
+- [FYI] docs/dev/build-speed.md:333 — Older section still says test-profile dependencies are -O0 except sha2 and libsqlite3-sys; the new overrides make that false. (spot check: REJECT FYI.) The file is a dated chronological log and the new section states the current state.
+- [FYI] .github/workflows/ci.yml:154 — Rewritten comment says each slice "carries about an equal share of the test time", which the PR's own doc shows is approximate at best. (spot check: REJECT FYI.) pre-existing on base: .github/workflows/ci.yml:154 ("about a quarter of the test time"); the diff only generalized the count.
+- [FYI] docs/dev/build-speed.md:346 — Older section still says "CI now uses four slice shards". (spot check: REJECT FYI.) Dated section heading (ht-o22w, 2026-10-18) scopes "now"; a "superseded by ht-v9v1" note would be the whole fix.
+- [FYI] .github/workflows/ci.yml:58 — "The one place the slice count lives" is true only of runtime expressions; prose in ci.yml:4, full-suite.yml:6 and the workflows_test.sh literal `[1,2,3,4,5]` still carry the count. (spot check: REJECT FYI.) The test literal is the intended shape guard, as on base.
+- [FYI] .github/workflows/ci.yml:163 — Timed step reads the count via step env `SHARDS` while the summary step at ci.yml:184 inlines `${{ strategy.job-total }}`. (spot check: REJECT FYI.) Both read the same single source; stylistic.
+- [FYI] tests/release/workflows_test.sh:81 — The SHARDS assertion runs two independent `yq` queries over all steps, so it does not tie `env.SHARDS` to the step that runs `--partition`. (spot check: REJECT FYI.) `set -euo pipefail` makes an unset SHARDS fail loudly; whole-job greps are the file's standing convention. Hardening suggestion: select the step by name as full-suite's `timed_step` helper does.
+- [FYI] .github/workflows/ci.yml:60 — A fifth shard adds a fifth independent set of live-network setup fetches; the nextest curl has no `--retry`. (spot check: REJECT FYI; lane test-isolation-environment keeps seat severity.) The missing retry is pre-existing on base: .github/workflows/ci.yml:118. No cross-shard shared state; per-shard leak ids, artifact names and `save-if` on shard 1 remain unique.
+- [FYI] Cargo.toml:107 — The profile edit changes the rust-cache key, so the first CI run after merge cold-builds dependencies in every shard, release-proof and clippy. (spot check: REJECT FYI.) Routine for any manifest edit; cold vs warm is ~15 vs 13-14 min and the 300 s timer starts after the prewarm.
+- [FYI] .github/workflows/ci.yml:53 — Check-run names change from "Tests N/4" to "Tests N/5"; any required-status-check keyed on the old names would wait forever. (spot check: REJECT FYI.) The seat verified main is unprotected (404) and rulesets are empty; no consumer of the names exists in scripts/, .github/ or tests/release.
+- [FYI] Cargo.toml:107 — (Speculative) some per-signature time may remain in -O0 dependencies such as subtle or zeroize. (spot check: REJECT FYI.) Self-described as unmeasured; the doc already weighed and declined a blanket opt-level 2. Spike if ever wanted: re-time the saturated-window test with subtle/zeroize at opt-level 3; kill under ~5% change.
+- [FYI] Cargo.toml:104 — Commit 7baad44a8 rewrites the comment a002883ca added one commit earlier; a fixup that could have been squashed. (spot check: REJECT FYI.) Commit granularity only; the final tree is correct and AGENTS.md sets no squash rule.
+
+## Escalations (need human)
+- none

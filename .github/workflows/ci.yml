@@ -55,8 +55,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The one place the slice count lives: every step reads it back as
-        # strategy.job-total (ht-v9v1: five slices keep each under ~250 s).
+        # The one place the slice count is set: the steps read it back as
+        # strategy.job-total (ht-v9v1: five slices project each under ~250 s).
         shard: [1, 2, 3, 4, 5]
     env:
       # ht-p03.131: every process a step starts carries this id, so the final
