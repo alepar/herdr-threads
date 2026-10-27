@@ -376,7 +376,8 @@ impl OrdinaryIdentity {
     /// ht-dtx0: decide this host's kept continuity claims, after a completed
     /// reconciliation pass, on the observation lane: each target read is quiet
     /// (no explicit capture, no wait for one), so a claim that stays not ready
-    /// costs one read per pass at the lane's own cadence. Each is the ordinary
+    /// costs two bounded reads per pass (the C1 diagnostic and the target) at
+    /// the lane's own cadence. Each is the ordinary
     /// C1 decision under its own operation key (a session's later
     /// resubmission replays the result). A claim whose process is gone, or that
     /// was decided either way, is dropped; one whose evidence is still not

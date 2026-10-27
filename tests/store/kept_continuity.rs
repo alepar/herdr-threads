@@ -107,3 +107,65 @@ fn a_claim_expires_an_hour_after_it_was_received() {
         .unwrap();
     assert_eq!(count, 0, "the expired row is gone");
 }
+
+fn by(mut command: ContinuityCheckIn, pid: u32) -> ContinuityCheckIn {
+    command.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 });
+    command
+}
+
+/// Seat `s` gets a binding naming `session`: a session some seat already had.
+fn bind(db: &rusqlite::Connection, session: &str) {
+    use crate::store::bindings::*;
+    let (key, place) = (
+        crate::store::bindings::tests::key(session, None),
+        crate::store::bindings::tests::placement(),
+    );
+    let request = EnrollRequest {
+        key: &key,
+        role: BindingRole::TopLevel,
+        parent: None,
+        lineage: None,
+        fingerprint: Some(crate::protocol::authority::LivenessFingerprint { pid: 99, start: 9 }),
+        placement: &place,
+        trigger: EnrollTrigger::Lifecycle,
+    };
+    enroll_with_hooks(db, &request, crate::protocol::time::UtcMillis(5), &[]).unwrap();
+}
+
+fn sessions(db: &mut rusqlite::Connection, host: HostId) -> Vec<String> {
+    due_at(db, host, 100)
+        .into_iter()
+        .map(|kept| kept.command.native_session.as_str().to_owned())
+        .collect()
+}
+
+/// Kills: a process that `/resume`d into another seat's session T keeping its
+/// older claim for S, so S's row reattaches S's seat to the pane now running T
+/// (T's next check-in then acts as that seat); and supersession by a fresh
+/// `/clear` successor, which would strand the pane's seat.
+#[test]
+fn a_known_session_of_the_same_process_supersedes_its_older_claim() {
+    let (mut db, host) = store();
+    bind(&db, "T");
+    // Fresh successor: no binding names S2, both stay.
+    assert!(keep_at(&mut db, host, &by(claim("w1:p1", "S"), 7), 10));
+    assert!(keep_at(&mut db, host, &by(claim("w1:p1", "S2"), 7), 20));
+    assert_eq!(sessions(&mut db, host), ["S", "S2"]);
+    // Another process's claim, and the same process on another target, stay.
+    assert!(keep_at(&mut db, host, &by(claim("w1:p1", "O"), 8), 25));
+    assert!(keep_at(&mut db, host, &by(claim("w1:p2", "S"), 7), 26));
+    // T is another seat's session: the process's other claims on w1:p1 go.
+    assert!(keep_at(&mut db, host, &by(claim("w1:p1", "T"), 7), 30));
+    assert_eq!(sessions(&mut db, host), ["O", "S", "T"]);
+    assert_eq!(
+        due_at(&mut db, host, 100)
+            .iter()
+            .map(|kept| kept.command.target.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        ["w1:p1", "w1:p2", "w1:p1"]
+    );
+    // A claim the daemon decided at intake supersedes too.
+    assert!(keep_at(&mut db, host, &by(claim("w1:p3", "S"), 7), 40));
+    forget(&db, host, &by(claim("w1:p3", "T"), 7), None).unwrap();
+    assert_eq!(sessions(&mut db, host), ["O", "S", "T"]);
+}

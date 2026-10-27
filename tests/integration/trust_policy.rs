@@ -2045,6 +2045,61 @@ fn codex_resume_claim_while_herdr_is_down_is_kept_and_decided() {
     resume_claim_while_herdr_is_down("codex", "htkx");
 }
 
+/// ht-dtx0 review: a process that resumes S in pane P (seat A) and then `/resume`s into T,
+/// seat B's session, before the daemon has reconciled, leaves only T's claim kept. S's older
+/// row never reattaches A to the pane now running T; B reattaches there instead.
+#[test]
+fn a_resume_into_another_seats_session_supersedes_the_kept_claim() {
+    let mut world = World::start(
+        "htks",
+        vec![
+            claude("w1:p1", "term-a", "SA"),
+            claude("w1:p2", "term-b", "TB"),
+        ],
+    );
+    let a = world.resolve("w1:p1");
+    let b = world.resolve("w1:p2");
+    for (pane, session) in [("w1:p1", "SA"), ("w1:p2", "TB")] {
+        let (code, _, stderr) =
+            world.hook("claude", pane, &session_start("claude", session, "startup"));
+        assert_eq!(code, 0, "{stderr}");
+    }
+    world.herdr.kill();
+    world.hook_unanswered("claude", "w1:p1", &session_start("claude", "SA", "resume"));
+    assert_eq!(world.kept_claims(), 1);
+    // The same process (SA's stand-in) now runs TB.
+    let process = herdr_threads::test_support::isolation::stand_in_fingerprint("claude", "SA")
+        .pid
+        .to_string();
+    let scale = herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV;
+    let _ = world.hook_with_env(
+        "claude",
+        "w1:p1",
+        &session_start("claude", "TB", "resume"),
+        &[
+            (scale, "1"),
+            ("CLAUDE_PID", &process),
+            ("HT_TEST_HARNESS_PID", &process),
+        ],
+    );
+    assert_eq!(world.kept_claims(), 1, "T's claim supersedes S's");
+    world.herdr.set_panes(vec![
+        claude("w1:p1", "term-a2", "TB"),
+        pane("w1:p2", "term-b2"),
+    ]);
+    world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
+    world.kick_observation();
+    world.wait_for_recovery("B to reattach to the pane running TB", |world| {
+        world.seat_state(&b) == "resolved" && world.kept_claims() == 0
+    });
+    assert_eq!(world.seat_state(&a), "unresolved");
+    assert_eq!(
+        world.open_binding(&b),
+        vec![("claude".into(), "cooperative_top_level".into(), "TB".into())]
+    );
+    assert_eq!(world.continuity_decisions(), 1);
+}
+
 /// ht-dtx0 acceptance 3: the claim kept by a daemon that then stops is decided by its
 /// replacement.
 #[test]

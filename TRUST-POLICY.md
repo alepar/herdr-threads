@@ -163,11 +163,17 @@ ensures one, as a lifecycle hook does (a live owner is never displaced).
 hook itself would retry (`cli::retry::is_continuity_refusal`: reconciliation lag, a failed, superseded or raced host
 read, writer admission, budget), is kept by the daemon verbatim: one row per (Herdr server, target, harness, native
 session), at most 256 in all, for at most one hour from the session's first such claim. A definitive refusal (no
-match, several matches, an owned or unusable target, an invalid claim) keeps nothing and drops any kept copy. The
+match, several matches, an owned or unusable target, an invalid claim) keeps nothing and drops any kept copy. A
+claim, kept or decided, for a session some binding already names supersedes the same process's (same liveness
+fingerprint's) kept claims for other sessions on that target: a process that `/resume`s into another seat's session
+has left the sessions it claimed before, so their older claims never reattach a seat to a pane that now runs another
+seat's session. A claim for a session no binding names (a `/clear` successor, which no seat matches) supersedes
+nothing. The
 reply to the session is unchanged. After each completed reconciliation pass of the current recovery boot and epoch,
 the observation worker decides each kept claim through the ordinary C1 transaction against the canonical view (A2),
-under its own operation key, so the session's later resubmission replays the same result; its target reads are the
-lane's own (no extra capture), at most one per claim per pass. A kept claim whose fingerprinted process has exited
+under its own operation key, so the session's later resubmission replays the same result. Each decision makes two
+bounded Herdr reads, as at intake: the C1 `agent_session` diagnostic and the target read, which is the lane's own
+(no extra capture, no wait for one); so at most two reads per claim per pass. A kept claim whose fingerprinted process has exited
 is dropped undecided; a decided one, either way, is dropped, but never a newer claim that replaced the row
 meanwhile. The claim and its evidence are the session's own; the daemon only defers the decision. Client-local intent
 files are never read by the daemon.

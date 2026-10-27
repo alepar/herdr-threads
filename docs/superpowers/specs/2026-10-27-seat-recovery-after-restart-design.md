@@ -92,6 +92,11 @@ The stored claim is the exact command, including operation id, execution and liv
 - at most 256 rows in all; beyond that, the claim is answered but not kept;
 - the age runs from the session's first claim on that target: a repeat replaces the command but keeps the
   original `received_at`.
+- a claim, kept or decided at intake, for a session some binding already names supersedes the same process's
+  (same liveness fingerprint's) kept claims for other sessions on that target. Without it, a process restored on
+  S that `/resume`s into T, another unresolved seat's session, before reconciliation leaves both rows; S, the older,
+  is decided first and reattaches its seat to the pane now running T, whose next check-in then acts as that seat.
+  A `/clear` successor's session is named by no binding, so it supersedes nothing and S can still reattach.
 
 The reply is unchanged (the same retryable error), so the wire does not change.
 
@@ -99,8 +104,9 @@ The observation worker re-submits every kept claim of its host through `Identity
 operation key, at most 16 per pass, oldest first. It does so after each completed reconciliation pass that
 recorded the marker for the current recovery boot and epoch, so `reconciliation_lags` is false. Each attempt is
 the ordinary C1 transaction against the canonical view (A2). Because the operation key is the same, the session's
-own later resubmission (hook or watch) replays the same result. These reads are quiet: they request no extra lane
-capture and never wait for one, since the pass that triggered them has just captured.
+own later resubmission (hook or watch) replays the same result. The target read is quiet: it requests no extra
+lane capture and never waits for one, since the pass that triggered it has just captured. Each attempt also makes
+the C1 `agent_session` diagnostic read (bounded at 750 ms), as at intake, so an attempt costs two Herdr reads.
 
 A kept row is removed:
 
@@ -113,7 +119,7 @@ A kept row is removed:
 A drop removes only the row as it was loaded, never a newer claim from the same session that replaced it meanwhile.
 
 A transient failure during re-submission, such as a host read failure or a guard race between the read and the
-transaction, keeps the row for the next pass. So a claim that keeps failing costs at most one host read per pass
+transaction, keeps the row for the next pass. So a claim that keeps failing costs at most two host reads per pass
 for one hour. A process that is gone cannot be the session that made the claim; that is the guard against deciding
 a claim for a session that has left the pane.
 
