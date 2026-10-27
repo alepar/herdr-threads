@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.3.3
+
+Re-run `herdr-threads setup hermes` after upgrading. No node schema or peer wire change.
+
+- **Hermes gateway sessions stay connected.** Hermes 0.22.1+: sessions in different panes of one gateway no longer disconnect each other; each pane keeps receiving its own mail (a gateway session now lives as long as the gateway process, TRUST-POLICY A4).
+- **Hermes idle wake.** Hermes 0.22.1+: an idle Hermes session is woken by p0 items, invitations and ACK requests, typed into its own pane's composer; senders no longer see `wake=no_wake` for Hermes seats (TRUST-POLICY A4, pane-scoped match for gateway harnesses).
+- **Tests.** A fixture race in the mod-delivery suite no longer types a wake for already-read mail under load.
+
 ## v2.3.2
 
 Re-run `herdr-threads setup codex`, `setup claude` and `setup hermes` after upgrading: the Codex and Claude hook contracts changed (new Codex `Stop` hook, Claude `UserPromptSubmit` hook, every-tool `PreToolUse` matcher) and the Hermes bridge changed. Until then the installs are reported stale. Codex asks to re-review its `pre_tool_use` and new `stop` hooks in `/hooks`; until then those hooks stay untrusted and do not deliver (`setup-status codex` still shows `trust_recorded: true`, which only checks that a hash exists). No node schema or peer wire change.
