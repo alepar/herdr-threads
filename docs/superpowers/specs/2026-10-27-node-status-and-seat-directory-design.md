@@ -152,11 +152,8 @@ present), `peer_version`, `caps`, `peer_has_ours: Option<u64>` =
 ```sql
 CREATE TABLE sync_peer_status (
     node_uuid TEXT PRIMARY KEY,
-    version TEXT,                 -- last node_info; a new boot replaces it
-    caps TEXT NOT NULL,           -- negotiated, space-separated
-    boot TEXT NOT NULL,           -- last hello boot
-    linked_since INTEGER,         -- NULL while no active link
-    last_linked_at INTEGER NOT NULL,
+    version TEXT,                 -- last node_info of this boot
+    boot TEXT NOT NULL,           -- the peer boot the values belong to
     tx_acked INTEGER, tx_head INTEGER,  -- their acknowledged view of our active log
     rx_have INTEGER, rx_head INTEGER,   -- our view of their active log
     app_seen_at INTEGER,          -- last coordinator-originated frame
@@ -164,23 +161,39 @@ CREATE TABLE sync_peer_status (
 ) STRICT;
 ```
 
-Written by the coordinator through `SyncStorePort::record_peer_status`
-(module `src/sync/coordinator/peer_status.rs`, store `src/store/sync_peer_status.rs`):
-at once when a node's active link comes up or goes away or its version or
-boot changes, otherwise changed rows at most every 10 s (the `ContactBook`
-cadence), one write in flight. A missing version or position keeps the stored
-value. Last contact stays in `sync_node_contact`. One row per node, bounded by
-`node_directory`. The progress clocks are live state only: a stall is
-meaningful only on a live link, so they are not persisted.
+Only what a peer without a live link is shown with: whether it is linked,
+and since when, comes from the live coordinator alone, so no stored row can
+claim a link a previous daemon run had. Written by the coordinator through
+`SyncStorePort::record_peer_status` (`src/sync/coordinator/peer_status.rs`,
+store `src/store/sync_peer_status.rs`):
+
+- a node not yet written, or a new version or boot: at the next tick;
+- changed positions: at most every 10 s; app contact only once it advanced
+  30 s (the `ContactBook` advance rule), so a healthy link costs a write
+  about every 30 s, not every `seen`;
+- a failed write backs off 10 s and is logged once per run of failures (and
+  once on recovery); a write still in flight after 60 s is logged once;
+- at shutdown, while the links still exist, the write in flight is joined
+  and every row that differs from the store is written, each step bounded by
+  `CLOSE_WRITE_TIMEOUT`.
+
+Merge rule: a row of a new boot replaces every value (the old boot's
+positions describe another run); within a boot a missing version or
+position keeps the stored one and app contact only moves forward. Counters
+past `i64::MAX` (a peer may advertise any `u64`) are stored clamped, so
+display data never fails a write. Last contact stays in `sync_node_contact`.
+One row per node, bounded by `node_directory`. The progress clocks are live
+state only.
 
 ### 4.4 Node state (one rule)
 
-`store::sync_status::node_state`, from `reach` and the live link the
-coordinator reports (no live link, or no answer from the coordinator: never
-`linked`/`stalled`). First match wins:
+`store::sync_status::node_state`, from the live link the coordinator
+reports and `reach`:
 
-1. `unreachable since <last_contact>` / `unreachable never`: `reach` says so.
-2. `stalled` with the parts that hold, in the order `app`, `tx`, `rx`:
+1. A node with a live active link is `stalled` with the parts that hold, in
+   the order `app`, `tx`, `rx`, else `linked`. The live link wins over the
+   throttled stored contact, so a just-linked node is never shown
+   unreachable.
    - `app`: `now - app_rx > APP_SILENT_AFTER` (30 s = three missed `seen`);
      transport alive, coordinator silent. The threshold must exceed the 10 s
      `seen` period, or a healthy link reads stalled between two `seen`s;
@@ -188,16 +201,23 @@ coordinator reports (no live link, or no answer from the coordinator: never
      that acknowledgement has not grown for `STALL_AFTER` (120 s);
    - `rx`: the peer advertises its active log ahead of what we hold and we
      have ingested none of it for `STALL_AFTER`.
-3. `linked`: active direct link, none of the above.
-4. `reachable`: no direct link, contact fresh (relayed).
+2. Without one: `unreachable since <last_contact>` / `unreachable never` by
+   `reach`, else `reachable` (fresh relayed contact).
+
+If the coordinator does not answer `peer list` within 2 s (its own deadline,
+inside the call budget), no node is live: the rows come from the store.
 
 Progress is clocked on the 1 s housekeeping tick (`track_progress`): a
-direction that is caught up, or whose held counter grew, made progress at
-that tick. A direction is stalled only while its held counter still equals
-the one the last tick recorded, so a catch-up followed by new entries between
-two ticks never reads as a stall. Stall is diagnostic only: it changes no
-link, rank or dial decision (a follow-up may let a stalled active link yield
-to a standby; not here).
+direction that is caught up, whose held counter grew, or whose active log
+changed (a new incarnation) made progress at that tick. A direction is
+stalled only while it still holds the counter of the same log the last tick
+recorded, so a catch-up followed by new entries between two ticks never
+reads as a stall. Stall is diagnostic only: it changes no link, rank or dial
+decision (a follow-up may let a stalled active link yield to a standby; not
+here).
+
+`node_info` is kept once per link and only when it looks like a version
+(1..=32 bytes of `[0-9A-Za-z.+-]`).
 
 Clone evidence: when `sync_clone_evidence` has an open (uncleared) row whose
 `subject` is the peer, its row adds ` clone_suspected` (16 bytes); the state
@@ -227,6 +247,8 @@ node Pq7 unreachable never v=- rx=- tx=-
   and the version text (at most 32 bytes).
 - JSON: `SyncReply::Peers.nodes: Vec<NodeRow>` (`#[serde(default)]`, omitted
   when empty); an older daemon's reply has none and prints no node rows.
+- `empty` is printed only when there is neither a dial target nor a known
+  node.
 
 `sync status` link rows add `since`, `last_rx`, `app_rx`, `subs`, `peer_lag`
 and, on a stalled link, `stalled=`:
@@ -243,12 +265,15 @@ no delivery, hook or check-in text changes.
 
 ### 4.6 Daemon log timestamps
 
-The daemon child's output reader (`ChildOwnedLogSink`, `src/daemon/mod.rs`),
-which already carries every byte the process writes to stdout/stderr into
-`daemon.log`, prefixes each line start with `2026-10-27T09:12:03.481Z ` (25
-bytes, UTC, ms, the reader's wall clock). Every line is stamped, panics and
-child output included, and CLI stderr is untouched. A line split across two
-reads is stamped once. daemon.log is operator-facing, not model-visible.
+The daemon child's `daemon.log` sink (`StampedLog` in `src/daemon/mod.rs`)
+prefixes each line start with `2026-10-27T09:12:03.481Z ` (25 bytes, UTC,
+ms, wall clock): the output reader's bytes (everything the process writes to
+stdout/stderr, panics and child output included) and the daemon's own
+writes (owner errors, drain notes, the final diagnostic replay) alike. The
+line state is shared, so a write continuing a line another began is not
+stamped again. CLI stderr is untouched. daemon.log is operator-facing, not
+model-visible. The 1 MiB rotation is unchanged, so the stamp costs about a
+fifth of the retained history; accepted for now.
 
 ### 4.7 Left out of ht-b3k6
 
@@ -498,8 +523,10 @@ TRUST-POLICY.md gains, in the same commit as phase 2:
     unavailable` (the old text is kept for exactly this case).
 - **A newer peer sending a frame we do not know** decodes as
   `PeerFrame::Unknown` (unchanged).
-- **Store:** migrations 0006 and 0007 are additive. A downgrade leaves the
-  two tables unused.
+- **Store:** migrations 0006 and 0007 are additive, but every migration
+  bumps the store's schema version and an older binary refuses a newer store
+  ("store is newer than this binary"), so a rollback below the release that
+  carries 0006 needs a newer binary back (as for every earlier delta).
 - **Wire-compat:** two new variants carry `// cap:`, and the baseline grows
   only by the new types. `scripts/check-wire-compat` and
   `scripts/freeze-peer-wire 2.1.1 --check` must pass. A 2.4.0 fixture is

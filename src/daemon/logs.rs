@@ -579,18 +579,12 @@ pub(crate) fn stamp_lines(chunk: &[u8], at_line_start: &mut bool, now_ms: i64) -
     out
 }
 
-/// `YYYY-MM-DDTHH:MM:SS.mmmZ`, UTC.
+/// `YYYY-MM-DDTHH:MM:SS.mmmZ`, UTC: the shared seconds formatter plus
+/// milliseconds.
 fn rfc3339_millis(millis: i64) -> String {
-    let secs = millis.div_euclid(1000);
-    let (year, month, day) = crate::summary::render::civil_from_days(secs.div_euclid(86_400));
-    let rem = secs.rem_euclid(86_400);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60,
-        millis.rem_euclid(1000)
-    )
+    let seconds = crate::harness::manifest::format_rfc3339_utc(millis);
+    let stem = seconds.strip_suffix('Z').unwrap_or(&seconds);
+    format!("{stem}.{:03}Z", millis.rem_euclid(1000))
 }
 
 #[cfg(test)]

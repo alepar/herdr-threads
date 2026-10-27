@@ -16,7 +16,6 @@ const COORDINATOR_FRAMES: &[&str] = &[
     "unwant",
     "entries",
     "seen",
-    "node_info",
     "branch_want",
     "branch_entries",
     "branch_none",
@@ -80,7 +79,7 @@ fn stalled_cluster(label: &str) -> Cluster {
         env.push((
             node,
             "HT_TEST_APP_SILENT_AFTER_MS".to_owned(),
-            "15000".to_owned(),
+            "25000".to_owned(),
         ));
     }
     let mut cluster = Cluster::start(

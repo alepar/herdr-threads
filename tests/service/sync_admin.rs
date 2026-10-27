@@ -1241,10 +1241,7 @@ fn peer_status(version: Option<&str>, boot: u128) -> crate::store::sync_peer_sta
     crate::store::sync_peer_status::PeerStatus {
         node: peer_node(),
         version: version.map(str::to_owned),
-        caps: vec!["sync.v1".into(), "node.info.v1".into()],
         boot: uuid::Uuid::from_u128(boot),
-        linked_since: None,
-        last_linked_at: 5,
         tx: Some((7, 9)),
         rx: Some((3, 5)),
         app_seen_at: Some(4),
@@ -1355,13 +1352,13 @@ fn node_rows_render_compactly() {
     let linked = render(vec![row("linked", &[])]);
     assert_eq!(
         linked,
-        "peers\nempty\nnode Q0V linked seen=4s app=6s v=2.4.0 rx=567/567 tx=1180/1234 since=06:12Z\n"
+        "peers\nnode Q0V linked seen=4s app=6s v=2.4.0 rx=567/567 tx=1180/1234 since=06:12Z\n"
     );
     let stalled = render(vec![NodeRow {
         clone_suspected: true,
         ..row("stalled", &["app", "tx"])
     }]);
-    let line = stalled.lines().nth(2).unwrap();
+    let line = stalled.lines().nth(1).unwrap();
     assert_eq!(
         line,
         "node Q0V stalled app,tx seen=4s app=6s v=2.4.0 rx=567/567 tx=1180/1234 since=06:12Z clone_suspected"
@@ -1372,10 +1369,11 @@ fn node_rows_render_compactly() {
         ..row("unreachable", &[])
     }]);
     assert_eq!(
-        unreachable.lines().nth(2).unwrap(),
+        unreachable.lines().nth(1).unwrap(),
         "node Q0V unreachable since 09:11Z v=2.4.0 rx=567/567 tx=1180/1234"
     );
-    // An older daemon's reply has no `nodes`: no node lines.
+    // `empty` only when there is neither a target nor a node; an older
+    // daemon's reply has no `nodes`: no node lines.
     let old: Reply =
         serde_json::from_value(serde_json::json!({"op": "peers", "rows": []})).unwrap();
     assert_eq!(text(old), "peers\nempty\n");
@@ -1414,4 +1412,104 @@ fn status_link_row_shows_liveness() {
         "link Q0V active dialer rx_logs=3 unsolicited=0 since=09:11Z last_rx=2s app_rx=6s subs=3 peer_lag=54 stalled=tx"
     );
     assert_eq!(line.len(), 110);
+}
+
+// Kills: a new boot that keeps the old boot's positions or app contact, an
+// app contact that moves backwards or turns NULL into 0, and a counter past
+// i64::MAX that fails the write instead of being clamped.
+#[test]
+fn peer_status_merge_rule() {
+    use crate::store::sync_peer_status::{PeerStatus, list};
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    let stored = |node: &Node| list(&node.store.context().open_writer().unwrap()).unwrap();
+    let base = PeerStatus {
+        app_seen_at: None,
+        ..peer_status(Some("2.4.0"), 1)
+    };
+    record_peer(&rig.node, base.clone());
+    assert_eq!(
+        stored(&rig.node),
+        std::slice::from_ref(&base),
+        "NULL app contact stays NULL"
+    );
+    // Same boot: missing values keep the stored ones, app contact only grows.
+    record_peer(
+        &rig.node,
+        PeerStatus {
+            version: None,
+            tx: None,
+            rx: Some((4, 5)),
+            app_seen_at: Some(50),
+            ..base.clone()
+        },
+    );
+    record_peer(
+        &rig.node,
+        PeerStatus {
+            app_seen_at: Some(20),
+            ..base.clone()
+        },
+    );
+    let row = &stored(&rig.node)[0];
+    assert_eq!(row.version.as_deref(), Some("2.4.0"));
+    assert_eq!(
+        (row.tx, row.rx, row.app_seen_at),
+        (Some((7, 9)), Some((3, 5)), Some(50))
+    );
+    // A new boot replaces everything, absent values included.
+    record_peer(
+        &rig.node,
+        PeerStatus {
+            version: None,
+            tx: None,
+            rx: None,
+            app_seen_at: None,
+            ..peer_status(None, 2)
+        },
+    );
+    let row = &stored(&rig.node)[0];
+    assert_eq!(
+        (row.version.clone(), row.tx, row.rx, row.app_seen_at),
+        (None, None, None, None)
+    );
+    // Past i64::MAX: stored clamped, the write succeeds.
+    record_peer(
+        &rig.node,
+        PeerStatus {
+            rx: Some((1, u64::MAX)),
+            ..peer_status(None, 2)
+        },
+    );
+    assert_eq!(stored(&rig.node)[0].rx, Some((1, i64::MAX as u64)));
+}
+
+// Kills: a stored unreachable contact overriding a live active link (a
+// just-linked node shown `unreachable since <now>`), and a stall not shown.
+#[test]
+fn node_state_prefers_the_live_link() {
+    use crate::store::sync_contacts::NodeReach;
+    use crate::store::sync_status::{LiveNode, NodeState, node_state};
+    use crate::sync::coordinator::Stall;
+    let live = |stalled: Stall| LiveNode {
+        node: peer_node(),
+        linked_since: 0,
+        last_rx: 0,
+        app_seen_at: None,
+        version: None,
+        tx: None,
+        rx: None,
+        stalled,
+    };
+    let never = NodeReach::Unreachable { since: None };
+    assert_eq!(
+        node_state(never, Some(&live(Stall::default()))),
+        NodeState::Linked
+    );
+    let tx = Stall {
+        tx: true,
+        ..Stall::default()
+    };
+    assert_eq!(node_state(never, Some(&live(tx))), NodeState::Stalled);
+    assert_eq!(node_state(never, None), NodeState::Unreachable);
+    assert_eq!(node_state(NodeReach::Reachable, None), NodeState::Reachable);
 }

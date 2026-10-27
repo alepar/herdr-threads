@@ -130,7 +130,8 @@ pub struct Seat {
 /// The relay a gated cluster's dials run through: `relay.py ROOT FROM TO --
 /// CMD...` runs the pump `CMD` and forwards both directions frame by frame. The
 /// first four frames of each direction (`FREE`) pass at once (hello,
-/// auth, accept, the full `have`); after that a frame of node `X` waits while
+/// auth, accept, the full `have`; a `node_info`, display only, passes
+/// uncounted); after that a frame of node `X` waits while
 /// `ROOT/hold/X` exists. A link therefore completes its handshake and both
 /// sides learn each other's vectors, but a held node's `want`s and entries do
 /// not move. While `ROOT/drop/X` exists, a frame of node `X` past `FREE`
@@ -170,6 +171,9 @@ def pump(src, dst, who, skip, close_dst):
             body = read_exact(src, int.from_bytes(head, "big"))
             if body is None:
                 break
+            if b'"t":"node_info"' in body[:32]:
+                write_all(dst, head + body)
+                continue
             if passed >= FREE:
                 while os.path.exists(root + "/hold/" + who):
                     time.sleep(0.02)

@@ -519,12 +519,10 @@ pub struct LinkStatus {
     /// The last inbound frame of any kind, ping/pong included.
     pub last_rx: UtcMillis,
     /// The last frame the peer's coordinator sent (not the link's own
-    /// ping/pong/credit): application-level contact.
-    pub app_rx: UtcMillis,
+    /// ping/pong/credit): application-level contact; `None` before the first.
+    pub app_rx: Option<UtcMillis>,
     /// The peer's self-reported daemon version (`node_info`); display only.
     pub peer_version: Option<String>,
-    /// The capabilities negotiated on this link.
-    pub caps: Vec<String>,
     /// `(acked, head)`: the peer holds `acked` of our active log (from its
     /// `have`); `None` off an active link or before its first full `have`.
     pub tx: Option<(u64, u64)>,
@@ -532,6 +530,20 @@ pub struct LinkStatus {
     /// advertises at `head`.
     pub rx: Option<(u64, u64)>,
     pub stalled: Stall,
+}
+
+impl Stall {
+    /// `app`, `tx`, `rx`: the parts that stalled, in that order.
+    pub fn names(self) -> Vec<&'static str> {
+        [("app", self.app), ("tx", self.tx), ("rx", self.rx)]
+            .into_iter()
+            .filter_map(|(name, on)| on.then_some(name))
+            .collect()
+    }
+
+    pub fn any(self) -> bool {
+        self.app || self.tx || self.rx
+    }
 }
 
 /// Which parts of an active link stopped making progress (diagnostic only;
@@ -806,6 +818,7 @@ impl SyncCoordinator {
             peer_flushed: BTreeMap::new(),
             peer_flushed_at: None,
             peer_flushes: JoinSet::new(),
+            peer_flush: peer_status::FlushHealth::default(),
         };
         let join = tokio::spawn(actor.run(Inputs {
             intake: intake_rx,
@@ -922,7 +935,8 @@ struct LinkEntry {
     last_rx_wall: u64,
     /// The last frame the peer's coordinator sent (see `peer_status`).
     app_rx: MonoInstant,
-    app_rx_wall: u64,
+    /// Wall time of the last coordinator frame; `None` before the first.
+    app_rx_wall: Option<u64>,
     /// The peer's `node_info` version.
     peer_version: Option<String>,
     /// A full `have` arrived in this activation, so `peer_vector` is the
@@ -930,9 +944,9 @@ struct LinkEntry {
     vector_known: bool,
     /// The held counter last seen growing in each direction, and when it
     /// last made progress (see `peer_status::track_progress`).
-    tx_mark: Option<u64>,
+    tx_mark: Option<(LogKey, u64)>,
     tx_progress_at: MonoInstant,
-    rx_mark: Option<u64>,
+    rx_mark: Option<(LogKey, u64)>,
     rx_progress_at: MonoInstant,
     /// Held so the transport's slot is released when the link is.
     _permit: Option<PeerPermit>,
@@ -1049,6 +1063,8 @@ struct Actor {
     peer_flushed_at: Option<MonoInstant>,
     /// `record_peer_status` calls in flight (at most one).
     peer_flushes: JoinSet<peer_status::PeerFlushDone>,
+    /// Failure backoff and stuck-write reporting of those calls.
+    peer_flush: peer_status::FlushHealth,
 }
 
 /// A [`ResyncPin`] and when it took hold (the coordinator's monotonic
@@ -1095,9 +1111,7 @@ impl Actor {
                     }
                 }
                 Some(joined) = self.peer_flushes.join_next(), if !self.peer_flushes.is_empty() => {
-                    if let Ok(done) = joined {
-                        self.on_peer_status_flushed(done);
-                    }
+                    self.on_peer_status_joined(joined);
                 }
                 Some(done) = inputs.ingest.recv() => self.on_ingested(done),
                 Some(joined) = self.serve_jobs.join_next(), if !self.serve_jobs.is_empty() => {
@@ -1287,7 +1301,7 @@ impl Actor {
                         polled_inbound: 0,
                         last_rx_wall: self.wall(),
                         app_rx: now,
-                        app_rx_wall: self.wall(),
+                        app_rx_wall: None,
                         peer_version: None,
                         vector_known: false,
                         tx_mark: None,
@@ -1594,7 +1608,7 @@ impl Actor {
             // Every frame that reaches the actor came from the peer's
             // coordinator: the link answers ping/pong/credit itself.
             entry.app_rx = now;
-            entry.app_rx_wall = wall;
+            entry.app_rx_wall = Some(wall);
             entry.last_rx_wall = wall;
         }
         if matches!(
@@ -2463,6 +2477,7 @@ impl Actor {
                     .take(SNAPSHOT_MAX_LINKS)
                     .map(|(id, entry)| {
                         let peer: &PeerInfo = entry.handle.peer();
+                        let (tx, rx) = self.link_positions(entry);
                         LinkStatus {
                             node: peer.node,
                             tag: peer.tag,
@@ -2485,12 +2500,13 @@ impl Actor {
                             last_rx: UtcMillis(
                                 i64::try_from(entry.last_rx_wall).unwrap_or(i64::MAX),
                             ),
-                            app_rx: UtcMillis(i64::try_from(entry.app_rx_wall).unwrap_or(i64::MAX)),
+                            app_rx: entry
+                                .app_rx_wall
+                                .map(|at| UtcMillis(i64::try_from(at).unwrap_or(i64::MAX))),
                             peer_version: entry.peer_version.clone(),
-                            caps: peer.caps.clone(),
-                            tx: self.link_positions(entry).0,
-                            rx: self.link_positions(entry).1,
-                            stalled: self.stall_of(entry, mono_now),
+                            tx: tx.map(|d| (d.held, d.head)),
+                            rx: rx.map(|d| (d.held, d.head)),
+                            stalled: self.stall_of(entry, tx, rx, mono_now),
                         }
                     })
                     .collect();
@@ -2561,6 +2577,7 @@ impl Actor {
             let _ = timeout(CLOSE_WRITE_TIMEOUT, worker).await;
         }
         self.final_flush().await;
+        self.final_peer_status_flush().await;
         self.dialer.shutdown().await;
         let leftover: Vec<u64> = self.links.keys().copied().collect();
         for link_id in leftover {
@@ -2784,6 +2801,9 @@ mod tests {
         clock: Arc<dyn Clock>,
         calls: Mutex<Vec<(i64, Vec<NodeContact>)>>,
         fail: AtomicBool,
+        /// `record_peer_status` calls, and whether they fail.
+        peer_calls: AtomicUsize,
+        peer_fail: AtomicBool,
     }
 
     impl CountingStore {
@@ -2828,6 +2848,13 @@ mod tests {
             rows: &[crate::store::sync_peer_status::PeerStatus],
             budget: &CallBudget,
         ) -> Result<(), ApiError> {
+            self.peer_calls.fetch_add(1, Ordering::SeqCst);
+            if self.peer_fail.load(Ordering::SeqCst) {
+                return Err(ApiError::new(
+                    ErrorCode::StoreBusy,
+                    "scripted peer status failure",
+                ));
+            }
             self.inner.record_peer_status(rows, budget)
         }
     }
@@ -2896,6 +2923,8 @@ mod tests {
             clock: clock.clone(),
             calls: Mutex::new(Vec::new()),
             fail: AtomicBool::new(false),
+            peer_calls: AtomicUsize::new(0),
+            peer_fail: AtomicBool::new(false),
         });
         let (handle, intake, join) = SyncCoordinator::start_with(
             CoordinatorDeps {
@@ -7470,10 +7499,14 @@ mod tests {
             other => panic!("expected node_info, got {other:?}"),
         }
         with.expect_have().await;
-        with.send(PeerFrame::NodeInfo(NodeInfo {
-            version: "9.9.9".into(),
-        }))
-        .await;
+        // Not a version: ignored. The first plausible one is kept, a later
+        // one is not.
+        for version in ["2.4 node X linked", "9.9.9", "1.1.1"] {
+            with.send(PeerFrame::NodeInfo(NodeInfo {
+                version: version.into(),
+            }))
+            .await;
+        }
         let mut without = connect(&rig, 1, &peer_hello(3)).await;
         // The first frame after the handshake is the activation have.
         without.expect_have().await;
@@ -7499,12 +7532,6 @@ mod tests {
         };
         assert_eq!(version(2).as_deref(), Some("9.9.9"));
         assert_eq!(version(3), None, "ignored without the cap");
-        assert!(
-            snap.links
-                .iter()
-                .find(|l| l.node == node_of(2))
-                .is_some_and(|l| l.caps.iter().any(|c| c == NODE_INFO_CAP))
-        );
         stop(rig).await;
     }
 
@@ -7551,7 +7578,10 @@ mod tests {
         let link = snapshot(&rig).await.links[0].clone();
         assert!(link.stalled.app, "{link:?}");
         assert!(!link.stalled.tx && !link.stalled.rx, "{link:?}");
-        assert!(link.last_rx.0 > link.app_rx.0, "pings move last_rx only");
+        assert!(
+            link.app_rx.is_some_and(|app| link.last_rx.0 > app.0),
+            "pings move last_rx only"
+        );
 
         // Coordinator traffic again, but no acknowledgement and nothing
         // ingested past the stall threshold.
@@ -7569,6 +7599,22 @@ mod tests {
             }
         );
 
+        // Partial progress: the peer acknowledges some of our log, still
+        // behind; tx is no longer stalled (rx still is).
+        peer.send_have(
+            true,
+            false,
+            vec![
+                have_log(own.node, own.incarnation, 1),
+                have_log(node_of(2), 1, 5),
+            ],
+        )
+        .await;
+        peer.pump(1_500).await;
+        let link = snapshot(&rig).await.links[0].clone();
+        assert_eq!(link.tx, Some((1, head)));
+        assert!(!link.stalled.tx && link.stalled.rx, "{link:?}");
+
         // The peer acknowledges our head and stops advertising its log.
         peer.send_have(true, false, vec![have_log(own.node, own.incarnation, head)])
             .await;
@@ -7579,11 +7625,13 @@ mod tests {
         stop(rig).await;
     }
 
-    // Kills: no peer-status row for a linked node, a row that keeps
-    // `linked_since` after the link ended, and a missing version.
+    // Kills: no peer-status row for a linked node, a row lost or its version
+    // wiped when the link ends, and a failing store retried every tick or
+    // logged on every retry.
     #[tokio::test(start_paused = true)]
-    async fn peer_status_rows_follow_the_link() {
+    async fn peer_status_rows_follow_the_link_and_back_off() {
         let (rig, _journal) = node(1, 0, 0);
+        rig.store.peer_fail.store(true, Ordering::SeqCst);
         let mut peer = connect(&rig, 0, &info_hello(2)).await;
         peer.next().await;
         peer.expect_have().await;
@@ -7591,7 +7639,25 @@ mod tests {
             version: "2.4.0".into(),
         }))
         .await;
-        peer.pump(2_000).await;
+        peer.pump(5_000).await;
+        assert_eq!(
+            rig.store.peer_calls.load(Ordering::SeqCst),
+            1,
+            "one try, then the backoff"
+        );
+        let failures = || {
+            rig.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.contains("peer status flush failed"))
+                .count()
+        };
+        peer.pump(10_000).await;
+        assert_eq!(rig.store.peer_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(failures(), 1, "logged once per run of failures");
+        rig.store.peer_fail.store(false, Ordering::SeqCst);
+        peer.pump(11_000).await;
         let row = |store: &CountingStore| {
             store
                 .inner
@@ -7599,18 +7665,20 @@ mod tests {
                 .into_iter()
                 .find(|r| r.node == node_of(2))
         };
-        let up = row(&rig.store).expect("a row once linked");
-        assert!(up.linked_since.is_some());
+        let up = row(&rig.store).expect("a row once the store takes it");
         assert_eq!(up.version.as_deref(), Some("2.4.0"));
+        assert!(
+            rig.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("peer status writes recovered"))
+        );
         peer.end();
-        for _ in 0..50 {
+        for _ in 0..10 {
             tokio::time::sleep(Duration::from_millis(200)).await;
-            if row(&rig.store).is_some_and(|r| r.linked_since.is_none()) {
-                break;
-            }
         }
         let down = row(&rig.store).unwrap();
-        assert_eq!(down.linked_since, None);
         assert_eq!(
             down.version.as_deref(),
             Some("2.4.0"),

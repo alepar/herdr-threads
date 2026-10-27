@@ -34,6 +34,7 @@ use crate::protocol::time::CallBudget;
 use crate::store::apply::{self, ApplyLimits, ApplyState, ReplayScope};
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
 use crate::store::{node_directory, sync_contacts, sync_dial_targets, sync_peer_status};
+use crate::sync::coordinator::Stall;
 use crate::sync::envelope::StoredEntry;
 use crate::sync::journal_port::ApplyProgress;
 use crate::sync::{BatchLimits, LogKey};
@@ -336,23 +337,44 @@ pub struct LiveNode {
     pub node: NodeUuid,
     pub linked_since: i64,
     pub last_rx: i64,
-    pub app_seen_at: i64,
+    pub app_seen_at: Option<i64>,
     pub version: Option<String>,
     pub tx: Option<(u64, u64)>,
     pub rx: Option<(u64, u64)>,
-    /// Which of `app`, `tx`, `rx` stalled.
-    pub stalled: Vec<&'static str>,
+    pub stalled: Stall,
 }
 
-/// The node-status rule (ht-xg88), the only place it is decided. First match
-/// wins: unreachable by `sync_contacts::reach`; `stalled` while its active
-/// link stalled; `linked` with an active link; else `reachable` (relayed).
-pub fn node_state(reach: sync_contacts::NodeReach, live: Option<&LiveNode>) -> &'static str {
-    match (reach, live) {
-        (sync_contacts::NodeReach::Unreachable { .. }, _) => "unreachable",
-        (_, Some(live)) if !live.stalled.is_empty() => "stalled",
-        (_, Some(_)) => "linked",
-        (_, None) => "reachable",
+/// The node-status rule (ht-xg88), the only place it is decided. A node with
+/// a live active link is `stalled` while that link stalled, else `linked`
+/// (the live link is fresher than the throttled stored contact); without one
+/// it is `unreachable` or, with fresh relayed contact, `reachable`.
+pub fn node_state(reach: sync_contacts::NodeReach, live: Option<&LiveNode>) -> NodeState {
+    match (live, reach) {
+        (Some(live), _) if live.stalled.any() => NodeState::Stalled,
+        (Some(_), _) => NodeState::Linked,
+        (None, sync_contacts::NodeReach::Unreachable { .. }) => NodeState::Unreachable,
+        (None, sync_contacts::NodeReach::Reachable) => NodeState::Reachable,
+    }
+}
+
+/// The states [`node_state`] decides; [`NodeState::as_str`] is the wire and
+/// text spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeState {
+    Linked,
+    Stalled,
+    Reachable,
+    Unreachable,
+}
+
+impl NodeState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Linked => "linked",
+            Self::Stalled => "stalled",
+            Self::Reachable => "reachable",
+            Self::Unreachable => "unreachable",
+        }
     }
 }
 
@@ -400,15 +422,15 @@ pub fn nodes(conn: &Connection, now_ms: u64, live: &[LiveNode]) -> Result<Vec<No
             .map_err(store_error)?;
         out.push(NodeRow {
             node: node_label(tag.as_deref(), &text),
-            state: node_state(reach, live).to_owned(),
+            state: node_state(reach, live).as_str().to_owned(),
             stalled: live
-                .map(|l| l.stalled.iter().map(|s| (*s).to_owned()).collect())
+                .map(|l| l.stalled.names().into_iter().map(str::to_owned).collect())
                 .unwrap_or_default(),
             last_contact_at: live
                 .map(|l| l.last_rx)
                 .or_else(|| contact.and_then(|c| at(c.last_contact_at))),
             app_seen_at: live
-                .map(|l| l.app_seen_at)
+                .and_then(|l| l.app_seen_at)
                 .or_else(|| last.and_then(|r| r.app_seen_at.and_then(at))),
             linked_since: live.map(|l| l.linked_since),
             version: live

@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 /// to `render_message` must bump it.
 pub const RENDERER_VERSION: u32 = 2;
 
-pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

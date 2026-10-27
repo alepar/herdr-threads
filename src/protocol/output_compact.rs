@@ -1113,7 +1113,7 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
             if let Some(state) = discovery {
                 let _ = writeln!(out, "discovery {state}");
             }
-            if rows.is_empty() {
+            if rows.is_empty() && nodes.is_empty() {
                 out.push_str("empty\n");
             }
             for row in rows {

@@ -64,9 +64,39 @@ fn close_fd(fd: RawFd) {
     let _ = unsafe { close(fd) };
 }
 
-fn lock_log(
-    log: &Mutex<RotatingLogSink>,
-) -> io::Result<std::sync::MutexGuard<'_, RotatingLogSink>> {
+/// The daemon child's `daemon.log`: every write, from the output reader or
+/// the daemon itself, has each line start stamped with its UTC time
+/// (ht-b3k6). The line state is shared, so a write that continues a line
+/// another write began is not stamped again.
+struct StampedLog {
+    sink: RotatingLogSink,
+    at_line_start: bool,
+}
+
+impl StampedLog {
+    fn install(&mut self) -> io::Result<()> {
+        self.sink.install()
+    }
+
+    fn write(&mut self, source: DiagnosticSource, fragment: &[u8]) -> io::Result<()> {
+        // Wall clock: log decoration only.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
+        let stamped = logs::stamp_lines(fragment, &mut self.at_line_start, now);
+        self.sink.write(source, &stamped)
+    }
+
+    fn drain(&mut self) -> io::Result<()> {
+        self.sink.drain()
+    }
+
+    fn close(&mut self) -> io::Result<()> {
+        self.sink.close()
+    }
+}
+
+fn lock_log(log: &Mutex<StampedLog>) -> io::Result<std::sync::MutexGuard<'_, StampedLog>> {
     log.lock()
         .map_err(|_| io::Error::other("diagnostic log lock poisoned"))
 }
@@ -100,7 +130,7 @@ fn observe_reader_drain_for_test(deadline: Instant) -> io::Result<()> {
 /// This sink is installed by lifecycle only after OwnerLock election. The
 /// process-wide descriptors belong to the dedicated detached daemon child.
 struct ChildOwnedLogSink {
-    log: Arc<Mutex<RotatingLogSink>>,
+    log: Arc<Mutex<StampedLog>>,
     reader: Option<JoinHandle<ReaderCompletion>>,
     close_deadline: Arc<OnceLock<Instant>>,
     daemon_tail: Vec<u8>,
@@ -125,7 +155,10 @@ struct ReaderCompletion {
 impl ChildOwnedLogSink {
     fn new(paths: &NodePaths) -> Self {
         Self {
-            log: Arc::new(Mutex::new(RotatingLogSink::new(paths.node_dir.clone()))),
+            log: Arc::new(Mutex::new(StampedLog {
+                sink: RotatingLogSink::new(paths.node_dir.clone()),
+                at_line_start: true,
+            })),
             reader: None,
             close_deadline: Arc::new(OnceLock::new()),
             daemon_tail: Vec::new(),
@@ -177,7 +210,6 @@ impl DiagnosticSink for ChildOwnedLogSink {
                 let mut bytes_after_close = 0usize;
                 let mut reads_after_close = 0usize;
                 let mut cutoff_reason = None;
-                let mut at_line_start = true;
                 #[cfg(test)]
                 let mut drain_observed = false;
                 loop {
@@ -207,14 +239,8 @@ impl DiagnosticSink for ChildOwnedLogSink {
                         Ok(0) => break,
                         Ok(size) => {
                             if first_error.is_none() {
-                                // Wall clock: log decoration only.
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
-                                let stamped =
-                                    logs::stamp_lines(&chunk[..size], &mut at_line_start, now);
                                 let result = lock_log(&log).and_then(|mut sink| {
-                                    sink.write(DiagnosticSource::Stdout, &stamped)
+                                    sink.write(DiagnosticSource::Stdout, &chunk[..size])
                                 });
                                 if let Err(error) = result {
                                     first_error = Some(error);

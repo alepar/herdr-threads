@@ -35,12 +35,15 @@ use crate::store::incarnations::{self, ForkOrigin};
 use crate::store::sync_status::{self, node_label, resolve_node};
 use crate::store::{node_directory, sync_dial_targets};
 use crate::sync::LogKey;
-use crate::sync::coordinator::{LinkMode, LinkStatus, LogFn, Stall, SyncHandle};
+use crate::sync::coordinator::{LinkMode, LinkStatus, LogFn, SyncHandle};
 use crate::sync::incarnations::IncarnationsSink;
 use crate::sync::resync::{self, RequestEnv};
 
 /// Appended to the two-copies remedy: the dial targets a `node_collision`
 /// stopped are not restarted by the clearance.
+/// How long `peer list` waits for the coordinator's live links (ms) before
+/// it shows the stored last-known rows alone.
+const PEER_LIST_SNAPSHOT_MS: u64 = 2_000;
 const REMEDY_RE_ADD: &str = "; then `herdr-threads peer add` any target stopped by node_collision";
 
 /// See the module documentation.
@@ -98,10 +101,23 @@ impl SyncAdmin {
             SyncCommand::PeerList => {
                 let now = u64::try_from(self.clock.utc_now().0).unwrap_or(0);
                 // Without an answer from the coordinator no node is shown as
-                // linked: the stored rows give last-known values only.
+                // linked: the stored rows give last-known values only. The ask
+                // gets its own short deadline, so a wedged coordinator still
+                // leaves the budget for the store read.
+                let ask = CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        budget.deadline.0.min(
+                            self.clock
+                                .monotonic_now()
+                                .0
+                                .saturating_add(PEER_LIST_SNAPSHOT_MS),
+                        ),
+                    ),
+                    cancellation: budget.cancellation.clone(),
+                };
                 let live: Vec<sync_status::LiveNode> = self
                     .runtime
-                    .block_on(self.sync.snapshot(budget))
+                    .block_on(self.sync.snapshot(&ask))
                     .map(|snapshot| live_nodes(&snapshot.links))
                     .unwrap_or_default();
                 let (rows, nodes) = self.store.sync_read(budget, |conn, _| {
@@ -260,12 +276,14 @@ impl SyncAdmin {
                     last_error,
                     since: Some(link.since.0),
                     last_rx: Some(link.last_rx.0),
-                    app_rx: Some(link.app_rx.0),
+                    app_rx: link.app_rx.map(|at| at.0),
                     subscriptions: link.subscriptions,
                     peer_lag: link.tx.map(|(acked, head)| head.saturating_sub(acked)),
-                    stalled: stall_names(link.stalled)
-                        .iter()
-                        .map(|s| (*s).to_owned())
+                    stalled: link
+                        .stalled
+                        .names()
+                        .into_iter()
+                        .map(str::to_owned)
                         .collect(),
                 }
             })
@@ -397,15 +415,7 @@ impl SyncAdmin {
 #[path = "../../tests/service/sync_admin.rs"]
 mod tests;
 
-/// `app`, `tx`, `rx`: the parts of a link that stalled, in that order.
-fn stall_names(stall: Stall) -> Vec<&'static str> {
-    [("app", stall.app), ("tx", stall.tx), ("rx", stall.rx)]
-        .into_iter()
-        .filter_map(|(name, on)| on.then_some(name))
-        .collect()
-}
-
-/// One [`sync_status::LiveNode`] per node with an active, open link.
+/// One [`sync_status::LiveNode`] per node with an active link.
 fn live_nodes(links: &[LinkStatus]) -> Vec<sync_status::LiveNode> {
     links
         .iter()
@@ -414,11 +424,11 @@ fn live_nodes(links: &[LinkStatus]) -> Vec<sync_status::LiveNode> {
             node: link.node,
             linked_since: link.since.0,
             last_rx: link.last_rx.0,
-            app_seen_at: link.app_rx.0,
+            app_seen_at: link.app_rx.map(|at| at.0),
             version: link.peer_version.clone(),
             tx: link.tx,
             rx: link.rx,
-            stalled: stall_names(link.stalled),
+            stalled: link.stalled,
         })
         .collect()
 }
