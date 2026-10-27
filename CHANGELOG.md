@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.4.2
+
+One-way store upgrade to node schema 9 (migration 0009, table `restored_pane_watch`). Older binaries, 2.4.1 included, then refuse the store, so back up the state directory first. No peer wire change, and no setup re-run is needed.
+
+- **Unresolved seats retire when their pane is closed.** A seat left unresolved by a Herdr restart used to stay unresolved forever after its pane was closed, along with the restore hold it kept. Such a seat now retires on its own once all of these hold:
+  - the pane the current recovery baseline held at its address has been seen closed by a later coherent snapshot of the same Herdr instance (neither the address nor that pane's terminal shown);
+  - no claim of its session rebinds it and none is kept;
+  - 10 minutes of observed closure have passed. Closure time counts only while reconciliation is caught up, and each absent pass adds at most 30 s, so suspend, clock steps and downtime don't shorten the grace.
+
+  The seat then retires as pane-closed, with `restored_pane_closed` recorded as its closure evidence, and restore holds lift once no unresolved seat remains. TRUST-POLICY C2 states the rule and its accepted limits. One of them: a session resumed by hand in a different pane, which makes no claim within those 10 minutes, loses its seat.
+- **Not covered:** a closure no daemon of this release observed, such as a pane closed before the upgrade or while the daemon was down, still needs an operator retirement.
+
 ## v2.4.1
 
 One-way store upgrade to node schema 8 (migration 0008, table `kept_continuity_claims`). Older binaries, 2.4.0 included, then refuse the store, so back up the state directory first. No peer wire change, and no setup re-run is needed.
