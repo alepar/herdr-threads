@@ -1803,7 +1803,7 @@ impl Drop for WatchChild {
 }
 impl World {
     fn watch(&self, pane: &str, session: &str) -> WatchChild {
-        let mut command = Command::new(BIN);
+        let mut command = Command::new(BIN); // leak-guard: spawned via spawn_owned below
         herdr_threads::test_support::isolation::as_agent(&mut command, "claude", session);
         let mut child = command
             .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
