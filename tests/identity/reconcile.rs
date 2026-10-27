@@ -247,6 +247,7 @@ fn indexed_saved_seat_page_plans_move_without_namespace_scan() {
         visited: 1,
         has_more: false,
         seats: vec![SnapshotSavedSeat {
+            restored_pane: Default::default(),
             ordinal: 1,
             seat: SeatId::new("seat-a"),
             state: SeatState::Resolved,
@@ -379,6 +380,7 @@ fn occupant_evidence_never_unseats_or_replaces_the_active_occupant() {
         visited: 1,
         has_more: false,
         seats: vec![SnapshotSavedSeat {
+            restored_pane: Default::default(),
             ordinal: 1,
             seat: SeatId::new("seat-a"),
             state: SeatState::Resolved,
@@ -512,6 +514,7 @@ fn host_invalidation_never_reconfirms_from_execution_or_prior_empty_shell_eviden
         visited: 1,
         has_more: false,
         seats: vec![SnapshotSavedSeat {
+            restored_pane: Default::default(),
             ordinal: 1,
             seat: SeatId::new("seat-a"),
             state: SeatState::Unresolved,
@@ -646,6 +649,7 @@ fn host_invalidated_seat_reconfirms_structurally_from_binding_evidence_with_unkn
         visited: 1,
         has_more: false,
         seats: vec![SnapshotSavedSeat {
+            restored_pane: Default::default(),
             ordinal: 1,
             seat: SeatId::new("seat-a"),
             state: SeatState::Unresolved,
@@ -992,6 +996,7 @@ fn never_registered_host_invalidated_seat_reconfirms_from_its_structural_proof()
         visited: 1,
         has_more: false,
         seats: vec![SnapshotSavedSeat {
+            restored_pane: Default::default(),
             ordinal: 1,
             seat: SeatId::new("seat-u"),
             state: SeatState::Unresolved,
@@ -2508,6 +2513,7 @@ mod fake_port {
             visited: 1,
             has_more: false,
             seats: vec![SnapshotSavedSeat {
+                restored_pane: Default::default(),
                 ordinal: 1,
                 seat: SeatId::new("seat-a"),
                 state: SeatState::Resolved,
@@ -2553,6 +2559,7 @@ mod fake_port {
 
     fn saved_seat(ordinal: u64, name: &str) -> SnapshotSavedSeat {
         SnapshotSavedSeat {
+            restored_pane: Default::default(),
             ordinal,
             seat: SeatId::new(name),
             state: SeatState::Resolved,
@@ -2832,6 +2839,7 @@ mod fake_port {
             visited: 1,
             has_more: false,
             seats: vec![SnapshotSavedSeat {
+                restored_pane: Default::default(),
                 ordinal: 1,
                 seat: SeatId::new("seat-a"),
                 state: SeatState::Resolved,
@@ -2877,6 +2885,7 @@ mod fake_port {
             invalidation_revision: 1,
         };
         let seat = |ordinal: u64, id: &str, state: SeatState| SnapshotSavedSeat {
+            restored_pane: Default::default(),
             ordinal,
             seat: SeatId::new(id),
             state,
@@ -2935,6 +2944,7 @@ mod fake_port {
         };
         let moved =
             |ordinal: u64, seat: &str, old: &str, new: &str, terminal: &str| SnapshotSavedSeat {
+                restored_pane: Default::default(),
                 ordinal,
                 seat: SeatId::new(seat),
                 state: SeatState::Resolved,

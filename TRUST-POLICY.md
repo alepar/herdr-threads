@@ -50,6 +50,10 @@ Amended 2026-10-27 for seat recovery after a Herdr restart (ht-dtx0): a push-cha
 its own session's `same_session` C1 claim, and the daemon keeps a C1 claim refused only for host evidence that is not
 ready and decides it after the epoch's reconciliation (C1); no new provenance or wire value.
 
+Amended 2026-10-27 for restored-pane retirement (ht-wpq4): a seat a new Herdr incarnation left unresolved retires
+when the pane watched at its target closes within that incarnation and no claim names it for an observed grace
+(C2); the retirement records `closure_evidence = restored_pane_closed`, two accepted limits; no new wire value.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -237,6 +241,27 @@ Memberships retire, receipts settle recipient-retired and invitations close, all
 every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown incarnation never retires: it
 yields unresolved seats under the C2 restore holds above, and each binding ends with reason `seat_unresolved`
 so the same session can reopen it after a rebind.
+
+**Restored-pane retirement (ht-wpq4).** A seat that a new incarnation left unresolved (reason `other`) keeps a
+saved target from the old one, which proves nothing (C2), so its absence never retires the seat. What retires it
+is structural, same-incarnation evidence about the pane the current incarnation shows at that target:
+- *Watch.* A reconciliation pass whose coherent publication shows terminal T at the seat's target A, while A is a
+  member of the current recovery baseline with no release (held for repair, no seat has claimed it) and no other
+  seat's structural proof or binding names T in this incarnation, records a durable watch (server, boot,
+  incarnation, A, T, the seat's mapping generation). A watch of another incarnation or generation is void.
+- *Closure.* A later coherent publication of the same boot and incarnation shows neither A nor T (a moved pane
+  keeps T, see Moved panes, and is not a close).
+- *No claim.* No kept continuity claim (C1) on that server names the harness and native session of any of the
+  seat's top-level bindings, and no other seat's structural proof or binding names T. A decided claim rebinds
+  the seat and bumps its generation, which voids the watch.
+- *Observed grace.* The daemon has observed the closure for 10 minutes of its own running time: each absent
+  pass adds the time since the previous one, at most 30 s, so a suspend, clock step or daemon downtime adds
+  at most one step.
+Then, in one transaction against the active publication (A2), the seat retires through the same fence as a pane
+close (`seat.retired` reason `closed`), its retirement records `closure_evidence = restored_pane_closed`, and
+the restore holds lift once no unresolved seat of that server remains. The saved address only selects which pane
+to watch; it is never the evidence. A seat whose target was not held when a pass saw it, or whose pane closed
+before any pass of the incarnation saw it, is never retired this way and waits for the operator, as before.
 
 A retirement of a published seat is also a `seat.retired` fact. Other nodes retire their remote copy of the seat
 only on that fact from the seat's home node (a fact from any other origin is recorded `failed` and retires
@@ -1950,6 +1975,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **A kept claim is decided at most one backoff step after Herdr returns (ht-dtx0).** The observation lane
   retries a frozen capture with capped backoff (up to 30 s); the kept claims are decided after the first
   reconciliation pass that follows.
+- **A session resumed by hand in another pane can lose its seat to restored-pane retirement (ht-wpq4).** If a
+  seat's session runs in a pane other than the one watched at its target and makes no C1 claim (none decided,
+  none kept) during the 10 observed minutes after the watched pane closes, the seat retires (C2), irreversibly;
+  that session's next claim finds no match and meets the ordinary guards.
+- **The watched pane is the one at the target when the recovery began (ht-wpq4).** The baseline is retaken after
+  a daemon restart within one incarnation, so a pane opened at the target after the Herdr restore can be watched
+  if the restored one was gone by then. Herdr does not retarget closed pane ids, and terminal ids are assumed not
+  reused within an incarnation, as the pane-close rule already assumes.
 - **Launch is not check-in.** A successful `launch` means Herdr started the agent, not that it registered.
   Its only record is a wake-eligible placeholder binding (`managed_launch`, A3) carrying the started process's
   fingerprint: not

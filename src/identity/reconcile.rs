@@ -4,8 +4,8 @@ use crate::ports::{
     DurableWorkAdmission, GuardedInvalidationTransition, GuardedSeatTransition, HostCallContext,
     HostInvalidationFence, HostInvalidationReason, HostObservationAdmission, HostPort,
     HostSnapshot, PublishedSnapshot, ReconciliationAction, ReconciliationOutcome,
-    RecoveryDisposition, SeatState, SnapshotHeader, SnapshotSavedSeat, SnapshotSeatPage,
-    SnapshotTargetMatch, UnresolvedReason,
+    RecoveryDisposition, RestoredPane, SeatState, SnapshotHeader, SnapshotSavedSeat,
+    SnapshotSeatPage, SnapshotTargetMatch, UnresolvedReason,
 };
 use crate::ports::{HostId, SnapshotGenerationId};
 use crate::ports::{
@@ -249,7 +249,16 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
             })
         };
         let action = if saved.state == SeatState::Unresolved && !recoverable {
-            Some(ReconciliationAction::MarkUnresolved)
+            // TRUST-POLICY C2 restored-pane retirement: the store derived the
+            // evidence; anything short of it keeps the seat unresolved.
+            Some(match (saved.restored_pane, saved.target.as_ref()) {
+                (RestoredPane::Observe, Some(_)) => ReconciliationAction::WatchRestoredPane,
+                (RestoredPane::Absent, Some(_)) => ReconciliationAction::NoteRestoredPaneAbsent,
+                (RestoredPane::Closed, Some(target)) => ReconciliationAction::RetireRestoredPane {
+                    absent_target: target.clone(),
+                },
+                _ => ReconciliationAction::MarkUnresolved,
+            })
         } else if publication_before_proof {
             None
         } else if !same_incarnation {

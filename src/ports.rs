@@ -1168,6 +1168,31 @@ pub struct SnapshotSavedSeat {
     pub latest_binding_evidence: Option<BindingEvidence>,
     /// Indexed lookup by terminal, with target lookup for no-terminal cases.
     pub observed_match: Option<SnapshotTargetMatch>,
+    /// Restored-pane retirement evidence (TRUST-POLICY C2, ht-wpq4) for an
+    /// `unresolved`/`other` seat against this publication; `None` otherwise.
+    pub restored_pane: RestoredPane,
+}
+
+/// Where an `unresolved`/`other` seat stands under the restored-pane rule
+/// (TRUST-POLICY C2) against one coherent publication. The store derives it
+/// (`seats::restored_pane_evidence`) for the page and again inside the
+/// applier's transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RestoredPane {
+    /// No watch applies: not such a seat, or nothing at its target to watch.
+    #[default]
+    None,
+    /// The publication shows a held pane at the seat's target that no seat
+    /// claims, and the seat has no current watch: record one.
+    Observe,
+    /// The watched pane is still shown.
+    Watching,
+    /// The watched pane is gone and no claim names the seat, but the observed
+    /// grace is not served yet: record this absence.
+    Absent,
+    /// The watched pane is gone, no claim names the seat and the grace is
+    /// served: retire.
+    Closed,
 }
 /// The terminal and verified host incarnation recorded on an occupant binding
 /// by the observation that proved it.
@@ -1260,6 +1285,16 @@ pub enum ReconciliationAction {
     },
     MarkUnresolved,
     BeginRetirement {
+        absent_target: HostTargetId,
+    },
+    /// Restored-pane rule (TRUST-POLICY C2): start watching the pane at an
+    /// `unresolved`/`other` seat's target.
+    WatchRestoredPane,
+    /// Restored-pane rule: the watched pane is still absent; count the
+    /// observed time toward the grace.
+    NoteRestoredPaneAbsent,
+    /// Restored-pane rule: retire the seat whose watched pane closed.
+    RetireRestoredPane {
         absent_target: HostTargetId,
     },
 }

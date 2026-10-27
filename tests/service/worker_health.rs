@@ -1058,6 +1058,7 @@ impl crate::identity::reconcile::observation_store::ObservationStore
             // A resolved seat whose target is absent from the publication
             // plans a retirement; `apply_reconciliation_transition` refuses it.
             page.seats.push(SnapshotSavedSeat {
+                restored_pane: Default::default(),
                 ordinal: page.high_water_ordinal + 1,
                 seat: SeatId::new("synthetic-seat"),
                 state: SeatState::Resolved,

@@ -244,6 +244,8 @@ struct World {
     /// Seats whose stand-in caller runs the session their hook registered, so the caller's
     /// commands reconnect that binding instead of enrolling a second one.
     sessions: std::cell::RefCell<std::collections::HashMap<String, String>>,
+    /// Extra environment for every command, so the daemon `ensure` starts inherits it.
+    env: Vec<(String, String)>,
     _scratch: Scratch,
 }
 impl World {
@@ -255,6 +257,24 @@ impl World {
         prefix: &str,
         panes: Vec<Value>,
         wake_batch_delay_ms: Option<u64>,
+    ) -> Self {
+        Self::start_full(prefix, panes, wake_batch_delay_ms, Vec::new())
+    }
+
+    /// `env` reaches every command and the daemon it starts.
+    fn start_with_env(prefix: &str, panes: Vec<Value>, env: &[(&str, &str)]) -> Self {
+        let env = env
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        Self::start_full(prefix, panes, None, env)
+    }
+
+    fn start_full(
+        prefix: &str,
+        panes: Vec<Value>,
+        wake_batch_delay_ms: Option<u64>,
+        env: Vec<(String, String)>,
     ) -> Self {
         let root = herdr_threads::test_support::scratch::temp_path(format!(
             "{prefix}-{}",
@@ -288,6 +308,7 @@ impl World {
             codex_hook,
             stale_marker: std::cell::RefCell::new(None),
             sessions: std::cell::RefCell::new(Default::default()),
+            env,
             _scratch: scratch,
         };
         if let Some(delay) = wake_batch_delay_ms {
@@ -381,6 +402,7 @@ impl World {
         if let Some(pane) = pane {
             command.env("HERDR_PANE_ID", pane);
         }
+        command.envs(self.env.iter().map(|(key, value)| (key, value)));
         command.envs(env.iter().copied());
         let output = command.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -475,6 +497,7 @@ impl World {
             .env("PATH", self.path())
             .env_remove("HERDR_PLUGIN_STATE_DIR")
             .env_remove("HERDR_BIN_PATH")
+            .envs(self.env.iter().map(|(key, value)| (key, value)))
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -2175,4 +2198,146 @@ fn kept_claim_of_another_session_takes_nothing() {
     world.hook_unanswered("claude", "w1:p1", &session_start("claude", "S3", "resume"));
     assert_eq!(world.kept_claims(), 0);
     assert_eq!(world.seat_state(&a), "unresolved");
+}
+
+/// ht-wpq4: captures every 300 ms and a 2 s restored-pane grace.
+const RESTORED_PANE_ENV: &[(&str, &str)] = &[
+    ("HT_TEST_LANE_TICK_MS", "300"),
+    ("HT_TEST_RESTORED_PANE_GRACE_MS", "2000"),
+];
+
+impl World {
+    fn restored_watches(&self) -> i64 {
+        self.count("SELECT count(*) FROM restored_pane_watch")
+    }
+    fn closure_evidence(&self, seat: &str) -> Option<String> {
+        self.database()
+            .query_row(
+                "SELECT closure_evidence FROM retirements WHERE seat_id=?1",
+                [seat],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+    /// Seats A (`SA` on w1:p1) and B (`SB` on w1:p2) registered by their hooks, then a
+    /// Herdr restart that restores both panes leaves both unresolved and watched.
+    fn restored_pair(prefix: &str, env: &[(&str, &str)]) -> (Self, String, String) {
+        let mut world = World::start_with_env(
+            prefix,
+            vec![
+                claude("w1:p1", "term-a", "SA"),
+                claude("w1:p2", "term-b", "SB"),
+            ],
+            env,
+        );
+        let a = world.resolve("w1:p1");
+        let b = world.resolve("w1:p2");
+        for (pane, session) in [("w1:p1", "SA"), ("w1:p2", "SB")] {
+            let (code, _, stderr) =
+                world.hook("claude", pane, &session_start("claude", session, "startup"));
+            assert_eq!(code, 0, "{stderr}");
+        }
+        world.restart_herdr(vec![
+            claude("w1:p1", "term-a2", "SA"),
+            claude("w1:p2", "term-b2", "SB"),
+        ]);
+        world.wait_reconciled();
+        assert_eq!(world.seat_state(&a), "unresolved");
+        assert_eq!(world.seat_state(&b), "unresolved");
+        world.wait_for("both restored panes to be watched", |world| {
+            world.restored_watches() == 2
+        });
+        (world, a, b)
+    }
+}
+
+/// ht-wpq4 acceptance 1, 5 and 7: a seat a new incarnation left unresolved retires once its
+/// restored pane closes and the grace is observed, also across a daemon restart within the
+/// incarnation; the holds lift when the last unresolved seat goes, and a resolved seat's pane
+/// close still retires it without restored-pane evidence.
+#[test]
+fn unresolved_seat_retires_when_its_restored_pane_closes_and_the_hold_lifts() {
+    let (world, a, b) = World::restored_pair("htrp", RESTORED_PANE_ENV);
+    assert_eq!(world.hold_unclaimed(), 1);
+    world.restart_daemon();
+    world.wait_reconciled();
+    assert_eq!(
+        world.restored_watches(),
+        2,
+        "the watches survive the restart"
+    );
+    world.herdr.set_panes(vec![
+        claude("w1:p2", "term-b2", "SB"),
+        pane("w1:p3", "term-c"),
+    ]);
+    world.wait_for("A to retire", |world| world.seat_state(&a) == "retired");
+    assert_eq!(
+        world.closure_evidence(&a).as_deref(),
+        Some("restored_pane_closed")
+    );
+    assert_eq!(
+        world.seat_state(&b),
+        "unresolved",
+        "B's pane is still there"
+    );
+    assert_eq!(world.hold_unclaimed(), 1, "B still holds the restore");
+    // A pane created after the restore resolves ordinarily.
+    let c = world.resolve("w1:p3");
+    assert_eq!(world.seat_state(&c), "resolved");
+    world.herdr.set_panes(vec![pane("w1:p4", "term-d")]);
+    world.wait_for("B and C to retire", |world| {
+        world.seat_state(&b) == "retired" && world.seat_state(&c) == "retired"
+    });
+    assert_eq!(
+        world.closure_evidence(&b).as_deref(),
+        Some("restored_pane_closed")
+    );
+    assert_eq!(world.closure_evidence(&c), None, "a pane close, as before");
+    world.wait_for("the hold to lift", |world| world.hold_unclaimed() == 0);
+    assert_eq!(world.restored_watches(), 0);
+}
+
+/// ht-wpq4 acceptance 2: a seat whose restored pane stays is never retired, however long,
+/// and its resumed session reattaches it.
+#[test]
+fn unresolved_seat_whose_restored_pane_stays_is_kept_and_reattaches() {
+    let (world, a, _b) = World::restored_pair("htrs", RESTORED_PANE_ENV);
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(world.seat_state(&a), "unresolved");
+    let (code, _, stderr) = world.hook("claude", "w1:p1", &session_start("claude", "SA", "resume"));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(world.seat_state(&a), "resolved");
+    assert_eq!(world.count("SELECT count(*) FROM retirements"), 0);
+}
+
+/// ht-wpq4 acceptance 3: the restored pane closes and the session, resumed in another pane,
+/// claims its seat while the closure grace runs; the seat is never retired.
+#[test]
+fn a_seat_whose_session_claims_during_the_grace_is_never_retired() {
+    let env = &[
+        ("HT_TEST_LANE_TICK_MS", "300"),
+        ("HT_TEST_RESTORED_PANE_GRACE_MS", "4000"),
+    ];
+    let (world, a, _b) = World::restored_pair("htrg", env);
+    world.herdr.set_panes(vec![
+        claude("w1:p2", "term-b2", "SB"),
+        claude("w1:p3", "term-c", "SA"),
+    ]);
+    world.wait_for("the closure to be observed", |world| {
+        world.count(&format!(
+            "SELECT count(*) FROM restored_pane_watch WHERE seat_id='{a}' AND absent_seen_at IS NOT NULL"
+        )) == 1
+    });
+    let (code, _, stderr) = world.hook("claude", "w1:p3", &session_start("claude", "SA", "resume"));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(world.seat_state(&a), "resolved");
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(world.seat_state(&a), "resolved");
+    assert_eq!(
+        world.count(&format!(
+            "SELECT count(*) FROM seats WHERE id='{a}' AND target_id='w1:p3'"
+        )),
+        1
+    );
+    assert_eq!(world.count("SELECT count(*) FROM retirements"), 0);
 }

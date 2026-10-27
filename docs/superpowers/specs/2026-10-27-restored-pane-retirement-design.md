@@ -86,9 +86,10 @@ Schema delta `0009_restored_pane_retirement.sql`:
 - column `retirements.closure_evidence TEXT NULL CHECK(closure_evidence IN ('restored_pane_closed'))`. NULL
   means every existing path: same-incarnation pane close, operator, replicated.
 
-`seat inspect` shows the value as `retirement.closure_evidence` (absent when NULL; operator-visible,
-`"closure_evidence":"restored_pane_closed"` is 39 bytes). The `seat.retired` fact keeps `reason: closed`. No new
-wire value, no new receipt or binding provenance.
+The column is the record; `seat inspect` does not show it, because `RetirementStatus` is `deny_unknown_fields`
+and an older CLI would refuse a newer daemon's inspect reply (a follow-up can add it behind a capability). The
+`seat.retired` fact keeps `reason: closed`. No new wire value, no new receipt or binding provenance, no new
+model- or operator-visible string.
 
 ### D4. Test override
 
