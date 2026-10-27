@@ -73,10 +73,21 @@ impl Drop for Scratch {
     }
 }
 
+/// The `lane observation:` lines, without the daemon's line timestamp
+/// (`YYYY-MM-DDTHH:MM:SS.mmmZ `, ht-b3k6), which every one must carry.
 fn observation_lines(log: &str) -> Vec<String> {
     log.lines()
+        .filter(|line| line.contains("lane observation:"))
+        .map(|line| {
+            let (stamp, rest) = line.split_at(25.min(line.len()));
+            let shape = stamp.len() == 25
+                && stamp.as_bytes()[10] == b'T'
+                && stamp.ends_with("Z ")
+                && stamp[..4].bytes().all(|b| b.is_ascii_digit());
+            assert!(shape, "a daemon.log line without its timestamp: {line:?}");
+            rest.to_owned()
+        })
         .filter(|line| line.starts_with("lane observation:"))
-        .map(str::to_owned)
         .collect()
 }
 

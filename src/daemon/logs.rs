@@ -559,3 +559,63 @@ mod operator_text_contract;
 #[cfg(test)]
 #[path = "../../tests/daemon/lane_log.rs"]
 mod lane_log;
+
+/// Prefixes each line start in `chunk` with the UTC time `now_ms`
+/// (`YYYY-MM-DDTHH:MM:SS.mmmZ `, 25 bytes; ht-b3k6). `at_line_start` carries
+/// across chunks, so a line split over two reads is stamped once.
+pub(crate) fn stamp_lines(chunk: &[u8], at_line_start: &mut bool, now_ms: i64) -> Vec<u8> {
+    let stamp = format!("{} ", rfc3339_millis(now_ms));
+    let mut out = Vec::with_capacity(chunk.len() + stamp.len());
+    for &byte in chunk {
+        if *at_line_start {
+            out.extend_from_slice(stamp.as_bytes());
+            *at_line_start = false;
+        }
+        out.push(byte);
+        if byte == b'\n' {
+            *at_line_start = true;
+        }
+    }
+    out
+}
+
+/// `YYYY-MM-DDTHH:MM:SS.mmmZ`, UTC.
+fn rfc3339_millis(millis: i64) -> String {
+    let secs = millis.div_euclid(1000);
+    let (year, month, day) = crate::summary::render::civil_from_days(secs.div_euclid(86_400));
+    let rem = secs.rem_euclid(86_400);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60,
+        millis.rem_euclid(1000)
+    )
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    #[test]
+    fn rfc3339_millis_formats_utc() {
+        assert_eq!(super::rfc3339_millis(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(
+            super::rfc3339_millis(1_793_092_323_481),
+            "2026-10-27T09:12:03.481Z"
+        );
+        assert_eq!(super::rfc3339_millis(1_793_092_323_481).len() + 1, 25);
+    }
+
+    #[test]
+    fn stamp_lines_stamps_each_line_once_across_chunks() {
+        let mut start = true;
+        let t = 1_793_092_323_481;
+        let a = super::stamp_lines(b"one\ntw", &mut start, t);
+        let b = super::stamp_lines(b"o\n", &mut start, t);
+        let text = String::from_utf8([a, b].concat()).unwrap();
+        assert_eq!(
+            text,
+            "2026-10-27T09:12:03.481Z one\n2026-10-27T09:12:03.481Z two\n"
+        );
+        assert!(start);
+    }
+}

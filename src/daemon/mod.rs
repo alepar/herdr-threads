@@ -177,6 +177,7 @@ impl DiagnosticSink for ChildOwnedLogSink {
                 let mut bytes_after_close = 0usize;
                 let mut reads_after_close = 0usize;
                 let mut cutoff_reason = None;
+                let mut at_line_start = true;
                 #[cfg(test)]
                 let mut drain_observed = false;
                 loop {
@@ -206,8 +207,14 @@ impl DiagnosticSink for ChildOwnedLogSink {
                         Ok(0) => break,
                         Ok(size) => {
                             if first_error.is_none() {
+                                // Wall clock: log decoration only.
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
+                                let stamped =
+                                    logs::stamp_lines(&chunk[..size], &mut at_line_start, now);
                                 let result = lock_log(&log).and_then(|mut sink| {
-                                    sink.write(DiagnosticSource::Stdout, &chunk[..size])
+                                    sink.write(DiagnosticSource::Stdout, &stamped)
                                 });
                                 if let Err(error) = result {
                                     first_error = Some(error);
