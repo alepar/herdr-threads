@@ -390,3 +390,51 @@ Before timing a local suite, run `sh tests/service/check_failpoints_absent.sh
 --prebuild`, as both CI workflows already do; a source change can otherwise put
 release compilation inside the suite timer. This task ran only focused tests;
 the coordinator owns the subsequent full-suite measurement.
+
+## Ed25519 signing at -O0 (ht-v9v1, 2026-10-26)
+
+Tests 1/4 took 315.8 and 316 s on main (4f639d7f6), with every test passing. Its heaviest
+test, `an_old_visible_invitation_topic_change_survives_a_saturated_newest_window`, ran
+77-86 s on CI and ~19 s on a Linux x86_64 host. Phase timers placed in the test (temporary,
+not committed) put 19.5 of its 20.5 s in building the 1,001-thread backlog: a flat ~8.5 ms
+per `CreateThread`/`Invite` command, and inside that, 14.3 s in `UnsignedEnvelope::seal`,
+the Ed25519 signature on every authored journal fact. `ed25519-dalek` and
+`curve25519-dalek` were dependencies at the dev profile's opt-level 0.
+
+`[profile.dev.package.curve25519-dalek]` and `[profile.dev.package.ed25519-dalek]` now
+take `opt-level = 3`, like `sha2` and `libsqlite3-sys`. No test, fixture or production
+code changed; release builds (and so the failpoint proof) are unaffected.
+
+The ht-o22w experiment above (curve only, `profile.test`, macOS arm64) saw no gain, and its
+local baseline for the same test was 5.4 s, not 19 s. curve25519-dalek picks its backend
+per target: on x86_64 it detects AVX2 at run time, and SIMD intrinsics compiled at -O0 are
+very slow; arm64 uses the serial backend. CI runs on x86_64. This is an inference from the
+two baselines, not a measured backend comparison.
+
+Measured on a Linux x86_64 host (blacky, 32 threads, `nice -n 19`, beside other load),
+with CI's `--profile ci --partition slice:N/4`:
+
+| | before | after |
+| --- | ---: | ---: |
+| saturated-newest-window test | 19.3 s | 3.6 s |
+| finite invitation backlog beyond the display cache | 18.4 s | 3.4 s |
+| Q4 three event keys, actual floor | 9.0 s | 4.3 s |
+| slice 1/4 wall (test-seconds) | 95.2 s (597) | 83.3 s (506) |
+| slice 2/4 | 77.2 s | 68.1 s |
+| slice 3/4 | 84.6 s | 71.3 s |
+| slice 4/4 | 90.2 s (585) | 72.7 s (464) |
+
+Build cost: curve25519-dalek compiles in 0.7 s instead of 0.5 s, ed25519-dalek in 0.1 s
+either way. A one-file edit's clippy (34 s) and `cargo test --no-run` (20 s) are
+unchanged, because neither rebuilds dependencies.
+
+Every dependency at `opt-level = 2` was also measured. It took slice 1/4 from 506 to 460
+test-seconds and left slice 2/4 flat (416 to 423), against a full cold rebuild of every
+dependency, so it was not taken.
+
+Projected CI wall time on run 40443109575's per-test durations (each local after/before
+ratio applied, wall about 0.15 x test-seconds, which holds within 2% for all four of its
+shards): slices 1-4 go from 316/290/182/228 s to about 276/269/159/189 s. The remaining
+spread is slice imbalance: round-robin over the sorted test list puts a handful of heavy
+tests wherever they fall, and every added test shifts the split (the run 11 tests later
+measured 233/277/326/333 s).
