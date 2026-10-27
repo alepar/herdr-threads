@@ -2897,7 +2897,8 @@ fn human_seat_is_never_woken() {
 
 /// ht-f0xn. Kills: a composer choice that holds a process spanning seats (a Hermes gateway,
 /// `BindingPolicy::process_spans_seats`) to the exact-pid rule, so its pane's own client is
-/// never matched, or that lets the pane scope match an empty foreground or another harness.
+/// never matched, that lets the pane scope match an empty foreground or another harness, or
+/// that lets a pane-scoped match hide an exact-pid one.
 #[test]
 fn composer_choice_is_pane_scoped_for_a_process_spanning_seats() {
     let target = |binding: &str, harness: &str, pid: u32| crate::ports::WakeTarget {
@@ -2929,12 +2930,17 @@ fn composer_choice_is_pane_scoped_for_a_process_spanning_seats() {
         crate::ports::ComposerChoice::Process(group) => assert_eq!(group.len(), 2),
         other => panic!("two sessions of one gateway are one process, got {other:?}"),
     }
+    // A stale gateway binding on the pane (its client exited, the gateway lives on) never hides
+    // the pane's live foreground binding: an exact-pid match wins.
     let mixed = authority(vec![target("g", "hermes", 7), target("c", "claude", 10)]);
-    assert_eq!(
-        mixed.composer_choice(&[10]),
-        crate::ports::ComposerChoice::NoMatch,
-        "a gateway session beside another harness's foreground binding: ambiguous"
-    );
+    match mixed.composer_choice(&[10]) {
+        crate::ports::ComposerChoice::Binding(t) => assert_eq!(t.binding.as_str(), "c"),
+        other => panic!("the foreground binding wins, got {other:?}"),
+    }
+    match mixed.composer_choice(&[99]) {
+        crate::ports::ComposerChoice::Binding(t) => assert_eq!(t.binding.as_str(), "g"),
+        other => panic!("no exact match: the pane's gateway session, got {other:?}"),
+    }
     assert_eq!(
         authority(vec![target("c", "claude", 10)]).composer_choice(&[99]),
         crate::ports::ComposerChoice::NoMatch,

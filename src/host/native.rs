@@ -1282,8 +1282,8 @@ impl HostPort for NativeCli {
     }
 
     /// The pane's non-shell foreground processes from Herdr's `pane.process_info` (advisory,
-    /// unfenced). The composer wake matches a binding's fingerprint pid among them; none
-    /// reported, and it does not fire. (The managed-launch placeholder keeps the stricter
+    /// unfenced). The composer wake matches a binding's fingerprint pid among them (a process
+    /// spanning seats needs only one of them); none reported, and it does not fire. (The managed-launch placeholder keeps the stricter
     /// single-process read, `started_process_pid`.)
     fn foreground_pids(
         &self,

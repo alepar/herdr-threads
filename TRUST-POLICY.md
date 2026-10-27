@@ -623,7 +623,9 @@ model open work, and summary closure never changes receipt state or installs glo
   Second exception (ht-f0xn, user decision 2026-10-26): a target whose harness declares
   `BindingPolicy::process_spans_seats` (one server process hosts the sessions of several panes, each pane
   running its own client: the Hermes 0.22.1+ gateway) is never a pane's foreground process, so its match is
-  pane-scoped: it matches when Herdr reports any non-shell foreground process in the pane. The pane is
+  pane-scoped: when no target matches by exact pid, it matches when Herdr reports any non-shell foreground
+  process in the pane (an exact-pid match always takes precedence, so a stale gateway binding never hides
+  the pane's live foreground binding of another harness). The pane is
   still the binding's own (targets are the bindings placed on the observed terminal, by their cooperative
   A1 pane claim); the native recheck still requires Herdr's agent kind there to be the bound harness, and
   the adapter's composer read still requires an empty, idle composer. Several matches follow the rules

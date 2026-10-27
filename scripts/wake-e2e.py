@@ -65,8 +65,9 @@ harnesses get their credentials:
   Hermes' own installer (`HOME=DIR bash setup-hermes.sh`) installed into, with its model credential and the telemetry
   answer already in DIR/.hermes (docs/evidence/hermes-composer/README.md). The driver runs `setup hermes` and
   `hermes plugins enable herdr-threads` with HOME=DIR (writing only there) and starts one recipient, `he-t0` (T=0):
-  every Hermes pane shares one gateway that keeps the first pane's HERDR_PANE_ID (live evidence 2026-10-23, defect
-  1), so a second Hermes recipient would bind to the first one's seat. No Hermes from DIR may be running at start;
+  every Hermes pane of a profile shares one gateway, and a gateway session reaches its own pane only through the
+  profile's terminal.client_env_passthrough (ht-hermes-identity), which the driver does not set up, so it runs one
+  recipient. No Hermes from DIR may be running at start;
   cleanup stops the gateway the recipient spawned. Herdr reports a Hermes pane `idle` throughout a turn, so the
   driver reads a Hermes recipient's state from its screen (hermes_idle): idle only while the composer's top rule
   carries no live status. Hermes 0.22 hosts its sessions in the gateway, so the native wake matches the

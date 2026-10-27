@@ -2152,7 +2152,8 @@ pub struct WakeTarget {
 pub enum ComposerChoice<'a> {
     /// The reservation names no targets: the legacy single-harness rule applies.
     Unspecified,
-    /// The one target whose process is among the pane's foreground processes.
+    /// The one target whose process is among the pane's foreground processes (or, for a process
+    /// that spans seats, the one target on the pane, `composer_choice`).
     Binding(&'a WakeTarget),
     /// Several matching targets that are bindings of one process: the same fingerprint pid and
     /// harness (a harness that forks sessions inside its own process, ht-327). The
@@ -2205,27 +2206,29 @@ impl ReservedWakeAuthority {
     /// process ([`ComposerChoice::Process`]); any other several, or none, are no match; no
     /// heuristic fallback. A target of a process that spans seats
     /// (`BindingPolicy::process_spans_seats`, a shared server behind each pane's own client)
-    /// is never the pane's foreground process: it matches any foreground process of its own
-    /// pane (targets are the bindings placed on the observed terminal), and the native recheck
-    /// still requires Herdr's agent kind there to be its harness (ht-f0xn).
+    /// is never the pane's foreground process: with no exact-pid match, those targets match any
+    /// foreground process of their own pane (targets are the bindings placed on the observed
+    /// terminal), and the native recheck still requires Herdr's agent kind there to be their
+    /// harness (ht-f0xn). An exact-pid match always wins, so a stale gateway binding never hides
+    /// the pane's live foreground binding.
     pub fn composer_choice(&self, foreground: &[u32]) -> ComposerChoice<'_> {
         match self.targets() {
             [] => ComposerChoice::Unspecified,
             many => {
-                let matching: Vec<&WakeTarget> = many
+                let exact: Vec<&WakeTarget> = many
                     .iter()
                     .filter(|t| {
-                        if crate::harness::registry::builtins()
-                            .binding_policy(&t.harness)
-                            .process_spans_seats
-                        {
-                            !foreground.is_empty()
-                        } else {
-                            t.fingerprint_pid
-                                .is_some_and(|pid| foreground.contains(&pid))
-                        }
+                        t.fingerprint_pid
+                            .is_some_and(|pid| foreground.contains(&pid))
                     })
                     .collect();
+                let matching = if exact.is_empty() && !foreground.is_empty() {
+                    many.iter()
+                        .filter(|t| crate::store::bindings::process_spans_seats(&t.harness))
+                        .collect()
+                } else {
+                    exact
+                };
                 match matching.as_slice() {
                     [] => ComposerChoice::NoMatch,
                     [found] => ComposerChoice::Binding(found),

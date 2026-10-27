@@ -264,7 +264,8 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
         // Every target set shares one composer (spec §3 Wake): type only to the target whose
-        // process is the pane's foreground process; with several targets in several processes
+        // process is the pane's foreground process (a process spanning seats: the target on its
+        // pane, `composer_choice`); with several targets in several processes
         // also only when the pane reads idle. No unique match, no composer wake; never a guess.
         let mut composer_harness: Option<String> = None;
         // The bindings the composer wake reaches: one, or every binding of one process.

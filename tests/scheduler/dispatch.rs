@@ -5677,7 +5677,9 @@ fn composer_wake_requires_idle() {
 }
 
 /// Kills: typing into the composer of a seat whose only target is not the pane's foreground
-/// process (spec §3, ht-54r.82), e.g. a hermes one-shot's wake typed into Claude's composer.
+/// process (spec §3, ht-54r.82), e.g. a codex binding's wake typed into Claude's composer. A
+/// Hermes target matches its pane instead (ht-f0xn); the native agent-kind recheck refuses it
+/// there (`cooperative_wake_refuses_hermes_bound_seat_with_claude_agent`).
 #[test]
 fn single_target_composer_wake_requires_the_foreground_match() {
     // The UI rule is unchanged for one target: `Unknown` still fires on a foreground match.
