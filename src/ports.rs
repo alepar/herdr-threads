@@ -3859,6 +3859,14 @@ pub trait HostPort: Send + Sync {
     fn wake_block(&self, _seat: &SeatId) -> Option<crate::protocol::results::WakeBlock> {
         None
     }
+    /// The host's current workspace, tab and pane labels for every target,
+    /// advisory display data only (ht-xg88 seat status). Default: none.
+    fn seat_labels(
+        &self,
+        _budget: &CallBudget,
+    ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
+        Ok(Vec::new())
+    }
     /// Pids of the processes Herdr reports in the pane's foreground (not its shell), for the
     /// composer wake of a seat with wake targets (spec §3 Wake). Empty when Herdr reports none
     /// or the adapter cannot ask: the composer wake then does not fire.

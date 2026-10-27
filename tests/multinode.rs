@@ -216,6 +216,9 @@ mod config_delivery;
 #[path = "multinode/node_status.rs"]
 mod node_status;
 
+#[path = "multinode/seat_status.rs"]
+mod seat_status;
+
 #[path = "multinode/config_restore.rs"]
 mod config_restore;
 

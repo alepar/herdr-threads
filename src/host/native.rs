@@ -1247,6 +1247,13 @@ impl NativeCli {
 }
 
 impl HostPort for NativeCli {
+    fn seat_labels(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
+        self.participant_labels(budget)
+    }
+
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         // Herdr 0.9.1 `agent.start` checks shell ownership and prompt
         // readiness itself. The same-incarnation preflight needs the kernel

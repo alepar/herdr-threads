@@ -285,21 +285,29 @@ fifth of the retained history; accepted for now.
 
 ### 5.1 What a home node publishes
 
-For each local, nonretired, published seat:
+`service::seat_publisher` (one task beside discovery, ended by the stop
+token) builds, for each local, published, nonretired seat
+(`store::local_seat_status::local_seats`, at most 512, oldest first):
 
 | Field | Source | Bound |
 | --- | --- | --- |
-| `seat` | id | |
-| `presence` | `busy` = connected binding and effective `ui_state` in {`active_turn`, `approval_or_question`, `human_input`}; `idle` = connected binding otherwise; `offline` = no connected binding. The existing local `active/inactive` column is unchanged. | enum |
-| `harness` | harness of the open top-level binding, else latest | 16 bytes, adapter id |
-| `activity_age_ms` | now − max(`record_contact`, latest binding transition) | u64 |
-| `workspace`, `tab`, `pane` | `SeatHostLabels` for the seat's target, matched on terminal and incarnation as `peer_locations` does | 64 bytes each, one line, else truncated |
+| `seat` | id | 64 bytes |
+| `presence` | `busy` = active (`bindings::seat_active`) and effective `ui_state` in {`active_turn`, `approval_or_question`, `human_input`}; `idle` = active otherwise; `offline` = not active. The local `active/inactive` column is unchanged. | 16 bytes |
+| `harness` | the open top-level binding's harness, else the latest binding's; opaque text (no harness branch in core) | 16 bytes |
+| `activity_age_ms` | now − max(`DeliveryPullState::last_contact`, latest binding registration or disconnect) | u64 |
+| `workspace`, `tab`, `pane` | `SeatHostLabels` of the seat's host and target whose terminal is the seat's structural terminal (and whose incarnation, when the host reports one, is the seat's); the label, else the Herdr id | 64 bytes each, cut on a char boundary |
 
 `machine` is not sent: it is `node_directory.host_label`, already replicated.
 
-The home daemon reads labels with one `api snapshot` (the same call and
-parser the CLI uses) on the publish tick, only while at least one linked peer
-negotiated `SEAT_STATUS_CAP`. No change to the reconcile/observation lane.
+Cadence: every 5 s it rebuilds from the store and publishes when anything
+but the ages changed; every 60 s it re-reads the labels (one `api snapshot`
+per attached host through the new `HostPort::seat_labels`, default none;
+`NativeCli` answers with `participant_labels`) and publishes again even
+unchanged, which keeps receivers fresh. It runs only while some active link
+negotiated `SEAT_STATUS_CAP` (`SyncHandle::seat_status_wanted`); the first
+listener gets a fresh snapshot at once. No change to the reconcile or
+observation lane. Test-support daemons take `HT_TEST_SEAT_CHECK_MS` and
+`HT_TEST_SEAT_REFRESH_MS`.
 
 ### 5.2 Wire
 
@@ -307,100 +315,98 @@ negotiated `SEAT_STATUS_CAP`. No change to the reconcile/observation lane.
 pub const SEAT_STATUS_CAP: &str = "seat.status.v1";
 
 // in PeerFrame
-/// One origin node's full advisory seat snapshot, relayed as is.
+/// One origin node's whole advisory seat snapshot, relayed as is.
 // cap: SEAT_STATUS_CAP
 SeatStatus(SeatStatusFrame),
 
-pub struct SeatStatusFrame {
-    #[serde(default)] pub origin: NodeUuid,
-    #[serde(default)] pub boot: Uuid,      // origin daemon boot
-    #[serde(default)] pub rev: u64,        // per boot, +1 per change
-    #[serde(default)] pub age_ms: u64,     // since origin built it, accumulated by relays
-    #[serde(default)] pub version: String, // origin daemon version (relayed nodes learn it here)
-    #[serde(default)] pub seats: Vec<SeatStatusEntry>, // <= 512
+pub struct SeatStatusFrame {   // every field #[serde(default)]
+    pub origin: NodeUuid,
+    pub boot: Uuid,      // origin daemon boot
+    pub rev: u64,        // per boot, +1 per changed snapshot
+    pub age_ms: u64,     // since the origin built it, accumulated by relays
+    pub version: String, // origin daemon version (relayed nodes learn it here)
+    pub seats: Vec<SeatStatusEntry>, // <= 512
 }
-pub struct SeatStatusEntry {
-    #[serde(default)] pub seat: SeatId,
-    #[serde(default)] pub presence: String, // unknown values render as `-`
-    #[serde(default)] pub harness: Option<String>,
-    #[serde(default)] pub activity_age_ms: Option<u64>,
-    #[serde(default)] pub workspace: Option<String>,
-    #[serde(default)] pub tab: Option<String>,
-    #[serde(default)] pub pane: Option<String>,
+pub struct SeatStatusEntry {   // every field #[serde(default)]
+    pub seat: String,
+    pub presence: String, // unknown values render as `-`
+    pub harness: Option<String>,
+    pub activity_age_ms: Option<u64>,
+    pub workspace: Option<String>,
+    pub tab: Option<String>,
+    pub pane: Option<String>,
 }
 ```
 
-- **Publish:** the origin rebuilds its snapshot every 60 s and on any presence or
-  label change (coalesced 5 s). It sends it to every active cap peer: when
-  something changed, on each link activation, and at least every 60 s so that
-  freshness (D5) keeps advancing. With ~20 seats this is about 2 KiB per link
-  per minute.
-- **Ordering:** a receiver keeps one snapshot per origin, chosen by
-  `built_at` (local ms = receipt time − `age_ms`), newest wins; `(boot, rev)`
-  only deduplicates within one boot (same boot and `rev <=` held: drop).
-  Ordering by `built_at` rather than `(boot, rev)` keeps two live boots of
-  one origin (clone, N8) from flapping on boot ordering: the newest-built
-  snapshot is shown, and the peer row says `clone_suspected` (§4.4).
-  Additionally, when more than one boot of an origin delivered a snapshot
-  within the last `UNREACHABLE_AFTER_MS`, its seats render with
-  `clone_suspected` in place of presence (no boot is picked silently).
-  The second boot is remembered in memory only (`remote_seat_origin`
-  holds the shown one).
-- **Relay:** a receiver forwards a snapshot it accepted to its other cap
-  peers with `age_ms += local hold time`, the same idea as relative ages in
-  `Seen`. Snapshots it dropped are not forwarded.
-- **Consistency guards** (not adversarial verification):
-  - Drop entries whose seat has no local row, or whose local row has
-    `home_node != origin`. The next refresh re-sends them.
-  - Drop a frame whose `origin` is this node.
-  - If the frame size exceeds `MAX_FRAME`, the snapshot is truncated in seat
-    order and marked by `seats.len()` (bounded by 512).
+Coordinator module `src/sync/coordinator/seat_status.rs`:
+
+- **Publish:** `SyncHandle::publish_seat_status` hands the entries to the
+  actor (never waits); a changed snapshot gets the next `rev`. Each publish
+  goes to every ready link (active, ranked, open, announced, with the cap); a
+  newly ready link first gets the own snapshot and every held one (except its
+  own node's).
+- **Frame bound:** a frame over the link's negotiated `max_frame` (as small
+  as 4 KiB) drops seats from the end, halving, until it fits.
+- **Ordering:** one held snapshot per origin. Same boot: a higher `rev`
+  replaces it; the same `rev` built more than 1 s later is a refresh (only
+  `built_at` moves); anything else is dropped. Another boot replaces it only
+  when built more than 1 s later. `built_at` = receipt time − `age_ms`; the
+  1 s margin keeps a snapshot coming back round a relay loop from looking
+  newer. Dropped snapshots are never relayed.
+- **Clone suspicion:** each boot's last delivery is remembered 180 s; when a
+  boot other than the held one delivered within it, the stored row carries
+  `other_boot_at` and the seats render `clone_suspected` (persisted, so the
+  rule needs no memory).
+- **Relay:** an accepted snapshot or refresh goes to every other ready link
+  except the sender and the origin's own node, with `age_ms` recomputed from
+  the held `built_at`.
+- **Guards:** a frame from a link without the cap, or with this node as
+  origin, is dropped; entries are bounded on receipt as on publish.
+- **Writes:** one pending update per origin (a refresh keeps pending
+  content), one batch in flight through
+  `SyncStorePort::record_remote_seat_status`; a failure keeps the updates
+  pending and logs once per run; shutdown flushes what is pending, bounded.
 
 ### 5.3 Storage (migration `0007_remote_seat_status.sql`)
 
 ```sql
+CREATE TABLE remote_seat_origin (
+    origin TEXT PRIMARY KEY, boot TEXT NOT NULL, rev INTEGER NOT NULL,
+    built_at INTEGER NOT NULL,   -- local ms = received_at - age_ms
+    version TEXT, other_boot_at INTEGER, updated_at INTEGER NOT NULL
+) STRICT;
 CREATE TABLE remote_seat_status (
     seat_id TEXT PRIMARY KEY REFERENCES seats(id),
-    origin TEXT NOT NULL,        -- = seats.home_node
-    boot TEXT NOT NULL,
-    rev INTEGER NOT NULL,
-    built_at INTEGER NOT NULL,   -- local ms = received_at - age_ms
-    presence TEXT NOT NULL,
-    harness TEXT,
+    origin TEXT NOT NULL REFERENCES remote_seat_origin(origin),
+    presence TEXT NOT NULL, harness TEXT,
     activity_at INTEGER,         -- local ms
     workspace TEXT, tab TEXT, pane TEXT
 ) STRICT;
-CREATE TABLE remote_seat_origin (
-    origin TEXT PRIMARY KEY, boot TEXT NOT NULL, rev INTEGER NOT NULL,
-    built_at INTEGER NOT NULL, version TEXT
-) STRICT;
 ```
 
-A newer snapshot from an origin replaces that origin's rows in one
-transaction; seats absent from it are deleted (they retired or went
-unpublished). Writes happen only when the content changed. A refresh with an
-unchanged `rev` updates only `remote_seat_origin.built_at`.
-`remote_seat_origin.version` also gives the version of relayed-only nodes in
-`peer list`.
+A snapshot replaces its origin's seat rows in one transaction; a seat is kept
+only when this node knows it as a remote seat (`state='remote'`) whose
+`home_node` is the origin (N4 guard, in the store). A refresh moves only the
+origin row. `remote_seat_origin.version` gives phase 3 the version of
+relayed-only nodes.
 
-### 5.4 Freshness (rendering rule, in one store function)
+### 5.4 Freshness (one store function)
+
+`store::remote_seat_status::presence_of(row, origin_reach, origin_live, now)`:
 
 ```
-remote_presence(seat) =
-  match node_state(origin):            // §4.4
-    Unreachable(since) -> Unreachable(since)
-    _ if two live boots (§5.2)      -> CloneSuspected
-    _ if now - origin.built_at > UNREACHABLE_AFTER_MS -> Stale(built_at)
-    _ -> Fresh(presence, activity_at)
-  no row -> Unknown   (origin lacks the cap or has not published yet)
+  home node unreachable and no live link   -> Unreachable(since)
+  no row                                   -> Unknown   (no cap, or nothing yet)
+  another boot published within 180 s      -> CloneSuspected
+  built more than 180 s ago                -> Stale(built_at)
+  else                                     -> Fresh(presence, activity_at)
 ```
 
-A `stalled` origin still shows fresh presence when its snapshot is fresh:
-the snapshot arriving is itself app-level contact from that node. If the
-origin's coordinator is silent, snapshots stop and the row goes `stale`
-within the bound.
-
-Local seats render from local state as today.
+A live link to the home node wins over its stored reach (as in §4.4). A
+`stalled` home node still shows fresh presence while its snapshots arrive:
+the snapshot is itself coordinator traffic. If its coordinator is silent,
+snapshots stop and the seat goes `stale` within the bound. Local seats
+render from local state as today.
 
 ## 6. Phase 3: directory and surfaces
 

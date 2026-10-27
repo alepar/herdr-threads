@@ -987,6 +987,26 @@ impl LaneProbe {
             ),
         }
     }
+    /// The seat publisher's check and refresh periods: production values, or
+    /// `HT_TEST_SEAT_CHECK_MS` / `HT_TEST_SEAT_REFRESH_MS` (multinode tests).
+    fn seat_publisher_periods(&self) -> (Duration, Duration) {
+        let ms = |name: &str, default: Duration| {
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .map_or(default, Duration::from_millis)
+        };
+        (
+            ms(
+                "HT_TEST_SEAT_CHECK_MS",
+                crate::service::seat_publisher::CHECK_EVERY,
+            ),
+            ms(
+                "HT_TEST_SEAT_REFRESH_MS",
+                crate::service::seat_publisher::REFRESH_EVERY,
+            ),
+        )
+    }
     /// Runs peer discovery with `herdr` at `program` every `period`, and without
     /// the `herdr --remote` process scan (the machine's real clients are not the
     /// test's). Call before the daemon starts.
@@ -1310,6 +1330,12 @@ impl LaneProbe {
     fn discovery(&self) -> (Option<std::path::PathBuf>, Duration) {
         (None, crate::sync::discovery::POLL_PERIOD)
     }
+    fn seat_publisher_periods(&self) -> (Duration, Duration) {
+        (
+            crate::service::seat_publisher::CHECK_EVERY,
+            crate::service::seat_publisher::REFRESH_EVERY,
+        )
+    }
     fn lane_log(&self, clock: Arc<dyn Clock>) -> crate::daemon::logs::RateLimitedLaneLog {
         crate::daemon::logs::RateLimitedLaneLog::to_stderr(clock)
     }
@@ -1508,6 +1534,8 @@ struct ComposedSync {
     join: tokio::task::JoinHandle<()>,
     /// Peer discovery (ends on the daemon's stop token, before the coordinator).
     discovery: tokio::task::JoinHandle<()>,
+    /// The seat-status publisher (ends like discovery).
+    seats: tokio::task::JoinHandle<()>,
 }
 
 /// The incarnations repair thread (ht-5fr.6.13) and the token that ends it.
@@ -1826,6 +1854,7 @@ where
             let sync_identity = Arc::clone(&identity);
             let sync_store = sqlite.clone();
             let discovery_store = sqlite.clone();
+            let publisher_store = sqlite.clone();
             let first_attach_store = sqlite.clone();
             let apply_node_json = identity_paths.node_json_path.clone();
             let store: Arc<dyn StorePort> = sqlite;
@@ -2265,12 +2294,27 @@ where
                     cancel: factory_stop.clone(),
                 },
             );
+            // Seat status (ht-xg88): publishes this node's seats while a
+            // linked peer takes them; ends on the stop token like discovery.
+            let (check_every, refresh_every) = factory_probe.seat_publisher_periods();
+            let seats_join =
+                crate::service::seat_publisher::SeatPublisher::spawn(crate::service::seat_publisher::SeatPublisherDeps {
+                    store: publisher_store,
+                    sessions: Arc::clone(&host_sessions),
+                    contacts: Arc::clone(&delivery_pull),
+                    sync: sync_handle.clone(),
+                    clock: Arc::clone(&factory_clock),
+                    cancel: factory_stop.clone(),
+                    check_every,
+                    refresh_every,
+                });
             *factory_sync_slot
                 .lock()
                 .map_err(|_| io::Error::other("sync slot poisoned"))? = Some(ComposedSync {
                 handle: sync_handle,
                 join: sync_join,
                 discovery: discovery_join,
+                seats: seats_join,
             });
             // The harness version manifest: cache, embedded fallback and the
             // detached fetch policy. One log line per fetch outcome (at most
@@ -2579,8 +2623,20 @@ where
                 handle,
                 mut join,
                 mut discovery,
+                mut seats,
             }) = sync
             {
+                if tokio::time::timeout(DISCOVERY_STOP_BOUND, &mut seats)
+                    .await
+                    .is_err()
+                {
+                    seats.abort();
+                    let _ = seats.await;
+                    eprintln!(
+                        "sync: seat publisher still running after {} s; aborted",
+                        DISCOVERY_STOP_BOUND.as_secs()
+                    );
+                }
                 // Discovery holds a handle clone: it ends first (the cancel
                 // above wakes it), or the coordinator would keep a sender.
                 if tokio::time::timeout(DISCOVERY_STOP_BOUND, &mut discovery)

@@ -128,6 +128,18 @@ impl DeliveryPullState {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    /// The last daemon call claiming `seat`, if one was recorded this run.
+    pub fn last_contact(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+    ) -> Option<crate::protocol::time::UtcMillis> {
+        self.contacts
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(seat)
+            .copied()
+    }
+
     /// Records a daemon call claiming `seat` at `now`.
     pub fn record_contact(
         &self,
