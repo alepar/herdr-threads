@@ -41,12 +41,28 @@ Folds in ht-b3k6 (sync observability). Builds on the cross-node sync design
 
 ## 3. Decisions
 
-**D1. No new heartbeat for liveness.** Ping/Pong plus any frame already
-guarantee inbound traffic at least every 30 s on a healthy link, `Seen` relays
-contact every 10 s, and `reach` already turns that into reachable/unreachable.
-A heartbeat frame would duplicate Ping and change 2.1.1 traffic for nothing.
-The Q0V incident was not a liveness failure (pings flowed); it was missing
-*position* and *time* observability, which D3 and D7 fix.
+**D1. Transport liveness is not node health; add application-level
+progress, no new heartbeat frame.** Pong is answered inside the link I/O task
+(`link.rs:738`), so a peer whose coordinator or store is wedged still pings
+fine and today reads `active`. The Q0V root cause is unknown (laptop-side
+debug pending); the design must not depend on it and must not show such a
+peer as plain `linked`. Node status therefore has three layers:
+
+1. *frame contact* (`seen`): any decoded frame, pings included (existing
+   `ContactBook` / `reach`);
+2. *application contact* (`app_seen`): a frame emitted by the peer's
+   coordinator actor, i.e. anything that reaches `on_frame` (`Have`, `Want`,
+   `Entries`, `Seen`, `NodeInfo`, `SeatStatus`, ...), never Ping/Pong/Credit;
+3. *progress*: each direction's position advances while there is something
+   to move (§4.4 stall rules).
+
+A dedicated heartbeat frame is not needed for layer 2: `Seen` is already sent
+by the coordinator actor every 10 s on each active link
+(`coordinator.rs:132`, `:2126`), so a live coordinator produces app-level
+traffic at least every 10 s and a wedged actor stops it. A wedged *store* with
+a live actor still sends `Seen` from memory, which layer 3 catches: the peer's
+acknowledged position of our log (from its `have`) stops advancing while we
+are ahead. A new frame would duplicate `Seen` and still miss the store case.
 
 **D2. Status survives the link.** Everything shown about a peer is persisted
 (new `sync_peer_status` table) and rendered from the store, so a peer we
@@ -116,11 +132,20 @@ pub struct NodeInfo {
 
 ### 4.2 Coordinator state (memory)
 
-`LinkEntry` gains `last_rx: UtcMillis` (set in `on_frame` and in
-`poll_contacts` when `inbound_frames` grows, i.e. pings count) and
-`peer_version: Option<String>`. `LinkStatus` exposes `since`, `last_rx`,
-`subscriptions` (already present), `peer_version`, `caps`, and
-`peer_has_ours: Option<u64>` = `peer_vector[own active LogKey].counter`.
+`LinkEntry` gains:
+
+- `last_rx: UtcMillis`: set in `on_frame` and in `poll_contacts` when
+  `inbound_frames` grows (pings count);
+- `app_rx: UtcMillis`: set in `on_frame` only (coordinator-originated frames);
+- `tx_progress_at: UtcMillis`: last time `peer_has_ours` advanced, or the
+  peer was caught up (`peer_has_ours >= our head`); reset on activation;
+- `rx_progress_at: UtcMillis`: last time our contiguous counter of the
+  peer's active log advanced, or we were caught up with its advertised head;
+- `peer_version: Option<String>`.
+
+`LinkStatus` exposes `since`, `last_rx`, `app_rx`, `subscriptions` (already
+present), `peer_version`, `caps`, `peer_has_ours: Option<u64>` =
+`peer_vector[own active LogKey].counter`, `tx_progress_at`, `rx_progress_at`.
 
 ### 4.3 Storage (migration `0006_peer_status.sql`)
 
@@ -133,6 +158,8 @@ CREATE TABLE sync_peer_status (
     linked_since INTEGER,         -- NULL while no active link
     last_linked_at INTEGER NOT NULL,
     peer_has_ours INTEGER,        -- their acknowledged counter of our active log
+    app_seen_at INTEGER,          -- last coordinator-originated frame
+    tx_progress_at INTEGER, rx_progress_at INTEGER,
     updated_at INTEGER NOT NULL
 ) STRICT;
 ```
@@ -145,11 +172,31 @@ bounded by `node_directory`.
 
 ### 4.4 Node state (one rule)
 
-Computed in `store::sync_status` from `reach` plus `linked_since`:
+Computed in one function in `store::sync_status` from `reach`, the
+`sync_peer_status` row and, while the daemon runs, the live `LinkStatus`
+(table only when the daemon is down, e.g. `doctor`). First match wins:
 
-- `linked`: an active direct link exists (`linked_since` set);
-- `reachable`: no direct link, contact fresh (relayed);
-- `unreachable since <last_contact>` or `unreachable never`.
+1. `unreachable since <last_contact>` / `unreachable never`: `reach` says so.
+2. `stalled app` : direct link active and `now - app_seen_at > APP_SILENT_AFTER`
+   (30 s = three missed `Seen`); transport alive, coordinator silent.
+3. `stalled tx`: direct link active, `our_head > peer_has_ours` and
+   `now - tx_progress_at > STALL_AFTER` (120 s). The peer acknowledges none of
+   what we have to offer it (covers a wedged peer store).
+4. `stalled rx`: direct link active, the peer's advertised head of its own log
+   is ahead of our contiguous counter, and `now - rx_progress_at > STALL_AFTER`.
+   We are not ingesting (our side is the suspect; shown on both ends' views).
+5. `linked`: active direct link, none of the above.
+6. `reachable`: no direct link, contact fresh (relayed).
+
+`stalled tx` and `stalled rx` may both hold; the row then shows `stalled tx,rx`.
+A peer that has nothing to move in a direction is never stalled in it
+(the progress clock is reset when caught up). Stall is diagnostic only: it
+changes no link, rank or dial decision in this design (a follow-up may let a
+stalled active link yield to a standby; not here).
+
+Clone evidence: when `sync_clone_evidence` has an open (uncleared) row whose
+`subject` is the peer, its row adds ` clone_suspected` (16 bytes); the state
+is computed as above, never hidden.
 
 ### 4.5 CLI
 
@@ -157,22 +204,25 @@ Computed in `store::sync_status` from `reach` plus `linked_since`:
 
 ```
 peers
-peer Q0V linked seen=4s v=2.4.0 rx=567/567 tx=1180/1234 since=09:12
+peer Q0V linked seen=4s app=4s v=2.4.0 rx=567/567 tx=1234/1234 since=09:12
+peer Q0V stalled tx seen=2s app=6s v=2.4.0 rx=567/567 tx=1180/1234 since=09:12 clone_suspected
 peer K7m unreachable since 09:40 v=2.3.2 rx=88/88 tx=902/1234
 ```
 
+- `seen` is frame contact, `app` application contact (§D1).
 - `rx=A/B`: we hold A of their head B as last advertised; `tx=A/B`: they
   acknowledged A of our head B. Unknown parts print `-`.
-- Linked row: 67 bytes for this example (fixed part ~43 bytes plus tag,
-  version and counters); unreachable row ~62 bytes.
+- Sizes: linked row 73 bytes in this example (fixed ~49 plus tag, version and
+  counters); the stalled example 93 bytes (state +7..10, `clone_suspected` +16);
+  unreachable ~62 bytes.
 
 `sync status` link rows add `since`, `last_rx`, `subs`, `peer_lag`:
 
 ```
-link Q0V active dialer rx_logs=3 unsolicited=0 since=09:12 last_rx=2s subs=3 peer_lag=54
+link Q0V active dialer rx_logs=3 unsolicited=0 since=09:12 last_rx=2s app_rx=6s subs=3 peer_lag=54 stalled=tx
 ```
 
-+34 bytes per link row (88 total in the example). `LinkRow` and `PeerRow`
++45 bytes per link row (99 total in the example; `stalled=` only when set). `LinkRow` and `PeerRow`
 gain `#[serde(default)]` fields (`src/protocol/sync_admin.rs` is a wire file).
 
 ### 4.6 Daemon log timestamps
@@ -189,7 +239,7 @@ For each local, nonretired, published seat:
 | Field | Source | Bound |
 | --- | --- | --- |
 | `seat` | id | |
-| `presence` | `active` = connected binding and effective `ui_state` in {`active_turn`, `approval_or_question`, `human_input`}; `idle` = connected binding otherwise; `inactive` = no connected binding | enum |
+| `presence` | `busy` = connected binding and effective `ui_state` in {`active_turn`, `approval_or_question`, `human_input`}; `idle` = connected binding otherwise; `offline` = no connected binding. The existing local `active/inactive` column is unchanged. | enum |
 | `harness` | harness of the open top-level binding, else latest | 16 bytes, adapter id |
 | `activity_age_ms` | now − max(`record_contact`, latest binding transition) | u64 |
 | `workspace`, `tab`, `pane` | `SeatHostLabels` for the seat's target, matched on terminal and incarnation as `peer_locations` does | 64 bytes each, one line, else truncated |
@@ -234,11 +284,20 @@ pub struct SeatStatusEntry {
   something changed, on each link activation, and at least every 60 s so that
   freshness (D5) keeps advancing. With ~20 seats this is about 2 KiB per link
   per minute.
-- **Relay:** a receiver keeps the newest `(boot, rev, built_at)` per origin.
-  It forwards a newer snapshot to its other cap peers with
-  `age_ms += local hold time`, the same idea as relative ages in `Seen`.
-  A snapshot with the same `(boot, rev)` is only re-forwarded if its
-  `built_at` is newer.
+- **Ordering:** a receiver keeps one snapshot per origin, chosen by
+  `built_at` (local ms = receipt time − `age_ms`), newest wins; `(boot, rev)`
+  only deduplicates within one boot (same boot and `rev <=` held: drop).
+  Ordering by `built_at` rather than `(boot, rev)` keeps two live boots of
+  one origin (clone, N8) from flapping on boot ordering: the newest-built
+  snapshot is shown, and the peer row says `clone_suspected` (§4.4).
+  Additionally, when more than one boot of an origin delivered a snapshot
+  within the last `UNREACHABLE_AFTER_MS`, its seats render with
+  `clone_suspected` in place of presence (no boot is picked silently).
+  The second boot is remembered in memory only (`remote_seat_origin`
+  holds the shown one).
+- **Relay:** a receiver forwards a snapshot it accepted to its other cap
+  peers with `age_ms += local hold time`, the same idea as relative ages in
+  `Seen`. Snapshots it dropped are not forwarded.
 - **Consistency guards** (not adversarial verification):
   - Drop entries whose seat has no local row, or whose local row has
     `home_node != origin`. The next refresh re-sends them.
@@ -277,12 +336,18 @@ unchanged `rev` updates only `remote_seat_origin.built_at`.
 
 ```
 remote_presence(seat) =
-  match reach(origin):
+  match node_state(origin):            // §4.4
     Unreachable(since) -> Unreachable(since)
-    Reachable if now - origin.built_at > UNREACHABLE_AFTER_MS -> Stale(built_at)
-    Reachable -> Fresh(presence, activity_at)
+    _ if two live boots (§5.2)      -> CloneSuspected
+    _ if now - origin.built_at > UNREACHABLE_AFTER_MS -> Stale(built_at)
+    _ -> Fresh(presence, activity_at)
   no row -> Unknown   (origin lacks the cap or has not published yet)
 ```
+
+A `stalled` origin still shows fresh presence when its snapshot is fresh:
+the snapshot arriving is itself app-level contact from that node. If the
+origin's coordinator is silent, snapshots stop and the row goes `stale`
+within the bound.
 
 Local seats render from local state as today.
 
@@ -299,7 +364,7 @@ New compact form (today it falls back to the generic encoder):
 
 ```
 seats
-snSGbl096JZZ blk active claude last=4s: herdr-threads / dev / claude
+snSGbl096JZZ blk busy claude last=4s: herdr-threads / dev / claude
 sQ0VnTDasAbY Q0V idle claude last=12m: office / main / claude
 sQ0Vx1aB2cD3 Q0V unreachable since 09:40 codex last=3d: office / api / codex
 sK7m0aaaBBBB K7m stale 09:58 - last=-: -
@@ -307,7 +372,8 @@ next: herdr-threads seat list --cursor ...
 ```
 
 - Row grammar: `SEAT TAG STATE HARNESS last=AGE[: WS / TAB / PANE]`.
-  - `STATE` is one of `active|idle|inactive|unreachable since T|stale T|-`.
+  - `STATE` is one of
+    `busy|idle|offline|unreachable since T|stale T|clone_suspected|-`.
   - Peer-chosen labels come only after the first `": "` and go through
     `one_line()` (output_compact convention).
 - Size: 31-33 fixed bytes plus `STATE` (4-24 bytes), harness, and labels
@@ -361,6 +427,8 @@ are opaque adapter ids from the binding. The core does not branch on them
 | --- | --- | --- |
 | `PING_AFTER` / `DEAD_AFTER` | 30 s / 90 s | existing |
 | `UNREACHABLE_AFTER_MS` | 180 s | existing; also the snapshot staleness bound |
+| `APP_SILENT_AFTER` | 30 s | new; three missed `Seen` (10 s) |
+| `STALL_AFTER` | 120 s | new; a direction with work pending and no progress |
 | `SEAT_STATUS_REFRESH` | 60 s | new; < 180 s / 2, so one missed refresh is never stale |
 | `SEAT_STATUS_COALESCE` | 5 s | new |
 | `PEER_STATUS_FLUSH` | 10 s | new, mirrors the `ContactBook` cadence |
@@ -388,6 +456,8 @@ TRUST-POLICY.md gains, in the same commit as phase 2:
     or `stale` past it.
   - Labels are cooperative peer text: shown last-known, never identity.
   - The peer version is a self-report: diagnostics only.
+  - `stalled` and `clone_suspected` are diagnostics: they change no link,
+    dial, seat or binding decision.
 - A2: decisions are still made in the daemon against the canonical view. The
   directory reads no client-local file, and the client CLI performs no
   filtering.
@@ -417,8 +487,17 @@ TRUST-POLICY.md gains, in the same commit as phase 2:
 **Unit and in-process tests (coordinator `Rig`):**
 - The `NodeInfo` frame is sent only when the cap is negotiated. It is ignored
   from a peer that did not advertise the cap. The version text is bounded.
-- `peer_has_ours` tracks the peer's `have` for our key, and `last_rx`
-  advances on pings.
+- `peer_has_ours` tracks the peer's `have` for our key; `last_rx`
+  advances on pings, `app_rx` does not.
+- Stall rules (`Rig`, mock clock): tx stall after `STALL_AFTER` with our head
+  ahead and no `have` advance; no stall when caught up or when the peer has
+  nothing to take; rx stall when the peer advertises ahead and we ingest
+  nothing; `stalled app` after `APP_SILENT_AFTER` of pings-only traffic;
+  each clears on the next progress.
+- Cross-boot ordering: two boots of one origin alternating snapshots →
+  the shown snapshot follows `built_at`, never flips on boot id, and seats
+  render `clone_suspected`; one boot going quiet for the bound → back to
+  normal.
 - `SeatStatus` relay:
   - a newer `(boot, rev)` replaces the old one;
   - an older one is dropped;
@@ -445,7 +524,7 @@ TRUST-POLICY.md gains, in the same commit as phase 2:
 **Two-node e2e (`tests/multinode/seat_directory.rs`, `support::cluster(.., 2, &[(0,1)], &[0,1])`):**
 1. Converge. Node 1 has a hosted seat with a connected binding.
 2. On node 0, `peer list` shows node 1 as `linked v=<ver>` with `tx`/`rx`.
-   `seat list --node <tag1>` shows the seat as `idle`/`active` with its
+   `seat list --node <tag1>` shows the seat as `idle`/`busy` with its
    harness and labels.
 3. Cut the link (`partition(0,1)`, or `hold_frames_from(1)` with `gated`).
    Then use `age_contact(0, node1, 200 s)` so the test does not wait 180 s.
@@ -453,7 +532,7 @@ TRUST-POLICY.md gains, in the same commit as phase 2:
    - `peer list` shows `unreachable since <T>` with the last-known version
      and positions;
    - `seat list` shows the seat as `unreachable since <T>`;
-   - no row says `active` or `idle`;
+   - no row says `busy` or `idle`;
    - `thread participants` shows `node <tag> unreachable since`.
 5. Heal. Presence returns within one refresh.
 6. Restart node 0 while it is still partitioned. The status is served from
@@ -462,12 +541,29 @@ TRUST-POLICY.md gains, in the same commit as phase 2:
 **Stale path:** hold only `SeatStatus` (a failpoint suppresses publishing)
 while pings continue. After the bound, the seat shows `stale`.
 
+**Wedged-peer e2e (`tests/multinode/node_stall.rs`, gated cluster, the case
+behind D1):** two linked nodes; node 0 authors messages so it has entries to
+offer. The relay then drops node 1's coordinator frames (`Have`, `Want`,
+`Entries`, `Seen`, `NodeInfo`, `SeatStatus`) while passing Ping/Pong, so the
+transport stays alive (a frame-class filter added to the existing
+`hold_frames_from` relay; the link must not die at 90 s). On node 0, with
+`STALL_AFTER` / `APP_SILENT_AFTER` shortened through the test-support
+config:
+- `peer list` shows `stalled` (`app` and/or `tx`) with `seen` fresh and
+  `app` aging, and never plain `linked`, sampled every second for the
+  whole hold;
+- `sync status` link row shows `stalled=`;
+- node 1's seats go `stale`, never `busy`/`idle` past the bound.
+Release the filter: the row returns to `linked` within one `Seen` period
+plus one `have`. A second variant keeps `Seen` flowing and holds only
+`Have`/`Entries` (wedged store) and expects `stalled tx`.
+
 All tests run under `nice -n 19` with cluster fixtures and private state
 directories only. Every test spawns through `test_support::spawn`.
 
 ## 11. Phases and commits
 
-1. **Node status:** `NodeInfo` frame and cap, `LinkEntry` fields,
+1. **Node status:** `NodeInfo` frame and cap, `LinkEntry` fields, app-level contact and stall rules,
    `sync_peer_status`, `peer list`/`sync status` rows, log timestamps.
    This closes ht-b3k6.
 2. **Seat status:** publisher (labels read, presence), the `SeatStatus` frame,
@@ -477,17 +573,17 @@ directories only. Every test spawns through `test_support::spawn`.
    locations, inspect, the `seats.directory_v1` daemon cap, the skill line
    (once per session, in SKILL.md), and the multinode e2e.
 
-## 12. Open questions for review
+## 12. Resolved in review (2026-10-27)
 
-1. **Presence vocabulary.** Should it be `active|idle|inactive`? Today's
-   local `active` means "connected binding", but here it would mean
-   "connected and mid-turn". The alternative `busy|idle|offline` avoids
-   overloading the word. I lean towards `busy|idle|offline` and leaving the
-   existing `active/inactive` column alone.
-2. **Label reads.** The home daemon would make one extra `api snapshot` call
-   every 60 s, only while a peer with the cap is linked. Alternatively,
-   labels could be lifted out of the reconcile enumeration that already
-   fetches the snapshot. That touches the observation lane, so I kept it
-   separate.
-3. **Pane cwd.** Should it be published too? It is useful for finding the
-   right agent, but it is more than the brief asked for. Default: no.
+1. Presence vocabulary: `busy|idle|offline`; the local `active/inactive`
+   column stays.
+2. Labels: a separate 60 s `api snapshot` on the home daemon; the observation
+   lane is untouched.
+3. Pane cwd: not published.
+4. Liveness: application-level progress (`app_seen`, stall rules) added;
+   no heartbeat frame, justified against the wedged-coordinator/store case
+   (D1), with a reproducing e2e (§10).
+5. Clone evidence: cross-boot ordering by `built_at`, `clone_suspected` on
+   peer rows and seats.
+6. Release: phases 1-3 ship together as 2.4.0 unless the user splits phase 1
+   off as a patch.
