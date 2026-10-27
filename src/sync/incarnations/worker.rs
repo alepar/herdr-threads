@@ -896,6 +896,7 @@ impl Core {
                 self.evidence_due = true;
                 self.refresh_branches_flag()?;
                 self.schedule_pulls()?;
+                self.probe_remembered_heads(log)?;
             }
             Rotation::Restored { .. } => {
                 // The old log is an ordinary own log now: the coordinator
@@ -957,28 +958,7 @@ impl Core {
                 continue;
             }
             if meta.own && meta.state == LogState::Frozen {
-                // A frozen own log: the peer's head may be a branch tip. A
-                // `Have` is unsigned, so the tip is recorded (and the
-                // own-history hold it starts) only on a signed entry: one this
-                // store already holds, else the peer's, probed for alone.
-                self.d.sink.note_tip_source(log, &have.head, source);
-                if self.local_entry(&log, have.counter, head)?.is_some() {
-                    self.record_tip(log, have.counter, head)?;
-                    self.d.sink.set_have_memo(source, log, memo.0, memo.1);
-                    continue;
-                }
-                let want = BranchWant {
-                    node: log.node,
-                    inc: log.incarnation,
-                    tip: TipRef {
-                        counter: have.counter,
-                        hash: have.head.clone(),
-                    },
-                    from: have.counter,
-                };
-                if self.send_probe(source, want, Probe::TipProof) {
-                    self.d.sink.set_have_memo(source, log, memo.0, memo.1);
-                }
+                self.consider_own_tip(source, log, have.counter, head)?;
                 continue;
             }
             if have.counter > meta.contiguous {
@@ -1029,6 +1009,60 @@ impl Core {
         }
         self.evidence_due = true;
         self.restore_derive_due = true;
+        Ok(())
+    }
+
+    /// A peer's head of a frozen own log may be a branch tip. A `Have` is
+    /// unsigned, so the tip is recorded (and the own-history hold it starts)
+    /// only on a signed entry: one this store already holds, else the
+    /// peer's, probed for alone.
+    fn consider_own_tip(
+        &mut self,
+        source: NodeUuid,
+        log: LogKey,
+        counter: u64,
+        head: [u8; 32],
+    ) -> Result<(), ApiError> {
+        let hash = hex_encode(&head);
+        self.d.sink.note_tip_source(log, &hash, source);
+        if self.local_entry(&log, counter, head)?.is_some() {
+            self.record_tip(log, counter, head)?;
+            self.d.sink.set_have_memo(source, log, counter, hash);
+            return Ok(());
+        }
+        let want = BranchWant {
+            node: log.node,
+            inc: log.incarnation,
+            tip: TipRef {
+                counter,
+                hash: hash.clone(),
+            },
+            from: counter,
+        };
+        if self.send_probe(source, want, Probe::TipProof) {
+            self.d.sink.set_have_memo(source, log, counter, hash);
+        }
+        Ok(())
+    }
+
+    /// Peer heads of `log` remembered while it was the active own log, now
+    /// that a fork froze it: each may be a branch tip past the proof. A
+    /// peer's `Have` deltas never repeat an unchanged head, so this is the
+    /// only time they are seen again.
+    fn probe_remembered_heads(&mut self, log: LogKey) -> Result<(), ApiError> {
+        let heads: Vec<(NodeUuid, u64, [u8; 32])> = self
+            .active_heads
+            .iter()
+            .filter(|((_, l), _)| *l == log)
+            .map(|((source, _), (counter, head))| (*source, *counter, *head))
+            .collect();
+        let budget = self.read_budget();
+        for (source, counter, head) in heads {
+            if self.d.journal.stored_hash(&log, counter, &budget)? != Some(head) {
+                self.consider_own_tip(source, log, counter, head)?;
+            }
+            self.active_heads.remove(&(source, log));
+        }
         Ok(())
     }
 

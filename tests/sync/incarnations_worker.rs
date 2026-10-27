@@ -904,6 +904,44 @@ fn own_log_proof_owner_rotate_schedules_pulls() {
     );
 }
 
+// Kills: a peer head of the active own log that is forgotten when a fork proof
+// at a lower counter freezes the log. The peer's `Have` deltas never repeat an
+// unchanged head, so the branch's tail past the proof would never be pulled.
+#[test]
+fn active_head_past_the_proof_is_probed_as_a_tip_after_rotation() {
+    let w = world();
+    let mut core = w.a.core();
+    let s = peer(11);
+    // While I is still active, s advertises b4: the peer looks ahead.
+    w.a.sink.on_have(s, true, &w.have(4, &w.b4.hash), &[]);
+    core.work();
+    assert!(w.a.sink.outbox().sends.is_empty(), "no probe while active");
+
+    w.a.sink.enqueue(w.owner_fork(s));
+    core.work();
+    assert_ne!(w.a.active_log(), w.log, "rotated away from the forked log");
+    let b4_probe = BranchWant {
+        node: w.log.node,
+        inc: w.log.incarnation,
+        tip: TipRef {
+            counter: 4,
+            hash: hex(&w.b4.hash),
+        },
+        from: 4,
+    };
+    assert!(
+        w.a.sink.outbox().sends.contains(&(s, b4_probe)),
+        "the remembered head is probed as a branch tip"
+    );
+
+    prove_b4_tip(&w, &mut core, s);
+    assert_eq!(
+        w.a.count("SELECT COUNT(*) FROM sync_branches WHERE tip_counter=4"),
+        1,
+        "the tip past the proof is recorded"
+    );
+}
+
 // Kills: a re-issue that does not run after a pull commit, one that re-issues
 // the other branch twice, and a branch left pulling.
 #[test]
