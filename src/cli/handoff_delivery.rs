@@ -312,6 +312,12 @@ fn inspect<C: LocalClient + ?Sized>(
     else {
         return Err(super::invalid_request("unexpected seat inspection result"));
     };
+    // A seat homed on another node (TRUST-POLICY N15): its home node decides eligibility; the
+    // handoff itself stays this node's facts.
+    if &found.summary.seat == seat && found.summary.continuity == ContinuityStatus::Remote {
+        check_remote(client, clock, seat)?;
+        return Ok(found);
+    }
     if &found.summary.seat != seat
         || found.summary.continuity != ContinuityStatus::Resolved
         || found.mapping.state != ContinuityStatus::Resolved
@@ -327,6 +333,80 @@ fn inspect<C: LocalClient + ?Sized>(
     }
     Ok(found)
 }
+/// Ask a remote seat's home node whether it can take a handoff now (N15). An ineligible answer
+/// refuses; a home node that cannot answer leaves this node's replicated view (the seat exists
+/// here as that node's nonretired seat) as the only check, and says so on stderr.
+fn check_remote<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    seat: &SeatId,
+) -> Result<(), RunError> {
+    use crate::protocol::sync_admin::{AddressReply, RemoteAddress, SyncCommand, SyncReply};
+    use crate::sync::frame::AddrOutcome;
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(
+            clock
+                .monotonic_now()
+                .0
+                .saturating_add(super::seat_resolution::REMOTE_ADDRESS_BUDGET_MS),
+        ),
+        cancellation: crate::protocol::time::Cancellation::default(),
+    };
+    let reply = client.call(
+        Command::Sync(SyncCommand::CheckRemoteSeat {
+            seat: seat.as_str().to_owned(),
+        }),
+        &budget,
+    )?;
+    let CommandResult::Sync(SyncReply::Address(AddressReply::Remote { node, answer })) = reply
+    else {
+        return Err(super::invalid_request(
+            "unexpected remote seat check result",
+        ));
+    };
+    let label = match &node.host {
+        Some(host) => format!(
+            "{} {}",
+            node.tag,
+            crate::view::escape::escape_for_terminal(
+                host,
+                crate::view::escape::Context::SingleLine
+            )
+        ),
+        None => node.tag.clone(),
+    };
+    let unchecked = |why: &str| {
+        eprintln!(
+            "herdr-threads: note: {} checked against replicated state only ({label}: {why})",
+            seat.as_str()
+        );
+        Ok(())
+    };
+    match answer {
+        RemoteAddress::Answered {
+            outcome: AddrOutcome::Eligible,
+        } => Ok(()),
+        RemoteAddress::Answered {
+            outcome: AddrOutcome::Ineligible { reason } | AddrOutcome::Refused { detail: reason },
+        } => Err(super::invalid_request(&format!(
+            "seat {} on {label} cannot take a handoff: {}",
+            seat.as_str(),
+            crate::view::escape::escape_for_terminal(
+                &reason,
+                crate::view::escape::Context::SingleLine
+            )
+        ))),
+        RemoteAddress::Answered {
+            outcome: AddrOutcome::Unavailable { reason },
+        } => unchecked(&reason),
+        RemoteAddress::Answered { .. } => unchecked("unexpected answer"),
+        RemoteAddress::Unreachable { .. } => unchecked("unreachable"),
+        RemoteAddress::NoCap { cap, .. } => unchecked(&format!("no {cap}")),
+        RemoteAddress::Timeout { secs } => unchecked(&format!("no answer in {secs}s")),
+        RemoteAddress::NotReplicated { .. } | RemoteAddress::Unknown => unchecked("unknown answer"),
+    }
+}
+
 /// Pure preparation plus canonical reads. No launch option environment is read.
 pub fn prepare<C: LocalClient + ?Sized>(
     request: &Request,

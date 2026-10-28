@@ -553,7 +553,10 @@ async fn serve_connection(
     // (spec 4.3): its own bound, so its typed answer is never cut off.
     let expires = if matches!(
         request.command,
-        Command::Sync(crate::protocol::sync_admin::SyncCommand::ResolveAddress { .. })
+        Command::Sync(
+            crate::protocol::sync_admin::SyncCommand::ResolveAddress { .. }
+                | crate::protocol::sync_admin::SyncCommand::CheckRemoteSeat { .. }
+        )
     ) {
         tokio::time::Instant::now()
             + crate::protocol::time::external_bound(Duration::from_millis(

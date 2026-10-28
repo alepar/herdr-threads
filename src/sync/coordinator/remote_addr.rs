@@ -18,8 +18,8 @@ use std::sync::OnceLock;
 
 use super::*;
 use crate::sync::frame::{
-    ADDR_RESOLVE_CAP, AddrOutcome, AddrResolve, AddrResolved, AddrTarget, MAX_ADDR_DETAIL_BYTES,
-    MAX_ADDR_TEXT_BYTES,
+    ADDR_CHECK_CAP, ADDR_RESOLVE_CAP, AddrOutcome, AddrResolve, AddrResolved, AddrTarget,
+    MAX_ADDR_DETAIL_BYTES, MAX_ADDR_TEXT_BYTES,
 };
 
 /// Requests one peer may have in flight on this node; past it the answer is
@@ -47,9 +47,12 @@ pub enum RemoteAnswer {
     Answered(AddrOutcome),
     /// No established active link to the node.
     NotLinked,
-    /// The link does not carry [`ADDR_RESOLVE_CAP`]; the peer's version when
-    /// known.
-    NoCap { version: Option<String> },
+    /// The link does not carry `cap`, which the request needs; the peer's
+    /// version when known.
+    NoCap {
+        cap: String,
+        version: Option<String>,
+    },
     /// The link ended before the answer.
     LinkLost,
 }
@@ -99,6 +102,7 @@ fn oversized(target: &AddrTarget) -> bool {
     match target {
         AddrTarget::Seat { location } => location.len() > MAX_ADDR_TEXT_BYTES,
         AddrTarget::Pane { space, tab, pane } => long(space) || long(tab) || long(pane),
+        AddrTarget::Check { seat } => seat.len() > MAX_ADDR_TEXT_BYTES,
         AddrTarget::Unknown => false,
     }
 }
@@ -148,6 +152,9 @@ fn bound_outcome(outcome: AddrOutcome) -> AddrOutcome {
         }
         AddrOutcome::Refused { detail } => refused(&detail),
         AddrOutcome::Unavailable { reason } => unavailable(&reason),
+        AddrOutcome::Ineligible { reason } => AddrOutcome::Ineligible {
+            reason: bounded(&reason, MAX_ADDR_DETAIL_BYTES),
+        },
         other => other,
     }
 }
@@ -198,14 +205,14 @@ impl Actor {
             return;
         };
         let entry = &self.links[&link_id];
-        if !entry
-            .handle
-            .peer()
-            .caps
-            .iter()
-            .any(|c| c == ADDR_RESOLVE_CAP)
-        {
+        let needs: &[&str] = match target {
+            AddrTarget::Check { .. } => &[ADDR_RESOLVE_CAP, ADDR_CHECK_CAP],
+            _ => &[ADDR_RESOLVE_CAP],
+        };
+        let caps = &entry.handle.peer().caps;
+        if let Some(missing) = needs.iter().find(|cap| !caps.iter().any(|c| c == **cap)) {
             let _ = reply.send(RemoteAnswer::NoCap {
+                cap: (*missing).to_owned(),
                 version: entry.peer_version.clone(),
             });
             return;
@@ -252,7 +259,10 @@ impl Actor {
                 outcome,
             }));
         };
-        if matches!(request.target, AddrTarget::Unknown) {
+        let checks = entry.handle.peer().caps.iter().any(|c| c == ADDR_CHECK_CAP);
+        if matches!(request.target, AddrTarget::Unknown)
+            || (matches!(request.target, AddrTarget::Check { .. }) && !checks)
+        {
             return answer_now(refused("unsupported target"));
         }
         if oversized(&request.target) {

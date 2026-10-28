@@ -194,3 +194,64 @@ fn remote_addresses_resolve_on_their_home_node() {
     assert_eq!(inspect(&cluster, &a, &b.id), Ok(b.id.clone()));
     cluster.heal(0, 1);
 }
+
+// Kills: a handoff into a seat on another node refused (the phase 1
+// refusal), the eligibility check skipped while the home node is up, and a
+// sleeping home node refusing a handoff to an exact remote seat ID instead
+// of authoring it and saying the check used replicated state only (N15).
+#[test]
+fn handoff_into_a_remote_seat_is_authored_by_the_sender() {
+    let mut cluster = Cluster::start(
+        "mn-remote-handoff",
+        crate::BIN,
+        2,
+        ClusterOptions {
+            links: vec![(0, 1)],
+            ..Default::default()
+        },
+    );
+    cluster.add_host(0, &[P1]);
+    cluster.add_host(1, &[P1]);
+    // Handoff needs a daemon started with its host (guarded bootstrap).
+    cluster.stop_node(0);
+    cluster.start_node(0);
+    let a = cluster.seat(0, P1);
+    let b = cluster.seat(1, P1);
+    support::wait_seats(&cluster, 0, 2);
+    cluster.wait_converged(crate::WAIT);
+    let handoff = |task: &str| {
+        cluster.run_as(
+            Some(&a),
+            0,
+            &["handoff", "--existing", "--seat", &b.id, "--", task],
+        )
+    };
+    let (code, value, stderr) = handoff("first task");
+    assert_eq!(code, 0, "{stderr}{value}");
+    assert!(!stderr.contains("replicated state only"), "{stderr}");
+    let delivered = |text: &str| {
+        let data = cluster.ok_as(Some(&b), 1, &["inbox"]);
+        data["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|i| i.to_string().contains(text)))
+            .then_some(())
+    };
+    cluster.wait_until("b to get the first task", crate::WAIT, || {
+        delivered("first task")
+    });
+    // The home node asleep: authored anyway, with the note.
+    cluster.partition(0, 1);
+    let (code, value, stderr) = cluster.wait_until("the link to drop", crate::WAIT, || {
+        let out = handoff("second task");
+        (out.0 != 0 || out.2.contains("replicated state only")).then_some(out)
+    });
+    assert_eq!(code, 0, "{stderr}{value}");
+    assert!(
+        stderr.contains("checked against replicated state only"),
+        "{stderr}"
+    );
+    cluster.heal(0, 1);
+    cluster.wait_until("b to get the second task", crate::WAIT, || {
+        delivered("second task")
+    });
+}

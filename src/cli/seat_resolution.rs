@@ -892,7 +892,7 @@ where
                         remote_error::one_line(&detail)
                     ))));
                 }
-                AddrOutcome::Unknown => {
+                AddrOutcome::Unknown | AddrOutcome::Eligible | AddrOutcome::Ineligible { .. } => {
                     return Err(run_error(ApiError::invalid_request(format!(
                         "{label} answered in an unknown form"
                     ))));
@@ -905,7 +905,7 @@ where
                 ),
                 None => format!("machine {label} is unreachable; pass an exact seat ID"),
             },
-            RemoteAddress::NoCap { version } => format!(
+            RemoteAddress::NoCap { version, .. } => format!(
                 "machine {label} cannot resolve names (needs addr.resolve.v1; version {})",
                 version.as_deref().unwrap_or("unknown")
             ),
@@ -984,7 +984,7 @@ fn same_resolution(a: &Resolved, b: &Resolved) -> bool {
 
 /// The CLI's budget for one `@MACHINE` resolution: the daemon's wait for the home node and for
 /// the seat to replicate, plus margin, so the daemon's typed answer arrives first (spec 4.3).
-const REMOTE_ADDRESS_BUDGET_MS: u64 =
+pub(crate) const REMOTE_ADDRESS_BUDGET_MS: u64 =
     crate::service::sync_admin::REMOTE_ADDRESS_DAEMON_BOUND_MS + 3_000;
 
 /// Caller-visible refusals of remote addresses (spec 4.4).

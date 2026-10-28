@@ -77,7 +77,7 @@ impl RemoteResolver {
             AddrTarget::Pane { space, tab, pane } => {
                 address::resolve_parts(topology, space.as_deref(), tab.as_deref(), pane.as_deref())
             }
-            AddrTarget::Unknown => Outcome::NoMatch,
+            AddrTarget::Check { .. } | AddrTarget::Unknown => Outcome::NoMatch,
         }
     }
 
@@ -94,7 +94,44 @@ impl RemoteResolver {
         }
     }
 
+    /// Whether this node's own published seat `seat` can take a handoff now: the delivery
+    /// recipient rule the daemon applies when it delivers (`eligible_delivery_recipient`).
+    fn check(&self, seat: &str) -> AddrOutcome {
+        let decided = self.store.sync_read(&self.budget(), |conn, _| {
+            let row = seat_row(conn, seat).map_err(crate::store::connection::store_error)?;
+            Ok(match row {
+                None | Some(SeatRow { local: false, .. }) => {
+                    Err(format!("seat {seat} does not live on this machine"))
+                }
+                Some(SeatRow {
+                    published: false, ..
+                }) => Err(format!("seat {seat} is not shared with other machines")),
+                Some(_) => {
+                    let instance: String = conn
+                        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+                        .map_err(crate::store::connection::store_error)?;
+                    crate::store::seats::eligible_delivery_recipient(
+                        conn,
+                        &instance,
+                        &crate::protocol::ids::SeatId::new(seat),
+                    )
+                    .map_err(|error| error.detail)
+                }
+            })
+        });
+        match decided {
+            Ok(Ok(())) => AddrOutcome::Eligible,
+            Ok(Err(reason)) => AddrOutcome::Ineligible { reason },
+            Err(error) => AddrOutcome::Unavailable {
+                reason: format!("seat lookup failed: {}", error.detail),
+            },
+        }
+    }
+
     fn answer(&self, target: &AddrTarget) -> AddrOutcome {
+        if let AddrTarget::Check { seat } = target {
+            return self.check(seat);
+        }
         if let AddrTarget::Seat { location } = target
             && let Some(outcome) = self.exact_seat(location)
         {

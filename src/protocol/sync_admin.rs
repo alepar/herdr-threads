@@ -67,6 +67,13 @@ pub enum SyncCommand {
         #[serde(default)]
         target: crate::sync::frame::AddrTarget,
     },
+    /// Whether the remote seat `seat` can take a handoff now, asked of its
+    /// home node (TRUST-POLICY N15). A read; answered as an
+    /// [`AddressReply::Remote`].
+    CheckRemoteSeat {
+        #[serde(default)]
+        seat: String,
+    },
 }
 
 impl SyncCommand {
@@ -114,6 +121,7 @@ impl SyncCommand {
                 logs.iter().map(String::as_str).try_for_each(text)
             }
             Self::ResolveAddress { machine, .. } => text(machine),
+            Self::CheckRemoteSeat { seat } => text(seat),
             Self::PeerList
             | Self::Verify
             | Self::UnappliedList { .. }
@@ -461,6 +469,9 @@ pub enum RemoteAddress {
     NoCap {
         #[serde(default)]
         version: Option<String>,
+        /// The missing capability (empty from an older daemon: `addr.resolve.v1`).
+        #[serde(default)]
+        cap: String,
     },
     /// No answer within the wait.
     Timeout {

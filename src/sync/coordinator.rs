@@ -731,6 +731,9 @@ pub struct CoordinatorOptions {
     /// Advertise [`crate::sync::frame::ADDR_RESOLVE_CAP`] (default). Without
     /// it, peers never send this node an `addr_resolve`.
     pub advertise_addr_resolve: bool,
+    /// Advertise [`crate::sync::frame::ADDR_CHECK_CAP`] (default; only with
+    /// `advertise_addr_resolve`).
+    pub advertise_addr_check: bool,
     /// The stall thresholds of node status.
     pub timings: StallTimings,
 }
@@ -740,6 +743,7 @@ impl Default for CoordinatorOptions {
         Self {
             advertise_opaque: true,
             advertise_addr_resolve: true,
+            advertise_addr_check: true,
             timings: StallTimings::default(),
         }
     }
@@ -770,6 +774,9 @@ impl CoordinatorOptions {
                 let withheld: Vec<&str> = caps.split(',').map(str::trim).collect();
                 if withheld.contains(&crate::sync::frame::ADDR_RESOLVE_CAP) {
                     options.advertise_addr_resolve = false;
+                }
+                if withheld.contains(&crate::sync::frame::ADDR_CHECK_CAP) {
+                    options.advertise_addr_check = false;
                 }
             }
         }
@@ -869,6 +876,11 @@ impl SyncCoordinator {
             hello
                 .caps
                 .push(crate::sync::frame::ADDR_RESOLVE_CAP.to_owned());
+            if options.advertise_addr_check {
+                hello
+                    .caps
+                    .push(crate::sync::frame::ADDR_CHECK_CAP.to_owned());
+            }
         }
         let me = Arc::new(hello);
         let actor = Actor {

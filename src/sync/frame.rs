@@ -60,6 +60,10 @@ pub const MAX_SEAT_HARNESS_BYTES: usize = 16;
 /// [`PeerFrame::AddrResolved`] (remote addresses, `SEAT@MACHINE`). A node
 /// sends a request only to a peer that advertised it.
 pub const ADDR_RESOLVE_CAP: &str = "addr.resolve.v1";
+/// Capability: this node answers an [`AddrTarget::Check`] (whether one of its
+/// seats can take a handoff now). A node sends one only to a peer that
+/// advertised it.
+pub const ADDR_CHECK_CAP: &str = "addr.check.v1";
 /// Longest address text (a location or one label) in an `addr_resolve`, in
 /// bytes; a longer one is answered `refused`.
 pub const MAX_ADDR_TEXT_BYTES: usize = 512;
@@ -449,6 +453,13 @@ pub enum AddrTarget {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<String>,
     },
+    /// Whether this exact seat of the answering node can take a handoff now
+    /// (cap [`ADDR_CHECK_CAP`]): resolved, published, nonretired, unheld, its
+    /// target observed.
+    Check {
+        #[serde(default)]
+        seat: String,
+    },
     #[default]
     #[serde(other)]
     Unknown,
@@ -502,6 +513,14 @@ pub enum AddrOutcome {
     Refused {
         #[serde(default)]
         detail: String,
+    },
+    /// The answer to [`AddrTarget::Check`]: the seat can take a handoff.
+    Eligible,
+    /// The answer to [`AddrTarget::Check`]: it cannot; `reason` is at most
+    /// [`MAX_ADDR_DETAIL_BYTES`].
+    Ineligible {
+        #[serde(default)]
+        reason: String,
     },
     /// Not answered now (busy, resolver not ready, a store read failed); a
     /// retry may succeed. `reason` is at most [`MAX_ADDR_DETAIL_BYTES`].

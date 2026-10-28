@@ -4559,3 +4559,100 @@ fn historical_none_automatic_existing_retry_requires_receipts_before_effects_and
         Command::AutomaticHandoffDelivery(q) if matches!(q.action, AutomaticDeliveryAction::Status))));
     assert_eq!(*inner.invitations.lock().unwrap(), 1);
 }
+
+/// Answers a remote seat's inspection and its home node's eligibility check (N15).
+struct RemoteClient {
+    answer: crate::protocol::sync_admin::RemoteAddress,
+    checks: Mutex<u32>,
+}
+impl LocalClient for RemoteClient {
+    fn call_with_output(
+        &self,
+        c: Command,
+        _: &OutputSpec,
+        b: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(c, b)
+    }
+    fn call(&self, c: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        use crate::protocol::sync_admin::{AddressReply, MachineRow, SyncCommand, SyncReply};
+        match c {
+            Command::SeatInspect(q) => {
+                assert_eq!(q.seat.as_str(), "sREMOTEseat1");
+                Ok(CommandResult::SeatInspect(serde_json::from_value(serde_json::json!({
+                    "summary":{"seat":"sREMOTEseat1","continuity":"remote","target":null,"generation":0,"created_at":1,"retired_at":null},
+                    "mapping":{"state":"remote","target":null,"detail_argv":null},
+                    "hold":null,"retirement":null,"open_binding":null,"history":page(serde_json::json!([]))
+                })).unwrap()))
+            }
+            Command::Sync(SyncCommand::CheckRemoteSeat { seat }) => {
+                assert_eq!(seat, "sREMOTEseat1");
+                *self.checks.lock().unwrap() += 1;
+                Ok(CommandResult::Sync(SyncReply::Address(
+                    AddressReply::Remote {
+                        node: MachineRow {
+                            uuid: "cd".repeat(16),
+                            tag: "Q0V".into(),
+                            host: Some("laptop".into()),
+                        },
+                        answer: self.answer.clone(),
+                    },
+                )))
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+}
+
+// Kills: a remote recipient refused outright (the phase 1 rule), its home
+// node's eligibility not asked, an ineligible answer ignored, and a home node
+// that cannot answer refusing the handoff of an exact remote seat (N15).
+#[test]
+fn a_remote_recipient_is_checked_by_its_home_node_or_replicated_state() {
+    use crate::protocol::sync_admin::RemoteAddress;
+    use crate::sync::frame::AddrOutcome;
+    let seat = SeatId::new("sREMOTEseat1");
+    let run = |answer: RemoteAddress| {
+        let client = RemoteClient {
+            answer,
+            checks: Mutex::new(0),
+        };
+        let result = super::inspect(&client, &TestClock, &seat).map(|_| ());
+        assert_eq!(*client.checks.lock().unwrap(), 1, "the home node is asked");
+        result
+    };
+    run(RemoteAddress::Answered {
+        outcome: AddrOutcome::Eligible,
+    })
+    .unwrap();
+    let Err(RunError::Api(error)) = run(RemoteAddress::Answered {
+        outcome: AddrOutcome::Ineligible {
+            reason: "delivery recipient unresolved, held or invalidated".into(),
+        },
+    }) else {
+        panic!("ineligible refuses")
+    };
+    assert!(
+        error
+            .detail
+            .contains("on Q0V laptop cannot take a handoff: delivery recipient unresolved"),
+        "{error:?}"
+    );
+    for asleep in [
+        RemoteAddress::Unreachable {
+            last_contact_at: None,
+        },
+        RemoteAddress::Timeout { secs: 10 },
+        RemoteAddress::NoCap {
+            version: Some("2.5.0".into()),
+            cap: "addr.check.v1".into(),
+        },
+        RemoteAddress::Answered {
+            outcome: AddrOutcome::Unavailable {
+                reason: "busy".into(),
+            },
+        },
+    ] {
+        run(asleep).unwrap();
+    }
+}

@@ -160,6 +160,7 @@ impl SyncAdmin {
             SyncCommand::ResolveAddress { machine, target } => {
                 self.resolve_address(&machine, target, budget)
             }
+            SyncCommand::CheckRemoteSeat { seat } => self.check_remote_seat(&seat, budget),
         }
     }
 
@@ -517,7 +518,7 @@ impl SyncAdmin {
                     last_contact_at: last.and_then(|c| i64::try_from(c.last_contact_at).ok()),
                 }
             }
-            Some(RemoteAnswer::NoCap { version }) => RemoteAddress::NoCap { version },
+            Some(RemoteAnswer::NoCap { cap, version }) => RemoteAddress::NoCap { version, cap },
             Some(RemoteAnswer::Answered(outcome)) => match &outcome {
                 AddrOutcome::Seat { seat, .. }
                     if !self.wait_replicated(seat, &uuid, REPLICA_WAIT_MS, budget)? =>
@@ -528,6 +529,34 @@ impl SyncAdmin {
             },
         };
         Ok(SyncReply::Address(AddressReply::Remote { node, answer }))
+    }
+
+    /// N15: ask `seat`'s home node whether it can take a handoff now. Only a
+    /// seat this node holds as remote and nonretired is asked about.
+    fn check_remote_seat(&self, seat: &str, budget: &CallBudget) -> Result<SyncReply, ApiError> {
+        use rusqlite::OptionalExtension;
+        let home: Option<String> = self.store.sync_read(budget, |conn, _| {
+            conn.query_row(
+                "SELECT home_node FROM seats WHERE id=?1 AND is_local=0 AND state='remote'",
+                [seat],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(crate::store::connection::store_error)
+        })?;
+        let Some(home) = home else {
+            return Err(ApiError::new(
+                ErrorCode::InvalidRequest,
+                "seat is not a nonretired remote seat here",
+            ));
+        };
+        self.resolve_address(
+            &home,
+            crate::sync::frame::AddrTarget::Check {
+                seat: seat.to_owned(),
+            },
+            budget,
+        )
     }
 
     /// `LOCATION@<this node>`: resolved locally by the caller, unless it is
