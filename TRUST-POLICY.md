@@ -673,7 +673,7 @@ model open work, and summary closure never changes receipt state or installs glo
   that process's composer: the item reaches whichever of its bindings takes the turn, so no binding is
   chosen. Like a single target it is not held to the several-targets idle condition (an ordinary wake
   reads no composer before that point); the adapter's final composer read immediately before submission
-  still refuses typed input and a busy agent. For a receipt or invitation it is owed only while every binding of the process is
+  still refuses typed input and a busy agent. After that read, and immediately before typing, the wake asks again whether it is still owed: a turn that served the item and ended while the attempt was in flight gets no wake (a pre-send refusal; ht-78f6). For a receipt or invitation it is owed only while every binding of the process is
   unserved (one served in its turn served the process), and a binding whose mod channel woke it takes its process's other bindings off the composer
   targets. Seat-level attention includes a delivery row the seat's nudge threshold admitted (reason `lazy`,
   the lazy frontier admitted by `NudgeThreshold`): under message priority delivery (D9) a bare `--nudge`

@@ -3968,6 +3968,24 @@ pub trait HostPort: Send + Sync {
         text: &str,
         context: &HostCallContext,
     ) -> Result<PromptOutcome, ApiError>;
+    /// [`submit_prompt`](Self::submit_prompt) that asks `still_owed` after the host's own last
+    /// readiness recheck (the agent awaits input) and immediately before anything is typed.
+    /// A turn that was still running when the wake was decided can serve the attention in
+    /// that turn and end just before the recheck; only a check made after the recheck sees
+    /// that (delivery contract rule 4). `Ok(None)`: `still_owed` declined and nothing was
+    /// sent. The default asks first, then submits.
+    fn submit_prompt_if_owed(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+        still_owed: &dyn Fn() -> Result<bool, ApiError>,
+    ) -> Result<Option<PromptOutcome>, ApiError> {
+        if !still_owed()? {
+            return Ok(None);
+        }
+        self.submit_prompt(target, text, context).map(Some)
+    }
     /// Historical turn-time compatibility hook, unused by notification dispatch.
     /// Native attention requires idle/done through both entry points.
     fn submit_prompt_during_turn(

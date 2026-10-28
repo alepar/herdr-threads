@@ -1430,7 +1430,18 @@ impl HostPort for NativeCli {
         text: &str,
         context: &HostCallContext,
     ) -> Result<ports::PromptOutcome, ApiError> {
-        self.submit_prompt_mode(target, text, context)
+        self.submit_prompt_mode(target, text, context, None)
+            .map(|outcome| outcome.unwrap_or(ports::PromptOutcome::OutcomeUnknown))
+    }
+
+    fn submit_prompt_if_owed(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+        still_owed: &dyn Fn() -> Result<bool, ApiError>,
+    ) -> Result<Option<ports::PromptOutcome>, ApiError> {
+        self.submit_prompt_mode(target, text, context, Some(still_owed))
     }
 
     /// Retained port compatibility; attention now requires idle/done even
@@ -1453,7 +1464,8 @@ impl HostPort for NativeCli {
                 "soft poke unsupported: no composer policy",
             ));
         }
-        self.submit_prompt_mode(target, text, context)
+        self.submit_prompt_mode(target, text, context, None)
+            .map(|outcome| outcome.unwrap_or(ports::PromptOutcome::OutcomeUnknown))
     }
 
     /// Reads the composer (`agent read --source detection`), clears it with a
@@ -1882,12 +1894,16 @@ impl NativeCli {
         blocks.insert(seat.clone(), (block, now));
     }
 
+    /// `still_owed` (when given) is asked once the agent was rechecked idle or done and its
+    /// composer read empty, immediately before `agent prompt`; `Ok(None)`: it declined and
+    /// nothing was sent. Without it the result is always `Some`.
     fn submit_prompt_mode(
         &self,
         target: &SafeWakeTarget,
         text: &str,
         context: &HostCallContext,
-    ) -> Result<ports::PromptOutcome, ApiError> {
+        still_owed: Option<&dyn Fn() -> Result<bool, ApiError>>,
+    ) -> Result<Option<ports::PromptOutcome>, ApiError> {
         // Taking the sample first makes every failed identity/status/read reset
         // the window. Only a successful focused-empty sample below retains it.
         let previous = self
@@ -2004,6 +2020,13 @@ impl NativeCli {
                 "insufficient wake prompt budget",
             ));
         }
+        // The agent is idle now, so a turn that served this attention has ended and its
+        // completion is committed: ask whether the wake is still owed only after the recheck.
+        if let Some(still_owed) = still_owed
+            && !still_owed()?
+        {
+            return Ok(None);
+        }
         let limit = Duration::from_millis(left.min(PROMPT_SUBMIT_MILLIS));
         let (raw, witness) = match self.run_witnessed(
             &["agent", "prompt", target.target.as_str(), text],
@@ -2026,7 +2049,7 @@ impl NativeCli {
             {
                 return Err(refuse(&failure.detail));
             }
-            Err(_) => return Ok(ports::PromptOutcome::OutcomeUnknown),
+            Err(_) => return Ok(Some(ports::PromptOutcome::OutcomeUnknown)),
         };
         let prompted = serde_json::from_str::<serde_json::Value>(&raw)
             .ok()
@@ -2037,9 +2060,9 @@ impl NativeCli {
                     == Some(target.terminal.as_str())
         });
         if correlated && self.same_incarnation(witness.as_ref(), target) {
-            Ok(ports::PromptOutcome::Submitted)
+            Ok(Some(ports::PromptOutcome::Submitted))
         } else {
-            Ok(ports::PromptOutcome::OutcomeUnknown)
+            Ok(Some(ports::PromptOutcome::OutcomeUnknown))
         }
     }
 
@@ -4454,6 +4477,25 @@ pub(crate) mod tests {
         Result<ports::PromptOutcome, ApiError>,
         Arc<std::sync::Mutex<Vec<String>>>,
     ) {
+        cooperative_wake_submit(registry, rest, slot, tamper, |cli, target, context, _| {
+            cli.submit_prompt(target, "wake marker", context)
+        })
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    /// [`cooperative_wake_in`] with the submission made by `submit` (given the Herdr methods
+    /// called so far, in order).
+    fn cooperative_wake_submit<R>(
+        registry: &'static Registry,
+        rest: Vec<Exchange>,
+        slot: Option<CliSlot>,
+        tamper: impl FnOnce(&mut SafeWakeTarget, &mut HostCallContext),
+        submit: impl FnOnce(
+            &NativeCli,
+            &SafeWakeTarget,
+            &HostCallContext,
+            &Arc<std::sync::Mutex<Vec<String>>>,
+        ) -> R,
+    ) -> (R, Arc<std::sync::Mutex<Vec<String>>>) {
         let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut exchanges = vec![pane_exchange()];
         exchanges.extend(rest);
@@ -4497,7 +4539,7 @@ pub(crate) mod tests {
         target.bound_harness = Some("claude".into());
         let mut context = wake_context(&observation);
         tamper(&mut target, &mut context);
-        let result = cli.submit_prompt(&target, "wake marker", &context);
+        let result = submit(&cli, &target, &context, &methods);
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
         (result, methods)
@@ -5326,6 +5368,73 @@ pub(crate) mod tests {
                 "the recheck immediately precedes the prompt"
             );
         }
+    }
+
+    /// Kills: ht-78f6's busy-agent nudge. The wake's owed check must run after the idle recheck
+    /// and composer read, right before `agent.prompt`: a turn that served the item and ended
+    /// between the dispatcher's early check and the recheck must not be prompted. A declined
+    /// check sends nothing; an agent still working is refused before the check is asked.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn cooperative_wake_asks_still_owed_after_the_recheck_and_before_the_prompt() {
+        let prompt = || -> Exchange {
+            Box::new(|stream: &mut UnixStream, request: Value| {
+                assert_eq!(request["method"], "agent.prompt");
+                answer(
+                    stream,
+                    &request,
+                    json!({"type":"agent_prompted","agent":wake_agent("idle", Some("codex"), "term_1")}),
+                );
+            })
+        };
+        let gated = |status: &str, owed: bool, tail: Vec<Exchange>| {
+            let mut rest = vec![recheck_exchange(wake_agent(
+                status,
+                Some("codex"),
+                "term_1",
+            ))];
+            rest.extend(tail);
+            cooperative_wake_submit(
+                registry::builtins(),
+                rest,
+                None,
+                |target, _| target.bound_harness = Some("codex".into()),
+                move |cli, target, context, methods| {
+                    cli.submit_prompt_if_owed(target, "wake marker", context, &|| {
+                        methods.lock().unwrap().push("still_owed".into());
+                        Ok(owed)
+                    })
+                },
+            )
+        };
+        // Served meanwhile: asked after the recheck and the composer read, nothing typed.
+        let (result, methods) = gated("idle", false, vec![detection_exchange(CODEX_EMPTY)]);
+        assert_eq!(result.unwrap(), None);
+        assert_eq!(
+            *methods.lock().unwrap(),
+            ["pane.get", "agent.get", "agent.read", "still_owed"]
+        );
+        // Still owed: the prompt follows the check.
+        let (result, methods) = gated(
+            "done",
+            true,
+            vec![detection_exchange(CODEX_EMPTY), prompt()],
+        );
+        assert_eq!(result.unwrap(), Some(ports::PromptOutcome::Submitted));
+        assert_eq!(
+            *methods.lock().unwrap(),
+            [
+                "pane.get",
+                "agent.get",
+                "agent.read",
+                "still_owed",
+                "agent.prompt"
+            ]
+        );
+        // Still working at the recheck: refused before the check is asked.
+        let (result, methods) = gated("working", true, vec![]);
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
     }
 
     /// TRUST-POLICY A4 wake rule: the pane's detected agent kind must equal

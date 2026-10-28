@@ -508,11 +508,29 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         } else {
             text
         };
-        // Unsolicited attention never queues into an active turn.
-        let submitted = self.host.submit_prompt(&target, text, &prompt_context);
+        // Unsolicited attention never queues into an active turn. The owed check above ran
+        // before the host's idle recheck; a turn still running then can serve the attention
+        // and end before that recheck, so the host asks again right before typing.
+        let reached: Vec<Option<&crate::protocol::ids::BindingId>> = if composer_bindings.is_empty()
+        {
+            vec![None]
+        } else {
+            composer_bindings.iter().map(Some).collect()
+        };
+        let still_owed = || -> Result<bool, ApiError> {
+            if poke_only {
+                return Ok(true);
+            }
+            self.check
+                .owes_wake(&reservation, &reached, &context.budget)
+        };
+        let submitted =
+            self.host
+                .submit_prompt_if_owed(&target, text, &prompt_context, &still_owed);
         let diagnostic = None;
         let submitted = match submitted {
-            Ok(submitted) => submitted,
+            Ok(Some(submitted)) => submitted,
+            Ok(None) => return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable),
             Err(err) => return refuse_error(err),
         };
         match submitted {

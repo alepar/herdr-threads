@@ -5443,6 +5443,50 @@ impl ReservationCheck for ServedReservationCheck {
     }
 }
 
+/// Owed at the dispatcher's early check, served by the time the host asks again (the busy
+/// turn delivered the item in a tool-boundary hook and ended while the attempt was in flight).
+struct ServedInFlightCheck {
+    asked: std::sync::atomic::AtomicUsize,
+}
+impl ReservationCheck for ServedInFlightCheck {
+    fn is_current(&self, _: &WakeReservation, _: &CallBudget) -> Result<bool, ApiError> {
+        Ok(true)
+    }
+    fn owes_wake(
+        &self,
+        _: &WakeReservation,
+        _: &[Option<&crate::protocol::ids::BindingId>],
+        _: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0)
+    }
+}
+
+/// Kills: ht-78f6's busy-agent nudge (Herdr release matrix, 0.9.4 aarch64). The wake was
+/// reserved and found owed while the turn still ran; the turn then served the p0 in its last
+/// tool-boundary hook and ended, the host's idle recheck passed, and the wake marker was typed
+/// for an item already shown (delivery contract rule 4). The owed check is asked again through
+/// the host's gate, after its recheck: nothing is typed and the attempt is a pre-send refusal.
+#[test]
+fn composer_wake_served_while_in_flight_is_not_typed() {
+    let check = ServedInFlightCheck {
+        asked: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let (outcome, prompted) = composer_wake_for(
+        vec![binding_target("main", "codex", Some(10))],
+        &[10],
+        &["lazy"],
+        &check,
+    );
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unavailable));
+    assert!(prompted.is_empty());
+    assert_eq!(
+        check.asked.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "asked before the host and again through its gate"
+    );
+}
+
 /// The three plain-call bindings Main's Codex held on 2026-10-13 (ht-327): its TUI session and
 /// two `/side` conversations the same process forked, all fingerprinting the one foreground pid.
 fn one_process_bindings() -> Vec<crate::ports::WakeTarget> {
