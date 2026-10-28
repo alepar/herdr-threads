@@ -3,6 +3,8 @@
 # CHANGELOG.md, README.md and docs/install.md. Uses grep only (no ripgrep
 # dependency). Prints ok/FAIL lines; exits non-zero if any check fails.
 set -euo pipefail
+# Piped greps read their whole input (no -q): an early exit SIGPIPEs the
+# producer, and pipefail would fail the check at random.
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"
@@ -34,7 +36,7 @@ check 'no "atomic" install wording in README/install/release docs' no_atomic_ins
 section() { # section FILE HEADING-REGEX: lines of the section, up to the next "## "
   awk -v re="$2" '$0 ~ re {on=1; next} on && /^## / {exit} on' "$1"
 }
-changelog_has() { section CHANGELOG.md '^## v0\.1\.0' | grep -Eq "$1"; }
+changelog_has() { section CHANGELOG.md '^## v0\.1\.0' | grep -E "$1" >/dev/null; }
 check 'CHANGELOG.md has a "## v0.1.0" heading' grep -q '^## v0\.1\.0' CHANGELOG.md
 check 'CHANGELOG: removed STATUS constants' changelog_has 'EXIT_STATUS_HELP'
 check 'CHANGELOG: inv- prefix' changelog_has 'inv-'
@@ -51,7 +53,7 @@ check 'release.md: build-targets job' rel_has 'build-targets'
 
 # docs/release.md: every root spec Follow-on item, under one heading.
 follow=$(section "$rel" '^## Post-merge follow-on checklist')
-follow_has() { printf '%s\n' "$follow" | grep -Eq "$1"; }
+follow_has() { printf '%s\n' "$follow" | grep -E "$1" >/dev/null; }
 check 'release.md: follow-on section exists' test -n "$follow"
 for n in 1 2 3 4 5 6; do
   check "release.md: follow-on item $n" follow_has "^$n\\. "
@@ -85,13 +87,13 @@ check 'follow-on dispatch: live gh issue filing step' follow_has 'file_issues\.p
 
 # README: Linux is experimental, and the line names what is still unverified there
 # (x86_64 and agent harness sessions); only the exercised arm64 link is claimed.
-readme_linux() { grep -iE 'linux' README.md | grep -iE 'experimental' | grep -iE 'unverified' | grep -iE 'x86_64' | grep -iE 'harness sessions' | grep -qiE 'rehearsal'; }
+readme_linux() { grep -iE 'linux' README.md | grep -iE 'experimental' | grep -iE 'unverified' | grep -iE 'x86_64' | grep -iE 'harness sessions' | grep -iE 'rehearsal' >/dev/null; }
 check 'README: Linux experimental, x86_64 and harness sessions unverified, rehearsal linked' readme_linux
 # No claim that Linux x86_64 or harness sessions were verified or exercised. Checked per
 # clause: the README's Linux paragraph is one line that also says "unverified". (install.md
 # and release.md phrase their limits as "not verified"/"only", which this pattern cannot tell
 # from a claim.)
-readme_no_linux_overclaim() { ! grep -iE 'linux' README.md | awk '{gsub(/[;.] /,"\n")}1' | grep -iE 'x86_64|harness sessions' | grep -iE 'verified|exercised|passes' | grep -qviE 'unverified'; }
+readme_no_linux_overclaim() { ! grep -iE 'linux' README.md | awk '{gsub(/[;.] /,"\n")}1' | grep -iE 'x86_64|harness sessions' | grep -iE 'verified|exercised|passes' | grep -viE 'unverified' >/dev/null; }
 check 'README: no Linux x86_64 or harness-session overclaim' readme_no_linux_overclaim
 # The installer never returns to the false macOS-only manifest/witness warning.
 install_no_stale_linux() { ! grep -qE 'declares macOS only|Unknown incarnation' scripts/install.sh; }
