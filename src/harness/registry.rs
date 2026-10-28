@@ -1598,12 +1598,21 @@ mod tests {
     use super::*;
 
     /// The send warning's `no_wake` rests on this classification: Claude (channel), Codex, agy
-    /// and Hermes (composer) wake; an unregistered id is unknown, never `no_wake`.
+    /// and Hermes (composer) wake; an unregistered id is unknown, never `no_wake`. Every shipped
+    /// harness wakes, so SKILL.md does not explain `warning: SEAT wake=no_wake`; only the
+    /// test-support `synthetic_fourth` (no composer, no channel) produces it.
     #[test]
     fn idle_wake_classification_of_the_builtins() {
         let registry = builtins();
-        for id in ["claude", "codex", "agy", "hermes"] {
-            assert_eq!(registry.has_idle_wake(id), Some(true), "{id}");
+        for r in registry.registrations() {
+            let id = r.metadata().id;
+            let shipped = id != "synthetic_fourth";
+            assert_eq!(
+                registry.has_idle_wake(id),
+                Some(shipped),
+                "{id}: a shipped harness without idle wake makes `wake=no_wake` reachable; \
+                 explain that warning in integrations/skill/SKILL.md (Warnings)"
+            );
         }
         assert_eq!(registry.has_idle_wake("human"), None);
         assert_eq!(registry.has_idle_wake("pi"), None);

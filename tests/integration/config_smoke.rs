@@ -576,3 +576,78 @@ fn synthetic_four_adapter_hook_configuration_and_canonical_replay() {
         4
     );
 }
+
+/// Sender-visible wake outcome end to end (ht-5gip). Every built-in harness has an idle wake, so
+/// the test-support `synthetic_fourth` (no composer, no channel) is the `no_wake` producer: a p0
+/// item to its seat warns each person sender once on stderr (`warning: SEAT wake=no_wake`), a p1
+/// send never asks, a repeat stays quiet, and `doctor` lists the block in JSON and text.
+#[test]
+fn p0_to_a_harness_without_idle_wake_warns_each_sender_once_and_doctor_lists_it() {
+    use serde_json::json;
+    let daemon = SyntheticDaemon::new();
+    daemon.json(&["daemon", "ensure"]);
+    let fourth = json!({"event": "SyntheticStart", "event_id": "no-wake-start", "session_id": "no-wake-session", "role": "top_level"});
+    assert!(!daemon.hook("w1:p4", "synthetic_fourth", &fourth)["synthetic_context"].is_null());
+    let seat = daemon.json(&["seat", "resolve", "--pane", "w1:p4"])["result"]["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // `human` comes first, before the global options.
+    let person = |pane: &str, args: &[&str]| {
+        let mut command = daemon.isolation.command(BIN);
+        let output = command
+            .args(["human", "--json", "--state-dir"])
+            .arg(&daemon.state)
+            .arg("--host-endpoint")
+            .arg(&daemon.endpoint)
+            .env("HERDR_PANE_ID", pane)
+            .args(args)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}{stderr}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+        (value, stderr)
+    };
+    person("w1:p1", &["me", "init"]);
+    person("w1:p2", &["me", "init"]);
+    let warning = format!("warning: {seat} wake=no_wake\n");
+
+    let (_, quiet) = person("w1:p1", &["send", "--seat", &seat, "--body", "hi"]);
+    assert_eq!(quiet, "", "a p1 send carries no p0 item");
+    let (_, nudged) = person(
+        "w1:p1",
+        &["send", "--seat", &seat, "--body", "now", "--nudge"],
+    );
+    assert_eq!(nudged, warning, "the direct target is p0");
+    let (created, _) = person("w1:p1", &["thread", "create", "--topic", "no wake"]);
+    let thread = created["result"]["data"].as_str().unwrap().to_owned();
+    let (_, invited) = person("w1:p1", &["invite", &thread, "--seat", &seat]);
+    assert_eq!(invited, "", "reported once per sender and seat");
+    let (_, other) = person(
+        "w1:p2",
+        &["send", "--seat", &seat, "--body", "now", "--nudge"],
+    );
+    assert_eq!(other, warning, "another sender gets its own report");
+
+    let doctor = daemon.json(&["doctor"]);
+    let rows = doctor["doctor"]["wake"]["seats"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{doctor}"));
+    assert!(
+        rows.iter().any(|row| row["seat"] == seat.as_str()
+            && row["harness"] == "synthetic_fourth"
+            && row["wake"] == "no_wake"),
+        "{doctor}"
+    );
+    let text = daemon.command().arg("doctor").output().unwrap();
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(
+        text.contains(&format!("wake: {seat} synthetic_fourth wake=no_wake\n")),
+        "{text}"
+    );
+}

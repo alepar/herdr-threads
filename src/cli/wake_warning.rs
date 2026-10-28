@@ -4,7 +4,11 @@
 //! what a wake attempt met (`unreadable`, `focused`) depends on an attempt this send has not made
 //! yet, so it is `doctor`'s. The line rides in the sender's own command output, so it is no item
 //! and wakes nobody. Model-visible: `warning: <seat> wake=no_wake\n`, 23 bytes plus the seat id
-//! (35 bytes for a 12-byte seat).
+//! (35 bytes for a 12-byte seat). Every shipped harness has an idle wake, so no production seat
+//! produces it today and the skill does not explain it; the path stays as a harness-neutral
+//! diagnostic for a harness without one (`synthetic_fourth` in test-support builds, covered end
+//! to end in `tests/integration/config_smoke.rs`; `idle_wake_classification_of_the_builtins`
+//! asks for the skill sentence back when a shipped harness loses its wake).
 
 use crate::ports::LocalClient;
 use crate::protocol::{
