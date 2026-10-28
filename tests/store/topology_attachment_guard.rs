@@ -36,7 +36,16 @@ fn attachment_fixture_directories(
     retain_legacy: bool,
     directories: bool,
 ) -> AttachmentFixture {
+    attachment_fixture_clocked(real_writer, retain_legacy, directories).0
+}
+/// The fixture plus the clock its context and store share.
+fn attachment_fixture_clocked(
+    real_writer: bool,
+    retain_legacy: bool,
+    directories: bool,
+) -> (AttachmentFixture, Arc<FixedClock>) {
     let (context, mut db, path, clock) = fixture(100);
+    let shared = clock.clone();
     db.execute_batch("DELETE FROM seat_archival; DELETE FROM seats;")
         .unwrap();
     let created = crate::protocol::handoff::topology_contract_tests::created();
@@ -169,7 +178,10 @@ fn attachment_fixture_directories(
         }
         tx.commit().unwrap();
     }
-    (context, db, path, store, observation, budget, id, a)
+    (
+        (context, db, path, store, observation, budget, id, a),
+        shared,
+    )
 }
 fn attachment_guard(
     store: &crate::store::SqliteStore,
@@ -1658,8 +1670,8 @@ fn automatic_terminal_directories(directories: bool) {
 /// keeps the send-time deadline (A6), which reports a launch that never checks in.
 #[test]
 fn automatic_launch_bootstrap_send_raises_no_unavailable_warning() {
-    let (context, mut db, path, store, observation, budget, old, a) =
-        attachment_fixture_inner(false, false);
+    let ((context, mut db, path, store, observation, budget, old, a), clock) =
+        attachment_fixture_clocked(false, false, false);
     let id = automatic_parent(&old);
     automatic_parent_created(&store, &id, &budget);
     let guard = attachment_guard(
@@ -1730,7 +1742,7 @@ fn automatic_launch_bootstrap_send_raises_no_unavailable_warning() {
             break;
         }
     }
-    automatic_child_mutate(&store, &send, &budget).unwrap();
+    let sent = automatic_child_mutate(&store, &send, &budget).unwrap();
     let warnings: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM prepared_unavailable_warnings WHERE affected_seat_id=?1",
@@ -1749,11 +1761,74 @@ fn automatic_launch_bootstrap_send_raises_no_unavailable_warning() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert!(
-        receipt.0 > 0,
-        "the ACK request keeps its send-time deadline"
-    );
     assert!(!receipt.1, "availability is still recorded honestly");
+    // A6: the deadline runs from send time, so a launch that never checks in surfaces as an
+    // overdue warning for the sender, naming the launched seat.
+    let CommandResult::MessageSent(bootstrap) = sent else {
+        panic!("unexpected bootstrap Send result {sent:?}")
+    };
+    let projected = crate::store::effective::effective_receipt(&db, bootstrap.as_str(), recipient)
+        .unwrap()
+        .expect("bootstrap receipt");
+    assert!(projected.frozen_duration_ms > 0);
+    assert_eq!(
+        projected.deadline_at,
+        Some(projected.decision_at + projected.frozen_duration_ms),
+        "the ACK deadline runs from send time"
+    );
+    // The clock moves past the fixture's call budget below.
+    let unbounded = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
+    };
+    // The send's work job materializes the receipt the due scan reads.
+    let job = format!("work:send:{}", bootstrap.as_str());
+    for _ in 0..64 {
+        let status: String = db
+            .query_row("SELECT status FROM work_jobs WHERE id=?1", [&job], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        if status == "complete" {
+            break;
+        }
+        let progress = crate::store::materialization::advance_work(
+            &mut db,
+            &job,
+            crate::ports::DurableWorkAdmission::new(16).unwrap(),
+            &unbounded,
+            context.clock(),
+        )
+        .unwrap();
+        assert!(progress.last_error.is_none(), "{:?}", progress.last_error);
+    }
+    clock.0.store(
+        projected.decision_at + projected.frozen_duration_ms + 1,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+    let due = crate::store::receipts::scan_due(&context, &mut db, 10, &mut cursor).unwrap();
+    assert_eq!(due.warnings, 1, "the never-checked-in launch is overdue");
+    let (warning, sender): (String, String) = db
+        .query_row(
+            "SELECT c.open_warning_id,o.seat_id FROM warning_conditions c JOIN receipt_warning_origins o ON o.warning_id=c.open_warning_id WHERE c.condition_kind='receipt' AND c.thread_id=?1 AND c.affected_seat_id=?2 AND c.clear_warning_id IS NULL",
+            rusqlite::params![thread.as_str(), recipient],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        sender,
+        id.claim.seat.as_str(),
+        "the overdue warning is the sender's"
+    );
+    assert_eq!(
+        crate::store::effective::effective_receipt(&db, bootstrap.as_str(), recipient)
+            .unwrap()
+            .unwrap()
+            .warning_message_id
+            .as_deref(),
+        Some(warning.as_str())
+    );
     // Any other send to the still-starting seat warns as before.
     let AutomaticDeliveryAction::Send(mut ordinary) = send.action.clone() else {
         unreachable!()
@@ -1766,7 +1841,7 @@ fn automatic_launch_bootstrap_send_raises_no_unavailable_warning() {
             &mut db,
             &ordinary,
             crate::store::messages::MessageLimits::default(),
-            &budget,
+            &unbounded,
             crate::ports::DurableWorkAdmission::new(16).unwrap(),
         )
         .unwrap();
@@ -1780,7 +1855,7 @@ fn automatic_launch_bootstrap_send_raises_no_unavailable_warning() {
                 &crate::protocol::commands::PermitMutation::SendMessage(ordinary.clone()),
             )
             .unwrap(),
-            &budget,
+            &unbounded,
         )
         .unwrap();
     crate::store::messages::publish_send(
@@ -1788,7 +1863,7 @@ fn automatic_launch_bootstrap_send_raises_no_unavailable_warning() {
         &mut db,
         &ordinary,
         &mut permit,
-        &budget,
+        &unbounded,
         || crate::store::messages::MAX_BODY_BYTES,
     )
     .unwrap();
