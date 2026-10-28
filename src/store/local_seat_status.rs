@@ -65,8 +65,10 @@ impl TargetLabels {
     }
 }
 
-/// The current labels in `labels` of local seat `seat`, when its target
-/// still shows its terminal; `None` for a remote, unknown or unmapped seat.
+/// The current labels in `labels` of local seat `seat`, when it is resolved
+/// and its target still shows its terminal; `None` for a retired,
+/// unresolved, remote, unknown or unmapped seat (the CLI's display rule: a
+/// seat that no longer holds its pane never takes that pane's labels).
 pub fn labels_of<'a>(
     conn: &Connection,
     seat: &str,
@@ -76,7 +78,7 @@ pub fn labels_of<'a>(
     let row: Option<Row> = conn
         .query_row(
             "SELECT host_id,target_id,structural_terminal_id,structural_incarnation FROM seats \
-             WHERE id=?1 AND is_local=1",
+             WHERE id=?1 AND is_local=1 AND state='resolved'",
             [seat],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
