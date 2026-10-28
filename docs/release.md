@@ -2,6 +2,40 @@
 
 ## Current release status
 
+[v2.6.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.0) from source `398f6da16`. It is a minor release with a one-way store upgrade to node schema 10 (migration 0010, `peer_requests`). It adds two capability-gated peer frame uses: `addr_resolve` with a check target (`addr.check.v1`) and `launch_request`/`launch_reply` (`peer.launch.v1`). `scripts/freeze-peer-wire 2.4.0 --at v2.6.0 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It adds:
+- handoff into a seat on another machine;
+- launching agents on another machine (`launch --pane PANE@M`, `handoff --pane PANE@M`, `handoff --new-tab LABEL --space SPACE@M`), with the TRUST-POLICY N14/N15 amendments and the accepted limit "any linked node can launch agents here";
+- the `lane wakes: refused` daemon.log line;
+- the `two_nodes_link_and_converge` test fix.
+
+**Qualification** ran on `398f6da16`, on blacky.dayton (Linux x86_64), every step at `nice -n 19`, with evidence in `/tmp/release-2.6.0`:
+- fmt, harness-neutral, wire-compat, both clippy variants, default-features and the candidate build (`2845a458…`) passed.
+- The wake e2e self-test and the Herdr release matrix (0.9.1-0.9.5, all PASS) passed, as did every leak check.
+- The package lifecycle gate passed (exit 0, 1782 s). Its log was later overwritten by a cancelled duplicate rerun, so only the summary line remains.
+- The installer daemon suite passed 5/5 and the installer backup suite 7/7.
+- The full suite passed 8055/8058 in 357 s; the three failures are the zsh tests.
+
+**Wake e2e** (`scripts/wake-e2e-herdr 0.9.5`, Claude Code 2.1.312, Codex 0.163.0):
+- The first run died on the per-user /tmp quota, which other sessions had filled.
+- The rerun passed Claude 60/60 but failed every Codex row at startup. OpenAI now rejects the login in `~/.codex/auth.json` (`account/read failed: workspace routing discovery unauthorized (401)`); it was accepted at 09:22Z and rejected by 15:34Z. That is not a herdr-threads defect, and ht-8f0g makes the driver report it.
+- At the user's choice, the Codex half was rerun with `--codex-auth-home ~/.aisw/profiles/codex/codex-2` (evidence `wake-codex`) and passed 60/60. The driver did not refresh the credential, so the profile is unchanged.
+- 120/120 rows passed across the two runs.
+
+**CI** passed on [run 40705538077](https://github.com/alepar/herdr-threads/actions/runs/40705538077) on `398f6da16`, and the [release run 40737438572](https://github.com/alepar/herdr-threads/actions/runs/40737438572) passed every job.
+
+**Archives:**
+- SHA256SUMS equals GitHub's digests.
+- Each archive has VERSION 2.6.0 and the right TARGET.
+- Each has 13 files with modes 755/644, and the licenses are present.
+- The credential scan is clean.
+
+**Installed on blacky** with the tag's installer (`--setup --version v2.6.0`, identical to `git show v2.6.0:scripts/install.sh`):
+- The installer's own backup is `herdr-threads-backups/pre-v2.6.0-20261028T181100Z` (schema 9, integrity ok). It stopped the 2.5.0 daemon and started 2.6.0.
+- The `/proc` exe hash is `33bec54e…`, equal to the linux-x86_64 archive, and doctor reports the daemon healthy.
+- The installer exited 3 because the codex skill component reported "skills is not a regular directory" for four aisw Codex profiles. An external tool had replaced their `skills/` with symlinks to `~/.codex/skills` at 16:12Z. The `~/.codex` skill itself was updated, so the skill is current everywhere; the false verdict is ht-lmjf.
+
 [v2.5.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.5.0) from source `579445295`, a minor release with no schema change (node schema stays 9). It adds one capability-gated peer frame pair, `addr_resolve`/`addr_resolved` (cap `addr.resolve.v1`), and `scripts/freeze-peer-wire 2.4.0 --at v2.5.0 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 It adds:
