@@ -4679,19 +4679,18 @@ fn every_help_page_is_harness_neutral() {
             text.setup_foreground,
             text.setup_notes,
             text.launch_notes,
-            text.config_root_hint,
         ] {
             if !fragment.is_empty() {
                 supplied.push(fragment.to_owned());
             }
         }
     }
+    // Composed lists exactly as help.rs renders them, never their bare items: a core line
+    // naming one variable on its own is still checked.
     supplied.push(crate::cli::help::config_root_hints(registry));
-    supplied.extend(
-        crate::cli::launch::registered_options_keys(registry, |_| true)
-            .into_iter()
-            .map(str::to_owned),
-    );
+    let options = |include: &dyn Fn(&str) -> bool| {
+        crate::cli::launch::registered_options_keys(registry, include).join(" / ")
+    };
     let markers: Vec<_> = registry.person_guard_markers().map(|m| m.name).collect();
     supplied.push(format!("agent markers ({})", markers.join(", ")));
     let kinds: Vec<_> = ids
@@ -4700,6 +4699,8 @@ fn every_help_page_is_harness_neutral() {
         .filter(|id| crate::harness::launch::bootstrap_target(registry, id).is_some())
         .collect();
     supplied.push(format!("--kind {}", kinds.join("|")));
+    supplied.push(options(&|_| true));
+    supplied.push(options(&|id| kinds.contains(&id)));
     supplied.extend(FROZEN.iter().map(|(text, _)| text.to_string()));
     supplied.sort_by_key(|text| std::cmp::Reverse(text.len()));
     supplied.dedup();
@@ -4790,10 +4791,20 @@ fn every_help_page_is_harness_neutral() {
         "Restart Codex first",
         "the Claude Code agent",
         "HERDR_THREADS_CLAUDE_OPTS prepend; then Claude runs SessionStart",
-        "see C1 and spec \u{a7}2 (ht-xe3v)",
         "[possible values: a, b\nClaude SessionStart",
+        // One detector each.
+        "Set CODEX_HOME first",
+        "the ClaudeCode env",
+        "the on_session_start hook",
+        "per C1 rules",
+        "spec \u{a7}2",
+        "docs/superpowers/specs/x.md",
+        "see ht-xe3v",
     ] {
         assert!(!check_page(core, &mut scratch).is_empty(), "not flagged: {core}");
+    }
+    for clean in ["strips C0/C1 control characters", "right-pad and ht-inst-x", "bootstrap plan V2"] {
+        assert!(check_page(clean, &mut scratch).is_empty(), "flagged: {clean}");
     }
 
     let mut used = std::collections::BTreeSet::new();
