@@ -936,6 +936,10 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
         || pass_finished().is_some(),
     );
     let wake_commits_at_finish = pass_finished().unwrap();
+    // Drop the hook's probe clone (probe -> pacer -> hook -> probe cycle).
+    session
+        .probe
+        .set_registered_idle_hook(Lane::Wakes, Box::new(|_| {}));
     let starts = starts.lock().unwrap().clone();
     let (_, started_at) = starts
         .iter()
