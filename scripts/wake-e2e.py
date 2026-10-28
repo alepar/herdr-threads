@@ -294,6 +294,9 @@ CLAUDE_CREDENTIAL_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 HARNESSES = ("claude", "codex", "agy", "hermes")
 # What a Hermes 0.22.1+ pane's client must send its gateway session for the session to take that pane's seat.
 HERMES_PASSTHROUGH = ("HERDR_PANE_ID", "HERDR_ENV")
+# An inherited Hermes root or profile (any Hermes session exports HERMES_HOME) would point `setup hermes` and every
+# `hermes --profile default` command at the operator's real Hermes, not the scratch home.
+HERMES_ROOT_ENV = ("HERMES_HOME", "HERMES_PROFILE")
 DEFAULT_HARNESSES = "claude,codex"
 # agy (opt-in): its model credential, and the optional endpoint override the agy relay uses.
 AGY_CREDENTIAL_ENV = "GEMINI_API_KEY"
@@ -708,7 +711,7 @@ class Run:
         return rc, out, err
 
     def ht(self, *argv, pane=None, human=False, env=None, tag=None, timeout=60, check=True):
-        e = dict(os.environ)
+        e = {k: v for k, v in os.environ.items() if k not in HERMES_ROOT_ENV}
         e.update(env or {})
         e.pop("HERDR_PANE_ID", None)  # never derive a seat from the controller's own pane
         if e.get("CLAUDE_CODE_PLUGIN_DIRS") == "":
@@ -822,10 +825,9 @@ class Run:
 
     def hermes_env(self):
         """The environment of a Hermes command run by the driver: HOME at the scratch Hermes home, so its
-        ~/.hermes and ~/.codex are the scratch ones. An inherited HERMES_HOME (any Hermes session exports it)
-        would name another root even with `--profile default`, so it is dropped."""
+        ~/.hermes and ~/.codex are the scratch ones (HERMES_ROOT_ENV dropped)."""
         env = {k: v for k, v in os.environ.items()
-               if k not in CALLER_SESSION_ENV and k not in ("CODEX_HOME", "HERDR_PANE_ID", "HERMES_HOME")}
+               if k not in CALLER_SESSION_ENV and k not in ("CODEX_HOME", "HERDR_PANE_ID", *HERMES_ROOT_ENV)}
         env.update(HOME=str(self.hermes_home), PATH=f"{self.hermes_bin().parent}:{env.get('PATH', '')}")
         return env
 
@@ -998,7 +1000,7 @@ class Run:
             return line
         if harness == "hermes":
             hh = self.hermes_home
-            return (f"unset CODEX_HOME; PATH={q(str(self.bindir))}:{q(str(self.hermes_bin().parent))}:\"$PATH\" "
+            return (f"unset CODEX_HOME {' '.join(HERMES_ROOT_ENV)}; PATH={q(str(self.bindir))}:{q(str(self.hermes_bin().parent))}:\"$PATH\" "
                     f"HOME={q(str(hh))} HERDR_AGENT=hermes exec hermes")
         if harness == "agy":
             # The credential stays in the private env file; the pane's command line and screen never carry it.

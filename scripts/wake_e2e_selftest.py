@@ -708,13 +708,13 @@ class HermesSetup(TempDir):
             calls.append((argv, env))
             return get() if "get" in argv else (0, "", "")
         r.run = run
-        with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.tmp / "real-hermes")}):
+        with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.tmp / "real-hermes"), "HERMES_PROFILE": "work"}):
             r.hermes_passthrough()
         for argv, env in calls:
             self.assertEqual(argv[:4], [str(r.hermes_bin()), "--profile", "default", "config"])
             self.assertEqual(env["HOME"], str(r.hermes_home))
             self.assertNotIn("HERDR_PANE_ID", env)
-            self.assertNotIn("HERMES_HOME", env)
+            self.assertFalse(set(W.HERMES_ROOT_ENV) & set(env))
         return [argv[4:] for argv, _ in calls]
 
     def test_default_empty_list_gets_both_names(self):
@@ -743,6 +743,20 @@ class HermesSetup(TempDir):
             self.passthrough(lambda: (0, '"HERDR_PANE_ID"', ""))
         with self.assertRaisesRegex(RuntimeError, "not a list"):
             self.passthrough(lambda: (0, "notice\n[]", ""))
+
+    def test_setup_and_pane_ignore_an_inherited_hermes_root(self):
+        """`setup hermes` reads HERMES_HOME/HERMES_PROFILE (src/harness/hermes.rs): an inherited one would install
+        into the operator's real Hermes, which unsetup (scratch HOME only) never cleans."""
+        captured = []
+        r = object.__new__(W.Run)
+        r.state, r.endpoint, r.bin = self.tmp / "state", "/fake/sock", "/fake/ht"
+        r.hermes_home, r.bindir = self.tmp / "hermes-home", self.tmp / "bin"
+        r.run = lambda argv, env=None, timeout=60, tag=None, cleanup=False: captured.append(env) or (0, "", "")
+        with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.tmp / "real-hermes"), "HERMES_PROFILE": "work"}):
+            r.ht("setup", "hermes", "--profile", "default", env={"HOME": str(r.hermes_home), "PATH": "/x"})
+        self.assertEqual(captured[0]["HOME"], str(r.hermes_home))
+        self.assertFalse(set(W.HERMES_ROOT_ENV) & set(captured[0]))
+        self.assertTrue(r.launch_line("hermes").startswith("unset CODEX_HOME HERMES_HOME HERMES_PROFILE; "))
 
     def test_layout_seats_a_hermes_recipient_per_threshold(self):
         r = object.__new__(W.Run)

@@ -1,4 +1,4 @@
-super-roast verdict: Should-fix (1 confirmed) [low coverage]
+super-roast verdict: Should-fix (2 confirmed) [low coverage]
 mode: PR        iteration: 1 of 3
 profile (assumed): Internal developer tooling. The diff touches only the opt-in Hermes path of the local wake e2e driver (scripts/wake-e2e.py) and its self-test; no shipped binary or wire surface changes. Blast radius is the operator's own machine, chiefly whether the driver writes outside its scratch Hermes home.
 inputs: bead/ht-m0ug@9ae9fbff0 vs 6e918785b
@@ -11,6 +11,10 @@ seat-agreement: omitted (no full panels ran)
   verdict: confirmed (inline: hermes_cli/profiles.py `resolve_profile_env` uses `profile_root_for_env_home(os.environ.get("HERMES_HOME"), ...)`, which returns the exported value when set)
   evidence: hermes_cli/profiles.py:2430-2453 (Hermes 0.22.5); `hermes_env` dropped only CALLER_SESSION_ENV, CODEX_HOME, HERDR_PANE_ID.
   fix-shape hint: drop HERMES_HOME in `hermes_env`; the self-test asserts it is absent with HERMES_HOME exported. Fixed.
+
+- [Should-fix] scripts/wake-e2e.py `Run.ht` (independent review, after this roast) — `setup hermes` inherited HERMES_HOME and HERMES_PROFILE, which the Hermes adapter reads as setup inputs (src/harness/hermes.rs:1132), so setup could install into the operator's real Hermes root, which unsetup (scratch HOME only) never cleans.
+  verdict: confirmed (reviewer-verified)
+  fix-shape hint: `ht` drops HERMES_ROOT_ENV from the inherited environment; `hermes_env` drops both names; the Hermes pane command unsets them (nit). Self-test exports both and asserts setup's env and the pane line. Fixed.
 
 ## Unverified nits (spot-checked)
 - [Nit] `hermes_passthrough` — Hermes 0.22.5 returns `[]` (rc 0) for the unset key (config_defaults.py:327); the test only faked the "not set" reply. Fixed: added a `[]` case.
