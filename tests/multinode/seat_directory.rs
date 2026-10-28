@@ -25,7 +25,7 @@ fn seat_row(cluster: &Cluster, node: usize, args: &[&str], seat: &str) -> Option
 }
 
 // Kills: a remote seat listed without its node, presence, harness or labels;
-// filters that do not narrow; participants and inspect still saying `remote;
+// filters that do not narrow; `--label` that misses the local seat; participants and inspect still saying `remote;
 // labels unavailable` or showing a presence once the home node is
 // unreachable.
 #[test]
@@ -74,6 +74,11 @@ fn directory_shows_remote_seats_as_fresh_as_their_node() {
         )
         .is_some()
     );
+    // `--label` matches the local seat too, by this node's own host labels
+    // (ht-hldp); a label neither has matches neither.
+    assert!(seat_row(&cluster, 0, &["--label", "w1:P1"], &a.id).is_some());
+    assert!(seat_row(&cluster, 0, &["--label", "w1:p9"], &a.id).is_none());
+    assert!(seat_row(&cluster, 0, &["--label", "w1:p9"], &b.id).is_none());
     assert!(seat_row(&cluster, 0, &["--local"], &b.id).is_none());
     assert!(seat_row(&cluster, 0, &["--local"], &a.id).is_some());
     assert!(seat_row(&cluster, 0, &["--harness", "codex"], &b.id).is_none());

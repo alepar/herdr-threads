@@ -702,7 +702,8 @@ pub fn wake_owed_to_binding(
 /// single-harness wake reaches), decided immediately before submission. A wake reserved for any
 /// reason other than pending receipts, invitations or the admitted delivery-row frontier (`lazy`)
 /// is always owed. Receipts and invitations are seat-wide items: one reached binding served them in
-/// its turn served the process, so they are owed only while every reached binding is unserved.
+/// its turn served the process, so they are owed only while one is still pending and every reached
+/// binding is unserved.
 /// Delivery rows (`lazy`) are each binding's own stream: the frontier row is owed while any reached
 /// binding still finds it unread (`LAZY_FRONTIER_UNREAD_SQL`; ht-yha.62). An empty `reached`, or a
 /// `None` with no seat-level binding, is owed.
@@ -778,12 +779,17 @@ pub fn wake_owed_to_reached(
     Ok(false)
 }
 
-/// No binding of `bindings` was shown every item of `pending` in its turn (`all_offered`).
+/// No binding of `bindings` was shown every item of `pending` in its turn (`all_offered`), and
+/// something is still pending: an item ACKed or accepted since the reservation is owed no wake
+/// (ht-j3by). A saturated walk may hide a pending item, so it is not empty.
 fn none_offered(
     db: &Connection,
     bindings: &[String],
     pending: &super::attention::PendingSet,
 ) -> Result<bool, ApiError> {
+    if pending.items.is_empty() && !pending.saturated {
+        return Ok(false);
+    }
     for binding in bindings {
         if all_offered(db, binding, pending)? {
             return Ok(false);

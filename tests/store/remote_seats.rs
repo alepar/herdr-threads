@@ -979,3 +979,69 @@ fn peer_requests_record_once_settle_once_and_fail_interrupted_runs() {
     assert_eq!(by_node[0].1, 3);
     assert_eq!(by_node[0].2.id, id4, "the newest");
 }
+
+// Kills (ht-hldp): `--label` that misses a local seat matching its pane's
+// current labels, or that matches a retired or unresolved local seat by the
+// labels of the pane it no longer holds.
+#[test]
+fn label_filter_matches_resolved_local_seats_by_host_labels() {
+    use herdr_threads::store::local_seat_status::{LabelMap, TargetLabels};
+    let f = fixture();
+    for (seat, state) in [("gone", "retired"), ("lost", "unresolved")] {
+        // Seeded on a pane of its own (one resolved seat per target), then
+        // left on `pane` in its final state.
+        local_seat(&f.db, seat, &format!("old-{seat}"));
+        f.db.execute(
+            "UPDATE seats SET target_id='pane',state=?2,retired_at=CASE WHEN ?2='retired' THEN 1 END,\
+             retired_seq=CASE WHEN ?2='retired' THEN 1 END WHERE id=?1",
+            params![seat, state],
+        )
+        .unwrap();
+    }
+    f.db.execute(
+        "UPDATE seats SET structural_terminal_id='term-pane',structural_incarnation='inc',\
+         structural_incarnation_kind='coherent_enumeration',structural_host_boot='host',\
+         structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1 \
+         WHERE is_local=1",
+        [],
+    )
+    .unwrap();
+    let mut labels = LabelMap::new();
+    labels.insert(
+        (f.host, "pane".to_owned()),
+        TargetLabels {
+            terminal: "term-pane".into(),
+            incarnation: None,
+            workspace: "w1".into(),
+            tab: "Office Space".into(),
+            pane: "claude".into(),
+        },
+    );
+    let listed = |label: &str| {
+        let command = Command::Seats(SeatsQuery {
+            page: page(),
+            target: None,
+            include_retired: true,
+            filter: herdr_threads::protocol::commands::SeatFilter {
+                label: Some(label.into()),
+                ..Default::default()
+            },
+        });
+        let CommandResult::Seats(page) = f
+            .store
+            .seats_read(&command, &labels, &read(), &budget())
+            .unwrap()
+        else {
+            panic!("wrong result")
+        };
+        let mut seats: Vec<String> = page
+            .items
+            .iter()
+            .map(|s| s.seat.as_str().to_owned())
+            .collect();
+        seats.sort();
+        seats
+    };
+    assert_eq!(listed("office"), ["local"]);
+    assert!(listed("nowhere").is_empty());
+}

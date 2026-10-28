@@ -16,7 +16,7 @@ use crate::{
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
         service::{ServiceOperation, ServiceResult},
-        time::{CallBudget, Clock},
+        time::{CallBudget, Clock, MonoInstant},
         watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport},
     },
     service::{
@@ -125,6 +125,8 @@ type WakeReports =
     std::collections::HashSet<(crate::protocol::ids::SeatId, crate::protocol::ids::SeatId)>;
 /// Bound on `wake_reports`: past it the set starts over (each `no_wake` may be reported again).
 const MAX_WAKE_REPORTS: usize = 4_096;
+/// Longest host label read of one `seat list --label` (ms).
+const LABEL_READ_MS: u64 = 1_000;
 
 impl DomainService {
     pub fn new(instance: String, store: Arc<dyn StorePort>, clock: Arc<dyn Clock>) -> Self {
@@ -1551,6 +1553,29 @@ impl LocalService for DomainService {
             | Command::BootstrapStatus(_)
             | Command::ResolveBootstrapSeat(_)
             | Command::RecoverBootstrap(_)) => self.bootstrap_command(command, peer, budget),
+            // `--label` on a listing also matches this node's own seats by
+            // the hosts' current labels (ht-hldp), read only when asked and
+            // within at most a second of the call's budget, so a slow host
+            // leaves the listing its time (its seats then match no label).
+            Command::Seats(q) if q.filter.label.is_some() && q.target.is_none() => {
+                let labels =
+                    self.hosts.as_ref().map_or_else(Default::default, |hosts| {
+                        let read_budget =
+                            CallBudget {
+                                deadline: MonoInstant(budget.deadline.0.min(
+                                    self.clock.monotonic_now().0.saturating_add(LABEL_READ_MS),
+                                )),
+                                cancellation: budget.cancellation.clone(),
+                            };
+                        crate::service::seat_publisher::read_labels(
+                            hosts,
+                            &read_budget,
+                            &Default::default(),
+                        )
+                    });
+                self.store
+                    .seats_read(&Command::Seats(q), &labels, &read, budget)
+            }
             Command::Directory(_)
             | Command::PickerDirectory(_)
             | Command::Seats(_)

@@ -15,9 +15,10 @@
 //!   `JournalPort::ingest` (which verifies every entry).
 //! - Relationships: [`request`] is called by the operator-gated CLI path and
 //!   uses the daemon's existing graceful stop (the shutdown token).
-//!   [`resume_at_start`] is step 0 of `run_elected_impl`; `app.rs` turns the
-//!   [`ResyncPlan`] into dial targets, the rx pin and the salvage job, which
-//!   the incarnations worker runs through [`run_salvage`].
+//!   [`resume_at_start`] is step 0 of `run_elected_impl`, run only by the
+//!   elected daemon; `app.rs` turns the [`ResyncPlan`] into dial targets, the
+//!   rx pin and the salvage job, which the incarnations worker runs through
+//!   [`run_salvage`].
 //! - Lifecycle: the marker file is the persisted state. Each phase is
 //!   restart-safe, and `moved`/`salvaging` never back up a second time.
 //! - Errors: request refusals are kept apart: `InvalidRequest` (unknown

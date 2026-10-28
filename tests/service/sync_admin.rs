@@ -2006,7 +2006,7 @@ fn seat_filter_matches_each_criterion() {
         tab: None,
         pane: None,
     };
-    let f = |filter: SeatFilter| matches(&filter, Some(&entry), false);
+    let f = |filter: SeatFilter| matches(&filter, Some(&entry), false, None);
     assert!(f(SeatFilter::default()));
     assert!(f(SeatFilter {
         node: Some("q0v".into()),
@@ -2053,8 +2053,30 @@ fn seat_filter_matches_each_criterion() {
             ..Default::default()
         },
         Some(&entry),
-        true
+        true,
+        None
     ));
+    // ht-hldp: a local seat's entry has no labels; `--label` matches its
+    // host labels (any of the three), and without them it matches nothing.
+    let local = SeatDirectory {
+        workspace: None,
+        ..entry.clone()
+    };
+    let host = crate::store::local_seat_status::TargetLabels {
+        terminal: "t1".into(),
+        incarnation: None,
+        workspace: "w1".into(),
+        tab: "Office Space".into(),
+        pane: "claude".into(),
+    };
+    let label = |text: &str| SeatFilter {
+        label: Some(text.into()),
+        ..Default::default()
+    };
+    assert!(matches(&label("office s"), Some(&local), true, Some(&host)));
+    assert!(matches(&label("CLAUDE"), Some(&local), true, Some(&host)));
+    assert!(!matches(&label("lab"), Some(&local), true, Some(&host)));
+    assert!(!matches(&label("office"), Some(&local), true, None));
 }
 
 // Kills: a local row without its state word or continuity marker, a

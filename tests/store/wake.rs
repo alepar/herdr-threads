@@ -3203,6 +3203,15 @@ fn dispatch_to(
     reservation: &crate::ports::WakeReservation,
     foreground: u32,
 ) -> (WakeOutcome, Vec<String>) {
+    dispatch_through(&StoreFence(store), reservation, foreground)
+}
+
+/// `dispatch_to` with `fence` as the dispatcher's store check.
+fn dispatch_through(
+    fence: &impl crate::notification::dispatch::ReservationCheck,
+    reservation: &crate::ports::WakeReservation,
+    foreground: u32,
+) -> (WakeOutcome, Vec<String>) {
     use crate::ports::{EvidenceKind, HostUiState, IncarnationEvidence, NotificationPort};
     use crate::scheduler::wake_text_tests::{TextRecordingHost, observation};
     let mut seen = observation(false);
@@ -3225,9 +3234,8 @@ fn dispatch_to(
         expected_boot: Some(crate::protocol::ids::HostBootId::new("host")),
         expected_epoch: Some(1),
     };
-    let fence = StoreFence(store);
     let dispatcher =
-        crate::notification::dispatch::NativeWakeDispatcher::new(&host, &fence, &WakeClock);
+        crate::notification::dispatch::NativeWakeDispatcher::new(&host, fence, &WakeClock);
     let outcome = dispatcher
         .attempt_wake(reservation.clone(), &context)
         .unwrap();
@@ -3755,6 +3763,99 @@ fn an_in_turn_offer_after_reservation_cancels_that_bindings_wake() {
             dispatch_to(&store, &reservation, FOREGROUND_B).1.len(),
             1,
             "{kind:?}: the sibling's wake stands"
+        );
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// The real store fence, with `resolve` committed right after the dispatcher's early owed check:
+/// the item is ACKed (or the invitation accepted) while the host rechecks the idle agent and reads
+/// its composer, after every check but the one right before the prompt.
+struct ResolvedAfterEarlyFence<'a> {
+    store: &'a SqliteStore,
+    resolve: &'static str,
+    owed_checks: std::sync::atomic::AtomicUsize,
+}
+impl crate::notification::dispatch::ReservationCheck for ResolvedAfterEarlyFence<'_> {
+    fn is_current(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        StoreFence(self.store).is_current(reservation, budget)
+    }
+    fn wake_text_evidence_current(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        StoreFence(self.store).wake_text_evidence_current(reservation, budget)
+    }
+    fn owes_wake(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+        reached: &[Option<&crate::protocol::ids::BindingId>],
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let owed = StoreFence(self.store).owes_wake(reservation, reached, budget);
+        if self
+            .owed_checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            == 0
+        {
+            self.store
+                .context
+                .open_writer()
+                .unwrap()
+                .execute_batch(self.resolve)
+                .unwrap();
+        }
+        owed
+    }
+}
+
+/// ht-j3by: an ACK (or an accepted invitation) committed after the reservation and the early
+/// fence, while the host rechecks the agent, leaves nothing pending; the check right before the
+/// prompt finds that and nothing is typed, recorded as the same pre-send refusal as a served item.
+/// Kills: treating an empty pending set as still owed at the final check.
+#[test]
+fn an_item_resolved_before_the_prompt_is_not_typed() {
+    for (kind, resolve) in [
+        (
+            InTurnKind::Receipt,
+            "UPDATE receipts SET state='acked',acked_at=1 WHERE message_id='m'",
+        ),
+        (
+            InTurnKind::Invitation,
+            "UPDATE invitations SET state='accepted',accepted_at=1,accepted_actor_seat_id='s',accepted_generation=1,accepted_observation='proof' WHERE id='inv'",
+        ),
+    ] {
+        let (store, path, _) = two_binding_store(kind);
+        let reservation = StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &owed_candidate(&store).unwrap(),
+            &budget(),
+        )
+        .unwrap()
+        .expect("reserved");
+        let fence = ResolvedAfterEarlyFence {
+            store: &store,
+            resolve,
+            owed_checks: Default::default(),
+        };
+        let (outcome, typed) = dispatch_through(&fence, &reservation, FOREGROUND_A);
+        assert_eq!(
+            fence.owed_checks.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "{kind:?}: early and final owed checks"
+        );
+        assert!(typed.is_empty(), "{kind:?}: resolved before the prompt");
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(crate::ports::RefusalCause::Unavailable),
+            "{kind:?}"
         );
         drop(store);
         let _ = std::fs::remove_file(path);
