@@ -558,6 +558,9 @@ struct Ended {
     why: LinkError,
     preamble_seen: bool,
     up_for: Duration,
+    /// Set when the link came up: how long it was up on the monotonic and
+    /// the wall clock, for the log line (ht-khs7).
+    linked: Option<(Duration, Duration)>,
 }
 
 /// Preamble, hand-off and the report loop of one dial.
@@ -589,6 +592,7 @@ async fn session(
                 why,
                 preamble_seen: false,
                 up_for: Duration::ZERO,
+                linked: None,
             };
         }
     }
@@ -605,13 +609,14 @@ async fn session(
             why: LinkError::Shutdown,
             preamble_seen: true,
             up_for: Duration::ZERO,
+            linked: None,
         };
     }
-    let mut established_at: Option<Instant> = None;
+    let mut established_at: Option<(Instant, i64)> = None;
     loop {
         match reports.recv().await {
             Some(DialReport::Established { node_uuid }) => {
-                established_at = Some(Instant::now());
+                established_at = Some((Instant::now(), ctx.clock.utc_now().0));
                 if let Some(old) = state.learned
                     && old != node_uuid
                 {
@@ -638,13 +643,16 @@ async fn session(
                     why,
                     preamble_seen: true,
                     up_for,
+                    linked: established_at.map(|(_, wall)| (up_for, wall_since(ctx, wall))),
                 };
             }
             None => {
+                let up_for = established_at.map_or(Duration::ZERO, |(at, _)| at.elapsed());
                 return Ended {
                     why: LinkError::Shutdown,
                     preamble_seen: true,
-                    up_for: established_at.map_or(Duration::ZERO, |at| at.elapsed()),
+                    up_for,
+                    linked: established_at.map(|(_, wall)| (up_for, wall_since(ctx, wall))),
                 };
             }
         }
@@ -678,7 +686,7 @@ async fn attempt(
                 ctx.clock.utc_now().0,
                 jitter,
             );
-            return finish(ctx, state, target, transition, attempts, cancel).await;
+            return finish(ctx, state, target, transition, attempts, None, cancel).await;
         }
     };
     let ended = tokio::select! {
@@ -706,7 +714,21 @@ async fn attempt(
         ctx.clock.utc_now().0,
         jitter,
     );
-    finish(ctx, state, target, transition, attempts, cancel).await
+    finish(
+        ctx,
+        state,
+        target,
+        transition,
+        attempts,
+        ended.linked,
+        cancel,
+    )
+    .await
+}
+
+/// Wall time since `wall_ms` (UTC milliseconds), zero when the clock stepped back.
+fn wall_since(ctx: &TaskCtx, wall_ms: i64) -> Duration {
+    Duration::from_millis(u64::try_from(ctx.clock.utc_now().0.saturating_sub(wall_ms)).unwrap_or(0))
 }
 
 async fn finish(
@@ -715,6 +737,7 @@ async fn finish(
     target: &DialTarget,
     transition: DialTransition,
     attempts: u32,
+    linked: Option<(Duration, Duration)>,
     cancel: &Cancellation,
 ) -> bool {
     if cancel.is_cancelled() {
@@ -736,28 +759,51 @@ async fn finish(
         }
         DialTransition::Dialing | DialTransition::Linked { .. } => {}
     }
-    log_outcome(ctx, state, &target.ssh_dest, &transition);
+    log_outcome(ctx, state, &target.ssh_dest, &transition, linked);
     state.last_write_ms = record(ctx, target.target_id, &target.ssh_dest, transition).await;
     true
 }
 
 /// One daemon.log line per change in a target's attempt outcome (backoff reason, not
 /// installed, stopped), so a failing link says why without `peer list`; the attempt
-/// count and retry time are left out so a steady failure logs once.
-fn log_outcome(ctx: &TaskCtx, state: &mut TaskState, dest: &str, transition: &DialTransition) {
-    let outcome = match transition {
-        DialTransition::Backoff { error, .. } => format!("dial failed, backing off: {error}"),
-        DialTransition::NotInstalled => "dial failed: herdr-threads is not installed there".into(),
-        DialTransition::Stopped { reason, .. } => format!("dial stopped: {reason:?}"),
-        DialTransition::Dialing | DialTransition::Linked { .. } => {
-            state.last_outcome_logged = None;
-            return;
-        }
+/// count and retry time are left out so a steady failure logs once. A link that
+/// came up and ended is not a failed dial: it logs how long it was up (ht-khs7).
+fn log_outcome(
+    ctx: &TaskCtx,
+    state: &mut TaskState,
+    dest: &str,
+    transition: &DialTransition,
+    linked: Option<(Duration, Duration)>,
+) {
+    let Some(outcome) = outcome_text(transition, linked) else {
+        state.last_outcome_logged = None;
+        return;
     };
     if state.last_outcome_logged.as_deref() != Some(outcome.as_str()) {
         (ctx.log)(&format!("sync peer {dest}: {outcome}"));
         state.last_outcome_logged = Some(outcome);
     }
+}
+
+/// [`log_outcome`]'s text for one transition; `None` for dialing and linked.
+fn outcome_text(
+    transition: &DialTransition,
+    linked: Option<(Duration, Duration)>,
+) -> Option<String> {
+    Some(match (transition, linked) {
+        (DialTransition::Backoff { error, .. }, Some((monotonic, wall))) => format!(
+            "link ended after {}, redialing: {error}",
+            super::link::up_for_text(monotonic, wall)
+        ),
+        (DialTransition::Backoff { error, .. }, None) => {
+            format!("dial failed, backing off: {error}")
+        }
+        (DialTransition::NotInstalled, _) => {
+            "dial failed: herdr-threads is not installed there".into()
+        }
+        (DialTransition::Stopped { reason, .. }, _) => format!("dial stopped: {reason:?}"),
+        (DialTransition::Dialing | DialTransition::Linked { .. }, _) => return None,
+    })
 }
 
 async fn run_task(
@@ -1085,6 +1131,33 @@ mod tests {
 
     fn template(text: &str) -> DialTemplate {
         DialTemplate::parse(text).expect("valid template")
+    }
+
+    #[test]
+    fn a_link_that_came_up_logs_how_long_it_was_up_not_a_failed_dial() {
+        let backoff = DialTransition::Backoff {
+            attempts: 1,
+            next_at: 0,
+            error: "link dead".into(),
+        };
+        assert_eq!(
+            outcome_text(&backoff, None).as_deref(),
+            Some("dial failed, backing off: link dead")
+        );
+        let up = Duration::from_secs(95);
+        assert_eq!(
+            outcome_text(&backoff, Some((up, up))).as_deref(),
+            Some("link ended after 95 s, redialing: link dead")
+        );
+        assert_eq!(
+            outcome_text(
+                &backoff,
+                Some((Duration::from_secs(5), Duration::from_secs(965)))
+            )
+            .as_deref(),
+            Some("link ended after 5 s (wall 965 s, host suspended ~960 s), redialing: link dead")
+        );
+        assert_eq!(outcome_text(&DialTransition::Dialing, Some((up, up))), None);
     }
 
     #[test]

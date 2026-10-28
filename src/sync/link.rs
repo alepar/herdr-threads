@@ -61,6 +61,27 @@ pub const DATA_QUEUE: usize = 4;
 
 const AUTH_DOMAIN: &[u8] = b"HTPEER1-AUTH\0";
 
+/// The smallest wall-over-monotonic excess a log line reports as host suspension.
+const SUSPEND_LOG_MIN: Duration = Duration::from_secs(5);
+
+/// How long a link was up, for daemon.log: `N s`, with the wall time and a
+/// `host suspended ~M s` marker when wall time ran ahead of the monotonic
+/// clock (macOS's monotonic clock excludes sleep, ht-khs7). Log text only:
+/// the link timers keep the monotonic clock.
+pub fn up_for_text(monotonic: Duration, wall: Duration) -> String {
+    let suspended = wall.saturating_sub(monotonic);
+    if suspended < SUSPEND_LOG_MIN {
+        format!("{} s", monotonic.as_secs())
+    } else {
+        format!(
+            "{} s (wall {} s, host suspended ~{} s)",
+            monotonic.as_secs(),
+            wall.as_secs(),
+            suspended.as_secs()
+        )
+    }
+}
+
 /// Why a link or a handshake ended. Closed: callers match it.
 #[derive(Debug)]
 pub enum LinkError {
@@ -877,10 +898,24 @@ async fn write_control<W: AsyncWrite + Unpin>(writer: &mut W, item: Control) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::protocol::time::{MonoInstant, UtcMillis};
     use tokio::io::{DuplexStream, duplex};
 
     const BIG: usize = 4 << 20;
+
+    #[test]
+    fn up_for_text_marks_host_suspension_beyond_five_seconds() {
+        let s = Duration::from_secs;
+        assert_eq!(up_for_text(s(5), s(5)), "5 s");
+        assert_eq!(up_for_text(s(5), s(9)), "5 s");
+        assert_eq!(
+            up_for_text(s(5), s(965)),
+            "5 s (wall 965 s, host suspended ~960 s)"
+        );
+        // A wall clock that stepped back reports no suspension.
+        assert_eq!(up_for_text(s(30), s(0)), "30 s");
+    }
 
     struct TokioClock(Instant);
     impl Clock for TokioClock {

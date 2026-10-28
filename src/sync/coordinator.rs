@@ -2248,10 +2248,12 @@ impl Actor {
             return;
         };
         let node = entry.handle.peer().node;
+        let wall =
+            u64::try_from(self.deps.clock.utc_now().0.saturating_sub(entry.since.0)).unwrap_or(0);
         (self.deps.log)(&format!(
-            "sync: link down {} after {} s: {}",
+            "sync: link down {} after {}: {}",
             uuid8(&node),
-            up_for.as_secs(),
+            super::link::up_for_text(up_for, Duration::from_millis(wall)),
             why
         ));
         self.probes.remove(&link_id);
