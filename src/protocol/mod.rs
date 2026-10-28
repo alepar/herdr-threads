@@ -1,3 +1,4 @@
+pub mod address;
 pub mod attention;
 pub mod authority;
 pub mod capabilities;

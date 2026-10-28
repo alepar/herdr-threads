@@ -1,5 +1,5 @@
 //! Unit tests for the pure seat-selector resolver over hand-built topologies.
-//! Mounted from `src/cli/seat_selector.rs`.
+//! Mounted from `src/protocol/address.rs`.
 
 use super::*;
 use crate::protocol::results::ErrorCode;

@@ -267,31 +267,7 @@ pub const FIND_PANE_ID_HINT: &str =
 /// Exact locator matching and scope, included in missing-pane diagnostics.
 pub const NAME_PRECEDENCE: &str = "an exact pane ID wins; pane label and live agent name match together within the selected tab; a tab label is an alias only when that tab holds exactly one pane";
 
-/// Tab IDs have an unambiguous separator/prefix, unlike workspace labels such as `work`.
-pub(crate) fn looks_like_tab_id(value: &str) -> bool {
-    value.split_once(':').is_some_and(|(space, tab)| {
-        space.len() > 1
-            && space.starts_with('w')
-            && space[1..].bytes().all(|byte| byte.is_ascii_alphanumeric())
-            && tab.len() > 1
-            && tab.starts_with('t')
-            && tab[1..].bytes().all(|byte| byte.is_ascii_alphanumeric())
-    })
-}
-
-/// The Herdr 0.9.1 pane ID shape `w<workspace>:p<pane>`. Such a value is used
-/// as given, exactly as before names were accepted.
-pub fn looks_like_pane_id(value: &str) -> bool {
-    let Some((workspace, pane)) = value.split_once(':') else {
-        return false;
-    };
-    let part = |text: &str, prefix: char| {
-        text.len() > 1
-            && text.starts_with(prefix)
-            && text[1..].bytes().all(|b| b.is_ascii_alphanumeric())
-    };
-    part(workspace, 'w') && part(pane, 'p')
-}
+pub use crate::protocol::address::{looks_like_pane_id, looks_like_tab_id};
 
 fn invalid(detail: String) -> ApiError {
     ApiError::invalid_request(detail)

@@ -35,7 +35,7 @@ mod picker;
 pub mod pre_upgrade_backup;
 pub mod retry;
 mod seat_resolution;
-pub mod seat_selector;
+pub use crate::protocol::address as seat_selector;
 pub(crate) mod send_priority;
 pub mod setup;
 pub mod skill;

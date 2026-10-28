@@ -1,4 +1,4 @@
-//! Pure seat-selector resolver (spec D3, D6 renderer, D2 step 2 prefix check).
+//! Pure seat-selector resolver, shared by the CLI and the daemon (remote addresses) (spec D3, D6 renderer, D2 step 2 prefix check).
 //!
 //! Owns: the readings table (whole string plus the `/` split), per-level matching (space label or
 //! ID; tab label or ID; pane label, live agent name or pane ID), the sole-pane-tab and
@@ -10,7 +10,6 @@
 //! seats itself (the caller passes a fallible lookup closure), or print. New reading or matching
 //! behaviour goes into `readings` and `reading_matches`, not into callers.
 
-use crate::cli::panes::{looks_like_pane_id, looks_like_tab_id};
 use crate::host::observation::{HostTopology, TopologyPane, TopologySpace, TopologyTab};
 use crate::protocol::{
     ids::{HostTargetId, SeatId},
@@ -751,6 +750,32 @@ impl Outcome {
             }
         }
     }
+}
+
+/// Tab IDs have an unambiguous separator/prefix, unlike workspace labels such as `work`.
+pub fn looks_like_tab_id(value: &str) -> bool {
+    value.split_once(':').is_some_and(|(space, tab)| {
+        space.len() > 1
+            && space.starts_with('w')
+            && space[1..].bytes().all(|byte| byte.is_ascii_alphanumeric())
+            && tab.len() > 1
+            && tab.starts_with('t')
+            && tab[1..].bytes().all(|byte| byte.is_ascii_alphanumeric())
+    })
+}
+
+/// The Herdr 0.9.1 pane ID shape `w<workspace>:p<pane>`. Such a value is used
+/// as given, exactly as before names were accepted.
+pub fn looks_like_pane_id(value: &str) -> bool {
+    let Some((workspace, pane)) = value.split_once(':') else {
+        return false;
+    };
+    let part = |text: &str, prefix: char| {
+        text.len() > 1
+            && text.starts_with(prefix)
+            && text[1..].bytes().all(|b| b.is_ascii_alphanumeric())
+    };
+    part(workspace, 'w') && part(pane, 'p')
 }
 
 #[cfg(test)]
