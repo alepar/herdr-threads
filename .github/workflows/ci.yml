@@ -665,6 +665,7 @@ jobs:
     needs: changes
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -698,8 +699,8 @@ jobs:
         env:
           TARGETS: ${{ matrix.targets }}
         run: |
-          # shellcheck disable=SC2086 # TARGETS is a space-separated list.
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal $(printf -- '--target %s ' $TARGETS)
+          read -r -a targets <<< "$TARGETS"
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal "${targets[@]/#/--target=}"
           rustup default "$RUST_TOOLCHAIN"
 
       - name: Rust dependency cache
@@ -719,7 +720,10 @@ jobs:
           TARGETS: ${{ matrix.targets }}
         run: |
           set -euo pipefail
-          for target in $TARGETS; do
+          read -r -a targets <<< "$TARGETS"
+          # Build every target even when one fails, so one failure hides no other.
+          failed=()
+          for target in "${targets[@]}"; do
             case "$target" in
               *linux-musl)
                 # The cc crate builds the bundled SQLite; point it at musl-gcc.
@@ -727,8 +731,12 @@ jobs:
                 export "$cc_var=musl-gcc"
                 ;;
             esac
-            cargo build --locked --release --target "$target"
+            cargo build --locked --release --target "$target" || failed+=("$target")
           done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::release build failed for: ${failed[*]}"
+            exit 1
+          fi
 
   actionlint:
     if: always()

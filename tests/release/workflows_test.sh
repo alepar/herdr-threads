@@ -68,6 +68,9 @@ check "ci.yml: build-targets matrix builds the four targets" test \
 check "ci.yml: build-targets builds both darwin targets on one macOS runner" test \
   "$(yq -o=json -I=0 '[.jobs.build-targets.strategy.matrix.include[] | select(.runner | test("^macos")) | .targets]' "$ci")" = \
   '["aarch64-apple-darwin x86_64-apple-darwin"]'
+check "ci.yml: build-targets toolchain and build steps read matrix.targets" test \
+  "$(yq -o=json -I=0 '[.jobs.build-targets.steps[] | select(.name == "Rust toolchain" or .name == "Locked release build") | .env.TARGETS]' "$ci")" = \
+  '["${{ matrix.targets }}","${{ matrix.targets }}"]'
 check "ci.yml: build-targets builds --locked --release" bash -c \
   'yq ".jobs.build-targets" "$1" | grep -q -- "cargo build --locked --release"' _ "$ci"
 check "ci.yml: clippy job exists" test "$(yq '.jobs | has("clippy")' "$ci")" = true
