@@ -633,6 +633,10 @@ pub enum LaunchState {
         detail: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<String>,
+        /// The start may have happened (`launch` exit 5): the pane must be
+        /// inspected before anyone launches there again.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unconfirmed: bool,
     },
     /// Not answered now (busy, launcher not ready); ask again.
     Unavailable {

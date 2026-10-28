@@ -1234,7 +1234,7 @@ fn caller_needs_identity(action: &CliAction) -> bool {
             | CliAction::Handoff(_)
             | CliAction::TopologyHandoff(_)
             | CliAction::TopologyRecover(_)
-    )
+    ) || matches!(action, CliAction::RemoteLaunch(remote) if remote.then.is_some())
 }
 
 /// The caller origin of a non-`human` command, refusing an agent without a session id for the
@@ -2756,10 +2756,17 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         } else {
             handoff::run(parsed, claim, &journal, paths, writer)
         };
-        if result.is_ok()
-            && let Some(launched) = launched
+        if let Some(launched) = launched
+            && peer_launch::handoff_settles(&result)
         {
             launched.settle();
+            if result.is_err() {
+                eprintln!(
+                    "herdr-threads: note: the handoff into launched seat {} was refused; a rerun \
+                     launches a new agent",
+                    launched.seat
+                );
+            }
         }
         return result;
     }

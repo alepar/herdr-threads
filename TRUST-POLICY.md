@@ -1674,7 +1674,8 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs
   pane, launched with its seat) in `peer_requests` before each step and answers a repeat with the recorded
   outcome, never a second launch. A request still running when this node's daemon restarts, or whose child
   exits without an outcome, is recorded failed (`interrupted`, naming any tab it created); it is never resumed
-  or relaunched automatically, and this node's operator (`operator:local-user:<uid>`) is the only one who
+  or relaunched automatically (on Linux its child ends with the daemon; on macOS an orphaned child can still
+  finish the launch after the row reads failed, an accepted limit), and this node's operator (`operator:local-user:<uid>`) is the only one who
   decides what happens to a tab it left. Rows are kept 7 days.
 - Every peer-requested launch is visible here: one `daemon.log` line per request and outcome naming the
   requesting node and the request id, and `peer list` shows each node's peer-requested launches.

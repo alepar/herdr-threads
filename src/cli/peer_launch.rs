@@ -160,6 +160,21 @@ fn one_line(text: &str) -> String {
         .into_owned()
 }
 
+/// Whether a remote handoff's follow-on result ends its launch's request: a
+/// success, or a refusal asking again cannot change (the launched seat cannot
+/// take it). A transient failure keeps the request, so a rerun resumes at
+/// delivery and never launches a second agent.
+pub fn handoff_settles(result: &Result<(), RunError>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(RunError::Api(error)) => matches!(
+            error.code,
+            ErrorCode::InvalidRequest | ErrorCode::NotFound | ErrorCode::Conflict
+        ),
+        Err(_) => false,
+    }
+}
+
 /// A launch that started on another machine. Its request id stays recorded
 /// until [`Self::settle`], so a rerun before it (a failed follow-on handoff)
 /// asks for the same launch's outcome instead of launching again.
@@ -302,10 +317,14 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                         format!("{label} refused the launch: {}", one_line(&detail)),
                     ));
                 }
-                LaunchState::Failed { detail, pane } => {
+                LaunchState::Failed {
+                    detail,
+                    pane,
+                    unconfirmed,
+                } => {
                     // An unconfirmed start keeps the id: a rerun reports the same, never a
                     // second agent in a pane that may already run one.
-                    if !detail.starts_with("start unconfirmed") {
+                    if !unconfirmed {
                         settle();
                     }
                     let left = pane.map_or_else(String::new, |p| {
@@ -353,5 +372,32 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
             ));
         }
         std::thread::sleep(POLL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Kills: a remote handoff that failed for a passing reason settling its
+    // launch (a rerun would start a second agent), and one refused for good
+    // keeping it (every rerun stuck on the old seat).
+    #[test]
+    fn only_success_or_a_final_refusal_settles_the_launch() {
+        let api = |code| Err(RunError::Api(ApiError::new(code, "x")));
+        assert!(handoff_settles(&Ok(())));
+        assert!(handoff_settles(&api(ErrorCode::InvalidRequest)));
+        assert!(handoff_settles(&api(ErrorCode::NotFound)));
+        for passing in [
+            ErrorCode::HostUnavailable,
+            ErrorCode::UnknownOutcome,
+            ErrorCode::StoreBusy,
+        ] {
+            let shown = format!("{passing:?}");
+            assert!(!handoff_settles(&api(passing)), "{shown}");
+        }
+        assert!(!handoff_settles(&Err(RunError::Io(std::io::Error::other(
+            "lost"
+        )))));
     }
 }

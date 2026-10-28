@@ -598,7 +598,10 @@ impl Worker {
             }
             _ => {
                 let detail = if out.code == Some(crate::cli::launch::EXIT_START_UNCONFIRMED) {
-                    format!("start unconfirmed: inspect pane {pane} here before launching again")
+                    format!(
+                        "{}: inspect pane {pane} here before launching again",
+                        peer_requests::UNCONFIRMED
+                    )
                 } else if out.error.is_empty() {
                     "launch did not report a seat".to_owned()
                 } else {

@@ -3838,6 +3838,37 @@ mod scoped_runtime {
         no_resolve_seat_journal(&runtime);
     }
 
+    // Kills: a remote handoff from a caller whose origin is refused (an agent
+    // without a session) that still asks another machine to launch, instead of
+    // being refused before any daemon call (remote launch, PR roast round 2).
+    #[test]
+    fn a_refused_caller_never_starts_a_remote_handoff() {
+        let runtime = Runtime::new(seat_snapshot());
+        let _origin = crate::cli::caller::fix_origin(crate::cli::caller::CallerOrigin::Refused(
+            crate::harness::caller_env::EnvRefusal::NoHarness,
+        ));
+        let error = api_error(runtime.run(&[
+            "handoff",
+            "--pane",
+            "w1:p2@laptop",
+            "--kind",
+            "codex",
+            "--",
+            "task",
+        ]));
+        assert_eq!(error.code, ErrorCode::SessionClaimRequired, "{error:?}");
+        assert!(
+            !runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::Sync(_))),
+            "no remote launch was asked for: {:?}",
+            runtime.calls.lock().unwrap()
+        );
+    }
+
     #[test]
     fn seat_space_narrowing_searches_every_tab() {
         let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();

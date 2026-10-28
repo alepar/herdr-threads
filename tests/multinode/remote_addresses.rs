@@ -389,18 +389,18 @@ fn remote_launch_runs_on_the_target_machine_once() {
     assert!(env.contains("HOME="), "{env}");
 
     // A held target is refused on node 1, before anything runs there.
-    // An open hold on w1:p3, kept by an unresolved seat on the same host
-    // (the daemon lifts a host's holds only once none is left).
-    cluster.write_sql(
-        1,
-        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) \
-         SELECT host_id,'w1:p3','fixture',0,'fixture' FROM herdr_hosts LIMIT 1",
-    );
+    // An open hold on w1:p3, kept by an unresolved seat on the same host,
+    // planted first (the daemon lifts a host's holds only once none is left).
     cluster.write_sql(
         1,
         "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at,home_node,is_local,host_id) \
          SELECT 'sHELDfixture','' || (SELECT id FROM local_node),'unresolved','other','native',1,0,\
          (SELECT id FROM local_node),1,host_id FROM herdr_hosts LIMIT 1",
+    );
+    cluster.write_sql(
+        1,
+        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) \
+         SELECT host_id,'w1:p3','fixture',0,'fixture' FROM herdr_hosts LIMIT 1",
     );
     let (code, stdout, stderr) = launch(P3, "--held");
     assert_ne!(code, 0, "{stdout}");
@@ -503,9 +503,46 @@ fn remote_launch_runs_on_the_target_machine_once() {
             .then_some(())
     });
 
+    // A remote handoff whose launched seat cannot take the task (b's pane is
+    // held now): refused for good, so the launch is settled and a rerun of
+    // the same command launches a new agent instead of retrying forever.
+    cluster.write_sql(
+        1,
+        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) \
+         SELECT host_id,'w1:p1','fixture',0,'fixture' FROM herdr_hosts LIMIT 1",
+    );
+    let before = calls(&calls_dir).len();
+    let refused_handoff = || {
+        cluster.text_as(
+            Some(&a),
+            0,
+            &[
+                "handoff",
+                "--pane",
+                &format!("{P2}@{b_tag}"),
+                "--kind",
+                "claude",
+                "--",
+                "will not land",
+            ],
+        )
+    };
+    let (code, _, stderr) = refused_handoff();
+    assert_ne!(code, 0);
+    assert!(stderr.contains("cannot take a handoff"), "{stderr}");
+    assert!(stderr.contains("a rerun launches a new agent"), "{stderr}");
+    assert_eq!(calls(&calls_dir).len(), before + 1);
+    let (code, _, _) = refused_handoff();
+    assert_ne!(code, 0);
+    assert_eq!(
+        calls(&calls_dir).len(),
+        before + 2,
+        "settled: the rerun launched anew"
+    );
+
     // peer list on node 1 shows node 0's launches.
     let (_, peers, _) = cluster.text_as(None, 1, &["peer", "list"]);
-    assert!(peers.contains("peer_launches=6 last=launched:"), "{peers}");
+    assert!(peers.contains("peer_launches=8 last=launched:"), "{peers}");
 
     // An older peer without peer.launch.v1: refused, nothing local.
     let (code, _, stderr) = cluster.text_as(

@@ -297,9 +297,14 @@ fn bound_state(state: LaunchState) -> LaunchState {
             pane: bounded(&pane),
         },
         LaunchState::Refused { detail } => refused(&detail),
-        LaunchState::Failed { detail, pane } => LaunchState::Failed {
+        LaunchState::Failed {
+            detail,
+            pane,
+            unconfirmed,
+        } => LaunchState::Failed {
             detail: bounded(&detail),
             pane: pane.map(|p| bounded(&p)),
+            unconfirmed,
         },
         LaunchState::Unavailable { reason } => LaunchState::Unavailable {
             reason: bounded(&reason),

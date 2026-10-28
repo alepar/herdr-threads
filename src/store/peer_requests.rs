@@ -15,6 +15,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::sync::frame::LaunchState;
 
+/// How a recorded detail of a start that may have happened begins: the row's
+/// own marker, read back only by [`PeerRequest::answer`] on this node.
+pub const UNCONFIRMED: &str = "start unconfirmed";
+
 /// Longest serialized plan the table takes (its CHECK), in bytes.
 pub const MAX_PLAN_BYTES: usize = 131_072;
 
@@ -53,6 +57,10 @@ impl PeerRequest {
             _ => LaunchState::Failed {
                 detail: detail(),
                 pane: self.pane.clone(),
+                unconfirmed: self
+                    .detail
+                    .as_deref()
+                    .is_some_and(|d| d.starts_with(UNCONFIRMED)),
             },
         }
     }
@@ -120,8 +128,9 @@ pub fn record(
     Ok(changed == 1)
 }
 
-/// At daemon start: every request still `running` was interrupted (its child
-/// died with the old daemon); it is failed, never resumed. Old rows are
+/// At daemon start: every request still `running` was interrupted (on Linux
+/// its child ended with the old daemon; on macOS an orphaned child may still
+/// finish); it is failed, never resumed. Old rows are
 /// deleted. Returns the ids failed.
 pub fn settle_at_start(conn: &Connection, now: i64) -> rusqlite::Result<Vec<String>> {
     let ids: Vec<String> = {
