@@ -131,6 +131,42 @@ fn wait_until<T>(what: &str, timeout: Duration, mut probe: impl FnMut() -> Optio
     }
 }
 
+/// [`wait_until`] for a bounded amount of work whose duration scales with host
+/// load: `probe` returns `Ok(done)` or `Err(progress)`, a counter that grows
+/// with every completed step. The wait fails when `stall` passes with no
+/// progress, so a slow but advancing worker is not mistaken for a stuck one,
+/// and at `ceiling` in any case (a hang guard that still fails with the
+/// caller's diagnostic, before the runner's own timeout).
+fn wait_progressing<T>(
+    what: &str,
+    stall: Duration,
+    ceiling: Duration,
+    mut probe: impl FnMut() -> Result<T, i64>,
+) -> T {
+    let mut best = None;
+    let mut until = Instant::now() + stall;
+    let hard = Instant::now() + ceiling;
+    loop {
+        match probe() {
+            Ok(found) => return found,
+            Err(progress) if best.is_none_or(|best| progress > best) => {
+                best = Some(progress);
+                until = Instant::now() + stall;
+            }
+            Err(_) => {}
+        }
+        assert!(
+            Instant::now() < until,
+            "timed out waiting for {what}: no progress past {best:?} for {stall:?}"
+        );
+        assert!(
+            Instant::now() < hard,
+            "timed out waiting for {what}: progress {best:?} after {ceiling:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 // ------------------------------------------------------------- stand-in Herdr
 
 type Calls = Arc<Mutex<Vec<(String, Value)>>>;
@@ -2007,8 +2043,36 @@ impl ActivationRelay {
                                 let _ = std::io::copy(&mut client, &mut server);
                                 let _ = server.shutdown(std::net::Shutdown::Both);
                             });
+                            // Only the capacity flow withholds frames from the child.
+                            // There the relay drains the daemon's frames on a thread,
+                            // as a real child reads them: a relay that stops reading
+                            // backs the daemon's channel writes up past their 5 s
+                            // write timeout, and the daemon drops the channel.
+                            let drain = match &capacity {
+                                Some(_) => {
+                                    let (frames, drained) = std::sync::mpsc::channel();
+                                    let mut source = upstream.try_clone()?;
+                                    let thread = std::thread::spawn(move || {
+                                        loop {
+                                            let frame = activation_read(&mut source);
+                                            let end = frame.is_err();
+                                            if frames.send(frame).is_err() || end {
+                                                break;
+                                            }
+                                        }
+                                    });
+                                    Some((drained, thread))
+                                }
+                                None => None,
+                            };
                             let forwarded = loop {
-                                let body = match activation_read(&mut upstream) {
+                                let next = match &drain {
+                                    Some((drained, _)) => drained.recv().unwrap_or_else(|_| {
+                                        Err(std::io::Error::other("frame drain ended"))
+                                    }),
+                                    None => activation_read(&mut upstream),
+                                };
+                                let body = match next {
                                     Ok(body) => body,
                                     Err(error) => break Err(error),
                                 };
@@ -2030,7 +2094,11 @@ impl ActivationRelay {
                                 }
                             };
                             let _ = downstream.shutdown(std::net::Shutdown::Both);
+                            let _ = upstream.shutdown(std::net::Shutdown::Both);
                             let _ = peer.join();
+                            if let Some((_, thread)) = drain {
+                                let _ = thread.join();
+                            }
                             return forwarded;
                         }
                         Ok(())
@@ -3033,17 +3101,23 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
     let attention_work_before = attention_work_diagnostic();
     let mut last_kicked_idle = None;
     let attention_work_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        wait_until(
+        // 257 jobs of two units each: the deadline worker's throughput, not a
+        // stall, decides how long this takes on a loaded host (CI shard: 141
+        // jobs in 20 s). Fail only when no unit completes for a whole STEP.
+        // The ceiling (6 x STEP) is a hang guard: the CI shard's rate (141
+        // jobs in 20 s) finishes in ~40 s.
+        wait_progressing(
             "all fixture send_attention jobs to complete before forwarding Attention",
             STEP,
+            STEP * 6,
             || {
-                let (total, complete, outstanding): (i64, i64, i64) = rig.db().query_row(
-                "SELECT count(*),COALESCE(sum(status='complete'),0),COALESCE(sum(status<>'complete'),0) FROM work_jobs WHERE kind='send_attention'",
+                let (total, complete, outstanding, units): (i64, i64, i64, i64) = rig.db().query_row(
+                "SELECT count(*),COALESCE(sum(status='complete'),0),COALESCE(sum(status<>'complete'),0),COALESCE(sum(completed_units),0) FROM work_jobs WHERE kind='send_attention'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             ).unwrap();
                 if outstanding == 0 {
-                    return Some((total, complete));
+                    return Ok((total, complete));
                 }
                 // Setup-only stepping: completed small jobs otherwise wait
                 // for the next safety tick. One ordinary kick per observed
@@ -3053,7 +3127,7 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
                     last_kicked_idle = Some(idle);
                     rig.probe.kick_registered(Lane::Deadlines);
                 }
-                None
+                Err(units)
             },
         )
     }));
@@ -3149,7 +3223,7 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
             assert_eq!(page["truncated"], json!([]));
             assert_eq!(page["items"], json!([]));
         }
-        other => panic!("real channel-triggered Pull refused: {other}"),
+        other => panic!("real channel-triggered Pull refused: {other}: {result}"),
     }
     assert_eq!(
         capacity_normal_snapshot(&rig),
