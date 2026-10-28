@@ -21,10 +21,6 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
     time::{Duration, Instant},
 };
 
@@ -138,6 +134,34 @@ fn target_state(state: &Path) -> Option<String> {
         .ok()
 }
 
+/// The durable dial record of A's only target: a backoff writes
+/// `last_error`/`last_error_at`, a link `last_linked_at`, and neither is
+/// cleared by the transitions that follow.
+#[derive(Debug)]
+struct DialHistory {
+    state: String,
+    last_error: Option<String>,
+    last_error_at: Option<i64>,
+    last_linked_at: Option<i64>,
+}
+
+fn dial_history(state: &Path) -> Option<DialHistory> {
+    open_db(state)?
+        .query_row(
+            "SELECT state, last_error, last_error_at, last_linked_at FROM sync_dial_targets",
+            [],
+            |r| {
+                Ok(DialHistory {
+                    state: r.get(0)?,
+                    last_error: r.get(1)?,
+                    last_error_at: r.get(2)?,
+                    last_linked_at: r.get(3)?,
+                })
+            },
+        )
+        .ok()
+}
+
 fn wait_until<T>(what: &str, mut probe: impl FnMut() -> Option<T>, daemons: &[&Path]) -> T {
     let deadline = Instant::now() + WAIT;
     loop {
@@ -150,7 +174,8 @@ fn wait_until<T>(what: &str, mut probe: impl FnMut() -> Option<T>, daemons: &[&P
                 .map(|state| {
                     let text = fs::read_to_string(state.join("node").join("daemon.log"))
                         .unwrap_or_default();
-                    format!("--- {}\n{text}\n", state.display())
+                    let target = dial_history(state);
+                    format!("--- {}\ndial target: {target:?}\n{text}\n", state.display())
                 })
                 .collect();
             panic!("timed out after {WAIT:?} waiting for {what}\n{tails}");
@@ -375,31 +400,34 @@ fn killed_remote_gives_backoff_then_reconnects() {
         &pair.daemons(),
     );
     let before = boot_id(&pair.iso, &pair.b);
-    // Watch A's target state through the whole outage: backoff may be short.
-    let seen_backoff = Arc::new(AtomicBool::new(false));
-    let done = Arc::new(AtomicBool::new(false));
-    let watcher = {
-        let (a, seen, done) = (pair.a.clone(), seen_backoff.clone(), done.clone());
-        std::thread::spawn(move || {
-            while !done.load(Ordering::Acquire) {
-                if target_state(&a).as_deref() == Some("backoff") {
-                    seen.store(true, Ordering::Release);
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        })
-    };
+    let linked = dial_history(&pair.a).expect("A's target row");
     // The remote daemon goes away; A's pump child ends and the link drops.
-    stop_daemon(&pair.iso, &pair.b);
-    wait_until(
-        "A's target to enter backoff",
-        || seen_backoff.load(Ordering::Acquire).then_some(()),
+    // Its endpoint is not awaited: A's next dial may already have started B
+    // again.
+    let stop = daemon(&pair.iso, &pair.b, "stop");
+    assert!(stop.status.success(), "daemon stop on B: {stop:?}");
+    // The backoff itself can last a millisecond (full jitter), so the test
+    // reads what it leaves behind: a newer `last_error_at` (only a backoff
+    // writes it), then a newer link recorded after it (ht-uk8t).
+    let relinked = wait_until(
+        &format!("A's target to back off and link again (before the stop: {linked:?})"),
+        || {
+            dial_history(&pair.a).filter(|now| {
+                now.state == "linked"
+                    && now.last_error_at > linked.last_error_at
+                    && now.last_linked_at > linked.last_linked_at
+                    && now.last_linked_at >= now.last_error_at
+            })
+        },
         &pair.daemons(),
     );
-    // The next dial's pump starts B again and the link comes back.
-    pair.wait_linked();
-    done.store(true, Ordering::Release);
-    watcher.join().unwrap();
+    assert!(
+        relinked
+            .last_error
+            .as_deref()
+            .is_some_and(|e| !e.is_empty()),
+        "the backoff recorded why: {relinked:?}"
+    );
     let after = boot_id(&pair.iso, &pair.b);
     assert_ne!(before, after, "B runs a new daemon after the restart");
 }
