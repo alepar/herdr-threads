@@ -262,9 +262,12 @@ where
 /// (`ServiceAllocation`) commits nothing before deciding, so any correlated
 /// rejection other than `UnknownOutcome` is definitive there. An operator
 /// mutation decides in one idempotent transaction and counts the same
-/// deterministic codes plus the operator-only `ThreadNotOrphaned`; its
-/// host-dependent refusals (`StaleHostObservation`, `TargetUnresolved`) and
-/// transient codes keep the intent. `UnknownOutcome`,
+/// deterministic codes plus the operator-only `ThreadNotOrphaned`. A
+/// definitive Herdr answer about the named pane from the pre-transaction
+/// target read (`NotFound`, `Unauthorized`, `InvalidRequest`) is one of those
+/// deterministic codes; the host-observation refusals (`StaleHostObservation`,
+/// `TargetUnresolved`, `TargetAlreadyOwned`) and transient codes keep the
+/// intent. `UnknownOutcome`,
 /// pre-submission failures and local output/journal failures always keep the
 /// intent (CLI design "Durable client intent"). Retries of an existing intent
 /// never discard it.

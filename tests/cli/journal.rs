@@ -1069,7 +1069,7 @@ fn new_resolution_discards_only_definitively_rejected_first_submission() {
 
 /// ht-2cbu: an operator first submission is discarded on exactly the
 /// cooperative deterministic codes plus the operator-only `ThreadNotOrphaned`;
-/// a transient or host-dependent code (which seat resolution would discard),
+/// a transient or host-observation code (which seat resolution would discard),
 /// an unknown outcome and a transport failure keep it.
 #[test]
 fn new_operator_intent_discards_only_deterministic_first_submission_rejection() {
