@@ -58,6 +58,11 @@ Amended 2026-10-27 for remote addresses (`SEAT@MACHINE`, phase 1): a seat name q
 by that machine's daemon over an authenticated direct link, as a read (N14, the cross-node accepted limit "A
 linked node answers remote resolution"); N13 unchanged; no new provenance value.
 
+Amended 2026-10-28 for remote handoff and launch (`SEAT@MACHINE`, phase 2): a linked peer node may ask this node
+to launch an agent here (a new tab or an existing pane), which this node decides against its own view and records
+with the new provenance `peer_request:<node_uuid>` (A3, A5, N15); a handoff to a seat on another node stays a set of
+facts authored by the sender's node (N15); N5 unchanged; two cross-node accepted limits.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -377,6 +382,7 @@ records there are replay machinery, never its identity.
 | `local_journal` | receipts, invitation answers and events materialized from an own old incarnation's entry with no staged local attribution | A wipe or restore pull-back re-applied this node's own earlier fact; the original binding is not known here. Never on bindings. |
 | `direct_auto_join` | join observations and events of a 1:1 pair seat's auto-join only | The seat's home node joined it because its pair was created (main D7): in the creating transaction when the seat is local to the creator, else when its node applied the pair's `thread.direct` (N4). No binding acted; the derived event's `actor_seat` is the pair creator. Never on bindings or receipts; authorizes nothing (amended 2026-10-15, main v1 reconcile §2.2). |
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
+| `peer_request:<node_uuid>` | launch and bootstrap audit of a peer-requested launch on the executing node only (`peer_requests`, bootstrap attempts) | The linked peer node `<node_uuid>`, on its authenticated direct link (N6) with cap `peer.launch.v1`, asked this node to launch an agent here; this node decided and executed it (N15). The requesting seat travels as a claim and is recorded as claimed, never as actor. Never on bindings (the launched agent's binding is `managed_launch`, then its own check-in), receipts, invitations, memberships or messages, and never replicated: it authorizes only that one launch. |
 | `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
 | `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
 | `liveness_process_exit` | binding disconnections only | The binding's fingerprinted process (pid and start time) no longer exists, or the pid now has a different start time. Structural evidence; it disconnects the binding and never ends it, moves a seat or merges seats. |
@@ -868,6 +874,7 @@ and wake are unchanged.
 | set the nudge threshold (`SetNudgeThreshold`; legacy `wake-on [nudge\|all]` = threshold 0 \| -1) | a connected top-level binding of the seat (cooperative; changes wake eligibility only, never receipts or authority) |
 | check in | the pane's top-level agent (hook) or a human via `ht human me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup with one observable started process; it grants no row above |
+| launch an agent on behalf of a linked peer node (`peer_request:<node_uuid>`) | this node's daemon, for a request on an authenticated direct link that negotiated `peer.launch.v1`, decided here (N15); it grants no other row, on this node or the requester's |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
 | service-authored send, notify, and managed-thread controls (ensure, invite, topic, release, archive, reopen) | the registered service connection |
 | summary, summary job, summary submit | the seat's binding or its children (summary workers), all under the seat's claim: read-mostly; submit only stores a validated block for a live lease issued to the seat |
@@ -1639,6 +1646,32 @@ A node that cannot answer (no direct link, no cap, no answer in time, no live He
 the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs` `resolve_at`,
 `src/service/remote_resolver.rs`).
 
+**N15. A peer-requested launch is this node's decision; a cross-node handoff is the sender's facts.**
+- *Handoff into an existing remote seat* adds no remote action. The thread, invitation, task message and ACK
+  request are facts authored by the sender's home node for the sender's seat (A2 there, N3, N4), addressed to a
+  seat the sender's node holds as remote (N5); the recipient's home node delivers and wakes them under the
+  unchanged delivery contract. Before authoring, the sender's CLI asks the recipient's home node, on
+  `addr_resolve`, whether the seat is eligible (resolved, nonretired, unheld, target present); that answer is
+  advisory link data, read only, and a node that cannot answer leaves the handoff refused, never sent blind.
+- *Remote launch* (`handoff --new-tab --space SPACE@M`, `handoff --pane P@M`, `launch --pane P@M`) is the one
+  action a node takes on another node's request. The request (`launch_request`, cap `peer.launch.v1`) carries
+  only a frozen plan (target, harness id, profile, argv, an absolute `cwd` on this node, agent name) and the
+  requesting seat as a claim. This node decides it in its own daemon against its own canonical view, exactly as
+  a local bootstrap or launch: the target exists and is not held (C2), the harness is registered here, the
+  `cwd` exists here, and the existing bootstrap fences, `ResolveBootstrapSeat` and `ObservedStartup` guards
+  apply unchanged. It never verifies the requesting seat (cooperative, A1, same user), and it never acts as
+  that seat: the launch is attributed to the peer node (`peer_request:<node_uuid>`), the new seat is a local
+  seat of this node, and its binding is `managed_launch` until its own agent checks in. A request names only
+  a launch; it cannot send, ACK, invite, join, repair, rebind or retire anything here.
+- The request's id is derived by the requester from its frozen intent, so a retry after a link drop, a crash
+  or a restart repeats the same id; this node records each id (`peer_requests`) before acting and answers a
+  repeat with the recorded outcome, never a second launch. A launch interrupted on this node is settled from
+  its bootstrap attempt records under the existing bootstrap recovery (interrupted with no tab: failed; a
+  created tab: adopted or refused as for a local interrupted bootstrap), and the operator of this node
+  (`operator:local-user:<uid>`) remains the only one who can decide an administrative recovery here.
+- A peer without `peer.launch.v1` gets no frame, and the requester refuses with that reason; nothing is ever
+  launched through the requester's own Herdr instead.
+
 ## Accepted limits
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
@@ -2284,6 +2317,20 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   also reveals panes that hold no seat (`no_seat` with its path and pane ID) and every candidate of an ambiguous
   name, more than `seat_status` shares; in-contract between this user's own nodes (A1). Design
   `docs/superpowers/specs/2026-10-27-remote-addresses-design.md`.
+- **Any linked node can launch agents here.** A node with a direct link and `peer.launch.v1` can make this node
+  open a tab and start an agent in a workspace of this node's Herdr, with any registered harness, profile and
+  argv and any existing directory as `cwd`: what `ssh <this node> herdr-threads launch` could do as the same
+  user. In-contract (A1, SSH is the link boundary, cooperative): the request is decided here like a local
+  launch (N15), holds and fences apply, the requesting seat is only a claim, and the launch is recorded as the
+  peer node's (`peer_request:<node_uuid>`). A requester's claimed seat can be wrong or stale; nothing here
+  depends on it.
+- **A cross-node handoff checks eligibility once.** The recipient's eligibility is read from its home node
+  before the sender authors the handoff; the seat can become held, retired or unbound in between. The task then
+  waits on the recipient's node like any message to a seat in that state, and the sender's node reports the
+  ACK overdue on its own clock (N5 accepted limit). A remote launch's `Launched` answer names a seat that the
+  sender's node must hold as that node's seat (after replication) before the handoff is authored; a seat that
+  never replicates leaves the handoff refused after the launch, which a retry of the same intent resumes at
+  delivery, never relaunching.
 
 ## Decision record
 
