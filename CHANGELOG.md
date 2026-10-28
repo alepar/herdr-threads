@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.6.2
+
+No schema or peer wire change (node schema stays 10), and no setup re-run is needed.
+
+### Fixed
+
+- **`send` no longer fails with `intent allocator lock timeout`.** On a node with thousands of retained intents, every hook turn read every intent file while holding the journal's allocator lock. Under load, a `send` waiting for that lock then gave up after 1 s. Hooks now read intent files outside the lock, which holds the lock for a few file operations however many intents exist.
+- **The installer accepts symlinked Codex `skills/` and `rules/`.** When an aisw Codex profile's `skills/` or `rules/` is a symlink to another root, `install.sh --setup` reports it as `shared (shared via symlink; managed at <real file>)` instead of failing and exiting 3. This holds even when the profile kept an ownership record from before the link existed.
+  - The record of the root that actually holds the file decides, whatever the directory order.
+  - If that record reads edited or interrupted, the profile is not reported as shared.
+  - Nothing is ever written through the link.
+
+### Tests
+
+- Fixture budgets are taken per call, and the topology fixtures wait for the daemon's own reconciled epoch.
+- The FIFO-reader probe replaces a 3 s clock in the task51 tests.
+- The golden_surfaces fixture has the same readiness and budget fixes.
+
 ## v2.6.1
 
 No schema or peer wire change (node schema stays 10). The agent skill text changes. Installed skill copies are refreshed by setup, so install with `--setup` (or run `herdr-threads setup` afterwards).
