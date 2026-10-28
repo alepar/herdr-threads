@@ -1302,8 +1302,9 @@ class BusyBarrier:
     def wait_entered(self, timeout=60, throttled=None, throttled_timeout=180):
         """Wait for the held tool to start. A provider rate limit backs the agent off before its first tool call (Codex
         waited 58-99 s after a 429 in the 2.5.0 qualification): when `throttled()` names one at `timeout`, the wait
-        runs on to `throttled_timeout`, and a tool that still never entered fails as provider throttled. The tool's
-        watchdog counts from its own start, so a longer entry wait never shortens the hold."""
+        runs on to `throttled_timeout`, and a tool that still never entered fails as provider throttled. Returns the
+        throttle a late entry waited out (row evidence), else None. The tool's watchdog counts from its own start, so a
+        longer entry wait never shortens the hold."""
         end, cause = time.monotonic() + timeout, None
         while not (self.path / "entered").exists():
             if time.monotonic() >= end:
@@ -1314,6 +1315,7 @@ class BusyBarrier:
                                    else "busy tool did not enter")
             time.sleep(.02)
         self.assert_held()
+        return cause
 
     def assert_held(self):
         if (self.path / "expired").exists():
@@ -1338,7 +1340,7 @@ def codex_throttle(codex_home, since):
     try:
         with contextlib.closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as c:
             row = c.execute("SELECT feedback_log_body FROM logs WHERE target = 'codex_core::responses_retry' AND ts >= ?"
-                            " AND feedback_log_body LIKE '%429%' ORDER BY ts DESC, ts_nanos DESC, id DESC LIMIT 1",
+                            " AND feedback_log_body LIKE '%status: 429%' ORDER BY ts DESC, ts_nanos DESC, id DESC LIMIT 1",
                             (int(since),)).fetchone()
     except sqlite3.Error:
         return None
@@ -1700,9 +1702,11 @@ class Recipient:
                 prompt = (BUSY_FAIL_PROMPT if fail else BUSY_PROMPT).format(tag=tag, hold=hold.command())
             since = time.time()
             self.run.herdr("agent", "prompt", self.pane, prompt)
-            hold.wait_entered(throttled=self.throttle_probe(since))
+            throttled = hold.wait_entered(throttled=self.throttle_probe(since))
             busy_at_send = self.status()
             checks = {"busy_at_send": busy_at_send}
+            if throttled:
+                checks["provider_throttled"] = throttled
             role = "main"
             if kind == "invite" and channel == "1:1":
                 # First contact from the fresh coordinator, mid-turn: the pair auto-joins (no invitation) and the opener
@@ -1793,9 +1797,11 @@ class Recipient:
         with BusyBarrier(self.run.root) as hold:
             since = time.time()
             self.run.herdr("agent", "prompt", self.pane, EOT_PROMPT.format(tag=tag, hold=hold.command()))
-            hold.wait_entered(throttled=self.throttle_probe(since))
+            throttled = hold.wait_entered(throttled=self.throttle_probe(since))
             busy_at_send = self.status()
             checks = {"busy_at_send": busy_at_send}
+            if throttled:
+                checks["provider_throttled"] = throttled
             mid = self.send("p0", f"{case} {self.run.run_id}", direct=False)
             hold.assert_held()
         anchor = f"End-of-turn test {tag}"

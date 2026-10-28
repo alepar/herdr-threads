@@ -147,7 +147,8 @@ class ProviderThrottle(TempDir):
     RETRY_429 = ("session_loop{thread_id=01a181cc}:run_sampling_request{turn_id=01a181cc}: stream disconnected - "
                  "retrying sampling request (1/5 in 98.999872989s)... turn_id=01a181cc retries=1 max_retries=5 "
                  "sampling_error=exceeded retry limit, last status: 429 Too Many Requests")
-    RETRY_WS = ("run_sampling_request{turn_id=01a18062}: stream disconnected - retrying sampling request (1/5 in 213ms)"
+    # Full ids are hex: `429` inside one is not a status.
+    RETRY_WS = ("run_sampling_request{turn_id=01a18062-4291-7f73}: stream disconnected - retrying sampling request (1/5 in 213ms)"
                 "... retries=1 max_retries=5 sampling_error=stream disconnected before completion: websocket closed")
 
     def log(self, *rows):
@@ -177,10 +178,13 @@ class ProviderThrottle(TempDir):
             late = threading.Timer(0.3, lambda: children.append(subprocess.Popen(shlex.split(hold.command()))))
             late.start()
             asked = []
-            hold.wait_entered(timeout=0.05, throttled=lambda: asked.append(1) or "429 retry 1/5 in 99s",
-                              throttled_timeout=5)
+            try:
+                cause = hold.wait_entered(timeout=0.05, throttled=lambda: asked.append(1) or "429 retry 1/5 in 99s",
+                                          throttled_timeout=5)
+            finally:
+                late.join()
             self.assertEqual(asked, [1], "the log is read once, at the base timeout")
-            late.join()
+            self.assertEqual(cause, "429 retry 1/5 in 99s", "the waited-out throttle is the row's evidence")
         children[0].wait(timeout=2)  # released: exits on its next poll
 
     def test_tool_that_never_enters_while_throttled_is_reported_as_such(self):
