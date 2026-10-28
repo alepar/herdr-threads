@@ -102,8 +102,13 @@ source_commit = subprocess.check_output(["git", "-C", str(SOURCE), "rev-parse", 
 evidence["source_commit"] = source_commit
 evidence["shared_config"] = str(shared_config)
 
-# Short and unique: sockets live here and macOS limits sockaddr_un paths.
-root = Path(tempfile.mkdtemp(prefix="htpv-", dir="/private/tmp" if sys.platform == "darwin" else None))
+# Short and unique: sockets live here (the daemon's ~50 bytes below the root)
+# and sockaddr_un paths are limited (104 bytes on macOS, 108 on Linux), so a
+# long platform temp dir falls back to /tmp.
+temp_base = "/private/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+if len(temp_base) > 40:
+    temp_base = "/tmp"
+root = Path(tempfile.mkdtemp(prefix="htpv-", dir=temp_base))
 home, config, state, runtime = (root / name for name in ("home", "cfg", "st", "rt"))
 for directory in (home, config, state, runtime):
     directory.mkdir(mode=0o700)
