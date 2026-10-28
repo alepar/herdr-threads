@@ -900,6 +900,8 @@ struct LinkEntry {
     handle: LinkHandle,
     origin: Origin,
     since: UtcMillis,
+    /// When the link came up on the monotonic clock, for `up_for`.
+    started: MonoInstant,
     mode: LinkMode,
     /// In the duplicate order. False while a clone probe of an older link
     /// decides this link's fate.
@@ -1310,6 +1312,7 @@ impl Actor {
                         handle,
                         origin,
                         since: self.deps.clock.utc_now(),
+                        started: now,
                         mode: LinkMode::Standby,
                         ranked: false,
                         closing: false,
@@ -1412,10 +1415,11 @@ impl Actor {
         }
     }
 
+    /// How long the link has been up on the monotonic clock, like the link
+    /// task's own `up_for` (`on_ended` adds the wall time).
     fn up_for(&self, link_id: u64) -> Duration {
         self.links.get(&link_id).map_or(Duration::ZERO, |entry| {
-            let now = self.deps.clock.utc_now().0;
-            Duration::from_millis(u64::try_from(now.saturating_sub(entry.since.0)).unwrap_or(0))
+            Duration::from_millis(self.mono().0.saturating_sub(entry.started.0))
         })
     }
 
