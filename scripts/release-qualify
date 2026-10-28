@@ -128,7 +128,7 @@ def qualify(evidence: Path, self_test: bool) -> int:
     try:
         step('package', ['nice', 'cargo', 'test', '--locked', '--all-features', '--test', 'package',
                          'install::clean_package_install_lifecycle', '--', '--ignored', '--exact', '--nocapture'], branch)
-        for name in ('alias', 'integrations', 'terminal'):
+        for name in ('alias', 'integrations', 'daemon', 'terminal'):
             argv = ['python3', f'tests/release/installer_{name}_test.py']
             if name == 'terminal':
                 argv.append('bin/herdr-threads')

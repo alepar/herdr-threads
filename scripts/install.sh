@@ -19,7 +19,9 @@
 #      the old one restored if that fails; an identical install is left
 #      alone) and links ~/.local/bin/herdr-threads and ht to its executable;
 #      stops again with the retained old executable after the swap, to catch
-#      a hook restarting it in the meantime, then verifies live daemon versions;
+#      a hook restarting it in the meantime, then verifies live daemon versions
+#      and executables, replacing (a bounded number of times) a daemon a client
+#      restarted from the old executable;
 #   4. registers the package with Herdr (`herdr plugin link`; Herdr does not
 #      build a linked plugin, and the package's build command keeps the
 #      prebuilt binary), and ensures the daemon if Herdr runs;
@@ -599,7 +601,8 @@ case "$version" in
 esac
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/herdr-threads-install.XXXXXX")
-trap 'rm -rf "$work"' EXIT
+retained_old=''
+trap 'rm -rf "$work" ${retained_old:+"$retained_old"}' EXIT
 say "downloading $asset ($version) from $download"
 curl -fsSL --retry 3 -o "$work/$asset" "$download/$asset" || die "download failed: $download/$asset"
 curl -fsSL --retry 3 -o "$work/SHA256SUMS" "$download/SHA256SUMS" || die "download failed: $download/SHA256SUMS"
@@ -691,7 +694,10 @@ if [ "$changed" = 1 ]; then
             fi
             installed_binary="$install_dir/bin/herdr-threads"
         fi
-        rm -rf "$install_dir.old"
+        # Kept until daemon verification: a client that started before the
+        # swap can still start the old daemon, and only the old executable
+        # can stop it across a wire-protocol change.
+        retained_old="$install_dir.old"
         OUT_UPGRADED=1
         say "replaced $install_dir ($previous_version -> $new_version)"
     else
@@ -899,34 +905,123 @@ fi
 
 # --- daemon verification ---------------------------------------------------
 
-# Verify the live instances against the executable we actually installed, not
-# the archive's VERSION label. `ensure` performs the version/boot handshake;
-# the explicit state/locator reaches the same daemon even when Herdr is down.
-# This also catches a failed ensure action which left an old daemon serving.
-verify_installed_daemons() {
-    local instance observed expected err locator
-    local -a where
-    expected=$("$installed_binary" --version) || return 1
-    expected=${expected#herdr-threads }
+# The physical path of an existing file, symlinks resolved (status 1 when
+# it is gone, as a deleted executable is).
+real_file() {
+    local path=$1 target
+    while [ -L "$path" ]; do
+        target=$(readlink "$path") || return 1
+        case "$target" in /*) path=$target ;; *) path=$(dirname "$path")/$target ;; esac
+    done
+    [ -e "$path" ] || return 1
+    printf '%s/%s\n' "$(CDPATH='' cd -P -- "$(dirname "$path")" && pwd -P)" "$(basename "$path")"
+}
+
+# The executable a daemon was started from: its argv[0], the path the client
+# that ensured it resolved as its own executable.
+daemon_executable() { ps -p "$1" -o command= 2>/dev/null | sed 's/ daemon run .*//'; }
+
+# Live instances whose daemon is not the installed executable, one
+# "INSTANCE<tab>REASON" line each: another version, or the same version
+# started from another file. A client that started before the swap (a
+# lifecycle hook, the mod watch's ensure) starts the daemon from its own
+# executable, which on Linux follows the rename to $install_dir.old, so it can
+# restart the old daemon after every stop above (ht-xe3v).
+stale_instances() {
+    local instance observed pid exe
     while IFS= read -r instance; do
         [ -n "$instance" ] || continue
-        observed=$(json_field software_version < "$instance/endpoint.json") || return 1
-        if [ "$observed" != "$expected" ]; then
-            warn "daemon in $instance runs $observed; installed executable is $expected"
-            return 1
+        observed=$(json_field software_version < "$instance/endpoint.json") || observed=unknown
+        if [ "$observed" != "$expected_version" ]; then
+            printf '%s\truns %s; installed executable is %s\n' "$instance" "$observed" "$expected_version"
+            continue
         fi
-        where=(--state-dir "$(state_of_instance "$instance")")
-        case "$instance" in
-            */node) ;;
-            *)
-                locator=$(cat "$instance/locator") || return 1
-                where+=(--host-endpoint "$locator") ;;
-        esac
-        if ! err=$("$installed_binary" "${where[@]}" daemon ensure 2>&1); then
-            warn "installed daemon verification failed in $instance: $err"
-            return 1
+        pid=$(instance_pid "$instance") || continue
+        exe=$(daemon_executable "$pid")
+        if [ "$(real_file "$exe" 2>/dev/null)" != "$installed_real" ]; then
+            printf '%s\truns from %s; installed executable is %s\n' "$instance" "$exe" "$installed_binary"
         fi
     done < <(live_instances)
+}
+
+# `daemon ensure` for one instance with the installed executable. The
+# explicit state/locator reaches the same daemon even when Herdr is down.
+ensure_instance() {
+    local instance=$1 err locator
+    local -a where
+    where=(--state-dir "$(state_of_instance "$instance")")
+    case "$instance" in
+        */node) ;;
+        *)
+            locator=$(cat "$instance/locator") || return 1
+            where+=(--host-endpoint "$locator") ;;
+    esac
+    if ! err=$("$installed_binary" "${where[@]}" daemon ensure 2>&1); then
+        warn "installed daemon verification failed in $instance: $err"
+        return 1
+    fi
+}
+
+# Stop the stale daemons (with the retained old executable, else the
+# installed one) and ensure the installed executable in their instances.
+# Never ensures over a stale daemon that is still running.
+replace_stale() {
+    local stale=$1 instance new_binary=$installed_binary stopped=0
+    if [ -n "$retained_old" ] && [ -x "$retained_old/bin/herdr-threads" ]; then
+        installed_binary="$retained_old/bin/herdr-threads"
+        if stop_with_installed; then stopped=1; fi
+        installed_binary=$new_binary
+    fi
+    if [ "$stopped" = 0 ] && ! stop_with_installed; then
+        warn "could not stop the stale daemon${stop_err:+: $stop_err}"
+        return 1
+    fi
+    while IFS="$(printf '\t')" read -r instance _; do
+        [ -n "$instance" ] || continue
+        ensure_instance "$instance" || return 1
+    done <<EOF_STALE
+$stale
+EOF_STALE
+}
+
+# Verify the live instances against the executable we actually installed, not
+# the archive's VERSION label: its version, and the file each daemon was
+# started from. `ensure` performs the version/boot handshake and waits for a
+# daemon that is still starting. A stale daemon is replaced, at most four
+# times, since an old client can restart it once more while it is replaced.
+# This also catches a failed ensure action which left an old daemon serving.
+verify_installed_daemons() {
+    local round stale instance repaired=0
+    expected_version=$("$installed_binary" --version) || return 1
+    expected_version=${expected_version#herdr-threads }
+    installed_real=$(real_file "$installed_binary") || return 1
+    for round in 1 2 3 4 5; do
+        stale=$(stale_instances)
+        if [ -z "$stale" ]; then
+            while IFS= read -r instance; do
+                [ -n "$instance" ] || continue
+                ensure_instance "$instance" || return 1
+            done < <(live_instances)
+            # An ensure may have waited for a daemon a client was starting.
+            stale=$(stale_instances)
+        fi
+        if [ -z "$stale" ]; then
+            if [ "$repaired" = 1 ]; then
+                say "replaced the stale daemon; the installed executable runs"
+                OUT_DAEMON_UP=1
+                OUT_DAEMON_ERROR=''
+            fi
+            return 0
+        fi
+        while IFS="$(printf '\t')" read -r instance reason; do
+            warn "daemon in $instance $reason"
+        done <<EOF_STALE
+$stale
+EOF_STALE
+        [ "$round" -lt 5 ] || return 1
+        replace_stale "$stale" || return 1
+        repaired=1
+    done
 }
 if ! verify_installed_daemons; then
     OUT_DAEMON_UP=0
