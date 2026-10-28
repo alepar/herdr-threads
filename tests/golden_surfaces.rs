@@ -1108,10 +1108,20 @@ impl Topology {
         // before the daemon has observed anything. Wait for the daemon's own,
         // newer epoch instead: its startup observation and its reconciliation
         // of the seeded seats finish before a test reads or edits them.
+        // The isolation root (and the daemon's log in it) is removed when the
+        // panic unwinds, so a failed wait carries the log's tail itself.
+        let daemon_log = || {
+            let log = fs::read(iso.path("daemon.stderr")).unwrap_or_default();
+            String::from_utf8_lossy(&log[log.len().saturating_sub(4096)..]).into_owned()
+        };
         let deadline = Instant::now() + WAIT;
         let mut last = String::from("no descriptor");
         loop {
-            assert!(daemon.try_wait().unwrap().is_none(), "owned daemon exited");
+            assert!(
+                daemon.try_wait().unwrap().is_none(),
+                "owned daemon exited; daemon stderr tail:\n{}",
+                daemon_log()
+            );
             if paths.descriptor_path.exists() {
                 let row = Connection::open(&paths.database_path).and_then(|db| {
                     db.query_row(
@@ -1130,7 +1140,8 @@ impl Topology {
             }
             assert!(
                 Instant::now() < deadline,
-                "timed out: owned elected daemon reconciliation of an epoch after the seed's {seeded_epoch}; last {last}"
+                "timed out: owned elected daemon reconciliation of an epoch after the seed's {seeded_epoch}; last {last}; daemon stderr tail:\n{}",
+                daemon_log()
             );
             std::thread::sleep(Duration::from_millis(10));
         }
