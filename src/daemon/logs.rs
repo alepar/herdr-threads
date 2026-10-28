@@ -240,17 +240,31 @@ impl LaneErrorLog for RateLimitedLaneLog {
         );
     }
 
-    /// One line per seat, then one summary per window while its wakes keep
-    /// being refused: `lane wakes: refused SEAT: DETAIL`.
+    /// One line per seat and refusing check, then one summary per window
+    /// while that check keeps refusing the seat:
+    /// `lane wakes: refused SEAT (CHECK): DETAIL`. CHECK is the detail without
+    /// the adapter's shared prefix, at most [`REFUSAL_CHECK_CHARS`] characters,
+    /// so a Herdr error's variable tail cannot grow the limiter's key set.
     fn record_wake_refusal(&self, seat: &crate::protocol::ids::SeatId, detail: &str) {
+        let check: String = detail
+            .strip_prefix(REFUSAL_PREFIX)
+            .unwrap_or(detail)
+            .chars()
+            .take(REFUSAL_CHECK_CHARS)
+            .collect();
         self.note(
             "lane wakes".to_owned(),
-            format!("refused {}", seat.as_str()),
+            format!("refused {} ({})", seat.as_str(), one_line(&check)),
             detail,
             0,
         );
     }
 }
+
+/// The prefix every adapter wake refusal shares (`submit_prompt_mode`).
+const REFUSAL_PREFIX: &str = "wake prompt refused before submission: ";
+/// How much of a refusal names its check in the limiter's key.
+const REFUSAL_CHECK_CHARS: usize = 48;
 
 pub const MAX_LOG_BYTES: u64 = 1024 * 1024;
 

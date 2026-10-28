@@ -179,31 +179,36 @@ fn wake_verification_lines_are_rate_limited() {
 }
 
 /// Kills: an unthrottled refusal line (one per backoff step), a limiter shared
-/// between seats (the second seat's first refusal would be hidden), and a line
-/// that drops the refusing check's detail.
+/// between seats or between checks (a later, different cause on the same seat
+/// would show only a detail-free count), a key that keeps a Herdr error's
+/// variable tail, and a line that drops the refusing check's detail.
 #[test]
-fn wake_refusal_lines_are_rate_limited_per_seat() {
+fn wake_refusal_lines_are_rate_limited_per_seat_and_check() {
     let (clock, log, lines) = limiter();
     let (a, b) = (
         crate::protocol::ids::SeatId::new("seat_a"),
         crate::protocol::ids::SeatId::new("seat_b"),
     );
+    let nonempty = "wake prompt refused before submission: composer is nonempty";
     for ms in [0, 100, 300, 700] {
         at(&clock, ms);
-        log.record_wake_refusal(
-            &a,
-            "wake prompt refused before submission: composer is nonempty",
-        );
+        log.record_wake_refusal(&a, nonempty);
     }
     log.record_wake_refusal(&b, "identity mismatch");
-    at(&clock, 31_000);
     log.record_wake_refusal(&a, "identity mismatch");
+    let long = "x".repeat(48);
+    log.record_wake_refusal(&a, &format!("{long} tail 1"));
+    log.record_wake_refusal(&a, &format!("{long} tail 2"));
+    at(&clock, 31_000);
+    log.record_wake_refusal(&a, nonempty);
     assert_eq!(
         lines.lock().unwrap().clone(),
         vec![
-            "lane wakes: refused seat_a: wake prompt refused before submission: composer is nonempty".to_owned(),
-            "lane wakes: refused seat_b: identity mismatch".to_owned(),
-            "lane wakes: refused seat_a repeated 4 times in the last 30s (attempt 0)".to_owned(),
+            format!("lane wakes: refused seat_a (composer is nonempty): {nonempty}"),
+            "lane wakes: refused seat_b (identity mismatch): identity mismatch".to_owned(),
+            "lane wakes: refused seat_a (identity mismatch): identity mismatch".to_owned(),
+            format!("lane wakes: refused seat_a ({long}): {long} tail 1"),
+            "lane wakes: refused seat_a (composer is nonempty) repeated 4 times in the last 30s (attempt 0)".to_owned(),
         ]
     );
 }
