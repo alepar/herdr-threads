@@ -3929,16 +3929,11 @@ pub trait HostPort: Send + Sync {
     }
     /// One coherent live topology (workspaces, tabs, panes and their
     /// labels), for resolving a linked peer's remote address (TRUST-POLICY
-    /// N14). Default: unsupported.
+    /// N14).
     fn live_topology(
         &self,
-        _budget: &CallBudget,
-    ) -> Result<crate::host::observation::HostTopology, ApiError> {
-        Err(ApiError::new(
-            crate::protocol::results::ErrorCode::Unsupported,
-            "host topology unavailable",
-        ))
-    }
+        budget: &CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, ApiError>;
     /// Pids of the processes Herdr reports in the pane's foreground (not its shell), for the
     /// composer wake of a seat with wake targets (spec §3 Wake). Empty when Herdr reports none
     /// or the adapter cannot ask: the composer wake then does not fire.
@@ -5289,6 +5284,15 @@ mod contract_adapter_tests {
         }
     }
     impl HostPort for Adapter {
+        fn live_topology(
+            &self,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError>
+        {
+            Err(crate::protocol::results::ApiError::unsupported(
+                "fixture host has no topology",
+            ))
+        }
         fn observe_current_target_for_archival(
             &self,
             _: &crate::protocol::ids::HostTargetId,

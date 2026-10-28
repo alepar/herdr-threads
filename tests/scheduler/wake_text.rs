@@ -58,6 +58,14 @@ pub(crate) struct TextRecordingHost {
     pub(crate) typed: Mutex<Vec<String>>,
 }
 impl HostPort for TextRecordingHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {
         Ok(self.foreground.clone())
     }

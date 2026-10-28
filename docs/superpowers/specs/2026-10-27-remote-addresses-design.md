@@ -576,3 +576,23 @@ only the launch path.
   `HT_TEST_HOST_LABEL` stands in for the hostname at genesis.
 - **Host label shown.** `peer list` node rows end in ` host=LABEL` (6 bytes
   plus the label), the name `@MACHINE` matches.
+- **Deferred to phase 2.** The D2 rule that every address of one invocation
+  names the same machine (`addresses name different machines`) is not built:
+  in phase 1 each SEAT argument resolves on its own machine, and recipients on
+  different machines in one `send --require-ack` are legitimate. Phase 2
+  enforces it where it matters: narrowing, and a rebind's seat and pane.
+- **Budgets (PR roast round 1).** The daemon transport gives `resolve
+  address` its own bound, `REMOTE_ADDRESS_DAEMON_BOUND_MS` = 10 s home-node
+  wait + 5 s replica wait + 2 s; the CLI waits 3 s longer, so the typed
+  refusal always reaches it. AC5 reads accordingly: a refusal within the
+  20 s CLI budget, never a hang. Timeout, late reply and the 8-request bound
+  are tested at the coordinator (`remote_resolve_times_out_and_bounds_inbound_requests`),
+  multi-host pooling and the host-failure rule at the resolver (`pool`), and
+  the asker's N14 seat check at the service (`resolve_address_matches_machines_and_takes_only_the_named_nodes_seat`);
+  the multinode test covers the end-to-end paths.
+- **Error classes.** Unreachable, no cap, timeout, not replicated and no
+  live Herdr are `host_unavailable` (retryable); a peer's request-shaped
+  refusal (`seat S does not live on this machine`, invalid path, a pane with
+  two seats) and an unknown answer are `invalid_request`. Only a daemon
+  without sync administration (`unsupported`) counts as knowing no machines;
+  every other failure of `resolve address` is passed through as a refusal.

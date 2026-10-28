@@ -119,6 +119,14 @@ impl RecordingHost {
     }
 }
 impl HostPort for RecordingHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     /// The pane's foreground process is the fixture binding's process (`liveness_pid`), the
     /// composer-wake match a single-target seat needs (ht-54r.82).
     fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {

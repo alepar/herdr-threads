@@ -415,9 +415,19 @@ fn write_resolved_line<W: Write>(
     seat: &SeatId,
     tier: &str,
 ) -> std::io::Result<()> {
+    write_resolved_text(stderr, path, pane.as_str(), seat, tier)
+}
+
+/// [`write_resolved_line`] with the pane as display text (`-` for a remote seat with none).
+fn write_resolved_text<W: Write>(
+    stderr: &mut W,
+    path: &str,
+    pane: &str,
+    seat: &SeatId,
+    tier: &str,
+) -> std::io::Result<()> {
     let line = format!(
-        "resolved: {path} {} seat={} (tier: {tier})\n",
-        pane.as_str(),
+        "resolved: {path} {pane} seat={} (tier: {tier})\n",
         seat.as_str()
     );
     #[cfg(test)]
@@ -721,8 +731,15 @@ where
     ) -> Result<Option<Resolved>, RunError> {
         let reply = match self.address(machine, location)? {
             Ok(reply) => reply,
-            // A daemon that cannot resolve machines knows none.
-            Err(_) if self.local_hit(raw) => return Ok(None),
+            // Only a daemon that cannot resolve machines (it has no such command) knows none;
+            // any other failure leaves the address refused (D7, N14).
+            Err(error) if cannot_resolve_machines(&error) => {
+                return if self.local_hit(raw) {
+                    Ok(None)
+                } else {
+                    Err(run_error(remote_error::unknown_machine(machine, &[])))
+                };
+            }
             Err(error) => return Err(run_error(error)),
         };
         let (node, answer) = match reply {
@@ -763,12 +780,16 @@ where
                 if !hit {
                     return at_self.map(Some);
                 }
-                let whole = self.resolve_local(parsed, slot, raw)?;
-                return match at_self {
-                    Ok(other) if !same_resolution(&other, &whole) => Err(run_error(
-                        remote_error::both_readings(raw, &[raw.to_owned(), location.to_owned()]),
-                    )),
-                    _ => Ok(Some(whole)),
+                // Both readings name a local pane: the same one is fine, two are a conflict.
+                let Ok(at_self) = at_self else {
+                    return self.resolve_local(parsed, slot, raw).map(Some);
+                };
+                return match self.resolve_local(parsed, slot, raw) {
+                    Ok(whole) if same_resolution(&at_self, &whole) => Ok(Some(whole)),
+                    _ => Err(run_error(remote_error::both_readings(
+                        raw,
+                        &[raw.to_owned(), location.to_owned()],
+                    ))),
                 };
             }
             AddressReply::Remote { node, answer } => (node, answer),
@@ -794,14 +815,17 @@ where
                             "machine answered a malformed seat",
                         ))
                     })?;
-                    let pane_shown = HostTargetId::parse(pane.clone())
-                        .unwrap_or_else(|_| HostTargetId::parse("w0:p0".to_owned()).unwrap());
+                    let pane_shown = if pane.is_empty() {
+                        "-".to_owned()
+                    } else {
+                        remote_error::one_line(&pane)
+                    };
                     let shown = if path.is_empty() {
                         format!("@{}", node.tag)
                     } else {
                         format!("{path}@{}", node.tag)
                     };
-                    write_resolved_line(self.stderr, &shown, &pane_shown, &seat, "any")?;
+                    write_resolved_text(self.stderr, &shown, &pane_shown, &seat, "any")?;
                     return Ok(Some(Resolved::Seat(seat)));
                 }
                 AddrOutcome::NoSeat { path, pane } if !hit => {
@@ -836,8 +860,18 @@ where
                 AddrOutcome::HostUnavailable => {
                     format!("{label}: seat names need its live Herdr topology")
                 }
-                AddrOutcome::Refused { detail } => format!("{label} refused: {detail}"),
-                AddrOutcome::Unknown => format!("{label} answered in an unknown form"),
+                // Request-shaped refusals never succeed on retry.
+                AddrOutcome::Refused { detail } => {
+                    return Err(run_error(ApiError::invalid_request(format!(
+                        "{label} refused {location}: {}",
+                        remote_error::one_line(&detail)
+                    ))));
+                }
+                AddrOutcome::Unknown => {
+                    return Err(run_error(ApiError::invalid_request(format!(
+                        "{label} answered in an unknown form"
+                    ))));
+                }
             },
             RemoteAddress::Unreachable { last_contact_at } => match last_contact_at {
                 Some(at) => format!(
@@ -906,6 +940,14 @@ where
     }
 }
 
+/// A daemon too old for `resolve address` refuses the command itself.
+fn cannot_resolve_machines(error: &ApiError) -> bool {
+    matches!(
+        error.code,
+        ErrorCode::Unsupported | ErrorCode::UnknownWireVersion
+    )
+}
+
 /// Whether two readings resolved the same seat or pane.
 fn same_resolution(a: &Resolved, b: &Resolved) -> bool {
     match (a, b) {
@@ -917,9 +959,8 @@ fn same_resolution(a: &Resolved, b: &Resolved) -> bool {
 
 /// The CLI's budget for one `@MACHINE` resolution: the daemon's wait for the home node and for
 /// the seat to replicate, plus margin, so the daemon's typed answer arrives first (spec 4.3).
-const REMOTE_ADDRESS_BUDGET_MS: u64 = crate::service::sync_admin::REMOTE_RESOLVE_WAIT_MS
-    + crate::service::sync_admin::REPLICA_WAIT_MS
-    + 5_000;
+const REMOTE_ADDRESS_BUDGET_MS: u64 =
+    crate::service::sync_admin::REMOTE_ADDRESS_DAEMON_BOUND_MS + 3_000;
 
 /// Caller-visible refusals of remote addresses (spec 4.4).
 mod remote_error {
@@ -930,7 +971,7 @@ mod remote_error {
     /// Known machines an unknown-machine refusal names.
     const KNOWN_LISTED: usize = 8;
 
-    fn one_line(text: &str) -> String {
+    pub(super) fn one_line(text: &str) -> String {
         crate::view::escape::escape_for_terminal(text, crate::view::escape::Context::SingleLine)
             .into_owned()
     }

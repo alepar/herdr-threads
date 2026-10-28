@@ -549,6 +549,19 @@ async fn serve_connection(
             "request id too long",
         ));
     }
+    // `@MACHINE` resolution waits for another node and then for replication
+    // (spec 4.3): its own bound, so its typed answer is never cut off.
+    let expires = if matches!(
+        request.command,
+        Command::Sync(crate::protocol::sync_admin::SyncCommand::ResolveAddress { .. })
+    ) {
+        tokio::time::Instant::now()
+            + crate::protocol::time::external_bound(Duration::from_millis(
+                crate::service::sync_admin::REMOTE_ADDRESS_DAEMON_BOUND_MS,
+            ))
+    } else {
+        expires
+    };
     let automatic_response = crate::protocol::wire::automatic_response_request(&request.command);
     let is_search = matches!(request.command, Command::Search(_));
     // A resync request ends the daemon like `Stop`: the shutdown it triggers

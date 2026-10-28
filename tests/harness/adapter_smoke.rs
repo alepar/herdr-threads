@@ -563,6 +563,17 @@ mod launch_fixture {
     use std::sync::atomic::{AtomicU64, Ordering};
     pub struct Host(pub AtomicU64);
     impl HostPort for Host {
+        fn live_topology(
+            &self,
+            _: &herdr_threads::protocol::time::CallBudget,
+        ) -> Result<
+            herdr_threads::host::observation::HostTopology,
+            herdr_threads::protocol::results::ApiError,
+        > {
+            Err(herdr_threads::protocol::results::ApiError::unsupported(
+                "fixture host has no topology",
+            ))
+        }
         fn native_launch_capability(&self) -> NativeLaunchCapability {
             NativeLaunchCapability::HostGuardedStart
         }

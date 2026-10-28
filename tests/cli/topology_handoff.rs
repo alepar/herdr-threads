@@ -2311,6 +2311,15 @@ mod live {
     }
     struct CompositionHost;
     impl crate::ports::HostPort for CompositionHost {
+        fn live_topology(
+            &self,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError>
+        {
+            Err(crate::protocol::results::ApiError::unsupported(
+                "fixture host has no topology",
+            ))
+        }
         fn native_launch_capability(&self) -> crate::ports::NativeLaunchCapability {
             crate::ports::NativeLaunchCapability::Unsupported
         }

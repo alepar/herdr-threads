@@ -22,6 +22,17 @@ struct Host {
     negative_failure: AtomicUsize,
 }
 impl HostPort for Host {
+    fn live_topology(
+        &self,
+        _: &herdr_threads::protocol::time::CallBudget,
+    ) -> Result<
+        herdr_threads::host::observation::HostTopology,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        Err(herdr_threads::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         NativeLaunchCapability::Unsupported
     }

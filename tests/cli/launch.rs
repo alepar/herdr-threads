@@ -82,6 +82,14 @@ impl FakeHost {
     }
 }
 impl HostPort for FakeHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -2903,6 +2911,14 @@ pub(in crate::cli) fn task10_hermes_native_fixture<R>(
 
 struct Task48HintHost(FakeHost);
 impl HostPort for Task48HintHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         self.0.native_launch_capability()
     }

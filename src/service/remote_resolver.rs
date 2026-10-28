@@ -94,19 +94,24 @@ impl RemoteResolver {
     /// `SEAT_ID@M` (spec D2): an exact seat ID is this node's own seat, or not here at all.
     fn exact_seat(&self, location: &str) -> Option<AddrOutcome> {
         let seat = crate::protocol::ids::SeatId::parse(location).ok()?;
-        let found: Option<(bool, Option<String>)> = self
-            .store
-            .sync_read(&self.budget(), |conn, _| {
-                use rusqlite::OptionalExtension;
-                conn.query_row(
-                    "SELECT is_local, target_id FROM seats WHERE id=?1 AND state<>'retired'",
-                    [seat.as_str()],
-                    |r| Ok((r.get::<_, i64>(0)? == 1, r.get(1)?)),
-                )
-                .optional()
-                .map_err(crate::store::connection::store_error)
-            })
-            .ok()?;
+        let found = self.store.sync_read(&self.budget(), |conn, _| {
+            use rusqlite::OptionalExtension;
+            conn.query_row(
+                "SELECT is_local, target_id FROM seats WHERE id=?1 AND state<>'retired'",
+                [seat.as_str()],
+                |r| Ok((r.get::<_, i64>(0)? == 1, r.get(1)?)),
+            )
+            .optional()
+            .map_err(crate::store::connection::store_error)
+        });
+        let found: Option<(bool, Option<String>)> = match found {
+            Ok(found) => found,
+            Err(error) => {
+                return Some(AddrOutcome::Refused {
+                    detail: format!("seat lookup failed: {}", error.detail),
+                });
+            }
+        };
         match found? {
             (true, target) => Some(AddrOutcome::Seat {
                 seat: seat.as_str().to_owned(),
@@ -138,63 +143,204 @@ impl RemoteResolver {
                 Err(_) => failed = true,
             }
         }
-        if matches
-            .iter()
-            .any(|m| matches!(m.outcome, Outcome::InvalidPath))
-        {
-            return AddrOutcome::Refused {
-                detail: r"invalid path: use 1-3 nonempty components; escapes: \/, \\ and \@".into(),
-            };
-        }
-        let pooled: Vec<(HostId, address::Candidate)> = matches
-            .into_iter()
-            .flat_map(|m| {
-                let host = m.host;
-                match m.outcome {
-                    Outcome::Resolved(c) => vec![(host, c)],
-                    Outcome::Ambiguous(cs) => cs.into_iter().map(|c| (host, c)).collect(),
-                    Outcome::NoMatch | Outcome::InvalidPath => Vec::new(),
-                }
-            })
-            .collect();
-        // A host that failed to read could hold a further match: only an
-        // answer that is already ambiguous stands without it.
-        if failed && pooled.len() < 2 {
-            return AddrOutcome::HostUnavailable;
-        }
-        match pooled.as_slice() {
-            [] => AddrOutcome::NoMatch,
-            [(host, one)] => match self.seat_on(*host, one.pane.as_str()) {
-                Ok(Some(seat)) => AddrOutcome::Seat {
-                    seat,
-                    path: one.path.clone(),
-                    pane: one.pane.as_str().to_owned(),
-                },
-                Ok(None) => AddrOutcome::NoSeat {
-                    path: one.path.clone(),
-                    pane: one.pane.as_str().to_owned(),
-                },
-                Err(error) => AddrOutcome::Refused {
-                    detail: error.detail,
-                },
+        pool(matches, failed, |host, pane| self.seat_on(host, pane))
+    }
+}
+
+/// The answer from every read host's matches (`failed`: some host could not
+/// be read), mapping the one matched pane to its seat through `seat_on`.
+fn pool(
+    matches: Vec<HostMatch>,
+    failed: bool,
+    mut seat_on: impl FnMut(HostId, &str) -> Result<Option<String>, ApiError>,
+) -> AddrOutcome {
+    if matches
+        .iter()
+        .any(|m| matches!(m.outcome, Outcome::InvalidPath))
+    {
+        return AddrOutcome::Refused {
+            detail: r"invalid path: use 1-3 nonempty components; escapes: \/, \\ and \@".into(),
+        };
+    }
+    let pooled: Vec<(HostId, address::Candidate)> = matches
+        .into_iter()
+        .flat_map(|m| {
+            let host = m.host;
+            match m.outcome {
+                Outcome::Resolved(c) => vec![(host, c)],
+                Outcome::Ambiguous(cs) => cs.into_iter().map(|c| (host, c)).collect(),
+                Outcome::NoMatch | Outcome::InvalidPath => Vec::new(),
+            }
+        })
+        .collect();
+    // A host that failed to read could hold a further match: only an answer
+    // that is already ambiguous stands without it.
+    if failed && pooled.len() < 2 {
+        return AddrOutcome::HostUnavailable;
+    }
+    match pooled.as_slice() {
+        [] => AddrOutcome::NoMatch,
+        [(host, one)] => match seat_on(*host, one.pane.as_str()) {
+            Ok(Some(seat)) => AddrOutcome::Seat {
+                seat,
+                path: one.path.clone(),
+                pane: one.pane.as_str().to_owned(),
             },
-            many => AddrOutcome::Ambiguous {
-                candidates: many
-                    .iter()
-                    .map(|(host, c)| AddrCandidate {
-                        path: c.path.clone(),
-                        pane: c.pane.as_str().to_owned(),
-                        seat: self.seat_on(*host, c.pane.as_str()).ok().flatten(),
-                    })
-                    .collect(),
-                omitted: 0,
+            Ok(None) => AddrOutcome::NoSeat {
+                path: one.path.clone(),
+                pane: one.pane.as_str().to_owned(),
             },
-        }
+            Err(error) => AddrOutcome::Refused {
+                detail: error.detail,
+            },
+        },
+        many => AddrOutcome::Ambiguous {
+            candidates: many
+                .iter()
+                .map(|(host, c)| AddrCandidate {
+                    path: c.path.clone(),
+                    pane: c.pane.as_str().to_owned(),
+                    seat: seat_on(*host, c.pane.as_str()).ok().flatten(),
+                })
+                .collect(),
+            omitted: 0,
+        },
     }
 }
 
 impl AddrResolver for RemoteResolver {
     fn resolve(&self, target: AddrTarget) -> AddrOutcome {
         self.answer(&target)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::observation::{TopologyPane, TopologySpace, TopologyTab};
+    use crate::protocol::ids::HostTargetId;
+
+    fn topology(panes: &[(&str, &str)]) -> HostTopology {
+        HostTopology {
+            spaces: vec![TopologySpace {
+                id: "w1".into(),
+                label: Some("office".into()),
+            }],
+            tabs: vec![TopologyTab {
+                id: "w1:t1".into(),
+                space: "w1".into(),
+                label: Some("main".into()),
+            }],
+            panes: panes
+                .iter()
+                .map(|(id, label)| TopologyPane {
+                    target: HostTargetId::parse((*id).to_owned()).unwrap(),
+                    space: "w1".into(),
+                    tab: "w1:t1".into(),
+                    label: Some((*label).into()),
+                    agent_names: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn on(host: i64, panes: &[(&str, &str)], location: &str) -> HostMatch {
+        HostMatch {
+            host: HostId::from_row(host),
+            outcome: RemoteResolver::outcome_of(
+                &AddrTarget::Seat {
+                    location: location.into(),
+                },
+                &topology(panes),
+            ),
+        }
+    }
+
+    fn seats(host: HostId, pane: &str) -> Result<Option<String>, ApiError> {
+        Ok(match (host.get(), pane) {
+            (1, "w1:p1") => Some("sAAAseat0001".into()),
+            (2, "w1:p9") => Some("sAAAseat0002".into()),
+            (2, "w1:p8") => {
+                return Err(ApiError::new(
+                    crate::protocol::results::ErrorCode::Conflict,
+                    "pane w1:p8 maps to more than one seat",
+                ));
+            }
+            _ => None,
+        })
+    }
+
+    // Kills: matches not pooled across hosts, a failed host ignored (a false
+    // unique match or NoMatch), an unseated pane answered as a seat, a seat
+    // conflict or an invalid path not refused, and no host read as NoMatch.
+    #[test]
+    fn matches_pool_across_hosts_and_a_failed_host_withholds_a_unique_answer() {
+        let one = on(1, &[("w1:p1", "claude")], "claude");
+        let other = on(2, &[("w1:p9", "claude")], "claude");
+        let none = on(2, &[("w1:p9", "codex")], "claude");
+        // One match on two read hosts: that pane's seat.
+        assert_eq!(
+            pool(vec![one.clone_match(), none.clone_match()], false, seats),
+            AddrOutcome::Seat {
+                seat: "sAAAseat0001".into(),
+                path: "office/main/claude".into(),
+                pane: "w1:p1".into(),
+            }
+        );
+        // The same name on two hosts: ambiguous, both listed with seats.
+        let AddrOutcome::Ambiguous { candidates, .. } =
+            pool(vec![one.clone_match(), other.clone_match()], false, seats)
+        else {
+            panic!("ambiguous")
+        };
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[1].seat.as_deref(), Some("sAAAseat0002"));
+        // A failed host: a unique or empty answer is withheld, an ambiguous
+        // one stands.
+        assert_eq!(
+            pool(vec![one.clone_match()], true, seats),
+            AddrOutcome::HostUnavailable
+        );
+        assert_eq!(
+            pool(vec![none.clone_match()], true, seats),
+            AddrOutcome::HostUnavailable
+        );
+        assert_eq!(pool(Vec::new(), true, seats), AddrOutcome::HostUnavailable);
+        assert!(matches!(
+            pool(vec![one.clone_match(), other.clone_match()], true, seats),
+            AddrOutcome::Ambiguous { .. }
+        ));
+        assert_eq!(
+            pool(vec![none.clone_match()], false, seats),
+            AddrOutcome::NoMatch
+        );
+        // An unseated pane, a seat conflict, an invalid path.
+        assert!(matches!(
+            pool(vec![on(1, &[("w1:p2", "spare")], "spare")], false, seats),
+            AddrOutcome::NoSeat { .. }
+        ));
+        assert_eq!(
+            pool(vec![on(2, &[("w1:p8", "dup")], "dup")], false, seats),
+            AddrOutcome::Refused {
+                detail: "pane w1:p8 maps to more than one seat".into()
+            }
+        );
+        assert!(matches!(
+            pool(
+                vec![on(1, &[("w1:p1", "claude")], r"path:a\x")],
+                false,
+                seats
+            ),
+            AddrOutcome::Refused { .. }
+        ));
+    }
+
+    impl HostMatch {
+        fn clone_match(&self) -> Self {
+            Self {
+                host: self.host,
+                outcome: self.outcome.clone(),
+            }
+        }
     }
 }

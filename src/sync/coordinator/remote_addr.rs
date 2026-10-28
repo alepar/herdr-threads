@@ -50,8 +50,7 @@ pub enum RemoteAnswer {
     /// The link does not carry [`ADDR_RESOLVE_CAP`]; the peer's version when
     /// known.
     NoCap { version: Option<String> },
-    /// The link ended before the answer, or too many requests are
-    /// outstanding here.
+    /// The link ended before the answer.
     LinkLost,
 }
 
@@ -180,7 +179,9 @@ impl Actor {
             return;
         }
         if self.addr.outstanding.len() >= MAX_OUTSTANDING {
-            let _ = reply.send(RemoteAnswer::LinkLost);
+            let _ = reply.send(RemoteAnswer::Answered(refused(
+                "too many remote requests in flight on the asking node",
+            )));
             return;
         }
         let id = Uuid::new_v4();

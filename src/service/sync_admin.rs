@@ -48,6 +48,9 @@ const PEER_LIST_SNAPSHOT_MS: u64 = 2_000;
 pub const REMOTE_RESOLVE_WAIT_MS: u64 = 10_000;
 /// How long it then waits for the named seat to replicate here.
 pub const REPLICA_WAIT_MS: u64 = 5_000;
+/// The daemon transport's bound for one `resolve address` request: both
+/// waits plus margin (the ordinary 5 s bound would cut them off).
+pub const REMOTE_ADDRESS_DAEMON_BOUND_MS: u64 = REMOTE_RESOLVE_WAIT_MS + REPLICA_WAIT_MS + 2_000;
 /// Known machines an unknown-machine answer lists.
 const KNOWN_MACHINES_LISTED: usize = 8;
 const REMEDY_RE_ADD: &str = "; then `herdr-threads peer add` any target stopped by node_collision";
@@ -496,9 +499,12 @@ impl SyncAdmin {
             .0
             .saturating_sub(self.clock.monotonic_now().0);
         let wait = std::time::Duration::from_millis(remaining.min(REMOTE_RESOLVE_WAIT_MS));
-        let answer = self
-            .runtime
-            .block_on(self.sync.resolve_remote(uuid, target, wait))?;
+        let answer = self.runtime.block_on(self.sync.resolve_remote(
+            uuid,
+            target,
+            wait,
+            &budget.cancellation,
+        ));
         let answer = match answer {
             None => RemoteAddress::Timeout {
                 secs: wait.as_secs(),
@@ -513,7 +519,9 @@ impl SyncAdmin {
             }
             Some(RemoteAnswer::NoCap { version }) => RemoteAddress::NoCap { version },
             Some(RemoteAnswer::Answered(outcome)) => match &outcome {
-                AddrOutcome::Seat { seat, .. } if !self.wait_replicated(seat, &uuid, budget)? => {
+                AddrOutcome::Seat { seat, .. }
+                    if !self.wait_replicated(seat, &uuid, REPLICA_WAIT_MS, budget)? =>
+                {
                     RemoteAddress::NotReplicated { seat: seat.clone() }
                 }
                 _ => RemoteAddress::Answered { outcome },
@@ -528,11 +536,14 @@ impl SyncAdmin {
         &self,
         seat: &str,
         home: &crate::node::NodeUuid,
+        wait_ms: u64,
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         use rusqlite::OptionalExtension;
+        const POLL_MS: u64 = 100;
         let start = self.clock.monotonic_now().0;
-        loop {
+        // Bounded by count too, so a stalled clock cannot keep it polling.
+        for _ in 0..=wait_ms / POLL_MS {
             let held = self.store.sync_read(budget, |conn, _| {
                 conn.query_row(
                     "SELECT 1 FROM seats WHERE id=?1 AND home_node=?2 AND is_local=0",
@@ -544,10 +555,11 @@ impl SyncAdmin {
                 .map_err(crate::store::connection::store_error)
             })?;
             let now = self.clock.monotonic_now().0;
-            if held || now.saturating_sub(start) >= REPLICA_WAIT_MS || now >= budget.deadline.0 {
+            if held || now.saturating_sub(start) >= wait_ms || now >= budget.deadline.0 {
                 return Ok(held);
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
         }
+        Ok(false)
     }
 }

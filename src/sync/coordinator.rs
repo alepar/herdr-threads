@@ -616,27 +616,30 @@ impl SyncHandle {
     }
 
     /// Ask `node` to resolve `target` on its own node, waiting at most
-    /// `wait`. `Err` only when the coordinator did not take the request.
+    /// `wait` (handing the request to the actor included) and never past a
+    /// cancellation of `cancel`. `None`: no answer in time.
     pub async fn resolve_remote(
         &self,
         node: NodeUuid,
         target: crate::sync::frame::AddrTarget,
         wait: Duration,
-    ) -> Result<Option<remote_addr::RemoteAnswer>, ApiError> {
-        let busy = || ApiError::new(ErrorCode::StoreBusy, "sync coordinator did not answer");
+        cancel: &Cancellation,
+    ) -> Option<remote_addr::RemoteAnswer> {
         let (tx, rx) = oneshot::channel();
-        self.requests
-            .send(Request::ResolveRemote {
-                node,
-                target,
-                reply: tx,
-            })
-            .await
-            .map_err(|_| busy())?;
-        match timeout(wait, rx).await {
-            Ok(Ok(answer)) => Ok(Some(answer)),
-            Ok(Err(_)) => Ok(Some(remote_addr::RemoteAnswer::LinkLost)),
-            Err(_) => Ok(None),
+        let ask = async {
+            self.requests
+                .send(Request::ResolveRemote {
+                    node,
+                    target,
+                    reply: tx,
+                })
+                .await
+                .ok()?;
+            Some(rx.await.unwrap_or(remote_addr::RemoteAnswer::LinkLost))
+        };
+        tokio::select! {
+            result = timeout(wait, ask) => result.ok().flatten(),
+            () = cancel.cancelled() => None,
         }
     }
 
@@ -8028,14 +8031,24 @@ mod tests {
         }
     }
 
+    async fn ask(rig: &Rig, node: NodeUuid, wait: Duration) -> Option<remote_addr::RemoteAnswer> {
+        rig.handle
+            .resolve_remote(node, seat_target("x"), wait, &Cancellation::default())
+            .await
+    }
+
     /// Ask until the link to `node` is up (anything but `NotLinked`).
     async fn ask_linked(rig: &Rig, node: NodeUuid, location: &str) -> remote_addr::RemoteAnswer {
         for _ in 0..200 {
             let answer = rig
                 .handle
-                .resolve_remote(node, seat_target(location), Duration::from_secs(5))
+                .resolve_remote(
+                    node,
+                    seat_target(location),
+                    Duration::from_secs(5),
+                    &Cancellation::default(),
+                )
                 .await
-                .unwrap()
                 .expect("answered in time");
             if answer != remote_addr::RemoteAnswer::NotLinked {
                 return answer;
@@ -8057,11 +8070,7 @@ mod tests {
         };
         b.handle
             .set_addr_resolver(Arc::new(FixedResolver(seat.clone())));
-        let unknown = a
-            .handle
-            .resolve_remote(identity(3).uuid(), seat_target("x"), Duration::from_secs(1))
-            .await
-            .unwrap();
+        let unknown = ask(&a, identity(3).uuid(), Duration::from_secs(1)).await;
         assert_eq!(unknown, Some(remote_addr::RemoteAnswer::NotLinked));
         let _report = link_nodes(&a, &b).await;
         let b_node = identity(2).uuid();
@@ -8080,6 +8089,15 @@ mod tests {
             remote_addr::RemoteAnswer::Answered(AddrOutcome::Refused {
                 detail: "resolver unavailable".into()
             })
+        );
+        // A cancelled caller stops waiting at once.
+        let cancel = Cancellation::default();
+        cancel.cancel();
+        assert_eq!(
+            a.handle
+                .resolve_remote(b_node, seat_target("x"), Duration::from_secs(60), &cancel)
+                .await,
+            None
         );
         stop(a).await;
         stop(b).await;
@@ -8107,12 +8125,20 @@ mod tests {
         stop(b).await;
     }
 
-    /// Holds every request until released.
-    struct GatedResolver(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+    /// Counts the requests it holds; holds each until released.
+    struct GatedResolver {
+        entered: Arc<AtomicUsize>,
+        gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
 
     impl remote_addr::AddrResolver for GatedResolver {
         fn resolve(&self, _: crate::sync::frame::AddrTarget) -> crate::sync::frame::AddrOutcome {
-            let _ = self.0.lock().unwrap().recv_timeout(Duration::from_secs(10));
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            let _ = self
+                .gate
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10));
             crate::sync::frame::AddrOutcome::NoMatch
         }
     }
@@ -8126,19 +8152,17 @@ mod tests {
         let a = start_node(1, Arc::new(MemoryJournal::new(identity(1))));
         let b = start_node(2, Arc::new(MemoryJournal::new(identity(2))));
         let (release, gate) = std::sync::mpsc::channel();
-        b.handle
-            .set_addr_resolver(Arc::new(GatedResolver(std::sync::Mutex::new(gate))));
+        let entered = Arc::new(AtomicUsize::new(0));
+        b.handle.set_addr_resolver(Arc::new(GatedResolver {
+            entered: entered.clone(),
+            gate: std::sync::Mutex::new(gate),
+        }));
         let _report = link_nodes(&a, &b).await;
         let b_node = identity(2).uuid();
         listed(&a, 1).await;
         // The first request is held by b: the asker gives up at its bound.
         let started = std::time::Instant::now();
-        let first = a
-            .handle
-            .resolve_remote(b_node, seat_target("x"), Duration::from_millis(300))
-            .await
-            .unwrap();
-        assert_eq!(first, None, "timed out");
+        assert_eq!(ask(&a, b_node, Duration::from_millis(300)).await, None);
         assert!(started.elapsed() < Duration::from_secs(3));
         // Seven more fill b's eight in-flight slots; the ninth is refused.
         let mut held = Vec::new();
@@ -8146,18 +8170,23 @@ mod tests {
             let handle = a.handle.clone();
             held.push(tokio::spawn(async move {
                 handle
-                    .resolve_remote(b_node, seat_target("x"), Duration::from_secs(20))
+                    .resolve_remote(
+                        b_node,
+                        seat_target("x"),
+                        Duration::from_secs(20),
+                        &Cancellation::default(),
+                    )
                     .await
             }));
         }
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let ninth = a
-            .handle
-            .resolve_remote(b_node, seat_target("x"), Duration::from_secs(5))
-            .await
-            .unwrap();
+        // Every one of the eight is held on b before the ninth goes out.
+        let ready = std::time::Instant::now();
+        while entered.load(Ordering::SeqCst) < 8 {
+            assert!(ready.elapsed() < Duration::from_secs(10), "requests held");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         assert_eq!(
-            ninth,
+            ask(&a, b_node, Duration::from_secs(5)).await,
             Some(remote_addr::RemoteAnswer::Answered(AddrOutcome::Refused {
                 detail: "busy".into()
             }))
@@ -8167,7 +8196,7 @@ mod tests {
         }
         for request in held {
             assert_eq!(
-                request.await.unwrap().unwrap(),
+                request.await.unwrap(),
                 Some(remote_addr::RemoteAnswer::Answered(AddrOutcome::NoMatch))
             );
         }

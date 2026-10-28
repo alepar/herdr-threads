@@ -1734,6 +1734,14 @@ impl ContendedTimingHost {
     }
 }
 impl HostPort for ContendedTimingHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -2546,6 +2554,14 @@ fn sqlite_repeated_completion_failures_keep_bounded_capacity_and_retry_work() {
     std::fs::remove_file(path).unwrap();
 }
 impl HostPort for SqliteTimingHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -3216,6 +3232,14 @@ impl FakeNativeHost {
     }
 }
 impl HostPort for FakeNativeHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -3540,6 +3564,14 @@ struct LateReadHost {
     clock: Arc<FakeClock>,
 }
 impl HostPort for LateReadHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -4584,6 +4616,15 @@ fn pre_submit_prompt_error_restores_ladder_and_backs_off() {
     // backoff untouched).
     struct SubmitErrHost(SqliteTimingHost);
     impl HostPort for SubmitErrHost {
+        fn live_topology(
+            &self,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError>
+        {
+            Err(crate::protocol::results::ApiError::unsupported(
+                "fixture host has no topology",
+            ))
+        }
         fn observe_current_target_for_archival(
             &self,
             _: &crate::protocol::ids::HostTargetId,
@@ -4932,6 +4973,14 @@ struct ErrObserveHost {
     error: ApiError,
 }
 impl HostPort for ErrObserveHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -5067,6 +5116,14 @@ struct CooperativeRecordingHost {
     foreground: Vec<u32>,
 }
 impl HostPort for CooperativeRecordingHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {
         Ok(self.foreground.clone())
     }
@@ -5816,6 +5873,14 @@ impl ComposerReadHost {
     }
 }
 impl HostPort for ComposerReadHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -6223,6 +6288,14 @@ impl PokeHost {
     }
 }
 impl HostPort for PokeHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -6316,6 +6389,14 @@ impl StashingHost {
     }
 }
 impl HostPort for StashingHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -7337,6 +7418,14 @@ impl CooperativeStashingHost {
     }
 }
 impl HostPort for CooperativeStashingHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -7470,6 +7559,14 @@ impl RegisteredPokeHost {
     }
 }
 impl HostPort for RegisteredPokeHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         self.inner.native_launch_capability()
     }

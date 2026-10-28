@@ -1276,14 +1276,18 @@ fn peer_list_shows_last_known_node_status() {
         },
     );
     let lines = node_lines(&rig);
-    assert_eq!(lines, ["node Zq7 unreachable never v=2.3.9 rx=3/5 tx=7/9"]);
-    assert_eq!(lines[0].len(), 48);
+    // The seeded node's host label ends the row: the name `@MACHINE` matches.
+    assert_eq!(
+        lines,
+        ["node Zq7 unreachable never v=2.3.9 rx=3/5 tx=7/9 host=laptop"]
+    );
+    assert_eq!(lines[0].len(), 60);
 
     // A newer boot without a version replaces the version.
     record_peer(&rig.node, peer_status(None, 2));
     assert_eq!(
         node_lines(&rig),
-        ["node Zq7 unreachable never v=- rx=3/5 tx=7/9"]
+        ["node Zq7 unreachable never v=- rx=3/5 tx=7/9 host=laptop"]
     );
 
     // Fresh contact but no live link: reachable (relayed), never linked.
@@ -1305,7 +1309,7 @@ fn peer_list_shows_last_known_node_status() {
     assert_eq!(
         lines,
         [format!(
-            "node Zq7 reachable seen=4s app={} v=- rx=3/5 tx=7/9 clone_suspected",
+            "node Zq7 reachable seen=4s app={} v=- rx=3/5 tx=7/9 clone_suspected host=laptop",
             age_of(now, 4)
         )]
     );
@@ -2160,4 +2164,87 @@ fn local_rows_participant_suffix_and_location_hint() {
             .unwrap(),
         "a / b / - / p\\nq"
     );
+}
+
+// Kills: an unknown machine not listing the known ones, a known but
+// unlinked machine not reported unreachable, our own machine sent away, and
+// an answered seat accepted although this node does not hold it as that
+// node's seat (TRUST-POLICY N14: absent, local, or homed elsewhere).
+#[test]
+fn resolve_address_matches_machines_and_takes_only_the_named_nodes_seat() {
+    use crate::protocol::sync_admin::{AddressReply, RemoteAddress};
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    seed_peer_node(&rig.node, "Zq7");
+    let resolve = |machine: &str| match rig
+        .read(SyncCommand::ResolveAddress {
+            machine: machine.into(),
+            target: crate::sync::frame::AddrTarget::Seat {
+                location: "w1:p1".into(),
+            },
+        })
+        .unwrap()
+    {
+        Reply::Address(reply) => reply,
+        other => panic!("{other:?}"),
+    };
+    let AddressReply::UnknownMachine { known } = resolve("nowhere") else {
+        panic!("unknown machine")
+    };
+    assert!(
+        known
+            .iter()
+            .any(|row| row.host.as_deref() == Some("laptop"))
+    );
+    let AddressReply::Remote { node, answer } = resolve("laptop") else {
+        panic!("remote")
+    };
+    assert_eq!(node.tag, "Zq7");
+    assert!(
+        matches!(answer, RemoteAddress::Unreachable { .. }),
+        "{answer:?}"
+    );
+    let db = rig.node.store.context().open_writer().unwrap();
+    let own: String = db
+        .query_row("SELECT tag FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(resolve(&own), AddressReply::SelfNode);
+
+    // Only a seat held as the named node's remote seat counts.
+    let insert_remote = |seat: &str, home: &str| {
+        db.execute(
+            "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+             VALUES(?1,(SELECT id FROM local_node),'remote','native',0,0,?2,0,'agent',1)",
+            rusqlite::params![seat, home],
+        )
+        .unwrap();
+    };
+    let peer = peer_node();
+    insert_remote("sZq7remote01", &peer.to_string());
+    let held = |seat: &str| {
+        rig.admin
+            .wait_replicated(seat, &peer, 0, &budget())
+            .unwrap()
+    };
+    assert!(held("sZq7remote01"));
+    assert!(!held("sZq7absent01"), "not replicated");
+    let other = crate::node::NodeUuid::from_u128(77);
+    seed_other_node(&rig.node, other, "Xx9");
+    insert_remote("sXx9remote01", &other.to_string());
+    assert!(!held("sXx9remote01"), "homed at another node");
+}
+
+fn seed_other_node(node: &Node, uuid: crate::node::NodeUuid, tag: &str) {
+    let db = node.store.context().open_writer().unwrap();
+    crate::store::node_directory::upsert(
+        &db,
+        &crate::store::node_directory::NodeDirectoryRow {
+            node_uuid: uuid,
+            tag: tag.parse().unwrap(),
+            tag_k: 0,
+            host_label: None,
+            first_seen_at: 0,
+            tag_hlc: None,
+        },
+    )
+    .unwrap();
 }

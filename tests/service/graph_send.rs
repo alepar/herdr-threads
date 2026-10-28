@@ -135,6 +135,17 @@ impl WakeHost {
     }
 }
 impl HostPort for WakeHost {
+    fn live_topology(
+        &self,
+        _: &herdr_threads::protocol::time::CallBudget,
+    ) -> Result<
+        herdr_threads::host::observation::HostTopology,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        Err(herdr_threads::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     /// The pane's foreground process is the checked-in worker: its claim carries this test
     /// process's fingerprint, and the composer wake types only to the binding with that pid.
     fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {

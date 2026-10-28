@@ -225,6 +225,21 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     ),
     (
         "src/sync/coordinator.rs",
+        "recv_timeout(Duration::from_secs(10))",
+        "unit-test resolver holding remote address requests until the test releases them, 10 s cap; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_millis(5)).await",
+        "unit test polling until eight remote address requests are held, 10 s cap; not daemon code",
+    ),
+    (
+        "src/service/sync_admin.rs",
+        "std::thread::sleep(std::time::Duration::from_millis(POLL_MS))",
+        "one `resolve address` request polling, on its own blocking handler thread, for the answered seat to replicate, bounded by REPLICA_WAIT_MS and the request's deadline; not a periodic daemon loop",
+    ),
+    (
+        "src/sync/coordinator.rs",
         "tokio::time::sleep(CLOSE_WRITE_TIMEOUT)",
         "the actor's one bounded wait at shutdown for link tasks to report their end after close; not periodic",
     ),

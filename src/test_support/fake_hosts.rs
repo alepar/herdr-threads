@@ -159,6 +159,14 @@ fn refused<T>() -> Result<T, ApiError> {
 }
 
 impl HostPort for RefusingHost {
+    fn live_topology(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         NativeLaunchCapability::Unsupported
     }

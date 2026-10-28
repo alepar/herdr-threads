@@ -66,8 +66,19 @@ fn remote_addresses_resolve_on_their_home_node() {
                 ..Default::default()
             },
         );
-        // Two local labels that carry an `@`.
-        cluster.add_host(0, &[P1, "w1:p4=w1:p1@beta.lab", "w1:p5=user@nowhere"]);
+        // Local labels that carry an `@`: one per collision case.
+        let b_prefix = cluster.node_uuid(1).to_string()[..8].to_owned();
+        let collide_remote = format!("w1:p6=w1:p1@{b_prefix}");
+        cluster.add_host(
+            0,
+            &[
+                P1,
+                "w1:p4=w1:p1@beta.lab",
+                "w1:p5=user@nowhere",
+                &collide_remote,
+                "w1:p7=w1:p1@alpha",
+            ],
+        );
         cluster.add_host(1, &[P1, P2]);
         cluster.add_host(2, &[P1, P3]);
         cluster
@@ -82,7 +93,8 @@ fn remote_addresses_resolve_on_their_home_node() {
     let b_uuid = cluster.node_uuid(1).to_string();
 
     // A path on beta by tag, uuid prefix and full uuid: beta's own seat.
-    for machine in [b_tag.as_str(), &b_uuid[..8], &b_uuid] {
+    // A 9-hex prefix: the 8-hex one is a colliding local label below.
+    for machine in [b_tag.as_str(), &b_uuid[..9], &b_uuid] {
         let address = format!("w1/w1:t1/{P1}@{machine}");
         assert_eq!(
             inspect(&cluster, &a, &address),
@@ -125,9 +137,11 @@ fn remote_addresses_resolve_on_their_home_node() {
     // An unknown machine.
     let err = inspect(&cluster, &a, &format!("{P1}@nowhere")).unwrap_err();
     assert!(err.contains("no machine nowhere; known:"), "{err}");
-    // Our own machine resolves locally.
+    // Our own machine resolves locally (by tag: `w1:p1@alpha` is also a
+    // local label, below).
+    let a_tag = tag_of(&cluster, 0, 0);
     assert_eq!(
-        inspect(&cluster, &a, &format!("{P1}@alpha")),
+        inspect(&cluster, &a, &format!("{P1}@{a_tag}")),
         Ok(a.id.clone())
     );
     // beta.lab has no addr.resolve.v1: refused naming the cap, even though
@@ -139,6 +153,15 @@ fn remote_addresses_resolve_on_their_home_node() {
     // meaning (that pane holds no seat).
     let err = inspect(&cluster, &a, "user@nowhere").unwrap_err();
     assert!(err.contains("w1:p5"), "{err}");
+    // A local label that is also a live remote address: both readings are
+    // listed and nothing is picked.
+    let err = inspect(&cluster, &a, &format!("w1:p1@{}", &b_uuid[..8])).unwrap_err();
+    assert!(err.contains("2 readings"), "{err}");
+    assert!(err.contains(r"\@"), "{err}");
+    // The same with our own machine: the label and the plain location name
+    // different local panes.
+    let err = inspect(&cluster, &a, "w1:p1@alpha").unwrap_err();
+    assert!(err.contains("2 readings"), "{err}");
     // Its exact seat ID still works.
     assert_eq!(inspect(&cluster, &a, &c.id), Ok(c.id.clone()));
     // beta unreachable: refused, the exact seat ID still works.

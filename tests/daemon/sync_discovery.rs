@@ -117,6 +117,17 @@ fn wait_until<T>(what: &str, mut probe: impl FnMut() -> Option<T>, states: &[&Pa
 struct LiveHost(AtomicU64);
 
 impl HostPort for LiveHost {
+    fn live_topology(
+        &self,
+        _: &herdr_threads::protocol::time::CallBudget,
+    ) -> Result<
+        herdr_threads::host::observation::HostTopology,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        Err(herdr_threads::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         RefusingHost.native_launch_capability()
     }

@@ -107,6 +107,17 @@ impl ResolutionHost {
     }
 }
 impl HostPort for ResolutionHost {
+    fn live_topology(
+        &self,
+        _: &herdr_threads::protocol::time::CallBudget,
+    ) -> Result<
+        herdr_threads::host::observation::HostTopology,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        Err(herdr_threads::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &herdr_threads::protocol::ids::HostTargetId,
@@ -2745,6 +2756,17 @@ impl LaunchHost {
     }
 }
 impl HostPort for LaunchHost {
+    fn live_topology(
+        &self,
+        _: &herdr_threads::protocol::time::CallBudget,
+    ) -> Result<
+        herdr_threads::host::observation::HostTopology,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        Err(herdr_threads::protocol::results::ApiError::unsupported(
+            "fixture host has no topology",
+        ))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &herdr_threads::protocol::ids::HostTargetId,
