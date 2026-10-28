@@ -365,6 +365,19 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
     /// Examines at most one bounded page per call. Unvisited rows from a
     /// partially attempted page remain in memory, preserving exact position.
     pub fn drive_wakes(&self, budget: &CallBudget) -> Result<WakeDriveOutcome, ApiError> {
+        let mut outcome = WakeDriveOutcome::default();
+        self.drive_wakes_into(budget, &mut outcome)
+            .map(|()| outcome)
+    }
+
+    /// [`Self::drive_wakes`] that keeps what a failed drive collected: on an
+    /// error `outcome` still holds the verification and refusal details of
+    /// the attempts made before it, so the daemon log can report them.
+    pub fn drive_wakes_into(
+        &self,
+        budget: &CallBudget,
+        outcome: &mut WakeDriveOutcome,
+    ) -> Result<(), ApiError> {
         if budget.is_exhausted(self.wakes.store.clock()) {
             return Err(error(
                 ErrorCode::DeadlineExceeded,
@@ -372,21 +385,20 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             ));
         }
         let completion_error = self.wakes.retry_completions(budget)?;
-        let mut outcome = WakeDriveOutcome::default();
-        if !self.drive_recovery(budget, &mut outcome)? {
+        if !self.drive_recovery(budget, outcome)? {
             outcome.has_more = true;
-            return Ok(outcome);
+            return Ok(());
         }
         if budget.is_exhausted(self.wakes.store.clock()) {
             outcome.has_more = true;
             return match completion_error {
                 Some(err) => Err(err),
-                None => Ok(outcome),
+                None => Ok(()),
             };
         }
         if !self.drive_batch_cleanup(budget)? {
             outcome.has_more = true;
-            return Ok(outcome);
+            return Ok(());
         }
         let mut scan = self
             .scan
@@ -492,7 +504,7 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
         outcome.next_due_at = self.wakes.next_due_at()?;
         match completion_error {
             Some(err) => Err(err),
-            None => Ok(outcome),
+            None => Ok(()),
         }
     }
 

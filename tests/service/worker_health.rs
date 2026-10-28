@@ -1742,6 +1742,32 @@ fn observe_drive_reports_wake_refusals() {
     assert_eq!(wake.health(), health_before);
 }
 
+/// Kills: a failed drive's refusals never reaching daemon.log (the bead's
+/// follow-up: details are drained on a drive error too).
+#[test]
+fn observe_drive_into_reports_refusals_of_a_failed_drive() {
+    use crate::protocol::ids::SeatId;
+    let wake = Arc::new(WorkerStatus::default());
+    let production = Production::new([Default::default(), wake.clone(), Default::default()]);
+    let fixture = wake_store(
+        &production._dir.0.join("wakes"),
+        production.clock.clone(),
+        uuid::Uuid::new_v4(),
+    );
+    let log = Arc::new(RefusalLog::default());
+    wake.set_error_log(log.clone());
+    let observed = ObservedWakePort::new(&fixture, &wake);
+    let refusals = vec![(SeatId::new("a"), "composer is nonempty".to_owned())];
+    observed.observe_drive_into(
+        &crate::scheduler::WakeDriveOutcome {
+            refusals: refusals.clone(),
+            ..Default::default()
+        },
+        &Err(ApiError::store_corrupt("injected")),
+    );
+    assert_eq!(log.0.lock().unwrap().clone(), refusals);
+}
+
 /// Refuses before sending (pacer D5) and, like the real dispatcher,
 /// reports no verification for a prompt it never sent.
 struct RefusingNotifier;

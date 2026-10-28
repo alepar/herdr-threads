@@ -1751,19 +1751,32 @@ impl<'a, P: WakePort + ?Sized> ObservedWakePort<'a, P> {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
     pub fn observe_drive(&self, result: &Result<crate::scheduler::WakeDriveOutcome, ApiError>) {
-        use crate::scheduler::SubmissionVerification::{NotChecked, Unsubmitted};
-        if let Ok(outcome) = result {
-            for (seat, verification) in &outcome.verification {
-                if matches!(verification, NotChecked | Unsubmitted) {
-                    self.status.report_wake_verification(seat, *verification);
-                }
-            }
-            for (seat, detail) in &outcome.refusals {
-                self.status.report_wake_refusal(seat, detail);
-            }
+        match result {
+            Ok(outcome) => self.report_drive_details(outcome),
+            Err(error) => self.observe_driver_error("unverified wake driver recovery", error),
         }
+    }
+    /// A `drive_wakes_into` result: the details its attempts collected are
+    /// reported whether or not the drive then failed.
+    pub fn observe_drive_into(
+        &self,
+        outcome: &crate::scheduler::WakeDriveOutcome,
+        result: &Result<(), ApiError>,
+    ) {
+        self.report_drive_details(outcome);
         if let Err(error) = result {
             self.observe_driver_error("unverified wake driver recovery", error);
+        }
+    }
+    fn report_drive_details(&self, outcome: &crate::scheduler::WakeDriveOutcome) {
+        use crate::scheduler::SubmissionVerification::{NotChecked, Unsubmitted};
+        for (seat, verification) in &outcome.verification {
+            if matches!(verification, NotChecked | Unsubmitted) {
+                self.status.report_wake_verification(seat, *verification);
+            }
+        }
+        for (seat, detail) in &outcome.refusals {
+            self.status.report_wake_refusal(seat, detail);
         }
     }
     /// Poke driver errors reach worker health like wake driver errors.
@@ -2139,8 +2152,10 @@ pub fn start_wake_worker_named(
                     cancellation: cancellation.clone(),
                 };
                 observed.begin_drive(&budget);
-                let result = scheduler.drive_wakes(&budget);
-                observed.observe_drive(&result);
+                let mut outcome = crate::scheduler::WakeDriveOutcome::default();
+                let result = scheduler.drive_wakes_into(&budget, &mut outcome);
+                observed.observe_drive_into(&outcome, &result);
+                let result = result.map(|()| outcome);
                 match result {
                     Err(error) => {
                         // A failure raised inside a store callback is already

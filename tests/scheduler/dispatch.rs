@@ -416,7 +416,12 @@ impl WakePort for FakeWakeStore {
                 | WakeOutcome::Cancelled
                 | WakeOutcome::Refused(_)
         ));
-        self.events.lock().unwrap().push("complete");
+        let mut events = self.events.lock().unwrap();
+        // A notifier that pushed `fail-complete` makes this attempt's record fail.
+        if events.contains(&"fail-complete") {
+            return Err(ApiError::store_corrupt("injected failed completion"));
+        }
+        events.push("complete");
         Ok(false)
     }
 }
