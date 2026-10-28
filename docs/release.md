@@ -2,6 +2,32 @@
 
 ## Current release status
 
+[v2.6.2 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.2) from source `9cd43ea9d`, a patch release. There is no schema change (node schema stays 10) and no peer wire change; `scripts/freeze-peer-wire 2.4.0 --at v2.6.2 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+**What changed.** Each change was roasted by its fixer and independently reviewed.
+- **`send` no longer fails with `intent allocator lock timeout`** (ht-l4bg). Hooks now scan intent files outside the allocator lock. That lock was held for up to 226 ms per hook turn with about 2,800 retained intents, and those intents came from a looping external invite timer.
+- **The installer reports symlinked Codex `skills/` and `rules/` as shared** (ht-lmjf, ht-mf2q). The record of the root that holds the real file decides, whatever the directory order. An edited or interrupted real-root record vetoes "shared".
+- **Test-fixture budget and readiness fixes:** ci/fixture-budgets, ci/golden-fixture, ci/setup-neighbors.
+
+**Qualification** ran on `9cd43ea9d` (blacky, `nice -n 19`, heavy steps through the shared lock, evidence in `~/.cache/herdr-threads-release/2.6.2`).
+- fmt, harness-neutral and wire-compat passed, as did both clippy variants and default-features.
+- The candidate build (`e4d62866…`), the wake e2e self-test, the Herdr matrix (0.9.1-0.9.5 PASS) and every leak check passed.
+- The package lifecycle gate passed (962 s), the installer daemon suite 5/5 and the installer backup suite 7/7.
+- The full suite passed 8074/8077; the three failures are the zsh tests.
+- The wake e2e (`scripts/wake-e2e-herdr 0.9.5 --codex-auth-home ~/.aisw/profiles/codex/codex-2`) passed 120/120 with no credential refresh.
+
+**CI.** [Run 40754886945](https://github.com/alepar/herdr-threads/actions/runs/40754886945) passed on the first attempt, and the [release run 40764433377](https://github.com/alepar/herdr-threads/actions/runs/40764433377) passed every job.
+
+**Archives.**
+- SHA256SUMS equals GitHub's digests.
+- Each archive has VERSION 2.6.2, the right TARGET and 13 files (modes 755/644), and the licenses are present.
+- The credential scan is clean.
+
+**Installed on blacky** with the tag's installer (`--setup --version v2.6.2`, identical to `git show v2.6.2:scripts/install.sh`).
+- The installer exited 0 and reported the four symlinked aisw Codex profiles `shared (shared via symlink; managed at ~/.codex/skills/herdr-threads/SKILL.md)`.
+- Backup: `herdr-threads-backups/pre-v2.6.2-20261028T205356Z` (schema 10, integrity ok). It pruned `pre-v2.5.0-…` and kept the newest three, which include the newest schema-9 backup.
+- The installer stopped the 2.6.1 daemon. The `/proc` exe hash is `7c0623b2…`, equal to the linux-x86_64 archive, and doctor reports the daemon healthy.
+
 [v2.6.1 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.1) from source `c707e6729`. It is a patch release under the refined versioning rule (minor only for new user-facing features). There is no schema change (node schema stays 10) and no peer wire change; `scripts/freeze-peer-wire 2.4.0 --at v2.6.1 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 **What it carries.** Every change passed the fixer's roast and an independent review before merge.
