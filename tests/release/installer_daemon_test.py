@@ -197,7 +197,9 @@ class InstallerDaemonRace(unittest.TestCase):
         self.assertNotIn('Check it: herdr-threads doctor', out)
 
     def test_a_daemon_from_another_installation_is_left_alone(self):
-        # A dev checkout's newer daemon: reported, never stopped or downgraded.
+        # A dev checkout's newer daemon on a reinstall: reported, never
+        # replaced (downgraded) by verification. An upgrade's stops are not
+        # covered: they stop every daemon on the default roots, as on main.
         self.run_installer('0.1.1')
         dev = self.root / 'dev/bin'
         dev.mkdir(parents=True)

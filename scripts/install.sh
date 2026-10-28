@@ -935,6 +935,8 @@ stale_instances() {
         [ -n "$instance" ] || continue
         pid=$(instance_pid "$instance") || continue
         exe=$(daemon_executable "$pid")
+        # Gone between the two reads: the next check sees what replaced it.
+        [ -n "$exe" ] || continue
         observed=$(json_field software_version < "$instance/endpoint.json") || observed=unknown
         if [ "$observed" != "$expected_version" ]; then
             printf '%s\t%s\truns %s; installed executable is %s\n' "$instance" "$exe" "$observed" "$expected_version"
@@ -945,17 +947,17 @@ stale_instances() {
 }
 
 # Whether a daemon started from EXECUTABLE belongs to this installation: run
-# from $install_dir or the retained $install_dir.old, while Herdr has no
-# other plugin root registered. Only such a daemon is replaced; another one
-# (a dev checkout Herdr runs, another prefix) is reported and left alone.
+# from $install_dir or $install_dir.old (retained by this run, or removed by
+# an earlier one, whose daemon then runs a deleted file). Only such a daemon
+# is replaced; another one (a dev checkout Herdr runs, another prefix) is
+# reported and left alone.
 owned_daemon() {
-    local exe dir
-    [ -z "$foreign_root" ] || return 1
+    local exe parent
     exe=$(real_file "$1" 2>/dev/null) || exe=$1
-    for dir in "$install_dir" ${retained_old:+"$retained_old"}; do
-        [ -d "$dir" ] || continue
-        case "$exe" in "$(CDPATH='' cd -P -- "$dir" && pwd -P)"/*) return 0 ;; esac
-    done
+    parent=$(CDPATH='' cd -P -- "$(dirname "$install_dir")" && pwd -P) || return 1
+    case "$exe" in
+        "$parent/$(basename "$install_dir")"/* | "$parent/$(basename "$install_dir").old"/*) return 0 ;;
+    esac
     return 1
 }
 
@@ -1041,7 +1043,10 @@ verify_installed_daemons() {
         foreign=0
         while IFS="$(printf '\t')" read -r instance exe reason; do
             warn "daemon in $instance $reason"
-            if ! owned_daemon "$exe"; then
+            if [ -n "$foreign_root" ]; then
+                warn "daemon in $instance left alone: Herdr has $PLUGIN_ID registered from $foreign_root"
+                foreign=1
+            elif ! owned_daemon "$exe"; then
                 warn "daemon in $instance runs from $exe, not from this installation; left alone"
                 foreign=1
             fi
