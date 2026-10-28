@@ -3560,6 +3560,11 @@ fn parse_cli_in_registry(
                     registry,
                 )?;
             }
+            if args.existing && remote_machine(&args.selector).is_some() {
+                return Err(invalid(
+                    "--existing --pane cannot name another machine; use --seat 'PANE@MACHINE'",
+                ));
+            }
             if !args.existing && remote_machine(&args.selector).is_some() {
                 if args.harness_binary.is_some()
                     || args.name.is_some()

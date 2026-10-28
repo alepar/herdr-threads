@@ -36,6 +36,14 @@ use crate::store::peer_requests::{self, PeerRequest};
 use crate::sync::coordinator::remote_launch::PeerLauncher;
 use crate::sync::frame::{LaunchRequest, LaunchState, LaunchTarget};
 
+/// Peer-requested launches one requesting node may have running here at once.
+pub const MAX_RUNNING_PER_PEER: u64 = 4;
+/// Retries of a worker's progress or outcome write after the first fails.
+const RECORD_RETRIES: [Duration; 3] = [
+    Duration::from_millis(200),
+    Duration::from_secs(1),
+    Duration::from_secs(5),
+];
 /// Budget of one store read or write, and of the topology reads (ms).
 const CALL_BUDGET_MS: u64 = 3_000;
 /// A child still running after this long is killed and the request failed.
@@ -63,11 +71,20 @@ const KEPT_ENV: &[&str] = &[
 
 /// The environment of a launch child, from `vars` (the daemon's own).
 pub fn child_env(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    // The setup inputs registered adapters declare (their config roots), so the
+    // child checks hooks where this node set them up; never session or pane
+    // variables, which no adapter declares as setup input.
+    let setup: Vec<&'static str> = crate::harness::registry::builtins()
+        .registrations()
+        .iter()
+        .flat_map(|r| r.setup_environment_inputs().iter().copied())
+        .collect();
     vars.filter(|(key, _)| {
         let Some(key) = key.to_str() else {
             return false;
         };
         KEPT_ENV.contains(&key)
+            || setup.contains(&key)
             || key.starts_with("LC_")
             || (cfg!(feature = "test-support")
                 && (key.starts_with("HT_TEST_") || key == "HT_LEAK_RUN_ID"))
@@ -76,6 +93,8 @@ pub fn child_env(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<(OsStr
 }
 
 pub struct PeerLaunchService {
+    /// Requests whose worker thread is running here (by id).
+    pub live: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     pub store: Arc<SqliteStore>,
     pub sessions: Arc<HostSessions>,
     pub writer: Arc<FairWriter>,
@@ -249,12 +268,17 @@ impl PeerLaunchService {
         let detail = clamp_detail(detail);
         let now = now_ms(self.clock.as_ref());
         let recorded = self.write(|conn| {
-            let (_, inserted) = peer_requests::insert_or_get(conn, row)?;
+            let (stored, inserted) = peer_requests::insert_or_get(conn, row)?;
             if inserted {
                 peer_requests::record(conn, &row.id, "refused", None, None, Some(&detail), now)?;
+                return Ok(None);
             }
-            Ok(())
+            // A concurrent decision for the same id got there first: its answer.
+            Ok(Some(stored))
         });
+        if let Ok(Some(stored)) = recorded {
+            return stored.answer();
+        }
         (self.log)(&format!(
             "peer launch {} from {}: refused: {detail}{}",
             short(&row.id),
@@ -268,6 +292,25 @@ impl PeerLaunchService {
         refused(detail)
     }
 
+    /// A `running` row whose worker is gone: recorded failed and unconfirmed
+    /// (its outcome write failed; the launch may have happened).
+    fn lost(&self, row: &PeerRequest) -> LaunchState {
+        let detail = format!(
+            "{}: the launch's outcome was lost; inspect pane {} here before launching again",
+            peer_requests::UNCONFIRMED,
+            row.pane.as_deref().unwrap_or("-")
+        );
+        let now = now_ms(self.clock.as_ref());
+        let _ = self.write(|conn| {
+            peer_requests::record(conn, &row.id, "failed", None, None, Some(&detail), now)
+        });
+        LaunchState::Failed {
+            detail,
+            pane: row.pane.clone(),
+            unconfirmed: true,
+        }
+    }
+
     fn decide(&self, from: NodeUuid, request: &LaunchRequest) -> Result<LaunchState, ApiError> {
         let id = request.id.to_string();
         let lookup = id.clone();
@@ -279,6 +322,16 @@ impl PeerLaunchService {
                     self.requester_tag(from)
                 ));
                 return Ok(refused("request id in use by another node"));
+            }
+            if row.requester_seat.as_deref().unwrap_or_default()
+                != clamp_detail(&request.requester_seat)
+            {
+                return Ok(refused("request id in use by another seat"));
+            }
+            // A row still `running` whose worker is gone (its outcome could not be
+            // written): the launch may have happened; never resumed, never relaunched.
+            if row.state == "running" && !self.live.lock().unwrap().contains(&id) {
+                return Ok(self.lost(&row));
             }
             return Ok(row.answer());
         }
@@ -299,8 +352,15 @@ impl PeerLaunchService {
             created_at: now_ms(self.clock.as_ref()),
             updated_at: 0,
         };
-        if row.plan.len() > peer_requests::MAX_PLAN_BYTES {
-            return Ok(self.refuse(from, &row, "launch plan too large"));
+        if let Some(why) = plan_refusal(plan, row.plan.len()) {
+            return Ok(self.refuse(from, &row, &why));
+        }
+        let from_text = from.to_string();
+        let running = self.read(move |conn| peer_requests::running_for(conn, &from_text))?;
+        if running >= MAX_RUNNING_PER_PEER {
+            return Ok(LaunchState::Unavailable {
+                reason: format!("{running} launches for that machine are already running here"),
+            });
         }
         let placement = match self.place(&plan.target) {
             Ok(placement) => placement,
@@ -321,10 +381,17 @@ impl PeerLaunchService {
         } else if self.held(&placement)? {
             return Ok(self.refuse(from, &row, "that pane is held for recovery here"));
         }
+        // A pane launch names its pane from the start, so an interruption at any
+        // point reads as unconfirmed (the launch child may have started).
+        let row = PeerRequest {
+            pane: (!new_tab).then(|| placement.target.clone()),
+            ..row
+        };
         let (stored, inserted) = self.write(|conn| peer_requests::insert_or_get(conn, &row))?;
         if !inserted {
             return Ok(stored.answer());
         }
+        self.live.lock().unwrap().insert(id.clone());
         let tag = self.requester_tag(from);
         (self.log)(&format!(
             "peer launch {} from {tag}: accepted ({}, {} on {})",
@@ -335,6 +402,7 @@ impl PeerLaunchService {
         ));
         let pane = (!new_tab).then(|| placement.target.clone());
         let worker = Worker {
+            live: Arc::clone(&self.live),
             id,
             tag,
             store: Arc::clone(&self.store),
@@ -360,18 +428,40 @@ impl PeerLauncher for PeerLaunchService {
     }
 }
 
+/// Why `plan` (serialized to `plan_bytes`) is refused before anything runs
+/// here, if it is: too large for the table, a harness this node does not
+/// register, or a tab label that starts like a flag.
+pub fn plan_refusal(plan: &crate::sync::frame::LaunchPlan, plan_bytes: usize) -> Option<String> {
+    if plan_bytes > peer_requests::MAX_PLAN_BYTES {
+        return Some("launch plan too large".into());
+    }
+    if crate::harness::registry::builtins()
+        .agent(&plan.kind)
+        .is_err()
+    {
+        return Some(format!(
+            "harness {} is not registered here",
+            clamp_detail(&plan.kind)
+        ));
+    }
+    if let LaunchTarget::NewTab { label, .. } = &plan.target
+        && label.trim_start().starts_with('-')
+    {
+        return Some("a tab label must not start with -".into());
+    }
+    None
+}
+
 /// The `internal peer-tab-create` arguments of a new tab: its label ends in
 /// `[from <tag>]`, the requesting node.
 pub fn tab_args(workspace: &str, label: &str, tag: &str, cwd: &str) -> Vec<String> {
+    // `--flag=value`: a value can never be read as another flag.
     vec![
         "internal".into(),
         "peer-tab-create".into(),
-        "--workspace".into(),
-        workspace.into(),
-        "--label".into(),
-        format!("{} [from {tag}]", label.trim()),
-        "--cwd".into(),
-        cwd.into(),
+        format!("--workspace={workspace}"),
+        format!("--label={} [from {tag}]", label.trim()),
+        format!("--cwd={cwd}"),
     ]
 }
 
@@ -379,10 +469,8 @@ pub fn tab_args(workspace: &str, label: &str, tag: &str, cwd: &str) -> Vec<Strin
 pub fn launch_args(pane: &str, plan: &crate::sync::frame::LaunchPlan) -> Vec<String> {
     let mut args = vec![
         "launch".to_owned(),
-        "--pane".to_owned(),
-        pane.to_owned(),
-        "--kind".to_owned(),
-        plan.kind.clone(),
+        format!("--pane={pane}"),
+        format!("--kind={}", plan.kind),
     ];
     if !plan.argv.is_empty() {
         args.push("--".into());
@@ -393,6 +481,7 @@ pub fn launch_args(pane: &str, plan: &crate::sync::frame::LaunchPlan) -> Vec<Str
 
 /// Runs one accepted request to its outcome.
 struct Worker {
+    live: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     id: String,
     tag: String,
     store: Arc<SqliteStore>,
@@ -438,20 +527,31 @@ fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::Joi
 
 impl Worker {
     fn record(&self, state: &str, pane: Option<&str>, seat: Option<&str>, detail: Option<&str>) {
-        let budget = CallBudget {
-            deadline: MonoInstant(self.clock.monotonic_now().0 + CALL_BUDGET_MS),
-            cancellation: Cancellation::default(),
-        };
-        let now = now_ms(self.clock.as_ref());
-        let written = self
-            .writer
-            .enter_background(&budget, self.clock.as_ref())
-            .and_then(|_turn| {
-                self.store.sync_operator_quantum(&budget, |tx, _, _| {
-                    peer_requests::record(tx, &self.id, state, pane, seat, detail, now)
-                        .map_err(crate::store::connection::store_error)
+        let write = || {
+            let now = now_ms(self.clock.as_ref());
+            let budget = CallBudget {
+                deadline: MonoInstant(self.clock.monotonic_now().0 + CALL_BUDGET_MS),
+                cancellation: Cancellation::default(),
+            };
+            self.writer
+                .enter_background(&budget, self.clock.as_ref())
+                .and_then(|_turn| {
+                    self.store.sync_operator_quantum(&budget, |tx, _, _| {
+                        peer_requests::record(tx, &self.id, state, pane, seat, detail, now)
+                            .map_err(crate::store::connection::store_error)
+                    })
                 })
-            });
+        };
+        let mut written = write();
+        for delay in RECORD_RETRIES {
+            if written.is_ok() {
+                break;
+            }
+            std::thread::sleep(delay);
+            written = write();
+        }
+        // Still unwritten: the row stays `running` and, once this worker is gone, a
+        // repeat answers it unconfirmed (`PeerLaunchService::lost`).
         if let Err(error) = written {
             (self.log)(&format!(
                 "peer launch {}: recording {state} failed: {}",
@@ -561,6 +661,11 @@ impl Worker {
     }
 
     fn run(&self, request: &LaunchRequest, target: String) {
+        self.run_to_outcome(request, target);
+        self.live.lock().unwrap().remove(&self.id);
+    }
+
+    fn run_to_outcome(&self, request: &LaunchRequest, target: String) {
         let plan = &request.plan;
         let pane = match &plan.target {
             LaunchTarget::NewTab { label, .. } => {
@@ -577,6 +682,16 @@ impl Worker {
                     (true, Some(pane)) => {
                         self.record("running", Some(&pane), None, None);
                         pane
+                    }
+                    // Killed before it answered: the tab may exist.
+                    _ if out.code.is_none() => {
+                        return self.fail(
+                            None,
+                            &format!(
+                                "tab creation: {}; a tab may have been created in workspace {target} here",
+                                out.error
+                            ),
+                        );
                     }
                     _ => {
                         return self.fail(None, &format!("tab creation: {}", out.error));
@@ -597,7 +712,11 @@ impl Worker {
                 ));
             }
             _ => {
-                let detail = if out.code == Some(crate::cli::launch::EXIT_START_UNCONFIRMED) {
+                // Exit 5, or killed (timeout, signal) before it answered: the start
+                // may have happened.
+                let detail = if out.code == Some(crate::cli::launch::EXIT_START_UNCONFIRMED)
+                    || out.code.is_none()
+                {
                     format!(
                         "{}: inspect pane {pane} here before launching again",
                         peer_requests::UNCONFIRMED
@@ -703,5 +822,43 @@ mod tests {
             ("w1", "review [from Q0V]", Some("/work"))
         );
         assert_eq!(clamp_detail(&"é".repeat(600)).len(), 1024);
+    }
+
+    // Kills: an unregistered harness or a flag-like tab label taken on (a real
+    // tab created before the launch child fails), or an oversized plan
+    // answered as retryable instead of refused.
+    #[test]
+    fn plans_are_refused_before_anything_runs() {
+        let plan = |kind: &str, label: &str| crate::sync::frame::LaunchPlan {
+            target: LaunchTarget::NewTab {
+                space: "w1".into(),
+                label: label.into(),
+            },
+            kind: kind.into(),
+            argv: Vec::new(),
+            cwd: Some("/tmp".into()),
+        };
+        let registered = crate::harness::registry::builtins()
+            .registrations()
+            .iter()
+            .map(|r| r.metadata().id)
+            .find(|id| crate::harness::registry::builtins().agent(id).is_ok())
+            .expect("a registered agent harness");
+        assert_eq!(plan_refusal(&plan(registered, "review"), 10), None);
+        assert!(
+            plan_refusal(&plan("nonesuch", "review"), 10)
+                .is_some_and(|why| why.contains("not registered here"))
+        );
+        assert!(
+            plan_refusal(&plan(registered, " --label=x"), 10)
+                .is_some_and(|why| why.contains("must not start with -"))
+        );
+        assert!(
+            plan_refusal(
+                &plan(registered, "review"),
+                peer_requests::MAX_PLAN_BYTES + 1
+            )
+            .is_some_and(|why| why.contains("too large"))
+        );
     }
 }

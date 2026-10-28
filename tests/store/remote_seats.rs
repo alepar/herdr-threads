@@ -948,13 +948,27 @@ fn peer_requests_record_once_settle_once_and_fail_interrupted_runs() {
         }
     );
     peer_requests::insert_or_get(&f.db, &request(id2, now + 10)).unwrap();
+    // A running request that already names its pane: its launch may have started.
+    let id4 = "00000000-0000-0000-0000-000000000004";
+    peer_requests::insert_or_get(
+        &f.db,
+        &PeerRequest {
+            pane: Some("w1:p5".into()),
+            ..request(id4, now + 11)
+        },
+    )
+    .unwrap();
     peer_requests::insert_or_get(&f.db, &request(old, 1)).unwrap();
     peer_requests::record(&f.db, old, "launched", None, Some("s"), None, 1).unwrap();
     let failed = peer_requests::settle_at_start(&f.db, now + 20).unwrap();
-    assert_eq!(failed, [id2]);
+    assert_eq!(failed, [id2, id4]);
     assert!(matches!(
         peer_requests::get(&f.db, id2).unwrap().unwrap().answer(),
-        LaunchState::Failed { detail, .. } if detail.contains("interrupted")
+        LaunchState::Failed { detail, unconfirmed: false, .. } if detail.contains("interrupted")
+    ));
+    assert!(matches!(
+        peer_requests::get(&f.db, id4).unwrap().unwrap().answer(),
+        LaunchState::Failed { detail, unconfirmed: true, .. } if detail.contains("inspect pane w1:p5")
     ));
     assert!(
         peer_requests::get(&f.db, old).unwrap().is_none(),
@@ -962,6 +976,6 @@ fn peer_requests_record_once_settle_once_and_fail_interrupted_runs() {
     );
     let by_node = peer_requests::by_node(&f.db).unwrap();
     assert_eq!(by_node.len(), 1);
-    assert_eq!(by_node[0].1, 2);
-    assert_eq!(by_node[0].2.id, id2, "the newest");
+    assert_eq!(by_node[0].1, 3);
+    assert_eq!(by_node[0].2.id, id4, "the newest");
 }

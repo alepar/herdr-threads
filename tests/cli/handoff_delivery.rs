@@ -4613,6 +4613,7 @@ fn a_remote_recipient_is_checked_by_its_home_node_or_replicated_state() {
     use crate::sync::frame::AddrOutcome;
     let seat = SeatId::new("sREMOTEseat1");
     let run = |answer: RemoteAddress| {
+        super::reset_remote_checks_for_test();
         let client = RemoteClient {
             answer,
             checks: Mutex::new(0),

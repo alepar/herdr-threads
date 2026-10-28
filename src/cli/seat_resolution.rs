@@ -912,6 +912,23 @@ where
             RemoteAddress::Timeout { secs } => {
                 format!("machine {label} did not answer in {secs}s; pass an exact seat ID")
             }
+            RemoteAddress::Replicated { seat, reason } => {
+                if !hit {
+                    let seat = SeatId::parse(&seat).map_err(|_| {
+                        run_error(ApiError::invalid_request(
+                            "daemon answered a malformed seat",
+                        ))
+                    })?;
+                    writeln!(
+                        self.stderr,
+                        "herdr-threads: note: {} on {label} checked against replicated state only ({})",
+                        seat.as_str(),
+                        remote_error::one_line(&reason)
+                    )?;
+                    return Ok(Some(Resolved::Seat(seat)));
+                }
+                format!("machine {label}: {}", remote_error::one_line(&reason))
+            }
             RemoteAddress::NotReplicated { seat } => {
                 format!("seat {seat} on {label} has not replicated here yet; retry")
             }

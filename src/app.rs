@@ -2313,6 +2313,7 @@ where
             // is decided here and run as this node's own `launch`; requests the
             // previous daemon left running are failed first, never resumed.
             let peer_launcher = Arc::new(crate::service::peer_launcher::PeerLaunchService {
+                live: Arc::default(),
                 store: Arc::clone(&publisher_store),
                 sessions: Arc::clone(&host_sessions),
                 writer: Arc::clone(&writer),

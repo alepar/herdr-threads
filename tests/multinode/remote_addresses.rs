@@ -250,9 +250,31 @@ fn handoff_into_a_remote_seat_is_authored_by_the_sender() {
         stderr.contains("checked against replicated state only"),
         "{stderr}"
     );
+    // SEAT_ID@M with M down: the exact ID stands on replicated state too.
+    let b_tag = tag_of(&cluster, 0, 1);
+    let (code, value, stderr) = cluster.run_as(
+        Some(&a),
+        0,
+        &[
+            "handoff",
+            "--existing",
+            "--seat",
+            &format!("{}@{b_tag}", b.id),
+            "--",
+            "third task",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}{value}");
+    assert!(
+        stderr.contains("checked against replicated state only"),
+        "{stderr}"
+    );
     cluster.heal(0, 1);
     cluster.wait_until("b to get the second task", crate::WAIT, || {
         delivered("second task")
+    });
+    cluster.wait_until("b to get the third task", crate::WAIT, || {
+        delivered("third task")
     });
 }
 
@@ -264,6 +286,7 @@ log="$HT_TEST_PEER_LAUNCH_LOG"
 n=$(ls "$log" | grep -c '^call-' )
 { printf '%s\n' "$@"; echo '--env--'; env; } > "$log/call-$n"
 while [ -e "$log/hold" ]; do sleep 0.1; done
+[ -e "$log/killself" ] && kill -9 $$
 for a in "$@"; do
   case "$a" in
     peer-tab-create) echo '{"pane":"w1:p9","tab":"w1:t9"}'; exit 0;;
@@ -381,7 +404,7 @@ fn remote_launch_runs_on_the_target_machine_once() {
     assert_eq!(first.len(), 1, "{first:?}");
     let (argv, env) = first[0].split_once("--env--").unwrap();
     assert!(
-        argv.contains("launch\n--pane\nw1:p2\n--kind\nclaude\n--\n--first"),
+        argv.contains("launch\n--pane=w1:p2\n--kind=claude\n--\n--first"),
         "{argv}"
     );
     assert!(!env.contains("HERDR_PANE_ID"), "{env}");
@@ -492,7 +515,7 @@ fn remote_launch_runs_on_the_target_machine_once() {
         .find(|c| c.contains("peer-tab-create"))
         .unwrap_or_else(|| panic!("no tab created: {stdout}{stderr}"));
     assert!(
-        tab_call.contains(&format!("--label\nreview [from {a_tag}]")),
+        tab_call.contains(&format!("--label=review [from {a_tag}]")),
         "{tab_call}"
     );
     cluster.wait_until("b to get the handed-off task", crate::WAIT, || {
@@ -540,9 +563,27 @@ fn remote_launch_runs_on_the_target_machine_once() {
         "settled: the rerun launched anew"
     );
 
+    // A launch child killed before it answered (it may have started the
+    // agent): recorded unconfirmed, the request kept, so a rerun reports the
+    // same instead of launching a second agent.
+    std::fs::write(calls_dir.join("killself"), b"").unwrap();
+    let before = calls(&calls_dir).len();
+    let (code, _, stderr) = launch(P2, "--killed");
+    assert_ne!(code, 0);
+    assert!(stderr.contains("start unconfirmed"), "{stderr}");
+    let (code, _, stderr) = launch(P2, "--killed");
+    assert_ne!(code, 0);
+    assert!(stderr.contains("start unconfirmed"), "{stderr}");
+    assert_eq!(
+        calls(&calls_dir).len(),
+        before + 1,
+        "the rerun launched nothing"
+    );
+    std::fs::remove_file(calls_dir.join("killself")).unwrap();
+
     // peer list on node 1 shows node 0's launches.
     let (_, peers, _) = cluster.text_as(None, 1, &["peer", "list"]);
-    assert!(peers.contains("peer_launches=8 last=launched:"), "{peers}");
+    assert!(peers.contains("peer_launches=9 last=failed:"), "{peers}");
 
     // An older peer without peer.launch.v1: refused, nothing local.
     let (code, _, stderr) = cluster.text_as(

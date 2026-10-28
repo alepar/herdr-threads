@@ -225,6 +225,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     ),
     (
         "src/service/peer_launcher.rs",
+        "std::thread::sleep(delay)",
+        "one peer-requested launch's worker retrying its outcome write, three times (RECORD_RETRIES, 6.2 s in all); not a periodic daemon loop",
+    ),
+    (
+        "src/service/peer_launcher.rs",
         "std::thread::sleep(CHILD_POLL)",
         "one peer-requested launch's worker thread waiting for its child to exit, bounded by CHILD_TIMEOUT; not a periodic daemon loop",
     ),

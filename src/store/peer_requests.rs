@@ -102,8 +102,16 @@ pub fn insert_or_get(
 ) -> rusqlite::Result<(PeerRequest, bool)> {
     let inserted = conn.execute(
         "INSERT INTO peer_requests(id,node_uuid,requester_seat,kind,plan,state,pane,seat,detail,created_at,updated_at) \
-         VALUES (?1,?2,?3,?4,?5,'running',NULL,NULL,NULL,?6,?6) ON CONFLICT(id) DO NOTHING",
-        params![new.id, new.node_uuid, new.requester_seat, new.kind, new.plan, new.created_at],
+         VALUES (?1,?2,?3,?4,?5,'running',?7,NULL,NULL,?6,?6) ON CONFLICT(id) DO NOTHING",
+        params![
+            new.id,
+            new.node_uuid,
+            new.requester_seat,
+            new.kind,
+            new.plan,
+            new.created_at,
+            new.pane
+        ],
     )?;
     let stored = get(conn, &new.id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
     Ok((stored, inserted == 1))
@@ -128,6 +136,9 @@ pub fn record(
     Ok(changed == 1)
 }
 
+/// Rows are pruned only here, at daemon start; the duplicate guard of an id
+/// lapses with its row after [`RETENTION_MS`].
+///
 /// At daemon start: every request still `running` was interrupted (on Linux
 /// its child ended with the old daemon; on macOS an orphaned child may still
 /// finish); it is failed, never resumed. Old rows are
@@ -139,16 +150,29 @@ pub fn settle_at_start(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Stri
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?
     };
+    // One that already names its pane may have started the agent there.
     conn.execute(
-        "UPDATE peer_requests SET state='failed', detail='interrupted: the daemon restarted', \
-         updated_at=?1 WHERE state='running'",
-        [now],
+        "UPDATE peer_requests SET state='failed', detail=CASE WHEN pane IS NULL \
+         THEN 'interrupted: the daemon restarted' \
+         ELSE ?2 || ': interrupted by a daemon restart; inspect pane ' || pane || \
+         ' here before launching again' END, updated_at=?1 WHERE state='running'",
+        rusqlite::params![now, UNCONFIRMED],
     )?;
     conn.execute(
         "DELETE FROM peer_requests WHERE created_at < ?1",
         [now - RETENTION_MS],
     )?;
     Ok(ids)
+}
+
+/// How many requests of `node_uuid` are `running` here.
+pub fn running_for(conn: &Connection, node_uuid: &str) -> rusqlite::Result<u64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM peer_requests WHERE node_uuid=?1 AND state='running'",
+        [node_uuid],
+        |r| r.get(0),
+    )?;
+    Ok(u64::try_from(count).unwrap_or(0))
 }
 
 /// Per requesting node: how many requests it made in the retention window,

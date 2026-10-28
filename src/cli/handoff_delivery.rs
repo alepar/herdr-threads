@@ -333,10 +333,38 @@ fn inspect<C: LocalClient + ?Sized>(
     }
     Ok(found)
 }
+thread_local! {
+    /// Remote seats whose home node already allowed a handoff in this process:
+    /// one handoff asks once (preparation and delivery both inspect the seat).
+    static CHECKED: std::cell::RefCell<std::collections::BTreeSet<String>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+}
+
+/// Test hook: forget the remote seats already checked on this thread.
+#[cfg(test)]
+pub(crate) fn reset_remote_checks_for_test() {
+    CHECKED.with(|checked| checked.borrow_mut().clear());
+}
+
 /// Ask a remote seat's home node whether it can take a handoff now (N15). An ineligible answer
 /// refuses; a home node that cannot answer leaves this node's replicated view (the seat exists
 /// here as that node's nonretired seat) as the only check, and says so on stderr.
 fn check_remote<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    seat: &SeatId,
+) -> Result<(), RunError> {
+    if CHECKED.with(|checked| checked.borrow().contains(seat.as_str())) {
+        return Ok(());
+    }
+    let result = check_remote_once(client, clock, seat);
+    if result.is_ok() {
+        CHECKED.with(|checked| checked.borrow_mut().insert(seat.as_str().to_owned()));
+    }
+    result
+}
+
+fn check_remote_once<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
     seat: &SeatId,
@@ -375,12 +403,24 @@ fn check_remote<C: LocalClient + ?Sized>(
         ),
         None => node.tag.clone(),
     };
+    let escape = |text: &str| {
+        crate::view::escape::escape_for_terminal(text, crate::view::escape::Context::SingleLine)
+            .into_owned()
+    };
     let unchecked = |why: &str| {
         eprintln!(
-            "herdr-threads: note: {} checked against replicated state only ({label}: {why})",
-            seat.as_str()
+            "herdr-threads: note: {} checked against replicated state only ({label}: {})",
+            seat.as_str(),
+            escape(why)
         );
         Ok(())
+    };
+    // A live home node that answers in a form this build does not know: refused.
+    let unknown = || {
+        Err(super::invalid_request(&format!(
+            "seat {} on {label}: the home node answered in an unknown form",
+            seat.as_str()
+        )))
     };
     match answer {
         RemoteAddress::Answered {
@@ -399,11 +439,12 @@ fn check_remote<C: LocalClient + ?Sized>(
         RemoteAddress::Answered {
             outcome: AddrOutcome::Unavailable { reason },
         } => unchecked(&reason),
-        RemoteAddress::Answered { .. } => unchecked("unexpected answer"),
+        RemoteAddress::Answered { .. } => unknown(),
         RemoteAddress::Unreachable { .. } => unchecked("unreachable"),
         RemoteAddress::NoCap { cap, .. } => unchecked(&format!("no {cap}")),
         RemoteAddress::Timeout { secs } => unchecked(&format!("no answer in {secs}s")),
-        RemoteAddress::NotReplicated { .. } | RemoteAddress::Unknown => unchecked("unknown answer"),
+        RemoteAddress::Replicated { reason, .. } => unchecked(&reason),
+        RemoteAddress::NotReplicated { .. } | RemoteAddress::Unknown => unknown(),
     }
 }
 

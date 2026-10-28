@@ -674,3 +674,31 @@ only the launch path.
 - **Not covered by tests:** the real `internal peer-tab-create` against Herdr
   (the fake has no `tab.create`), the 180 s child-timeout kill, and the
   cross-node request-id collision guard.
+
+### 2026-10-28, independent review of phase 2 (7a7a6ed8e)
+
+- **Request id.** Derived from the whole frozen intent: the resolved node
+  uuid (a new `ResolveMachine` command answers it without asking the node),
+  the requesting seat, the plan and the follow-on handoff. Created
+  exclusively (`create_new`; a concurrent run reads the winner's id). M also
+  refuses a repeat whose requesting seat differs from the recorded one.
+- **Settling.** The id is settled once the follow-on handoff journaled its
+  own intent (its retry and recovery own the work from then on and never
+  relaunch), or on a final refusal before that.
+- **Unconfirmed starts.** A launch child killed by the timeout or a signal,
+  and a `running` row with a pane at daemon start, are failed *unconfirmed*
+  (inspect pane P); the requester keeps the id. A pane launch records its
+  pane at insert. A `running` row whose worker is gone (its outcome write
+  failed even after retries at 0.2/1/5 s) answers unconfirmed too.
+- **Refused before anything runs:** an unregistered harness, a tab label that
+  starts with `-`, an oversized plan; at most 4 running launches per
+  requesting node. Child flags go as `--flag=value`.
+- **Child environment** also keeps the setup inputs registered adapters
+  declare (config roots such as `CODEX_HOME`, `CLAUDE_CONFIG_DIR`); never
+  session or pane variables.
+- **`SEAT_ID@M` with M down** resolves on replicated state (this node holds it
+  as M's nonretired seat), with the note. `handoff --existing --pane
+  PANE@MACHINE` is refused (use `--seat`). `check_remote` fails closed on an
+  answer it does not know, escapes peer text, and asks once per handoff.
+- **Rows** are pruned only at daemon start; an id's duplicate guard lapses
+  with its row after 7 days.

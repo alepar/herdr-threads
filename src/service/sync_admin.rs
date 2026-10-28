@@ -162,8 +162,9 @@ impl SyncAdmin {
             }
             SyncCommand::CheckRemoteSeat { seat } => self.check_remote_seat(&seat, budget),
             SyncCommand::RemoteLaunch { machine, request } => {
-                self.remote_launch(&machine, *request, budget)
+                self.remote_launch(&machine, Some(*request), budget)
             }
+            SyncCommand::ResolveMachine { machine } => self.remote_launch(&machine, None, budget),
         }
     }
 
@@ -503,6 +504,14 @@ impl SyncAdmin {
             .0
             .saturating_sub(self.clock.monotonic_now().0);
         let wait = std::time::Duration::from_millis(remaining.min(REMOTE_RESOLVE_WAIT_MS));
+        let exact = match &target {
+            crate::sync::frame::AddrTarget::Seat { location }
+                if crate::protocol::ids::SeatId::parse(location).is_ok() =>
+            {
+                Some(location.clone())
+            }
+            _ => None,
+        };
         let answer = self.runtime.block_on(self.sync.resolve_remote(
             uuid,
             target,
@@ -531,7 +540,45 @@ impl SyncAdmin {
                 _ => RemoteAddress::Answered { outcome },
             },
         };
+        // N15: an exact seat ID this node holds as that node's nonretired seat
+        // stands on replicated state when the node cannot answer.
+        let answer = match (&answer, exact) {
+            (
+                RemoteAddress::Unreachable { .. }
+                | RemoteAddress::NoCap { .. }
+                | RemoteAddress::Timeout { .. },
+                Some(seat),
+            ) if self.holds_remote_seat(&seat, &uuid, budget)? => RemoteAddress::Replicated {
+                seat,
+                reason: match &answer {
+                    RemoteAddress::Unreachable { .. } => "unreachable".into(),
+                    RemoteAddress::NoCap { .. } => "no addr.resolve.v1".into(),
+                    _ => "no answer in time".into(),
+                },
+            },
+            _ => answer,
+        };
         Ok(SyncReply::Address(AddressReply::Remote { node, answer }))
+    }
+
+    /// Whether this node holds `seat` as `home`'s nonretired remote seat.
+    fn holds_remote_seat(
+        &self,
+        seat: &str,
+        home: &crate::node::NodeUuid,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        use rusqlite::OptionalExtension;
+        self.store.sync_read(budget, |conn, _| {
+            conn.query_row(
+                "SELECT 1 FROM seats WHERE id=?1 AND home_node=?2 AND is_local=0 AND state='remote'",
+                [seat, home.to_string().as_str()],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|found| found.is_some())
+            .map_err(crate::store::connection::store_error)
+        })
     }
 
     /// N15: forward a launch request to `machine` and report its state there.
@@ -540,7 +587,7 @@ impl SyncAdmin {
     fn remote_launch(
         &self,
         machine: &str,
-        request: crate::sync::frame::LaunchRequest,
+        request: Option<crate::sync::frame::LaunchRequest>,
         budget: &CallBudget,
     ) -> Result<SyncReply, ApiError> {
         use crate::protocol::sync_admin::{LaunchReply, MachineRow, RemoteLaunchAnswer};
@@ -582,6 +629,12 @@ impl SyncAdmin {
             .uuid
             .parse()
             .map_err(|_| ApiError::new(ErrorCode::StoreCorrupt, "malformed node directory uuid"))?;
+        let Some(request) = request else {
+            return Ok(SyncReply::Launch(LaunchReply::Remote {
+                node,
+                answer: RemoteLaunchAnswer::Unknown,
+            }));
+        };
         let remaining = budget
             .deadline
             .0

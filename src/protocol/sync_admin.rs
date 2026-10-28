@@ -83,6 +83,12 @@ pub enum SyncCommand {
         #[serde(default)]
         request: Box<crate::sync::frame::LaunchRequest>,
     },
+    /// Which node `machine` names, asked of nobody: answered as a
+    /// [`LaunchReply`] whose `Remote.answer` is `Unknown` (not asked).
+    ResolveMachine {
+        #[serde(default)]
+        machine: String,
+    },
 }
 
 impl SyncCommand {
@@ -131,7 +137,7 @@ impl SyncCommand {
             }
             Self::ResolveAddress { machine, .. } => text(machine),
             Self::CheckRemoteSeat { seat } => text(seat),
-            Self::RemoteLaunch { machine, .. } => text(machine),
+            Self::RemoteLaunch { machine, .. } | Self::ResolveMachine { machine } => text(machine),
             Self::PeerList
             | Self::Verify
             | Self::UnappliedList { .. }
@@ -568,6 +574,15 @@ pub enum RemoteAddress {
     NotReplicated {
         #[serde(default)]
         seat: String,
+    },
+    /// The node could not answer (`reason`), and the location is the exact ID
+    /// of a seat this node holds as that node's nonretired seat: resolved on
+    /// replicated state only (TRUST-POLICY N15).
+    Replicated {
+        #[serde(default)]
+        seat: String,
+        #[serde(default)]
+        reason: String,
     },
     #[default]
     #[serde(other)]

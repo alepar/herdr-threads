@@ -1659,7 +1659,7 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs
   live (N14).
 - *Remote launch* (`handoff --new-tab --space SPACE@M`, `handoff --pane P@M`, `launch --pane P@M`) is the one
   action a node takes on another node's request. The request (`launch_request`, cap `peer.launch.v1`) carries
-  only a frozen plan (target, harness id, profile, argv, an absolute `cwd` on this node, agent name) and the
+  only a frozen plan (target, a harness id registered here, argv, and for a new tab an absolute `cwd` on this node) and the
   requesting seat as a claim. This node decides it against its own canonical view: its daemon checks the target
   pane or workspace exists, and then runs this node's own `launch` for it as a child process, so the launch is
   exactly a local `launch`: an available shell pane, the pane's seat through ordinary guarded resolution (a

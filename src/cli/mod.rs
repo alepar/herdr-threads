@@ -2744,6 +2744,9 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             parsed.action = CliAction::TopologyHandoff(*then);
             launched = Some(done);
         }
+        let intents_before = launched
+            .as_ref()
+            .map(|_| peer_launch::intent_names(&paths.node_dir.join("intents")));
         let topology = match &parsed.action {
             CliAction::TopologyHandoff(_) => true,
             CliAction::Retry(recovery) => topology_runtime::is_compound(
@@ -2756,11 +2759,16 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         } else {
             handoff::run(parsed, claim, &journal, paths, writer)
         };
+        // Once the handoff journaled its own intent, that intent's retry and recovery own
+        // the work (they never relaunch); before that, a final refusal settles too.
+        let journaled = intents_before.is_some_and(|before| {
+            peer_launch::intent_names(&paths.node_dir.join("intents")) != before
+        });
         if let Some(launched) = launched
-            && peer_launch::handoff_settles(&result)
+            && (journaled || peer_launch::handoff_settles(&result))
         {
             launched.settle();
-            if result.is_err() {
+            if result.is_err() && !journaled {
                 eprintln!(
                     "herdr-threads: note: the handoff into launched seat {} was refused; a rerun \
                      launches a new agent",

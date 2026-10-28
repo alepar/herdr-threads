@@ -105,21 +105,30 @@ fn launch_timeout() -> Duration {
     REMOTE_LAUNCH_TIMEOUT
 }
 
-/// The request id of this launch: derived from the frozen request and kept in
-/// `node_dir/remote-launch/` until the launch settles, so a rerun of the same
-/// command (after a link drop, a crash or the timeout) resumes it and never
-/// launches twice; a new launch after it settled gets a new id.
+/// The request id of this launch: derived from the whole frozen intent (the
+/// resolved node, the requesting seat, the plan and the handoff that follows
+/// it) and kept in `node_dir/remote-launch/` until the launch settles, so a
+/// rerun of the same command resumes it and never launches twice, while any
+/// other command (another task, another seat, another spelling of the same
+/// node aside) never matches it. The file is created exclusively: of two
+/// concurrent runs, the second reads the first one's id.
 fn request_id(
     node_dir: &Path,
-    machine: &str,
-    plan: &crate::sync::frame::LaunchPlan,
+    node_uuid: &str,
+    requester_seat: Option<&str>,
+    remote: &RemoteLaunch,
 ) -> std::io::Result<(uuid::Uuid, std::path::PathBuf)> {
     use sha2::Digest;
+    use std::io::Write as _;
     let mut hash = sha2::Sha256::new();
-    hash.update(b"herdr-threads remote launch v1\0");
-    hash.update(machine.as_bytes());
+    hash.update(b"herdr-threads remote launch v2\0");
+    hash.update(node_uuid.as_bytes());
     hash.update(b"\0");
-    hash.update(serde_json::to_vec(plan).unwrap_or_default());
+    hash.update(requester_seat.unwrap_or_default().as_bytes());
+    hash.update(b"\0");
+    hash.update(serde_json::to_vec(&remote.plan).unwrap_or_default());
+    hash.update(b"\0");
+    hash.update(format!("{:?}", remote.then).as_bytes());
     let key = hash
         .finalize()
         .iter()
@@ -129,16 +138,90 @@ fn request_id(
     let dir = node_dir.join("remote-launch");
     std::fs::create_dir_all(&dir)?;
     let file = dir.join(format!("{key}.id"));
-    if let Ok(text) = std::fs::read_to_string(&file)
-        && let Ok(id) = text.trim().parse()
-    {
+    let read = |file: &Path| -> std::io::Result<uuid::Uuid> {
+        std::fs::read_to_string(file)?
+            .trim()
+            .parse()
+            .map_err(|_| std::io::Error::other("unreadable remote launch request id"))
+    };
+    if let Ok(id) = read(&file) {
         return Ok((id, file));
     }
     let id = uuid::Uuid::new_v4();
-    let tmp = dir.join(format!("{key}.tmp"));
-    std::fs::write(&tmp, id.to_string())?;
-    std::fs::rename(&tmp, &file)?;
-    Ok((id, file))
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file)
+    {
+        Ok(mut out) => {
+            out.write_all(id.to_string().as_bytes())?;
+            out.sync_all()?;
+            Ok((id, file))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // A concurrent run won: its id is the request's (it may still be writing).
+            for _ in 0..50 {
+                if let Ok(id) = read(&file) {
+                    return Ok((id, file));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(std::io::Error::other(
+                "remote launch request id file stayed empty",
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// The refusal for a machine that names no single other node.
+fn machine_refusal(machine: &str, reply: crate::protocol::sync_admin::LaunchReply) -> RunError {
+    use crate::protocol::sync_admin::LaunchReply;
+    let refuse =
+        |code: ErrorCode, detail: String| -> RunError { ApiError::new(code, detail).into() };
+    match reply {
+        LaunchReply::SelfNode => refuse(
+            ErrorCode::InvalidRequest,
+            format!(
+                "{} is this machine: launch without @MACHINE",
+                one_line(machine)
+            ),
+        ),
+        LaunchReply::UnknownMachine { known } => {
+            let names: Vec<String> = known.iter().take(8).map(label_of).collect();
+            refuse(
+                ErrorCode::NotFound,
+                format!(
+                    "no machine {}; known: {}; for a local pane whose label has an @, pass its pane ID",
+                    one_line(machine),
+                    if names.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        names.join(", ")
+                    }
+                ),
+            )
+        }
+        LaunchReply::AmbiguousMachine { matches } => {
+            let lines: Vec<String> = matches
+                .iter()
+                .map(|row| format!("  {} {}", row.uuid, label_of(row)))
+                .collect();
+            refuse(
+                ErrorCode::Conflict,
+                format!(
+                    "ambiguous machine {}: {} matches\n{}\npass @<uuid>",
+                    one_line(machine),
+                    matches.len(),
+                    lines.join("\n")
+                ),
+            )
+        }
+        LaunchReply::Remote { .. } | LaunchReply::Unknown => refuse(
+            ErrorCode::InvalidRequest,
+            "the daemon answered in an unknown form".into(),
+        ),
+    }
 }
 
 fn label_of(node: &crate::protocol::sync_admin::MachineRow) -> String {
@@ -158,6 +241,17 @@ fn label_of(node: &crate::protocol::sync_admin::MachineRow) -> String {
 fn one_line(text: &str) -> String {
     crate::view::escape::escape_for_terminal(text, crate::view::escape::Context::SingleLine)
         .into_owned()
+}
+
+/// The intent files in `dir` (a handoff that journals adds one).
+pub fn intent_names(dir: &Path) -> std::collections::BTreeSet<std::ffi::OsString> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Whether a remote handoff's follow-on result ends its launch's request: a
@@ -205,7 +299,37 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
 ) -> Result<Launched, RunError> {
     use crate::protocol::sync_admin::{LaunchReply, RemoteLaunchAnswer, SyncCommand, SyncReply};
     use crate::sync::frame::{LaunchRequest, LaunchState};
-    let (id, file) = request_id(node_dir, &remote.machine, &remote.plan)?;
+    let budget = || CallBudget {
+        deadline: MonoInstant(
+            clock
+                .monotonic_now()
+                .0
+                .saturating_add(super::seat_resolution::REMOTE_ADDRESS_BUDGET_MS),
+        ),
+        cancellation: Cancellation::default(),
+    };
+    let node = match client.call(
+        crate::protocol::commands::Command::Sync(SyncCommand::ResolveMachine {
+            machine: remote.machine.clone(),
+        }),
+        &budget(),
+    )? {
+        crate::protocol::results::CommandResult::Sync(SyncReply::Launch(LaunchReply::Remote {
+            node,
+            ..
+        })) => node,
+        crate::protocol::results::CommandResult::Sync(SyncReply::Launch(other)) => {
+            return Err(machine_refusal(&remote.machine, other));
+        }
+        _ => {
+            return Err(ApiError::new(
+                ErrorCode::InvalidRequest,
+                "unexpected machine resolution result",
+            )
+            .into());
+        }
+    };
+    let (id, file) = request_id(node_dir, &node.uuid, requester_seat, remote)?;
     let request = LaunchRequest {
         id,
         requester_seat: requester_seat.unwrap_or_default().to_owned(),
@@ -219,21 +343,12 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
     let started = std::time::Instant::now();
     let mut announced = false;
     loop {
-        let budget = CallBudget {
-            deadline: MonoInstant(
-                clock
-                    .monotonic_now()
-                    .0
-                    .saturating_add(super::seat_resolution::REMOTE_ADDRESS_BUDGET_MS),
-            ),
-            cancellation: Cancellation::default(),
-        };
         let reply = client.call(
             crate::protocol::commands::Command::Sync(SyncCommand::RemoteLaunch {
                 machine: remote.machine.clone(),
                 request: Box::new(request.clone()),
             }),
-            &budget,
+            &budget(),
         )?;
         let crate::protocol::results::CommandResult::Sync(SyncReply::Launch(reply)) = reply else {
             return Err(refuse(
@@ -243,53 +358,10 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
         };
         let (node, answer) = match reply {
             LaunchReply::Remote { node, answer } => (node, answer),
-            LaunchReply::SelfNode => {
+            // The node table changed since this run resolved the machine.
+            other => {
                 settle();
-                return Err(refuse(
-                    ErrorCode::InvalidRequest,
-                    format!(
-                        "{} is this machine: launch without @MACHINE",
-                        one_line(&remote.machine)
-                    ),
-                ));
-            }
-            LaunchReply::UnknownMachine { known } => {
-                settle();
-                let names: Vec<String> = known.iter().take(8).map(label_of).collect();
-                return Err(refuse(
-                    ErrorCode::NotFound,
-                    format!(
-                        "no machine {}; known: {}; for a local pane whose label has an @, pass its pane ID",
-                        one_line(&remote.machine),
-                        if names.is_empty() {
-                            "none".to_owned()
-                        } else {
-                            names.join(", ")
-                        }
-                    ),
-                ));
-            }
-            LaunchReply::AmbiguousMachine { matches } => {
-                settle();
-                let lines: Vec<String> = matches
-                    .iter()
-                    .map(|row| format!("  {} {}", row.uuid, label_of(row)))
-                    .collect();
-                return Err(refuse(
-                    ErrorCode::Conflict,
-                    format!(
-                        "ambiguous machine {}: {} matches\n{}\npass @<uuid>",
-                        one_line(&remote.machine),
-                        matches.len(),
-                        lines.join("\n")
-                    ),
-                ));
-            }
-            LaunchReply::Unknown => {
-                return Err(refuse(
-                    ErrorCode::InvalidRequest,
-                    "the daemon answered in an unknown form".into(),
-                ));
+                return Err(machine_refusal(&remote.machine, other));
             }
         };
         let label = label_of(&node);
@@ -378,6 +450,71 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn remote(task: &str) -> RemoteLaunch {
+        RemoteLaunch {
+            machine: "laptop".into(),
+            plan: crate::sync::frame::LaunchPlan {
+                target: crate::sync::frame::LaunchTarget::Pane {
+                    space: None,
+                    tab: None,
+                    pane: "w1:p2".into(),
+                },
+                kind: "codex".into(),
+                argv: Vec::new(),
+                cwd: None,
+            },
+            then: Some(Box::new(super::super::topology_handoff::Request {
+                policy: None,
+                automatic: true,
+                new_tab: None,
+                existing: true,
+                selector: Default::default(),
+                seat: None,
+                cwd: None,
+                profile_dir: None,
+                thread: None,
+                thread_name: None,
+                topic: None,
+                goal: None,
+                body: task.into(),
+                kind: None,
+                binary: None,
+                name: None,
+                argv: Vec::new(),
+            })),
+        }
+    }
+
+    // Kills: one request id for two different handoffs (task B landing in the
+    // agent launched for task A), for two requesting seats, or for two nodes;
+    // a different id on a rerun of the same command; and two concurrent runs
+    // of one command each minting their own id (two launches).
+    #[test]
+    fn request_ids_follow_the_whole_frozen_intent() {
+        let dir = crate::test_support::scratch::temp_path(format!(
+            "ht-remote-launch-id-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = |node: &str, seat: Option<&str>, task: &str| {
+            request_id(&dir, node, seat, &remote(task)).unwrap().0
+        };
+        let a = id("n1", Some("s1"), "task A");
+        assert_eq!(a, id("n1", Some("s1"), "task A"), "a rerun reuses it");
+        assert_ne!(a, id("n1", Some("s1"), "task B"), "another task");
+        assert_ne!(a, id("n1", Some("s2"), "task A"), "another seat");
+        assert_ne!(a, id("n2", Some("s1"), "task A"), "another node");
+        // Concurrent first runs agree on one id.
+        let ids: Vec<uuid::Uuid> = std::thread::scope(|scope| {
+            let runs: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| id("n3", Some("s1"), "race")))
+                .collect();
+            runs.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        assert!(ids.iter().all(|i| *i == ids[0]), "{ids:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // Kills: a remote handoff that failed for a passing reason settling its
     // launch (a rerun would start a second agent), and one refused for good
