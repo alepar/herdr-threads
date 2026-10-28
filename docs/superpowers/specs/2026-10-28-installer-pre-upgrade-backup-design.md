@@ -24,8 +24,9 @@ policy is unit-tested in Rust against real SQLite files.
 The installer runs it with the **new package's** executable (`$package/bin/herdr-threads`,
 extracted and checksum-verified, not yet installed). If that build lacks the helper (an
 explicit `--version` of a release before 2.5.0), it uses the installed executable when that
-one has it (a rollback from >= 2.5.0). If neither has it, the installer refuses (fail
-closed) and names `--no-backup`. Capability is probed with `internal pre-upgrade-backup
+one has it (a rollback from >= 2.5.0). If the package's helper fails, the installed
+executable's helper is tried before giving up (a rollback whose older SQLite cannot read a
+newer store). If neither has it, the installer refuses (fail closed) and names `--no-backup`. Capability is probed with `internal pre-upgrade-backup
 --help` (a help query, no effects), as `installer_integrations()` does today. So that a probe
 failure never reads as "no helper" when the download cannot execute at all (a noexec
 `TMPDIR`; roast design-1), the installer first runs the package's `--version` and, if that
@@ -39,7 +40,10 @@ installed: upgrade, downgrade, or install over kept state) and a state directory
 store. State directories: the two default roots the installer already scans for daemons
 (`${XDG_STATE_HOME:-~/.local/state}/herdr/plugins/herdr-threads` and
 `~/.local/state/herdr/plugins/herdr-threads`, deduplicated by physical path). A store is
-`<state>/node/herdr-threads.db` (a regular file). Legacy `instances/*/threads.sqlite3`
+`<state>/node/herdr-threads.db`: any entry at that path, a symlink included, is passed to the
+helper, which refuses anything that is not a regular file, so the install fails closed
+(`--no-backup` is the escape) instead of migrating a symlinked store unbacked (independent
+review of 6631a0b90). Legacy `instances/*/threads.sqlite3`
 stores are not backed up: the daemon never opens or migrates them, so an upgrade cannot
 damage them. An identical re-install (`changed = 0`) and a fresh install with no store take
 no backup.
@@ -75,7 +79,10 @@ directories beside the state directory are never read, counted or removed.
    its `user_version` is the schema reported and used by pruning.
 5. `node.key` and `node.json`: copied byte for byte when present (`fs::copy`, never read into
    a string), chmod 0600, fsynced.
-6. The staging directory is fsynced, renamed to the entry name, and the root fsynced.
+6. The staging directory is fsynced and renamed to the entry name, then the root fsynced; a
+   failure of that last fsync leaves a complete backup in place and is a warning
+   (`herdr-threads: warning: backup in place, but syncing its directory failed: <reason>`,
+   ≈ 70 bytes + reason), not a failed backup.
 7. Prints `herdr-threads: backed up <state> to <dir> (schema N, integrity ok)` (≈ 60 bytes +
    two paths). Any failure: `herdr-threads: error: pre-upgrade backup failed: <reason>` on
    stderr (≈ 50 bytes + reason), exit 1.
@@ -83,7 +90,12 @@ directories beside the state directory are never read, counted or removed.
 Never printed: `node.key`'s contents. The helper never formats key bytes; errors name paths
 only.
 
-### Pruning (helper, right after a successful backup)
+### Pruning (helper, before the copy and after it)
+
+It runs twice: before the copy without a just-taken entry (so a full disk can still take the
+copy; the keep rules below never drop the newest backup of a schema, which is what a rollback
+needs), and after a successful copy with it. A failed copy still reports the first pass's
+deletions.
 
 Candidates: entries of the root whose name matches the grammar exactly and that are real
 directories (`symlink_metadata`; a symlink is never followed or removed).
@@ -168,3 +180,12 @@ continues: pruning never fails the install.
   docs/install.md says so.
 - A backup copied by hand into `herdr-threads-backups/` under the grammar is pruned like the
   installer's own: the directory is documented as installer-owned.
+- A symlinked state directory puts the backup root beside its physical target (the installer
+  resolves `pwd -P`); documented.
+- The staging sweep decides liveness with `kill(pid, 0)` in the helper's own PID namespace: a
+  concurrent installer in another namespace sharing this state directory could have its
+  staging directory removed (its rename then fails closed). Accepted: concurrent installs
+  already collide on the prefix swap and daemon stop.
+- Pruning trusts the UTC stamp in the name: an entry taken with a far-future clock holds one
+  newest-3 slot until real time passes it. Accepted: the just-taken backup and the newest per
+  schema are kept regardless.

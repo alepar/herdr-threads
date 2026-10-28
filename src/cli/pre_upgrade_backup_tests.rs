@@ -60,7 +60,11 @@ fn taken(outcome: Outcome) -> (PathBuf, i64, PruneReport) {
             backup,
             schema,
             prune,
-        } => (backup, schema, prune),
+            warnings,
+        } => {
+            assert!(warnings.is_empty(), "{warnings:?}");
+            (backup, schema, prune)
+        }
         Outcome::NoStore => panic!("no backup taken"),
     }
 }
@@ -124,7 +128,9 @@ fn a_store_that_is_not_sqlite_fails_and_leaves_no_staging() {
     let _ = fs::remove_file(node.join("herdr-threads.db-wal"));
     let _ = fs::remove_file(node.join("herdr-threads.db-shm"));
     fs::write(node.join(DATABASE_FILE), b"not a database at all").unwrap();
-    let error = backup_and_prune(&state, "v2.5.0", at(NOW)).unwrap_err();
+    let error = backup_and_prune(&state, "v2.5.0", at(NOW))
+        .unwrap_err()
+        .reason;
     assert!(!error.contains("SECRET"), "{error}");
     assert!(names(&backups(&state)).is_empty(), "staging removed");
 }
@@ -323,5 +329,52 @@ fn a_copy_that_fails_its_integrity_check_is_refused() {
     assert!(
         error.starts_with("the copy failed its integrity check"),
         "{error}"
+    );
+}
+
+#[test]
+fn prune_runs_before_the_copy_so_a_failed_copy_still_frees_space() {
+    let (_root, state) = state("early", 9);
+    let root = backups(&state);
+    fs::create_dir_all(&root).unwrap();
+    for day in 1..=5 {
+        entry(
+            &root,
+            &format!("pre-v2.4.{day}-2026100{day}T000000Z"),
+            Some(5),
+        );
+    }
+    let node = state.join("node");
+    let _ = fs::remove_file(node.join("herdr-threads.db-wal"));
+    let _ = fs::remove_file(node.join("herdr-threads.db-shm"));
+    fs::write(node.join(DATABASE_FILE), b"not a database at all").unwrap();
+    let failure = backup_and_prune(&state, "v2.5.0", at(NOW)).unwrap_err();
+    let mut pruned: Vec<String> = failure
+        .prune
+        .pruned
+        .iter()
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
+        .collect();
+    pruned.sort();
+    assert_eq!(
+        pruned,
+        vec!["pre-v2.4.1-20261001T000000Z", "pre-v2.4.2-20261002T000000Z"]
+    );
+    assert_eq!(names(&root).len(), 3, "the newest 3 stay; no staging left");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_store_is_refused() {
+    let (_root, state) = state("symlink", 9);
+    let node = state.join("node");
+    let real = state.join("elsewhere.db");
+    fs::rename(node.join(DATABASE_FILE), &real).unwrap();
+    std::os::unix::fs::symlink(&real, node.join(DATABASE_FILE)).unwrap();
+    let failure = backup_and_prune(&state, "v2.5.0", at(NOW)).unwrap_err();
+    assert!(
+        failure.reason.contains("is not a regular file"),
+        "{}",
+        failure.reason
     );
 }

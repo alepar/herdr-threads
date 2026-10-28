@@ -28,16 +28,21 @@ STUB = r'''#!/bin/bash
 case "$1" in
     --version) [ __RUNS__ = 1 ] || exit 126; echo "herdr-threads __VERSION__" ;;
     internal)
-        [ "${2:-}" = pre-upgrade-backup ] && [ __HELPER__ = 1 ] && exec "$REAL_BIN" "$@"
-        exit 2 ;;
+        [ "${2:-}" = pre-upgrade-backup ] || exit 2
+        case __HELPER__ in
+            1) exec "$REAL_BIN" "$@" ;;
+            # A helper that exists but fails (an older SQLite on a newer store).
+            fail) [ "${3:-}" = --help ] && exit 0; echo "herdr-threads: error: pre-upgrade backup failed: stand-in" >&2; exit 1 ;;
+            *) exit 2 ;;
+        esac ;;
     daemon) exit 0 ;;
     *) exit 2 ;;
 esac
 '''
 
-# (version, has the helper, runs)
+# (version, helper: True / False / 'fail', runs)
 RELEASES = [('0.1.0', True, True), ('0.1.1', True, True), ('0.1.2', False, True),
-            ('0.1.3', False, True), ('0.1.4', True, False)]
+            ('0.1.3', False, True), ('0.1.4', True, False), ('0.1.5', 'fail', True)]
 
 
 def user_version(path, version):
@@ -71,7 +76,8 @@ class InstallerBackup(unittest.TestCase):
         folder = self.release / 'download' / f'v{version}'
         folder.mkdir(parents=True)
         archive = folder / self.asset
-        stub = (STUB.replace('__VERSION__', version).replace('__HELPER__', '1' if helper else '0')
+        mode = 'fail' if helper == 'fail' else ('1' if helper else '0')
+        stub = (STUB.replace('__VERSION__', version).replace('__HELPER__', mode)
                 .replace('__RUNS__', '1' if runs else '0'))
         files = {'herdr-plugin.toml': b'id="herdr-threads"\n', 'bin/herdr-threads': stub.encode(),
                  'scripts/view.sh': b'#!/bin/sh\n', 'scripts/build.sh': b'#!/bin/sh\n',
@@ -194,6 +200,31 @@ class InstallerBackup(unittest.TestCase):
         self.assertIn('--no-backup: no pre-upgrade backup of', out)
         self.assertEqual((self.prefix / 'VERSION').read_text(), '0.1.3')
         self.assertFalse(self.backups.exists())
+
+    def test_a_failing_package_helper_falls_back_to_the_installed_one(self):
+        self.install('0.1.1')
+        self.store(9)
+        out = self.install('0.1.5')
+        self.assertIn('pre-upgrade backup failed: stand-in', out)
+        self.assertIn('integrity ok', out)
+        self.assertEqual([n[:11] for n in self.names()], ['pre-v0.1.5-'])
+
+    def test_a_symlinked_store_fails_closed(self):
+        self.install('0.1.0')
+        self.store(9)
+        node = self.state / 'node'
+        real = self.root / 'elsewhere.db'
+        (node / 'herdr-threads.db').rename(real)
+        for sidecar in ('-wal', '-shm'):
+            (node / f'herdr-threads.db{sidecar}').unlink(missing_ok=True)
+        (node / 'herdr-threads.db').symlink_to(real)
+        out = self.install('0.1.1', expect=1)
+        self.assertIn('is not a regular file', out)
+        self.assertIn('nothing was stopped or replaced', out)
+        self.assertEqual((self.prefix / 'VERSION').read_text(), '0.1.0')
+        out = self.install('0.1.1', '--no-backup')
+        self.assertIn('--no-backup: no pre-upgrade backup of', out)
+        self.assertEqual((self.prefix / 'VERSION').read_text(), '0.1.1')
 
     def test_a_download_that_cannot_run_is_named(self):
         self.install('0.1.1')

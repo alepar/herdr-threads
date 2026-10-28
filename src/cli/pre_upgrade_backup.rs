@@ -41,10 +41,28 @@ pub enum Outcome {
         backup: PathBuf,
         schema: i64,
         prune: PruneReport,
+        /// Problems after the backup was complete and in place (a failed fsync of the root).
+        warnings: Vec<String>,
     },
 }
 
-#[derive(Debug, Default)]
+/// A failed backup: no backup exists, but the pre-copy prune may have removed entries.
+#[derive(Debug)]
+pub struct Failure {
+    pub reason: String,
+    pub prune: PruneReport,
+}
+
+impl From<String> for Failure {
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            prune: PruneReport::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct PruneReport {
     pub pruned: Vec<PathBuf>,
     /// Kept because the schema could not be read: (path, reason).
@@ -71,6 +89,7 @@ pub fn run<W: Write>(
             backup,
             schema,
             prune,
+            warnings,
         }) => {
             writeln!(
                 writer,
@@ -78,30 +97,17 @@ pub fn run<W: Write>(
                 state_dir.display(),
                 backup.display()
             )?;
-            for path in &prune.pruned {
-                writeln!(
-                    writer,
-                    "herdr-threads: pruned old backup {}",
-                    path.display()
-                )?;
-            }
-            writer.flush()?;
-            for (path, reason) in &prune.unreadable {
-                eprintln!(
-                    "herdr-threads: warning: kept {}: cannot read its store schema ({reason})",
-                    path.display()
-                );
-            }
-            for (path, reason) in &prune.failed {
-                eprintln!(
-                    "herdr-threads: warning: could not prune {}: {reason}",
-                    path.display()
-                );
+            report_prune(&prune, writer)?;
+            for warning in &warnings {
+                eprintln!("herdr-threads: warning: {warning}");
             }
         }
-        Err(reason) => {
-            writer.flush()?;
-            eprintln!("herdr-threads: error: pre-upgrade backup failed: {reason}");
+        Err(failure) => {
+            report_prune(&failure.prune, writer)?;
+            eprintln!(
+                "herdr-threads: error: pre-upgrade backup failed: {}",
+                failure.reason
+            );
             return Err(super::RunError::Exit(1));
         }
     }
@@ -109,39 +115,84 @@ pub fn run<W: Write>(
     Ok(())
 }
 
-/// Take the backup of `state_dir`'s node store, then prune the backup root. An error means
-/// no backup exists (the staging directory is removed); pruning never fails the run.
+fn report_prune<W: Write>(prune: &PruneReport, writer: &mut W) -> io::Result<()> {
+    for path in &prune.pruned {
+        writeln!(
+            writer,
+            "herdr-threads: pruned old backup {}",
+            path.display()
+        )?;
+    }
+    writer.flush()?;
+    for (path, reason) in &prune.unreadable {
+        eprintln!(
+            "herdr-threads: warning: kept {}: cannot read its store schema ({reason})",
+            path.display()
+        );
+    }
+    for (path, reason) in &prune.failed {
+        eprintln!(
+            "herdr-threads: warning: could not prune {}: {reason}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Prune the backup root, take the backup of `state_dir`'s node store, then prune again
+/// with the new backup counted. Pruning first frees the space of entries the policy drops
+/// anyway (it never drops the newest per schema), so a full disk can still take the copy.
+/// An error means no backup exists (the staging directory is removed); pruning never fails
+/// the run.
 pub fn backup_and_prune(
     state_dir: &Path,
     version: &str,
     now: SystemTime,
-) -> Result<Outcome, String> {
+) -> Result<Outcome, Failure> {
     let source = node_dir(state_dir).join(DATABASE_FILE);
     match fs::symlink_metadata(&source) {
         Ok(meta) if meta.is_file() => {}
-        Ok(_) => return Err(format!("{} is not a regular file", source.display())),
+        Ok(_) => {
+            return Err(Failure::from(format!(
+                "{} is not a regular file",
+                source.display()
+            )));
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Outcome::NoStore),
-        Err(error) => return Err(format!("{}: {error}", source.display())),
+        Err(error) => return Err(Failure::from(format!("{}: {error}", source.display()))),
     }
     let tag = version.strip_prefix('v').unwrap_or(version);
     if !valid_tag(tag) {
-        return Err(format!("invalid version {version:?}"));
+        return Err(Failure::from(format!("invalid version {version:?}")));
     }
     let root = state_dir
         .parent()
-        .ok_or_else(|| format!("{} has no parent directory", state_dir.display()))?
+        .ok_or_else(|| format!("{} has no parent directory", state_dir.display()))
+        .map_err(Failure::from)?
         .join(ROOT);
     match fs::symlink_metadata(&root) {
         Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return Err(format!("{} is not a directory", root.display())),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            create_private_dir(&root).map_err(|error| format!("{}: {error}", root.display()))?;
+        Ok(_) => {
+            return Err(Failure::from(format!(
+                "{} is not a directory",
+                root.display()
+            )));
         }
-        Err(error) => return Err(format!("{}: {error}", root.display())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            create_private_dir(&root)
+                .map_err(|error| Failure::from(format!("{}: {error}", root.display())))?;
+        }
+        Err(error) => return Err(Failure::from(format!("{}: {error}", root.display()))),
     }
     sweep_stale_staging(&root);
+    let early = prune(&root, None);
+    let fail = |reason: String| Failure {
+        reason,
+        prune: early.clone(),
+    };
     let staging = root.join(format!("{STAGING_PREFIX}{}", std::process::id()));
-    create_private_dir(&staging).map_err(|error| format!("{}: {error}", staging.display()))?;
+    create_private_dir(&staging)
+        .map_err(|error| fail(format!("{}: {error}", staging.display())))?;
     let result = (|| {
         let schema = copy_store(&source, &staging.join(DATABASE_FILE))?;
         for name in [
@@ -153,21 +204,32 @@ pub fn backup_and_prune(
         sync_dir(&staging)?;
         let backup = free_name(&root, tag, now)?;
         fs::rename(&staging, &backup).map_err(|error| format!("{}: {error}", backup.display()))?;
-        sync_dir(&root)?;
         Ok((backup, schema))
     })();
     let (backup, schema) = match result {
         Ok(taken) => taken,
         Err(reason) => {
             let _ = fs::remove_dir_all(&staging);
-            return Err(reason);
+            return Err(fail(reason));
         }
     };
-    let prune = prune(&root, &backup);
+    // The backup is complete and in place; a failed fsync of its directory entry is a
+    // durability warning, not a failed backup.
+    let warnings = sync_dir(&root)
+        .err()
+        .map(|reason| format!("backup in place, but syncing its directory failed: {reason}"))
+        .into_iter()
+        .collect();
+    let late = prune(&root, Some(&backup));
+    let mut prune = early;
+    prune.pruned.extend(late.pruned);
+    prune.unreadable = late.unreadable;
+    prune.failed = late.failed;
     Ok(Outcome::Taken {
         backup,
         schema,
         prune,
+        warnings,
     })
 }
 
@@ -366,7 +428,7 @@ struct Candidate {
 
 /// Keep the backup just taken, the newest 3, the newest per schema and every entry whose
 /// schema cannot be read; remove the rest. Only entries on the grammar are considered.
-fn prune(root: &Path, taken: &Path) -> PruneReport {
+fn prune(root: &Path, taken: Option<&Path>) -> PruneReport {
     let mut report = PruneReport::default();
     let Ok(entries) = fs::read_dir(root) else {
         return report;
@@ -405,7 +467,7 @@ fn prune(root: &Path, taken: &Path) -> PruneReport {
             }
             Ok(schema) => schemas.insert(*schema),
         };
-        if newest_of_schema || index < KEEP_NEWEST || candidate.path == taken {
+        if newest_of_schema || index < KEEP_NEWEST || Some(candidate.path.as_path()) == taken {
             continue;
         }
         match fs::remove_dir_all(&candidate.path) {

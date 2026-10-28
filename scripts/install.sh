@@ -647,31 +647,38 @@ fi
 # one way. The helper (`internal pre-upgrade-backup`) copies the store with
 # VACUUM INTO (consistent while the daemon runs), checks the copy, copies
 # node.key and node.json, and prunes older backups in herdr-threads-backups/
-# beside the state directory. The new package's executable runs it; one
-# without the helper (an older --version) falls back to the installed one.
+# beside the state directory. The new package's executable runs it; when it
+# lacks the helper (an older --version) or its helper fails (an older SQLite
+# that cannot read a newer store, on a rollback), the installed one is tried.
 # Fail closed: no backup, no install (unless --no-backup).
 
 # State directories with a node store under Herdr's default plugin state
-# roots, one per line, deduplicated by physical path.
+# roots, one per line, deduplicated by physical path. Any entry at the store
+# path counts, a symlink included: the helper refuses what it cannot back up,
+# so the run fails closed instead of migrating it unbacked.
 store_states() {
     local state
     for state in "${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$PLUGIN_ID" \
         "$HOME/.local/state/herdr/plugins/$PLUGIN_ID"; do
-        [ -f "$state/node/herdr-threads.db" ] && [ ! -L "$state/node/herdr-threads.db" ] || continue
+        [ -e "$state/node/herdr-threads.db" ] || [ -L "$state/node/herdr-threads.db" ] || continue
         (CDPATH='' cd -P -- "$state" && pwd -P)
     done | sort -u
 }
 
-# The first of the given executables that has the backup helper.
-backup_helper() {
-    local exe
+# Back up STATE with the first of the given executables whose helper succeeds.
+# Status 2 when none of them has the helper, 1 when every helper failed.
+backup_with() {
+    local state=$1 exe found=0
+    shift
     for exe in "$@"; do
         [ -x "$exe" ] || continue
-        if "$exe" internal pre-upgrade-backup --help >/dev/null 2>&1; then
-            printf '%s\n' "$exe"
+        "$exe" internal pre-upgrade-backup --help >/dev/null 2>&1 || continue
+        found=1
+        if "$exe" internal pre-upgrade-backup --state-dir "$state" --target-version "$new_version"; then
             return 0
         fi
     done
+    [ "$found" = 1 ] || return 2
     return 1
 }
 
@@ -685,10 +692,13 @@ if [ "$changed" = 1 ]; then
         # A probe failure must not read as "no helper" when the download cannot run at all.
         "$package/bin/herdr-threads" --version >/dev/null 2>&1 ||
             die "the downloaded $new_version executable does not run here (a noexec ${TMPDIR:-/tmp}? set TMPDIR to another directory); nothing was stopped or replaced"
-        helper=$(backup_helper "$package/bin/herdr-threads" "$installed_binary") ||
-            die "pre-upgrade backup of $state failed: neither $new_version nor the installed executable can take it; nothing was stopped or replaced. Back it up by hand and re-run with --no-backup"
-        "$helper" internal pre-upgrade-backup --state-dir "$state" --target-version "$new_version" ||
-            die "pre-upgrade backup of $state failed; nothing was stopped or replaced. Fix the cause and re-run, or pass --no-backup to install without a backup"
+        rc=0
+        backup_with "$state" "$package/bin/herdr-threads" "$installed_binary" || rc=$?
+        case $rc in
+            0) ;;
+            2) die "pre-upgrade backup of $state failed: neither $new_version nor the installed executable can take it; nothing was stopped or replaced. Back it up by hand and re-run with --no-backup" ;;
+            *) die "pre-upgrade backup of $state failed; nothing was stopped or replaced. Fix the cause and re-run, or pass --no-backup to install without a backup" ;;
+        esac
     done <<EOF_STATES
 $(store_states)
 EOF_STATES
