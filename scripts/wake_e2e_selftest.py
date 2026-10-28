@@ -2,6 +2,7 @@
 the daemon and the harnesses. Run with `python3 scripts/wake-e2e.py --self-test`. Uses only fake credentials."""
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -9,6 +10,7 @@ import shlex
 import shutil
 import stat
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -132,6 +134,75 @@ class BusyPublicationBarrier(TempDir):
         with W.BusyBarrier(self.tmp) as hold:
             with self.assertRaisesRegex(RuntimeError, "tool did not enter"):
                 hold.wait_entered(timeout=0.01)
+
+
+class ProviderThrottle(TempDir):
+    """ht-b8jm: a Codex 429 backoff (58-99 s in the 2.5.0 qualification) delays the busy tool past the entry wait; the
+    driver reads it from the scratch CODEX_HOME's logs_2.sqlite, waits on and reports it as provider throttled."""
+
+    # Codex's own logs table (logs_2.sqlite) and retry lines as 2.5.0 recorded them, span prefixes cut.
+    SCHEMA = ("CREATE TABLE logs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, ts_nanos INTEGER NOT NULL,"
+              " level TEXT NOT NULL, target TEXT NOT NULL, feedback_log_body TEXT, module_path TEXT, file TEXT,"
+              " line INTEGER, thread_id TEXT, process_uuid TEXT, estimated_bytes INTEGER NOT NULL DEFAULT 0)")
+    RETRY_429 = ("session_loop{thread_id=01a181cc}:run_sampling_request{turn_id=01a181cc}: stream disconnected - "
+                 "retrying sampling request (1/5 in 98.999872989s)... turn_id=01a181cc retries=1 max_retries=5 "
+                 "sampling_error=exceeded retry limit, last status: 429 Too Many Requests")
+    RETRY_WS = ("run_sampling_request{turn_id=01a18062}: stream disconnected - retrying sampling request (1/5 in 213ms)"
+                "... retries=1 max_retries=5 sampling_error=stream disconnected before completion: websocket closed")
+
+    def log(self, *rows):
+        db = sqlite3.connect(self.tmp / "logs_2.sqlite")
+        with contextlib.closing(db):
+            db.execute(self.SCHEMA)
+            db.executemany("INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body) VALUES (?, 0, 'WARN', ?, ?)",
+                           rows)
+            db.commit()
+
+    def test_reads_the_latest_429_retry_since_the_prompt(self):
+        self.log((1000, "codex_core::responses_retry", self.RETRY_429.replace("98.999872989s", "5s")),
+                 (1100, "codex_core::responses_retry", self.RETRY_429),
+                 (1200, "codex_core::responses_retry", self.RETRY_WS),
+                 (1300, "codex_core::other", self.RETRY_429.replace("98.999872989s", "7s")))
+        self.assertEqual(W.codex_throttle(self.tmp, 1050.5), "429 retry 1/5 in 99s")
+        self.assertIsNone(W.codex_throttle(self.tmp, 1101), "a non-429 retry or another target is not throttling")
+
+    def test_no_or_unreadable_log_is_not_throttling(self):
+        self.assertIsNone(W.codex_throttle(self.tmp, 0))
+        (self.tmp / "logs_2.sqlite").write_text("not a database")
+        self.assertIsNone(W.codex_throttle(self.tmp, 0))
+
+    def test_throttled_wait_runs_on_until_the_tool_enters(self):
+        children = []
+        with W.BusyBarrier(self.tmp) as hold:
+            late = threading.Timer(0.3, lambda: children.append(subprocess.Popen(shlex.split(hold.command()))))
+            late.start()
+            asked = []
+            hold.wait_entered(timeout=0.05, throttled=lambda: asked.append(1) or "429 retry 1/5 in 99s",
+                              throttled_timeout=5)
+            self.assertEqual(asked, [1], "the log is read once, at the base timeout")
+            late.join()
+        children[0].wait(timeout=2)  # released: exits on its next poll
+
+    def test_tool_that_never_enters_while_throttled_is_reported_as_such(self):
+        with W.BusyBarrier(self.tmp) as hold:
+            with self.assertRaisesRegex(RuntimeError, r"^provider throttled \(429 retry 1/5 in 99s\); busy tool did not enter$"):
+                hold.wait_entered(timeout=0.01, throttled=lambda: "429 retry 1/5 in 99s", throttled_timeout=0.05)
+
+    def test_unthrottled_late_tool_keeps_the_plain_failure(self):
+        with W.BusyBarrier(self.tmp) as hold:
+            t0 = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, "^busy tool did not enter$"):
+                hold.wait_entered(timeout=0.05, throttled=lambda: None, throttled_timeout=60)
+            self.assertLess(time.monotonic() - t0, 5, "no throttle evidence must not widen the wait")
+
+    def test_only_codex_recipients_probe_the_codex_log(self):
+        self.log((1100, "codex_core::responses_retry", self.RETRY_429))
+        recipient = object.__new__(W.Recipient)
+        recipient.run = SimpleNamespace(codex_home=self.tmp)
+        recipient.harness = "claude"
+        self.assertIsNone(recipient.throttle_probe(0))
+        recipient.harness = "codex"
+        self.assertEqual(recipient.throttle_probe(1000)(), "429 retry 1/5 in 99s")
 
 
 class CodexAuthCopy(TempDir):
