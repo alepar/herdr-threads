@@ -67,6 +67,7 @@ case "$1" in
                     echo $((n - 1)) > "$FAKE_DIR/race-ensure-$version"
                     "$FAKE_DIR/old-client/herdr-threads" --state-dir "$state" daemon ensure
                 fi
+                if [ -e "$FAKE_DIR/ensure-fail-$version" ]; then echo "ensure refused" >&2; exit 1; fi
                 if live; then
                     observed=$(sed -n 's/.*"software_version":"\([^"]*\)".*/\1/p' "$endpoint")
                     [ "$observed" = "$version" ] || { echo "daemon version mismatch: $observed" >&2; exit 1; }
@@ -181,6 +182,14 @@ class InstallerDaemonRace(unittest.TestCase):
         self.assertIn('replaced the stale daemon; the installed executable runs', out)
         self.assertNotIn('running daemon does not match', out)
         self.assertEqual((self.root / 'race-ensure-0.1.1').read_text().strip(), '0')
+
+    def test_failed_reensure_after_a_replacement_is_not_reported_as_success(self):
+        (self.root / 'ensure-fail-0.1.1').write_text('')
+        out = self.upgrade_with_racing_client(5)
+        self.assertFalse(self.endpoint.exists(), out)
+        self.assertIn('installed daemon verification failed', out)
+        self.assertNotIn('replaced the stale daemon', out)
+        self.assertNotIn('Check it: herdr-threads doctor', out)
 
     def test_replacement_is_bounded(self):
         start = time.monotonic()

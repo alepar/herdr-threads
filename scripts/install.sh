@@ -967,7 +967,9 @@ ensure_instance() {
 # Never ensures over a stale daemon that is still running. Status 1 when the
 # stop or an ensure failed; the caller checks again either way.
 replace_stale() {
-    local stale=$1 instance new_binary=$installed_binary stopped=0
+    local stale=$1 instance new_binary=$installed_binary stopped=0 stopping
+    # The stop takes down every live instance: ensure each of them again.
+    stopping=$(live_instances)
     if [ -n "$retained_old" ] && [ -x "$retained_old/bin/herdr-threads" ]; then
         installed_binary="$retained_old/bin/herdr-threads"
         if stop_with_installed; then stopped=1; fi
@@ -978,12 +980,12 @@ replace_stale() {
         return 1
     fi
     local ok=0
-    while IFS="$(printf '\t')" read -r instance _; do
+    while IFS= read -r instance; do
         [ -n "$instance" ] || continue
         ensure_instance "$instance" || ok=1
-    done <<EOF_STALE
-$stale
-EOF_STALE
+    done <<EOF_STOPPED
+$(printf '%s\n%s\n' "$stopping" "$(printf '%s\n' "$stale" | cut -f1)" | sort -u)
+EOF_STOPPED
     return "$ok"
 }
 
@@ -1013,9 +1015,11 @@ verify_installed_daemons() {
         if [ -z "$stale" ]; then
             [ "$ensured" = 1 ] || return 1
             if [ "$repaired" = 1 ]; then
+                # Claim success only for a daemon actually found running.
+                [ -n "$(live_instances)" ] || return 1
                 say "replaced the stale daemon; the installed executable runs"
-                OUT_DAEMON_UP=1
                 OUT_DAEMON_ERROR=''
+                if [ "$OUT_LINKED" = 1 ]; then OUT_DAEMON_UP=1; fi
             fi
             return 0
         fi
