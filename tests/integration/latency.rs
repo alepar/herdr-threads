@@ -448,10 +448,13 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
     let (ok, value, stderr) =
         plugin.run(Some(agent(0)), &["check-in", "--lifecycle-event", &event]);
     assert!(ok, "check-in after the party: {stderr}{value}");
-    // A lane commit between a send's preparation and decision refuses it
-    // definitively ("snapshot changed", nothing published); the design
-    // accepts that race and a cooperative caller resends, as the party's
-    // senders above may. Only that refusal is resent, at most five times.
+    // A lane commit between two quanta of a send's preparation refuses it
+    // definitively ("snapshot changed; bounded cleanup required", nothing
+    // published); the design accepts that race and a cooperative caller
+    // resends, as the party's senders above may. Only that refusal is resent,
+    // at most five times. The other snapshot-changed refusals cannot race
+    // since the sealed preparation keeps its writer turn through publication
+    // (ht-sceg), so they fail at once.
     let mut attempts = 0;
     let (ok, value, stderr) = loop {
         attempts += 1;
@@ -459,7 +462,10 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
             Some(agent(0)),
             &["send", &thread, "--body", "Off with their heads!"],
         );
-        if ok || attempts == 5 || !stderr.contains("send preparation snapshot changed") {
+        if ok
+            || attempts == 5
+            || !stderr.contains("send preparation snapshot changed; bounded cleanup required")
+        {
             break (ok, value, stderr);
         }
     };
