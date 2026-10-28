@@ -360,7 +360,15 @@ async fn two_nodes_link_and_converge() {
     let (thread, _creator) = thread_of(&a, "smoke");
     let (ra, rb) = (start(&a, 11, 1), start(&b, 12, 2));
     ra.link(&rb).await;
-    wait_until("B applies A's thread", PATIENCE, || has_thread(&b, &thread)).await;
+    // Both directions: A's thread reaching B says nothing of B's own entries
+    // (its node genesis) reaching A.
+    wait_until("A and B converge", PATIENCE, || {
+        has_thread(&b, &thread)
+            && pending(&a) == 0
+            && pending(&b) == 0
+            && ra.vector() == rb.vector()
+    })
+    .await;
     assert_projections_equal(&[&a, &b]);
     ra.stop().await;
     rb.stop().await;
