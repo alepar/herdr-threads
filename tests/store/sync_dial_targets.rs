@@ -464,6 +464,7 @@ fn retire_unseen_deletes_only_never_linked_process_rows_absent_from_the_pass() {
     let present = discovered(&tx, "open", DiscoverySource::HerdrRemoteProcess);
     let once_linked = discovered(&tx, "linked-once", DiscoverySource::HerdrRemoteProcess);
     let forgotten = discovered(&tx, "forgotten", DiscoverySource::HerdrRemoteProcess);
+    let mid_dial = discovered(&tx, "mid-dial", DiscoverySource::HerdrRemoteProcess);
     let machine = discovered(&tx, "machine", DiscoverySource::HerdrMachine);
     let explicit = targets::add_explicit(&tx, "explicit", None, 10).unwrap();
     targets::forget(&tx, "forgotten", 20).unwrap();
@@ -474,6 +475,8 @@ fn retire_unseen_deletes_only_never_linked_process_rows_absent_from_the_pass() {
         DialTransition::Linked { node: node(7) },
         30,
     );
+    // Its link may be up before the Dialer records it: kept until it settles.
+    transition(&mut db, mid_dial, DialTransition::Dialing, 30);
 
     let tx = db.transaction().unwrap();
     assert_eq!(
@@ -487,7 +490,7 @@ fn retire_unseen_deletes_only_never_linked_process_rows_absent_from_the_pass() {
         .map(|row| row.target_id)
         .collect();
     assert!(!left.contains(&stray), "the stray client's row is deleted");
-    for kept in [present, once_linked, forgotten, machine, explicit] {
+    for kept in [present, once_linked, forgotten, mid_dial, machine, explicit] {
         assert!(left.contains(&kept), "{kept:?} kept");
     }
     assert!(

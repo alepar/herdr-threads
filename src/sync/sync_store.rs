@@ -125,6 +125,15 @@ mod memory {
             id
         }
 
+        /// Gives the row `from` the destination `to`, as SQLite reusing a
+        /// deleted row's id for a new destination does.
+        pub fn rename(&self, from: &str, to: &str) {
+            let mut state = self.state.lock().unwrap();
+            for target in state.targets.iter_mut().filter(|t| t.ssh_dest == from) {
+                to.clone_into(&mut target.ssh_dest);
+            }
+        }
+
         /// Disables the target with this destination.
         pub fn disable(&self, dest: &str) {
             let mut state = self.state.lock().unwrap();

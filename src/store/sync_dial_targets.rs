@@ -398,7 +398,9 @@ pub fn upsert_discovered(
 /// linked and whose destination is not in `seen` (every destination the pass
 /// found), so a one-off client (a test harness's `herdr --remote test-only`, a
 /// typo) is not dialed forever (ht-hvyf). Explicit, `herdr_machine`, forgotten
-/// and once-linked rows are kept; a later sighting adds the row again.
+/// and once-linked rows are kept, and so is a row mid-dial (`dialing`): its
+/// link may be up before the Dialer records it. A later sighting adds the
+/// row again.
 /// Returns the rows deleted.
 pub fn retire_unseen_remote_processes(
     tx: &Transaction<'_>,
@@ -408,7 +410,8 @@ pub fn retire_unseen_remote_processes(
         .prepare(
             "SELECT target_id, ssh_dest FROM sync_dial_targets \
              WHERE source='herdr_remote_process' AND enabled=1 \
-               AND learned_node_uuid IS NULL AND last_linked_at IS NULL",
+               AND learned_node_uuid IS NULL AND last_linked_at IS NULL \
+               AND state NOT IN ('dialing','linked')",
         )
         .map_err(store_error)?;
     let unseen = candidates

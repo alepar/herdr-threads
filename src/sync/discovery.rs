@@ -360,9 +360,9 @@ pub struct DiscoveryWorker {
     deps: DiscoveryDeps,
     pacer: Arc<Pacer>,
     last_logged: Mutex<Vec<(&'static str, std::time::Instant)>>,
-    /// What the last pass with a completed process scan found (`None` before
-    /// the first): retiring runs on the first such pass and whenever a
-    /// destination found then is gone, so a steady pass writes nothing.
+    /// The remote clients the last pass with a completed process scan found
+    /// (`None` before the first): retiring runs on the first such pass and
+    /// whenever a client found then is gone, so a steady pass writes nothing.
     last_found: Mutex<Option<Vec<String>>>,
 }
 
@@ -469,11 +469,13 @@ impl DiscoveryWorker {
         };
         deps.status.set(state);
         let upserts = found.upserts();
+        // Only a client leaving the process scan triggers retirement, not a
+        // flapping machine list.
         let retire = scanned && {
             let last = self.last_found.lock().unwrap_or_else(|e| e.into_inner());
             last.as_ref().is_none_or(|last| {
                 last.iter()
-                    .any(|dest| !upserts.iter().any(|(found, _)| found == dest))
+                    .any(|dest| !found.remote_clients.iter().any(|client| client == dest))
             })
         };
         if upserts.is_empty() && !retire {
@@ -517,7 +519,7 @@ impl DiscoveryWorker {
         }
         if scanned {
             *self.last_found.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(upserts.into_iter().map(|(dest, _)| dest).collect());
+                Some(found.remote_clients.clone());
         }
         if tally.inserted > 0 {
             (deps.log)(&format!(
@@ -901,6 +903,17 @@ mod tests {
                 ("r2".to_owned(), DiscoverySource::HerdrRemoteProcess),
                 ("r3".to_owned(), DiscoverySource::HerdrRemoteProcess),
             ]
+        );
+        // A machine-list entry that comes and goes never triggers retirement.
+        rig.store.retired.store(0, Ordering::SeqCst);
+        *rig.lister.0.lock().unwrap() = Some(machines(&[("m", true)]));
+        rig.worker.pass().await;
+        next_pass(&rig);
+        rig.worker.pass().await;
+        assert_eq!(
+            rig.store.retires.lock().unwrap()[4..],
+            [false, false],
+            "a machine-list flap does not retire"
         );
         assert!(rig.logs.lock().unwrap().iter().any(|line| line
             == "sync discovery: retired 1 never-linked dial target(s) whose herdr --remote client is gone"));

@@ -6,7 +6,7 @@
 //! - Owns: one [`DialTask`]-style tokio task per enabled `sync_dial_targets`
 //!   row, driven by a reload diff of `SyncStorePort::enabled_targets()`
 //!   (new row: task; removed or disabled row: cancel; changed
-//!   `remote_command`: restart). Each task owns its child process end to end:
+//!   `remote_command` or destination: restart). Each task owns its child process end to end:
 //!   spawn with piped stdio, stderr in a 4 KiB ring, its own process group,
 //!   `kill_on_drop`, and on every exit path (link ended, cancellation, daemon
 //!   shutdown) `killpg(TERM)` (whether or not the leader is still alive), at most 2 s,
@@ -949,6 +949,9 @@ impl Drop for Dialer {
 }
 
 struct TaskEntry {
+    /// A row id SQLite reuses after a deleted row (discovery retirement)
+    /// names another destination: the task restarts (ht-hvyf).
+    ssh_dest: String,
     remote_command: Option<String>,
     rows: watch::Sender<DialTarget>,
     cancel: Cancellation,
@@ -1038,7 +1041,10 @@ impl Supervisor {
         for target in targets {
             let id = target.target_id;
             let restart = match self.tasks.get(&id) {
-                Some(entry) if entry.remote_command == target.remote_command => {
+                Some(entry)
+                    if entry.remote_command == target.remote_command
+                        && entry.ssh_dest == target.ssh_dest =>
+                {
                     entry.rows.send_if_modified(|current| {
                         if *current == target {
                             false
@@ -1076,6 +1082,7 @@ impl Supervisor {
             }
         };
         let remote_command = target.remote_command.clone();
+        let ssh_dest = target.ssh_dest.clone();
         let join = tokio::spawn(run_task(
             self.ctx.clone(),
             target,
@@ -1084,6 +1091,7 @@ impl Supervisor {
             seed,
         ));
         TaskEntry {
+            ssh_dest,
             remote_command,
             rows: rows_tx,
             cancel,
@@ -1694,6 +1702,19 @@ mod tests {
         rig.dialer.shared().request_reload();
         let dialed = next_dial(&mut rig).await;
         assert_eq!(dialed.target_id, id);
+        rig.dialer.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_reused_target_id_with_another_destination_restarts_its_task() {
+        let mut rig = rig(PREAMBLE_THEN_SLEEP);
+        let id = rig.store.add_target("retired");
+        rig.dialer.shared().request_reload();
+        assert_eq!(next_dial(&mut rig).await.dest, "retired");
+        rig.store.rename("retired", "fresh");
+        rig.dialer.shared().request_reload();
+        let dialed = next_dial(&mut rig).await;
+        assert_eq!((dialed.target_id, dialed.dest.as_str()), (id, "fresh"));
         rig.dialer.shutdown().await;
     }
 
