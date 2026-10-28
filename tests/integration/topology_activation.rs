@@ -458,7 +458,10 @@ impl Fixture {
     /// observation and its reconciliation of the seeded seats would then run
     /// inside the test body.
     fn wait_for_daemon_reconciliation(&self) {
-        let until = Instant::now() + Duration::from_secs(5);
+        // The daemon's startup observation and reconciliation pass run inside
+        // this wait under suite load; the same bound as the identical wait
+        // in handoff_topology_cli (WAIT).
+        let until = Instant::now() + Duration::from_secs(15);
         loop {
             let row = self.db().query_row(
                 "SELECT recovery_epoch,reconciled_epoch,reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot FROM herdr_hosts",
@@ -992,7 +995,6 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
             .iter()
             .any(|v| v == herdr_threads::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1)
     );
-    f.wait_for_daemon_reconciliation();
     let out = f.cli(
         &[
             "--cooperative-seat",
