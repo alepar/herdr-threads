@@ -107,9 +107,9 @@ A harness that exits right after the start (for example a harness refusing its a
 fails launch at once with invalid_request and the pane's last lines.
 
 Harness choices come from the same-binary registry."#;
-const LAUNCH_TAIL: &str = r#"--pane PANE@MACHINE launches on another machine: it runs its own launch there.
-Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
-inspect the pane (`herdr agent get` / `herdr agent read`) before launching again."#;
+const LAUNCH_TAIL: &str = r#"Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
+inspect the pane (`herdr agent get` / `herdr agent read`) before launching again.
+--pane PANE@MACHINE launches on another machine: it runs its own launch there."#;
 
 const HANDOFF_TEMPLATE: &str = r#"Omit --new-thread and --thread for the canonical automatic two-seat channel.
 Optionally override it with --new-thread or --thread ID_OR_NAME.
