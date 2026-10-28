@@ -609,10 +609,12 @@ impl HostSessions {
         port.resume_after_epoch(u64::try_from(epoch).unwrap_or(0));
 
         let session = self.start_session(host_id, locator, port, observer)?;
+        // Index first: a caller that finds the session (the read-lock fast path
+        // of `resolve`) must also find its id in the store's index.
+        self.index.publish(locator.clone(), host_id);
         if let Ok(mut map) = self.sessions.write() {
             map.insert(host_id, Arc::clone(&session));
         }
-        self.index.publish(locator.clone(), host_id);
         // Taken under its own lock, so a hook installed concurrently by
         // `on_first_attach` runs exactly once, here or there.
         let hook = self
