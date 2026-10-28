@@ -447,19 +447,22 @@ impl Fixture {
     ) -> u64 {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let native = NativeCli::new(context.host_endpoint.clone().unwrap(), clock.clone());
-        let budget = CallBudget {
+        // Each setup call gets its own budget from the moment it starts: one
+        // deadline across the whole seed (schema creation included) runs out
+        // under host load before the later calls start.
+        let budget = || CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
         };
-        let ctx = HostCallContext {
-            budget: budget.clone(),
+        let ctx = || HostCallContext {
+            budget: budget(),
             expected_boot: None,
             expected_epoch: None,
         };
         let observed = native
             .observe_bootstrap_target(
                 &herdr_threads::protocol::ids::HostTargetId::new("w4:p1"),
-                &ctx,
+                &ctx(),
             )
             .unwrap();
         let observation = observed.observation();
@@ -483,18 +486,18 @@ impl Fixture {
             .begin_host_observation(
                 &instance.to_string(),
                 herdr_threads::test_support::test_host_id(),
-                &budget,
+                &budget(),
             )
             .unwrap();
-        let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx).unwrap();
+        let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx()).unwrap();
         let stage = store
             .begin_snapshot_stage(
                 SnapshotHeader::from_captured(admission, &snapshot).unwrap(),
-                &budget,
+                &budget(),
             )
             .unwrap();
         // A writer turn can commit a prefix when its quantum expires. Honor
-        // that progress before sealing, under the original overall budget.
+        // that progress before sealing.
         let mut offset = 0u64;
         let mut targets = &snapshot.targets[..];
         while !targets.is_empty() {
@@ -505,7 +508,7 @@ impl Fixture {
                     offset,
                     batch,
                     DurableWorkAdmission::new(16).unwrap(),
-                    &budget,
+                    &budget(),
                 )
                 .unwrap();
             let visited = usize::from(progress.visited);
@@ -516,9 +519,9 @@ impl Fixture {
             );
             targets = &targets[visited..];
         }
-        store.seal_snapshot_stage(&stage.id, &budget).unwrap();
+        store.seal_snapshot_stage(&stage.id, &budget()).unwrap();
         let seeded_epoch = store
-            .publish_snapshot_stage(&stage.id, &budget)
+            .publish_snapshot_stage(&stage.id, &budget())
             .unwrap()
             .epoch;
         let execution = Uuid::new_v4();
