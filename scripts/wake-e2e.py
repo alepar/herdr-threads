@@ -822,9 +822,10 @@ class Run:
 
     def hermes_env(self):
         """The environment of a Hermes command run by the driver: HOME at the scratch Hermes home, so its
-        ~/.hermes and ~/.codex are the scratch ones."""
+        ~/.hermes and ~/.codex are the scratch ones. An inherited HERMES_HOME (any Hermes session exports it)
+        would name another root even with `--profile default`, so it is dropped."""
         env = {k: v for k, v in os.environ.items()
-               if k not in CALLER_SESSION_ENV and k not in ("CODEX_HOME", "HERDR_PANE_ID")}
+               if k not in CALLER_SESSION_ENV and k not in ("CODEX_HOME", "HERDR_PANE_ID", "HERMES_HOME")}
         env.update(HOME=str(self.hermes_home), PATH=f"{self.hermes_bin().parent}:{env.get('PATH', '')}")
         return env
 
@@ -837,7 +838,10 @@ class Run:
         rc, out, err = self.run([*hermes, "get", key, "--json"], env=self.hermes_env(), tag="hermes:passthrough-get",
                                 timeout=60)
         if rc == 0:
-            names = json.loads(out)
+            try:
+                names = json.loads(out)
+            except ValueError:
+                names = None
             if not isinstance(names, list):
                 raise RuntimeError(f"hermes config get {key}: not a list: {clip(out.strip(), 200, self.secrets)}")
         elif "not set" in err:
@@ -1055,7 +1059,7 @@ class Run:
             except Exception as e:
                 problems.append(f"workspace {self.workspace}: closure not verified: {clip(e, 200, getattr(self, 'secrets', None))}")
         if getattr(self, "hermes_home", None):
-            # The recipient's pane spawned Hermes' gateway (`gateway run --idle-exit`), which outlives the pane.
+            # A recipient's pane (whichever started first) spawned Hermes' gateway (`gateway run --idle-exit`), which outlives the pane.
             try:
                 rc = self.run([str(self.hermes_bin()), "--profile", "default", "gateway", "stop"],
                               env=self.hermes_env(), tag="cleanup:hermes-gateway", timeout=60, cleanup=True)[0]

@@ -708,12 +708,19 @@ class HermesSetup(TempDir):
             calls.append((argv, env))
             return get() if "get" in argv else (0, "", "")
         r.run = run
-        r.hermes_passthrough()
+        with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.tmp / "real-hermes")}):
+            r.hermes_passthrough()
         for argv, env in calls:
             self.assertEqual(argv[:4], [str(r.hermes_bin()), "--profile", "default", "config"])
             self.assertEqual(env["HOME"], str(r.hermes_home))
             self.assertNotIn("HERDR_PANE_ID", env)
+            self.assertNotIn("HERMES_HOME", env)
         return [argv[4:] for argv, _ in calls]
+
+    def test_default_empty_list_gets_both_names(self):
+        """Hermes 0.22.5 defaults the key to [] and prints it."""
+        calls = self.passthrough(lambda: (0, "[]\n", ""))
+        self.assertEqual(calls[-1], ["set", "terminal.client_env_passthrough", '["HERDR_PANE_ID", "HERDR_ENV"]'])
 
     def test_unset_list_gets_both_names(self):
         calls = self.passthrough(lambda: (1, "", "Config key not set: terminal.client_env_passthrough\n"))
@@ -734,6 +741,8 @@ class HermesSetup(TempDir):
             self.passthrough(lambda: (2, "", "usage: hermes config ..."))
         with self.assertRaisesRegex(RuntimeError, "not a list"):
             self.passthrough(lambda: (0, '"HERDR_PANE_ID"', ""))
+        with self.assertRaisesRegex(RuntimeError, "not a list"):
+            self.passthrough(lambda: (0, "notice\n[]", ""))
 
     def test_layout_seats_a_hermes_recipient_per_threshold(self):
         r = object.__new__(W.Run)
