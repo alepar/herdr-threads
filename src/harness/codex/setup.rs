@@ -758,8 +758,8 @@ impl SharedRules {
 
 /// Whether `permissions` is a shared rules file (see [`SharedRules`]); `None` when no directory
 /// below the config root on its path is a symbolic link to elsewhere. A record of the lexical path
-/// itself (an earlier release wrote through the link) never makes it writable here: it is only
-/// the owner of last resort, after any record made at another root.
+/// itself (an earlier release wrote through the link) never makes it writable here: like any
+/// other root's record, it can only show the real file owned.
 fn shared_rules(
     env: &SetupEnv,
     permissions: &CodexPermissions,
@@ -778,26 +778,33 @@ fn shared_rules(
             managed_elsewhere(env, rules, &canonical_of)?.map(|owner| SharedRules::Owned { owner })
         );
     };
-    let mut owners: Vec<(PathBuf, PathBuf)> =
-        lib::manifests_of_kind(env.state_dir()?, "codex-permissions")
-            .into_iter()
-            .filter_map(|manifest| {
-                let file = CodexPermissions::recorded_file(&manifest)?;
-                (canonical_of(&file).as_ref() == Some(&canonical)).then_some((file, manifest))
-            })
-            .collect();
-    owners.sort_by_key(|(file, _)| file == permissions.rules_file());
-    if let Some((file, manifest)) = owners.into_iter().next() {
-        return Ok(Some(
-            match CodexPermissions::at(file.clone(), manifest).status() {
-                // A record of this very link path names the real file instead.
-                Ok(CodexPermissionState::Installed) => SharedRules::Owned {
-                    owner: if file == rules { canonical } else { file },
-                },
-                Ok(CodexPermissionState::Missing) => SharedRules::Missing { canonical },
-                _ => SharedRules::Unowned { canonical },
-            },
-        ));
+    // Every record of the real file, whichever root made it (a linked profile's record, made
+    // before its link, resolves to the same file), in no particular order; the record of the root
+    // that holds the file (reached with no link below that root, even when the root itself is a
+    // link) decides. The verdict names the real file, never a record's lexical path.
+    let records: Vec<_> = lib::manifests_of_kind(env.state_dir()?, "codex-permissions")
+        .into_iter()
+        .filter_map(|manifest| {
+            let file = CodexPermissions::recorded_file(&manifest)?;
+            (canonical_of(&file).as_ref() == Some(&canonical)).then_some((file, manifest))
+        })
+        .map(|(file, manifest)| {
+            let real = file
+                .parent()
+                .and_then(Path::parent)
+                .is_some_and(|root| matches!(lib::shared_through_symlink(root, &file), Ok(None)));
+            let state = match CodexPermissions::at(file, manifest).status() {
+                Ok(CodexPermissionState::Installed) => lib::SharedRecord::Installed,
+                Ok(CodexPermissionState::Missing) => lib::SharedRecord::Missing,
+                _ => lib::SharedRecord::Unsettled,
+            };
+            (real, state)
+        })
+        .collect();
+    match lib::shared_ownership(&records) {
+        lib::SharedOwnership::Owned => return Ok(Some(SharedRules::Owned { owner: canonical })),
+        lib::SharedOwnership::Unowned => return Ok(Some(SharedRules::Unowned { canonical })),
+        lib::SharedOwnership::Undecided => {}
     }
     Ok(Some(
         if fs::symlink_metadata(&canonical)

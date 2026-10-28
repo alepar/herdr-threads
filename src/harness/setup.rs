@@ -465,6 +465,126 @@ pub(crate) fn manifests_of_kind(state_dir: &Path, kind: &str) -> Vec<std::path::
         .take(512)
         .collect()
 }
+/// One ownership record of a file shared through a symbolic link, as the shared check reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SharedRecord {
+    /// The file holds exactly what the record wrote.
+    Installed,
+    /// The file is absent.
+    Missing,
+    /// Edited since, mid-update or unreadable.
+    Unsettled,
+}
+
+/// Who owns a file shared through a symbolic link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SharedOwnership {
+    Owned,
+    Unowned,
+    /// No record decides; the file's presence does.
+    Undecided,
+}
+
+/// The ownership of a shared file from every record that resolves to it, in any order. `real`
+/// marks a record made at the root that holds the file (reached with no link below that root):
+/// such a record decides, so an edited or interrupted one is never outvoted by a linked
+/// profile's. Only when there is none, or it is missing, does any installed record own the file;
+/// otherwise any unsettled one leaves it unowned.
+pub(crate) fn shared_ownership(records: &[(bool, SharedRecord)]) -> SharedOwnership {
+    let decide = |real_only: bool| {
+        let states = || {
+            records
+                .iter()
+                .filter(move |(real, _)| *real || !real_only)
+                .map(|(_, state)| *state)
+        };
+        if states().any(|state| state == SharedRecord::Installed) {
+            SharedOwnership::Owned
+        } else if states().any(|state| state == SharedRecord::Unsettled) {
+            SharedOwnership::Unowned
+        } else {
+            SharedOwnership::Undecided
+        }
+    };
+    match decide(true) {
+        SharedOwnership::Undecided => decide(false),
+        decided => decided,
+    }
+}
+
+#[cfg(test)]
+mod shared_ownership_tests {
+    use super::{SharedOwnership as O, SharedRecord as R, shared_ownership};
+
+    fn permutations(items: &[(bool, R)]) -> Vec<Vec<(bool, R)>> {
+        if items.len() <= 1 {
+            return vec![items.to_vec()];
+        }
+        (0..items.len())
+            .flat_map(|i| {
+                let mut rest = items.to_vec();
+                let first = rest.remove(i);
+                permutations(&rest).into_iter().map(move |mut tail| {
+                    tail.insert(0, first);
+                    tail
+                })
+            })
+            .collect()
+    }
+
+    // Kills a decision that depends on record order (a stale sibling record listed first), or
+    // lets a linked profile's installed record outvote the real root's edited one (ht-mf2q).
+    #[test]
+    fn the_real_roots_record_decides_in_every_order() {
+        for (records, expected) in [
+            // Stale sibling profiles never outrank the real root's installed record.
+            (
+                vec![
+                    (true, R::Installed),
+                    (false, R::Unsettled),
+                    (false, R::Unsettled),
+                ],
+                O::Owned,
+            ),
+            // The real root's edited or interrupted record vetoes a profile's installed one.
+            (
+                vec![
+                    (true, R::Unsettled),
+                    (false, R::Installed),
+                    (false, R::Installed),
+                ],
+                O::Unowned,
+            ),
+            // A missing real record defers to any installed record, then to any unsettled one.
+            (
+                vec![
+                    (true, R::Missing),
+                    (false, R::Installed),
+                    (false, R::Unsettled),
+                ],
+                O::Owned,
+            ),
+            (
+                vec![
+                    (true, R::Missing),
+                    (false, R::Unsettled),
+                    (false, R::Missing),
+                ],
+                O::Unowned,
+            ),
+            // With no real record, any installed record owns the file (a symlinked default root
+            // whose records are all lexical link paths is still real, so it is never here).
+            (vec![(false, R::Unsettled), (false, R::Installed)], O::Owned),
+            (vec![(false, R::Missing), (false, R::Missing)], O::Undecided),
+            (vec![], O::Undecided),
+        ] {
+            for order in permutations(&records) {
+                assert_eq!(shared_ownership(&order), expected, "{order:?}");
+            }
+        }
+    }
+}
+
 fn permission_fingerprint(rule: &str) -> String {
     fingerprint(&serde_json::to_vec(&json!({ "allow": rule })).unwrap_or_default())
 }
