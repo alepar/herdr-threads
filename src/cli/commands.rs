@@ -2715,11 +2715,15 @@ fn parse_cli_in_registry(
                 "--cwd and --profile-dir require --new-tab; guarded pane launches cannot change directories",
             ));
         }
-        args.cwd = args
-            .cwd
-            .take()
-            .map(normalize_handoff_directory)
-            .transpose()?;
+        // A tab on another machine: `--cwd` names a directory there, which only
+        // that machine can check (TRUST-POLICY N15).
+        if remote_machine(&args.selector).is_none() {
+            args.cwd = args
+                .cwd
+                .take()
+                .map(normalize_handoff_directory)
+                .transpose()?;
+        }
         args.profile_dir = args
             .profile_dir
             .take()

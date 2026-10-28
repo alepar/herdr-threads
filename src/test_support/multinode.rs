@@ -676,6 +676,27 @@ impl Cluster {
         )
     }
 
+    /// [`Cluster::text_as`] with `env` added to the command.
+    pub fn text_as_env(
+        &self,
+        seat: Option<&Seat>,
+        node: usize,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> (i32, String, String) {
+        let output = self
+            .seat_command(seat, seat.map_or(0, |s| s.host), node, false)
+            .envs(env.iter().copied())
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
     /// The CLI of `node` against its `host`th server, as `seat` when given.
     fn seat_command(
         &self,

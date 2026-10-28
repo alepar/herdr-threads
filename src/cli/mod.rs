@@ -652,38 +652,40 @@ fn run_parsed_in_pane<W: Write>(
     if topology_runtime::run_operator(&parsed, &context, &paths, &clock, writer)? {
         return Ok(());
     }
-    // A launch on another machine (TRUST-POLICY N15): that machine launches; a
-    // handoff then continues here as `--existing --seat <launched seat>`.
-    if let CliAction::RemoteLaunch(remote) = &parsed.action {
-        let remote = (**remote).clone();
+    // A launch on another machine (TRUST-POLICY N15): that machine launches.
+    // A remote handoff runs in `run_selected`, after the caller checks a
+    // handoff needs.
+    if let CliAction::RemoteLaunch(remote) = &parsed.action
+        && remote.then.is_none()
+    {
         let (_, _, client) = connect(&paths, &clock)?;
-        let requester = parsed
-            .cooperative
-            .as_ref()
-            .map(|c| c.seat.as_str().to_owned());
-        let (seat, pane) = peer_launch::run_remote(
-            &remote,
-            requester.as_deref(),
+        let launched = peer_launch::run_remote(
+            remote,
+            None,
             &paths.node_dir,
             &client,
             clock.as_ref(),
             &mut io::stderr(),
         )?;
-        match remote.then {
-            None => {
-                writeln!(
-                    writer,
-                    "launched seat={seat} pane={pane}@{}",
-                    remote.machine
-                )?;
-                writer.flush()?;
-                return Ok(());
-            }
-            Some(mut then) => {
-                then.seat = Some(seat);
-                parsed.action = CliAction::TopologyHandoff(*then);
-            }
-        }
+        launched.settle();
+        let out = match parsed.output.format {
+            OutputFormat::Json => format!(
+                "{}\n",
+                launch::json_envelope(serde_json::json!({
+                    "outcome": "started",
+                    "seat": launched.seat,
+                    "pane": launched.pane,
+                    "machine": remote.machine,
+                }))
+            ),
+            OutputFormat::Text => format!(
+                "launched seat={} pane={}@{}\n",
+                launched.seat, launched.pane, remote.machine
+            ),
+        };
+        writer.write_all(out.as_bytes())?;
+        writer.flush()?;
+        return Ok(());
     }
     // The claim host's adapter, built only when a pane selector needs the host:
     // a store-only command (sync, peer, daemon, pending-ops) never asks.
@@ -2705,7 +2707,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         }
     }
     let compound = match &parsed.action {
-        CliAction::Handoff(_) | CliAction::TopologyHandoff(_) => true,
+        CliAction::Handoff(_) | CliAction::TopologyHandoff(_) | CliAction::RemoteLaunch(_) => true,
         CliAction::Retry(recovery) => {
             let original = retry::load_original_for_actor(&journal, recovery.as_str())?;
             handoff::is_handoff(&original.semantic)
@@ -2721,6 +2723,27 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             .as_ref()
             .ok_or_else(|| caller_not_located("handoff requires lifecycle check-in"))?;
         let claim = contexts.claim(saved).map_err(context_run_error)?;
+        // A remote handoff (N15): the launch runs there only now, after the
+        // top-level and check-in checks above; the handoff then continues as
+        // `--existing --seat <launched seat>`. The request id is kept until the
+        // handoff succeeds, so a rerun resumes at delivery, never relaunching.
+        let mut parsed = parsed;
+        let mut launched = None;
+        if let CliAction::RemoteLaunch(remote) = &parsed.action {
+            let remote = (**remote).clone();
+            let done = peer_launch::run_remote(
+                &remote,
+                Some(claim.seat.as_str()),
+                &paths.node_dir,
+                client,
+                clock,
+                &mut io::stderr(),
+            )?;
+            let mut then = remote.then.expect("a remote handoff continues");
+            then.seat = Some(done.seat.clone());
+            parsed.action = CliAction::TopologyHandoff(*then);
+            launched = Some(done);
+        }
         let topology = match &parsed.action {
             CliAction::TopologyHandoff(_) => true,
             CliAction::Retry(recovery) => topology_runtime::is_compound(
@@ -2728,11 +2751,17 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             ),
             _ => false,
         };
-        return if topology {
+        let result = if topology {
             topology_runtime::run(parsed, claim, &journal, paths, writer)
         } else {
             handoff::run(parsed, claim, &journal, paths, writer)
         };
+        if result.is_ok()
+            && let Some(launched) = launched
+        {
+            launched.settle();
+        }
+        return result;
     }
     let initial = if (current.is_none() || fresh_lifecycle) && lifecycle {
         let execution = uuid::Uuid::new_v4();
@@ -3123,6 +3152,8 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller
         | CliAction::TopologyHandoff(_)
         | CliAction::Watch(_)
         | CliAction::WatchAck(_) => CallerNeed::Selection,
+        // A remote handoff needs the top-level caller before it launches there.
+        CliAction::RemoteLaunch(remote) if remote.then.is_some() => CallerNeed::Selection,
         CliAction::TopologyRecover(_) => CallerNeed::None,
         CliAction::Retry(recovery) => {
             // Retry needs the daemon; report it unavailable (exit 3, intent
@@ -3829,7 +3860,7 @@ fn run_launch<W: Write>(
     )?;
     let bytes = match parsed.output.format {
         OutputFormat::Json => {
-            let mut bytes = serde_json::to_vec(&serde_json::json!({ "launch": outcome.report }))
+            let mut bytes = serde_json::to_vec(&launch::json_envelope(outcome.report))
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             bytes.push(b'\n');
             bytes

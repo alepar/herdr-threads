@@ -243,37 +243,55 @@ impl PeerLaunchService {
             )
     }
 
+    /// Records `row` refused with `detail` (a repeat answers the same) and
+    /// logs it.
+    fn refuse(&self, from: NodeUuid, row: &PeerRequest, detail: &str) -> LaunchState {
+        let detail = clamp_detail(detail);
+        let now = now_ms(self.clock.as_ref());
+        let recorded = self.write(|conn| {
+            let (_, inserted) = peer_requests::insert_or_get(conn, row)?;
+            if inserted {
+                peer_requests::record(conn, &row.id, "refused", None, None, Some(&detail), now)?;
+            }
+            Ok(())
+        });
+        (self.log)(&format!(
+            "peer launch {} from {}: refused: {detail}{}",
+            short(&row.id),
+            self.requester_tag(from),
+            if recorded.is_err() {
+                " (not recorded)"
+            } else {
+                ""
+            }
+        ));
+        refused(detail)
+    }
+
     fn decide(&self, from: NodeUuid, request: &LaunchRequest) -> Result<LaunchState, ApiError> {
         let id = request.id.to_string();
         let lookup = id.clone();
         if let Some(row) = self.read(move |conn| peer_requests::get(conn, &lookup))? {
-            return Ok(if row.node_uuid == from.to_string() {
-                row.answer()
-            } else {
-                refused("request id in use by another node")
-            });
+            if row.node_uuid != from.to_string() {
+                (self.log)(&format!(
+                    "peer launch {} from {}: refused: request id in use by another node",
+                    short(&id),
+                    self.requester_tag(from)
+                ));
+                return Ok(refused("request id in use by another node"));
+            }
+            return Ok(row.answer());
         }
         let plan = &request.plan;
-        let placement = match self.place(&plan.target) {
-            Ok(placement) => placement,
-            Err(state) => return Ok(state),
-        };
         let new_tab = matches!(plan.target, LaunchTarget::NewTab { .. });
-        if new_tab {
-            let cwd = plan.cwd.as_deref().map(Path::new);
-            if !cwd.is_some_and(|cwd| cwd.is_absolute() && cwd.is_dir()) {
-                return Ok(refused("a new tab needs an existing absolute cwd here"));
-            }
-        } else if self.held(&placement)? {
-            return Ok(refused("that pane is held for recovery here"));
-        }
+        let plan_text = serde_json::to_string(plan).unwrap_or_default();
         let row = PeerRequest {
             id: id.clone(),
             node_uuid: from.to_string(),
             requester_seat: (!request.requester_seat.is_empty())
-                .then(|| request.requester_seat.clone()),
+                .then(|| clamp_detail(&request.requester_seat)),
             kind: if new_tab { "new_tab" } else { "pane" }.into(),
-            plan: serde_json::to_string(plan).unwrap_or_default(),
+            plan: plan_text,
             state: "running".into(),
             pane: None,
             seat: None,
@@ -281,6 +299,28 @@ impl PeerLaunchService {
             created_at: now_ms(self.clock.as_ref()),
             updated_at: 0,
         };
+        if row.plan.len() > peer_requests::MAX_PLAN_BYTES {
+            return Ok(self.refuse(from, &row, "launch plan too large"));
+        }
+        let placement = match self.place(&plan.target) {
+            Ok(placement) => placement,
+            // A refusal is recorded (a repeat answers it); an unavailable
+            // answer is not, so a repeat decides again.
+            Err(LaunchState::Refused { detail }) => return Ok(self.refuse(from, &row, &detail)),
+            Err(state) => return Ok(state),
+        };
+        if new_tab {
+            let cwd = plan.cwd.as_deref().map(Path::new);
+            if !cwd.is_some_and(|cwd| cwd.is_absolute() && cwd.is_dir()) {
+                return Ok(self.refuse(
+                    from,
+                    &row,
+                    "a new tab needs an existing absolute cwd here",
+                ));
+            }
+        } else if self.held(&placement)? {
+            return Ok(self.refuse(from, &row, "that pane is held for recovery here"));
+        }
         let (stored, inserted) = self.write(|conn| peer_requests::insert_or_get(conn, &row))?;
         if !inserted {
             return Ok(stored.answer());
@@ -320,6 +360,37 @@ impl PeerLauncher for PeerLaunchService {
     }
 }
 
+/// The `internal peer-tab-create` arguments of a new tab: its label ends in
+/// `[from <tag>]`, the requesting node.
+pub fn tab_args(workspace: &str, label: &str, tag: &str, cwd: &str) -> Vec<String> {
+    vec![
+        "internal".into(),
+        "peer-tab-create".into(),
+        "--workspace".into(),
+        workspace.into(),
+        "--label".into(),
+        format!("{} [from {tag}]", label.trim()),
+        "--cwd".into(),
+        cwd.into(),
+    ]
+}
+
+/// The ordinary `launch --pane` arguments of `plan` on `pane`.
+pub fn launch_args(pane: &str, plan: &crate::sync::frame::LaunchPlan) -> Vec<String> {
+    let mut args = vec![
+        "launch".to_owned(),
+        "--pane".to_owned(),
+        pane.to_owned(),
+        "--kind".to_owned(),
+        plan.kind.clone(),
+    ];
+    if !plan.argv.is_empty() {
+        args.push("--".into());
+        args.extend(plan.argv.iter().cloned());
+    }
+    args
+}
+
 /// Runs one accepted request to its outcome.
 struct Worker {
     id: String,
@@ -335,8 +406,34 @@ struct Worker {
 /// One finished child: exit success, stdout, the last stderr line.
 struct ChildOutput {
     ok: bool,
+    /// The exit status, when the child exited by itself.
+    code: Option<i32>,
     stdout: String,
     error: String,
+}
+
+/// Longest detail recorded in `peer_requests.detail` (its CHECK), in bytes.
+const MAX_DETAIL_BYTES: usize = 1024;
+
+/// `text` cut to fit `peer_requests.detail`, on a char boundary.
+fn clamp_detail(text: &str) -> String {
+    let mut end = text.len().min(MAX_DETAIL_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// Reads all of `pipe` on its own thread, so a child that writes more than
+/// the pipe buffer never blocks on it.
+fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut out);
+        }
+        out
+    })
 }
 
 impl Worker {
@@ -388,51 +485,73 @@ impl Worker {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // The child ends with this daemon: a request the next daemon fails as
+        // interrupted never completes behind its back (Linux; elsewhere it may).
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: prctl is async-signal-safe; nothing else runs between
+            // fork and exec here.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
                 return ChildOutput {
                     ok: false,
+                    code: None,
                     stdout: String::new(),
                     error: format!("could not start: {error}"),
                 };
             }
         };
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
         let started = std::time::Instant::now();
-        loop {
+        let status = loop {
             match child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(status)) => break Some(status),
                 Ok(None) if started.elapsed() < CHILD_TIMEOUT => std::thread::sleep(CHILD_POLL),
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return ChildOutput {
-                        ok: false,
-                        stdout: String::new(),
-                        error: "timed out".into(),
-                    };
+                    break None;
                 }
             }
-        }
-        match child.wait_with_output() {
-            Ok(output) => ChildOutput {
-                ok: output.status.success(),
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                error: String::from_utf8_lossy(&output.stderr)
-                    .lines()
-                    .rfind(|l| !l.trim().is_empty())
-                    .unwrap_or_default()
-                    .to_owned(),
+        };
+        let stdout = String::from_utf8_lossy(&stdout.join().unwrap_or_default()).into_owned();
+        let stderr = String::from_utf8_lossy(&stderr.join().unwrap_or_default()).into_owned();
+        let last = stderr
+            .lines()
+            .rfind(|l| !l.trim().is_empty())
+            .unwrap_or_default()
+            .to_owned();
+        match status {
+            Some(status) => ChildOutput {
+                ok: status.success(),
+                code: status.code(),
+                stdout,
+                error: last,
             },
-            Err(error) => ChildOutput {
+            None => ChildOutput {
                 ok: false,
-                stdout: String::new(),
-                error: error.to_string(),
+                code: None,
+                stdout,
+                error: "timed out".into(),
             },
         }
     }
 
     fn fail(&self, pane: Option<&str>, detail: &str) {
+        let detail = clamp_detail(detail);
+        let detail = detail.as_str();
         self.record("failed", pane, None, Some(detail));
         (self.log)(&format!(
             "peer launch {} from {}: failed: {detail}",
@@ -445,17 +564,12 @@ impl Worker {
         let plan = &request.plan;
         let pane = match &plan.target {
             LaunchTarget::NewTab { label, .. } => {
-                let label = format!("{} [from {}]", label.trim(), self.tag);
-                let out = self.child(&[
-                    "internal".into(),
-                    "peer-tab-create".into(),
-                    "--workspace".into(),
-                    target,
-                    "--label".into(),
+                let out = self.child(&tab_args(
+                    &target,
                     label,
-                    "--cwd".into(),
-                    plan.cwd.clone().unwrap_or_default(),
-                ]);
+                    &self.tag,
+                    plan.cwd.as_deref().unwrap_or_default(),
+                ));
                 let pane = serde_json::from_str::<serde_json::Value>(out.stdout.trim())
                     .ok()
                     .and_then(|v| v["pane"].as_str().map(str::to_owned));
@@ -471,24 +585,8 @@ impl Worker {
             }
             _ => target,
         };
-        let mut args = vec![
-            "launch".to_owned(),
-            "--pane".to_owned(),
-            pane.clone(),
-            "--kind".to_owned(),
-            plan.kind.clone(),
-        ];
-        if !plan.argv.is_empty() {
-            args.push("--".into());
-            args.extend(plan.argv.iter().cloned());
-        }
-        let out = self.child(&args);
-        let value: serde_json::Value =
-            serde_json::from_str(out.stdout.trim()).unwrap_or(serde_json::Value::Null);
-        let seat = value["result"]["data"]["seat"]
-            .as_str()
-            .or_else(|| value["seat"].as_str())
-            .map(str::to_owned);
+        let out = self.child(&launch_args(&pane, plan));
+        let seat = crate::cli::launch::json_envelope_seat(&out.stdout);
         match (out.ok, seat) {
             (true, Some(seat)) => {
                 self.record("launched", Some(&pane), Some(&seat), None);
@@ -499,7 +597,9 @@ impl Worker {
                 ));
             }
             _ => {
-                let detail = if out.error.is_empty() {
+                let detail = if out.code == Some(crate::cli::launch::EXIT_START_UNCONFIRMED) {
+                    format!("start unconfirmed: inspect pane {pane} here before launching again")
+                } else if out.error.is_empty() {
                     "launch did not report a seat".to_owned()
                 } else {
                     format!("launch: {}", out.error)
@@ -539,5 +639,66 @@ mod tests {
             .map(|(k, _)| k.into_string().unwrap())
             .collect();
         assert_eq!(kept, ["HOME", "PATH", "LC_ALL"]);
+    }
+
+    // Kills: the launcher reading the launched seat from a path `launch --json`
+    // never prints (every real peer launch recorded failed), and the two
+    // child command lines not parsing as the commands they are meant to be.
+    #[test]
+    fn child_output_and_argv_match_the_real_commands() {
+        let report =
+            serde_json::json!({"outcome": "started", "seat": "snSGseat0001", "pane": "w1:p2"});
+        let stdout = crate::cli::launch::json_envelope(report).to_string();
+        assert_eq!(
+            crate::cli::launch::json_envelope_seat(&stdout).as_deref(),
+            Some("snSGseat0001")
+        );
+        assert_eq!(
+            crate::cli::launch::json_envelope_seat(r#"{"seat":"x"}"#),
+            None
+        );
+        let plan = crate::sync::frame::LaunchPlan {
+            target: LaunchTarget::Pane {
+                space: None,
+                tab: None,
+                pane: "w1:p2".into(),
+            },
+            kind: "claude".into(),
+            argv: vec!["--model".into(), "x".into()],
+            cwd: None,
+        };
+        let parse = |args: Vec<String>| {
+            let mut argv = vec![
+                "ht".to_owned(),
+                "--json".into(),
+                "--state-dir".into(),
+                "/s".into(),
+                "--host-endpoint".into(),
+                "/h.sock".into(),
+            ];
+            argv.extend(args);
+            crate::cli::commands::parse_argv_exact_seats(argv)
+                .unwrap()
+                .action
+        };
+        let crate::cli::commands::CliAction::Launch(launch) = parse(launch_args("w1:p2", &plan))
+        else {
+            panic!("a launch")
+        };
+        assert_eq!(launch.target.as_str(), "w1:p2");
+        assert_eq!(launch.argv, ["--model", "x"]);
+        let crate::cli::commands::CliAction::InternalPeerTabCreate {
+            workspace,
+            label,
+            cwd,
+        } = parse(tab_args("w1", " review ", "Q0V", "/work"))
+        else {
+            panic!("a tab creation")
+        };
+        assert_eq!(
+            (workspace.as_str(), label.as_str(), cwd.to_str()),
+            ("w1", "review [from Q0V]", Some("/work"))
+        );
+        assert_eq!(clamp_detail(&"é".repeat(600)).len(), 1024);
     }
 }

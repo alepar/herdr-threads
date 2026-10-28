@@ -590,6 +590,23 @@ pub struct LaunchReport {
     pub exit: i32,
 }
 
+/// The exit status of a launch whose start may have happened but was not
+/// confirmed (the pane must be inspected before launching again).
+pub const EXIT_START_UNCONFIRMED: i32 = 5;
+
+/// What `launch --json` prints: the report under `launch`. The peer launcher
+/// reads a launch child's output through [`json_envelope_seat`], so both
+/// change together.
+pub fn json_envelope(report: Value) -> Value {
+    json!({ "launch": report })
+}
+
+/// The seat a `launch --json` output line names, if any.
+pub fn json_envelope_seat(stdout: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(stdout.trim()).ok()?;
+    value["launch"]["seat"].as_str().map(str::to_owned)
+}
+
 fn append_record(dir: &Path, record: &Value) -> io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut line = serde_json::to_vec(record).map_err(io::Error::other)?;
@@ -1101,7 +1118,9 @@ fn execute_guarded_inner(
             Some(correlation.agent_name.clone()),
             0,
         ),
-        NativeLaunchOutcome::OutcomeUnknown => ("outcome_unknown", None, None, 5),
+        NativeLaunchOutcome::OutcomeUnknown => {
+            ("outcome_unknown", None, None, EXIT_START_UNCONFIRMED)
+        }
     };
     // TRUST-POLICY A3 `managed_launch`: only an accepted, correlated startup
     // is reported to the daemon, never an unconfirmed one.

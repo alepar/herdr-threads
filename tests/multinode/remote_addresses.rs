@@ -267,7 +267,7 @@ while [ -e "$log/hold" ]; do sleep 0.1; done
 for a in "$@"; do
   case "$a" in
     peer-tab-create) echo '{"pane":"w1:p9","tab":"w1:t9"}'; exit 0;;
-    launch) printf '{"result":{"data":{"seat":"%s"}}}\n' "$(cat "$log/seat")"; exit 0;;
+    launch) printf '{"launch":{"outcome":"started","seat":"%s"}}\n' "$(cat "$log/seat")"; exit 0;;
   esac
 done
 exit 1
@@ -295,6 +295,7 @@ fn calls(log: &std::path::Path) -> Vec<String> {
 #[test]
 fn remote_launch_runs_on_the_target_machine_once() {
     use std::os::unix::fs::PermissionsExt;
+
     let log = herdr_threads::test_support::scratch::temp_path(format!(
         "ht-peer-launch-{}",
         std::process::id()
@@ -338,6 +339,9 @@ fn remote_launch_runs_on_the_target_machine_once() {
     cluster.add_host(0, &[P1]);
     cluster.add_host(1, &[P1, P2, P3]);
     cluster.add_host(2, &[P1]);
+    // Handoff needs a daemon started with its host (guarded bootstrap).
+    cluster.stop_node(0);
+    cluster.start_node(0);
     let a = cluster.seat(0, P1);
     let b = cluster.seat(1, P1);
     let _c = cluster.seat(2, P1);
@@ -348,8 +352,9 @@ fn remote_launch_runs_on_the_target_machine_once() {
     let b_tag = tag_of(&cluster, 0, 1);
     let c_tag = tag_of(&cluster, 0, 2);
     let a_tag = tag_of(&cluster, 0, 0);
+    // The asker gives up after 8 s here (120 s in production), so a rerun runs.
     let launch = |pane: &str, arg: &str| {
-        cluster.text_as(
+        cluster.text_as_env(
             Some(&a),
             0,
             &[
@@ -361,6 +366,7 @@ fn remote_launch_runs_on_the_target_machine_once() {
                 "--",
                 arg,
             ],
+            &[("HT_TEST_REMOTE_LAUNCH_TIMEOUT_MS", "8000")],
         )
     };
 
@@ -383,47 +389,86 @@ fn remote_launch_runs_on_the_target_machine_once() {
     assert!(env.contains("HOME="), "{env}");
 
     // A held target is refused on node 1, before anything runs there.
+    // An open hold on w1:p3, kept by an unresolved seat on the same host
+    // (the daemon lifts a host's holds only once none is left).
     cluster.write_sql(
         1,
         "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) \
          SELECT host_id,'w1:p3','fixture',0,'fixture' FROM herdr_hosts LIMIT 1",
+    );
+    cluster.write_sql(
+        1,
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at,home_node,is_local,host_id) \
+         SELECT 'sHELDfixture','' || (SELECT id FROM local_node),'unresolved','other','native',1,0,\
+         (SELECT id FROM local_node),1,host_id FROM herdr_hosts LIMIT 1",
     );
     let (code, stdout, stderr) = launch(P3, "--held");
     assert_ne!(code, 0, "{stdout}");
     assert!(stderr.contains("held for recovery"), "{stderr}");
     assert_eq!(calls(&calls_dir).len(), 1, "nothing ran for the held pane");
 
-    // A dropped link mid-launch: the rerun reuses the request id and gets
-    // the one launch's outcome; the child ran once.
+    // A refusal is recorded: no such pane there.
+    let (code, _, stderr) = launch("nosuchpane", "--x");
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("refused the launch: no such pane here"),
+        "{stderr}"
+    );
+
+    // The asker gives up while node 1 is unreachable mid-launch; a rerun of
+    // the same command reuses the request id and gets that launch's outcome:
+    // the child ran once.
     std::fs::write(calls_dir.join("hold"), b"").unwrap();
-    let (code, stdout, stderr) = std::thread::scope(|scope| {
+    let (code, _, stderr) = std::thread::scope(|scope| {
         let run = scope.spawn(|| launch(P2, "--second"));
         cluster.wait_until("node 1 to start the launch", crate::WAIT, || {
             (calls(&calls_dir).len() == 2).then_some(())
         });
         cluster.partition(0, 1);
-        // The asker keeps asking with the same id while the link is down.
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        cluster.heal(0, 1);
-        std::fs::remove_file(calls_dir.join("hold")).unwrap();
         run.join().unwrap()
     });
-    // It rode out the drop, or gave up and a rerun resumes the same request;
-    // either way the launch ran once.
-    let (code, stdout, stderr) = if code == 0 {
-        (code, stdout, stderr)
-    } else {
-        assert!(stderr.contains("rerun to resume"), "{stderr}");
+    assert_ne!(code, 0);
+    assert!(stderr.contains("rerun to resume"), "{stderr}");
+    cluster.heal(0, 1);
+    std::fs::remove_file(calls_dir.join("hold")).unwrap();
+    let (code, stdout, stderr) =
         cluster.wait_until("the rerun to get the outcome", crate::WAIT, || {
             let out = launch(P2, "--second");
             (out.0 == 0).then_some(out)
-        })
-    };
+        });
     assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("launched seat="), "{stdout}");
+    assert!(
+        stdout.contains(&format!("launched seat={}", b.id)),
+        "{stdout}"
+    );
     assert_eq!(calls(&calls_dir).len(), 2, "one launch for one request");
 
-    // A new tab, labelled with the requesting node.
+    // A new tab whose cwd does not exist there: refused on node 1.
+    let (code, _, stderr) = cluster.text_as(
+        Some(&a),
+        0,
+        &[
+            "handoff",
+            "--new-tab",
+            "x",
+            "--space",
+            &format!("w1@{b_tag}"),
+            "--cwd",
+            "/nonexistent/herdr-threads-test",
+            "--kind",
+            "claude",
+            "--",
+            "task",
+        ],
+    );
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("needs an existing absolute cwd here"),
+        "{stderr}"
+    );
+
+    // A remote handoff into a new tab, labelled with the requesting node; the
+    // task then reaches the launched seat (the stub names b's).
     let (code, stdout, stderr) = cluster.text_as(
         Some(&a),
         0,
@@ -441,18 +486,26 @@ fn remote_launch_runs_on_the_target_machine_once() {
             "look at this",
         ],
     );
+    assert_eq!(code, 0, "{stdout}{stderr}");
     let tab_call = calls(&calls_dir)
         .into_iter()
         .find(|c| c.contains("peer-tab-create"))
-        .unwrap_or_else(|| panic!("no tab created: {code} {stdout}{stderr}"));
+        .unwrap_or_else(|| panic!("no tab created: {stdout}{stderr}"));
     assert!(
         tab_call.contains(&format!("--label\nreview [from {a_tag}]")),
         "{tab_call}"
     );
+    cluster.wait_until("b to get the handed-off task", crate::WAIT, || {
+        let data = cluster.ok_as(Some(&b), 1, &["inbox"]);
+        data["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|i| i.to_string().contains("look at this")))
+            .then_some(())
+    });
 
     // peer list on node 1 shows node 0's launches.
     let (_, peers, _) = cluster.text_as(None, 1, &["peer", "list"]);
-    assert!(peers.contains("peer_launches="), "{peers}");
+    assert!(peers.contains("peer_launches=6 last=launched:"), "{peers}");
 
     // An older peer without peer.launch.v1: refused, nothing local.
     let (code, _, stderr) = cluster.text_as(

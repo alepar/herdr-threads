@@ -648,3 +648,29 @@ only the launch path.
   refused before anything runs, a dropped link mid-launch with exactly one
   child run, the `[from <tag>]` tab label, `peer list`, and the older-peer
   refusal; the real `launch` path itself is the existing launch suite's.
+
+### 2026-10-28, PR roast of phase 2 (round 1)
+
+- **Blocking, fixed:** the launcher read the launched seat from a path real
+  `launch --json` never prints. Both now go through one envelope
+  (`cli::launch::json_envelope` / `json_envelope_seat`), the multinode stub
+  prints the real envelope, and a unit test parses the real child argvs with
+  the CLI's own parser.
+- **Retry at delivery:** the request id stays recorded until the follow-on
+  handoff succeeds (`Launched::settle`), so a rerun after a failed handoff
+  asks for the same launch's outcome, never a second agent. An unconfirmed
+  start (child exit 5) keeps the id too: a rerun reports the same.
+- **Children:** stdout and stderr drain on reader threads (no pipe-buffer
+  stall); details are clamped to the `peer_requests.detail` bound; on Linux a
+  child gets `PR_SET_PDEATHSIG` so it ends with its daemon (on macOS an
+  orphaned child may still complete after the next daemon failed its row).
+- **Refusals recorded:** a refused request is stored `refused` and logged, so
+  a repeat answers the same and `peer list` counts it; a plan over the
+  table's 128 KiB bound is refused.
+- **Remote handoff order:** the launch runs only after the handoff's own
+  top-level and check-in checks, in `run_selected`; `--cwd` of a remote tab is
+  checked on that machine only (it was wrongly checked here as well).
+- **Output:** a remote `launch --json` prints the `{"launch": {...}}` envelope.
+- **Not covered by tests:** the real `internal peer-tab-create` against Herdr
+  (the fake has no `tab.create`), the 180 s child-timeout kill, and the
+  cross-node request-id collision guard.

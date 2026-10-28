@@ -92,6 +92,19 @@ pub const REMOTE_LAUNCH_TIMEOUT: Duration = Duration::from_secs(120);
 /// How often it asks.
 const POLL: Duration = Duration::from_secs(2);
 
+/// [`REMOTE_LAUNCH_TIMEOUT`]; test-support builds read
+/// `HT_TEST_REMOTE_LAUNCH_TIMEOUT_MS` (multinode tests of a rerun).
+fn launch_timeout() -> Duration {
+    #[cfg(feature = "test-support")]
+    if let Some(ms) = std::env::var("HT_TEST_REMOTE_LAUNCH_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    REMOTE_LAUNCH_TIMEOUT
+}
+
 /// The request id of this launch: derived from the frozen request and kept in
 /// `node_dir/remote-launch/` until the launch settles, so a rerun of the same
 /// command (after a link drop, a crash or the timeout) resumes it and never
@@ -147,6 +160,24 @@ fn one_line(text: &str) -> String {
         .into_owned()
 }
 
+/// A launch that started on another machine. Its request id stays recorded
+/// until [`Self::settle`], so a rerun before it (a failed follow-on handoff)
+/// asks for the same launch's outcome instead of launching again.
+#[derive(Debug)]
+pub struct Launched {
+    pub seat: String,
+    pub pane: String,
+    file: std::path::PathBuf,
+}
+
+impl Launched {
+    /// The launch's work is done here: a new launch of the same plan gets a
+    /// new request id.
+    pub fn settle(&self) {
+        let _ = std::fs::remove_file(&self.file);
+    }
+}
+
 /// Runs a remote launch to its outcome: the launched seat (now held here as
 /// that machine's) and its pane, or a refusal.
 pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
@@ -156,7 +187,7 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
     client: &C,
     clock: &dyn Clock,
     stderr: &mut W,
-) -> Result<(String, String), RunError> {
+) -> Result<Launched, RunError> {
     use crate::protocol::sync_admin::{LaunchReply, RemoteLaunchAnswer, SyncCommand, SyncReply};
     use crate::sync::frame::{LaunchRequest, LaunchState};
     let (id, file) = request_id(node_dir, &remote.machine, &remote.plan)?;
@@ -250,7 +281,6 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
         let pending = match answer {
             RemoteLaunchAnswer::Answered { state } => match state {
                 LaunchState::Launched { seat, pane } => {
-                    settle();
                     writeln!(
                         stderr,
                         "launched: {} on {}@{} (request {})",
@@ -259,7 +289,11 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                         node.tag,
                         &id.to_string()[..8]
                     )?;
-                    return Ok((seat, pane));
+                    return Ok(Launched {
+                        seat,
+                        pane,
+                        file: file.clone(),
+                    });
                 }
                 LaunchState::Refused { detail } => {
                     settle();
@@ -269,7 +303,11 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                     ));
                 }
                 LaunchState::Failed { detail, pane } => {
-                    settle();
+                    // An unconfirmed start keeps the id: a rerun reports the same, never a
+                    // second agent in a pane that may already run one.
+                    if !detail.starts_with("start unconfirmed") {
+                        settle();
+                    }
                     let left = pane.map_or_else(String::new, |p| {
                         format!("; it left tab pane {} there", one_line(&p))
                     });
@@ -305,7 +343,7 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
             )?;
             announced = true;
         }
-        if started.elapsed() >= REMOTE_LAUNCH_TIMEOUT {
+        if started.elapsed() >= launch_timeout() {
             return Err(refuse(
                 ErrorCode::HostUnavailable,
                 format!(

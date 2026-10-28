@@ -15,6 +15,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::sync::frame::LaunchState;
 
+/// Longest serialized plan the table takes (its CHECK), in bytes.
+pub const MAX_PLAN_BYTES: usize = 131_072;
+
 /// Rows older than this are deleted (ms).
 pub const RETENTION_MS: i64 = 7 * 24 * 3_600_000;
 
