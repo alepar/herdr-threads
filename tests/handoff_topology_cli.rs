@@ -399,7 +399,7 @@ impl Fixture {
             assert_eq!(instance, copied.instance);
         }
         drop(owner);
-        Self::seed(&paths, &context, instance);
+        let seeded_epoch = Self::seed(&paths, &context, instance);
         let mut cmd = iso.command(BIN);
         cmd.args(["daemon", "run", "--state-dir"])
             .arg(&context.state_dir)
@@ -410,14 +410,37 @@ impl Fixture {
             .stdout(fs::File::create(iso.path("daemon.stdout")).unwrap())
             .stderr(fs::File::create(iso.path("daemon.stderr")).unwrap());
         let mut daemon = cmd.spawn_owned().unwrap();
-        wait("owned elected daemon descriptor/reconciliation", || {
+        // The seed publishes before any seat exists, so its empty recovery
+        // completes at publication and the reconciled marker already matches
+        // before the daemon has observed anything. Wait for the daemon's own,
+        // newer epoch instead: its startup observation and its reconciliation
+        // of the seeded seats finish before a test reads or edits them.
+        let deadline = Instant::now() + WAIT;
+        let mut last = String::from("no descriptor");
+        loop {
             assert!(daemon.try_wait().unwrap().is_none(), "owned daemon exited");
-            if !paths.descriptor_path.exists() {
-                return false;
+            if paths.descriptor_path.exists() {
+                let row = Connection::open(&paths.database_path).and_then(|db| {
+                    db.query_row(
+                        "SELECT recovery_epoch,reconciled_epoch,reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot FROM herdr_hosts",
+                        [],
+                        |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<bool>>(2)?)),
+                    )
+                });
+                if let Ok((Some(recovery), Some(reconciled), Some(true))) = row
+                    && recovery > seeded_epoch as i64
+                    && reconciled == recovery
+                {
+                    break;
+                }
+                last = format!("(recovery_epoch, reconciled_epoch, boot_matches)={row:?}");
             }
-            let db = Connection::open(&paths.database_path).unwrap();
-            db.query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
-        });
+            assert!(
+                Instant::now() < deadline,
+                "timed out: owned elected daemon reconciliation of an epoch after the seed's {seeded_epoch}; last {last}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         println!(
             "fixture instance={instance} root={} host={} daemon={}",
             iso.state_root().display(),
@@ -434,22 +457,30 @@ impl Fixture {
             cli_log: Mutex::new(Vec::new()),
         }
     }
-    fn seed(paths: &NodePaths, context: &RuntimeContext, instance: herdr_threads::node::NodeUuid) {
+    /// Seeds the host snapshot and both seats; returns the seed's epoch.
+    fn seed(
+        paths: &NodePaths,
+        context: &RuntimeContext,
+        instance: herdr_threads::node::NodeUuid,
+    ) -> u64 {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let native = NativeCli::new(context.host_endpoint.clone().unwrap(), clock.clone());
-        let budget = CallBudget {
+        // Each setup call gets its own budget from the moment it starts: one
+        // deadline across the whole seed (schema creation included) runs out
+        // under host load before the later calls start.
+        let budget = || CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
         };
-        let ctx = HostCallContext {
-            budget: budget.clone(),
+        let ctx = || HostCallContext {
+            budget: budget(),
             expected_boot: None,
             expected_epoch: None,
         };
         let observed = native
             .observe_bootstrap_target(
                 &herdr_threads::protocol::ids::HostTargetId::new("w4:p1"),
-                &ctx,
+                &ctx(),
             )
             .unwrap();
         let observation = observed.observation();
@@ -473,18 +504,18 @@ impl Fixture {
             .begin_host_observation(
                 &instance.to_string(),
                 herdr_threads::test_support::test_host_id(),
-                &budget,
+                &budget(),
             )
             .unwrap();
-        let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx).unwrap();
+        let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx()).unwrap();
         let stage = store
             .begin_snapshot_stage(
                 SnapshotHeader::from_captured(admission, &snapshot).unwrap(),
-                &budget,
+                &budget(),
             )
             .unwrap();
         // A writer turn can commit a prefix when its quantum expires. Honor
-        // that progress before sealing, under the original overall budget.
+        // that progress before sealing.
         let mut offset = 0u64;
         let mut targets = &snapshot.targets[..];
         while !targets.is_empty() {
@@ -495,7 +526,7 @@ impl Fixture {
                     offset,
                     batch,
                     DurableWorkAdmission::new(16).unwrap(),
-                    &budget,
+                    &budget(),
                 )
                 .unwrap();
             let visited = usize::from(progress.visited);
@@ -506,19 +537,22 @@ impl Fixture {
             );
             targets = &targets[visited..];
         }
-        store.seal_snapshot_stage(&stage.id, &budget).unwrap();
-        store.publish_snapshot_stage(&stage.id, &budget).unwrap();
+        store.seal_snapshot_stage(&stage.id, &budget()).unwrap();
+        let seeded_epoch = store
+            .publish_snapshot_stage(&stage.id, &budget())
+            .unwrap()
+            .epoch;
         let execution = Uuid::new_v4();
         for (seat, target, terminal) in [
             ("sender", "w4:p1", "term_1"),
             ("recipient", "w4:p2", "term_2"),
         ] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,?6,'native_current_target',?6,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str(),seeded_epoch as i64]).unwrap();
         }
         // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
         let sender_fp =
             herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session");
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(sender_fp.pid),sender_fp.start as i64]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,?5,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(sender_fp.pid),sender_fp.start as i64,seeded_epoch as i64]).unwrap();
         let contexts = paths
             .node_dir
             .join("contexts")
@@ -544,6 +578,7 @@ impl Fixture {
                 role: Role::TopLevel,
             })
             .unwrap();
+        seeded_epoch
     }
     fn owned_path(&self) -> std::ffi::OsString {
         let mut paths = vec![self.iso.path("")];
