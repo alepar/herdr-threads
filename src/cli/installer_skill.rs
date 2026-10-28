@@ -131,10 +131,15 @@ fn inspect_shared(
             })
             .filter(|recorded| canonical_of(&recorded.path).as_deref() == Some(canonical))
             .collect();
-    // A record of this very link path (an earlier release wrote before the link existed) is
-    // only the owner of last resort, after any record made at another root.
-    owners.sort_by_key(|recorded| recorded.path == path);
-    if let Some(recorded) = owners.into_iter().next() {
+    // Any record of the real file installed and unedited owns it. Deterministic order: a record
+    // of the real path first, then other roots' (another linked profile's may be stale), and a
+    // record of this very link path (an earlier release wrote before the link existed) last.
+    owners.sort_by(|a, b| {
+        let rank = |recorded: &Manifest| (recorded.path != canonical, recorded.path == path);
+        rank(a).cmp(&rank(b)).then_with(|| a.path.cmp(&b.path))
+    });
+    let mut present = false;
+    for recorded in owners {
         let current = read_optional(&recorded.path).ok().flatten();
         if recorded.version == 1
             && recorded.harness == name
@@ -148,14 +153,15 @@ fn inspect_shared(
                 recorded.path
             }));
         }
-        if current.is_some() || fs::symlink_metadata(&recorded.path).is_ok() {
-            return Err(conflict(format!(
-                "{} is shared through a symlink to {}, which herdr-threads does not own unedited; {}",
-                path.display(),
-                canonical.display(),
-                shared_remedy(name)
-            )));
-        }
+        present |= current.is_some() || fs::symlink_metadata(&recorded.path).is_ok();
+    }
+    if present {
+        return Err(conflict(format!(
+            "{} is shared through a symlink to {}, which herdr-threads does not own unedited; {}",
+            path.display(),
+            canonical.display(),
+            shared_remedy(name)
+        )));
     }
     if fs::symlink_metadata(canonical).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
         return Ok(SkillInspection::SharedMissing(format!(
