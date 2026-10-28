@@ -2093,3 +2093,37 @@ fn stale_refused_pass_skips_reconciliation_marker() {
     assert_eq!(port.pass_records.load(Ordering::SeqCst), 1);
     worker.stop();
 }
+
+/// Kills: ht-jajd. Health's remedy points at daemon.log, so a lane failure
+/// (or spawn failure) reaches the lane-error log before Health reports it:
+/// while the log records, Health still shows no failure; afterwards it does.
+#[test]
+fn lane_failure_is_logged_before_health_reports_it() {
+    struct HealthAtLog {
+        status: Mutex<std::sync::Weak<WorkerStatus>>,
+        seen: Mutex<Vec<Option<String>>>,
+    }
+    impl crate::daemon::logs::LaneErrorLog for HealthAtLog {
+        fn record(&self, _lane: crate::service::kicks::Lane, _error: &ApiError) {
+            let status = self.status.lock().unwrap().upgrade().unwrap();
+            self.seen.lock().unwrap().push(status.last_error());
+        }
+    }
+    let fail = |status: &WorkerStatus, lane| {
+        status.record_failure(lane, &ApiError::new(ErrorCode::StoreBusy, "injected"))
+    };
+    let spawn = |status: &WorkerStatus, lane| {
+        status.record_spawn_failure(lane, &std::io::Error::other("injected"))
+    };
+    for report in [&fail as &dyn Fn(&WorkerStatus, _), &spawn] {
+        let status = Arc::new(WorkerStatus::default());
+        let log = Arc::new(HealthAtLog {
+            status: Mutex::new(Arc::downgrade(&status)),
+            seen: Mutex::new(Vec::new()),
+        });
+        status.set_error_log(log.clone());
+        report(&status, crate::service::kicks::Lane::Wakes);
+        assert_eq!(*log.seen.lock().unwrap(), [None]);
+        assert!(status.last_error().is_some());
+    }
+}

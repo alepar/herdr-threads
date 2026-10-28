@@ -585,7 +585,7 @@ mod tests {
         // macOS assesses the first exec of every newly written file
         // (syspolicyd): ~0.2 s idle, several seconds while a loaded suite
         // writes new executables. Pay it here, before the budget's clock
-        // starts, so the 5 s budget measures the probe and not the host's
+        // starts, so the budget measures the probe and not the host's
         // assessment queue. The guard line exits before the body runs.
         use crate::test_support::spawn::SpawnOwned;
         let warm = crate::test_support::spawn::command(&path)
