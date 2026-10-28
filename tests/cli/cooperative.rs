@@ -2271,6 +2271,8 @@ mod scoped_runtime {
         /// The `session.snapshot` answer; a test may relabel panes between runs.
         snapshot: Arc<Mutex<Value>>,
         capabilities: Arc<Mutex<Vec<String>>>,
+        /// The `resolve address` answer (`@MACHINE`); `None` answers `unsupported`.
+        address: Arc<Mutex<Option<crate::protocol::sync_admin::AddressReply>>>,
         stop: Arc<AtomicBool>,
         workers: Vec<thread::JoinHandle<()>>,
     }
@@ -2311,6 +2313,7 @@ mod scoped_runtime {
             let capabilities = Arc::new(Mutex::new(vec![
                 crate::protocol::capabilities::INBOX_BATCH.to_owned(),
             ]));
+            let address = Arc::new(Mutex::new(None));
             let stop = Arc::new(AtomicBool::new(false));
             let host_stop = Arc::clone(&stop);
             let host_current = Arc::clone(&current);
@@ -2353,6 +2356,7 @@ mod scoped_runtime {
             let daemon_stop = Arc::clone(&stop);
             let daemon_seats = Arc::clone(&seats);
             let daemon_capabilities = Arc::clone(&capabilities);
+            let daemon_address = Arc::clone(&address);
             let seen = Arc::clone(&calls);
             let journal_seen = Arc::clone(&journals);
             let intents = paths.node_dir.join("intents");
@@ -2440,6 +2444,23 @@ mod scoped_runtime {
                             .find(|seat| seat.id == query.seat.as_str())
                             .map(|seat| CommandResult::SeatInspect(seat.inspection()))
                             .ok_or_else(|| ApiError::not_found("seat not found")),
+                        Command::Sync(
+                            crate::protocol::sync_admin::SyncCommand::ResolveAddress { .. },
+                        ) => daemon_address
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .map(|reply| {
+                                CommandResult::Sync(
+                                    crate::protocol::sync_admin::SyncReply::Address(reply),
+                                )
+                            })
+                            .ok_or_else(|| {
+                                ApiError::new(
+                                    ErrorCode::Unsupported,
+                                    "sync administration unavailable",
+                                )
+                            }),
                         Command::Capabilities => Ok(CommandResult::Capabilities(
                             crate::protocol::results::CapabilityList {
                                 capabilities: daemon_capabilities.lock().unwrap().clone(),
@@ -2504,6 +2525,7 @@ mod scoped_runtime {
                 current,
                 snapshot,
                 capabilities,
+                address,
                 stop,
                 workers: vec![host_worker, daemon_worker],
             }
@@ -3401,6 +3423,77 @@ mod scoped_runtime {
                 "{error:?}"
             );
         }
+    }
+
+    fn remote(
+        outcome: crate::sync::frame::AddrOutcome,
+    ) -> crate::protocol::sync_admin::AddressReply {
+        crate::protocol::sync_admin::AddressReply::Remote {
+            node: crate::protocol::sync_admin::MachineRow {
+                uuid: "ab".repeat(16),
+                tag: "nSG".into(),
+                host: Some("blacky".into()),
+            },
+            answer: crate::protocol::sync_admin::RemoteAddress::Answered { outcome },
+        }
+    }
+
+    // Kills: a home node's transient answer reported as a permanent refusal
+    // (or without the local escape hint), and a permanent refusal reported as
+    // retryable (remote addresses, PR roast round 2).
+    #[test]
+    fn remote_unavailable_is_retryable_and_refused_is_not() {
+        use crate::sync::frame::AddrOutcome;
+        let mut host = seat_snapshot();
+        // A local pane whose label is also the address.
+        host["panes"][0]["label"] = json!("dave@blacky");
+        let runtime = Runtime::new(host);
+        *runtime.address.lock().unwrap() = Some(remote(AddrOutcome::Unavailable {
+            reason: "busy".into(),
+        }));
+        let error = api_error(runtime.run(&["inbox", "--seat", "alice@blacky"]));
+        assert_eq!(error.code, ErrorCode::HostUnavailable, "{error:?}");
+        assert!(
+            error.detail.contains("cannot answer now: busy"),
+            "{error:?}"
+        );
+        let error = api_error(runtime.run(&["inbox", "--seat", "dave@blacky"]));
+        assert_eq!(error.code, ErrorCode::HostUnavailable, "{error:?}");
+        assert!(error.detail.contains(r"'path:...\@...'"), "{error:?}");
+        *runtime.address.lock().unwrap() = Some(remote(AddrOutcome::Refused {
+            detail: "seat sX is not shared with other machines".into(),
+        }));
+        let error = api_error(runtime.run(&["inbox", "--seat", "alice@blacky"]));
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+        assert!(
+            error
+                .detail
+                .contains("refused alice: seat sX is not shared"),
+            "{error:?}"
+        );
+    }
+
+    // Kills: an ambiguous split reading on this node silently replaced by the
+    // whole string's local pane (D7: never a choice between readings).
+    #[test]
+    fn self_machine_with_an_ambiguous_split_reading_is_refused() {
+        let mut host = seat_snapshot();
+        // Two `dup` panes in the same tier as seen from the caller (w1:p2 in w1:t2).
+        host["panes"][0]["label"] = json!("dup");
+        host["panes"][2]["label"] = json!("dup@here");
+        host["panes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"pane_id":"w1:p4","terminal_id":"w1:p4",
+            "workspace_id":"w1","tab_id":"w1:t1","label":"dup","focused":false,
+            "agent_status":"idle","revision":1}));
+        let runtime = Runtime::new(host);
+        *runtime.address.lock().unwrap() =
+            Some(crate::protocol::sync_admin::AddressReply::SelfNode);
+        let error = api_error(runtime.run(&["inbox", "--seat", "dup@here"]));
+        assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+        assert!(error.detail.contains("2 readings"), "{error:?}");
+        assert!(error.detail.contains("dup (ambiguous)"), "{error:?}");
     }
 
     #[test]
