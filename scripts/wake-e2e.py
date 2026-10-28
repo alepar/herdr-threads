@@ -1636,8 +1636,8 @@ class Recipient:
                 agent = (data.get("result") or {}).get("agent") or {}
                 if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE + ("blocked",):
                     break
-                if not agent and AUTH_REJECTED.search(self.run.herdr("pane", "read", self.pane, "--source", "visible",
-                                                                     check=False).get("raw", "")):
+                if AUTH_REJECTED.search(self.run.herdr("pane", "read", self.pane, "--source", "visible",
+                                                       check=False).get("raw", "")):
                     raise RuntimeError(f"{self.name}: {self.harness} auth rejected: {self.tail()}")
                 time.sleep(1)
             else:
