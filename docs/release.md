@@ -2,6 +2,37 @@
 
 ## Current release status
 
+[v2.6.1 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.1) from source `c707e6729`. It is a patch release under the refined versioning rule (minor only for new user-facing features). There is no schema change (node schema stays 10) and no peer wire change; `scripts/freeze-peer-wire 2.4.0 --at v2.6.1 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+**What it carries.** Every change passed the fixer's roast and an independent review before merge.
+- Wake fixes: no wake for an item already ACKed or accepted mid-flight (ht-j3by), and a lowered nudge threshold is rechecked before typing (ht-98ih).
+- No false `recipient_unavailable` on `handoff --new-tab` (ht-fne2).
+- `seat list --label` matches local seats (ht-hldp).
+- The losing resync election no longer moves the store (ht-la3c).
+- No false HostUnavailable on racing first claims (ht-jhcl).
+- Wake refusal details survive a failed pass (ht-78f6).
+- The skill treats relayed user statements as the user's words; TRUST-POLICY.md is amended.
+- About twenty load-flake test fixes, six CI shards, and wake e2e driver fixes (ht-m0ug, ht-b8jm, ht-8f0g).
+
+**Qualification** ran on `c707e6729` (blacky.dayton, every step at `nice -n 19`, heavy steps through the shared two-slot lock). Evidence is in `~/.cache/herdr-threads-release/2.6.1`.
+- fmt, harness-neutral and wire-compat passed, as did both clippy variants and default-features.
+- The candidate built; the wake e2e self-test, the Herdr release matrix (0.9.1-0.9.5 PASS) and every leak check passed.
+- The package lifecycle gate passed (586 s), the installer daemon suite 5/5, and the installer backup suite 7/7.
+- The full suite passed 8064/8067; the three failures are the zsh tests.
+- The wake e2e (`scripts/wake-e2e-herdr 0.9.5 --codex-auth-home ~/.aisw/profiles/codex/codex-2`) passed 120/120 with no credential refresh. `~/.codex` is still rejected by OpenAI, as recorded for 2.6.0.
+
+**CI** [run 40737528706](https://github.com/alepar/herdr-threads/actions/runs/40737528706) passed on attempt 2. Attempt 1's only failure was the `topology_activation` flake ht-bnb0, since fixed on main. The [release run 40747733207](https://github.com/alepar/herdr-threads/actions/runs/40747733207) passed every job.
+
+**Archives:**
+- SHA256SUMS equals GitHub's digests.
+- Each archive has VERSION 2.6.1, the right TARGET and 13 files with modes 755/644, and the licenses are present.
+- The credential scan is clean.
+
+**Installed on blacky** with the tag's installer (`--setup --version v2.6.1`, identical to `git show v2.6.1:scripts/install.sh`).
+- The installer took its own backup, `herdr-threads-backups/pre-v2.6.1-20261028T192920Z` (schema 10, integrity ok). It stopped the 2.6.0 daemon.
+- The `/proc` exe hash is `7af7957e…`, equal to the linux-x86_64 archive, and doctor reports the daemon healthy.
+- The installer exited 3 on the same symlinked-`skills/` verdict as for 2.6.0. That is fixed on main (ht-lmjf, ht-mf2q) for 2.6.2.
+
 [v2.6.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.0) from source `398f6da16`. It is a minor release with a one-way store upgrade to node schema 10 (migration 0010, `peer_requests`). It adds two capability-gated peer frame uses: `addr_resolve` with a check target (`addr.check.v1`) and `launch_request`/`launch_reply` (`peer.launch.v1`). `scripts/freeze-peer-wire 2.4.0 --at v2.6.0 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 It adds:
