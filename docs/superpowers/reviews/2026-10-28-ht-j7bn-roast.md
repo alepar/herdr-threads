@@ -16,7 +16,20 @@ independence: none (inline) · rung: inline
 
 ## Confirmed findings
 
-None.
+None in the inline round. The independent review afterwards confirmed one (fixed, below).
+
+## Independent review follow-up (fixed)
+
+- [Should-fix] tests/integration/hermes_enrollment_smoke.rs, configuration 10 — the relaxation
+  accepted a `current` second turn whenever the first turn's last answer had no ack, not only
+  when the cap ran out (`ack_mode` reads the last spy entry; a cap timeout appends nothing). A
+  fast first turn (under the driver's 1 s slow mark) answering without a `lifecycle_ack` after
+  the daemon committed the startup check-in, the ht-nzzg gap, passed although it used to fail.
+  Fix: the branch is gated on cap exhaustion (no answer reached the bridge, or the turn took
+  >= 1000 ms); otherwise the second turn must be a seated `startup` one. Shown with a temporary
+  driver edit stripping the first turn's `lifecycle_ack`: when that turn had checked in
+  (116 ms), the test fails at `step 0: the first turn delivered no context ... mode current`;
+  runs whose first turn failed open (no check-in, second turn `startup`) pass, as before.
 
 ## Rejected (with reason)
 
