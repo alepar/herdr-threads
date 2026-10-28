@@ -641,11 +641,14 @@ fn all_offered(
 
 /// `?1` binding, `?2` seat, `?3` the reservation's lazy frontier (`lazy_recipients.decision_seq`): the binding
 /// still finds a frontier row unread (its cursor has not passed it and no `binding_row_displays` mark holds
-/// it; `binding_lazy_unread_sql!`). Decided from the binding's own records, never the seat-wide `state`: a
-/// sibling's display never decides whether this binding is woken. Reached through `messages` by decision
-/// sequence, then `lazy_recipients` by its unique key.
+/// it; `binding_lazy_unread_sql!`) and the seat's current nudge threshold still admits it
+/// (`THRESHOLD_ADMITS_SQL`: a threshold lowered since the reservation owes no wake; ht-98ih). Decided from
+/// the binding's own records, never the seat-wide `state`: a sibling's display never decides whether this
+/// binding is woken. Reached through `messages` by decision sequence, then `lazy_recipients` by its unique key.
 pub(crate) const LAZY_FRONTIER_UNREAD_SQL: &str = concat!(
-    "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats ss ON ss.id=b.seat_id JOIN messages m ON m.instance_id=ss.instance_id AND m.decision_seq=?3 AND m.kind='ordinary' JOIN lazy_recipients r ON r.message_id=m.id AND r.seat_id=b.seat_id WHERE b.binding_id=?1 AND b.seat_id=?2 AND r.decision_seq=?3 AND ",
+    "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id JOIN messages m ON m.instance_id=s.instance_id AND m.decision_seq=?3 AND m.kind='ordinary' JOIN lazy_recipients r ON r.message_id=m.id AND r.seat_id=b.seat_id WHERE b.binding_id=?1 AND b.seat_id=?2 AND r.decision_seq=?3 AND ",
+    crate::store::seats::threshold_admits_sql!(),
+    " AND ",
     crate::store::lazy_delivery::binding_lazy_unread_sql!(),
     ")"
 );
@@ -705,7 +708,8 @@ pub fn wake_owed_to_binding(
 /// its turn served the process, so they are owed only while one is still pending and every reached
 /// binding is unserved.
 /// Delivery rows (`lazy`) are each binding's own stream: the frontier row is owed while any reached
-/// binding still finds it unread (`LAZY_FRONTIER_UNREAD_SQL`; ht-yha.62). An empty `reached`, or a
+/// binding still finds it unread and the seat's current threshold still admits it
+/// (`LAZY_FRONTIER_UNREAD_SQL`; ht-yha.62, ht-98ih). An empty `reached`, or a
 /// `None` with no seat-level binding, is owed.
 pub fn wake_owed_to_reached(
     db: &Connection,
@@ -760,7 +764,8 @@ pub fn wake_owed_to_reached(
     }
     if has(LAZY) {
         // A threshold-admitted delivery row (D9: a bare `--nudge` makes no receipt) is owed while some
-        // reached binding has not displayed the frontier row the wake was reserved for.
+        // reached binding has not displayed the frontier row the wake was reserved for and the seat's
+        // current threshold still admits it.
         let Some(frontier) = reservation.attention_witness.frontier.lazy else {
             return Ok(true);
         };

@@ -6336,9 +6336,14 @@ pub fn nudge_threshold(
 
 /// Row priority `r.priority` admitted by the seat's threshold, for set-based SQL. Aliases: `r` =
 /// `lazy_recipients`, `s` = `seats`. The SQL twin of `NudgeThreshold::admits`; no statement writes
-/// `p <= T` by hand.
-pub(crate) const THRESHOLD_ADMITS_SQL: &str =
-    "(s.nudge_threshold<0 OR r.priority<=s.nudge_threshold)";
+/// `p <= T` by hand. `threshold_admits_sql!` is the same text for `concat!`.
+macro_rules! threshold_admits_sql {
+    () => {
+        "(s.nudge_threshold<0 OR r.priority<=s.nudge_threshold)"
+    };
+}
+pub(crate) use threshold_admits_sql;
+pub(crate) const THRESHOLD_ADMITS_SQL: &str = threshold_admits_sql!();
 
 /// The seat's `wake_on` preference through the legacy alias: `all` iff the threshold is negative.
 pub fn wake_on(
