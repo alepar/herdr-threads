@@ -9,13 +9,15 @@
 //!   node's snapshot through the one freshness rule
 //!   (`remote_seat_status::presence_of`).
 //! - Must not: feed any decision. Every value is a display hint (TRUST-POLICY
-//!   C1, N13); a local seat's labels are the CLI's own host read, never the
-//!   daemon's.
+//!   C1, N13). A local seat's entry carries no labels (the CLI shows its own
+//!   host read); `--label` matches it by the daemon's host read, the one the
+//!   seat publisher makes (ht-hldp).
 //! - Role: read by `store::queries`.
 
 use rusqlite::{Connection, OptionalExtension};
 
 use super::connection::store_error;
+use super::local_seat_status::TargetLabels;
 use super::remote_seat_status::{self, RemotePresence};
 use super::sync_status::node_label;
 use super::{local_seat_status, node_directory, sync_contacts};
@@ -105,9 +107,15 @@ pub fn directory(
     })))
 }
 
-/// Whether `entry` (of a local seat when `local`) passes `filter`: every
-/// set criterion, case-insensitively for names and labels.
-pub fn matches(filter: &SeatFilter, entry: Option<&SeatDirectory>, local: bool) -> bool {
+/// Whether `entry` (of a local seat when `local`, whose current host labels
+/// are `host_labels`) passes `filter`: every set criterion,
+/// case-insensitively for names and labels.
+pub fn matches(
+    filter: &SeatFilter,
+    entry: Option<&SeatDirectory>,
+    local: bool,
+    host_labels: Option<&TargetLabels>,
+) -> bool {
     if filter.is_empty() {
         return true;
     }
@@ -141,9 +149,13 @@ pub fn matches(filter: &SeatFilter, entry: Option<&SeatDirectory>, local: bool) 
     }
     if let Some(label) = &filter.label {
         let needle = label.to_lowercase();
+        let host = host_labels
+            .into_iter()
+            .flat_map(|l| [&l.workspace, &l.tab, &l.pane]);
         let hit = [&entry.workspace, &entry.tab, &entry.pane]
             .into_iter()
             .flatten()
+            .chain(host)
             .any(|text| text.to_lowercase().contains(&needle));
         if !hit {
             return false;

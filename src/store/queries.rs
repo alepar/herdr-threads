@@ -192,7 +192,9 @@ pub(super) fn query_with_output_for_caller(
     budget: &CallBudget,
     caller: Option<&OperationReadScope>,
 ) -> Result<CommandResult, ApiError> {
-    query_inner(store, instance, command, output, budget, caller, &mut None)
+    query_inner(
+        store, instance, command, output, budget, caller, &mut None, None,
+    )
 }
 
 /// An attention digest read together with the binding it was read for (ht-54r.55): the daemon
@@ -206,10 +208,42 @@ pub(super) fn query_attention_digest(
     budget: &CallBudget,
 ) -> Result<(CommandResult, Option<crate::protocol::ids::BindingId>), ApiError> {
     let mut binding = None;
-    let result = query_inner(store, instance, command, output, budget, None, &mut binding)?;
+    let result = query_inner(
+        store,
+        instance,
+        command,
+        output,
+        budget,
+        None,
+        &mut binding,
+        None,
+    )?;
     Ok((result, binding))
 }
 
+/// A `Seats` query whose `--label` also matches local seats by
+/// `local_labels`, the host labels the daemon read for it (ht-hldp).
+pub(super) fn query_seats(
+    store: &StoreContext,
+    instance: &str,
+    command: &Command,
+    output: &OutputSpec,
+    budget: &CallBudget,
+    local_labels: &super::local_seat_status::LabelMap,
+) -> Result<CommandResult, ApiError> {
+    query_inner(
+        store,
+        instance,
+        command,
+        output,
+        budget,
+        None,
+        &mut None,
+        Some(local_labels),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn query_inner(
     store: &StoreContext,
     instance: &str,
@@ -218,6 +252,7 @@ fn query_inner(
     budget: &CallBudget,
     caller: Option<&OperationReadScope>,
     digest_binding: &mut Option<crate::protocol::ids::BindingId>,
+    local_labels: Option<&super::local_seat_status::LabelMap>,
 ) -> Result<CommandResult, ApiError> {
     command
         .validate()
@@ -370,7 +405,14 @@ fn query_inner(
             participant_locations(&db, instance, q, store.clock().utc_now())
         }
         Command::WakeStatus(q) => wake_status_seats(&db, instance, q),
-        Command::Seats(q) => seats(&db, instance, q, store.clock().utc_now(), output),
+        Command::Seats(q) => seats(
+            &db,
+            instance,
+            q,
+            store.clock().utc_now(),
+            output,
+            local_labels,
+        ),
         Command::Diagnostics(q) => diagnostics(&db, instance, q, store.clock().utc_now(), output),
         Command::Recipients(q) => recipients(&db, instance, q, store.clock().utc_now(), output),
         Command::SeatInspect(q) => {
@@ -1448,12 +1490,15 @@ fn seat_inspect(
     Ok(result)
 }
 
+/// `local_labels`: this node's host labels for `--label` on local seats
+/// (ht-hldp); without them `--label` matches remote seats only.
 fn seats(
     db: &QueryConnection,
     instance: &str,
     q: &SeatsQuery,
     now: UtcMillis,
     output: &OutputSpec,
+    local_labels: Option<&super::local_seat_status::LabelMap>,
 ) -> Result<CommandResult, ApiError> {
     // The pre-directory digest when no directory filter is set, so a cursor
     // of an older CLI page stays valid.
@@ -1571,7 +1616,13 @@ fn seats(
         } else {
             None
         };
-        if !super::seat_directory::matches(&q.filter, directory.as_deref(), local) {
+        let host_labels = match local_labels {
+            Some(labels) if local && q.filter.label.is_some() => {
+                super::local_seat_status::labels_of(db, &id, labels)?
+            }
+            _ => None,
+        };
+        if !super::seat_directory::matches(&q.filter, directory.as_deref(), local, host_labels) {
             last = ordinal as u64;
             continue;
         }

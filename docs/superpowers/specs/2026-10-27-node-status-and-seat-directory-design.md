@@ -434,7 +434,9 @@ seat's comes from its home node's stored snapshot through
 
 New flags: `--node TAG`, `--on MACHINE` (host label or tag; `--machine` is
 the global machine-output flag), `--harness ID`, `--label TEXT`
-(case-insensitive substring of a remote seat's workspace/tab/pane), `--local`.
+(case-insensitive substring of a seat's workspace/tab/pane: a remote seat's
+from its home node's snapshot, a local seat's from the daemon's own host read,
+made only for `--label`, ht-hldp), `--local`.
 Filters are AND, case-insensitive, evaluated in the daemon while it pages
 (rows examined count toward the page's work bound; locality is the
 `is_local` column, so a retired remote seat is never `--local`), kept in the
@@ -507,7 +509,9 @@ and labels are advisory and never an address.
 
 - Remote rows read `presence_of` with no live-link input: a link that just
   came up shows its node unreachable until the contact flush (at most ~10 s).
-- `--label` matches remote seats only (local labels are the CLI's host read).
+- `--label` reads the local hosts' labels within at most 1 s of the call's
+  budget; a host that does not answer in time leaves its seats matching no
+  label (ht-hldp; previously `--label` matched remote seats only).
 
 ## 7. Timeouts and constants
 

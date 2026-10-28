@@ -20,13 +20,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::ports::HostId;
 use crate::protocol::results::ApiError;
 use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant};
 use crate::service::delivery_pull::DeliveryPullState;
 use crate::service::host_sessions::HostSessions;
 use crate::store::SqliteStore;
-use crate::store::local_seat_status::{LocalSeat, local_seats};
+use crate::store::local_seat_status::{LabelMap, LocalSeat, TargetLabels, local_seats};
 use crate::sync::coordinator::SyncHandle;
 use crate::sync::frame::SeatStatusEntry;
 
@@ -55,28 +54,15 @@ pub struct SeatPublisherDeps {
     pub log: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
-/// Labels of one host target.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Labels {
-    terminal: String,
-    incarnation: Option<String>,
-    workspace: String,
-    tab: String,
-    pane: String,
-}
-
 /// The advisory entry of `seat`, given its target's current labels.
 fn entry_of(
     seat: &LocalSeat,
-    labels: Option<&Labels>,
+    labels: Option<&TargetLabels>,
     now_ms: i64,
     contact: Option<i64>,
 ) -> SeatStatusEntry {
     let presence = crate::store::local_seat_status::presence(seat);
-    let labels = labels.filter(|l| {
-        seat.terminal.as_deref() == Some(l.terminal.as_str())
-            && (l.incarnation.is_none() || l.incarnation == seat.incarnation)
-    });
+    let labels = labels.filter(|l| l.fits(seat.terminal.as_deref(), seat.incarnation.as_ref()));
     let last = contact.max(seat.last_transition_at);
     SeatStatusEntry {
         seat: seat.seat.as_str().to_owned(),
@@ -115,7 +101,7 @@ async fn run(deps: SeatPublisherDeps) {
         Arc::clone(&deps.clock),
         deps.cancel.clone(),
     );
-    let mut labels: HashMap<(HostId, String), Labels> = HashMap::new();
+    let mut labels = LabelMap::new();
     let mut labels_at: Option<MonoInstant> = None;
     let mut published: Option<(Vec<SeatStatusEntry>, MonoInstant)> = None;
     let mut failing = false;
@@ -129,8 +115,10 @@ async fn run(deps: SeatPublisherDeps) {
             if due(labels_at) {
                 let read = Arc::clone(&deps);
                 let held = labels.clone();
-                if let Ok(fresh) =
-                    tokio::task::spawn_blocking(move || read_labels(&read, held)).await
+                if let Ok(fresh) = tokio::task::spawn_blocking(move || {
+                    read_labels(&read.sessions, &budget(&read), &held)
+                })
+                .await
                 {
                     labels = fresh;
                     labels_at = Some(now);
@@ -200,17 +188,18 @@ fn read_seats(deps: &SeatPublisherDeps) -> Result<Vec<LocalSeat>, ApiError> {
         .sync_read(&budget(deps), |conn, _| local_seats(conn))
 }
 
-/// Every attached host's labels, by `(host, target)`, within one budget for
+/// Every attached host's labels, by `(host, target)`, within `budget` for
 /// all hosts. A host that does not answer keeps its labels from `held` (a
-/// blip never strips its seats' labels until the next refresh).
-fn read_labels(
-    deps: &SeatPublisherDeps,
-    held: HashMap<(HostId, String), Labels>,
-) -> HashMap<(HostId, String), Labels> {
-    let budget = budget(deps);
+/// blip never strips its seats' labels until the next refresh). Also the
+/// daemon's read for `seat list --label` (ht-hldp), with nothing held.
+pub(crate) fn read_labels(
+    sessions: &HostSessions,
+    budget: &CallBudget,
+    held: &LabelMap,
+) -> LabelMap {
     let mut out = HashMap::new();
-    for session in deps.sessions.attached() {
-        let Ok(found) = session.port().seat_labels(&budget) else {
+    for session in sessions.attached() {
+        let Ok(found) = session.port().seat_labels(budget) else {
             let host = session.host_id();
             out.extend(
                 held.iter()
@@ -222,7 +211,7 @@ fn read_labels(
         for label in found {
             out.insert(
                 (session.host_id(), label.target.as_str().to_owned()),
-                Labels {
+                TargetLabels {
                     terminal: label.terminal,
                     incarnation: label.incarnation,
                     workspace: label.workspace_label.unwrap_or(label.workspace_id),
@@ -256,8 +245,8 @@ mod tests {
         }
     }
 
-    fn labels(terminal: &str, incarnation: Option<&str>) -> Labels {
-        Labels {
+    fn labels(terminal: &str, incarnation: Option<&str>) -> TargetLabels {
+        TargetLabels {
             terminal: terminal.into(),
             incarnation: incarnation.map(str::to_owned),
             workspace: "office".into(),
