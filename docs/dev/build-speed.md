@@ -459,7 +459,7 @@ test step follows it:
 | 40680960206 | 462 / 551 / 599 / 540 / 529 | 173 / 291 / 287 / 286 / 252 |
 | 40687941838 | 592 / 556 / 382 / 457 / 576 | 297 / 267 / 175 / 211 / 275 |
 
-The median test duration moves with it (0.09 s on the fast runners, 0.15-0.20 s on the
+The median test duration moves with it (0.09-0.12 s on the fast runners, 0.14-0.20 s on the
 slow ones), across every module rather than in a few heavy tests, and the slow slice
 changes from run to run. Wall time stays about test-seconds / 7 (the `ci` profile's
 slots), so each slice is throughput-bound: the long tests named in the bead (30-45 s
