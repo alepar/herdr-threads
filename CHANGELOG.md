@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.4.3
+
+No schema or peer wire change, and no setup re-run is needed.
+
+- **The installer leaves the installed executable running.** During an upgrade, a hook or the Claude mod's watch could restart the daemon from the old executable between the installer's stop and its link update, so the old version kept running until a manual `daemon stop` and `daemon ensure`. The installer now checks every live daemon's version and executable. It replaces any daemon of this installation that a client restarted from the old executable, at most four times, and claims success only when the installed executable runs. A daemon from another installation, such as a dev checkout, is reported and left alone.
+- **Stale discovered dial targets are dropped.** A target found from a `herdr --remote` process that never linked is now removed once that process is gone, so a one-off client is no longer dialed forever. Herdr's own test harness was one such client: blacky dialed the target `test-only` for days. Targets you added explicitly, machine targets, forgotten targets and targets that ever linked are kept.
+- **Clearer sync link logs.** A link-down line shows wall time and roughly how long the host was suspended when the two differ, so a Mac that slept no longer looks like a link that lasted 5 s. A link that came up and then ended now logs `link ended after N s, redialing` instead of `dial failed`.
+- **Release gate on Linux.** The package lifecycle validation and its Herdr pin test now run on Linux x86_64 and aarch64 as well as macOS.
+- **Tests.** Doctor's observation budget scales for loaded test runs, which fixes a flaky doctor golden test.
+
 ## v2.4.2
 
 One-way store upgrade to node schema 9 (migration 0009, table `restored_pane_watch`). Older binaries, 2.4.1 included, then refuse the store, so back up the state directory first. No peer wire change, and no setup re-run is needed.
