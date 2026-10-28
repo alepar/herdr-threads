@@ -1092,7 +1092,7 @@ impl Topology {
         let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
         let instance = owner.node_uuid().unwrap();
         drop(owner);
-        Self::seed(&paths, &context, instance);
+        let seeded_epoch = Self::seed(&paths, &context, instance);
         let mut cmd = iso.command(BIN);
         cmd.args(["daemon", "run", "--state-dir"])
             .arg(&context.state_dir)
@@ -1103,14 +1103,37 @@ impl Topology {
             .stdout(fs::File::create(iso.path("daemon.stdout")).unwrap())
             .stderr(fs::File::create(iso.path("daemon.stderr")).unwrap());
         let mut daemon = cmd.spawn_owned().unwrap();
-        wait("owned elected daemon descriptor/reconciliation", || {
+        // The seed publishes before any seat exists, so its empty recovery
+        // completes at publication and the reconciled marker already matches
+        // before the daemon has observed anything. Wait for the daemon's own,
+        // newer epoch instead: its startup observation and its reconciliation
+        // of the seeded seats finish before a test reads or edits them.
+        let deadline = Instant::now() + WAIT;
+        let mut last = String::from("no descriptor");
+        loop {
             assert!(daemon.try_wait().unwrap().is_none(), "owned daemon exited");
-            if !paths.descriptor_path.exists() {
-                return false;
+            if paths.descriptor_path.exists() {
+                let row = Connection::open(&paths.database_path).and_then(|db| {
+                    db.query_row(
+                        "SELECT recovery_epoch,reconciled_epoch,reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot FROM herdr_hosts",
+                        [],
+                        |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<bool>>(2)?)),
+                    )
+                });
+                if let Ok((Some(recovery), Some(reconciled), Some(true))) = row
+                    && recovery > seeded_epoch as i64
+                    && reconciled == recovery
+                {
+                    break;
+                }
+                last = format!("(recovery_epoch, reconciled_epoch, boot_matches)={row:?}");
             }
-            let db = Connection::open(&paths.database_path).unwrap();
-            db.query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
-        });
+            assert!(
+                Instant::now() < deadline,
+                "timed out: owned elected daemon reconciliation of an epoch after the seed's {seeded_epoch}; last {last}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         Self {
             daemon,
             host,
@@ -1121,19 +1144,25 @@ impl Topology {
         }
     }
 
-    fn seed(paths: &NodePaths, context: &RuntimeContext, instance: herdr_threads::node::NodeUuid) {
-        Self::seed_with_store_clock(paths, context, instance, Arc::new(SystemClock::new()));
+    /// Seeds the host snapshot and both seats; returns the seed's epoch.
+    fn seed(
+        paths: &NodePaths,
+        context: &RuntimeContext,
+        instance: herdr_threads::node::NodeUuid,
+    ) -> u64 {
+        Self::seed_with_store_clock(paths, context, instance, Arc::new(SystemClock::new())).epoch
     }
 
     /// Seeds the instance's store. `store_clock` is the clock the store's
     /// writer quantum and budgets read; the host call keeps the system clock.
-    /// Returns how many writer turns staged the snapshot's targets.
+    /// Returns the seed's published epoch and how many writer turns staged
+    /// the snapshot's targets.
     fn seed_with_store_clock(
         paths: &NodePaths,
         context: &RuntimeContext,
         instance: herdr_threads::node::NodeUuid,
         store_clock: Arc<dyn Clock>,
-    ) -> usize {
+    ) -> Seeded {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let native = NativeCli::new(context.host_endpoint.clone().unwrap(), clock.clone());
         let ctx = HostCallContext {
@@ -1203,18 +1232,21 @@ impl Topology {
             turns += 1;
         }
         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
-        store.publish_snapshot_stage(&stage.id, &budget).unwrap();
+        let epoch = store
+            .publish_snapshot_stage(&stage.id, &budget)
+            .unwrap()
+            .epoch;
         let execution = uuid::Uuid::new_v4();
         for (seat, target, terminal) in [
             ("sender", "w4:p1", "term_1"),
             ("recipient", "w4:p2", "term_2"),
         ] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,?6,'native_current_target',?6,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str(),epoch as i64]).unwrap();
         }
         // The codex occupant's process is this test process, so the daemon's liveness worker
         // keeps the binding connected (deterministic availability across the epoch carry).
         let process = herdr_threads::protocol::authority::LivenessFingerprint::current_process();
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(process.pid),process.start as i64]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,?5,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(process.pid),process.start as i64,epoch as i64]).unwrap();
         let contexts = paths
             .node_dir
             .join("contexts")
@@ -1240,7 +1272,7 @@ impl Topology {
                 role: Role::TopLevel,
             })
             .unwrap();
-        turns
+        Seeded { epoch, turns }
     }
 
     /// The roots, the instance, and the IDs the daemon generated for this
@@ -1385,6 +1417,15 @@ impl Topology {
         params
     }
 }
+
+/// What `Topology::seed_with_store_clock` published.
+struct Seeded {
+    /// The epoch of the seed's published snapshot.
+    epoch: u64,
+    /// How many writer turns staged the snapshot's targets.
+    turns: usize,
+}
+
 impl Drop for Topology {
     fn drop(&mut self) {
         self.daemon.stop();
@@ -1421,7 +1462,7 @@ fn seeding_stages_the_rest_after_a_spent_writer_quantum() {
     let instance = owner.node_uuid().unwrap();
     drop(owner);
     let clock: Arc<dyn Clock> = Arc::new(SteppingClock(std::sync::atomic::AtomicU64::new(1)));
-    let turns = Topology::seed_with_store_clock(&paths, &context, instance, clock);
+    let turns = Topology::seed_with_store_clock(&paths, &context, instance, clock).turns;
     let db = Connection::open(&paths.database_path).unwrap();
     let staged: i64 = db
         .query_row("SELECT count(*) FROM snapshot_targets", [], |r| r.get(0))
