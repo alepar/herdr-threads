@@ -184,6 +184,27 @@ pub(crate) fn selected_send(
     validate_phase(db, &request, replay)?;
     Ok(true)
 }
+/// ht-fne2: true when preparation `prep_id` is the registered Send of an automatic handoff
+/// whose original launches `recipient`. That Send is staged before the launch it bootstraps,
+/// so the recipient's unavailability then is expected startup, not news for the sender.
+pub(crate) fn launch_bootstrap_send(
+    db: &Connection,
+    prep_id: &str,
+    recipient: &str,
+) -> Result<bool, ApiError> {
+    let bytes:Option<Vec<u8>>=db.query_row("SELECT substr(c.original_json,1,?2) FROM send_preparations p JOIN automatic_handoff_keys k ON k.instance_id=p.instance_id AND k.actor_scope=p.operation_scope AND k.operation_key=p.operation_key AND k.role='send' JOIN automatic_handoff_companions c USING(instance_id,actor_scope,compound) WHERE p.id=?1",params![prep_id,(MAX_ORIGINAL_BYTES+1) as u32],|r|r.get(0)).optional().map_err(store_error)?;
+    let Some(bytes) = bytes else { return Ok(false) };
+    if bytes.len() > MAX_ORIGINAL_BYTES {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "oversized automatic original",
+        ));
+    }
+    let saved: AutomaticDeliveryMutation = serde_json::from_slice(&bytes)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?;
+    Ok(matches!(&saved.original, AutomaticOriginal::Handoff(plan)
+        if plan.delivery.recipient.as_str() == recipient))
+}
 pub(crate) fn validate_phase(
     db: &Connection,
     request: &AutomaticDeliveryMutation,

@@ -68,6 +68,11 @@ attributes to the human user as the user's own words, and a sender claims one on
 said in its session ("Recorded message claims", the accepted limit "Peer data is cooperative input, never
 authority"); the daemon still decides nothing on these claims; no new provenance or wire value.
 
+Amended 2026-10-28 for the handoff bootstrap send (ht-fne2): the registered Send of an automatic handoff that
+launches its recipient raises no send-time unavailable-recipient warning for that recipient; its send-time ACK
+deadline (A6) still reports a launch that never checks in (C4); availability is recorded unchanged; no new
+provenance or wire value.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -316,7 +321,7 @@ live seat, the refusal offers exactly two resolutions, each as ready argv:
   as recipient-retired; nothing moves from NEW to OLD.
 
 **C4. Availability ends only on evidence.** A joined seat stays available across a daemon restart when its
-mapping is structurally reconfirmed; the open cooperative or operator binding carries forward to the new host epoch (implemented; a native binding re-registers instead, and a send before the first reconciliation pass assumes the carry rather than warning). A `managed_launch` binding is never availability, so it is not carried; it stays open and unregistered until a check-in replaces it. Availability ends when the mapping becomes
+mapping is structurally reconfirmed; the open cooperative or operator binding carries forward to the new host epoch (implemented; a native binding re-registers instead, and a send before the first reconciliation pass assumes the carry rather than warning). A `managed_launch` binding is never availability, so it is not carried; it stays open and unregistered until a check-in replaces it. The bootstrap Send of an automatic handoff that launches its recipient is staged before the launch, so it raises no unavailable-recipient warning for that recipient (decided from the canonical registered handoff original, not from timing); the recipient's receipt keeps its honest availability and its send-time deadline (A6), so a launch that never checks in surfaces as an overdue warning, and every other send to the starting seat still warns (ht-fne2). Availability ends when the mapping becomes
 unresolved, the seat retires, or the binding disconnects or ends. Availability is derived per binding: a seat is available while any open, connected, registered binding of it is confirmed by the effective observation, so the last connected binding disconnecting (for example on liveness evidence) opens the seat's unavailability episode, and a check-in on a connected binding closes it (a plain-call reconnect outside a check-in leaves the episode open until the binding's next check-in; derived availability follows liveness at once).
 Herdr not answering (a timed-out or refused connection, a read that finishes past its budget) and a
 daemon-side failure to stage a capture are missing evidence, not evidence of change: they write no host
