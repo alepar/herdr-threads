@@ -857,11 +857,18 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
         Lane::Wakes,
         Box::new(move |wake| recorded.lock().unwrap().push((wake, Instant::now()))),
     );
-    let finished = Arc::new(Mutex::new(Vec::<Instant>::new()));
+    // Each pass end, with the wake-origin commit count at that moment: the
+    // idle hook runs on the wake lane's thread before its next wait, so no
+    // later pass has committed yet.
+    let finished = Arc::new(Mutex::new(Vec::<(Instant, u64)>::new()));
     let ended = Arc::clone(&finished);
+    let lane_probe = session.probe.clone();
     session.probe.set_registered_idle_hook(
         Lane::Wakes,
-        Box::new(move |_| ended.lock().unwrap().push(Instant::now())),
+        Box::new(move |_| {
+            let wake = lane_probe.commit_counts().get("wake").copied().unwrap_or(0);
+            ended.lock().unwrap().push((Instant::now(), wake));
+        }),
     );
     let kicks_before = session.probe.kick_log().len();
     // The 1 s deadline has passed (the quiet wait above lasted longer). The
@@ -915,17 +922,24 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
         || kicked_start().is_some(),
     );
     let pass_started = kicked_start().unwrap();
+    let pass_finished = || {
+        finished
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(at, _)| *at >= pass_started)
+            .map(|(_, wake)| *wake)
+    };
     wait_until(
         "the kicked wake pass to finish",
         Duration::from_secs(5),
-        || {
-            finished
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|at| *at >= pass_started)
-        },
+        || pass_finished().is_some(),
     );
+    let wake_commits_at_finish = pass_finished().unwrap();
+    // Drop the hook's probe clone (probe -> pacer -> hook -> probe cycle).
+    session
+        .probe
+        .set_registered_idle_hook(Lane::Wakes, Box::new(|_| {}));
     let starts = starts.lock().unwrap().clone();
     let (_, started_at) = starts
         .iter()
@@ -966,9 +980,12 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
         std::collections::BTreeSet::from([inviter.seat.as_str()]),
         "only the timed invitation's original inviter is woken: {reserved_before:?} -> {reserved_after:?}"
     );
-    // That one wake is exactly its reservation and its completion.
+    // That one wake is exactly its reservation and its completion, counted
+    // at the end of the pass that made it. The inviter's pane runs no agent,
+    // so the attempt is refused (`unsafe`) and the refusal ladder retries it
+    // 80 ms or more later; those retries are later passes, not this one.
     assert_eq!(
-        session.commits("wake") - wake_commits,
+        wake_commits_at_finish - wake_commits,
         2,
         "the wake lane committed only the inviter's one attempt"
     );
