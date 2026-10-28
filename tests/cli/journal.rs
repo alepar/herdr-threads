@@ -1067,6 +1067,69 @@ fn new_resolution_discards_only_definitively_rejected_first_submission() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// ht-2cbu: an operator first submission is discarded on exactly the
+/// cooperative deterministic codes plus the operator-only `ThreadNotOrphaned`;
+/// a transient or host-dependent code (which seat resolution would discard),
+/// an unknown outcome and a transport failure keep it.
+#[test]
+fn new_operator_intent_discards_only_deterministic_first_submission_rejection() {
+    use crate::protocol::results::{ApiError, ErrorCode};
+    fn api(code: ErrorCode) -> ApiError {
+        ApiError::new(code, "fixture")
+    }
+    let operator = || IntentScope::Operator {
+        instance: "instance-1".into(),
+        local_user_uid: crate::daemon::paths::effective_uid(),
+    };
+    let invite = || SemanticMutation::OperatorOrphanInvite {
+        thread: ThreadId::new("thread-1"),
+        seat: SeatId::new("seat-1"),
+        deadline_millis: None,
+    };
+    let no_claim = || Err(io::Error::other("operator actions carry no caller claim"));
+    for (answer, kept) in [
+        (Ok(Err(api(ErrorCode::ThreadNotOrphaned))), false),
+        (Ok(Err(api(ErrorCode::Unauthorized))), false),
+        (Ok(Err(api(ErrorCode::NotFound))), false),
+        (Ok(Err(api(ErrorCode::OperationPayloadMismatch))), false),
+        (Ok(Err(api(ErrorCode::StoreBusy))), true),
+        (Ok(Err(api(ErrorCode::DeadlineExceeded))), true),
+        (Ok(Err(api(ErrorCode::StaleHostObservation))), true),
+        (Ok(Err(api(ErrorCode::TargetUnresolved))), true),
+        (Ok(Err(api(ErrorCode::UnknownOutcome))), true),
+        (Err(api(ErrorCode::UnknownOutcome)), true),
+        (Err(api(ErrorCode::HostUnavailable)), true),
+    ] {
+        let dir = temp();
+        let journal = Journal::open(&dir).unwrap();
+        let expected = match &answer {
+            Ok(Err(error)) | Err(error) => error.code.clone(),
+            Ok(Ok(_)) => unreachable!(),
+        };
+        let failure = crate::cli::retry::run_new_api_to_writer_discarding_rejection(
+            &journal,
+            operator(),
+            invite(),
+            1,
+            no_claim,
+            |command| {
+                assert!(matches!(command, Command::OperatorOrphanInvite(_)));
+                answer
+            },
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(failure, crate::cli::retry::RetryFailure::Submit(ref error) if error.code == expected),
+            "{expected:?}: {failure:?}"
+        );
+        let pending = journal.page(&Default::default()).unwrap().items.len();
+        assert_eq!(pending, usize::from(kept), "{expected:?} kept={kept}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 #[test]
 fn allocator_lock_leaf_symlink_is_refused() {
     let dir = temp();

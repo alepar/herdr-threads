@@ -260,7 +260,11 @@ where
 /// the intent — a rejection does not prove nothing was committed under the key
 /// (send preparation commits quanta before a later rejection). Seat resolution
 /// (`ServiceAllocation`) commits nothing before deciding, so any correlated
-/// rejection other than `UnknownOutcome` is definitive there. `UnknownOutcome`,
+/// rejection other than `UnknownOutcome` is definitive there. An operator
+/// mutation decides in one idempotent transaction and counts the same
+/// deterministic codes plus the operator-only `ThreadNotOrphaned`; its
+/// host-dependent refusals (`StaleHostObservation`, `TargetUnresolved`) and
+/// transient codes keep the intent. `UnknownOutcome`,
 /// pre-submission failures and local output/journal failures always keep the
 /// intent (CLI design "Durable client intent"). Retries of an existing intent
 /// never discard it.
@@ -282,9 +286,12 @@ where
     W: Write,
 {
     let cooperative = matches!(scope, IntentScope::Cooperative { .. });
+    let operator = matches!(scope, IntentScope::Operator { .. });
     let definitive = move |code: &ErrorCode| {
         if cooperative {
             is_deterministic_rejection(code)
+        } else if operator {
+            is_deterministic_rejection(code) || *code == ErrorCode::ThreadNotOrphaned
         } else {
             *code != ErrorCode::UnknownOutcome
         }
@@ -337,7 +344,8 @@ where
 ///   after an upgrade.
 /// - `UnsupportedHarness` is emitted only by the scheduler and client-side
 ///   setup/launch.
-/// - `ThreadNotOrphaned` is operator orphan invite only.
+/// - `ThreadNotOrphaned` is operator orphan invite only (the operator scope
+///   adds it in `run_new_api_to_writer_discarding_rejection`).
 /// - `RequiredInvitationNeedsManagedThread` is service-operation invite only.
 ///
 /// Every other unlisted code keeps the intent (keep-on-doubt).
