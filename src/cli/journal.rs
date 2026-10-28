@@ -1342,7 +1342,13 @@ impl Journal {
         let body = serde_json::to_vec(&semantic)?;
         let _lock = self.lock()?;
         let recorded = self.record_locked(scope, semantic, created_at_millis, body)?;
-        LAST_RECORDED.with(|last| *last.borrow_mut() = Some(recorded.recovery_ref()));
+        let reference = recorded.recovery_ref();
+        ON_RECORD.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook(&reference);
+            }
+        });
+        LAST_RECORDED.with(|last| *last.borrow_mut() = Some(reference));
         Ok(recorded)
     }
     /// Serialize event allocation and recover an intent published before context save.
@@ -2183,6 +2189,26 @@ fn private_open(path: &Path) -> io::Result<File> {
 thread_local! {
     /// The recovery reference of the last intent this thread recorded.
     static LAST_RECORDED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A hook called with the recovery reference of a recorded intent.
+type RecordHook = Box<dyn Fn(&str)>;
+
+thread_local! {
+    /// Called with the recovery reference of each intent this thread records,
+    /// right after it is durable (a remote handoff ties its launch to it).
+    static ON_RECORD: std::cell::RefCell<Option<RecordHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook` with the recovery reference of every intent this thread
+/// records until [`clear_record_hook_on_this_thread`].
+pub fn set_record_hook_on_this_thread(hook: RecordHook) {
+    ON_RECORD.with(|slot| *slot.borrow_mut() = Some(hook));
+}
+
+pub fn clear_record_hook_on_this_thread() {
+    ON_RECORD.with(|slot| *slot.borrow_mut() = None);
 }
 
 /// Forget the intent this thread recorded last, before a call whose own

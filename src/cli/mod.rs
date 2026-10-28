@@ -2747,6 +2747,21 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             launched = Some(done);
         }
         journal::clear_recorded_on_this_thread();
+        // The moment the follow-on handoff records its intent (before delivery
+        // starts), the launch's request keeps that reference: a crash or Ctrl-C
+        // after it never lets a rerun hand the task off a second time.
+        let launched = launched.map(std::rc::Rc::new);
+        if let Some(launched) = &launched {
+            let launched = std::rc::Rc::clone(launched);
+            journal::set_record_hook_on_this_thread(Box::new(move |reference| {
+                if let Err(error) = launched.record_journaled(reference) {
+                    eprintln!(
+                        "herdr-threads: note: could not keep {reference} with the remote launch: \
+                         {error}"
+                    );
+                }
+            }));
+        }
         let topology = match &parsed.action {
             CliAction::TopologyHandoff(_) => true,
             CliAction::Retry(recovery) => topology_runtime::is_compound(
@@ -2759,26 +2774,29 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         } else {
             handoff::run(parsed, claim, &journal, paths, writer)
         };
+        journal::clear_record_hook_on_this_thread();
         // The intent this handoff journaled on this thread, if it got that far.
         let journaled = journal::take_recorded_on_this_thread();
-        if let Some(launched) = launched
-            && peer_launch::remote_handoff_settles(journaled.is_some(), &result)
-        {
-            launched.settle();
-            if result.is_err() {
-                match &journaled {
-                    Some(reference) => eprintln!(
-                        "herdr-threads: note: the handoff into launched seat {} is journaled; \
-                         finish it with `herdr-threads retry {reference}` (a rerun of this \
-                         command launches a new agent)",
-                        launched.seat
-                    ),
-                    None => eprintln!(
+        if let Some(launched) = launched {
+            match (&result, &journaled) {
+                // Done: a new run of this command is a new launch.
+                (Ok(()), _) => launched.settle(),
+                // Journaled, then failed: the request keeps the reference, and a
+                // rerun of this command says to finish it with `retry`.
+                (Err(_), Some(reference)) => eprintln!(
+                    "herdr-threads: note: the handoff into launched seat {} is journaled; finish \
+                     it with `herdr-threads retry {reference}`",
+                    launched.seat
+                ),
+                (Err(_), None) if peer_launch::handoff_settles(&result) => {
+                    launched.settle();
+                    eprintln!(
                         "herdr-threads: note: the handoff into launched seat {} was refused; a \
                          rerun launches a new agent",
                         launched.seat
-                    ),
+                    );
                 }
+                (Err(_), None) => {}
             }
         }
         return result;

@@ -2812,3 +2812,22 @@ fn the_thread_names_the_intent_it_recorded() {
     );
     assert_eq!(take_recorded_on_this_thread(), None, "taken once");
 }
+
+// Kills: a remote handoff's launch learning its follow-on intent only after
+// delivery (a crash in between lets a rerun hand the task off twice): the hook
+// runs as each intent of this thread is recorded, and never after it is cleared.
+#[test]
+fn the_record_hook_sees_each_intent_as_it_is_recorded() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&seen);
+    set_record_hook_on_this_thread(Box::new(move |reference| {
+        sink.borrow_mut().push(reference.to_owned());
+    }));
+    let reference = journal.record(scope(), send(), 1).unwrap();
+    assert_eq!(*seen.borrow(), [reference.recovery_ref()]);
+    clear_record_hook_on_this_thread();
+    journal.record(scope(), send(), 2).unwrap();
+    assert_eq!(seen.borrow().len(), 1, "cleared");
+}

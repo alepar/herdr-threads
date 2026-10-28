@@ -720,3 +720,25 @@ only the launch path.
   failed write removes it.
 - Tests: the journal marker, the settle decision, the empty-file replacement,
   and `check_remote` failing closed and asking once per handoff.
+
+### 2026-10-28, independent correctness review of f4d20081f
+
+- **Unconfirmed only after a start:** a launch child that never spawned
+  (`current_exe` deleted by an upgrade, a failing `pre_exec`) is a plain
+  failure; only a child killed after it started is unconfirmed.
+- **Durable journaled ref:** a journal record hook writes the follow-on
+  handoff's intent reference into the request file the moment the intent is
+  recorded, before delivery starts. A rerun that finds a still-pending ref is
+  told to `retry` it (never a second handoff); one whose ref completed is a
+  new command. A handoff that failed after journaling keeps the ref.
+- **Polled by uuid:** the launch is polled with the resolved node uuid, and a
+  reply naming another node keeps the request unsettled.
+- **Cap from the live map:** the per-requesting-node cap counts live requests
+  under one lock that also claims the slot, so concurrent requests cannot all
+  pass it and lost rows never hold a slot; a drop guard frees the slot when a
+  worker ends, a panic included.
+- **Request file:** read and replaced under a per-request `flock`, so
+  concurrent reruns agree on one id.
+- **Child env** drops the per-session mod-delivery override; a lost new-tab
+  request names its workspace; an unconfirmed refusal says that changing the
+  task or plan launches anew.

@@ -165,16 +165,6 @@ pub fn settle_at_start(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Stri
     Ok(ids)
 }
 
-/// How many requests of `node_uuid` are `running` here.
-pub fn running_for(conn: &Connection, node_uuid: &str) -> rusqlite::Result<u64> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM peer_requests WHERE node_uuid=?1 AND state='running'",
-        [node_uuid],
-        |r| r.get(0),
-    )?;
-    Ok(u64::try_from(count).unwrap_or(0))
-}
-
 /// Per requesting node: how many requests it made in the retention window,
 /// and the newest one.
 pub fn by_node(conn: &Connection) -> rusqlite::Result<Vec<(String, u64, PeerRequest)>> {

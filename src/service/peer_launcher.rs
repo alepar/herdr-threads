@@ -74,10 +74,12 @@ pub fn child_env(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<(OsStr
     // The setup inputs registered adapters declare (their config roots), so the
     // child checks hooks where this node set them up; never session or pane
     // variables, which no adapter declares as setup input.
+    // The mod-delivery switch is a per-session override, not a config root.
     let setup: Vec<&'static str> = crate::harness::registry::builtins()
         .registrations()
         .iter()
         .flat_map(|r| r.setup_environment_inputs().iter().copied())
+        .filter(|key| *key != crate::protocol::watch::MOD_DELIVERY_ENV)
         .collect();
     vars.filter(|(key, _)| {
         let Some(key) = key.to_str() else {
@@ -92,9 +94,28 @@ pub fn child_env(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<(OsStr
     .collect()
 }
 
+/// Requests whose decision or worker is running here: request id -> the
+/// requesting node. The per-node running cap counts these, so a lost row
+/// (its worker gone) never holds a slot.
+pub type Live = Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>;
+
+/// Removes a request from [`Live`] when its worker ends, a panic included.
+struct LiveGuard {
+    live: Live,
+    id: String,
+}
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        if let Ok(mut live) = self.live.lock() {
+            live.remove(&self.id);
+        }
+    }
+}
+
 pub struct PeerLaunchService {
     /// Requests whose worker thread is running here (by id).
-    pub live: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    pub live: Live,
     pub store: Arc<SqliteStore>,
     pub sessions: Arc<HostSessions>,
     pub writer: Arc<FairWriter>,
@@ -295,10 +316,20 @@ impl PeerLaunchService {
     /// A `running` row whose worker is gone: recorded failed and unconfirmed
     /// (its outcome write failed; the launch may have happened).
     fn lost(&self, row: &PeerRequest) -> LaunchState {
+        // A new tab's pane may be unknown: its workspace is named instead.
+        let place = match &row.pane {
+            Some(pane) => format!("pane {pane}"),
+            None => serde_json::from_str::<crate::sync::frame::LaunchPlan>(&row.plan)
+                .ok()
+                .and_then(|plan| match plan.target {
+                    LaunchTarget::NewTab { space, .. } => Some(format!("workspace {space}")),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "its target".to_owned()),
+        };
         let detail = format!(
-            "{}: the launch's outcome was lost; inspect pane {} here before launching again",
-            peer_requests::UNCONFIRMED,
-            row.pane.as_deref().unwrap_or("-")
+            "{}: the launch's outcome was lost; inspect {place} here before launching again",
+            peer_requests::UNCONFIRMED
         );
         let now = now_ms(self.clock.as_ref());
         let written = self.write(|conn| {
@@ -337,7 +368,7 @@ impl PeerLaunchService {
             }
             // A row still `running` whose worker is gone (its outcome could not be
             // written): the launch may have happened; never resumed, never relaunched.
-            if row.state == "running" && !self.live.lock().unwrap().contains(&id) {
+            if row.state == "running" && !self.live.lock().unwrap().contains_key(&id) {
                 return Ok(self.lost(&row));
             }
             return Ok(row.answer());
@@ -361,13 +392,6 @@ impl PeerLaunchService {
         };
         if let Some(why) = plan_refusal(plan, row.plan.len()) {
             return Ok(self.refuse(from, &row, &why));
-        }
-        let from_text = from.to_string();
-        let running = self.read(move |conn| peer_requests::running_for(conn, &from_text))?;
-        if running >= MAX_RUNNING_PER_PEER {
-            return Ok(LaunchState::Unavailable {
-                reason: format!("{running} launches for that machine are already running here"),
-            });
         }
         let placement = match self.place(&plan.target) {
             Ok(placement) => placement,
@@ -394,23 +418,32 @@ impl PeerLaunchService {
             pane: (!new_tab).then(|| placement.target.clone()),
             ..row
         };
-        // Live before its row commits: a repeat never reads a fresh `running` row as
-        // one whose worker is gone.
-        let fresh = self.live.lock().unwrap().insert(id.clone());
-        let written = self.write(|conn| peer_requests::insert_or_get(conn, &row));
-        let (stored, inserted) = match written {
-            Ok(done) => done,
-            Err(error) => {
-                if fresh {
-                    self.live.lock().unwrap().remove(&id);
-                }
-                return Err(error);
+        // The cap and the claim on a slot are one step under the live lock (no
+        // two decisions both pass it), and the claim precedes the row's commit
+        // (a repeat never reads a fresh `running` row as one whose worker is gone).
+        let from_text = from.to_string();
+        {
+            let mut live = self.live.lock().unwrap();
+            if live.contains_key(&id) {
+                // Another decision for this id is in flight: it answers.
+                return Ok(LaunchState::Running {
+                    pane: row.pane.clone(),
+                });
             }
+            let running = live.values().filter(|node| **node == from_text).count() as u64;
+            if running >= MAX_RUNNING_PER_PEER {
+                return Ok(LaunchState::Unavailable {
+                    reason: format!("{running} launches for that machine are already running here"),
+                });
+            }
+            live.insert(id.clone(), from_text);
+        }
+        let slot = LiveGuard {
+            live: Arc::clone(&self.live),
+            id: id.clone(),
         };
+        let (stored, inserted) = self.write(|conn| peer_requests::insert_or_get(conn, &row))?;
         if !inserted {
-            if fresh {
-                self.live.lock().unwrap().remove(&id);
-            }
             return Ok(stored.answer());
         }
         let tag = self.requester_tag(from);
@@ -423,7 +456,7 @@ impl PeerLaunchService {
         ));
         let pane = (!new_tab).then(|| placement.target.clone());
         let worker = Worker {
-            live: Arc::clone(&self.live),
+            slot,
             id,
             tag,
             store: Arc::clone(&self.store),
@@ -502,7 +535,8 @@ pub fn launch_args(pane: &str, plan: &crate::sync::frame::LaunchPlan) -> Vec<Str
 
 /// Runs one accepted request to its outcome.
 struct Worker {
-    live: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    /// Frees the request's live slot when the worker ends, a panic included.
+    slot: LiveGuard,
     id: String,
     tag: String,
     store: Arc<SqliteStore>,
@@ -516,10 +550,95 @@ struct Worker {
 /// One finished child: exit success, stdout, the last stderr line.
 struct ChildOutput {
     ok: bool,
+    /// The child process started (`spawn` succeeded). A child that never
+    /// started cannot have launched anything.
+    spawned: bool,
     /// The exit status, when the child exited by itself.
     code: Option<i32>,
     stdout: String,
     error: String,
+}
+
+impl ChildOutput {
+    /// Started, then killed (timeout, signal) before it answered: it may have
+    /// done its work.
+    fn may_have_started(&self) -> bool {
+        self.spawned && self.code.is_none()
+    }
+}
+
+/// The failure detail of a launch child that did not report a seat, and
+/// whether the start may have happened (exit 5, or killed after it started).
+fn launch_failure(out: &ChildOutput, pane: &str) -> (String, bool) {
+    if out.code == Some(crate::cli::launch::EXIT_START_UNCONFIRMED) || out.may_have_started() {
+        return (
+            format!(
+                "{}: inspect pane {pane} here before launching again",
+                peer_requests::UNCONFIRMED
+            ),
+            true,
+        );
+    }
+    let detail = if out.error.is_empty() {
+        "launch did not report a seat".to_owned()
+    } else {
+        format!("launch: {}", out.error)
+    };
+    (detail, false)
+}
+
+/// Runs `command` (stdout and stderr piped) to its end, killing it past
+/// [`CHILD_TIMEOUT`].
+fn run_child(mut command: Command) -> ChildOutput {
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return ChildOutput {
+                ok: false,
+                spawned: false,
+                code: None,
+                stdout: String::new(),
+                error: format!("could not start: {error}"),
+            };
+        }
+    };
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < CHILD_TIMEOUT => std::thread::sleep(CHILD_POLL),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let stdout = String::from_utf8_lossy(&stdout.join().unwrap_or_default()).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr.join().unwrap_or_default()).into_owned();
+    let last = stderr
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    match status {
+        Some(status) => ChildOutput {
+            ok: status.success(),
+            spawned: true,
+            code: status.code(),
+            stdout,
+            error: last,
+        },
+        None => ChildOutput {
+            ok: false,
+            spawned: true,
+            code: None,
+            stdout,
+            error: "timed out".into(),
+        },
+    }
 }
 
 /// Longest detail recorded in `peer_requests.detail` (its CHECK), in bytes.
@@ -622,52 +741,7 @@ impl Worker {
                 });
             }
         }
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                return ChildOutput {
-                    ok: false,
-                    code: None,
-                    stdout: String::new(),
-                    error: format!("could not start: {error}"),
-                };
-            }
-        };
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
-        let started = std::time::Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if started.elapsed() < CHILD_TIMEOUT => std::thread::sleep(CHILD_POLL),
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-            }
-        };
-        let stdout = String::from_utf8_lossy(&stdout.join().unwrap_or_default()).into_owned();
-        let stderr = String::from_utf8_lossy(&stderr.join().unwrap_or_default()).into_owned();
-        let last = stderr
-            .lines()
-            .rfind(|l| !l.trim().is_empty())
-            .unwrap_or_default()
-            .to_owned();
-        match status {
-            Some(status) => ChildOutput {
-                ok: status.success(),
-                code: status.code(),
-                stdout,
-                error: last,
-            },
-            None => ChildOutput {
-                ok: false,
-                code: None,
-                stdout,
-                error: "timed out".into(),
-            },
-        }
+        run_child(command)
     }
 
     fn fail(&self, pane: Option<&str>, detail: &str) {
@@ -681,9 +755,9 @@ impl Worker {
         ));
     }
 
-    fn run(&self, request: &LaunchRequest, target: String) {
+    fn run(self, request: &LaunchRequest, target: String) {
         self.run_to_outcome(request, target);
-        self.live.lock().unwrap().remove(&self.id);
+        drop(self.slot);
     }
 
     fn run_to_outcome(&self, request: &LaunchRequest, target: String) {
@@ -705,7 +779,7 @@ impl Worker {
                         pane
                     }
                     // Killed before it answered: the tab may exist.
-                    _ if out.code.is_none() => {
+                    _ if out.may_have_started() => {
                         return self.fail(
                             None,
                             &format!(
@@ -733,20 +807,7 @@ impl Worker {
                 ));
             }
             _ => {
-                // Exit 5, or killed (timeout, signal) before it answered: the start
-                // may have happened.
-                let detail = if out.code == Some(crate::cli::launch::EXIT_START_UNCONFIRMED)
-                    || out.code.is_none()
-                {
-                    format!(
-                        "{}: inspect pane {pane} here before launching again",
-                        peer_requests::UNCONFIRMED
-                    )
-                } else if out.error.is_empty() {
-                    "launch did not report a seat".to_owned()
-                } else {
-                    format!("launch: {}", out.error)
-                };
+                let (detail, _) = launch_failure(&out, &pane);
                 self.fail(Some(&pane), &detail);
             }
         }
@@ -880,6 +941,36 @@ mod tests {
                 peer_requests::MAX_PLAN_BYTES + 1
             )
             .is_some_and(|why| why.contains("too large"))
+        );
+    }
+
+    // Kills: a child that never started (an upgrade left `current_exe`
+    // deleted) read as an unconfirmed start (the requester locked out for 7
+    // days), and a child killed after it started read as a plain failure (a
+    // rerun would launch a second agent).
+    #[test]
+    fn only_a_started_child_can_leave_an_unconfirmed_start() {
+        let never = run_child(Command::new("/nonexistent/herdr-threads-test-child"));
+        assert!(!never.spawned);
+        assert!(!launch_failure(&never, "w1:p2").1);
+        let killed = ChildOutput {
+            ok: false,
+            spawned: true,
+            code: None,
+            stdout: String::new(),
+            error: "timed out".into(),
+        };
+        let (detail, unconfirmed) = launch_failure(&killed, "w1:p2");
+        assert!(unconfirmed);
+        assert!(detail.contains("inspect pane w1:p2"), "{detail}");
+        let refused = ChildOutput {
+            code: Some(2),
+            error: "no such pane".into(),
+            ..killed
+        };
+        assert_eq!(
+            launch_failure(&refused, "w1:p2"),
+            ("launch: no such pane".into(), false)
         );
     }
 }

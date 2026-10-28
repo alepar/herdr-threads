@@ -105,21 +105,73 @@ fn launch_timeout() -> Duration {
     REMOTE_LAUNCH_TIMEOUT
 }
 
-/// The request id of this launch: derived from the whole frozen intent (the
-/// resolved node, the requesting seat, the plan and the handoff that follows
-/// it) and kept in `node_dir/remote-launch/` until the launch settles, so a
-/// rerun of the same command resumes it and never launches twice, while any
-/// other command (another task, another seat, another spelling of the same
-/// node aside) never matches it. The file is created exclusively: of two
-/// concurrent runs, the second reads the first one's id.
-fn request_id(
-    node_dir: &Path,
-    node_uuid: &str,
-    requester_seat: Option<&str>,
-    remote: &RemoteLaunch,
-) -> std::io::Result<(uuid::Uuid, std::path::PathBuf)> {
-    use sha2::Digest;
+/// The request of one remote launch as this node keeps it, in
+/// `node_dir/remote-launch/<key>.id`: its id, and once the follow-on handoff
+/// recorded its intent, that intent's recovery reference (`journaled`), so a
+/// rerun resumes through it and never hands the task off a second time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestRecord {
+    pub id: uuid::Uuid,
+    pub journaled: Option<String>,
+}
+
+impl RequestRecord {
+    fn parse(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        let id = lines.next()?.trim().parse().ok()?;
+        let journaled = lines
+            .find_map(|line| line.strip_prefix("journaled "))
+            .map(|r| r.trim().to_owned());
+        Some(Self { id, journaled })
+    }
+
+    fn text(&self) -> String {
+        match &self.journaled {
+            Some(reference) => format!("{}\njournaled {reference}\n", self.id),
+            None => format!("{}\n", self.id),
+        }
+    }
+}
+
+/// Holds the per-request lock: every read and replacement of one request's
+/// file happens under it, so concurrent runs of one command agree.
+struct RecordLock {
+    /// Holds the lock while open; closing it releases the lock.
+    _file: std::fs::File,
+}
+
+impl RecordLock {
+    fn take(file: &Path) -> std::io::Result<Self> {
+        use std::os::unix::io::AsRawFd;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(file.with_extension("lock"))?;
+        // SAFETY: flock on a descriptor this function owns.
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { _file: lock })
+    }
+}
+
+/// Writes `record` to `file` atomically (temporary file, sync, rename).
+fn write_record(file: &Path, record: &RequestRecord) -> std::io::Result<()> {
     use std::io::Write as _;
+    let tmp = file.with_extension(format!("{}.tmp", std::process::id()));
+    let mut out = std::fs::File::create(&tmp)?;
+    out.write_all(record.text().as_bytes())?;
+    out.sync_all()?;
+    std::fs::rename(&tmp, file)
+}
+
+/// The key of this launch's request: the whole frozen intent (the resolved
+/// node, the requesting seat, the plan and the handoff that follows it), so a
+/// rerun of the same command finds its request and any other command (another
+/// task, another seat) never does.
+fn request_key(node_uuid: &str, requester_seat: Option<&str>, remote: &RemoteLaunch) -> String {
+    use sha2::Digest;
     let mut hash = sha2::Sha256::new();
     hash.update(b"herdr-threads remote launch v3\0");
     hash.update(node_uuid.as_bytes());
@@ -129,63 +181,45 @@ fn request_id(
     hash.update(serde_json::to_vec(&remote.plan).unwrap_or_default());
     hash.update(b"\0");
     hash.update(serde_json::to_vec(&remote.then).unwrap_or_default());
-    let key = hash
-        .finalize()
+    hash.finalize()
         .iter()
         .take(16)
         .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+        .collect()
+}
+
+/// This launch's request: the one a run of the same command recorded (kept
+/// until the launch settles, so a rerun resumes it and never launches twice),
+/// else a new one. Under the request's lock, so concurrent runs agree; an
+/// unreadable file a dead run left behind is replaced.
+fn request_id(
+    node_dir: &Path,
+    node_uuid: &str,
+    requester_seat: Option<&str>,
+    remote: &RemoteLaunch,
+) -> std::io::Result<(RequestRecord, std::path::PathBuf)> {
+    let key = request_key(node_uuid, requester_seat, remote);
     let dir = node_dir.join("remote-launch");
     std::fs::create_dir_all(&dir)?;
     let file = dir.join(format!("{key}.id"));
-    let read = |file: &Path| -> std::io::Result<uuid::Uuid> {
-        std::fs::read_to_string(file)?
-            .trim()
-            .parse()
-            .map_err(|_| std::io::Error::other("unreadable remote launch request id"))
-    };
-    if let Ok(id) = read(&file) {
-        return Ok((id, file));
-    }
-    let id = uuid::Uuid::new_v4();
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&file)
+    let _lock = RecordLock::take(&file)?;
+    if let Some(record) = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|text| RequestRecord::parse(&text))
     {
-        Ok(mut out) => {
-            let written = out
-                .write_all(id.to_string().as_bytes())
-                .and_then(|()| out.sync_all());
-            if let Err(error) = written {
-                // Never leave an empty id behind for the next run to trip on.
-                let _ = std::fs::remove_file(&file);
-                return Err(error);
-            }
-            Ok((id, file))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            // A concurrent run won: its id is the request's (it may still be writing).
-            for _ in 0..50 {
-                if let Ok(id) = read(&file) {
-                    return Ok((id, file));
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            // Still unreadable after a second: a run that died mid-write left it.
-            // Nothing was sent under it, so it is replaced.
-            let tmp = dir.join(format!("{key}.{}.tmp", std::process::id()));
-            std::fs::write(&tmp, id.to_string())?;
-            std::fs::rename(&tmp, &file)?;
-            read(&file).map(|id| (id, file.clone())).map_err(|error| {
-                std::io::Error::other(format!(
-                    "remote launch request id file {}: {error}",
-                    file.display()
-                ))
-            })
-        }
-        Err(error) => Err(error),
+        return Ok((record, file));
     }
+    let record = RequestRecord {
+        id: uuid::Uuid::new_v4(),
+        journaled: None,
+    };
+    write_record(&file, &record).map_err(|error| {
+        std::io::Error::other(format!(
+            "remote launch request file {}: {error}",
+            file.display()
+        ))
+    })?;
+    Ok((record, file))
 }
 
 /// The refusal for a machine that names no single other node.
@@ -262,7 +296,8 @@ fn one_line(text: &str) -> String {
 /// again cannot change (the launched seat cannot take it). A transient
 /// failure keeps the request, so a rerun resumes at delivery and never
 /// launches a second agent. (Once the handoff journaled its intent, the
-/// request ends regardless: that intent's `retry` owns the work.)
+/// request keeps that intent's reference instead, and a rerun resumes
+/// through `retry`.)
 pub fn handoff_settles(result: &Result<(), RunError>) -> bool {
     match result {
         Ok(()) => true,
@@ -274,13 +309,6 @@ pub fn handoff_settles(result: &Result<(), RunError>) -> bool {
     }
 }
 
-/// Whether a remote handoff ends its launch's request: once the handoff
-/// journaled its own intent (`journaled`; that intent's `retry` owns the work
-/// and never relaunches), or per [`handoff_settles`] before that.
-pub fn remote_handoff_settles(journaled: bool, result: &Result<(), RunError>) -> bool {
-    journaled || handoff_settles(result)
-}
-
 /// A launch that started on another machine. Its request id stays recorded
 /// until [`Self::settle`], so a rerun before it (a failed follow-on handoff)
 /// asks for the same launch's outcome instead of launching again.
@@ -288,6 +316,7 @@ pub fn remote_handoff_settles(journaled: bool, result: &Result<(), RunError>) ->
 pub struct Launched {
     pub seat: String,
     pub pane: String,
+    id: uuid::Uuid,
     file: std::path::PathBuf,
 }
 
@@ -295,7 +324,22 @@ impl Launched {
     /// The launch's work is done here: a new launch of the same plan gets a
     /// new request id.
     pub fn settle(&self) {
-        let _ = std::fs::remove_file(&self.file);
+        if let Ok(_lock) = RecordLock::take(&self.file) {
+            let _ = std::fs::remove_file(&self.file);
+        }
+    }
+
+    /// The follow-on handoff recorded its intent `reference`: kept with the
+    /// request before delivery starts, so a rerun resumes through it.
+    pub fn record_journaled(&self, reference: &str) -> std::io::Result<()> {
+        let _lock = RecordLock::take(&self.file)?;
+        write_record(
+            &self.file,
+            &RequestRecord {
+                id: self.id,
+                journaled: Some(reference.to_owned()),
+            },
+        )
     }
 }
 
@@ -341,14 +385,45 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
             .into());
         }
     };
-    let (id, file) = request_id(node_dir, &node.uuid, requester_seat, remote)?;
+    let (record, file) = request_id(node_dir, &node.uuid, requester_seat, remote)?;
+    // The follow-on handoff of this very command already recorded its intent:
+    // it resumes through that intent, never through a second handoff.
+    let record = match &record.journaled {
+        Some(reference) => {
+            let journal = super::journal::Journal::read_only(node_dir.join("intents"))?;
+            match journal.resolve_recovery_ref(reference) {
+                Ok(_) => {
+                    return Err(ApiError::new(
+                        ErrorCode::Conflict,
+                        format!(
+                            "this handoff is already journaled as {reference}; finish it with \
+                             `herdr-threads retry {reference}`"
+                        ),
+                    )
+                    .into());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // That handoff completed: this run is a new command.
+                    if let Ok(_lock) = RecordLock::take(&file) {
+                        let _ = std::fs::remove_file(&file);
+                    }
+                    request_id(node_dir, &node.uuid, requester_seat, remote)?.0
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        None => record,
+    };
+    let id = record.id;
     let request = LaunchRequest {
         id,
         requester_seat: requester_seat.unwrap_or_default().to_owned(),
         plan: remote.plan.clone(),
     };
     let settle = || {
-        let _ = std::fs::remove_file(&file);
+        if let Ok(_lock) = RecordLock::take(&file) {
+            let _ = std::fs::remove_file(&file);
+        }
     };
     let refuse =
         |code: ErrorCode, detail: String| -> RunError { ApiError::new(code, detail).into() };
@@ -356,8 +431,9 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
     let mut announced = false;
     loop {
         let reply = client.call(
+            // By the node's full uuid: a node-table change mid-poll never retargets it.
             crate::protocol::commands::Command::Sync(SyncCommand::RemoteLaunch {
-                machine: remote.machine.clone(),
+                machine: node.uuid.clone(),
                 request: Box::new(request.clone()),
             }),
             &budget(),
@@ -368,12 +444,19 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                 "unexpected remote launch result".into(),
             ));
         };
+        let resolved = &node.uuid;
         let (node, answer) = match reply {
-            LaunchReply::Remote { node, answer } => (node, answer),
-            // The node table changed since this run resolved the machine.
-            other => {
-                settle();
-                return Err(machine_refusal(&remote.machine, other));
+            LaunchReply::Remote { node, answer } if &node.uuid == resolved => (node, answer),
+            // Another node, or none: the request stays, nothing is settled.
+            _ => {
+                return Err(refuse(
+                    ErrorCode::HostUnavailable,
+                    format!(
+                        "machine {resolved} is no longer the node this launch was asked of; \
+                         request {} kept, rerun to resume",
+                        &id.to_string()[..8]
+                    ),
+                ));
             }
         };
         let label = label_of(&node);
@@ -391,6 +474,7 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                     return Ok(Launched {
                         seat,
                         pane,
+                        id,
                         file: file.clone(),
                     });
                 }
@@ -414,9 +498,20 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                     let left = pane.map_or_else(String::new, |p| {
                         format!("; it left tab pane {} there", one_line(&p))
                     });
+                    // An unconfirmed start keeps answering for this exact command
+                    // (N15); any change to its task or plan is a new request.
+                    let escape = if unconfirmed {
+                        "; rerunning this exact command reports the same, change its task or plan \
+                         to launch anew"
+                    } else {
+                        ""
+                    };
                     return Err(refuse(
                         ErrorCode::HostUnavailable,
-                        format!("launch on {label} failed: {}{left}", one_line(&detail)),
+                        format!(
+                            "launch on {label} failed: {}{left}{escape}",
+                            one_line(&detail)
+                        ),
                     ));
                 }
                 LaunchState::Running { .. } => "running".to_owned(),
@@ -510,7 +605,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let id = |node: &str, seat: Option<&str>, task: &str| {
-            request_id(&dir, node, seat, &remote(task)).unwrap().0
+            request_id(&dir, node, seat, &remote(task)).unwrap().0.id
         };
         let a = id("n1", Some("s1"), "task A");
         assert_eq!(a, id("n1", Some("s1"), "task A"), "a rerun reuses it");
@@ -528,26 +623,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // Kills: a journaled handoff whose launch is kept (a rerun would hand the
-    // task off a second time) or a transient pre-journal failure that settles
-    // it (a rerun would launch a second agent).
+    // Kills: an id file a dead run left empty blocking every later run, two
+    // runs that find it at once replacing it with different ids, and the
+    // follow-on handoff's intent reference not surviving with the request.
     #[test]
-    fn a_journaled_handoff_or_a_final_refusal_settles_the_launch() {
-        let transient = || {
-            Err(RunError::Api(ApiError::new(
-                ErrorCode::HostUnavailable,
-                "x",
-            )))
-        };
-        assert!(remote_handoff_settles(true, &transient()));
-        assert!(!remote_handoff_settles(false, &transient()));
-        assert!(remote_handoff_settles(false, &Ok(())));
-    }
-
-    // Kills: an id file a dead run left empty blocking every later run, and a
-    // failed write leaving the empty file behind.
-    #[test]
-    fn an_empty_request_id_file_is_replaced() {
+    fn the_request_record_is_replaced_once_and_keeps_the_journaled_intent() {
         let dir = crate::test_support::scratch::temp_path(format!(
             "ht-remote-launch-empty-{}",
             std::process::id()
@@ -555,15 +635,33 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (first, file) = request_id(&dir, "n1", Some("s1"), &remote("task")).unwrap();
         std::fs::write(&file, b"").unwrap();
-        let (second, again) = request_id(&dir, "n1", Some("s1"), &remote("task")).unwrap();
-        assert_eq!(file, again);
-        assert_ne!(first, second, "a fresh id replaces the empty file");
-        assert_eq!(
-            request_id(&dir, "n1", Some("s1"), &remote("task"))
-                .unwrap()
-                .0,
-            second
-        );
+        let ids: Vec<uuid::Uuid> = std::thread::scope(|threads| {
+            let runs: Vec<_> = (0..8)
+                .map(|_| {
+                    threads.spawn(|| {
+                        request_id(&dir, "n1", Some("s1"), &remote("task"))
+                            .unwrap()
+                            .0
+                            .id
+                    })
+                })
+                .collect();
+            runs.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        assert!(ids.iter().all(|i| *i == ids[0]), "{ids:?}");
+        assert_ne!(first.id, ids[0], "a fresh id replaced the empty file");
+        let launched = Launched {
+            seat: "s".into(),
+            pane: "p".into(),
+            id: ids[0],
+            file: file.clone(),
+        };
+        launched.record_journaled("local:7").unwrap();
+        let (record, _) = request_id(&dir, "n1", Some("s1"), &remote("task")).unwrap();
+        assert_eq!(record.id, ids[0]);
+        assert_eq!(record.journaled.as_deref(), Some("local:7"));
+        launched.settle();
+        assert!(!file.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
