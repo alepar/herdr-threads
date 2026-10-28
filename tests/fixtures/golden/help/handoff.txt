@@ -42,8 +42,6 @@ Options:
           Agent role for the cooperative call [possible values: top-level, subagent]
       --tab <TAB>
           Exact tab ID or label in the selected workspace; a tab ID supplies its workspace
-      --agent-id <ID>
-          Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
       --pane <PANE>
           Exact pane ID, label or live agent name in the selected tab. Omitted parents inherit the live caller; outside Herdr supply parents or a pane ID. Qualify duplicate names with --space/--tab or use an ID; conflicts never pick a pane
       --new-thread

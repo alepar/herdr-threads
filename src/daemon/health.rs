@@ -489,7 +489,7 @@ pub fn unresolved_seats_line(summary: &crate::ports::UnresolvedSeatSummary) -> S
         &format!(
             "unresolved seats: {}; their check-ins are refused; host_invalidation seats \
              reconfirm when a coherent snapshot shows their pane; other seats reattach when \
-             their session claims them (C1); else `seat rebind SEAT --pane PANE --operator`",
+             their session claims them; else `seat rebind SEAT --pane PANE --operator`",
             summary.count
         ),
         256,

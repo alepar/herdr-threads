@@ -175,7 +175,7 @@ pub fn operate(
         ServiceOperation::Notify(_) => {
             return Err(api_error(
                 ErrorCode::Unsupported,
-                "notification publication belongs to C3",
+                "notification publication is not supported here",
             ));
         }
         ServiceOperation::Send(_)

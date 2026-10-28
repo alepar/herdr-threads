@@ -1,4 +1,4 @@
-Install the owned herdr-threads hooks for a harness at user level (with no harness: for every detected harness). Claude: `$CLAUDE_CONFIG_DIR/settings.json` (hooks and allow rule). Codex: `$CODEX_HOME/hooks.json`. Ownership manifests stay private in plugin state. Setup uses the declared hook contract; installed version metadata is optional and may be unknown. Configured hooks do not prove observed delivery or native harness support
+Install the owned herdr-threads hooks for a harness at user level (with no harness: for every detected harness). Ownership manifests stay private in plugin state. Setup uses the declared hook contract; installed version metadata is optional and may be unknown. Configured hooks do not prove observed delivery or native harness support
 
 Usage: herdr-threads setup [OPTIONS] [HARNESS]
 
@@ -19,7 +19,7 @@ Options:
       --profile <NAME>
           Existing named profile, supported only by the explicitly selected adapter
       --harness-binary <PATH>
-          Absolute harness executable (default: the first `claude`/`codex` on PATH). Version metadata is optional; setup uses the declared contract
+          Absolute harness executable (default: the harness's executable on PATH). Version metadata is optional; setup uses the declared contract
       --human
           Human-readable tables and transcripts (the default on a terminal)
       --disable-prompt-suggestions
@@ -42,8 +42,6 @@ Options:
           Agent role for the cooperative call [possible values: top-level, subagent]
       --without-pane-env
           setup: remove the pane environment block setup owns, keeping the hooks
-      --agent-id <ID>
-          Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
   -h, --help
           Print help
 

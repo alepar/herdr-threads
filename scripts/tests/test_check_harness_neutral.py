@@ -412,5 +412,47 @@ class SuggestAndJsonTests(Case):
         self.assertEqual(json.loads(p.stdout)["status"], "ok")
 
 
+class ProseLiteralTests(Case):
+    """Hook-event names and design references are flagged only inside prose literals."""
+
+    def test_hook_event_in_prose_flagged(self):
+        p = self.flagged('let h = "the SessionStart hook shows it";\n')
+        self.assertViolations(p, 1)
+        self.assertIn("src/cli/x.rs:1: SessionStart:", p.stdout)
+
+    def test_bare_hook_event_is_data(self):
+        self.assertViolations(self.flagged('if e == "SessionStart" { f("PreToolUse") }\n'), 0)
+
+    def test_hook_event_identifier_and_comment_ignored(self):
+        src = "// the SessionStart hook\nfn f(k: Kind) { let _ = Kind::SessionStart; }\n"
+        self.assertViolations(self.flagged(src), 0)
+
+    def test_design_references_flagged(self):
+        src = (
+            'let a = "claims them (C1); else";\n'
+            'let b = r#"see spec \u00a71\nand R17 here"#;\n'
+            'let c = "fixed by ht-yha.61 now";\n'
+            'let d = "read docs/superpowers/specs/x.md first";\n'
+        )
+        p = self.flagged(src)
+        self.assertViolations(p, 5)
+        for site in ("1: C1:", "2: \u00a7:", "3: R17:", "4: ht-yha:", "5: docs/superpowers:"):
+            self.assertIn("src/cli/x.rs:" + site, p.stdout)
+
+    def test_non_references_not_flagged(self):
+        src = 'let a = "bootstrap plan V2 and ht-inst-abc and F1 key";\nlet b = "R17";\n'
+        self.assertViolations(self.flagged(src), 0)
+
+    def test_test_code_skipped(self):
+        src = '#[cfg(test)]\nmod t {\n    const E: &str = "the SessionStart hook (C1)";\n}\n'
+        self.assertViolations(self.flagged(src), 0)
+
+    def test_prose_hit_allowlisted(self):
+        self.write("src/cli/x.rs", 'let h = "the SessionStart hook";\n')
+        self.allow("src/cli/x.rs:the SessionStart hook \u2014 frozen-wire: test")
+        p = self.run_check()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

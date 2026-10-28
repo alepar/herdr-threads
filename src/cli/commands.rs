@@ -29,7 +29,7 @@ pub struct ParsedCli {
     /// Raw thread selector, consumed once before any daemon dispatch or journal.
     pub thread_selector: Option<String>,
     pub require_ack_panes: Vec<super::panes::PaneSelector>,
-    /// `--agent-id`: the subagent id herdr-threads' Claude PreToolUse hook inserts (spec §1).
+    /// `--agent-id`: the subagent id the harness integration inserts.
     /// Carried into a cooperative claim by [`ParsedCli::stamp_agent_id`].
     pub agent_id: Option<crate::protocol::ids::AgentId>,
     /// Raw seat arguments, consumed once by the runtime stage before any journal or dispatch;
@@ -957,9 +957,9 @@ struct Cli {
     /// Agent role for the cooperative call.
     #[arg(long, global = true, value_parser = ["top-level", "subagent"])]
     cooperative_role: Option<String>,
-    /// Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into
-    /// the cooperative claim; no behaviour change until session bindings land.
-    #[arg(long, global = true, value_name = "ID")]
+    /// Subagent id of the calling agent, supplied by the harness integration; recorded with the
+    /// cooperative claim.
+    #[arg(long, global = true, value_name = "ID", hide = true)]
     agent_id: Option<String>,
     #[command(subcommand)]
     command: Top,
@@ -1093,10 +1093,8 @@ enum Top {
         command: Option<DoctorSub>,
     },
     /// Install the owned herdr-threads hooks for a harness at user level
-    /// (with no harness: for every detected harness).
-    /// Claude: `$CLAUDE_CONFIG_DIR/settings.json` (hooks and allow rule).
-    /// Codex: `$CODEX_HOME/hooks.json`. Ownership manifests stay private in
-    /// plugin state. Setup uses the declared hook contract; installed version
+    /// (with no harness: for every detected harness). Ownership manifests
+    /// stay private in plugin state. Setup uses the declared hook contract; installed version
     /// metadata is optional and may be unknown. Configured hooks do not prove
     /// observed delivery or native harness support.
     #[command(after_help = super::help::setup_help())]
@@ -1117,7 +1115,7 @@ enum Top {
     Retry { recovery_ref: String },
     /// Show a local attention view of threads and actions.
     View(ViewArgs),
-    /// Start Codex or Claude in one explicit existing empty shell pane with
+    /// Start a registered agent harness in one explicit existing empty shell pane with
     /// the owned hooks, after resolving the pane's seat. Launch never
     /// registers, accepts or ACKs: the handoff is read through the hooks.
     #[command(after_help = super::help::launch_help())]
@@ -1287,7 +1285,7 @@ enum SummarySub {
 #[derive(Subcommand)]
 enum HarnessVersionSub {
     /// Print the canonical bare `MAJOR.MINOR.PATCH` of a raw `--version`
-    /// string (for example `codex-cli 0.158.0` or `2.1.286 (Claude Code)`);
+    /// string (for example `tool-cli 0.158.0` or `2.1.286 (Tool Name)`);
     /// exits non-zero for a string it does not recognize.
     Normalize {
         harness: String,
@@ -1831,7 +1829,7 @@ struct SetupArgs {
     /// Existing named profile, supported only by the explicitly selected adapter.
     #[arg(long, value_name = "NAME")]
     profile: Option<String>,
-    /// Absolute harness executable (default: the first `claude`/`codex` on
+    /// Absolute harness executable (default: the harness's executable on
     /// PATH). Version metadata is optional; setup uses the declared contract.
     #[arg(long, value_name = "PATH")]
     harness_binary: Option<String>,
@@ -1866,7 +1864,7 @@ struct LaunchArgs {
     #[arg(long)]
     kind: String,
     /// Absolute harness executable whose `--version` is gated (default: the
-    /// first `claude`/`codex` on PATH, which Herdr starts by name).
+    /// harness's executable on PATH, which Herdr starts by name).
     #[arg(long, value_name = "PATH")]
     harness_binary: Option<String>,
     /// Herdr agent name (default: the pane's Herdr label, else the compact

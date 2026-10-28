@@ -48,6 +48,15 @@
 # `harness_claude`, `ClaudeContract`, `CLAUDE_CONFIG_DIR`, `NotClaude`, `~/.gemini`; not
 # `strategy`, `legacy`, `claudette`, `Agyle`.
 #
+# Prose literals: inside a string literal whose contents hold a space (text a model or operator
+# reads, not a data key), these tokens are also flagged: the native hook-event and
+# harness-marker names in MECHANISMS (whole token), and design references: `§`, requirement
+# ids `[ACDPR]N` / `[ACDPR]NN` (whole token), bead ids `ht-xxx` (three [a-z0-9], not followed
+# by [a-z0-9-]) and `docs/superpowers`. A bare literal such as "SessionStart" is data and is
+# not flagged; identifiers and comments never are. Clap help comes from `///` doc comments,
+# which this scan cannot see: the in-crate test every_help_page_is_harness_neutral
+# (tests/cli/commands.rs) renders every --help page and checks it instead.
+#
 # Lexer (POSIX awk, runs on one-true-awk and gawk/mawk): keeps state across lines: normal,
 # "…" string (\ escapes, b"…"), raw string r#*"…"#*, nested /* */ comment. `//` starts a
 # comment only in the normal state. `'x'`, `'\x'`, `'\u{…}'` are char literals, other `'`
@@ -75,6 +84,8 @@ export LC_ALL=C
 # agy aliases (see header): comma-separated `id:alias+alias`.
 ALIASES="agy:antigravity+gemini"
 PLANNED_IDS="agy"
+# Native hook-event and harness-marker names, flagged only inside prose literals (see header).
+MECHANISMS="CLAUDECODE PostToolUse PreCompact PreInvocation PreToolUse SessionEnd SessionStart SubagentStart SubagentStop UserPromptSubmit post_llm_call pre_llm_call"
 
 root=""
 allowlist=""
@@ -194,6 +205,8 @@ cat >"$tmp/lex.awk" <<'AWK'
 function isid(c) { return c ~ /[A-Za-z0-9_]/ }
 function trim(s) { sub(/^[ ]+/, "", s); sub(/[ ]+$/, "", s); return s }
 function emit(x) { if (skip != 2) out = out x }
+function lit(x) { if (skip != 2) cur = cur x }
+function endlit() { if (cur != "") lits[++nlits] = cur; cur = "" }
 
 # Does the token name a harness (any component equals a name)?
 function names_harness(tok,    i, n, c, p, comp, b) {
@@ -223,7 +236,6 @@ function names_harness(tok,    i, n, c, p, comp, b) {
 
 function scan(clean, raw,    rest, tok) {
     if (!match(tolower(clean), namere)) return
-    split("", seen)
     rest = clean
     while (match(rest, /[A-Za-z0-9_]+/)) {
         tok = substr(rest, RSTART, RLENGTH)
@@ -236,7 +248,7 @@ function scan(clean, raw,    rest, tok) {
 }
 
 function lex(s,    i, n, c, c2, j, k, h, p) {
-    n = length(s); i = 1; out = ""
+    n = length(s); i = 1; out = ""; nlits = 0; cur = ""
     while (i <= n) {
         c = substr(s, i, 1)
         if (mode == 3) {
@@ -247,13 +259,13 @@ function lex(s,    i, n, c, c2, j, k, h, p) {
             continue
         }
         if (mode == 1) {
-            if (c == "\\") { emit(substr(s, i, 2)); i += 2 }
-            else { if (c == "\"") mode = 0; emit(c); i++ }
+            if (c == "\\") { emit(substr(s, i, 2)); lit(substr(s, i, 2)); i += 2 }
+            else { if (c == "\"") { mode = 0; endlit() } else lit(c); emit(c); i++ }
             continue
         }
         if (mode == 2) {
-            if (c == "\"" && substr(s, i + 1, rawh) == hashes) { emit(c hashes); i += 1 + rawh; mode = 0 }
-            else { emit(c); i++ }
+            if (c == "\"" && substr(s, i + 1, rawh) == hashes) { emit(c hashes); i += 1 + rawh; mode = 0; endlit() }
+            else { emit(c); lit(c); i++ }
             continue
         }
         # normal state
@@ -312,9 +324,48 @@ function lex(s,    i, n, c, c2, j, k, h, p) {
         }
         emit(c); i++
     }
+    endlit()
+}
+
+# Prose literals (string contents holding a space) must not name a harness mechanism or cite a
+# design document; a bare literal ("SessionStart") is data and stays allowed.
+function scan_prose(clean, raw,    q, seg, rest, tok, k, nx) {
+    for (q = 1; q <= nlits; q++) {
+        seg = lits[q]
+        if (index(seg, " ") == 0) continue
+        rest = seg
+        while (match(rest, /[A-Za-z0-9_]+/)) {
+            tok = substr(rest, RSTART, RLENGTH)
+            rest = substr(rest, RSTART + RLENGTH)
+            if (!(tok in seen) && ((tok in mech) || tok ~ /^[ACDPR][0-9][0-9]?$/)) {
+                seen[tok] = 1
+                printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, FNR, tok, trim(clean), trim(raw)
+            }
+        }
+        if (index(seg, "\302\247") && !("\302\247" in seen)) {
+            seen["\302\247"] = 1
+            printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, FNR, "\302\247", trim(clean), trim(raw)
+        }
+        if (index(seg, "docs/superpowers") && !("docs/superpowers" in seen)) {
+            seen["docs/superpowers"] = 1
+            printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, FNR, "docs/superpowers", trim(clean), trim(raw)
+        }
+        rest = seg
+        while (match(rest, /ht-[a-z0-9][a-z0-9][a-z0-9]/)) {
+            tok = substr(rest, RSTART, RLENGTH)
+            k = RSTART + RLENGTH
+            nx = substr(rest, k, 1)
+            rest = substr(rest, k)
+            if (nx ~ /[a-z0-9-]/ || tok in seen) continue
+            seen[tok] = 1
+            printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, FNR, tok, trim(clean), trim(raw)
+        }
+    }
 }
 
 BEGIN {
+    nm2 = split(mechs, mm, " ")
+    for (i = 1; i <= nm2; i++) mech[mm[i]] = 1
     nn = split(names, nm, " ")
     namere = ""
     for (i = 1; i <= nn; i++) { name[nm[i]] = 1; namere = namere (i > 1 ? "|" : "") nm[i] }
@@ -341,7 +392,9 @@ FNR == 1 { mode = 0; bd = 0; skip = 0; sd = 0; pd = 0; sbraced = 0; rawh = 0; ha
             || t == "#[cfg(any(test, feature = \"test-support\"))]" \
             || substr(t, 1, 14) == "#[cfg(all(test") { skip = 1; next }
     }
+    split("", seen)
     if (out != "") scan(out, line)
+    if (nlits > 0) scan_prose(out, line)
 }
 AWK
 
@@ -403,7 +456,7 @@ AWK
 : >"$tmp/records"
 if [ -s "$files" ]; then
     # shellcheck disable=SC2046
-    (cd "$root" && awk -v names="$names" -f "$tmp/lex.awk" $(cat "$files")) >"$tmp/records"
+    (cd "$root" && awk -v names="$names" -v mechs="$MECHANISMS" -f "$tmp/lex.awk" $(cat "$files")) >"$tmp/records"
 fi
 
 rc=0

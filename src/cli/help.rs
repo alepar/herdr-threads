@@ -94,12 +94,12 @@ Native options that would replace the owned configuration are refused. No
 auto-approve flag is added.
 
 Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
-sent before launch stay pending; the agent's SessionStart hook shows them, and
+sent before launch stay pending; the agent's session-start hook shows them, and
 `herdr-threads inbox --seat SEAT` lists them even when the initial prompt is lost.
 After an observed start, the seat gets a `managed_launch` placeholder binding next to
 any it already holds (report `binding`; `seat inspect` shows it as launched, not checked
 in): it lets the daemon wake the idle agent for pending work before its first check-in
-(some harnesses run no SessionStart hook until their first turn), and the launched
+(some harnesses run no session-start hook until their first turn), and the launched
 harness's first check-in replaces it. It is not recorded when Herdr shows no single
 started process.
 

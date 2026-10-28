@@ -1563,7 +1563,7 @@ fn unresolved_seats_are_counted_named_and_degrade_otherwise_healthy_health() {
         vec![
             "unresolved seats: 4; their check-ins are refused; host_invalidation seats \
              reconfirm when a coherent snapshot shows their pane; other seats reattach when \
-             their session claims them (C1); else `seat rebind SEAT --pane PANE --operator`"
+             their session claims them; else `seat rebind SEAT --pane PANE --operator`"
                 .to_string(),
             "unresolved seat seat-u on w4:p11 (host_invalidation)".to_string(),
             "unresolved seat seat-v on no pane (other)".to_string(),

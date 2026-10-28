@@ -1,4 +1,4 @@
-Start Codex or Claude in one explicit existing empty shell pane with the owned hooks, after resolving the pane's seat. Launch never registers, accepts or ACKs: the handoff is read through the hooks
+Start a registered agent harness in one explicit existing empty shell pane with the owned hooks, after resolving the pane's seat. Launch never registers, accepts or ACKs: the handoff is read through the hooks
 
 Usage: herdr-threads launch [OPTIONS] --kind <KIND> [-- <AGENT_ARG>...]
 
@@ -23,7 +23,7 @@ Options:
       --kind <KIND>
           Native agent to start [possible values: claude, codex, hermes, agy, synthetic_fourth]
       --harness-binary <PATH>
-          Absolute harness executable whose `--version` is gated (default: the first `claude`/`codex` on PATH, which Herdr starts by name)
+          Absolute harness executable whose `--version` is gated (default: the harness's executable on PATH, which Herdr starts by name)
       --machine
           The stable `key: value` text form for scripts and models (the default when stdout is not a terminal)
       --cooperative-seat <COOPERATIVE_SEAT>
@@ -36,8 +36,6 @@ Options:
           Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
       --cooperative-role <COOPERATIVE_ROLE>
           Agent role for the cooperative call [possible values: top-level, subagent]
-      --agent-id <ID>
-          Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
   -h, --help
           Print help
 
@@ -72,12 +70,12 @@ Native options that would replace the owned configuration are refused. No
 auto-approve flag is added.
 
 Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
-sent before launch stay pending; the agent's SessionStart hook shows them, and
+sent before launch stay pending; the agent's session-start hook shows them, and
 `herdr-threads inbox --seat SEAT` lists them even when the initial prompt is lost.
 After an observed start, the seat gets a `managed_launch` placeholder binding next to
 any it already holds (report `binding`; `seat inspect` shows it as launched, not checked
 in): it lets the daemon wake the idle agent for pending work before its first check-in
-(some harnesses run no SessionStart hook until their first turn), and the launched
+(some harnesses run no session-start hook until their first turn), and the launched
 harness's first check-in replaces it. It is not recorded when Herdr shows no single
 started process.
 

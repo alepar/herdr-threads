@@ -1189,7 +1189,7 @@ fn execute_guarded_inner(
         "binding": binding,
         "receipt": "launch is not receipt: nothing was checked in, accepted or ACKed",
         "next": format!(
-            "the agent's SessionStart hook shows pending invitations and messages; if its \
+            "the agent's session-start hook shows pending invitations and messages; if its \
              initial prompt is lost, the idle agent is woken for pending work, and \
              `herdr-threads inbox --seat {seat_word}` still lists it"
         ),

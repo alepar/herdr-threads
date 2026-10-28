@@ -23,8 +23,6 @@ Options:
           Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
       --cooperative-role <COOPERATIVE_ROLE>
           Agent role for the cooperative call [possible values: top-level, subagent]
-      --agent-id <ID>
-          Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
   -h, --help
           Print help
 

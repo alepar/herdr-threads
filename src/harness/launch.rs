@@ -766,7 +766,7 @@ fn refuse_second_agent(
             return Err(error(
                 ErrorCode::TargetUnsafe,
                 &format!(
-                    "seat {} is bound to a live {kind} agent in pane {}; launch refuses to start a second agent for the seat (TRUST-POLICY A4). Use that pane, or retire/rebind the seat as the operator",
+                    "seat {} is bound to a live {kind} agent in pane {}; launch refuses to start a second agent for the seat. Use that pane, or retire/rebind the seat as the operator",
                     seat.as_str(),
                     bound.target.as_str()
                 ),
