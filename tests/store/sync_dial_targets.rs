@@ -481,7 +481,11 @@ fn retire_unseen_deletes_only_never_linked_process_rows_absent_from_the_pass() {
     let tx = db.transaction().unwrap();
     assert_eq!(
         targets::retire_unseen_remote_processes(&tx, &["open"]).unwrap(),
-        1
+        targets::Retired {
+            deleted: 1,
+            deferred: 1
+        },
+        "the stray row goes; the unseen row mid-dial is kept and counted"
     );
     tx.commit().unwrap();
     let left: Vec<TargetId> = targets::list(&db)

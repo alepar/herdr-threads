@@ -398,39 +398,56 @@ pub fn upsert_discovered(
 /// linked and whose destination is not in `seen` (every destination the pass
 /// found), so a one-off client (a test harness's `herdr --remote test-only`, a
 /// typo) is not dialed forever (ht-hvyf). Explicit, `herdr_machine`, forgotten
-/// and once-linked rows are kept, and so is a row mid-dial (`dialing`): its
-/// link may be up before the Dialer records it. A later sighting adds the
-/// row again.
-/// Returns the rows deleted.
+/// and once-linked rows are kept. An unseen row mid-dial (`dialing`, or
+/// `linked` not yet recorded) is kept for now, since its link may be up before
+/// the Dialer records it, and counted in [`Retired::deferred`] so the caller
+/// tries again. A later sighting adds a deleted row again.
 pub fn retire_unseen_remote_processes(
     tx: &Transaction<'_>,
     seen: &[&str],
-) -> Result<usize, ApiError> {
+) -> Result<Retired, ApiError> {
     let mut candidates = tx
         .prepare(
-            "SELECT target_id, ssh_dest FROM sync_dial_targets \
+            "SELECT target_id, ssh_dest, state IN ('dialing','linked') FROM sync_dial_targets \
              WHERE source='herdr_remote_process' AND enabled=1 \
-               AND learned_node_uuid IS NULL AND last_linked_at IS NULL \
-               AND state NOT IN ('dialing','linked')",
+               AND learned_node_uuid IS NULL AND last_linked_at IS NULL",
         )
         .map_err(store_error)?;
     let unseen = candidates
         .query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
         })
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?
         .into_iter()
-        .filter(|(_, dest)| !seen.contains(&dest.as_str()))
-        .map(|(id, _)| id)
+        .filter(|(_, dest, _)| !seen.contains(&dest.as_str()))
         .collect::<Vec<_>>();
     drop(candidates);
-    for id in &unseen {
+    let mut retired = Retired::default();
+    for (id, _, mid_dial) in unseen {
+        if mid_dial {
+            retired.deferred += 1;
+            continue;
+        }
         tx.execute("DELETE FROM sync_dial_targets WHERE target_id=?1", [id])
             .map_err(store_error)?;
+        retired.deleted += 1;
     }
-    Ok(unseen.len())
+    Ok(retired)
+}
+
+/// What [`retire_unseen_remote_processes`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Retired {
+    /// Rows deleted.
+    pub deleted: usize,
+    /// Unseen rows kept because they were mid-dial: retirement is due again.
+    pub deferred: usize,
 }
 
 /// Disables the target whose destination or learned node uuid is
@@ -516,8 +533,8 @@ pub fn enabled(conn: &Connection) -> Result<Vec<DialTarget>, ApiError> {
 }
 
 /// Stores what the Dialer observed for `target` (see [`DialTarget::apply`]).
-/// `InvalidRequest` when the target does not exist; rows are never deleted,
-/// so that is a caller bug.
+/// `InvalidRequest` when the target does not exist: a caller bug, or a row
+/// discovery retired while its dial task was still running.
 pub fn record_transition(
     tx: &Transaction<'_>,
     target: TargetId,

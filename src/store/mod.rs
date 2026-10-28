@@ -1549,7 +1549,9 @@ impl crate::sync::discovery::DiscoveryStore for SqliteStore {
         }
         if retire_unseen {
             let seen: Vec<&str> = found.iter().map(|(dest, _)| dest.as_str()).collect();
-            tally.retired = sync_dial_targets::retire_unseen_remote_processes(&tx, &seen)?;
+            let retired = sync_dial_targets::retire_unseen_remote_processes(&tx, &seen)?;
+            tally.retired = retired.deleted;
+            tally.deferred = retired.deferred;
         }
         tx.commit().map_err(store_error)?;
         Ok(tally)

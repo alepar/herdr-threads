@@ -234,6 +234,8 @@ pub struct UpsertTally {
     pub skipped: usize,
     /// Never-linked process-scan rows whose client is gone (ht-hvyf).
     pub retired: usize,
+    /// Such rows kept because they were mid-dial: retirement stays armed.
+    pub deferred: usize,
 }
 
 /// The store side of discovery: one transaction upserting `found` and, with
@@ -364,6 +366,9 @@ pub struct DiscoveryWorker {
     /// (`None` before the first): retiring runs on the first such pass and
     /// whenever a client found then is gone, so a steady pass writes nothing.
     last_found: Mutex<Option<Vec<String>>>,
+    /// The last retirement kept unseen rows that were mid-dial: retire again
+    /// on the next scanned pass, whatever the scan finds.
+    retire_due: std::sync::atomic::AtomicBool,
 }
 
 impl DiscoveryWorker {
@@ -378,6 +383,7 @@ impl DiscoveryWorker {
             pacer,
             last_logged: Mutex::new(Vec::new()),
             last_found: Mutex::new(None),
+            retire_due: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -471,13 +477,14 @@ impl DiscoveryWorker {
         let upserts = found.upserts();
         // Only a client leaving the process scan triggers retirement, not a
         // flapping machine list.
-        let retire = scanned && {
-            let last = self.last_found.lock().unwrap_or_else(|e| e.into_inner());
-            last.as_ref().is_none_or(|last| {
-                last.iter()
-                    .any(|dest| !found.remote_clients.iter().any(|client| client == dest))
-            })
-        };
+        let retire = scanned
+            && (self.retire_due.load(std::sync::atomic::Ordering::Relaxed) || {
+                let last = self.last_found.lock().unwrap_or_else(|e| e.into_inner());
+                last.as_ref().is_none_or(|last| {
+                    last.iter()
+                        .any(|dest| !found.remote_clients.iter().any(|client| client == dest))
+                })
+            });
         if upserts.is_empty() && !retire {
             return PassOutcome::Ran { changed: false };
         }
@@ -526,6 +533,10 @@ impl DiscoveryWorker {
                 "sync discovery: added {} dial target(s)",
                 tally.inserted
             ));
+        }
+        if retire {
+            self.retire_due
+                .store(tally.deferred > 0, std::sync::atomic::Ordering::Relaxed);
         }
         if tally.retired > 0 {
             (deps.log)(&format!(
@@ -641,6 +652,7 @@ mod tests {
         retires: Mutex<Vec<bool>>,
         inserted: AtomicUsize,
         retired: AtomicUsize,
+        deferred: AtomicUsize,
     }
 
     impl DiscoveryStore for RecordingStore {
@@ -657,6 +669,11 @@ mod tests {
                 skipped: 0,
                 retired: if retire_unseen {
                     self.retired.load(Ordering::SeqCst)
+                } else {
+                    0
+                },
+                deferred: if retire_unseen {
+                    self.deferred.load(Ordering::SeqCst)
                 } else {
                     0
                 },
@@ -864,6 +881,28 @@ mod tests {
         // Only the first pass's retirement reaches the store; nothing was found.
         assert_eq!(rig.store.calls.lock().unwrap().as_slice(), [vec![]]);
         assert_eq!(rig.store.retires.lock().unwrap().as_slice(), [true]);
+    }
+
+    #[tokio::test]
+    async fn a_row_kept_mid_dial_is_retired_on_a_later_pass() {
+        let rig = rig(true, machines(&[]), vec!["r1".into()]);
+        let next_pass = |rig: &Rig| *rig.lister.0.lock().unwrap() = Some(machines(&[]));
+        rig.store.inserted.store(0, Ordering::SeqCst);
+        // First pass: the stray row is mid-dial, so it is kept and counted.
+        rig.store.deferred.store(1, Ordering::SeqCst);
+        rig.worker.pass().await;
+        // The same clients, the row now in backoff: retirement is still due.
+        rig.store.deferred.store(0, Ordering::SeqCst);
+        rig.store.retired.store(1, Ordering::SeqCst);
+        next_pass(&rig);
+        assert_eq!(rig.worker.pass().await, PassOutcome::Ran { changed: true });
+        // Done: a steady pass no longer retires.
+        next_pass(&rig);
+        rig.worker.pass().await;
+        assert_eq!(
+            rig.store.retires.lock().unwrap().as_slice(),
+            [true, true, false]
+        );
     }
 
     #[tokio::test]
