@@ -742,3 +742,15 @@ only the launch path.
 - **Child env** drops the per-session mod-delivery override; a lost new-tab
   request names its workspace; an unconfirmed refusal says that changing the
   task or plan launches anew.
+
+### 2026-10-28, PR roast of the correctness fixes
+
+- The request file is read, checked against its journaled intent, and
+  replaced in one hold of a single `remote-launch/.lock` (no per-request lock
+  files); settling and recording the journaled ref act only on a file that
+  still names this launch. Writes and removals sync the directory.
+- A failed thread spawn on M records a plain failure (never unconfirmed).
+- The record-hook failure note says not to rerun and to use `retry`.
+- Tests: the journaled-ref decision, the post-handoff rule, polling by the
+  resolved uuid (another node's answer keeps the request), stale-launch id
+  checks, and the per-node slot cap including 16 concurrent claims.

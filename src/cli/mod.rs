@@ -2756,8 +2756,9 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             journal::set_record_hook_on_this_thread(Box::new(move |reference| {
                 if let Err(error) = launched.record_journaled(reference) {
                     eprintln!(
-                        "herdr-threads: note: could not keep {reference} with the remote launch: \
-                         {error}"
+                        "herdr-threads: note: could not keep {reference} with the remote launch \
+                         ({error}); if this handoff does not finish, do not rerun this command: \
+                         use `herdr-threads retry {reference}`"
                     );
                 }
             }));
@@ -2778,17 +2779,14 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         // The intent this handoff journaled on this thread, if it got that far.
         let journaled = journal::take_recorded_on_this_thread();
         if let Some(launched) = launched {
-            match (&result, &journaled) {
-                // Done: a new run of this command is a new launch.
-                (Ok(()), _) => launched.settle(),
-                // Journaled, then failed: the request keeps the reference, and a
-                // rerun of this command says to finish it with `retry`.
-                (Err(_), Some(reference)) => eprintln!(
+            match peer_launch::after_handoff(&result, journaled.as_deref()) {
+                peer_launch::AfterHandoff::Settle => launched.settle(),
+                peer_launch::AfterHandoff::KeepJournaled(reference) => eprintln!(
                     "herdr-threads: note: the handoff into launched seat {} is journaled; finish \
                      it with `herdr-threads retry {reference}`",
                     launched.seat
                 ),
-                (Err(_), None) if peer_launch::handoff_settles(&result) => {
+                peer_launch::AfterHandoff::SettleRefused => {
                     launched.settle();
                     eprintln!(
                         "herdr-threads: note: the handoff into launched seat {} was refused; a \
@@ -2796,7 +2794,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
                         launched.seat
                     );
                 }
-                (Err(_), None) => {}
+                peer_launch::AfterHandoff::Keep => {}
             }
         }
         return result;

@@ -99,6 +99,35 @@ pub fn child_env(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<(OsStr
 /// (its worker gone) never holds a slot.
 pub type Live = Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>;
 
+/// Why a slot could not be claimed.
+#[derive(Debug, PartialEq, Eq)]
+enum Claim {
+    /// A decision or worker for this id is already live.
+    InFlight,
+    /// The requesting node already has this many launches running here.
+    Full(u64),
+}
+
+/// Claims request `id`'s slot for node `node` in one hold of the live lock:
+/// the cap check and the claim are one step, so concurrent requests from one
+/// node can never all pass the cap, and a lost row (no live entry) holds no
+/// slot. The returned guard frees the slot when dropped.
+fn claim_slot(live: &Live, id: &str, node: &str) -> Result<LiveGuard, Claim> {
+    let mut map = live.lock().unwrap();
+    if map.contains_key(id) {
+        return Err(Claim::InFlight);
+    }
+    let running = map.values().filter(|n| *n == node).count() as u64;
+    if running >= MAX_RUNNING_PER_PEER {
+        return Err(Claim::Full(running));
+    }
+    map.insert(id.to_owned(), node.to_owned());
+    Ok(LiveGuard {
+        live: Arc::clone(live),
+        id: id.to_owned(),
+    })
+}
+
 /// Removes a request from [`Live`] when its worker ends, a panic included.
 struct LiveGuard {
     live: Live,
@@ -422,25 +451,19 @@ impl PeerLaunchService {
         // two decisions both pass it), and the claim precedes the row's commit
         // (a repeat never reads a fresh `running` row as one whose worker is gone).
         let from_text = from.to_string();
-        {
-            let mut live = self.live.lock().unwrap();
-            if live.contains_key(&id) {
+        let slot = match claim_slot(&self.live, &id, &from_text) {
+            Ok(slot) => slot,
+            Err(Claim::InFlight) => {
                 // Another decision for this id is in flight: it answers.
                 return Ok(LaunchState::Running {
                     pane: row.pane.clone(),
                 });
             }
-            let running = live.values().filter(|node| **node == from_text).count() as u64;
-            if running >= MAX_RUNNING_PER_PEER {
+            Err(Claim::Full(running)) => {
                 return Ok(LaunchState::Unavailable {
                     reason: format!("{running} launches for that machine are already running here"),
                 });
             }
-            live.insert(id.clone(), from_text);
-        }
-        let slot = LiveGuard {
-            live: Arc::clone(&self.live),
-            id: id.clone(),
         };
         let (stored, inserted) = self.write(|conn| peer_requests::insert_or_get(conn, &row))?;
         if !inserted {
@@ -468,7 +491,24 @@ impl PeerLaunchService {
         };
         let request = request.clone();
         let target = placement.target;
-        std::thread::spawn(move || worker.run(&request, target));
+        let worker_id = row.id.clone();
+        let started = std::thread::Builder::new()
+            .name("peer-launch".into())
+            .spawn(move || worker.run(&request, target));
+        if let Err(error) = started {
+            // Nothing started: a plain failure, never an unconfirmed one (the worker
+            // and its slot dropped with the closure).
+            let detail = clamp_detail(&format!("could not start the launch worker: {error}"));
+            let now = now_ms(self.clock.as_ref());
+            let _ = self.write(|conn| {
+                peer_requests::record(conn, &worker_id, "failed", None, None, Some(&detail), now)
+            });
+            return Ok(LaunchState::Failed {
+                detail,
+                pane: None,
+                unconfirmed: false,
+            });
+        }
         Ok(LaunchState::Running { pane })
     }
 }
@@ -972,5 +1012,47 @@ mod tests {
             launch_failure(&refused, "w1:p2"),
             ("launch: no such pane".into(), false)
         );
+    }
+
+    // Kills: a cap that concurrent requests of one node all pass, a lost row
+    // holding a slot, a duplicate id decided twice, and a slot never freed
+    // when its worker ends.
+    #[test]
+    fn slots_are_capped_per_node_and_freed_with_their_guard() {
+        let live: Live = Arc::default();
+        let mut held: Vec<LiveGuard> = (0..MAX_RUNNING_PER_PEER)
+            .map(|i| claim_slot(&live, &format!("id{i}"), "nodeA").unwrap())
+            .collect();
+        assert_eq!(
+            claim_slot(&live, "id9", "nodeA").err(),
+            Some(Claim::Full(MAX_RUNNING_PER_PEER))
+        );
+        assert!(
+            claim_slot(&live, "idB", "nodeB").is_ok(),
+            "another node's cap"
+        );
+        assert_eq!(
+            claim_slot(&live, "id0", "nodeA").err(),
+            Some(Claim::InFlight)
+        );
+        held.pop();
+        assert!(
+            claim_slot(&live, "id9", "nodeA").is_ok(),
+            "a dropped guard frees its slot"
+        );
+        // Concurrent claims never exceed the cap.
+        let race: Live = Arc::default();
+        let won = std::thread::scope(|threads| {
+            let runs: Vec<_> = (0..16)
+                .map(|i| {
+                    let race = &race;
+                    threads.spawn(move || claim_slot(race, &format!("r{i}"), "nodeA").ok())
+                })
+                .collect();
+            runs.into_iter()
+                .filter_map(|r| r.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(won.len() as u64, MAX_RUNNING_PER_PEER);
     }
 }
