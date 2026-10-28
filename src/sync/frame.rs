@@ -64,6 +64,14 @@ pub const ADDR_RESOLVE_CAP: &str = "addr.resolve.v1";
 /// seats can take a handoff now). A node sends one only to a peer that
 /// advertised it.
 pub const ADDR_CHECK_CAP: &str = "addr.check.v1";
+/// Capability: this node takes [`PeerFrame::LaunchRequest`] and answers with
+/// [`PeerFrame::LaunchReply`] (remote launch, TRUST-POLICY N15).
+pub const PEER_LAUNCH_CAP: &str = "peer.launch.v1";
+/// Most `argv` entries a launch plan carries.
+pub const MAX_LAUNCH_ARGS: usize = 64;
+/// Longest single launch plan text (a label, path, harness id or argument),
+/// in bytes.
+pub const MAX_LAUNCH_TEXT_BYTES: usize = 1024;
 /// Longest address text (a location or one label) in an `addr_resolve`, in
 /// bytes; a longer one is answered `refused`.
 pub const MAX_ADDR_TEXT_BYTES: usize = 512;
@@ -533,6 +541,109 @@ pub enum AddrOutcome {
     Unknown,
 }
 
+/// A request to launch an agent on the receiving node (cap
+/// [`PEER_LAUNCH_CAP`]). Sending the same `id` again asks for the recorded
+/// outcome; the receiver never launches twice for one id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchRequest {
+    #[serde(default)]
+    pub id: Uuid,
+    /// The requesting seat, a claim recorded as claimed (never an actor).
+    #[serde(default)]
+    pub requester_seat: String,
+    #[serde(default)]
+    pub plan: LaunchPlan,
+}
+
+/// What to launch, frozen by the requester.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchPlan {
+    #[serde(default)]
+    pub target: LaunchTarget,
+    /// The harness id (`launch --kind`).
+    #[serde(default)]
+    pub kind: String,
+    /// The agent's arguments, byte for byte.
+    #[serde(default)]
+    pub argv: Vec<String>,
+    /// An absolute directory on the receiving node (new tab only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// Where to launch.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum LaunchTarget {
+    /// An existing shell pane, named as `--space/--tab/--pane` name it.
+    Pane {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
+        #[serde(default)]
+        pane: String,
+    },
+    /// A new tab in this workspace (an ID or label).
+    NewTab {
+        #[serde(default)]
+        space: String,
+        #[serde(default)]
+        label: String,
+    },
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// The answer to a [`LaunchRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchReply {
+    #[serde(default)]
+    pub id: Uuid,
+    #[serde(default)]
+    pub state: LaunchState,
+}
+
+/// Where a launch stands on the receiving node.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum LaunchState {
+    /// Accepted and running; ask again with the same id.
+    Running {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
+    /// Started: `seat` is the receiving node's seat on `pane`.
+    Launched {
+        #[serde(default)]
+        seat: String,
+        #[serde(default)]
+        pane: String,
+    },
+    /// Not launched, and asking again cannot change it.
+    Refused {
+        #[serde(default)]
+        detail: String,
+    },
+    /// Stopped (interrupted or failed); `pane` names a tab it left, if any.
+    /// Never resumed.
+    Failed {
+        #[serde(default)]
+        detail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
+    /// Not answered now (busy, launcher not ready); ask again.
+    Unavailable {
+        #[serde(default)]
+        reason: String,
+    },
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
 /// One candidate of an ambiguous [`AddrOutcome`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddrCandidate {
@@ -639,6 +750,12 @@ pub enum PeerFrame {
     /// The answer to one `addr_resolve`.
     // cap: ADDR_RESOLVE_CAP
     AddrResolved(AddrResolved),
+    /// Launch an agent on the receiving node, or ask how that launch stands.
+    // cap: PEER_LAUNCH_CAP
+    LaunchRequest(LaunchRequest),
+    /// The answer to one `launch_request`.
+    // cap: PEER_LAUNCH_CAP
+    LaunchReply(LaunchReply),
     #[serde(other)]
     Unknown,
 }

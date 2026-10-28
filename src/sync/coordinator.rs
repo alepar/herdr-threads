@@ -96,6 +96,7 @@ use crate::store::sync_peer_status::PeerStatus;
 mod ingest;
 mod peer_status;
 pub mod remote_addr;
+pub mod remote_launch;
 mod routing;
 mod seat_status;
 mod serve;
@@ -588,6 +589,12 @@ enum Request {
         target: crate::sync::frame::AddrTarget,
         reply: oneshot::Sender<remote_addr::RemoteAnswer>,
     },
+    /// Ask another node to launch (or report a launch) (remote launch).
+    LaunchRemote {
+        node: NodeUuid,
+        request: crate::sync::frame::LaunchRequest,
+        reply: oneshot::Sender<remote_launch::LaunchAnswer>,
+    },
 }
 
 /// The cloneable facade over the coordinator actor.
@@ -605,9 +612,44 @@ pub struct SyncHandle {
     clock: Arc<dyn Clock>,
     signals: Arc<SyncSignals>,
     resolver: remote_addr::ResolverSlot,
+    launcher: remote_launch::LauncherSlot,
 }
 
 impl SyncHandle {
+    /// Install the launcher that answers peers' `launch_request` (once).
+    /// Until then peers get `unavailable: launcher unavailable`.
+    pub fn set_peer_launcher(&self, launcher: Arc<dyn remote_launch::PeerLauncher>) {
+        let _ = self.launcher.set(launcher);
+    }
+
+    /// Ask `node` to launch per `request` (or report how that id stands),
+    /// waiting at most `wait` and never past a cancellation of `cancel`.
+    /// `None`: no answer in time.
+    pub async fn launch_remote(
+        &self,
+        node: NodeUuid,
+        request: crate::sync::frame::LaunchRequest,
+        wait: Duration,
+        cancel: &Cancellation,
+    ) -> Option<remote_launch::LaunchAnswer> {
+        let (tx, rx) = oneshot::channel();
+        let ask = async {
+            self.requests
+                .send(Request::LaunchRemote {
+                    node,
+                    request,
+                    reply: tx,
+                })
+                .await
+                .ok()?;
+            Some(rx.await.unwrap_or(remote_launch::LaunchAnswer::LinkLost))
+        };
+        tokio::select! {
+            result = timeout(wait, ask) => result.ok().flatten(),
+            () = cancel.cancelled() => None,
+        }
+    }
+
     /// Install the resolver that answers peers' `addr_resolve` (once; the
     /// daemon calls it when its hosts exist). Until then peers get
     /// `refused: resolver unavailable`.
@@ -734,6 +776,8 @@ pub struct CoordinatorOptions {
     /// Advertise [`crate::sync::frame::ADDR_CHECK_CAP`] (default; only with
     /// `advertise_addr_resolve`).
     pub advertise_addr_check: bool,
+    /// Advertise [`crate::sync::frame::PEER_LAUNCH_CAP`] (default).
+    pub advertise_peer_launch: bool,
     /// The stall thresholds of node status.
     pub timings: StallTimings,
 }
@@ -744,6 +788,7 @@ impl Default for CoordinatorOptions {
             advertise_opaque: true,
             advertise_addr_resolve: true,
             advertise_addr_check: true,
+            advertise_peer_launch: true,
             timings: StallTimings::default(),
         }
     }
@@ -777,6 +822,9 @@ impl CoordinatorOptions {
                 }
                 if withheld.contains(&crate::sync::frame::ADDR_CHECK_CAP) {
                     options.advertise_addr_check = false;
+                }
+                if withheld.contains(&crate::sync::frame::PEER_LAUNCH_CAP) {
+                    options.advertise_peer_launch = false;
                 }
             }
         }
@@ -851,8 +899,10 @@ impl SyncCoordinator {
         );
         let seat_status_wanted = Arc::new(AtomicBool::new(false));
         let resolver: remote_addr::ResolverSlot = Arc::default();
+        let launcher: remote_launch::LauncherSlot = Arc::default();
         let handle = SyncHandle {
             resolver: resolver.clone(),
+            launcher: launcher.clone(),
             links: links.clone(),
             seat_status_wanted: seat_status_wanted.clone(),
             requests: requests_tx,
@@ -876,6 +926,11 @@ impl SyncCoordinator {
             hello
                 .caps
                 .push(crate::sync::frame::ADDR_RESOLVE_CAP.to_owned());
+            if options.advertise_peer_launch {
+                hello
+                    .caps
+                    .push(crate::sync::frame::PEER_LAUNCH_CAP.to_owned());
+            }
             if options.advertise_addr_check {
                 hello
                     .caps
@@ -922,6 +977,7 @@ impl SyncCoordinator {
             peer_flush: peer_status::FlushHealth::default(),
             seats: seat_status::SeatStatusState::new(seat_status_wanted),
             addr: remote_addr::RemoteAddrState::new(resolver),
+            launch: remote_launch::RemoteLaunchState::new(launcher),
         };
         let join = tokio::spawn(actor.run(Inputs {
             intake: intake_rx,
@@ -1176,6 +1232,8 @@ struct Actor {
     seats: seat_status::SeatStatusState,
     /// Remote address requests, outbound and inbound.
     addr: remote_addr::RemoteAddrState,
+    /// Remote launch requests, outbound and inbound.
+    launch: remote_launch::RemoteLaunchState,
 }
 
 /// A [`ResyncPin`] and when it took hold (the coordinator's monotonic
@@ -1229,6 +1287,9 @@ impl Actor {
                 }
                 Some(joined) = self.addr.serving.join_next(), if !self.addr.serving.is_empty() => {
                     self.on_addr_served(joined);
+                }
+                Some(joined) = self.launch.serving.join_next(), if !self.launch.serving.is_empty() => {
+                    self.on_launch_served(joined);
                 }
                 Some(done) = inputs.ingest.recv() => self.on_ingested(done),
                 Some(joined) = self.serve_jobs.join_next(), if !self.serve_jobs.is_empty() => {
@@ -1762,6 +1823,14 @@ impl Actor {
                 self.on_addr_resolved(link_id, reply);
                 return;
             }
+            PeerFrame::LaunchRequest(request) => {
+                self.on_launch_request(link_id, request);
+                return;
+            }
+            PeerFrame::LaunchReply(reply) => {
+                self.on_launch_reply(link_id, reply);
+                return;
+            }
             other => other,
         };
         if !usable {
@@ -2235,6 +2304,7 @@ impl Actor {
         self.flush_have_deltas(now);
         self.drain_fork_outbox();
         self.addr_housekeeping();
+        self.launch_housekeeping();
         for id in std::mem::take(&mut self.serve_retry) {
             self.push_link(id);
         }
@@ -2351,6 +2421,7 @@ impl Actor {
         ));
         self.probes.remove(&link_id);
         self.addr_link_ended(link_id);
+        self.launch_link_ended(link_id);
         let was_ranked = self.by_node.get_mut(&node).is_some_and(|ids| {
             let before = ids.len();
             ids.retain(|id| *id != link_id);
@@ -2611,6 +2682,11 @@ impl Actor {
                 target,
                 reply,
             } => self.on_resolve_remote(node, target, reply),
+            Request::LaunchRemote {
+                node,
+                request,
+                reply,
+            } => self.on_launch_remote(node, request, reply),
             Request::Snapshot(reply) => {
                 let mono_now = self.mono();
                 let links = self
@@ -3635,6 +3711,7 @@ mod tests {
             clock: rig.clock.clone(),
             signals: rig.handle.signals(),
             resolver: Arc::default(),
+            launcher: Arc::default(),
         };
         let short = CallBudget {
             deadline: MonoInstant(rig.clock.monotonic_now().0 + 50),
