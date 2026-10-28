@@ -549,3 +549,42 @@ fn crash_after_moved_resumes_without_second_backup() {
     assert!(logs.contains(&old[0]), "{logs:?} vs {old:?}");
     drop(daemon);
 }
+
+/// ht-la3c: a second daemon start that loses the election must not run the
+/// rebuild's step 0. Two contenders (an ensure and a peer pump's ensure) can
+/// both read a `requested` marker; the one that moves the store aside after
+/// the other has won and opened its fresh store pulls that store out from
+/// under it (SQLite then refuses writes: "attempt to write a readonly
+/// database"). Here the winner already runs when the loser reads the marker.
+#[test]
+fn election_loser_leaves_the_running_store_in_place() {
+    use herdr_threads::test_support::spawn::SpawnOwned;
+    let iso = TestIsolation::new("rs-loser");
+    let paths = resolve_seeded(iso.state_root());
+    let daemon = Daemon::start(&paths).expect("the elected daemon");
+    requested(peer(), Vec::new()).write(&paths).unwrap();
+
+    let out = iso
+        .command(BIN)
+        .args(["daemon", "run", "--state-dir"])
+        .arg(iso.state_root())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn_owned()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    assert!(out.status.success(), "the loser exits quietly: {out:?}");
+    assert!(paths.database_path.is_file(), "the running store stays put");
+    assert!(
+        backup_dirs(iso.state_root()).is_empty(),
+        "no backup was taken"
+    );
+    assert_eq!(
+        ResyncMarker::read(&paths).unwrap().map(|m| m.phase),
+        Some(ResyncPhase::Requested),
+        "the marker is left to the next elected start"
+    );
+    drop(daemon);
+}

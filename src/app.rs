@@ -1575,18 +1575,6 @@ async fn run_elected_impl<R>(
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
-    // Step 0: a pending `sync resync` backs up and moves the damaged store
-    // aside, so every later step runs against a missing store (the key is
-    // loaded, not created). The plan is composed once the journal is open:
-    // dial targets, the pinned rx source and the salvage job.
-    let resync_plan = crate::sync::resync::resume_at_start(paths, clock.as_ref())?;
-    if let Some(plan) = &resync_plan {
-        eprintln!(
-            "resync: rebuilding from {}; backup at {}",
-            plan.from,
-            plan.backup_db.display()
-        );
-    }
     // The node's identity comes from its key, loaded (or created for a new
     // node) before election; the descriptor and the store `instance` string
     // carry its uuid. node.json is a derived hint, written here so clients
@@ -1689,6 +1677,20 @@ where
                 return Err(io::Error::other(
                     "node.json hint does not match the loaded node key",
                 ));
+            }
+            // Step 0, once elected (a contender that loses the election must
+            // not move the winner's store): a pending `sync resync` backs up
+            // and moves the damaged store aside, so every later step runs
+            // against a missing store. The plan is composed once the journal
+            // is open: dial targets, the pinned rx source and the salvage job.
+            let resync_plan =
+                crate::sync::resync::resume_at_start(&identity_paths, factory_clock.as_ref())?;
+            if let Some(plan) = &resync_plan {
+                eprintln!(
+                    "resync: rebuilding from {}; backup at {}",
+                    plan.from,
+                    plan.backup_db.display()
+                );
             }
             // Created before the context; HostSessions will publish into it.
             let host_index = Arc::new(crate::store::hosts::HostIndex::new());
