@@ -415,14 +415,32 @@ impl Fixture {
         // before the daemon has observed anything. Wait for the daemon's own,
         // newer epoch instead: its startup observation and its reconciliation
         // of the seeded seats finish before a test reads or edits them.
-        wait("owned elected daemon descriptor/reconciliation", || {
+        let deadline = Instant::now() + WAIT;
+        let mut last = String::from("no descriptor");
+        loop {
             assert!(daemon.try_wait().unwrap().is_none(), "owned daemon exited");
-            if !paths.descriptor_path.exists() {
-                return false;
+            if paths.descriptor_path.exists() {
+                let row = Connection::open(&paths.database_path).and_then(|db| {
+                    db.query_row(
+                        "SELECT recovery_epoch,reconciled_epoch,reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot FROM herdr_hosts",
+                        [],
+                        |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<bool>>(2)?)),
+                    )
+                });
+                if let Ok((Some(recovery), Some(reconciled), Some(true))) = row
+                    && recovery > seeded_epoch as i64
+                    && reconciled == recovery
+                {
+                    break;
+                }
+                last = format!("(recovery_epoch, reconciled_epoch, boot_matches)={row:?}");
             }
-            let db = Connection::open(&paths.database_path).unwrap();
-            db.query_row("SELECT count(*) FROM herdr_hosts WHERE recovery_epoch>?1 AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[seeded_epoch as i64],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
-        });
+            assert!(
+                Instant::now() < deadline,
+                "timed out: owned elected daemon reconciliation of an epoch after the seed's {seeded_epoch}; last {last}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         println!(
             "fixture instance={instance} root={} host={} daemon={}",
             iso.state_root().display(),
@@ -529,12 +547,12 @@ impl Fixture {
             ("sender", "w4:p1", "term_1"),
             ("recipient", "w4:p2", "term_2"),
         ] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,?6,'native_current_target',?6,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str(),seeded_epoch as i64]).unwrap();
         }
         // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
         let sender_fp =
             herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session");
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(sender_fp.pid),sender_fp.start as i64]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,?5,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(sender_fp.pid),sender_fp.start as i64,seeded_epoch as i64]).unwrap();
         let contexts = paths
             .node_dir
             .join("contexts")
