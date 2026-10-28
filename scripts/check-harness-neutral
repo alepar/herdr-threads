@@ -206,7 +206,22 @@ function isid(c) { return c ~ /[A-Za-z0-9_]/ }
 function trim(s) { sub(/^[ ]+/, "", s); sub(/[ ]+$/, "", s); return s }
 function emit(x) { if (skip != 2) out = out x }
 function lit(x) { if (skip != 2) cur = cur x }
-function endlit() { if (cur != "") lits[++nlits] = cur; cur = "" }
+# One piece per physical line of a literal; a literal spanning lines is judged prose or data as a
+# whole when it closes, and its pieces are scanned once their lines' text is known.
+function piece() { if (cur != "") { pseg[++npc] = cur; pln[npc] = FNR; pend[++npend] = npc }; cur = "" }
+function endlit(    q, all) {
+    piece()
+    all = ""
+    for (q = 1; q <= npend; q++) all = all decode(pseg[pend[q]])
+    if (index(all, " ")) for (q = 1; q <= npend; q++) rdy[++nrdy] = pend[q]
+    npend = 0
+}
+# Escapes that read as whitespace or as the section sign; other escapes stay as written.
+function decode(x) {
+    gsub(/\\[nrt]/, " ", x)
+    gsub(/\\u[{]0*[aA]7[}]/, "\302\247", x)
+    return x
+}
 
 # Does the token name a harness (any component equals a name)?
 function names_harness(tok,    i, n, c, p, comp, b) {
@@ -248,7 +263,7 @@ function scan(clean, raw,    rest, tok) {
 }
 
 function lex(s,    i, n, c, c2, j, k, h, p) {
-    n = length(s); i = 1; out = ""; nlits = 0; cur = ""
+    n = length(s); i = 1; out = ""; cur = ""
     while (i <= n) {
         c = substr(s, i, 1)
         if (mode == 3) {
@@ -324,42 +339,35 @@ function lex(s,    i, n, c, c2, j, k, h, p) {
         }
         emit(c); i++
     }
-    endlit()
+    if (mode == 1 || mode == 2) piece()
 }
 
 # Prose literals (string contents holding a space) must not name a harness mechanism or cite a
 # design document; a bare literal ("SessionStart") is data and stays allowed.
-function scan_prose(clean, raw,    q, seg, rest, tok, k, nx) {
-    for (q = 1; q <= nlits; q++) {
-        seg = lits[q]
-        if (index(seg, " ") == 0) continue
-        rest = seg
-        while (match(rest, /[A-Za-z0-9_]+/)) {
-            tok = substr(rest, RSTART, RLENGTH)
-            rest = substr(rest, RSTART + RLENGTH)
-            if (!(tok in seen) && ((tok in mech) || tok ~ /^[ACDPR][0-9][0-9]?$/)) {
-                seen[tok] = 1
-                printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, FNR, tok, trim(clean), trim(raw)
-            }
-        }
-        if (index(seg, "\302\247") && !("\302\247" in seen)) {
-            seen["\302\247"] = 1
-            printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, FNR, "\302\247", trim(clean), trim(raw)
-        }
-        if (index(seg, "docs/superpowers") && !("docs/superpowers" in seen)) {
-            seen["docs/superpowers"] = 1
-            printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, FNR, "docs/superpowers", trim(clean), trim(raw)
-        }
-        rest = seg
-        while (match(rest, /ht-[a-z0-9][a-z0-9][a-z0-9]/)) {
-            tok = substr(rest, RSTART, RLENGTH)
-            k = RSTART + RLENGTH
-            nx = substr(rest, k, 1)
-            rest = substr(rest, k)
-            if (nx ~ /[a-z0-9-]/ || tok in seen) continue
-            seen[tok] = 1
-            printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, FNR, tok, trim(clean), trim(raw)
-        }
+function report(q, tok) {
+    if ((pln[q] SUBSEP tok) in pseen) return
+    pseen[pln[q], tok] = 1
+    printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, pln[q], tok, trim(pclean[q]), trim(praw[q])
+}
+function scan_piece(q,    seg, rest, tok, k, n, m, prev) {
+    seg = decode(pseg[q])
+    rest = seg
+    while (match(rest, /[A-Za-z0-9_]+/)) {
+        tok = substr(rest, RSTART, RLENGTH)
+        rest = substr(rest, RSTART + RLENGTH)
+        if ((tok in mech) || tok ~ /^[ACDPR][0-9][0-9]?$/) report(q, tok)
+    }
+    if (index(seg, "\302\247")) report(q, "\302\247")
+    if (index(seg, "docs/superpowers")) report(q, "docs/superpowers")
+    # bead ids: ht- plus 3-5 of [a-z0-9], not inside a longer word (ht-inst-x, right-pad).
+    k = 0
+    while ((m = index(substr(seg, k + 1), "ht-")) > 0) {
+        k += m
+        prev = (k > 1) ? substr(seg, k - 1, 1) : ""
+        n = 0
+        while (substr(seg, k + 3 + n, 1) ~ /^[a-z0-9]$/) n++
+        if (prev !~ /^[A-Za-z0-9-]$/ && n >= 3 && n <= 5 && substr(seg, k + 3 + n, 1) != "-")
+            report(q, substr(seg, k, 3 + n))
     }
 }
 
@@ -370,7 +378,7 @@ BEGIN {
     namere = ""
     for (i = 1; i <= nn; i++) { name[nm[i]] = 1; namere = namere (i > 1 ? "|" : "") nm[i] }
 }
-FNR == 1 { mode = 0; bd = 0; skip = 0; sd = 0; pd = 0; sbraced = 0; rawh = 0; hashes = "" }
+FNR == 1 { mode = 0; bd = 0; skip = 0; sd = 0; pd = 0; sbraced = 0; rawh = 0; hashes = ""; npend = 0; nrdy = 0; split("", pseen) }
 {
     line = $0
     gsub(/\t/, " ", line)
@@ -394,7 +402,9 @@ FNR == 1 { mode = 0; bd = 0; skip = 0; sd = 0; pd = 0; sbraced = 0; rawh = 0; ha
     }
     split("", seen)
     if (out != "") scan(out, line)
-    if (nlits > 0) scan_prose(out, line)
+    for (q = npc; q > 0 && pln[q] == FNR && !(q in pclean); q--) { pclean[q] = out; praw[q] = line }
+    for (q = 1; q <= nrdy; q++) scan_piece(rdy[q])
+    nrdy = 0
 }
 AWK
 

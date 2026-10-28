@@ -23,7 +23,7 @@ binary), plus a scan of core string literals that read as prose (contain a space
 | H1 | `src/cli/commands.rs:960` | `--agent-id`: "inserted by herdr-threads' Claude PreToolUse hook (spec §1) ... no behaviour change until session bindings land" (global: on all 83 subcommand pages) | `hide = true` (plumbing the harness integration inserts; agents never type it) and neutral text |
 | H2 | `src/cli/commands.rs:1097` | `setup` about: "Claude: `$CLAUDE_CONFIG_DIR/settings.json` ... Codex: `$CODEX_HOME/hooks.json`" (two of four harnesses) | dropped; the per-harness scope list in the long help already comes from each adapter |
 | H3 | `src/cli/commands.rs:1120` | `launch` about: "Start Codex or Claude" | "Start a registered agent harness" |
-| H4 | `src/cli/commands.rs:1290` | `harness-version normalize`: examples `codex-cli 0.158.0`, `2.1.286 (Claude Code)` | neutral examples |
+| H4 | `src/cli/commands.rs:1290` | `harness-version normalize`: examples `codex-cli 0.158.0`, `2.1.286 (Claude Code)` | points at `contract-id --json`, which lists each harness's accepted forms |
 | H5 | `src/cli/commands.rs:1834`, `:1869` | `--harness-binary`: "default: the first `claude`/`codex` on PATH" | "default: the harness's executable on PATH" |
 | H6 | `src/cli/help.rs:97`, `:102` | `launch` long help: "SessionStart hook" | "session-start hook" |
 
@@ -70,7 +70,10 @@ binary), plus a scan of core string literals that read as prose (contain a space
 ## Acceptance criteria
 
 - A1. No core-authored `--help` text names a harness, a hook event or a design
-  reference; the help test passes and fails if `--agent-id`'s old text is restored.
+  reference; the help test passes, and fails when such text is added to a visible
+  paragraph, including one that also holds an exempted generated span. Hidden args
+  (`--agent-id` now among them) are never rendered, so their doc comments are outside
+  its reach.
 - A2. O1–O4 strings are neutral; `check-harness-neutral` fails if any is restored.
 - A3. `check-harness-neutral` self-tests (`scripts/tests/test_check_harness_neutral.py`)
   cover the new token classes and the prose/data distinction.

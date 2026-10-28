@@ -443,6 +443,27 @@ class ProseLiteralTests(Case):
         src = 'let a = "bootstrap plan V2 and ht-inst-abc and F1 key";\nlet b = "R17";\n'
         self.assertViolations(self.flagged(src), 0)
 
+    def test_bead_ids_of_three_to_five_characters(self):
+        src = (
+            'let a = "fixed by ht-xe3v now";\n'
+            'let b = "see ht-zo4 and ht-abcde.2 here";\n'
+            'let c = "right-pad and ht-abcdef and xht-abc and ht-inst-x stay";\n'
+        )
+        p = self.flagged(src)
+        self.assertViolations(p, 3)
+        for site in ("1: ht-xe3v:", "2: ht-zo4:", "2: ht-abcde:"):
+            self.assertIn("src/cli/x.rs:" + site, p.stdout)
+
+    def test_multiline_literal_judged_as_a_whole(self):
+        src = 'let a = r#"SessionStart\n(C1)\nhook text"#;\nlet b = "x\\nSessionStart";\n'
+        p = self.flagged(src)
+        self.assertViolations(p, 3)
+        for site in ("1: SessionStart:", "2: C1:", "4: SessionStart:"):
+            self.assertIn("src/cli/x.rs:" + site, p.stdout)
+
+    def test_multiline_data_literal_not_flagged(self):
+        self.assertViolations(self.flagged('let a = r#"SessionStart\nPreToolUse"#;\n'), 0)
+
     def test_test_code_skipped(self):
         src = '#[cfg(test)]\nmod t {\n    const E: &str = "the SessionStart hook (C1)";\n}\n'
         self.assertViolations(self.flagged(src), 0)

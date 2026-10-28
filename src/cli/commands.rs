@@ -1285,7 +1285,7 @@ enum SummarySub {
 #[derive(Subcommand)]
 enum HarnessVersionSub {
     /// Print the canonical bare `MAJOR.MINOR.PATCH` of a raw `--version`
-    /// string (for example `tool-cli 0.158.0` or `2.1.286 (Tool Name)`);
+    /// string (`contract-id --json` lists each harness's accepted forms under `normalize`);
     /// exits non-zero for a string it does not recognize.
     Normalize {
         harness: String,

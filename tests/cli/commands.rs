@@ -4640,25 +4640,24 @@ fn seat_inspect_binding_details_refuses_an_older_daemon_before_query() {
 
 /// Every `--help` page is harness-neutral: no harness name, native hook event or design
 /// reference in core-authored text. Allowed: harness ids as data (`[possible values: ...]`),
-/// adapter-owned fragments (lines found verbatim in an adapter's source) and the
-/// registry-generated or harness-keyed lines in `KEYED`.
+/// adapter-owned sentences (found verbatim in an adapter's source), the registry-generated
+/// spans in `SPANS` and the harness-keyed paragraphs in `KEYED`. Hidden args are not
+/// rendered, so their doc comments are outside this test's reach.
 #[test]
 fn every_help_page_is_harness_neutral() {
     use clap::CommandFactory;
-    // (line substring, reason)
-    const KEYED: &[(&str, &str)] = &[
-        ("_OPTS / HERDR_THREADS_", "HERDR_THREADS_<ID>_OPTS list, generated from the registry"),
-        ("--kind claude|codex", "--kind id list, generated from the registry"),
-        ("agent markers (", "agent-marker list, generated from the adapters"),
-        ("{\"claude\": ID, \"codex\": ID", "contract-id --json keys: frozen v1 wire shape"),
-        ("setup (claude):", "flag honoured only by `setup claude`, labelled with its harness"),
-        ("`CLAUDE_CODE_PLUGIN_DIRS` path", "continuation of the `setup (claude):` --hooks-only help"),
-        ("setup` (and bare `setup`) asks", "adapter-owned setup note joined across a wrapped line"),
-        ("hook file of the CLAUDE_CONFIG_DIR / ", "config-dir variable list, generated from the adapters"),
-        ("harness. Claude: merge `disableAgentView", "adapter setup_foreground fragment after core text"),
-        ("CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`. Codex:", "adapter setup_foreground fragments, joined"),
-        ("(wire code not_claude)", "not_claude: frozen watch wire code"),
+    // (span start, span end, reason): the span is removed and the rest of the line is checked.
+    const SPANS: &[(&str, &str, &str)] = &[
+        ("HERDR_THREADS_", "_OPTS", "HERDR_THREADS_<ID>_OPTS name, generated from the registry"),
+        ("--kind claude|", " ", "--kind id list, generated from the registry"),
+        ("agent markers (", ")", "agent-marker list, generated from the adapters"),
+        ("{\"claude\": ID", "}}", "contract-id --json keys: frozen v1 wire shape"),
+        ("hook file of the ", " the agent", "config-dir variable list, generated from the adapters"),
+        ("(wire code not_claude)", ")", "not_claude: frozen watch wire code"),
     ];
+    // (paragraph prefix, reason): a paragraph keyed to one harness, exempt as a whole.
+    const KEYED: &[(&str, &str)] =
+        &[("setup (claude): ", "flag honoured only by `setup claude`, labelled with its harness")];
     const MECHANISMS: &[&str] = &[
         "CLAUDECODE", "PostToolUse", "PreCompact", "PreInvocation", "PreToolUse", "SessionEnd",
         "SessionStart", "SubagentStart", "SubagentStop", "UserPromptSubmit", "post_llm_call",
@@ -4676,22 +4675,23 @@ fn every_help_page_is_harness_neutral() {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
             let rel = path.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
-            let top = rel.split('/').next().unwrap();
-            let stem = top.trim_end_matches(".rs");
-            let owned = ids.iter().any(|id| {
-                stem == *id || stem.starts_with(&format!("{id}_"))
-            });
+            let stem = rel.split('/').next().unwrap().trim_end_matches(".rs");
+            let owned = ids
+                .iter()
+                .any(|id| stem == *id || stem.starts_with(&format!("{id}_")));
             if path.is_dir() {
                 if owned {
                     stack.push(path);
                 }
             } else if owned && rel.ends_with(".rs") {
                 adapter_text.push_str(&std::fs::read_to_string(&path).unwrap());
+                adapter_text.push('\n');
             }
         }
     }
-    let adapter_owned = |line: &str| {
-        let mut t = line.trim();
+    // A sentence piece found verbatim in adapter source, optionally after a leading `<id>` label.
+    let adapter_owned = |piece: &str| {
+        let mut t = piece.trim();
         if let Some((head, rest)) = t.split_once(char::is_whitespace)
             && ids.contains(&head.trim_end_matches(':'))
         {
@@ -4699,8 +4699,27 @@ fn every_help_page_is_harness_neutral() {
         }
         !t.is_empty() && adapter_text.contains(t)
     };
+    // Components split on `_` and case boundaries, as scripts/check-harness-neutral does.
     let names_harness = |token: &str| {
-        token.split('_').any(|c| names.iter().any(|n| c.eq_ignore_ascii_case(n)))
+        let chars: Vec<char> = token.chars().collect();
+        let mut comps = vec![String::new()];
+        for (i, &c) in chars.iter().enumerate() {
+            let boundary = i > 0
+                && c.is_ascii_uppercase()
+                && (chars[i - 1].is_ascii_lowercase()
+                    || chars[i - 1].is_ascii_digit()
+                    || (chars[i - 1].is_ascii_uppercase()
+                        && chars.get(i + 1).is_some_and(char::is_ascii_lowercase)));
+            if c == '_' || boundary {
+                comps.push(String::new());
+            }
+            if c != '_' {
+                comps.last_mut().unwrap().push(c);
+            }
+        }
+        comps
+            .iter()
+            .any(|c| names.iter().any(|n| c.eq_ignore_ascii_case(n)))
     };
     let design_ref = |token: &str| {
         let b = token.as_bytes();
@@ -4708,7 +4727,23 @@ fn every_help_page_is_harness_neutral() {
             && b"ACDPR".contains(&b[0])
             && b[1..].iter().all(u8::is_ascii_digit)
     };
+    let id_char = |c: &u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    let hits = |text: &str| {
+        let bytes = text.as_bytes();
+        let bead = text.match_indices("ht-").any(|(i, _)| {
+            let n = bytes[i + 3..].iter().take_while(|c| id_char(c)).count();
+            (3..=5).contains(&n)
+                && bytes.get(i + 3 + n) != Some(&b'-')
+                && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'-'))
+        });
+        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|t| names_harness(t) || MECHANISMS.contains(&t) || design_ref(t))
+            || text.contains('§')
+            || text.contains("docs/superpowers")
+            || bead
+    };
 
+    let mut used = std::collections::BTreeSet::new();
     let mut stack = vec![(String::new(), Cli::command())];
     let mut violations = Vec::new();
     let mut pages = 0;
@@ -4716,40 +4751,56 @@ fn every_help_page_is_harness_neutral() {
         pages += 1;
         let help = cmd.render_long_help().to_string();
         for line in help.lines() {
-            let mut text = line.to_string();
-            while let Some(start) = text.find("[possible values:") {
-                let end = text[start..].find(']').map_or(text.len(), |e| start + e + 1);
-                text.replace_range(start..end, "");
-            }
-            if KEYED.iter().any(|(s, _)| text.contains(s)) || adapter_owned(&text) {
+            if !hits(line) {
                 continue;
             }
-            let bead = text.match_indices("ht-").any(|(i, _)| {
-                let rest = &text.as_bytes()[i + 3..];
-                rest.len() >= 3
-                    && rest[..3].iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-                    && rest.get(3).is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'-'))
-            });
-            let hit = text
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .any(|t| names_harness(t) || MECHANISMS.contains(&t) || design_ref(t))
-                || text.contains('§')
-                || text.contains("docs/superpowers")
-                || bead;
-            if hit {
-                violations.push(format!("{}: {}", if path.is_empty() { "(root)" } else { &path }, line.trim()));
+            if let Some((prefix, _)) = KEYED.iter().find(|(p, _)| line.trim().starts_with(p)) {
+                used.insert(*prefix);
+                continue;
+            }
+            let mut text = line.to_string();
+            for (start, end, _) in std::iter::once(&("[possible values:", "]", "")).chain(SPANS) {
+                while let Some(s) = text.find(start) {
+                    let from = s + start.len();
+                    let e = text[from..].find(end).map_or(text.len(), |e| from + e + end.len());
+                    text.replace_range(s..e, " ");
+                    used.insert(*start);
+                }
+            }
+            let rest: Vec<&str> = text
+                .split(". ")
+                .filter(|piece| hits(piece) && !adapter_owned(piece))
+                .collect();
+            if !rest.is_empty() {
+                let at = if path.is_empty() { "(root)" } else { &path };
+                violations.push(format!("{at}: {}", line.trim()));
             }
         }
         for sub in cmd.get_subcommands() {
             if sub.get_name() == "help" {
                 continue;
             }
-            let p = if path.is_empty() { sub.get_name().to_string() } else { format!("{path} {}", sub.get_name()) };
+            let p = if path.is_empty() {
+                sub.get_name().to_string()
+            } else {
+                format!("{path} {}", sub.get_name())
+            };
             stack.push((p, sub.clone()));
         }
     }
     assert!(pages > 50, "rendered only {pages} help pages");
+    let stale: Vec<&str> = SPANS
+        .iter()
+        .map(|(s, _, _)| *s)
+        .chain(KEYED.iter().map(|(p, _)| *p))
+        .filter(|s| !used.contains(s))
+        .collect();
+    assert!(stale.is_empty(), "stale help exemptions: {stale:?}");
     violations.sort();
     violations.dedup();
-    assert!(violations.is_empty(), "harness-specific or design-reference help text:\n{}", violations.join("\n"));
+    assert!(
+        violations.is_empty(),
+        "harness-specific or design-reference help text:\n{}",
+        violations.join("\n")
+    );
 }
