@@ -764,25 +764,32 @@ where
                     self.local_hit(raw),
                 )));
             }
+            AddressReply::SeatElsewhere { seat, home } => {
+                return Err(run_error(ApiError::invalid_request(format!(
+                    "seat {} lives on {}, not {}",
+                    remote_error::one_line(&seat),
+                    home.as_ref()
+                        .map_or_else(|| "another machine".to_owned(), remote_error::machine_label),
+                    remote_error::one_line(machine)
+                ))));
+            }
             AddressReply::SelfNode => {
-                if let Ok(seat) = SeatId::parse(location)
-                    && let Some(inspection) = self.inspect(&seat)?
-                    && inspection.summary.continuity == ContinuityStatus::Remote
-                {
-                    return Err(run_error(ApiError::invalid_request(format!(
-                        "seat {} lives on another machine, not {}",
-                        seat.as_str(),
-                        machine
-                    ))));
-                }
                 let hit = self.local_hit(raw);
                 let at_self = self.resolve_local(parsed, slot, location);
                 if !hit {
                     return at_self.map(Some);
                 }
-                // Both readings name a local pane: the same one is fine, two are a conflict.
-                let Ok(at_self) = at_self else {
-                    return self.resolve_local(parsed, slot, raw).map(Some);
+                // Both readings name a local pane: the same one is fine, two are a conflict, and
+                // an ambiguous split reading is a conflict too, never the whole string's pick.
+                let at_self = match at_self {
+                    Ok(at_self) => at_self,
+                    Err(RunError::Api(error)) if error.code == ErrorCode::Conflict => {
+                        return Err(run_error(remote_error::both_readings(
+                            raw,
+                            &[raw.to_owned(), format!("{location} (ambiguous)")],
+                        )));
+                    }
+                    Err(_) => return self.resolve_local(parsed, slot, raw).map(Some),
                 };
                 return match self.resolve_local(parsed, slot, raw) {
                     Ok(whole) if same_resolution(&at_self, &whole) => Ok(Some(whole)),
@@ -794,12 +801,24 @@ where
             }
             AddressReply::Remote { node, answer } => (node, answer),
         };
+        let hit = self.local_hit(raw);
+        // A remote reading with no match leaves the whole string's local reading, which the
+        // narrowing applies to as before; any other remote answer cannot be narrowed.
+        if hit
+            && matches!(
+                answer,
+                RemoteAddress::Answered {
+                    outcome: AddrOutcome::NoMatch
+                }
+            )
+        {
+            return Ok(None);
+        }
         if self.raw_narrowing.is_some() {
             return Err(run_error(ApiError::invalid_request(
                 "--space/--tab cannot narrow a remote address; qualify its path instead",
             )));
         }
-        let hit = self.local_hit(raw);
         let label = remote_error::machine_label(&node);
         let reason = match answer {
             RemoteAddress::Answered { outcome } => match outcome {
@@ -859,6 +878,12 @@ where
                 }
                 AddrOutcome::HostUnavailable => {
                     format!("{label}: seat names need its live Herdr topology")
+                }
+                AddrOutcome::Unavailable { reason } => {
+                    format!(
+                        "{label} cannot answer now: {}",
+                        remote_error::one_line(&reason)
+                    )
                 }
                 // Request-shaped refusals never succeed on retry.
                 AddrOutcome::Refused { detail } => {

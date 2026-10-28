@@ -8086,8 +8086,8 @@ mod tests {
         let none = ask_linked(&b, identity(1).uuid(), "w/t/p").await;
         assert_eq!(
             none,
-            remote_addr::RemoteAnswer::Answered(AddrOutcome::Refused {
-                detail: "resolver unavailable".into()
+            remote_addr::RemoteAnswer::Answered(AddrOutcome::Unavailable {
+                reason: "resolver unavailable".into()
             })
         );
         // A cancelled caller stops waiting at once.
@@ -8187,9 +8187,11 @@ mod tests {
         }
         assert_eq!(
             ask(&a, b_node, Duration::from_secs(5)).await,
-            Some(remote_addr::RemoteAnswer::Answered(AddrOutcome::Refused {
-                detail: "busy".into()
-            }))
+            Some(remote_addr::RemoteAnswer::Answered(
+                AddrOutcome::Unavailable {
+                    reason: "busy".into()
+                }
+            ))
         );
         for _ in 0..8 {
             release.send(()).unwrap();

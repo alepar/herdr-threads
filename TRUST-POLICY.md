@@ -2280,7 +2280,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   can name the wrong one of its seats, or claim no match. In-contract (A1, same user, cooperative): the answer is
   bounded, only a seat the asking node already holds as that node's seat (after replication) is used, and the
   command is then decided locally as for an exact seat ID (N14). A host label is the hostname captured at the
-  node's genesis; a renamed machine keeps its old name until a new store (`peer list` shows `host=`). Design
+  node's genesis; a renamed machine keeps its old name until a new store (`peer list` shows `host=`). The answer
+  also reveals panes that hold no seat (`no_seat` with its path and pane ID) and every candidate of an ambiguous
+  name, more than `seat_status` shares; in-contract between this user's own nodes (A1). Design
   `docs/superpowers/specs/2026-10-27-remote-addresses-design.md`.
 
 ## Decision record

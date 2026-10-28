@@ -496,10 +496,18 @@ pub enum AddrOutcome {
     /// No attached Herdr host could be read (or one failed and the rest
     /// did not already make the answer ambiguous).
     HostUnavailable,
-    /// Not answered; `detail` (at most [`MAX_ADDR_DETAIL_BYTES`]) says why.
+    /// Not answered, and asking again cannot help (an unsupported or
+    /// invalid request); `detail` (at most [`MAX_ADDR_DETAIL_BYTES`]) says
+    /// why.
     Refused {
         #[serde(default)]
         detail: String,
+    },
+    /// Not answered now (busy, resolver not ready, a store read failed); a
+    /// retry may succeed. `reason` is at most [`MAX_ADDR_DETAIL_BYTES`].
+    Unavailable {
+        #[serde(default)]
+        reason: String,
     },
     #[default]
     #[serde(other)]

@@ -109,6 +109,12 @@ fn refused(detail: &str) -> AddrOutcome {
     }
 }
 
+fn unavailable(reason: &str) -> AddrOutcome {
+    AddrOutcome::Unavailable {
+        reason: bounded(reason, MAX_ADDR_DETAIL_BYTES),
+    }
+}
+
 /// The answer as this node sends it: every text bounded, at most
 /// [`crate::sync::frame::MAX_ADDR_CANDIDATES`] candidates.
 fn bound_outcome(outcome: AddrOutcome) -> AddrOutcome {
@@ -141,7 +147,33 @@ fn bound_outcome(outcome: AddrOutcome) -> AddrOutcome {
             }
         }
         AddrOutcome::Refused { detail } => refused(&detail),
+        AddrOutcome::Unavailable { reason } => unavailable(&reason),
         other => other,
+    }
+}
+
+/// `reply` cut to fit `max` encoded bytes (the link's `max_frame`): an
+/// ambiguous answer drops candidates, counting them in `omitted`, as
+/// `seat_status` drops seats.
+fn fit_frame(mut reply: AddrResolved, max: usize) -> AddrResolved {
+    loop {
+        let size = PeerFrame::AddrResolved(reply.clone())
+            .encode()
+            .map_or(usize::MAX, |bytes| bytes.len());
+        let AddrOutcome::Ambiguous {
+            candidates,
+            omitted,
+        } = &mut reply.outcome
+        else {
+            return reply;
+        };
+        if size <= max || candidates.is_empty() {
+            return reply;
+        }
+        let len = candidates.len();
+        let keep = (len * max / size.max(1)).min(len - 1);
+        *omitted = omitted.saturating_add(u32::try_from(len - keep).unwrap_or(u32::MAX));
+        candidates.truncate(keep);
     }
 }
 
@@ -179,7 +211,7 @@ impl Actor {
             return;
         }
         if self.addr.outstanding.len() >= MAX_OUTSTANDING {
-            let _ = reply.send(RemoteAnswer::Answered(refused(
+            let _ = reply.send(RemoteAnswer::Answered(unavailable(
                 "too many remote requests in flight on the asking node",
             )));
             return;
@@ -227,11 +259,11 @@ impl Actor {
             return answer_now(refused("address too long"));
         }
         let Some(resolver) = self.addr.resolver.get().cloned() else {
-            return answer_now(refused("resolver unavailable"));
+            return answer_now(unavailable("resolver unavailable"));
         };
         let busy = self.addr.in_flight.entry(link_id).or_default();
         if *busy >= MAX_INBOUND_IN_FLIGHT {
-            return answer_now(refused("busy"));
+            return answer_now(unavailable("busy"));
         }
         *busy += 1;
         let id = request.id;
@@ -239,7 +271,7 @@ impl Actor {
         self.addr.serving.spawn(async move {
             let outcome = tokio::task::spawn_blocking(move || resolver.resolve(target))
                 .await
-                .unwrap_or_else(|_| refused("resolver failed"));
+                .unwrap_or_else(|_| unavailable("resolver failed"));
             Served {
                 link_id,
                 id,
@@ -260,10 +292,14 @@ impl Actor {
             }
         }
         if let Some(entry) = self.links.get(&served.link_id) {
-            let _ = entry.handle.send(PeerFrame::AddrResolved(AddrResolved {
-                id: served.id,
-                outcome: bound_outcome(served.outcome),
-            }));
+            let max = entry.handle.peer().limits.max_frame as usize;
+            let _ = entry.handle.send(PeerFrame::AddrResolved(fit_frame(
+                AddrResolved {
+                    id: served.id,
+                    outcome: bound_outcome(served.outcome),
+                },
+                max,
+            )));
         }
     }
 
@@ -345,6 +381,41 @@ mod tests {
                 detail: "x".repeat(MAX_ADDR_DETAIL_BYTES)
             }
         );
+    }
+
+    #[test]
+    fn ambiguous_answers_fit_the_link_frame() {
+        let candidates: Vec<AddrCandidate> = (0..32)
+            .map(|i| AddrCandidate {
+                path: "p".repeat(200),
+                pane: format!("w1:p{i}"),
+                seat: Some("s".repeat(12)),
+            })
+            .collect();
+        let reply = fit_frame(
+            AddrResolved {
+                id: Uuid::from_u128(1),
+                outcome: AddrOutcome::Ambiguous {
+                    candidates,
+                    omitted: 1,
+                },
+            },
+            4_096,
+        );
+        let size = PeerFrame::AddrResolved(reply.clone())
+            .encode()
+            .unwrap()
+            .len();
+        assert!(size <= 4_096, "{size}");
+        let AddrOutcome::Ambiguous {
+            candidates,
+            omitted,
+        } = reply.outcome
+        else {
+            panic!("ambiguous")
+        };
+        assert!(!candidates.is_empty());
+        assert_eq!(candidates.len() as u32 + omitted, 33);
     }
 
     #[test]

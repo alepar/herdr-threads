@@ -69,6 +69,7 @@ fn remote_addresses_resolve_on_their_home_node() {
         // Local labels that carry an `@`: one per collision case.
         let b_prefix = cluster.node_uuid(1).to_string()[..8].to_owned();
         let collide_remote = format!("w1:p6=w1:p1@{b_prefix}");
+        let narrowed_local = format!("w1:p8=ci@{}", &cluster.node_uuid(1).to_string()[..9]);
         cluster.add_host(
             0,
             &[
@@ -77,6 +78,7 @@ fn remote_addresses_resolve_on_their_home_node() {
                 "w1:p5=user@nowhere",
                 &collide_remote,
                 "w1:p7=w1:p1@alpha",
+                &narrowed_local,
             ],
         );
         cluster.add_host(1, &[P1, P2]);
@@ -130,7 +132,10 @@ fn remote_addresses_resolve_on_their_home_node() {
         Ok(b.id.clone())
     );
     let err = inspect(&cluster, &a, &format!("{}@alpha", b.id)).unwrap_err();
-    assert!(err.contains("lives on another machine"), "{err}");
+    assert!(
+        err.contains(&format!("lives on {b_tag} beta, not alpha")),
+        "{err}"
+    );
     // An unseated pane on beta: refused, nothing allocated there.
     let err = inspect(&cluster, &a, &format!("{P2}@{b_tag}")).unwrap_err();
     assert!(err.contains("no seat at"), "{err}");
@@ -162,6 +167,21 @@ fn remote_addresses_resolve_on_their_home_node() {
     // different local panes.
     let err = inspect(&cluster, &a, "w1:p1@alpha").unwrap_err();
     assert!(err.contains("2 readings"), "{err}");
+    // A local `@` label narrowed by --space whose machine answers no match:
+    // resolved locally, as before remote addresses (that pane holds no seat).
+    let (code, value, stderr) = cluster.run_as(
+        Some(&a),
+        0,
+        &[
+            "inbox",
+            "--seat",
+            &format!("ci@{}", &b_uuid[..9]),
+            "--space",
+            "w1",
+        ],
+    );
+    assert_ne!(code, 0);
+    assert!(stderr.contains("w1:p8"), "{stderr}{value}");
     // Its exact seat ID still works.
     assert_eq!(inspect(&cluster, &a, &c.id), Ok(c.id.clone()));
     // beta unreachable: refused, the exact seat ID still works.

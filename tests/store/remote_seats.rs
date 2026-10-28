@@ -846,3 +846,48 @@ fn unknown_since_renders_without_time() {
     let lines = node_lines(&participants);
     assert_eq!(lines, ["node aaaaaaaa unreachable"], "{participants}");
 }
+
+// Kills: an unpublished local seat answered to a peer (it never replicates,
+// so the asker would wait and say "retry" forever), a seat on another host
+// or pane answered, and the exact-ID answer not refusing another node's or
+// an unshared seat (remote addresses, TRUST-POLICY N14).
+#[test]
+fn remote_resolution_answers_only_published_local_seats() {
+    use herdr_threads::service::remote_resolver::{exact_outcome, pane_seats, seat_row};
+    use herdr_threads::sync::frame::AddrOutcome;
+    let f = fixture();
+    local_seat(&f.db, "sAAAlocal001", "w1:p1");
+    remote_seat(&f.db, "sAAAremote01");
+    let host: i64 =
+        f.db.query_row("SELECT host_id FROM herdr_hosts", [], |r| r.get(0))
+            .unwrap();
+    // Unpublished: no seat on its pane, and its exact ID is refused.
+    assert!(pane_seats(&f.db, host, "w1:p1").unwrap().is_empty());
+    let unshared = exact_outcome("sAAAlocal001", seat_row(&f.db, "sAAAlocal001").unwrap());
+    assert!(
+        matches!(&unshared, Some(AddrOutcome::Refused { detail }) if detail.contains("not shared")),
+        "{unshared:?}"
+    );
+    f.db.execute("UPDATE seats SET published=1 WHERE id='sAAAlocal001'", [])
+        .unwrap();
+    assert_eq!(pane_seats(&f.db, host, "w1:p1").unwrap(), ["sAAAlocal001"]);
+    assert!(pane_seats(&f.db, host, "w1:p2").unwrap().is_empty());
+    assert!(pane_seats(&f.db, host + 1, "w1:p1").unwrap().is_empty());
+    assert_eq!(
+        exact_outcome("sAAAlocal001", seat_row(&f.db, "sAAAlocal001").unwrap()),
+        Some(AddrOutcome::Seat {
+            seat: "sAAAlocal001".into(),
+            path: String::new(),
+            pane: "w1:p1".into(),
+        })
+    );
+    let foreign = exact_outcome("sAAAremote01", seat_row(&f.db, "sAAAremote01").unwrap());
+    assert!(
+        matches!(&foreign, Some(AddrOutcome::Refused { detail }) if detail.contains("does not live")),
+        "{foreign:?}"
+    );
+    assert_eq!(
+        exact_outcome("sNone0000000", seat_row(&f.db, "sNone0000000").unwrap()),
+        None
+    );
+}

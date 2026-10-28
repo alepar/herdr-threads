@@ -488,7 +488,7 @@ impl SyncAdmin {
             }
         };
         if node.uuid == own {
-            return Ok(SyncReply::Address(AddressReply::SelfNode));
+            return self.self_address(&target, &rows, budget);
         }
         let uuid: crate::node::NodeUuid = node
             .uuid
@@ -528,6 +528,40 @@ impl SyncAdmin {
             },
         };
         Ok(SyncReply::Address(AddressReply::Remote { node, answer }))
+    }
+
+    /// `LOCATION@<this node>`: resolved locally by the caller, unless it is
+    /// the exact ID of a seat this node does not home (retired included).
+    fn self_address(
+        &self,
+        target: &crate::sync::frame::AddrTarget,
+        rows: &[crate::protocol::sync_admin::MachineRow],
+        budget: &CallBudget,
+    ) -> Result<SyncReply, ApiError> {
+        use crate::protocol::sync_admin::AddressReply;
+        use rusqlite::OptionalExtension;
+        let crate::sync::frame::AddrTarget::Seat { location } = target else {
+            return Ok(SyncReply::Address(AddressReply::SelfNode));
+        };
+        if crate::protocol::ids::SeatId::parse(location).is_err() {
+            return Ok(SyncReply::Address(AddressReply::SelfNode));
+        }
+        let home: Option<String> = self.store.sync_read(budget, |conn, _| {
+            conn.query_row(
+                "SELECT home_node FROM seats WHERE id=?1 AND is_local=0",
+                [location.as_str()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(crate::store::connection::store_error)
+        })?;
+        Ok(SyncReply::Address(match home {
+            None => AddressReply::SelfNode,
+            Some(home) => AddressReply::SeatElsewhere {
+                seat: location.clone(),
+                home: rows.iter().find(|row| row.uuid == home).cloned(),
+            },
+        }))
     }
 
     /// Whether `seat` is (or within [`REPLICA_WAIT_MS`] becomes) a seat this

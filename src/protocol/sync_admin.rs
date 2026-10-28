@@ -413,6 +413,14 @@ pub struct MachineRow {
 pub enum AddressReply {
     /// The machine is this node: the caller resolves the location locally.
     SelfNode,
+    /// The machine is this node, but the location is the exact ID of a seat
+    /// homed on another node (`home`, when known): refused (spec D2).
+    SeatElsewhere {
+        #[serde(default)]
+        seat: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        home: Option<MachineRow>,
+    },
     /// No node matches; `known` lists up to eight known nodes.
     UnknownMachine {
         #[serde(default)]

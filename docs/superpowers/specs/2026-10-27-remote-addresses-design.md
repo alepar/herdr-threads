@@ -596,3 +596,22 @@ only the launch path.
   two seats) and an unknown answer are `invalid_request`. Only a daemon
   without sync administration (`unsupported`) counts as knowing no machines;
   every other failure of `resolve address` is passed through as a refusal.
+
+### 2026-10-28, independent review of 6852590ec
+
+- `--space/--tab` with a raw `@` label: a remote `NoMatch` with a local hit
+  resolves locally before the narrowing refusal is considered (it applies to
+  remote hits and unevaluable answers only), as before remote addresses.
+- `SEAT_ID@<this node>`: the daemon answers `seat_elsewhere` (with the home
+  node's row) for any seat this node does not home, retired included; the CLI
+  prints `seat S lives on <tag> <host>, not M`.
+- The home node answers only published seats: an unpublished seat on a pane
+  is `no_seat`, its exact ID `refused` (`not shared with other machines`).
+  A retired seat of its own answers `seat`, as its bare ID resolves.
+- `AddrOutcome::Unavailable { reason }` carries the transient answers (busy,
+  resolver not ready or failed, store read failure, the asker's own full
+  table); they reach the caller as `host_unavailable` with the `\@` hint.
+  `Refused` stays for answers a retry cannot change.
+- The self-node dual reading refuses an ambiguous split reading instead of
+  taking the whole string's pane; `addr_resolved` is fitted to the link's
+  `max_frame` (candidates dropped into `omitted`).

@@ -53,18 +53,8 @@ impl RemoteResolver {
     /// The resolved local seat on `pane` of `host`: `Ok(None)` for none,
     /// `Err` for more than one.
     fn seat_on(&self, host: HostId, pane: &str) -> Result<Option<String>, ApiError> {
-        let seats: Vec<String> = self.store.sync_read(&self.budget(), |conn, _| {
-            let mut statement = conn
-                .prepare_cached(
-                    "SELECT id FROM seats WHERE is_local=1 AND state='resolved' \
-                     AND host_id=?1 AND target_id=?2 ORDER BY id LIMIT 2",
-                )
-                .map_err(crate::store::connection::store_error)?;
-            let rows = statement
-                .query_map(rusqlite::params![host.get(), pane], |r| r.get(0))
-                .map_err(crate::store::connection::store_error)?;
-            rows.collect::<Result<Vec<String>, _>>()
-                .map_err(crate::store::connection::store_error)
+        let seats = self.store.sync_read(&self.budget(), |conn, _| {
+            pane_seats(conn, host.get(), pane).map_err(crate::store::connection::store_error)
         })?;
         match seats.len() {
             0 => Ok(None),
@@ -94,32 +84,12 @@ impl RemoteResolver {
     /// `SEAT_ID@M` (spec D2): an exact seat ID is this node's own seat, or not here at all.
     fn exact_seat(&self, location: &str) -> Option<AddrOutcome> {
         let seat = crate::protocol::ids::SeatId::parse(location).ok()?;
-        let found = self.store.sync_read(&self.budget(), |conn, _| {
-            use rusqlite::OptionalExtension;
-            conn.query_row(
-                "SELECT is_local, target_id FROM seats WHERE id=?1 AND state<>'retired'",
-                [seat.as_str()],
-                |r| Ok((r.get::<_, i64>(0)? == 1, r.get(1)?)),
-            )
-            .optional()
-            .map_err(crate::store::connection::store_error)
-        });
-        let found: Option<(bool, Option<String>)> = match found {
-            Ok(found) => found,
-            Err(error) => {
-                return Some(AddrOutcome::Refused {
-                    detail: format!("seat lookup failed: {}", error.detail),
-                });
-            }
-        };
-        match found? {
-            (true, target) => Some(AddrOutcome::Seat {
-                seat: seat.as_str().to_owned(),
-                path: String::new(),
-                pane: target.unwrap_or_default(),
-            }),
-            (false, _) => Some(AddrOutcome::Refused {
-                detail: format!("seat {} does not live on this machine", seat.as_str()),
+        match self.store.sync_read(&self.budget(), |conn, _| {
+            seat_row(conn, seat.as_str()).map_err(crate::store::connection::store_error)
+        }) {
+            Ok(row) => exact_outcome(seat.as_str(), row),
+            Err(error) => Some(AddrOutcome::Unavailable {
+                reason: format!("seat lookup failed: {}", error.detail),
             }),
         }
     }
@@ -145,6 +115,84 @@ impl RemoteResolver {
         }
         pool(matches, failed, |host, pane| self.seat_on(host, pane))
     }
+}
+
+/// A failed seat lookup: a seat conflict cannot change on retry, a store
+/// failure can.
+fn lookup_failed(error: ApiError) -> AddrOutcome {
+    if error.code == crate::protocol::results::ErrorCode::Conflict {
+        AddrOutcome::Refused {
+            detail: error.detail,
+        }
+    } else {
+        AddrOutcome::Unavailable {
+            reason: format!("seat lookup failed: {}", error.detail),
+        }
+    }
+}
+
+/// The published resolved local seats on `pane` of host `host_id`, at most
+/// two (only a published seat exists on other nodes).
+pub fn pane_seats(
+    conn: &rusqlite::Connection,
+    host_id: i64,
+    pane: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare_cached(
+        "SELECT id FROM seats WHERE is_local=1 AND published=1 AND state='resolved' \
+         AND host_id=?1 AND target_id=?2 ORDER BY id LIMIT 2",
+    )?;
+    let rows = statement.query_map(rusqlite::params![host_id, pane], |r| r.get(0))?;
+    rows.collect()
+}
+
+/// What `SEAT_ID@M` needs of one seat row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatRow {
+    pub local: bool,
+    pub published: bool,
+    pub target: Option<String>,
+}
+
+/// The row of `seat`, retired included (a bare exact seat ID resolves a
+/// retired seat too).
+pub fn seat_row(conn: &rusqlite::Connection, seat: &str) -> rusqlite::Result<Option<SeatRow>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT is_local, published, target_id FROM seats WHERE id=?1",
+        [seat],
+        |r| {
+            Ok(SeatRow {
+                local: r.get::<_, i64>(0)? == 1,
+                published: r.get::<_, i64>(1)? == 1,
+                target: r.get(2)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// The answer for `SEAT_ID@M` from its row: only this node's own published
+/// seat (retired included) is a seat; another node's, or one never shared
+/// with other nodes, is refused (asking again cannot help); an unknown ID
+/// falls through to name matching (`None`).
+pub fn exact_outcome(seat: &str, row: Option<SeatRow>) -> Option<AddrOutcome> {
+    let row = row?;
+    Some(match row {
+        SeatRow { local: false, .. } => AddrOutcome::Refused {
+            detail: format!("seat {seat} does not live on this machine"),
+        },
+        SeatRow {
+            published: false, ..
+        } => AddrOutcome::Refused {
+            detail: format!("seat {seat} is not shared with other machines"),
+        },
+        SeatRow { target, .. } => AddrOutcome::Seat {
+            seat: seat.to_owned(),
+            path: String::new(),
+            pane: target.unwrap_or_default(),
+        },
+    })
 }
 
 /// The answer from every read host's matches (`failed`: some host could not
@@ -190,9 +238,7 @@ fn pool(
                 path: one.path.clone(),
                 pane: one.pane.as_str().to_owned(),
             },
-            Err(error) => AddrOutcome::Refused {
-                detail: error.detail,
-            },
+            Err(error) => lookup_failed(error),
         },
         many => AddrOutcome::Ambiguous {
             candidates: many

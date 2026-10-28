@@ -2231,6 +2231,35 @@ fn resolve_address_matches_machines_and_takes_only_the_named_nodes_seat() {
     seed_other_node(&rig.node, other, "Xx9");
     insert_remote("sXx9remote01", &other.to_string());
     assert!(!held("sXx9remote01"), "homed at another node");
+
+    // `SEAT_ID@<this node>` for a seat homed elsewhere, retired included: refused
+    // naming its home, never resolved here.
+    let at_self = |seat: &str| match rig
+        .read(SyncCommand::ResolveAddress {
+            machine: own.clone(),
+            target: crate::sync::frame::AddrTarget::Seat {
+                location: seat.into(),
+            },
+        })
+        .unwrap()
+    {
+        Reply::Address(reply) => reply,
+        other => panic!("{other:?}"),
+    };
+    let AddressReply::SeatElsewhere { home, .. } = at_self("sZq7remote01") else {
+        panic!("seat elsewhere")
+    };
+    assert_eq!(home.map(|row| row.tag), Some("Zq7".to_owned()));
+    db.execute(
+        "UPDATE seats SET state='retired', retired_at=1 WHERE id='sXx9remote01'",
+        [],
+    )
+    .unwrap();
+    assert!(matches!(
+        at_self("sXx9remote01"),
+        AddressReply::SeatElsewhere { .. }
+    ));
+    assert_eq!(at_self("sAAAnotaseat"), AddressReply::SelfNode);
 }
 
 fn seed_other_node(node: &Node, uuid: crate::node::NodeUuid, tag: &str) {
