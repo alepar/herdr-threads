@@ -91,6 +91,26 @@ pub fn get(conn: &Connection, uuid: NodeUuid) -> rusqlite::Result<Option<NodeDir
     .optional()
 }
 
+/// Every known node, this one included, ordered by uuid.
+pub fn all(conn: &Connection) -> rusqlite::Result<Vec<NodeDirectoryRow>> {
+    let mut statement = conn.prepare(
+        "SELECT node_uuid,tag,tag_k,host_label,first_seen_at,tag_hlc FROM node_directory \
+         ORDER BY node_uuid",
+    )?;
+    statement
+        .query_map([], |r| {
+            Ok(NodeDirectoryRow {
+                node_uuid: parse_column(r.get(0)?, 0)?,
+                tag: parse_column(r.get(1)?, 1)?,
+                tag_k: r.get(2)?,
+                host_label: r.get(3)?,
+                first_seen_at: r.get(4)?,
+                tag_hlc: r.get(5)?,
+            })
+        })?
+        .collect()
+}
+
 /// Every node that currently carries `tag`, ordered by uuid. The caller (a
 /// fact handler) passes the result to `on_collision`; this function only
 /// reports who shares the tag.

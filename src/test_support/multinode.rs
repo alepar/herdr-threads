@@ -332,6 +332,7 @@ impl Cluster {
         private_dir(&root.join("cut"));
         private_dir(&root.join("pids"));
         private_dir(&root.join("down"));
+        private_dir(&root.join("env"));
         let shim = root.join("shim.sh");
         write_private(
             &shim,
@@ -343,6 +344,7 @@ impl Cluster {
                  case \"$dest\" in \"$base\"/n[0-9]*) ;; *) echo \"not a cluster node: $dest\" >&2; exit 75;; esac\n\
                  [ -e \"$root/cut/$from-$to\" ] && {{ echo \"partitioned $from-$to\" >&2; exit 75; }}\n\
                  [ -e \"$root/down/$to\" ] && {{ echo \"down $to\" >&2; exit 75; }}\n\
+                 [ -e \"$root/env/$to\" ] && . \"$root/env/$to\"\n\
                  echo $$ > \"$root/pids/$from-$to\"\n\
                  [ -e \"$root/cut/$from-$to\" ] && {{ echo \"partitioned $from-$to\" >&2; exit 75; }}\n\
                  [ -e \"$root/relay.py\" ] && exec python3 \"$root/relay.py\" \"$root\" \"$from\" \"$to\" -- {bin} --state-dir \"$dest\" peer --stdio\n\
@@ -384,6 +386,21 @@ impl Cluster {
                 )
                 .as_bytes(),
             );
+            // A daemon a peer's dial starts gets its own node's environment,
+            // not the dialer's.
+            let own_env: Vec<String> = options
+                .env
+                .iter()
+                .filter(|(n, _, _)| *n == index)
+                .map(|(_, k, v)| format!("export {k}={}\n", sh_quote(v)))
+                .collect();
+            if !own_env.is_empty() {
+                write_private(
+                    &root.join("env").join(&name),
+                    0o600,
+                    own_env.concat().as_bytes(),
+                );
+            }
             nodes.push(Node {
                 name,
                 state,

@@ -1330,6 +1330,7 @@ fn node_rows_render_compactly() {
     let now = 1_793_092_323_481; // 2026-10-27T09:12:03.481Z
     let row = |state: &str, stalled: &[&str]| NodeRow {
         node: "Q0V".into(),
+        host: None,
         state: state.into(),
         stalled: stalled.iter().map(|s| (*s).to_owned()).collect(),
         last_contact_at: Some(now - 4_000),
@@ -1371,6 +1372,19 @@ fn node_rows_render_compactly() {
     assert_eq!(
         unreachable.lines().nth(1).unwrap(),
         "node Q0V unreachable since 09:11Z v=2.4.0 rx=567/567 tx=1180/1234"
+    );
+    // The machine name an `@MACHINE` address matches, escaped to one token.
+    let named = render(vec![NodeRow {
+        host: Some("laptop.local".into()),
+        ..row("linked", &[])
+    }]);
+    assert!(
+        named
+            .lines()
+            .nth(1)
+            .unwrap()
+            .ends_with(" since=06:12Z host=laptop.local"),
+        "{named}"
     );
     // `empty` only when there is neither a target nor a node; an older
     // daemon's reply has no `nodes`: no node lines.

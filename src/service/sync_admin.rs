@@ -44,6 +44,12 @@ use crate::sync::resync::{self, RequestEnv};
 /// How long `peer list` waits for the coordinator's live links (ms) before
 /// it shows the stored last-known rows alone.
 const PEER_LIST_SNAPSHOT_MS: u64 = 2_000;
+/// How long `resolve address` waits for the home node's answer (spec 4.3).
+pub const REMOTE_RESOLVE_WAIT_MS: u64 = 10_000;
+/// How long it then waits for the named seat to replicate here.
+pub const REPLICA_WAIT_MS: u64 = 5_000;
+/// Known machines an unknown-machine answer lists.
+const KNOWN_MACHINES_LISTED: usize = 8;
 const REMEDY_RE_ADD: &str = "; then `herdr-threads peer add` any target stopped by node_collision";
 
 /// See the module documentation.
@@ -148,6 +154,9 @@ impl SyncAdmin {
             SyncCommand::UnappliedReplay => self.unapplied_replay(label, budget),
             SyncCommand::Resync { from, logs } => self.resync(&from, &logs, label, budget),
             SyncCommand::CloneCleared => self.clone_cleared(label, budget),
+            SyncCommand::ResolveAddress { machine, target } => {
+                self.resolve_address(&machine, target, budget)
+            }
         }
     }
 
@@ -431,4 +440,114 @@ fn live_nodes(links: &[LinkStatus]) -> Vec<sync_status::LiveNode> {
             stalled: link.stalled,
         })
         .collect()
+}
+
+impl SyncAdmin {
+    /// `@MACHINE` resolution (spec D1, 4.3): the machine against the node
+    /// directory, then the location by the home node's daemon over its link.
+    /// A read: nothing is written or attributed here or there.
+    fn resolve_address(
+        &self,
+        machine: &str,
+        target: crate::sync::frame::AddrTarget,
+        budget: &CallBudget,
+    ) -> Result<SyncReply, ApiError> {
+        use crate::protocol::sync_admin::{AddressReply, MachineRow, RemoteAddress};
+        use crate::sync::coordinator::remote_addr::RemoteAnswer;
+        use crate::sync::frame::AddrOutcome;
+        let (rows, own) = self.store.sync_read(budget, |conn, _| {
+            let rows = node_directory::all(conn)
+                .map_err(crate::store::connection::store_error)?
+                .into_iter()
+                .map(|row| MachineRow {
+                    uuid: row.node_uuid.to_string(),
+                    tag: row.tag.to_string(),
+                    host: row.host_label,
+                })
+                .collect::<Vec<_>>();
+            let own: String = conn
+                .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+                .map_err(crate::store::connection::store_error)?;
+            Ok((rows, own))
+        })?;
+        let found = crate::protocol::address::match_machine(machine, &rows);
+        let node = match found.as_slice() {
+            [] => {
+                return Ok(SyncReply::Address(AddressReply::UnknownMachine {
+                    known: rows.iter().take(KNOWN_MACHINES_LISTED).cloned().collect(),
+                }));
+            }
+            [one] => (*one).clone(),
+            many => {
+                return Ok(SyncReply::Address(AddressReply::AmbiguousMachine {
+                    matches: many.iter().map(|row| (*row).clone()).collect(),
+                }));
+            }
+        };
+        if node.uuid == own {
+            return Ok(SyncReply::Address(AddressReply::SelfNode));
+        }
+        let uuid: crate::node::NodeUuid = node
+            .uuid
+            .parse()
+            .map_err(|_| ApiError::new(ErrorCode::StoreCorrupt, "malformed node directory uuid"))?;
+        let remaining = budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        let wait = std::time::Duration::from_millis(remaining.min(REMOTE_RESOLVE_WAIT_MS));
+        let answer = self
+            .runtime
+            .block_on(self.sync.resolve_remote(uuid, target, wait))?;
+        let answer = match answer {
+            None => RemoteAddress::Timeout {
+                secs: wait.as_secs(),
+            },
+            Some(RemoteAnswer::NotLinked | RemoteAnswer::LinkLost) => {
+                let last = self.store.sync_read(budget, |conn, _| {
+                    crate::store::sync_contacts::get(conn, &uuid)
+                })?;
+                RemoteAddress::Unreachable {
+                    last_contact_at: last.and_then(|c| i64::try_from(c.last_contact_at).ok()),
+                }
+            }
+            Some(RemoteAnswer::NoCap { version }) => RemoteAddress::NoCap { version },
+            Some(RemoteAnswer::Answered(outcome)) => match &outcome {
+                AddrOutcome::Seat { seat, .. } if !self.wait_replicated(seat, &uuid, budget)? => {
+                    RemoteAddress::NotReplicated { seat: seat.clone() }
+                }
+                _ => RemoteAddress::Answered { outcome },
+            },
+        };
+        Ok(SyncReply::Address(AddressReply::Remote { node, answer }))
+    }
+
+    /// Whether `seat` is (or within [`REPLICA_WAIT_MS`] becomes) a seat this
+    /// node holds as `home`'s (TRUST-POLICY N14).
+    fn wait_replicated(
+        &self,
+        seat: &str,
+        home: &crate::node::NodeUuid,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        use rusqlite::OptionalExtension;
+        let start = self.clock.monotonic_now().0;
+        loop {
+            let held = self.store.sync_read(budget, |conn, _| {
+                conn.query_row(
+                    "SELECT 1 FROM seats WHERE id=?1 AND home_node=?2 AND is_local=0",
+                    [seat, home.to_string().as_str()],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map(|found| found.is_some())
+                .map_err(crate::store::connection::store_error)
+            })?;
+            let now = self.clock.monotonic_now().0;
+            if held || now.saturating_sub(start) >= REPLICA_WAIT_MS || now >= budget.deadline.0 {
+                return Ok(held);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
 }

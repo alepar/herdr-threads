@@ -182,7 +182,7 @@ fn path_components(path: &str) -> Result<Vec<String>, ()> {
         match c {
             '/' => parts.push(String::new()),
             '\\' => match chars.next() {
-                Some(c @ ('/' | '\\')) => parts.last_mut().unwrap().push(c),
+                Some(c @ ('/' | '\\' | '@')) => parts.last_mut().unwrap().push(c),
                 _ => return Err(()),
             },
             _ => parts.last_mut().unwrap().push(c),
@@ -705,7 +705,7 @@ impl Outcome {
         match self {
             Outcome::Resolved(candidate) => Ok(candidate),
             Outcome::InvalidPath => Err(ApiError::invalid_request(
-                r"invalid path: use 1-3 nonempty components; escapes: \/ and \\",
+                r"invalid path: use 1-3 nonempty components; escapes: \/, \\ and \@",
             )),
             Outcome::NoMatch => Err(ApiError::not_found(format!(
                 "seat {}: neither an existing seat ID nor a live space/tab/pane name",
@@ -750,6 +750,96 @@ impl Outcome {
             }
         }
     }
+}
+
+/// One `--space/--tab/--pane` selector as a single reading, pooled over the
+/// whole topology (no caller pane: remote addresses, spec D2 "Parent
+/// inheritance on M"). Matching and aliases are [`reading_matches`]'s.
+pub fn resolve_parts(
+    topology: &HostTopology,
+    space: Option<&str>,
+    tab: Option<&str>,
+    pane: Option<&str>,
+) -> Outcome {
+    if space.is_none() && tab.is_none() && pane.is_none() {
+        return Outcome::NoMatch;
+    }
+    let wanted = reading(space, tab, pane);
+    let mut candidates: Vec<Candidate> = topology
+        .panes
+        .iter()
+        .filter(|p| reading_matches(topology, p, &wanted))
+        .map(|p| Candidate {
+            pane: p.target.clone(),
+            tier: Tier::Any,
+            readings: vec![wanted.clone()],
+            path: render_pane(topology, p),
+        })
+        .collect();
+    match candidates.len() {
+        0 => Outcome::NoMatch,
+        1 => Outcome::Resolved(candidates.remove(0)),
+        _ => Outcome::Ambiguous(candidates),
+    }
+}
+
+/// The `@MACHINE` split of an address (remote addresses, spec D2):
+/// `(location, machine)` at the last `@` whose machine part is nonempty and
+/// holds no `/` or `\\`, with a nonempty location. In the `path:` form a
+/// `\\@` is a literal `@`, never the separator. The location keeps its
+/// `path:` prefix and its escapes. `None`: the address names no machine.
+pub fn split_machine(raw: &str) -> Option<(&str, &str)> {
+    let at = match raw.strip_prefix("path:") {
+        Some(path) => {
+            let mut last = None;
+            let mut chars = path.char_indices();
+            while let Some((i, c)) = chars.next() {
+                match c {
+                    '\\' => {
+                        chars.next();
+                    }
+                    '@' => last = Some("path:".len() + i),
+                    _ => {}
+                }
+            }
+            last?
+        }
+        None => raw.rfind('@')?,
+    };
+    let (location, machine) = (&raw[..at], &raw[at + 1..]);
+    let bare = location.strip_prefix("path:").unwrap_or(location);
+    (!bare.is_empty() && !machine.is_empty() && !machine.contains(['/', '\\']))
+        .then_some((location, machine))
+}
+
+/// Whether `raw` (an `@MACHINE` suffix) names the node `row` (spec D1): its
+/// full uuid or a prefix of at least 8 hex digits (any case), its exact tag,
+/// or its host label or that label's first DNS label, ignoring ASCII case.
+pub fn machine_matches(raw: &str, row: &crate::protocol::sync_admin::MachineRow) -> bool {
+    let hex = (8..=32).contains(&raw.len()) && raw.bytes().all(|b| b.is_ascii_hexdigit());
+    (hex && row.uuid.starts_with(&raw.to_ascii_lowercase()))
+        || raw == row.tag
+        || row.host.as_deref().is_some_and(|host| {
+            host.eq_ignore_ascii_case(raw)
+                || host
+                    .split('.')
+                    .next()
+                    .is_some_and(|first| first.eq_ignore_ascii_case(raw))
+        })
+}
+
+/// Every row `raw` names, each node once, in the rows' order.
+pub fn match_machine<'a>(
+    raw: &str,
+    rows: &'a [crate::protocol::sync_admin::MachineRow],
+) -> Vec<&'a crate::protocol::sync_admin::MachineRow> {
+    let mut out: Vec<&crate::protocol::sync_admin::MachineRow> = Vec::new();
+    for row in rows.iter().filter(|row| machine_matches(raw, row)) {
+        if !out.iter().any(|seen| seen.uuid == row.uuid) {
+            out.push(row);
+        }
+    }
+    out
 }
 
 /// Tab IDs have an unambiguous separator/prefix, unlike workspace labels such as `work`.

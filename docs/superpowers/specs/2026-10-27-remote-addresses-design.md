@@ -543,3 +543,36 @@ only the launch path.
 ## Post-Implementation Notes
 
 > *Append dated notes here as the design is implemented and diverges.*
+
+### 2026-10-27, phase 1 as built
+
+- **Scope.** Phase 1 covers the SEAT arguments: `--seat` (reads, `invite`,
+  direct `send`), `--require-ack SEAT`, and the positional `SEAT` of `seat
+  inspect|rebind|retire` (rebind and retire of a remote seat stay refused by
+  N5 once resolved, as with its exact ID). The `--space/--tab/--pane` flags
+  keep their local meaning in phase 1 (`@` stays a literal character there);
+  `@MACHINE` on them moves to phase 2, where `launch`/`handoff --pane P@M`
+  need it anyway. Every remote pane is already addressable as
+  `--seat 'SPACE/TAB/PANE@MACHINE'`. `--space/--tab` narrowing of a remote
+  `--seat` address is refused (`--space/--tab cannot narrow a remote address;
+  qualify its path instead`, 71 bytes). `AddrTarget::Pane` and the remote
+  parent rule (`protocol::address::resolve_parts`) are on the wire and in the
+  resolver now, so phase 2 adds no frame.
+- **Nicknames.** `SEAT_ID@M` is checked by M (its own non-retired seat, else
+  `seat S does not live on this machine`); `PREFIX/SEAT_ID@M` is not resolved
+  remotely (no match there).
+- **Replication wait.** `AddrOutcome::Seat` carries no `at` position: the
+  asking daemon polls for the seat row with `home_node = M` (every 100 ms, up
+  to `REPLICA_WAIT_MS` = 5 s), which also enforces that the seat is M's.
+- **Fallback.** An unknown machine suffix, or a local daemon that cannot
+  resolve machines, falls back to the local reading only when the whole
+  string names a live local pane; otherwise the unknown machine is reported.
+- **Resolved line.** `resolved: PATH@TAG PANE seat=ID (tier: any)`.
+- **Old peer.** A peer is "older" when its hello lacks `addr.resolve.v1`;
+  test-support daemons drop it with `HT_TEST_WITHHOLD_CAPS=addr.resolve.v1`.
+- **Test harness.** The multinode dial shim now sources the destination
+  node's own environment (`cluster/env/<node>`), so a daemon a peer's dial
+  starts no longer inherits the dialer's; `FakeHerdr` panes take `ID=LABEL`;
+  `HT_TEST_HOST_LABEL` stands in for the hostname at genesis.
+- **Host label shown.** `peer list` node rows end in ` host=LABEL` (6 bytes
+  plus the label), the name `@MACHINE` matches.

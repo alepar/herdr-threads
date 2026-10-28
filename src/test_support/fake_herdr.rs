@@ -162,7 +162,8 @@ pub struct FakeHerdr {
 
 impl FakeHerdr {
     /// Serves `panes` (idle Claude agents) at `socket`. `label` names the
-    /// server in the stand-in session of each pane.
+    /// server in the stand-in session of each pane. A pane is `ID` (labelled
+    /// by its id) or `ID=LABEL`.
     pub fn start(label: &str, socket: &Path, panes: &[&str]) -> Self {
         let listener = UnixListener::bind(socket)
             .unwrap_or_else(|e| panic!("bind the fake Herdr at {}: {e}", socket.display()));
@@ -170,11 +171,12 @@ impl FakeHerdr {
         let panes = panes
             .iter()
             .enumerate()
-            .map(|(i, id)| {
+            .map(|(i, spec)| {
+                let (id, pane_label) = spec.split_once('=').unwrap_or((spec, spec));
                 json!({"pane_id":id,"terminal_id":format!("term-{label}-{i}"),
                        "workspace_id":"w1","tab_id":"w1:t1",
                        "focused":false,"agent_status":"idle","agent":"claude",
-                       "label":id,"revision":3})
+                       "label":pane_label,"revision":3})
             })
             .collect();
         let world = Arc::new(World {

@@ -1426,6 +1426,12 @@ const HOST_LABEL_MAX_BYTES: usize = 255;
 
 /// This machine's hostname, lossy UTF-8, for the genesis `host_label`.
 fn host_label() -> String {
+    // Multinode tests: every cluster node runs on one machine; this stands in
+    // for each node's own hostname.
+    #[cfg(feature = "test-support")]
+    if let Ok(label) = std::env::var("HT_TEST_HOST_LABEL") {
+        return truncate_label(&label);
+    }
     let mut buf = [0u8; 256];
     // SAFETY: the buffer is valid for `buf.len()` bytes; gethostname writes at
     // most that many and may omit the terminator when it truncates.
@@ -2294,6 +2300,15 @@ where
                     cancel: factory_stop.clone(),
                 },
             );
+            // Remote addresses: linked peers' `addr_resolve` is answered
+            // against this node's own hosts and seats (TRUST-POLICY N14).
+            sync_handle.set_addr_resolver(Arc::new(
+                crate::service::remote_resolver::RemoteResolver {
+                    store: Arc::clone(&publisher_store),
+                    sessions: Arc::clone(&host_sessions),
+                    clock: Arc::clone(&factory_clock),
+                },
+            ));
             // Seat status (ht-xg88): publishes this node's seats while a
             // linked peer takes them; ends on the stop token like discovery.
             let (check_every, refresh_every) = factory_probe.seat_publisher_periods();

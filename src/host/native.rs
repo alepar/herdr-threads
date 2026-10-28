@@ -1254,6 +1254,13 @@ impl HostPort for NativeCli {
         self.participant_labels(budget)
     }
 
+    fn live_topology(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, ApiError> {
+        self.topology(budget)
+    }
+
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         // Herdr 0.9.1 `agent.start` checks shell ownership and prompt
         // readiness itself. The same-incarnation preflight needs the kernel

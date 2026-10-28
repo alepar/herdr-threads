@@ -303,6 +303,46 @@ fn seat_status_is_unknown_to_2_1_1() {
     assert!(matches!(shadow, legacy::PeerFrame::Unknown));
 }
 
+// Kills: an addr_resolve or addr_resolved frame (remote addresses, sent
+// only to a peer advertising addr.resolve.v1) that a 2.1.1 peer would refuse
+// instead of ignoring, were one ever sent to it.
+#[test]
+fn addr_frames_are_unknown_to_2_1_1() {
+    use herdr_threads::sync::frame::{
+        AddrCandidate, AddrOutcome, AddrResolve, AddrResolved, AddrTarget,
+    };
+    for frame in [
+        PeerFrame::AddrResolve(AddrResolve {
+            id: Uuid::from_u128(5),
+            target: AddrTarget::Seat {
+                location: "office/main/claude".into(),
+            },
+        }),
+        PeerFrame::AddrResolve(AddrResolve {
+            id: Uuid::from_u128(5),
+            target: AddrTarget::Pane {
+                space: None,
+                tab: Some("main".into()),
+                pane: Some("claude".into()),
+            },
+        }),
+        PeerFrame::AddrResolved(AddrResolved {
+            id: Uuid::from_u128(5),
+            outcome: AddrOutcome::Ambiguous {
+                candidates: vec![AddrCandidate {
+                    path: "office / main / claude".into(),
+                    pane: "w1:p1".into(),
+                    seat: None,
+                }],
+                omitted: 3,
+            },
+        }),
+    ] {
+        let shadow = legacy::decode(&frame.encode().unwrap()).expect("2.1.1 decodes it");
+        assert!(matches!(shadow, legacy::PeerFrame::Unknown), "{frame:?}");
+    }
+}
+
 #[test]
 fn emitted_hello_envelope_is_one() {
     let mut seen = 0;

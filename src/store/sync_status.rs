@@ -410,9 +410,9 @@ pub fn nodes(conn: &Connection, now_ms: u64, live: &[LiveNode]) -> Result<Vec<No
         let uuid: NodeUuid = text
             .parse()
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "malformed node uuid"))?;
-        let tag = node_directory::get(conn, uuid)
-            .map_err(store_error)?
-            .map(|row| row.tag.to_string());
+        let directory = node_directory::get(conn, uuid).map_err(store_error)?;
+        let tag = directory.as_ref().map(|row| row.tag.to_string());
+        let host = directory.and_then(|row| row.host_label);
         let reach = sync_contacts::reach(conn, &uuid, now_ms)?;
         let contact = sync_contacts::get(conn, &uuid)?;
         let live = live.iter().find(|l| l.node == uuid);
@@ -422,6 +422,7 @@ pub fn nodes(conn: &Connection, now_ms: u64, live: &[LiveNode]) -> Result<Vec<No
             .map_err(store_error)?;
         out.push(NodeRow {
             node: node_label(tag.as_deref(), &text),
+            host,
             state: node_state(reach, live).as_str().to_owned(),
             stalled: live
                 .map(|l| l.stalled.names().into_iter().map(str::to_owned).collect())

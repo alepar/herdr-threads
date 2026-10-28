@@ -3927,6 +3927,18 @@ pub trait HostPort: Send + Sync {
     ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
         Ok(Vec::new())
     }
+    /// One coherent live topology (workspaces, tabs, panes and their
+    /// labels), for resolving a linked peer's remote address (TRUST-POLICY
+    /// N14). Default: unsupported.
+    fn live_topology(
+        &self,
+        _budget: &CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, ApiError> {
+        Err(ApiError::new(
+            crate::protocol::results::ErrorCode::Unsupported,
+            "host topology unavailable",
+        ))
+    }
     /// Pids of the processes Herdr reports in the pane's foreground (not its shell), for the
     /// composer wake of a seat with wake targets (spec §3 Wake). Empty when Herdr reports none
     /// or the adapter cannot ask: the composer wake then does not fire.

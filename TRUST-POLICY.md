@@ -54,6 +54,10 @@ Amended 2026-10-27 for restored-pane retirement (ht-wpq4): a seat a new Herdr in
 when the pane watched at its target closes within that incarnation and no claim names it for an observed grace
 (C2); the retirement records `closure_evidence = restored_pane_closed`, two accepted limits; no new wire value.
 
+Amended 2026-10-27 for remote addresses (`SEAT@MACHINE`, phase 1): a seat name qualified by a machine is resolved
+by that machine's daemon over an authenticated direct link, as a read (N14, the cross-node accepted limit "A
+linked node answers remote resolution"); N13 unchanged; no new provenance value.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -1623,6 +1627,18 @@ Any display of it is only as fresh as the home node's status allows: unreachable
 never a stale presence (`store::remote_seat_status::presence_of`, the one rule every reader uses). Peer node status (`node_info` version, stall flags,
 positions) is diagnostic the same way: it changes no link, dial, seat or binding decision.
 
+**N14. A remote address is resolved by its home node, as a read.** A seat argument `LOCATION@MACHINE` whose
+machine is another node is sent to that node's daemon on `addr_resolve` (cap `addr.resolve.v1`) over the live
+direct link (N6 binds the link to the node). That daemon resolves the location against its own live topology and
+seat table (A2 on the node that owns the panes) and answers with at most one of its own resolved local seats; it
+writes nothing, allocates nothing and attributes nothing, and the request carries no caller identity. The asking
+node only learns a seat ID: it waits until that seat has replicated to it, and then decides the command exactly
+as for that exact seat ID (A2, N3, N5). Cached remote labels (N13) never take part. A machine name is matched
+against the node directory (uuid, uuid prefix, tag, host label); more than one match is refused, never guessed.
+A node that cannot answer (no direct link, no cap, no answer in time, no live Herdr) leaves the address refused:
+the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs` `resolve_at`,
+`src/service/remote_resolver.rs`).
+
 ## Accepted limits
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
@@ -2260,6 +2276,12 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   (N2): any linked node can misdescribe another node's seats, or hold a too-high rev that hides that boot's
   later snapshots until the origin restarts. In-contract (A1, same user, cooperative); receivers take only
   origins they know, bound every field, and the data stays display-only. Design `docs/superpowers/specs/2026-10-27-node-status-and-seat-directory-design.md`.
+- **A linked node answers remote resolution.** An `addr_resolved` is unsigned link data from the named node: it
+  can name the wrong one of its seats, or claim no match. In-contract (A1, same user, cooperative): the answer is
+  bounded, only a seat the asking node already holds as that node's seat (after replication) is used, and the
+  command is then decided locally as for an exact seat ID (N14). A host label is the hostname captured at the
+  node's genesis; a renamed machine keeps its old name until a new store (`peer list` shows `host=`). Design
+  `docs/superpowers/specs/2026-10-27-remote-addresses-design.md`.
 
 ## Decision record
 

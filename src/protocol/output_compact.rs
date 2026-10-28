@@ -1160,7 +1160,7 @@ fn age(now_ms: i64, at_ms: i64) -> String {
 
 /// One `peer list` node row (ht-xg88), about 60-95 bytes:
 /// `node TAG STATE[ PARTS] seen=AGE app=AGE v=VER rx=HAVE/HEAD tx=ACKED/HEAD
-/// [since=TIME][ clone_suspected]`, where an unreachable node shows
+/// [since=TIME][ clone_suspected][ host=LABEL]`, where an unreachable node shows
 /// `unreachable since TIME` (or `unreachable never`) instead of the two ages.
 /// The version is peer-chosen text, escaped to one token.
 fn node_row(node: &NodeRow, now: i64, out: &mut String) {
@@ -1201,6 +1201,10 @@ fn node_row(node: &NodeRow, now: i64, out: &mut String) {
     }
     if node.clone_suspected {
         out.push_str(" clone_suspected");
+    }
+    // The machine name `@MACHINE` addresses match (6 bytes plus the label).
+    if let Some(host) = &node.host {
+        let _ = write!(out, " host={}", token(host));
     }
     out.push('\n');
 }
@@ -1340,6 +1344,15 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
         }
         SyncReply::CloneCleared { cleared } => {
             let _ = writeln!(out, "clone_cleared {cleared}");
+        }
+        // Consumed by seat resolution, never printed on its own; the JSON
+        // form is the debugging view.
+        SyncReply::Address(reply) => {
+            let _ = writeln!(
+                out,
+                "address {}",
+                one_line(&serde_json::to_string(reply).unwrap_or_default())
+            );
         }
     }
 }

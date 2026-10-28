@@ -25,7 +25,7 @@ Options:
       --machine
           The stable `key: value` text form for scripts and models (the default when stdout is not a terminal)
       --seat <SEAT>
-          SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
+          SEAT: exact ID or SPACE/TAB/PANE[@MACHINE]; single-quote path: names with \/ \\ \@ escapes
       --cooperative-seat <COOPERATIVE_SEAT>
           Explicit seat ID for a cooperative agent call; requires all four --cooperative-* options
       --cwd <CWD>

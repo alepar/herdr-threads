@@ -236,3 +236,6 @@ mod sweep;
 
 #[path = "multinode/config_user_intent.rs"]
 mod config_user_intent;
+
+#[path = "multinode/remote_addresses.rs"]
+mod remote_addresses;

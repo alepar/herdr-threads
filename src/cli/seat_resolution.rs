@@ -30,6 +30,7 @@ use super::{
     panes::{looks_like_pane_id, resolve_parents},
     seat_selector::{self, Narrowing},
 };
+use crate::sync::frame::{AddrOutcome, AddrTarget};
 use crate::{
     daemon::paths::{NodePaths, RuntimeContext},
     host::observation::HostTopology,
@@ -40,6 +41,7 @@ use crate::{
         ids::{HostTargetId, SeatId},
         pagination::PageRequest,
         results::{ApiError, CommandResult, ContinuityStatus, ErrorCode, SeatInspection},
+        sync_admin::{AddressReply, RemoteAddress, SyncCommand, SyncReply},
         time::Clock,
     },
 };
@@ -536,6 +538,29 @@ where
             self.verify_narrowed(raw, &seat, &inspection)?;
             return Ok(Resolved::Seat(seat));
         }
+        // An `@MACHINE` suffix (remote addresses): the home node resolves the location; the whole
+        // string keeps its local reading.
+        if let Some((location, machine)) = seat_selector::split_machine(raw)
+            && let Some(resolved) = self.resolve_at(parsed, slot, raw, location, machine)?
+        {
+            return Ok(resolved);
+        }
+        self.resolve_local(parsed, slot, raw)
+    }
+
+    /// Steps 1-4 of `raw` against this node only.
+    fn resolve_local(
+        &mut self,
+        parsed: &ParsedCli,
+        slot: SeatSlot,
+        raw: &str,
+    ) -> Result<Resolved, RunError> {
+        if let Ok(seat) = SeatId::parse(raw)
+            && let Some(inspection) = self.inspect(&seat)?
+        {
+            self.verify_narrowed(raw, &seat, &inspection)?;
+            return Ok(Resolved::Seat(seat));
+        }
         let selector = seat_selector::Selector::new(raw);
         // 2. Nickname PREFIX/SEAT_ID: the last part is an existing seat; the prefix must name
         // the seat's live location.
@@ -631,6 +656,213 @@ where
         }
     }
 
+    /// Whether `raw` names a live local pane (its whole-string reading): a read failure is no hit.
+    fn local_hit(&self, raw: &str) -> bool {
+        let Ok(topology) = self.topology() else {
+            return false;
+        };
+        let caller = self.caller().ok().flatten();
+        let narrowing = self.narrowing().ok().flatten().cloned().unwrap_or_default();
+        !matches!(
+            seat_selector::Selector::new(raw).resolve_with(
+                topology,
+                caller,
+                &narrowing,
+                seat_selector::Tiering::Global
+            ),
+            seat_selector::Outcome::NoMatch | seat_selector::Outcome::InvalidPath
+        )
+    }
+
+    /// Ask the daemon to resolve `location` on `machine` (spec 4.3). The outer error is a
+    /// connection failure; the inner one the daemon's refusal.
+    fn address(
+        &self,
+        machine: &str,
+        location: &str,
+    ) -> Result<Result<AddressReply, ApiError>, RunError> {
+        let (_, client) = self.connection.get()?;
+        let budget = crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(
+                self.clock
+                    .monotonic_now()
+                    .0
+                    .saturating_add(REMOTE_ADDRESS_BUDGET_MS),
+            ),
+            cancellation: crate::protocol::time::Cancellation::default(),
+        };
+        Ok(
+            match client.call(
+                Command::Sync(SyncCommand::ResolveAddress {
+                    machine: machine.to_owned(),
+                    target: AddrTarget::Seat {
+                        location: location.to_owned(),
+                    },
+                }),
+                &budget,
+            ) {
+                Ok(CommandResult::Sync(SyncReply::Address(reply))) => Ok(reply),
+                Ok(_) => Err(ApiError::invalid_request("unexpected address result")),
+                Err(error) => Err(error),
+            },
+        )
+    }
+
+    /// `location@machine` (spec D2): `Ok(None)` when only the whole string's local reading can
+    /// apply (the suffix names no known machine), else the one resolution or a refusal. A
+    /// suffix naming a machine that cannot answer is refused, never resolved locally (D7).
+    fn resolve_at(
+        &mut self,
+        parsed: &ParsedCli,
+        slot: SeatSlot,
+        raw: &str,
+        location: &str,
+        machine: &str,
+    ) -> Result<Option<Resolved>, RunError> {
+        let reply = match self.address(machine, location)? {
+            Ok(reply) => reply,
+            // A daemon that cannot resolve machines knows none.
+            Err(_) if self.local_hit(raw) => return Ok(None),
+            Err(error) => return Err(run_error(error)),
+        };
+        let (node, answer) = match reply {
+            AddressReply::UnknownMachine { known } => {
+                return if self.local_hit(raw) {
+                    Ok(None)
+                } else {
+                    Err(run_error(remote_error::unknown_machine(machine, &known)))
+                };
+            }
+            AddressReply::AmbiguousMachine { matches } => {
+                return Err(run_error(remote_error::ambiguous_machine(
+                    machine, &matches,
+                )));
+            }
+            AddressReply::Unknown => {
+                return Err(run_error(remote_error::unevaluable(
+                    raw,
+                    location,
+                    machine,
+                    "the daemon answered in an unknown form",
+                    self.local_hit(raw),
+                )));
+            }
+            AddressReply::SelfNode => {
+                if let Ok(seat) = SeatId::parse(location)
+                    && let Some(inspection) = self.inspect(&seat)?
+                    && inspection.summary.continuity == ContinuityStatus::Remote
+                {
+                    return Err(run_error(ApiError::invalid_request(format!(
+                        "seat {} lives on another machine, not {}",
+                        seat.as_str(),
+                        machine
+                    ))));
+                }
+                let hit = self.local_hit(raw);
+                let at_self = self.resolve_local(parsed, slot, location);
+                if !hit {
+                    return at_self.map(Some);
+                }
+                let whole = self.resolve_local(parsed, slot, raw)?;
+                return match at_self {
+                    Ok(other) if !same_resolution(&other, &whole) => Err(run_error(
+                        remote_error::both_readings(raw, &[raw.to_owned(), location.to_owned()]),
+                    )),
+                    _ => Ok(Some(whole)),
+                };
+            }
+            AddressReply::Remote { node, answer } => (node, answer),
+        };
+        if self.raw_narrowing.is_some() {
+            return Err(run_error(ApiError::invalid_request(
+                "--space/--tab cannot narrow a remote address; qualify its path instead",
+            )));
+        }
+        let hit = self.local_hit(raw);
+        let label = remote_error::machine_label(&node);
+        let reason = match answer {
+            RemoteAddress::Answered { outcome } => match outcome {
+                AddrOutcome::Seat { seat, path, pane } => {
+                    if hit {
+                        return Err(run_error(remote_error::both_readings(
+                            raw,
+                            &[raw.to_owned(), format!("{path}@{}", node.tag)],
+                        )));
+                    }
+                    let seat = SeatId::parse(&seat).map_err(|_| {
+                        run_error(ApiError::invalid_request(
+                            "machine answered a malformed seat",
+                        ))
+                    })?;
+                    let pane_shown = HostTargetId::parse(pane.clone())
+                        .unwrap_or_else(|_| HostTargetId::parse("w0:p0".to_owned()).unwrap());
+                    let shown = if path.is_empty() {
+                        format!("@{}", node.tag)
+                    } else {
+                        format!("{path}@{}", node.tag)
+                    };
+                    write_resolved_line(self.stderr, &shown, &pane_shown, &seat, "any")?;
+                    return Ok(Some(Resolved::Seat(seat)));
+                }
+                AddrOutcome::NoSeat { path, pane } if !hit => {
+                    return Err(run_error(remote_error::no_seat(&path, &pane, &node)));
+                }
+                AddrOutcome::NoMatch if hit => return Ok(None),
+                AddrOutcome::NoMatch => {
+                    return Err(run_error(ApiError::not_found(format!(
+                        "seat {location}@{}: neither an existing seat ID nor a live space/tab/pane \
+                         name on {label}",
+                        node.tag
+                    ))));
+                }
+                AddrOutcome::Ambiguous {
+                    candidates,
+                    omitted,
+                } => {
+                    return Err(run_error(remote_error::ambiguous(
+                        raw,
+                        &node,
+                        &candidates,
+                        omitted,
+                        hit,
+                    )));
+                }
+                AddrOutcome::NoSeat { path, .. } => {
+                    return Err(run_error(remote_error::both_readings(
+                        raw,
+                        &[raw.to_owned(), format!("{path}@{}", node.tag)],
+                    )));
+                }
+                AddrOutcome::HostUnavailable => {
+                    format!("{label}: seat names need its live Herdr topology")
+                }
+                AddrOutcome::Refused { detail } => format!("{label} refused: {detail}"),
+                AddrOutcome::Unknown => format!("{label} answered in an unknown form"),
+            },
+            RemoteAddress::Unreachable { last_contact_at } => match last_contact_at {
+                Some(at) => format!(
+                    "machine {label} is unreachable (last contact {}m ago); pass an exact seat ID",
+                    self.clock.utc_now().0.saturating_sub(at).max(0) / 60_000
+                ),
+                None => format!("machine {label} is unreachable; pass an exact seat ID"),
+            },
+            RemoteAddress::NoCap { version } => format!(
+                "machine {label} cannot resolve names (needs addr.resolve.v1; version {})",
+                version.as_deref().unwrap_or("unknown")
+            ),
+            RemoteAddress::Timeout { secs } => {
+                format!("machine {label} did not answer in {secs}s; pass an exact seat ID")
+            }
+            RemoteAddress::NotReplicated { seat } => {
+                format!("seat {seat} on {label} has not replicated here yet; retry")
+            }
+            RemoteAddress::Unknown => format!("{label} answered in an unknown form"),
+        };
+        Err(run_error(remote_error::unevaluable(
+            raw, location, machine, &reason, hit,
+        )))
+    }
+
     fn candidate(
         &self,
         outcome: seat_selector::Outcome,
@@ -670,6 +902,151 @@ where
                     .ok_or_else(|| super::no_seat_for_pane(&pane))
             }
             SeatMapping::Allocate => Ok(Resolved::Pane { pane, line: None }),
+        }
+    }
+}
+
+/// Whether two readings resolved the same seat or pane.
+fn same_resolution(a: &Resolved, b: &Resolved) -> bool {
+    match (a, b) {
+        (Resolved::Seat(a), Resolved::Seat(b)) => a == b,
+        (Resolved::Pane { pane: a, .. }, Resolved::Pane { pane: b, .. }) => a == b,
+        _ => false,
+    }
+}
+
+/// The CLI's budget for one `@MACHINE` resolution: the daemon's wait for the home node and for
+/// the seat to replicate, plus margin, so the daemon's typed answer arrives first (spec 4.3).
+const REMOTE_ADDRESS_BUDGET_MS: u64 = crate::service::sync_admin::REMOTE_RESOLVE_WAIT_MS
+    + crate::service::sync_admin::REPLICA_WAIT_MS
+    + 5_000;
+
+/// Caller-visible refusals of remote addresses (spec 4.4).
+mod remote_error {
+    use crate::protocol::results::{ApiError, ErrorCode};
+    use crate::protocol::sync_admin::MachineRow;
+    use crate::sync::frame::AddrCandidate;
+
+    /// Known machines an unknown-machine refusal names.
+    const KNOWN_LISTED: usize = 8;
+
+    fn one_line(text: &str) -> String {
+        crate::view::escape::escape_for_terminal(text, crate::view::escape::Context::SingleLine)
+            .into_owned()
+    }
+
+    /// `<tag> <host>`, or the tag alone.
+    pub(super) fn machine_label(row: &MachineRow) -> String {
+        match &row.host {
+            Some(host) => format!("{} {}", row.tag, one_line(host)),
+            None => row.tag.clone(),
+        }
+    }
+
+    pub(super) fn unknown_machine(machine: &str, known: &[MachineRow]) -> ApiError {
+        let names: Vec<String> = known.iter().take(KNOWN_LISTED).map(machine_label).collect();
+        ApiError::not_found(format!(
+            "no machine {}; known: {}",
+            one_line(machine),
+            if names.is_empty() {
+                "none".to_owned()
+            } else {
+                names.join(", ")
+            }
+        ))
+    }
+
+    pub(super) fn ambiguous_machine(machine: &str, matches: &[MachineRow]) -> ApiError {
+        let mut lines = vec![format!(
+            "ambiguous machine {}: {} matches",
+            one_line(machine),
+            matches.len()
+        )];
+        lines.extend(
+            matches
+                .iter()
+                .map(|row| format!("  {} {}", row.uuid, machine_label(row))),
+        );
+        lines.push("pass @<uuid>".to_owned());
+        ApiError::new(ErrorCode::Conflict, lines.join("\n"))
+    }
+
+    pub(super) fn no_seat(path: &str, pane: &str, node: &MachineRow) -> ApiError {
+        ApiError::not_found(format!(
+            "no seat at {}@{} (pane {}); a seat appears once an agent there checks in",
+            one_line(path),
+            node.tag,
+            one_line(pane)
+        ))
+    }
+
+    pub(super) fn ambiguous(
+        raw: &str,
+        node: &MachineRow,
+        candidates: &[AddrCandidate],
+        omitted: u32,
+        local_hit: bool,
+    ) -> ApiError {
+        let total =
+            candidates.len() + usize::try_from(omitted).unwrap_or(0) + usize::from(local_hit);
+        let mut lines = vec![format!(
+            "ambiguous seat {}: {total} candidates (tier: any)",
+            one_line(raw)
+        )];
+        if local_hit {
+            lines.push(format!("  {} (this machine)", one_line(raw)));
+        }
+        for c in candidates {
+            lines.push(format!(
+                "  {}@{} {} seat={}",
+                one_line(&c.path),
+                node.tag,
+                one_line(&c.pane),
+                c.seat.as_deref().map_or("none".to_owned(), one_line)
+            ));
+        }
+        if omitted > 0 {
+            lines.push(format!("  ({omitted} omitted)"));
+        }
+        lines.push("qualify with a longer SPACE/TAB/PANE path, or an exact seat ID".to_owned());
+        ApiError::new(ErrorCode::Conflict, lines.join("\n"))
+    }
+
+    /// The whole string names a local pane and its split names a remote (or another local)
+    /// one.
+    pub(super) fn both_readings(raw: &str, readings: &[String]) -> ApiError {
+        let mut lines = vec![format!(
+            "ambiguous seat {}: {} readings",
+            one_line(raw),
+            readings.len()
+        )];
+        lines.extend(readings.iter().map(|r| format!("  {}", one_line(r))));
+        lines.push(r"for the local name escape the @: 'path:...\@...'".to_owned());
+        ApiError::new(ErrorCode::Conflict, lines.join("\n"))
+    }
+
+    /// The machine cannot answer: refused, with the escape hint when the whole string also names
+    /// a local pane (spec D2).
+    pub(super) fn unevaluable(
+        raw: &str,
+        location: &str,
+        machine: &str,
+        reason: &str,
+        local_hit: bool,
+    ) -> ApiError {
+        let code = ErrorCode::HostUnavailable;
+        if local_hit {
+            ApiError::new(
+                code,
+                format!(
+                    r"cannot check {}@{}: {reason}; for the local name use 'path:...\@...' ({})",
+                    one_line(location),
+                    one_line(machine),
+                    one_line(raw)
+                ),
+            )
+        } else {
+            ApiError::new(code, reason.to_owned())
         }
     }
 }

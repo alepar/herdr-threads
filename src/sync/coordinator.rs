@@ -8106,4 +8106,72 @@ mod tests {
         stop(a).await;
         stop(b).await;
     }
+
+    /// Holds every request until released.
+    struct GatedResolver(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+
+    impl remote_addr::AddrResolver for GatedResolver {
+        fn resolve(&self, _: crate::sync::frame::AddrTarget) -> crate::sync::frame::AddrOutcome {
+            let _ = self.0.lock().unwrap().recv_timeout(Duration::from_secs(10));
+            crate::sync::frame::AddrOutcome::NoMatch
+        }
+    }
+
+    // Kills: an asker that waits past its bound for a stalled peer, a peer
+    // that runs more than eight of one link's requests at once, and a late
+    // answer delivered to nobody crashing or leaking the request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_resolve_times_out_and_bounds_inbound_requests() {
+        use crate::sync::frame::AddrOutcome;
+        let a = start_node(1, Arc::new(MemoryJournal::new(identity(1))));
+        let b = start_node(2, Arc::new(MemoryJournal::new(identity(2))));
+        let (release, gate) = std::sync::mpsc::channel();
+        b.handle
+            .set_addr_resolver(Arc::new(GatedResolver(std::sync::Mutex::new(gate))));
+        let _report = link_nodes(&a, &b).await;
+        let b_node = identity(2).uuid();
+        listed(&a, 1).await;
+        // The first request is held by b: the asker gives up at its bound.
+        let started = std::time::Instant::now();
+        let first = a
+            .handle
+            .resolve_remote(b_node, seat_target("x"), Duration::from_millis(300))
+            .await
+            .unwrap();
+        assert_eq!(first, None, "timed out");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        // Seven more fill b's eight in-flight slots; the ninth is refused.
+        let mut held = Vec::new();
+        for _ in 0..7 {
+            let handle = a.handle.clone();
+            held.push(tokio::spawn(async move {
+                handle
+                    .resolve_remote(b_node, seat_target("x"), Duration::from_secs(20))
+                    .await
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let ninth = a
+            .handle
+            .resolve_remote(b_node, seat_target("x"), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(
+            ninth,
+            Some(remote_addr::RemoteAnswer::Answered(AddrOutcome::Refused {
+                detail: "busy".into()
+            }))
+        );
+        for _ in 0..8 {
+            release.send(()).unwrap();
+        }
+        for request in held {
+            assert_eq!(
+                request.await.unwrap().unwrap(),
+                Some(remote_addr::RemoteAnswer::Answered(AddrOutcome::NoMatch))
+            );
+        }
+        stop(a).await;
+        stop(b).await;
+    }
 }

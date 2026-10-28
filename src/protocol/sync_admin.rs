@@ -58,6 +58,15 @@ pub enum SyncCommand {
         logs: Vec<String>,
     },
     CloneCleared,
+    /// Resolve the address `target` on machine `machine` (an `@MACHINE`
+    /// suffix: a node uuid or its prefix, a tag or a host name). A read: the
+    /// home node's daemon resolves it against its own live view.
+    ResolveAddress {
+        #[serde(default)]
+        machine: String,
+        #[serde(default)]
+        target: crate::sync::frame::AddrTarget,
+    },
 }
 
 impl SyncCommand {
@@ -104,6 +113,7 @@ impl SyncCommand {
                 text(from)?;
                 logs.iter().map(String::as_str).try_for_each(text)
             }
+            Self::ResolveAddress { machine, .. } => text(machine),
             Self::PeerList
             | Self::Verify
             | Self::UnappliedList { .. }
@@ -138,6 +148,10 @@ pub struct NodeRow {
     /// The node's tag, else its uuid prefix.
     #[serde(default)]
     pub node: String,
+    /// Its host label: the machine name an `@MACHINE` address matches
+    /// (captured at the node's genesis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     /// `linked`, `stalled`, `reachable` or `unreachable`.
     #[serde(default)]
     pub state: String,
@@ -376,4 +390,81 @@ pub enum SyncReply {
     CloneCleared {
         cleared: u32,
     },
+    /// The answer to [`SyncCommand::ResolveAddress`].
+    Address(AddressReply),
+}
+
+/// One machine (node) as an address names it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineRow {
+    /// 32 lowercase hex.
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub tag: String,
+    /// Its `host_label` (the hostname it signed at genesis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+/// How the daemon resolved an `@MACHINE` address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum AddressReply {
+    /// The machine is this node: the caller resolves the location locally.
+    SelfNode,
+    /// No node matches; `known` lists up to eight known nodes.
+    UnknownMachine {
+        #[serde(default)]
+        known: Vec<MachineRow>,
+    },
+    /// Several nodes match.
+    AmbiguousMachine {
+        #[serde(default)]
+        matches: Vec<MachineRow>,
+    },
+    /// The home node answered (or could not).
+    Remote {
+        #[serde(default)]
+        node: MachineRow,
+        #[serde(default)]
+        answer: RemoteAddress,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+/// What became of the request to the home node.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum RemoteAddress {
+    /// The home node's own outcome. A `seat` outcome names a seat this node
+    /// already holds (the daemon waited for it to replicate).
+    Answered {
+        #[serde(default)]
+        outcome: crate::sync::frame::AddrOutcome,
+    },
+    /// No live direct link to the node; its last contact (unix ms).
+    Unreachable {
+        #[serde(default)]
+        last_contact_at: Option<i64>,
+    },
+    /// The link does not carry `addr.resolve.v1`.
+    NoCap {
+        #[serde(default)]
+        version: Option<String>,
+    },
+    /// No answer within the wait.
+    Timeout {
+        #[serde(default)]
+        secs: u64,
+    },
+    /// The node named a seat this node does not hold yet.
+    NotReplicated {
+        #[serde(default)]
+        seat: String,
+    },
+    #[default]
+    #[serde(other)]
+    Unknown,
 }

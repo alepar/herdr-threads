@@ -1013,3 +1013,110 @@ fn an_empty_selector_never_matches_an_empty_label() {
         Outcome::NoMatch
     );
 }
+
+// ---- remote addresses: the @MACHINE split and machine matching ----
+
+#[test]
+fn split_machine_takes_the_last_at_of_raw_and_path_forms() {
+    assert_eq!(split_machine("a/b/c@laptop"), Some(("a/b/c", "laptop")));
+    assert_eq!(
+        split_machine("user@host@laptop"),
+        Some(("user@host", "laptop"))
+    );
+    assert_eq!(split_machine("seat1@nSG"), Some(("seat1", "nSG")));
+    for none in ["plain", "@laptop", "a/b@", "a@b/c", "path:@m", "path:a\\@b"] {
+        assert_eq!(split_machine(none), None, "{none}");
+    }
+    assert_eq!(
+        split_machine(r"path:prj\/x/tab@laptop"),
+        Some((r"path:prj\/x/tab", "laptop"))
+    );
+    assert_eq!(
+        split_machine(r"path:user\@home/main@laptop"),
+        Some((r"path:user\@home/main", "laptop"))
+    );
+    // A literal `@` escaped in the last component is never the separator.
+    assert_eq!(split_machine(r"path:a/user\@laptop"), None);
+}
+
+#[test]
+fn path_escape_decodes_a_literal_at() {
+    let topology = HostTopology {
+        spaces: vec![space("w1", "office")],
+        tabs: vec![tab("w1:t1", "w1", "main")],
+        panes: vec![pane("w1:p1", "w1", "w1:t1", "user@laptop", &[])],
+    };
+    let outcome = Selector::new(r"path:office/main/user\@laptop").resolve_with(
+        &topology,
+        None,
+        &Narrowing::default(),
+        Tiering::Global,
+    );
+    assert!(matches!(outcome, Outcome::Resolved(_)), "{outcome:?}");
+    let outcome = Selector::new(r"path:a\x").resolve_with(
+        &topology,
+        None,
+        &Narrowing::default(),
+        Tiering::Global,
+    );
+    let err = outcome
+        .into_result(r"path:a\x", |_| Ok::<_, ()>(None))
+        .unwrap_err();
+    assert!(err.detail.contains(r"\/, \\ and \@"), "{}", err.detail);
+}
+
+fn machine(uuid: &str, tag: &str, host: Option<&str>) -> crate::protocol::sync_admin::MachineRow {
+    crate::protocol::sync_admin::MachineRow {
+        uuid: uuid.into(),
+        tag: tag.into(),
+        host: host.map(Into::into),
+    }
+}
+
+#[test]
+fn machines_match_by_uuid_prefix_tag_or_host() {
+    let rows = vec![
+        machine(
+            &format!("ab12cd34{}", "0".repeat(24)),
+            "nSG",
+            Some("blacky.dayton"),
+        ),
+        machine(
+            &format!("ab12ff00{}", "1".repeat(24)),
+            "Q0V",
+            Some("Laptop"),
+        ),
+        machine(
+            &format!("ee{}", "2".repeat(30)),
+            "x1Z",
+            Some("laptop.local"),
+        ),
+    ];
+    let uuids = |raw: &str| -> Vec<String> {
+        match_machine(raw, &rows)
+            .into_iter()
+            .map(|r| r.tag.clone())
+            .collect()
+    };
+    assert_eq!(uuids("nSG"), ["nSG"]);
+    assert_eq!(
+        uuids("nsg"),
+        Vec::<String>::new(),
+        "tags are case-sensitive"
+    );
+    assert_eq!(uuids("blacky"), ["nSG"], "first DNS label");
+    assert_eq!(uuids("BLACKY.dayton"), ["nSG"]);
+    assert_eq!(uuids("AB12CD34"), ["nSG"], "uuid prefix, any case");
+    assert_eq!(uuids("ab12"), Vec::<String>::new(), "prefix needs 8 hex");
+    assert_eq!(uuids("ab12cd3"), Vec::<String>::new());
+    assert_eq!(
+        uuids("laptop"),
+        ["Q0V", "x1Z"],
+        "a shared host name matches both"
+    );
+    assert_eq!(uuids(&rows[1].uuid), ["Q0V"]);
+    assert_eq!(uuids("nowhere"), Vec::<String>::new());
+    // One node listed twice is one match.
+    let twice = vec![rows[0].clone(), rows[0].clone()];
+    assert_eq!(match_machine("nSG", &twice).len(), 1);
+}
