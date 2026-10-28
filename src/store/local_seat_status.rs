@@ -3,14 +3,17 @@
 //!
 //! Responsibility (local_seat_status)
 //! - Owns: [`local_seats`] and [`local_seat`], the read of a local seat's
-//!   binding, connection and canonical UI state, and [`presence`], its
-//!   advisory word.
+//!   binding, connection and canonical UI state, [`presence`], its advisory
+//!   word, and [`TargetLabels::fits`], the rule that a target's host labels
+//!   are a seat's.
 //! - Hides: the binding choice (the open top-level binding, else the latest)
 //!   and the effective-observation lookup.
 //! - Must not: decide anything but advisory display and publication; wakes
 //!   and availability keep their own rules (the busy rule is theirs,
 //!   `effective::turn_in_progress`).
 //! - Role: read by `service::seat_publisher` and `store::seat_directory`.
+
+use std::collections::HashMap;
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -36,6 +39,55 @@ pub struct LocalSeat {
     pub ui_state: Option<String>,
     /// The latest binding registration or disconnect (unix ms).
     pub last_transition_at: Option<i64>,
+}
+
+/// One host target's current labels, as the publisher sends them and
+/// `seat list --label` matches them: display hints only (TRUST-POLICY N13).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TargetLabels {
+    pub terminal: String,
+    pub incarnation: Option<String>,
+    pub workspace: String,
+    pub tab: String,
+    pub pane: String,
+}
+
+/// Host labels by `(host, target)`.
+pub type LabelMap = HashMap<(HostId, String), TargetLabels>;
+
+impl TargetLabels {
+    /// Whether these labels are those of a seat mapped to their target with
+    /// `terminal` and `incarnation`: the same structural terminal, and the
+    /// same incarnation where the host reports one.
+    pub fn fits(&self, terminal: Option<&str>, incarnation: Option<&String>) -> bool {
+        terminal == Some(self.terminal.as_str())
+            && (self.incarnation.is_none() || self.incarnation.as_ref() == incarnation)
+    }
+}
+
+/// The current labels in `labels` of local seat `seat`, when its target
+/// still shows its terminal; `None` for a remote, unknown or unmapped seat.
+pub fn labels_of<'a>(
+    conn: &Connection,
+    seat: &str,
+    labels: &'a LabelMap,
+) -> Result<Option<&'a TargetLabels>, ApiError> {
+    type Row = (Option<i64>, Option<String>, Option<String>, Option<String>);
+    let row: Option<Row> = conn
+        .query_row(
+            "SELECT host_id,target_id,structural_terminal_id,structural_incarnation FROM seats \
+             WHERE id=?1 AND is_local=1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((Some(host), Some(target), terminal, incarnation)) = row else {
+        return Ok(None);
+    };
+    Ok(labels
+        .get(&(HostId::from_row(host), target))
+        .filter(|l| l.fits(terminal.as_deref(), incarnation.as_ref())))
 }
 
 /// The advisory presence word of a local seat: `busy` when active and a

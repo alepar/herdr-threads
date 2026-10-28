@@ -3197,6 +3197,18 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         self.query(command, read, budget)
             .map(|result| (result, None))
     }
+    /// A `Seats` query whose `--label` also matches this node's own seats by
+    /// `local_labels`, the hosts' current labels the daemon read for it
+    /// (ht-hldp): display data only (TRUST-POLICY N13). Default: as `query`.
+    fn seats_read(
+        &self,
+        command: &Command,
+        _local_labels: &crate::store::local_seat_status::LabelMap,
+        read: &ReadContext,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.query(command, read, budget)
+    }
     fn mutate(
         &self,
         command: PermitMutation,

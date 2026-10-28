@@ -1505,7 +1505,7 @@ enum SeatSub {
         #[arg(long, value_name = "ID")]
         harness: Option<String>,
         /// Only seats whose workspace, tab or pane label contains TEXT
-        /// (case-insensitive; labels of remote seats).
+        /// (case-insensitive).
         #[arg(long, value_name = "TEXT")]
         label: Option<String>,
         /// Only this node's own seats.

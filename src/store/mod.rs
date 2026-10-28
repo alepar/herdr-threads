@@ -1824,6 +1824,31 @@ impl StorePort for SqliteStore {
         )
     }
 
+    fn seats_read(
+        &self,
+        command: &Command,
+        local_labels: &local_seat_status::LabelMap,
+        read: &ReadContext,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        read.validate()
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+        if read.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "read instance mismatch",
+            ));
+        }
+        queries::query_seats(
+            &self.context,
+            &self.instance,
+            command,
+            &read.output,
+            budget,
+            local_labels,
+        )
+    }
+
     fn query(
         &self,
         command: &Command,
