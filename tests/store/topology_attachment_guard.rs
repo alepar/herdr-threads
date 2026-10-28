@@ -1653,6 +1653,160 @@ fn automatic_terminal_directories(directories: bool) {
     let _ = std::fs::remove_file(path);
 }
 
+/// ht-fne2: the bootstrap Send of a handoff that launches its recipient is staged before the
+/// launch, so the recipient is not yet available. That send warns no one; its ACK request
+/// keeps the send-time deadline (A6), which reports a launch that never checks in.
+#[test]
+fn automatic_launch_bootstrap_send_raises_no_unavailable_warning() {
+    let (context, mut db, path, store, observation, budget, old, a) =
+        attachment_fixture_inner(false, false);
+    let id = automatic_parent(&old);
+    automatic_parent_created(&store, &id, &budget);
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        5,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Resolve {
+            attempt: BootstrapAttempt::first(),
+        },
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
+    let attachment = AutomaticBootstrapAttachment {
+        attempt: BootstrapAttempt::first(),
+        created: a.created,
+        resolve_operation: id.plan.payload.keys.resolve.clone(),
+        resolved_seat: a.resolved_seat,
+        child: child.clone(),
+    };
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        6,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Attach(Box::new(attachment.clone())),
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    automatic_child_mutate(&store, &child.begin(), &budget).unwrap();
+    let thread = automatic_selected_thread(
+        &automatic_child_mutate(&store, &child.ensure(), &budget).unwrap(),
+    )
+    .unwrap()
+    .clone();
+    let recipient = attachment.resolved_seat.as_str();
+    assert!(
+        crate::store::schema::effective_registered_availability(&db, recipient, None)
+            .unwrap()
+            .is_none(),
+        "the launched seat is not available before its agent checks in"
+    );
+    let send = child.send(thread.clone());
+    loop {
+        if let crate::ports::SendPreparationProgress::Ready { .. } =
+            crate::ports::BootstrapStorePort::automatic_delivery_prepare_send_step(
+                &*store,
+                &id.plan.payload.handoff.namespace,
+                &send,
+                crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                &budget,
+            )
+            .unwrap()
+        {
+            break;
+        }
+    }
+    automatic_child_mutate(&store, &send, &budget).unwrap();
+    let warnings: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM prepared_unavailable_warnings WHERE affected_seat_id=?1",
+            [recipient],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        warnings, 0,
+        "bootstrap send warned about its launching recipient"
+    );
+    let receipt: (i64, bool) = db
+        .query_row(
+            "SELECT frozen_duration_ms,eligible_at_snapshot FROM prepared_recipients WHERE seat_id=?1 AND thread_id=?2",
+            rusqlite::params![recipient, thread.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        receipt.0 > 0,
+        "the ACK request keeps its send-time deadline"
+    );
+    assert!(!receipt.1, "availability is still recorded honestly");
+    // Any other send to the still-starting seat warns as before.
+    let AutomaticDeliveryAction::Send(mut ordinary) = send.action.clone() else {
+        unreachable!()
+    };
+    ordinary.operation = OperationId::new("ordinary-to-starting-seat");
+    ordinary.body = "ordinary".into();
+    loop {
+        let step = crate::store::messages::prepare_send_step(
+            &context,
+            &mut db,
+            &ordinary,
+            crate::store::messages::MessageLimits::default(),
+            &budget,
+            crate::ports::DurableWorkAdmission::new(16).unwrap(),
+        )
+        .unwrap();
+        if matches!(step, crate::ports::SendPreparationProgress::Ready { .. }) {
+            break;
+        }
+    }
+    let mut permit = store
+        .issue_cooperative_permit(
+            crate::store::cooperative_permit_request(
+                &crate::protocol::commands::PermitMutation::SendMessage(ordinary.clone()),
+            )
+            .unwrap(),
+            &budget,
+        )
+        .unwrap();
+    crate::store::messages::publish_send(
+        &context,
+        &mut db,
+        &ordinary,
+        &mut permit,
+        &budget,
+        || crate::store::messages::MAX_BODY_BYTES,
+    )
+    .unwrap();
+    let warnings: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM prepared_unavailable_warnings WHERE affected_seat_id=?1",
+            [recipient],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        warnings, 1,
+        "an ordinary send to the starting seat still warns"
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn automatic_linked_wire_refuses_unknown_fields_inside_derived_launch() {
     let (_context, db, path, _store, _observation, _budget, old, a) =

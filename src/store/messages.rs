@@ -796,8 +796,11 @@ pub(super) fn stage_recipient(
     }
     // C4: a seat whose binding the pending reconciliation pass will carry is
     // not warned about; the carry records availability independently of the send-time deadline.
+    // Nor is the seat a handoff is about to launch, in that handoff's own bootstrap Send (ht-fne2):
+    // its ACK deadline still runs from send time (A6) and reports a launch that never checks in.
     if !available
         && !schema::carry_pending(tx, recipient, instance)?
+        && !super::handoff::automatic::launch_bootstrap_send(tx, prep_id, recipient)?
         && schema::effective_membership_state(tx, thread, &SeatId::new(recipient))?
             .as_ref()
             .is_some_and(|v| v.state == "joined")
