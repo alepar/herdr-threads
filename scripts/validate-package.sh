@@ -5,8 +5,11 @@
 #
 # Publishes the committed REF (default HEAD) of SOURCE_REPOSITORY (default:
 # this checkout) to a private bare repository, then drives the pinned Herdr
-# 0.9.1 CLI against a private `herdr server` whose HOME, XDG directories,
-# config and socket all live under one fresh /private/tmp directory. A private
+# 0.9.1 CLI (`herdr` on PATH when it is the pinned binary for this host
+# target, else the release-smoke cache entry; digests in
+# tests/herdr-releases.tsv) against a private `herdr server` whose HOME, XDG
+# directories, config and socket all live under one fresh directory in the
+# platform temp dir (/private/tmp on macOS). A private
 # git `insteadOf` rule makes `herdr plugin install alepar/herdr-threads`
 # clone that private repository, so Herdr itself performs the clean checkout,
 # the locked release build and the registration. The shared Herdr server is
@@ -34,7 +37,6 @@ import uuid
 
 SOURCE = Path(sys.argv[1]).resolve()
 REF = sys.argv[2]
-PINNED_HERDR_SHA256 = "5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de"
 PLUGIN = "herdr-threads"
 OWNER_REPO = "alepar/herdr-threads"
 PROMPT = "Enter to refresh, q to quit:"
@@ -55,14 +57,27 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-herdr = shutil.which("herdr")
-if not herdr:
-    fail("Herdr 0.9.1 is required on PATH")
-herdr = str(Path(herdr).resolve())
+# The pinned Herdr 0.9.1 binary for this host target: its GitHub release asset
+# digest from tests/herdr-releases.tsv; `herdr` on PATH when it is that binary,
+# else the release-smoke cache entry (scripts/herdr-release-smoke's layout).
+TARGET = "{}-{}".format({"darwin": "macos"}.get(sys.platform, sys.platform),
+                        {"arm64": "aarch64", "amd64": "x86_64"}.get(os.uname().machine, os.uname().machine))
+PINNED_HERDR_SHA256 = next(
+    (fields[2] for fields in (line.split("\t") for line in (SOURCE / "tests/herdr-releases.tsv").read_text().splitlines())
+     if len(fields) == 3 and fields[0] == "0.9.1" and fields[1] == f"herdr-{TARGET}"), None)
+if PINNED_HERDR_SHA256 is None:
+    fail(f"tests/herdr-releases.tsv has no Herdr 0.9.1 row for herdr-{TARGET}")
+candidates = [shutil.which("herdr")] + [
+    str(Path(cache) / "0.9.1" / TARGET / "herdr")
+    for cache in (os.environ.get("HT_HERDR_RELEASE_CACHE"),
+                  os.path.expanduser("~/.cache/herdr-threads/herdr-releases")) if cache]
+herdr = next((str(Path(c).resolve()) for c in candidates
+              if c and Path(c).is_file() and sha256(c) == PINNED_HERDR_SHA256), None)
+if herdr is None:
+    fail(f"no pinned Herdr 0.9.1 binary (herdr-{TARGET}, sha256 {PINNED_HERDR_SHA256}) among {candidates}; "
+         "put it on PATH or cache it with scripts/herdr-release-smoke --versions 0.9.1")
 if subprocess.check_output([herdr, "--version"], text=True).strip() != "herdr 0.9.1":
     fail("this validation requires Herdr 0.9.1")
-if sha256(herdr) != PINNED_HERDR_SHA256:
-    fail("installed Herdr differs from the pinned 0.9.1 binary")
 evidence["herdr"] = {"path": herdr, "version": "0.9.1", "sha256": PINNED_HERDR_SHA256}
 
 real_home = Path(os.path.expanduser("~"))
@@ -88,7 +103,7 @@ evidence["source_commit"] = source_commit
 evidence["shared_config"] = str(shared_config)
 
 # Short and unique: sockets live here and macOS limits sockaddr_un paths.
-root = Path(tempfile.mkdtemp(prefix="htpv-", dir="/private/tmp" if sys.platform == "darwin" else "/tmp"))
+root = Path(tempfile.mkdtemp(prefix="htpv-", dir="/private/tmp" if sys.platform == "darwin" else None))
 home, config, state, runtime = (root / name for name in ("home", "cfg", "st", "rt"))
 for directory in (home, config, state, runtime):
     directory.mkdir(mode=0o700)
@@ -135,6 +150,8 @@ environment.update({
     # A hostile inherited target dir: the package build must not follow it.
     "CARGO_TARGET_DIR": str(foreign_target),
     "GIT_CONFIG_NOSYSTEM": "1",
+    # A `herdr` the plugin or a pane resolves by name is the pinned one.
+    "PATH": os.pathsep.join([str(Path(herdr).parent), os.environ.get("PATH", "")]),
 })
 server = None
 handoff_server = None

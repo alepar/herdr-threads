@@ -89,34 +89,59 @@ fn manifest_matches_pinned_091_documented_argv_shape() {
     }
 }
 
+/// The pinned Herdr 0.9.1 binary for this host target: `herdr` on PATH when it
+/// is that release, else the release-smoke cache entry
+/// (`$HT_HERDR_RELEASE_CACHE` or ~/.cache/herdr-threads/herdr-releases, at
+/// `0.9.1/<os>-<arch>/herdr`), matched against the GitHub release asset digest
+/// in tests/herdr-releases.tsv.
 fn installed_herdr() -> PathBuf {
+    let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let asset = format!("herdr-{target}");
+    let listed = fs::read_to_string(root().join("tests/herdr-releases.tsv")).unwrap();
+    let pinned = listed
+        .lines()
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .find(|fields| fields.len() == 3 && fields[0] == "0.9.1" && fields[1] == asset)
+        .map(|fields| fields[2].to_owned())
+        .unwrap_or_else(|| panic!("tests/herdr-releases.tsv has no Herdr 0.9.1 row for {asset}"));
+    let mut candidates = Vec::new();
     let which = Command::new("which").arg("herdr").output().unwrap();
-    assert!(which.status.success(), "installed Herdr binary is required");
-    let path = PathBuf::from(String::from_utf8(which.stdout).unwrap().trim());
-    let path = fs::canonicalize(path).unwrap();
+    if which.status.success() {
+        candidates.push(PathBuf::from(
+            String::from_utf8(which.stdout).unwrap().trim(),
+        ));
+    }
+    let caches = [
+        std::env::var_os("HT_HERDR_RELEASE_CACHE").map(PathBuf::from),
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(".cache/herdr-threads/herdr-releases")),
+    ];
+    candidates.extend(
+        caches
+            .into_iter()
+            .flatten()
+            .map(|cache| cache.join("0.9.1").join(&target).join("herdr")),
+    );
+    let path = candidates
+        .iter()
+        .filter_map(|candidate| fs::canonicalize(candidate).ok())
+        .find(|path| format!("{:x}", Sha256::digest(fs::read(path).unwrap())) == pinned)
+        .unwrap_or_else(|| {
+            panic!(
+                "no pinned Herdr 0.9.1 binary ({asset}, sha256 {pinned}) among {candidates:?}; \
+                 put it on PATH or cache it with scripts/herdr-release-smoke --versions 0.9.1"
+            )
+        });
     let version = Command::new(&path).arg("--version").output().unwrap();
     assert!(version.status.success());
     assert_eq!(
         String::from_utf8_lossy(&version.stdout).trim(),
         "herdr 0.9.1"
     );
-    let hash = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
-    // GitHub release asset digests of Herdr 0.9.1, per platform.
-    let pinned = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => "5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de",
-        ("macos", "x86_64") => "053be0639935fe54ab5efbdb46651054e4f6a753a5b43153c88bd6912bce1e94",
-        ("linux", "x86_64") => "2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7",
-        ("linux", "aarch64") => "f4ccf4de745f2cb9a39a983e9ba3703dad50ec2a58dea83026ceab721bbd8d9e",
-        other => panic!("no pinned Herdr 0.9.1 digest for {other:?}"),
-    };
-    assert_eq!(
-        hash, pinned,
-        "installed Herdr differs from the pinned 0.9.1 binary"
-    );
     eprintln!(
         "installed Herdr: {}; version: herdr 0.9.1; sha256: {}",
         path.display(),
-        hash
+        pinned
     );
     path
 }
