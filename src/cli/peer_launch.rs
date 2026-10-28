@@ -121,14 +121,14 @@ fn request_id(
     use sha2::Digest;
     use std::io::Write as _;
     let mut hash = sha2::Sha256::new();
-    hash.update(b"herdr-threads remote launch v2\0");
+    hash.update(b"herdr-threads remote launch v3\0");
     hash.update(node_uuid.as_bytes());
     hash.update(b"\0");
     hash.update(requester_seat.unwrap_or_default().as_bytes());
     hash.update(b"\0");
     hash.update(serde_json::to_vec(&remote.plan).unwrap_or_default());
     hash.update(b"\0");
-    hash.update(format!("{:?}", remote.then).as_bytes());
+    hash.update(serde_json::to_vec(&remote.then).unwrap_or_default());
     let key = hash
         .finalize()
         .iter()
@@ -154,8 +154,14 @@ fn request_id(
         .open(&file)
     {
         Ok(mut out) => {
-            out.write_all(id.to_string().as_bytes())?;
-            out.sync_all()?;
+            let written = out
+                .write_all(id.to_string().as_bytes())
+                .and_then(|()| out.sync_all());
+            if let Err(error) = written {
+                // Never leave an empty id behind for the next run to trip on.
+                let _ = std::fs::remove_file(&file);
+                return Err(error);
+            }
             Ok((id, file))
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -166,9 +172,17 @@ fn request_id(
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Err(std::io::Error::other(
-                "remote launch request id file stayed empty",
-            ))
+            // Still unreadable after a second: a run that died mid-write left it.
+            // Nothing was sent under it, so it is replaced.
+            let tmp = dir.join(format!("{key}.{}.tmp", std::process::id()));
+            std::fs::write(&tmp, id.to_string())?;
+            std::fs::rename(&tmp, &file)?;
+            read(&file).map(|id| (id, file.clone())).map_err(|error| {
+                std::io::Error::other(format!(
+                    "remote launch request id file {}: {error}",
+                    file.display()
+                ))
+            })
         }
         Err(error) => Err(error),
     }
@@ -243,21 +257,12 @@ fn one_line(text: &str) -> String {
         .into_owned()
 }
 
-/// The intent files in `dir` (a handoff that journals adds one).
-pub fn intent_names(dir: &Path) -> std::collections::BTreeSet<std::ffi::OsString> {
-    std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok().map(|e| e.file_name()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Whether a remote handoff's follow-on result ends its launch's request: a
-/// success, or a refusal asking again cannot change (the launched seat cannot
-/// take it). A transient failure keeps the request, so a rerun resumes at
-/// delivery and never launches a second agent.
+/// Whether a remote handoff's follow-on result ends its launch's request
+/// before the handoff journaled anything: a success, or a refusal asking
+/// again cannot change (the launched seat cannot take it). A transient
+/// failure keeps the request, so a rerun resumes at delivery and never
+/// launches a second agent. (Once the handoff journaled its intent, the
+/// request ends regardless: that intent's `retry` owns the work.)
 pub fn handoff_settles(result: &Result<(), RunError>) -> bool {
     match result {
         Ok(()) => true,
@@ -267,6 +272,13 @@ pub fn handoff_settles(result: &Result<(), RunError>) -> bool {
         ),
         Err(_) => false,
     }
+}
+
+/// Whether a remote handoff ends its launch's request: once the handoff
+/// journaled its own intent (`journaled`; that intent's `retry` owns the work
+/// and never relaunches), or per [`handoff_settles`] before that.
+pub fn remote_handoff_settles(journaled: bool, result: &Result<(), RunError>) -> bool {
+    journaled || handoff_settles(result)
 }
 
 /// A launch that started on another machine. Its request id stays recorded
@@ -513,6 +525,45 @@ mod tests {
             runs.into_iter().map(|r| r.join().unwrap()).collect()
         });
         assert!(ids.iter().all(|i| *i == ids[0]), "{ids:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Kills: a journaled handoff whose launch is kept (a rerun would hand the
+    // task off a second time) or a transient pre-journal failure that settles
+    // it (a rerun would launch a second agent).
+    #[test]
+    fn a_journaled_handoff_or_a_final_refusal_settles_the_launch() {
+        let transient = || {
+            Err(RunError::Api(ApiError::new(
+                ErrorCode::HostUnavailable,
+                "x",
+            )))
+        };
+        assert!(remote_handoff_settles(true, &transient()));
+        assert!(!remote_handoff_settles(false, &transient()));
+        assert!(remote_handoff_settles(false, &Ok(())));
+    }
+
+    // Kills: an id file a dead run left empty blocking every later run, and a
+    // failed write leaving the empty file behind.
+    #[test]
+    fn an_empty_request_id_file_is_replaced() {
+        let dir = crate::test_support::scratch::temp_path(format!(
+            "ht-remote-launch-empty-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (first, file) = request_id(&dir, "n1", Some("s1"), &remote("task")).unwrap();
+        std::fs::write(&file, b"").unwrap();
+        let (second, again) = request_id(&dir, "n1", Some("s1"), &remote("task")).unwrap();
+        assert_eq!(file, again);
+        assert_ne!(first, second, "a fresh id replaces the empty file");
+        assert_eq!(
+            request_id(&dir, "n1", Some("s1"), &remote("task"))
+                .unwrap()
+                .0,
+            second
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

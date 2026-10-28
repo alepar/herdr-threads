@@ -4657,3 +4657,45 @@ fn a_remote_recipient_is_checked_by_its_home_node_or_replicated_state() {
         run(asleep).unwrap();
     }
 }
+
+// Kills: a live home node's answer this build does not know read as "checked
+// against replicated state" (handing off blind), and the once-per-handoff
+// cache asking twice or caching a failed check.
+#[test]
+fn a_remote_recipient_check_fails_closed_and_is_asked_once() {
+    use crate::protocol::sync_admin::RemoteAddress;
+    use crate::sync::frame::AddrOutcome;
+    let seat = SeatId::new("sREMOTEseat1");
+    for unknown in [
+        RemoteAddress::Unknown,
+        RemoteAddress::NotReplicated {
+            seat: "sREMOTEseat1".into(),
+        },
+        RemoteAddress::Answered {
+            outcome: AddrOutcome::NoMatch,
+        },
+    ] {
+        super::reset_remote_checks_for_test();
+        let client = RemoteClient {
+            answer: unknown.clone(),
+            checks: Mutex::new(0),
+        };
+        let Err(RunError::Api(error)) = super::inspect(&client, &TestClock, &seat) else {
+            panic!("{unknown:?} must refuse")
+        };
+        assert!(error.detail.contains("unknown form"), "{error:?}");
+        // A refused check is not cached: the next inspection asks again.
+        let _ = super::inspect(&client, &TestClock, &seat);
+        assert_eq!(*client.checks.lock().unwrap(), 2, "{unknown:?}");
+    }
+    super::reset_remote_checks_for_test();
+    let client = RemoteClient {
+        answer: RemoteAddress::Answered {
+            outcome: AddrOutcome::Eligible,
+        },
+        checks: Mutex::new(0),
+    };
+    super::inspect(&client, &TestClock, &seat).unwrap();
+    super::inspect(&client, &TestClock, &seat).unwrap();
+    assert_eq!(*client.checks.lock().unwrap(), 1, "one handoff asks once");
+}

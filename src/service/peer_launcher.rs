@@ -301,9 +301,16 @@ impl PeerLaunchService {
             row.pane.as_deref().unwrap_or("-")
         );
         let now = now_ms(self.clock.as_ref());
-        let _ = self.write(|conn| {
-            peer_requests::record(conn, &row.id, "failed", None, None, Some(&detail), now)
+        let written = self.write(|conn| {
+            if peer_requests::record(conn, &row.id, "failed", None, None, Some(&detail), now)? {
+                return Ok(None);
+            }
+            // Settled meanwhile (its worker's write landed after all): that answer.
+            peer_requests::get(conn, &row.id)
         });
+        if let Ok(Some(stored)) = written {
+            return stored.answer();
+        }
         LaunchState::Failed {
             detail,
             pane: row.pane.clone(),
@@ -387,11 +394,25 @@ impl PeerLaunchService {
             pane: (!new_tab).then(|| placement.target.clone()),
             ..row
         };
-        let (stored, inserted) = self.write(|conn| peer_requests::insert_or_get(conn, &row))?;
+        // Live before its row commits: a repeat never reads a fresh `running` row as
+        // one whose worker is gone.
+        let fresh = self.live.lock().unwrap().insert(id.clone());
+        let written = self.write(|conn| peer_requests::insert_or_get(conn, &row));
+        let (stored, inserted) = match written {
+            Ok(done) => done,
+            Err(error) => {
+                if fresh {
+                    self.live.lock().unwrap().remove(&id);
+                }
+                return Err(error);
+            }
+        };
         if !inserted {
+            if fresh {
+                self.live.lock().unwrap().remove(&id);
+            }
             return Ok(stored.answer());
         }
-        self.live.lock().unwrap().insert(id.clone());
         let tag = self.requester_tag(from);
         (self.log)(&format!(
             "peer launch {} from {tag}: accepted ({}, {} on {})",

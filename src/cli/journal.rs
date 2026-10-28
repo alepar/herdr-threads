@@ -1341,7 +1341,9 @@ impl Journal {
         semantic.validate()?;
         let body = serde_json::to_vec(&semantic)?;
         let _lock = self.lock()?;
-        self.record_locked(scope, semantic, created_at_millis, body)
+        let recorded = self.record_locked(scope, semantic, created_at_millis, body)?;
+        LAST_RECORDED.with(|last| *last.borrow_mut() = Some(recorded.recovery_ref()));
+        Ok(recorded)
     }
     /// Serialize event allocation and recover an intent published before context save.
     /// Lock order is context journal then CLI allocator; factory performs local work only.
@@ -2178,6 +2180,24 @@ fn private_open(path: &Path) -> io::Result<File> {
     options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     options.open(path)
 }
+thread_local! {
+    /// The recovery reference of the last intent this thread recorded.
+    static LAST_RECORDED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Forget the intent this thread recorded last, before a call whose own
+/// intent [`take_recorded_on_this_thread`] then names (a remote handoff ties
+/// its launch to the handoff's journaled intent).
+pub fn clear_recorded_on_this_thread() {
+    LAST_RECORDED.with(|last| *last.borrow_mut() = None);
+}
+
+/// The recovery reference of the intent this thread recorded since the last
+/// [`clear_recorded_on_this_thread`], if any.
+pub fn take_recorded_on_this_thread() -> Option<String> {
+    LAST_RECORDED.with(|last| last.borrow_mut().take())
+}
+
 #[cfg(test)]
 #[path = "../../tests/cli/journal.rs"]
 mod tests;

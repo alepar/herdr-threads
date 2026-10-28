@@ -684,7 +684,11 @@ only the launch path.
   refuses a repeat whose requesting seat differs from the recorded one.
 - **Settling.** The id is settled once the follow-on handoff journaled its
   own intent (its retry and recovery own the work from then on and never
-  relaunch), or on a final refusal before that.
+  relaunch), or on a final refusal before that; a transient failure before
+  that keeps it. "Journaled" is the intent this thread recorded
+  (`journal::take_recorded_on_this_thread`), never a listing of the shared
+  intents directory. A journaled handoff that then failed prints its
+  `retry` reference.
 - **Unconfirmed starts.** A launch child killed by the timeout or a signal,
   and a `running` row with a pane at daemon start, are failed *unconfirmed*
   (inspect pane P); the requester keeps the id. A pane launch records its
@@ -702,3 +706,17 @@ only the launch path.
   answer it does not know, escapes peer text, and asks once per handoff.
 - **Rows** are pruned only at daemon start; an id's duplicate guard lapses
   with its row after 7 days.
+
+### 2026-10-28, PR roast of the review fixes (round 3)
+
+- The settle rule keys on the intent this thread recorded, not a diff of the
+  node-wide intents directory (another agent's journal activity no longer
+  reads as this handoff's).
+- The lost-worker check cannot misreport a launch that just succeeded: the id
+  joins the live set before its row commits, and `lost()` returns the stored
+  answer when its update changed nothing.
+- The request id hashes the handoff's serde form (`Request: Serialize`), not
+  its Debug output; an empty id file a dead run left behind is replaced, and a
+  failed write removes it.
+- Tests: the journal marker, the settle decision, the empty-file replacement,
+  and `check_remote` failing closed and asking once per handoff.

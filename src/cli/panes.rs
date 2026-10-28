@@ -5,7 +5,7 @@ use super::commands::{CliAction, MutationSpec, ParsedCli};
 use crate::protocol::{ids::HostTargetId, results::ApiError};
 
 /// Command-local exact target locator. Parsed separately from canonical wire types.
-#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args, serde::Serialize)]
 pub struct PaneSelector {
     /// Exact workspace ID or label; omitted inherits the caller's live workspace, never focus.
     #[arg(long)]

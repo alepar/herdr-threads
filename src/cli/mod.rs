@@ -2725,8 +2725,10 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         let claim = contexts.claim(saved).map_err(context_run_error)?;
         // A remote handoff (N15): the launch runs there only now, after the
         // top-level and check-in checks above; the handoff then continues as
-        // `--existing --seat <launched seat>`. The request id is kept until the
-        // handoff succeeds, so a rerun resumes at delivery, never relaunching.
+        // `--existing --seat <launched seat>`. The launch's request id is kept
+        // until the handoff journals its own intent (whose `retry` then owns the
+        // work and never relaunches) or is refused for good; a transient failure
+        // before that keeps it, so a rerun resumes at delivery.
         let mut parsed = parsed;
         let mut launched = None;
         if let CliAction::RemoteLaunch(remote) = &parsed.action {
@@ -2744,9 +2746,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             parsed.action = CliAction::TopologyHandoff(*then);
             launched = Some(done);
         }
-        let intents_before = launched
-            .as_ref()
-            .map(|_| peer_launch::intent_names(&paths.node_dir.join("intents")));
+        journal::clear_recorded_on_this_thread();
         let topology = match &parsed.action {
             CliAction::TopologyHandoff(_) => true,
             CliAction::Retry(recovery) => topology_runtime::is_compound(
@@ -2759,21 +2759,26 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         } else {
             handoff::run(parsed, claim, &journal, paths, writer)
         };
-        // Once the handoff journaled its own intent, that intent's retry and recovery own
-        // the work (they never relaunch); before that, a final refusal settles too.
-        let journaled = intents_before.is_some_and(|before| {
-            peer_launch::intent_names(&paths.node_dir.join("intents")) != before
-        });
+        // The intent this handoff journaled on this thread, if it got that far.
+        let journaled = journal::take_recorded_on_this_thread();
         if let Some(launched) = launched
-            && (journaled || peer_launch::handoff_settles(&result))
+            && peer_launch::remote_handoff_settles(journaled.is_some(), &result)
         {
             launched.settle();
-            if result.is_err() && !journaled {
-                eprintln!(
-                    "herdr-threads: note: the handoff into launched seat {} was refused; a rerun \
-                     launches a new agent",
-                    launched.seat
-                );
+            if result.is_err() {
+                match &journaled {
+                    Some(reference) => eprintln!(
+                        "herdr-threads: note: the handoff into launched seat {} is journaled; \
+                         finish it with `herdr-threads retry {reference}` (a rerun of this \
+                         command launches a new agent)",
+                        launched.seat
+                    ),
+                    None => eprintln!(
+                        "herdr-threads: note: the handoff into launched seat {} was refused; a \
+                         rerun launches a new agent",
+                        launched.seat
+                    ),
+                }
             }
         }
         return result;

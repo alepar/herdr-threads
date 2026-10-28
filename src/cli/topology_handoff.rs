@@ -2,7 +2,7 @@
 use super::{RunError, panes::PaneSelector};
 use crate::store::connection::DurableSync;
 mod automatic;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Request {
     pub policy: Option<crate::protocol::handoff::HandoffPolicy>,
     pub automatic: bool,

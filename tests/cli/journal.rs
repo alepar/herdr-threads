@@ -2790,3 +2790,25 @@ fn same_session_continuity_intent_is_durable_and_replayable() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+// Kills: a remote handoff that cannot tell its own journaled intent from
+// another agent's on the same node (it would settle or keep its launch
+// wrongly): only what this thread recorded since the clear counts.
+#[test]
+fn the_thread_names_the_intent_it_recorded() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    clear_recorded_on_this_thread();
+    assert_eq!(take_recorded_on_this_thread(), None);
+    // Another thread's record is not this thread's.
+    std::thread::scope(|threads| {
+        threads.spawn(|| journal.record(scope(), send(), 1).unwrap());
+    });
+    assert_eq!(take_recorded_on_this_thread(), None);
+    let reference = journal.record(scope(), send(), 2).unwrap();
+    assert_eq!(
+        take_recorded_on_this_thread(),
+        Some(reference.recovery_ref())
+    );
+    assert_eq!(take_recorded_on_this_thread(), None, "taken once");
+}
