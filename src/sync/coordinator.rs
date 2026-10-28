@@ -95,6 +95,7 @@ use crate::store::sync_peer_status::PeerStatus;
 
 mod ingest;
 mod peer_status;
+pub mod remote_addr;
 mod routing;
 mod seat_status;
 mod serve;
@@ -581,6 +582,12 @@ enum Request {
     Snapshot(oneshot::Sender<SyncSnapshot>),
     /// This node's own seats, to publish on `seat_status` (ht-xg88).
     PublishSeats(Vec<SeatStatusEntry>),
+    /// Resolve an address on another node (remote addresses).
+    ResolveRemote {
+        node: NodeUuid,
+        target: crate::sync::frame::AddrTarget,
+        reply: oneshot::Sender<remote_addr::RemoteAnswer>,
+    },
 }
 
 /// The cloneable facade over the coordinator actor.
@@ -597,9 +604,42 @@ pub struct SyncHandle {
     dial: Arc<DialShared>,
     clock: Arc<dyn Clock>,
     signals: Arc<SyncSignals>,
+    resolver: remote_addr::ResolverSlot,
 }
 
 impl SyncHandle {
+    /// Install the resolver that answers peers' `addr_resolve` (once; the
+    /// daemon calls it when its hosts exist). Until then peers get
+    /// `refused: resolver unavailable`.
+    pub fn set_addr_resolver(&self, resolver: Arc<dyn remote_addr::AddrResolver>) {
+        let _ = self.resolver.set(resolver);
+    }
+
+    /// Ask `node` to resolve `target` on its own node, waiting at most
+    /// `wait`. `Err` only when the coordinator did not take the request.
+    pub async fn resolve_remote(
+        &self,
+        node: NodeUuid,
+        target: crate::sync::frame::AddrTarget,
+        wait: Duration,
+    ) -> Result<Option<remote_addr::RemoteAnswer>, ApiError> {
+        let busy = || ApiError::new(ErrorCode::StoreBusy, "sync coordinator did not answer");
+        let (tx, rx) = oneshot::channel();
+        self.requests
+            .send(Request::ResolveRemote {
+                node,
+                target,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| busy())?;
+        match timeout(wait, rx).await {
+            Ok(Ok(answer)) => Ok(Some(answer)),
+            Ok(Err(_)) => Ok(Some(remote_addr::RemoteAnswer::LinkLost)),
+            Err(_) => Ok(None),
+        }
+    }
+
     /// The round-complete signal (written only by the actor).
     pub fn signals(&self) -> Arc<SyncSignals> {
         self.signals.clone()
@@ -685,6 +725,9 @@ pub struct CoordinatorOptions {
     /// Advertise [`OPAQUE_CAP`] in the hello (default). Without it, peers
     /// withhold opaque entries from this node.
     pub advertise_opaque: bool,
+    /// Advertise [`crate::sync::frame::ADDR_RESOLVE_CAP`] (default). Without
+    /// it, peers never send this node an `addr_resolve`.
+    pub advertise_addr_resolve: bool,
     /// The stall thresholds of node status.
     pub timings: StallTimings,
 }
@@ -693,6 +736,7 @@ impl Default for CoordinatorOptions {
     fn default() -> Self {
         Self {
             advertise_opaque: true,
+            advertise_addr_resolve: true,
             timings: StallTimings::default(),
         }
     }
@@ -717,6 +761,13 @@ impl CoordinatorOptions {
             }
             if let Some(v) = ms("HT_TEST_SEEN_EVERY_MS") {
                 options.timings.seen_every_ms = v;
+            }
+            // A node of an older release: these caps stay out of the hello.
+            if let Ok(caps) = std::env::var("HT_TEST_WITHHOLD_CAPS") {
+                let withheld: Vec<&str> = caps.split(',').map(str::trim).collect();
+                if withheld.contains(&crate::sync::frame::ADDR_RESOLVE_CAP) {
+                    options.advertise_addr_resolve = false;
+                }
             }
         }
         options
@@ -789,7 +840,9 @@ impl SyncCoordinator {
             deps.dial.clone(),
         );
         let seat_status_wanted = Arc::new(AtomicBool::new(false));
+        let resolver: remote_addr::ResolverSlot = Arc::default();
         let handle = SyncHandle {
+            resolver: resolver.clone(),
             links: links.clone(),
             seat_status_wanted: seat_status_wanted.clone(),
             requests: requests_tx,
@@ -809,6 +862,11 @@ impl SyncCoordinator {
         }
         hello.caps.push(NODE_INFO_CAP.to_owned());
         hello.caps.push(SEAT_STATUS_CAP.to_owned());
+        if options.advertise_addr_resolve {
+            hello
+                .caps
+                .push(crate::sync::frame::ADDR_RESOLVE_CAP.to_owned());
+        }
         let me = Arc::new(hello);
         let actor = Actor {
             me,
@@ -848,6 +906,7 @@ impl SyncCoordinator {
             peer_flushes: JoinSet::new(),
             peer_flush: peer_status::FlushHealth::default(),
             seats: seat_status::SeatStatusState::new(seat_status_wanted),
+            addr: remote_addr::RemoteAddrState::new(resolver),
         };
         let join = tokio::spawn(actor.run(Inputs {
             intake: intake_rx,
@@ -1100,6 +1159,8 @@ struct Actor {
     peer_flush: peer_status::FlushHealth,
     /// Own and relayed seat-status snapshots (ht-xg88).
     seats: seat_status::SeatStatusState,
+    /// Remote address requests, outbound and inbound.
+    addr: remote_addr::RemoteAddrState,
 }
 
 /// A [`ResyncPin`] and when it took hold (the coordinator's monotonic
@@ -1150,6 +1211,9 @@ impl Actor {
                 }
                 Some(joined) = self.seats.writes.join_next(), if !self.seats.writes.is_empty() => {
                     self.on_seat_status_written(joined);
+                }
+                Some(joined) = self.addr.serving.join_next(), if !self.addr.serving.is_empty() => {
+                    self.on_addr_served(joined);
                 }
                 Some(done) = inputs.ingest.recv() => self.on_ingested(done),
                 Some(joined) = self.serve_jobs.join_next(), if !self.serve_jobs.is_empty() => {
@@ -1674,6 +1738,15 @@ impl Actor {
                 self.on_node_info(link_id, info);
                 return;
             }
+            // Answered on any established link: a request names no log.
+            PeerFrame::AddrResolve(request) => {
+                self.on_addr_resolve(link_id, request);
+                return;
+            }
+            PeerFrame::AddrResolved(reply) => {
+                self.on_addr_resolved(link_id, reply);
+                return;
+            }
             other => other,
         };
         if !usable {
@@ -2146,6 +2219,7 @@ impl Actor {
         self.failover(now);
         self.flush_have_deltas(now);
         self.drain_fork_outbox();
+        self.addr_housekeeping();
         for id in std::mem::take(&mut self.serve_retry) {
             self.push_link(id);
         }
@@ -2261,6 +2335,7 @@ impl Actor {
             why
         ));
         self.probes.remove(&link_id);
+        self.addr_link_ended(link_id);
         let was_ranked = self.by_node.get_mut(&node).is_some_and(|ids| {
             let before = ids.len();
             ids.retain(|id| *id != link_id);
@@ -2516,6 +2591,11 @@ impl Actor {
     fn on_request(&mut self, request: Request) {
         match request {
             Request::PublishSeats(seats) => self.on_publish_seats(seats),
+            Request::ResolveRemote {
+                node,
+                target,
+                reply,
+            } => self.on_resolve_remote(node, target, reply),
             Request::Snapshot(reply) => {
                 let mono_now = self.mono();
                 let links = self
@@ -3539,6 +3619,7 @@ mod tests {
             dial: rig.handle.dial.clone(),
             clock: rig.clock.clone(),
             signals: rig.handle.signals(),
+            resolver: Arc::default(),
         };
         let short = CallBudget {
             deadline: MonoInstant(rig.clock.monotonic_now().0 + 50),
@@ -7921,5 +8002,108 @@ mod tests {
         );
         assert!(!got[0].seats.is_empty() && got[0].seats.len() < 200);
         stop(rig).await;
+    }
+
+    // ---- remote addresses (addr.resolve.v1) ----
+
+    struct FixedResolver(crate::sync::frame::AddrOutcome);
+
+    impl remote_addr::AddrResolver for FixedResolver {
+        fn resolve(
+            &self,
+            target: crate::sync::frame::AddrTarget,
+        ) -> crate::sync::frame::AddrOutcome {
+            match target {
+                crate::sync::frame::AddrTarget::Seat { location } if location == "boom" => {
+                    crate::sync::frame::AddrOutcome::NoMatch
+                }
+                _ => self.0.clone(),
+            }
+        }
+    }
+
+    fn seat_target(location: &str) -> crate::sync::frame::AddrTarget {
+        crate::sync::frame::AddrTarget::Seat {
+            location: location.into(),
+        }
+    }
+
+    /// Ask until the link to `node` is up (anything but `NotLinked`).
+    async fn ask_linked(rig: &Rig, node: NodeUuid, location: &str) -> remote_addr::RemoteAnswer {
+        for _ in 0..200 {
+            let answer = rig
+                .handle
+                .resolve_remote(node, seat_target(location), Duration::from_secs(5))
+                .await
+                .unwrap()
+                .expect("answered in time");
+            if answer != remote_addr::RemoteAnswer::NotLinked {
+                return answer;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("never linked");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn remote_resolve_is_answered_by_the_peer_resolver() {
+        use crate::sync::frame::AddrOutcome;
+        let a = start_node(1, Arc::new(MemoryJournal::new(identity(1))));
+        let b = start_node(2, Arc::new(MemoryJournal::new(identity(2))));
+        let seat = AddrOutcome::Seat {
+            seat: "s2abcdefgh".into(),
+            path: "w / t / p".into(),
+            pane: "w1:p1".into(),
+        };
+        b.handle
+            .set_addr_resolver(Arc::new(FixedResolver(seat.clone())));
+        let unknown = a
+            .handle
+            .resolve_remote(identity(3).uuid(), seat_target("x"), Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(unknown, Some(remote_addr::RemoteAnswer::NotLinked));
+        let _report = link_nodes(&a, &b).await;
+        let b_node = identity(2).uuid();
+        assert_eq!(
+            ask_linked(&a, b_node, "w/t/p").await,
+            remote_addr::RemoteAnswer::Answered(seat)
+        );
+        assert_eq!(
+            ask_linked(&a, b_node, "boom").await,
+            remote_addr::RemoteAnswer::Answered(AddrOutcome::NoMatch)
+        );
+        // b answers a too, without a resolver of its own on a.
+        let none = ask_linked(&b, identity(1).uuid(), "w/t/p").await;
+        assert_eq!(
+            none,
+            remote_addr::RemoteAnswer::Answered(AddrOutcome::Refused {
+                detail: "resolver unavailable".into()
+            })
+        );
+        stop(a).await;
+        stop(b).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn remote_resolve_to_a_capless_peer_is_refused_without_a_frame() {
+        let a = start_node(1, Arc::new(MemoryJournal::new(identity(1))));
+        let b = start_node_full(
+            2,
+            Arc::new(MemoryJournal::new(identity(2))),
+            None,
+            CoordinatorOptions {
+                advertise_addr_resolve: false,
+                ..CoordinatorOptions::default()
+            },
+        );
+        let _report = link_nodes(&a, &b).await;
+        let answer = ask_linked(&a, identity(2).uuid(), "w/t/p").await;
+        assert!(
+            matches!(answer, remote_addr::RemoteAnswer::NoCap { .. }),
+            "{answer:?}"
+        );
+        stop(a).await;
+        stop(b).await;
     }
 }

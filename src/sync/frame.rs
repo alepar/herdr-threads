@@ -56,6 +56,18 @@ pub const MAX_SEAT_STATUS_SEATS: usize = 512;
 pub const MAX_SEAT_LABEL_BYTES: usize = 64;
 /// Longest harness id kept, in bytes.
 pub const MAX_SEAT_HARNESS_BYTES: usize = 16;
+/// Capability: this node answers [`PeerFrame::AddrResolve`] with
+/// [`PeerFrame::AddrResolved`] (remote addresses, `SEAT@MACHINE`). A node
+/// sends a request only to a peer that advertised it.
+pub const ADDR_RESOLVE_CAP: &str = "addr.resolve.v1";
+/// Longest address text (a location or one label) in an `addr_resolve`, in
+/// bytes; a longer one is answered `refused`.
+pub const MAX_ADDR_TEXT_BYTES: usize = 512;
+/// Most candidates one `addr_resolved` lists; the rest are counted.
+pub const MAX_ADDR_CANDIDATES: usize = 32;
+/// Longest `refused.detail`, path or pane text in an `addr_resolved`, in
+/// bytes.
+pub const MAX_ADDR_DETAIL_BYTES: usize = 256;
 /// Most fork references in one `have` frame.
 pub const MAX_HAVE_FORKS: usize = 64;
 /// Longest `close.detail`, in bytes.
@@ -405,6 +417,107 @@ pub struct SeatStatusEntry {
     pub pane: Option<String>,
 }
 
+/// A request to the peer to resolve an address on its own node (cap
+/// [`ADDR_RESOLVE_CAP`]). The peer answers with one [`AddrResolved`] of the
+/// same `id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddrResolve {
+    /// Correlation id, fresh per request.
+    #[serde(default)]
+    pub id: Uuid,
+    #[serde(default)]
+    pub target: AddrTarget,
+}
+
+/// What an [`AddrResolve`] asks for. An unknown kind decodes to
+/// [`AddrTarget::Unknown`] and is answered `refused`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum AddrTarget {
+    /// A SEAT argument without its `@MACHINE` suffix: an exact seat ID, a
+    /// `SPACE/TAB/PANE` name, a nickname or a pane ID.
+    Seat {
+        #[serde(default)]
+        location: String,
+    },
+    /// A `--space/--tab/--pane` selector without its suffixes.
+    Pane {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// The answer to an [`AddrResolve`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddrResolved {
+    #[serde(default)]
+    pub id: Uuid,
+    #[serde(default)]
+    pub outcome: AddrOutcome,
+}
+
+/// How the answering node resolved an address against its own live
+/// topology and seat table. An unknown kind decodes to
+/// [`AddrOutcome::Unknown`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum AddrOutcome {
+    /// One pane, mapped to this resolved local seat.
+    Seat {
+        #[serde(default)]
+        seat: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        pane: String,
+    },
+    /// One pane, which holds no resolved seat.
+    NoSeat {
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        pane: String,
+    },
+    NoMatch,
+    /// At most [`MAX_ADDR_CANDIDATES`]; `omitted` counts the rest.
+    Ambiguous {
+        #[serde(default)]
+        candidates: Vec<AddrCandidate>,
+        #[serde(default)]
+        omitted: u32,
+    },
+    /// No attached Herdr host could be read (or one failed and the rest
+    /// did not already make the answer ambiguous).
+    HostUnavailable,
+    /// Not answered; `detail` (at most [`MAX_ADDR_DETAIL_BYTES`]) says why.
+    Refused {
+        #[serde(default)]
+        detail: String,
+    },
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// One candidate of an ambiguous [`AddrOutcome`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddrCandidate {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub pane: String,
+    /// The pane's resolved seat, if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<String>,
+}
+
 /// One peer wire frame. Every struct tolerates unknown fields and an unknown
 /// `t` decodes to [`PeerFrame::Unknown`], so peers add frames and fields
 /// compatibly; senders send a non-base frame only to a peer that advertised
@@ -493,6 +606,12 @@ pub enum PeerFrame {
     /// One origin node's whole advisory seat snapshot, relayed as is.
     // cap: SEAT_STATUS_CAP
     SeatStatus(SeatStatusFrame),
+    /// Resolve an address on the receiving node (remote addresses).
+    // cap: ADDR_RESOLVE_CAP
+    AddrResolve(AddrResolve),
+    /// The answer to one `addr_resolve`.
+    // cap: ADDR_RESOLVE_CAP
+    AddrResolved(AddrResolved),
     #[serde(other)]
     Unknown,
 }
@@ -793,6 +912,23 @@ mod tests {
                     pane: None,
                 }],
             }),
+            PeerFrame::AddrResolve(AddrResolve {
+                id: Uuid::from_u128(11),
+                target: AddrTarget::Seat {
+                    location: "office/main/claude".to_owned(),
+                },
+            }),
+            PeerFrame::AddrResolved(AddrResolved {
+                id: Uuid::from_u128(11),
+                outcome: AddrOutcome::Ambiguous {
+                    candidates: vec![AddrCandidate {
+                        path: "office / main / claude".to_owned(),
+                        pane: "w1:p1".to_owned(),
+                        seat: Some("snSGabcdefgh".to_owned()),
+                    }],
+                    omitted: 0,
+                },
+            }),
         ]
     }
 
@@ -803,7 +939,7 @@ mod tests {
     #[test]
     fn every_variant_round_trips() {
         let frames = all_frames();
-        assert_eq!(frames.len(), 15);
+        assert_eq!(frames.len(), 17);
         for frame in &frames {
             let bytes = frame.encode().unwrap();
             let back = PeerFrame::decode(&bytes).unwrap();
@@ -833,7 +969,9 @@ mod tests {
                 "pong",
                 "seen",
                 "node_info",
-                "seat_status"
+                "seat_status",
+                "addr_resolve",
+                "addr_resolved"
             ]
         );
         // The entry payload keeps its exact bytes.
@@ -849,6 +987,67 @@ mod tests {
                 .unwrap()
                 .contains(r#""payload":{ "b":1, "a":2 }"#)
         );
+    }
+
+    #[test]
+    fn addr_kinds_round_trip_and_unknown_kinds_decode() {
+        for target in [
+            AddrTarget::Seat {
+                location: "a@b".into(),
+            },
+            AddrTarget::Pane {
+                space: Some("w1".into()),
+                tab: None,
+                pane: Some("p".into()),
+            },
+        ] {
+            let frame = PeerFrame::AddrResolve(AddrResolve {
+                id: Uuid::from_u128(1),
+                target: target.clone(),
+            });
+            let PeerFrame::AddrResolve(back) = PeerFrame::decode(&frame.encode().unwrap()).unwrap()
+            else {
+                panic!("addr_resolve")
+            };
+            assert_eq!(back.target, target);
+        }
+        for outcome in [
+            AddrOutcome::Seat {
+                seat: "s1".into(),
+                path: "a / b / c".into(),
+                pane: "w1:p1".into(),
+            },
+            AddrOutcome::NoSeat {
+                path: "a / b / c".into(),
+                pane: "w1:p1".into(),
+            },
+            AddrOutcome::NoMatch,
+            AddrOutcome::HostUnavailable,
+            AddrOutcome::Refused {
+                detail: "busy".into(),
+            },
+        ] {
+            let frame = PeerFrame::AddrResolved(AddrResolved {
+                id: Uuid::from_u128(2),
+                outcome: outcome.clone(),
+            });
+            let PeerFrame::AddrResolved(back) =
+                PeerFrame::decode(&frame.encode().unwrap()).unwrap()
+            else {
+                panic!("addr_resolved")
+            };
+            assert_eq!(back.outcome, outcome);
+        }
+        let future = br#"{"t":"addr_resolve","id":"00000000-0000-0000-0000-000000000003","target":{"k":"thread","x":1}}"#;
+        let PeerFrame::AddrResolve(req) = PeerFrame::decode(future).unwrap() else {
+            panic!("addr_resolve")
+        };
+        assert_eq!(req.target, AddrTarget::Unknown);
+        let future = br#"{"t":"addr_resolved","id":"00000000-0000-0000-0000-000000000003","outcome":{"k":"moved","to":"x"}}"#;
+        let PeerFrame::AddrResolved(reply) = PeerFrame::decode(future).unwrap() else {
+            panic!("addr_resolved")
+        };
+        assert_eq!(reply.outcome, AddrOutcome::Unknown);
     }
 
     #[test]
