@@ -194,9 +194,25 @@ fn pid_alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-/// Every recorded pid is gone within 15 s; the survivors are named, killed
+/// The probe's reaper finishes its bounded teardown: it removes its lock dir
+/// (`/tmp/ih-reaper.<owner>`) as its last step. Its own bounds add up to
+/// ~36 s (group TERM wait 2 s, Herdr graceful stop 5 s, then TERM wait 15 s
+/// and socket wait 10 s, root sweep 2 s, tagged pids 2 s), so a fixed window
+/// shorter than that, counted from the kill, fails a reaper that is merely
+/// slow on a loaded host. 60 s is a hang guard, not a budget.
+const REAPER_HANG_GUARD: Duration = Duration::from_secs(60);
+
+/// After the probe's reaper has finished, every recorded pid is gone (5 s
+/// for the killed ones to be reaped); the survivors are named, killed
 /// (cleanup) and then fail the test. The isolated root is removed too.
-fn assert_all_gone(dir: &Path) {
+fn assert_all_gone(probe: &Probe) {
+    let dir = &probe.dir;
+    let reaper_lock = PathBuf::from(format!("/tmp/ih-reaper.{}", probe.child.id()));
+    let reaper_deadline = Instant::now() + REAPER_HANG_GUARD;
+    while reaper_lock.exists() && Instant::now() < reaper_deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let reaper_stuck = reaper_lock.exists();
     let recorded = fs::read_to_string(dir.join("pids")).expect("probe wrote its pids");
     let entries: Vec<(String, i32)> = recorded
         .lines()
@@ -209,7 +225,7 @@ fn assert_all_gone(dir: &Path) {
     let isolated_root = fs::read_to_string(dir.join("ih_root"))
         .ok()
         .map(PathBuf::from);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(5);
     let mut survivors;
     let mut root_left;
     loop {
@@ -225,6 +241,12 @@ fn assert_all_gone(dir: &Path) {
         std::thread::sleep(Duration::from_millis(100));
     }
     let mut report = String::new();
+    if reaper_stuck {
+        report.push_str(&format!(
+            "  reaper still running after {REAPER_HANG_GUARD:?}: {}\n",
+            reaper_lock.display()
+        ));
+    }
     for (label, pid) in &survivors {
         let cmd = Command::new("ps")
             .args(["-o", "command=", "-p", &pid.to_string()])
@@ -253,7 +275,7 @@ fn injected_panic_leaves_no_processes() {
     });
     let status = probe.child.try_wait().unwrap().unwrap();
     assert!(!status.success(), "the panic probe must fail, got {status}");
-    assert_all_gone(&probe.dir);
+    assert_all_gone(&probe);
 }
 
 fn killed_run_leaves_no_processes(signal: i32) {
@@ -262,7 +284,7 @@ fn killed_run_leaves_no_processes(signal: i32) {
     // SAFETY: signals the probe child this test spawned.
     unsafe { libc::kill(probe.child.id() as i32, signal) };
     probe.child.wait().expect("reap the probe");
-    assert_all_gone(&probe.dir);
+    assert_all_gone(&probe);
 }
 
 #[test]
@@ -303,7 +325,7 @@ fn checker_flags_live_tagged_processes_then_passes_after_reap() {
     // SAFETY: signals the probe child this test spawned.
     unsafe { libc::kill(probe.child.id() as i32, libc::SIGKILL) };
     probe.child.wait().expect("reap the probe");
-    assert_all_gone(&probe.dir);
+    assert_all_gone(&probe);
     // Not "exit 0": the checker scans the whole machine, so another run's
     // orphan (a live suite in a sibling worktree) may legitimately be listed,
     // and its own grace would then spin on that orphan. Nothing of this probe
