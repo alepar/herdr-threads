@@ -1090,3 +1090,148 @@ fn installer_names_the_real_skill_when_the_default_root_is_a_symlink() {
         );
     }
 }
+
+// Kills a shared rules check that lets a sibling linked profile's stale permission record (made
+// before its rules/ became a symlink) outrank the real root's in directory order, names a record's
+// link path instead of the real file, or writes through a link to an unmanaged directory (ht-mf2q).
+#[test]
+fn installer_reports_recorded_profile_rules_shared_once_rules_is_a_symlink() {
+    let f = Fixture::new();
+    success(&f.install());
+    let profiles = [f.0.join("aisw/a"), f.0.join("aisw/b")];
+    let foreign = f.0.join("aisw/foreign");
+    let roots: Vec<String> = profiles
+        .iter()
+        .chain([&foreign])
+        .map(|profile| {
+            fs::create_dir_all(profile).unwrap();
+            format!("codex={}", profile.display())
+        })
+        .collect();
+    let run = |roots: &[String]| {
+        let mut args = vec!["internal", "installer-integrations", "--confirm-missing"];
+        for root in roots {
+            args.extend(["--config-root", root.as_str()]);
+        }
+        f.run(&args)
+    };
+    // Each profile records its own rules file while rules/ is still a regular directory.
+    success(&run(&roots[..2]));
+    let stale: Vec<String> = profiles
+        .iter()
+        .map(|profile| {
+            let rules = profile.join("rules/herdr-threads.rules");
+            assert!(rules.is_file());
+            fs::remove_dir_all(profile.join("rules")).unwrap();
+            std::os::unix::fs::symlink(f.0.join("codex/rules"), profile.join("rules")).unwrap();
+            rules.display().to_string()
+        })
+        .collect();
+    // Both profiles' records are stale (an older render's fingerprint) and re-created after the
+    // real root's, as a later setup's atomic replace does, so a newest-first listing (tmpfs)
+    // offers them before it.
+    for entry in fs::read_dir(f.0.join("state/setup")).unwrap() {
+        let path = entry.unwrap().path();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap_or_default();
+        if manifest["resources"][0]["file"]
+            .as_str()
+            .is_some_and(|file| stale.iter().any(|s| s == file))
+        {
+            manifest["resources"][0]["fingerprint"] = "stale".into();
+            fs::remove_file(&path).unwrap();
+            fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        }
+    }
+    let out = run(&roots[..2]);
+    success(&out);
+    let text = String::from_utf8_lossy(&out.stdout);
+    let canonical = fs::canonicalize(f.0.join("codex/rules"))
+        .unwrap()
+        .join("herdr-threads.rules");
+    for profile in &profiles {
+        assert!(
+            text.contains(&format!(
+                "codex permissions (CODEX_HOME={}): shared (shared via symlink; managed at {})",
+                profile.display(),
+                canonical.display()
+            )),
+            "{text}"
+        );
+    }
+    // A link to a directory no managed root owns is refused and nothing is written through it.
+    let elsewhere = f.0.join("elsewhere/rules");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(elsewhere.join("herdr-threads.rules"), "foreign\n").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, foreign.join("rules")).unwrap();
+    let out = run(&roots[2..]);
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(&format!(
+            "codex permissions (CODEX_HOME={}): failed ({} is shared through a symlink to {}, \
+             which herdr-threads does not own unedited",
+            foreign.display(),
+            foreign.join("rules/herdr-threads.rules").display(),
+            fs::canonicalize(&elsewhere)
+                .unwrap()
+                .join("herdr-threads.rules")
+                .display()
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        fs::read_to_string(elsewhere.join("herdr-threads.rules")).unwrap(),
+        "foreign\n"
+    );
+    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 1);
+}
+
+// Kills a shared rules verdict that names whichever record validated (a sibling profile's link
+// path) instead of the real file, when the default root is itself a dotfile manager's symlink
+// (ht-mf2q).
+#[test]
+fn installer_names_the_real_rules_file_when_the_default_root_is_a_symlink() {
+    let f = Fixture::new();
+    let real = f.0.join("dotfiles/codex");
+    fs::create_dir_all(&real).unwrap();
+    std::os::unix::fs::symlink(&real, f.0.join("codex")).unwrap();
+    success(&f.install());
+    // The profiles' records stay valid (same render) once their rules/ is linked.
+    let profiles = [f.0.join("aisw/a"), f.0.join("aisw/b")];
+    let roots: Vec<String> = profiles
+        .iter()
+        .map(|profile| {
+            fs::create_dir_all(profile).unwrap();
+            format!("codex={}", profile.display())
+        })
+        .collect();
+    let run = || {
+        let mut args = vec!["internal", "installer-integrations", "--confirm-missing"];
+        for root in &roots {
+            args.extend(["--config-root", root.as_str()]);
+        }
+        f.run(&args)
+    };
+    success(&run());
+    for profile in &profiles {
+        fs::remove_dir_all(profile.join("rules")).unwrap();
+        std::os::unix::fs::symlink(f.0.join("codex/rules"), profile.join("rules")).unwrap();
+    }
+    let out = run();
+    success(&out);
+    let text = String::from_utf8_lossy(&out.stdout);
+    let canonical = fs::canonicalize(&real)
+        .unwrap()
+        .join("rules/herdr-threads.rules");
+    for profile in &profiles {
+        assert!(
+            text.contains(&format!(
+                "codex permissions (CODEX_HOME={}): shared (shared via symlink; managed at {})",
+                profile.display(),
+                canonical.display()
+            )),
+            "{text}"
+        );
+    }
+}
