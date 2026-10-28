@@ -579,9 +579,14 @@ fn doctor_environment(
     }
     environment
 }
+/// Doctor's one shared deadline. It bounds external probes (Hermes profile
+/// inspection runs Python), so a loaded test child gets the scaled bound.
 pub(crate) fn observation_budget(clock: &Arc<dyn Clock>) -> CallBudget {
+    let budget =
+        crate::protocol::time::external_bound(std::time::Duration::from_millis(HEALTH_BUDGET_MS));
+    let budget_ms = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX);
     CallBudget {
-        deadline: MonoInstant(clock.monotonic_now().0.saturating_add(HEALTH_BUDGET_MS)),
+        deadline: MonoInstant(clock.monotonic_now().0.saturating_add(budget_ms)),
         cancellation: Default::default(),
     }
 }
