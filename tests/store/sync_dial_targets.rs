@@ -448,3 +448,58 @@ fn readding_a_linked_target_keeps_it_linked_unless_its_command_changes() {
         "a new command re-dials"
     );
 }
+
+#[test]
+fn retire_unseen_deletes_only_never_linked_process_rows_absent_from_the_pass() {
+    let mut db = db();
+    let tx = db.transaction().unwrap();
+    let discovered = |tx: &rusqlite::Transaction<'_>, dest, source| {
+        let Discovered::Inserted(id) = targets::upsert_discovered(tx, dest, source, 10).unwrap()
+        else {
+            panic!("inserted {dest}")
+        };
+        id
+    };
+    let stray = discovered(&tx, "test-only", DiscoverySource::HerdrRemoteProcess);
+    let present = discovered(&tx, "open", DiscoverySource::HerdrRemoteProcess);
+    let once_linked = discovered(&tx, "linked-once", DiscoverySource::HerdrRemoteProcess);
+    let forgotten = discovered(&tx, "forgotten", DiscoverySource::HerdrRemoteProcess);
+    let machine = discovered(&tx, "machine", DiscoverySource::HerdrMachine);
+    let explicit = targets::add_explicit(&tx, "explicit", None, 10).unwrap();
+    targets::forget(&tx, "forgotten", 20).unwrap();
+    tx.commit().unwrap();
+    transition(
+        &mut db,
+        once_linked,
+        DialTransition::Linked { node: node(7) },
+        30,
+    );
+
+    let tx = db.transaction().unwrap();
+    assert_eq!(
+        targets::retire_unseen_remote_processes(&tx, &["open"]).unwrap(),
+        1
+    );
+    tx.commit().unwrap();
+    let left: Vec<TargetId> = targets::list(&db)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.target_id)
+        .collect();
+    assert!(!left.contains(&stray), "the stray client's row is deleted");
+    for kept in [present, once_linked, forgotten, machine, explicit] {
+        assert!(left.contains(&kept), "{kept:?} kept");
+    }
+    assert!(
+        !row(&db, forgotten).enabled,
+        "a forgotten row stays forgotten"
+    );
+
+    // Seen again later, the destination is discovered afresh.
+    let tx = db.transaction().unwrap();
+    assert!(matches!(
+        targets::upsert_discovered(&tx, "test-only", DiscoverySource::HerdrRemoteProcess, 40)
+            .unwrap(),
+        Discovered::Inserted(_)
+    ));
+}

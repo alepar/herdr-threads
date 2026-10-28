@@ -226,19 +226,24 @@ impl Found {
     }
 }
 
-/// How many rows one upsert pass added.
+/// How many rows one upsert pass added and retired.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpsertTally {
     pub inserted: usize,
     /// Over the target cap.
     pub skipped: usize,
+    /// Never-linked process-scan rows whose client is gone (ht-hvyf).
+    pub retired: usize,
 }
 
-/// The store side of discovery: one transaction upserting `found`.
+/// The store side of discovery: one transaction upserting `found` and, with
+/// `retire_unseen`, deleting the never-linked `herdr_remote_process` rows
+/// whose destination is not in `found`.
 pub trait DiscoveryStore: Send + Sync {
     fn upsert_discovered(
         &self,
         found: &[(String, DiscoverySource)],
+        retire_unseen: bool,
         budget: &CallBudget,
     ) -> Result<UpsertTally, ApiError>;
 }
@@ -355,6 +360,10 @@ pub struct DiscoveryWorker {
     deps: DiscoveryDeps,
     pacer: Arc<Pacer>,
     last_logged: Mutex<Vec<(&'static str, std::time::Instant)>>,
+    /// What the last pass with a completed process scan found (`None` before
+    /// the first): retiring runs on the first such pass and whenever a
+    /// destination found then is gone, so a steady pass writes nothing.
+    last_found: Mutex<Option<Vec<String>>>,
 }
 
 impl DiscoveryWorker {
@@ -368,6 +377,7 @@ impl DiscoveryWorker {
             deps,
             pacer,
             last_logged: Mutex::new(Vec::new()),
+            last_found: Mutex::new(None),
         }
     }
 
@@ -414,8 +424,9 @@ impl DiscoveryWorker {
     }
 
     /// One pass: nothing when disabled or without an attached host; else the
-    /// found destinations are upserted and, when a row was added, the Dialer
-    /// reloads.
+    /// found destinations are upserted, never-linked process-scan rows whose
+    /// client is gone are retired, and when a row was added or retired the
+    /// Dialer reloads.
     pub async fn pass(&self) -> PassOutcome {
         let deps = &self.deps;
         if !deps.enabled {
@@ -443,16 +454,29 @@ impl DiscoveryWorker {
             ),
         }
         let scan = Arc::clone(&deps.remote_clients);
-        match tokio::task::spawn_blocking(move || scan()).await {
-            Ok(clients) => found.remote_clients = clients,
-            Err(error) => self.log_limited(
-                "process_scan",
-                &format!("sync discovery: process scan failed: {error}"),
-            ),
-        }
+        let scanned = match tokio::task::spawn_blocking(move || scan()).await {
+            Ok(clients) => {
+                found.remote_clients = clients;
+                true
+            }
+            Err(error) => {
+                self.log_limited(
+                    "process_scan",
+                    &format!("sync discovery: process scan failed: {error}"),
+                );
+                false
+            }
+        };
         deps.status.set(state);
         let upserts = found.upserts();
-        if upserts.is_empty() {
+        let retire = scanned && {
+            let last = self.last_found.lock().unwrap_or_else(|e| e.into_inner());
+            last.as_ref().is_none_or(|last| {
+                last.iter()
+                    .any(|dest| !upserts.iter().any(|(found, _)| found == dest))
+            })
+        };
+        if upserts.is_empty() && !retire {
             return PassOutcome::Ran { changed: false };
         }
         let budget = CallBudget {
@@ -460,8 +484,11 @@ impl DiscoveryWorker {
             cancellation: deps.cancel.clone(),
         };
         let store = Arc::clone(&deps.store);
-        let written =
-            tokio::task::spawn_blocking(move || store.upsert_discovered(&upserts, &budget)).await;
+        let written = {
+            let upserts = upserts.clone();
+            tokio::task::spawn_blocking(move || store.upsert_discovered(&upserts, retire, &budget))
+                .await
+        };
         let tally = match written {
             Ok(Ok(tally)) => tally,
             Ok(Err(error)) => {
@@ -488,12 +515,24 @@ impl DiscoveryWorker {
                 ),
             );
         }
-        let changed = tally.inserted > 0;
-        if changed {
+        if scanned {
+            *self.last_found.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(upserts.into_iter().map(|(dest, _)| dest).collect());
+        }
+        if tally.inserted > 0 {
             (deps.log)(&format!(
                 "sync discovery: added {} dial target(s)",
                 tally.inserted
             ));
+        }
+        if tally.retired > 0 {
+            (deps.log)(&format!(
+                "sync discovery: retired {} never-linked dial target(s) whose herdr --remote client is gone",
+                tally.retired
+            ));
+        }
+        let changed = tally.inserted > 0 || tally.retired > 0;
+        if changed {
             (deps.reload)();
         }
         PassOutcome::Ran { changed }
@@ -597,19 +636,28 @@ mod tests {
     #[derive(Default)]
     struct RecordingStore {
         calls: Mutex<Vec<Vec<(String, DiscoverySource)>>>,
+        retires: Mutex<Vec<bool>>,
         inserted: AtomicUsize,
+        retired: AtomicUsize,
     }
 
     impl DiscoveryStore for RecordingStore {
         fn upsert_discovered(
             &self,
             found: &[(String, DiscoverySource)],
+            retire_unseen: bool,
             _: &CallBudget,
         ) -> Result<UpsertTally, ApiError> {
             self.calls.lock().unwrap().push(found.to_vec());
+            self.retires.lock().unwrap().push(retire_unseen);
             Ok(UpsertTally {
                 inserted: self.inserted.load(Ordering::SeqCst),
                 skipped: 0,
+                retired: if retire_unseen {
+                    self.retired.load(Ordering::SeqCst)
+                } else {
+                    0
+                },
             })
         }
     }
@@ -798,6 +846,7 @@ mod tests {
     #[tokio::test]
     async fn failing_machine_list_logs_once_per_hour() {
         let rig = rig(true, ListOutcome::Failed("boom".into()), Vec::new());
+        rig.store.inserted.store(0, Ordering::SeqCst);
         for _ in 0..3 {
             *rig.lister.0.lock().unwrap() = Some(ListOutcome::Failed("boom".into()));
             assert_eq!(rig.worker.pass().await, PassOutcome::Ran { changed: false });
@@ -810,7 +859,51 @@ mod tests {
             .filter(|l| l.contains("machine list failed"))
             .count();
         assert_eq!(failures, 1);
-        assert!(rig.store.calls.lock().unwrap().is_empty());
+        // Only the first pass's retirement reaches the store; nothing was found.
+        assert_eq!(rig.store.calls.lock().unwrap().as_slice(), [vec![]]);
+        assert_eq!(rig.store.retires.lock().unwrap().as_slice(), [true]);
+    }
+
+    #[tokio::test]
+    async fn retires_on_the_first_scan_and_when_a_client_is_gone() {
+        let clients = Arc::new(Mutex::new(vec!["r1".to_owned(), "r2".to_owned()]));
+        let scan = Arc::clone(&clients);
+        let rig = rig_with(
+            true,
+            machines(&[]),
+            Arc::new(move || scan.lock().unwrap().clone()),
+        );
+        let next_pass = |rig: &Rig| *rig.lister.0.lock().unwrap() = Some(machines(&[]));
+        // The first scan retires rows left by clients of an earlier run.
+        assert_eq!(rig.worker.pass().await, PassOutcome::Ran { changed: true });
+        // The same clients again: upserted as before, nothing retired.
+        rig.store.inserted.store(0, Ordering::SeqCst);
+        next_pass(&rig);
+        assert_eq!(rig.worker.pass().await, PassOutcome::Ran { changed: false });
+        // A new client alone upserts without retiring.
+        clients.lock().unwrap().push("r3".into());
+        next_pass(&rig);
+        rig.worker.pass().await;
+        // r1's client is gone: retired, logged, and the Dialer reloads.
+        clients.lock().unwrap().remove(0);
+        rig.store.retired.store(1, Ordering::SeqCst);
+        let reloads = rig.reloads.load(Ordering::SeqCst);
+        next_pass(&rig);
+        assert_eq!(rig.worker.pass().await, PassOutcome::Ran { changed: true });
+        assert_eq!(rig.reloads.load(Ordering::SeqCst), reloads + 1);
+        assert_eq!(
+            rig.store.retires.lock().unwrap().as_slice(),
+            [true, false, false, true]
+        );
+        assert_eq!(
+            rig.store.calls.lock().unwrap().last().unwrap(),
+            &vec![
+                ("r2".to_owned(), DiscoverySource::HerdrRemoteProcess),
+                ("r3".to_owned(), DiscoverySource::HerdrRemoteProcess),
+            ]
+        );
+        assert!(rig.logs.lock().unwrap().iter().any(|line| line
+            == "sync discovery: retired 1 never-linked dial target(s) whose herdr --remote client is gone"));
     }
 
     #[cfg(unix)]

@@ -393,6 +393,43 @@ pub fn upsert_discovered(
     Ok(Discovered::Inserted(TargetId(id)))
 }
 
+/// Discovery's process scan no longer sees a `herdr --remote` client for a
+/// destination: deletes each enabled `herdr_remote_process` row that never
+/// linked and whose destination is not in `seen` (every destination the pass
+/// found), so a one-off client (a test harness's `herdr --remote test-only`, a
+/// typo) is not dialed forever (ht-hvyf). Explicit, `herdr_machine`, forgotten
+/// and once-linked rows are kept; a later sighting adds the row again.
+/// Returns the rows deleted.
+pub fn retire_unseen_remote_processes(
+    tx: &Transaction<'_>,
+    seen: &[&str],
+) -> Result<usize, ApiError> {
+    let mut candidates = tx
+        .prepare(
+            "SELECT target_id, ssh_dest FROM sync_dial_targets \
+             WHERE source='herdr_remote_process' AND enabled=1 \
+               AND learned_node_uuid IS NULL AND last_linked_at IS NULL",
+        )
+        .map_err(store_error)?;
+    let unseen = candidates
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?
+        .into_iter()
+        .filter(|(_, dest)| !seen.contains(&dest.as_str()))
+        .map(|(id, _)| id)
+        .collect::<Vec<_>>();
+    drop(candidates);
+    for id in &unseen {
+        tx.execute("DELETE FROM sync_dial_targets WHERE target_id=?1", [id])
+            .map_err(store_error)?;
+    }
+    Ok(unseen.len())
+}
+
 /// Disables the target whose destination or learned node uuid is
 /// `dest_or_node`. Nothing is deleted; the row keeps its history and a later
 /// [`add_explicit`] enables it again. Returns the rows disabled (0 when there

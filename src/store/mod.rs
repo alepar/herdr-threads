@@ -1526,6 +1526,7 @@ impl crate::sync::discovery::DiscoveryStore for SqliteStore {
     fn upsert_discovered(
         &self,
         found: &[(String, sync_dial_targets::DiscoverySource)],
+        retire_unseen: bool,
         budget: &CallBudget,
     ) -> Result<crate::sync::discovery::UpsertTally, ApiError> {
         let _turn = self
@@ -1545,6 +1546,10 @@ impl crate::sync::discovery::DiscoveryStore for SqliteStore {
                 sync_dial_targets::Discovered::Present(_) => {}
                 sync_dial_targets::Discovered::Skipped => tally.skipped += 1,
             }
+        }
+        if retire_unseen {
+            let seen: Vec<&str> = found.iter().map(|(dest, _)| dest.as_str()).collect();
+            tally.retired = sync_dial_targets::retire_unseen_remote_processes(&tx, &seen)?;
         }
         tx.commit().map_err(store_error)?;
         Ok(tally)
