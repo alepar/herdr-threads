@@ -1,7 +1,7 @@
 super-roast verdict: clean (0 nits, 3 FYI) [low coverage]
 mode: PR        iteration: 1 of 3
 profile (assumed): Internal developer tooling (local same-user CLI). The change touches only read-side classification of a symlinked Codex rules file; nothing is written through the link either before or after the change.
-inputs: bead/ht-mf2q@cf1f45c4a vs main@103e9fbec
+inputs: bead/ht-mf2q@cf1f45c4a vs main@103e9fbec (round 1, inline); independent review round below
 coverage: unavailable: manual run, no coverage object. Lanes covered inline: correctness, regression vs existing tests, test causality.
 independence: none (inline) · rung: inline
 
@@ -28,3 +28,10 @@ None.
 ## Escalations (need human)
 
 None.
+
+## Independent review round (coordinator's reviewer), resolved in 8f809d5c0
+
+- [Should-fix, confirmed, resolved] src/harness/codex/setup.rs `shared_rules` (and the same rule in src/cli/installer_skill.rs `inspect_shared`, on main via ht-lmjf): the first installed record won, so the real root's own edited or interrupted record had no veto. A profile reported the file shared and managed while the real root reported it edited. Fix: one neutral decision, `harness::setup::shared_ownership`. A record made at the root that holds the file (`shared_through_symlink(record_root, file) == None`, which also holds when the root itself is a link) decides. Only when there is no such record, or it is missing, does any installed record own the file. Test: `installer_lets_the_real_roots_edited_record_veto_a_linked_profiles_record` (rules file and skill) fails on cf1f45c4a.
+- [Nit, resolved] The stale-record integration test was deterministic only on a newest-first listing. `shared_ownership_tests::the_real_roots_record_decides_in_every_order` now runs the decision over every permutation of each record set. It fails under both earlier rules ("the first record listed decides" and "any installed record wins").
+- [FYI] If two roots both reach the real file without a link below them (for example CODEX_HOME=~/.codex, a link, and CODEX_HOME=~/dotfiles/codex, both recorded), any installed record among them wins over an unsettled one among them. The result does not depend on order, but it is not a strict veto.
+- [FYI] The record's root is derived from the recorded path (`rules/herdr-threads.rules`, two levels up; `skills/herdr-threads/SKILL.md`, three levels up). Both layouts are fixed by their adapters, and the permission manifest's own `config_root` is written from the same derivation.
