@@ -62,9 +62,12 @@ check "release.yml: on.push.tags == [v*]" test "$(yq -o=json -I=0 '.on.push.tags
 check "release.yml: on.workflow_dispatch exists" test "$(yq '.on | has("workflow_dispatch")' "$rel")" = true
 
 check "ci.yml: build-targets job exists" test "$(yq '.jobs | has("build-targets")' "$ci")" = true
-check "ci.yml: build-targets matrix has the four targets" test \
-  "$(yq -o=json -I=0 '[.jobs.build-targets.strategy.matrix.include[].target] | sort' "$ci")" = \
+check "ci.yml: build-targets matrix builds the four targets" test \
+  "$(yq -o=json -I=0 '[.jobs.build-targets.strategy.matrix.include[].targets | split(" ") | .[]] | sort' "$ci")" = \
   '["aarch64-apple-darwin","aarch64-unknown-linux-musl","x86_64-apple-darwin","x86_64-unknown-linux-musl"]'
+check "ci.yml: build-targets builds both darwin targets on one macOS runner" test \
+  "$(yq -o=json -I=0 '[.jobs.build-targets.strategy.matrix.include[] | select(.runner | test("^macos")) | .targets]' "$ci")" = \
+  '["aarch64-apple-darwin x86_64-apple-darwin"]'
 check "ci.yml: build-targets builds --locked --release" bash -c \
   'yq ".jobs.build-targets" "$1" | grep -q -- "cargo build --locked --release"' _ "$ci"
 check "ci.yml: clippy job exists" test "$(yq '.jobs | has("clippy")' "$ci")" = true

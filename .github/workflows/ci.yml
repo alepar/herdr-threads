@@ -663,16 +663,18 @@ jobs:
   build-targets:
     if: always()
     needs: changes
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        # Both darwin targets build in one macos-15 job: hosted macOS runners
+        # sometimes are never acquired (ht-yjhb), so each run asks for as few as
+        # it can. `targets` is space-separated.
         include:
-          - { target: aarch64-apple-darwin, runner: macos-15 }
-          - { target: x86_64-apple-darwin, runner: macos-15 }
-          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
-          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { name: apple-darwin, targets: aarch64-apple-darwin x86_64-apple-darwin, runner: macos-15 }
+          - { name: x86_64-unknown-linux-musl, targets: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { name: aarch64-unknown-linux-musl, targets: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
     steps:
       - name: Validate changed-path detector
         if: always()
@@ -686,7 +688,7 @@ jobs:
         if: needs.changes.outputs.heavy == 'true'
 
       - name: musl toolchain
-        if: needs.changes.outputs.heavy == 'true' && contains(matrix.target, 'linux-musl')
+        if: needs.changes.outputs.heavy == 'true' && contains(matrix.targets, 'linux-musl')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
@@ -694,9 +696,10 @@ jobs:
       - name: Rust toolchain
         if: needs.changes.outputs.heavy == 'true'
         env:
-          TARGET: ${{ matrix.target }}
+          TARGETS: ${{ matrix.targets }}
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$TARGET"
+          # shellcheck disable=SC2086 # TARGETS is a space-separated list.
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal $(printf -- '--target %s ' $TARGETS)
           rustup default "$RUST_TOOLCHAIN"
 
       - name: Rust dependency cache
@@ -706,24 +709,26 @@ jobs:
           # rust-cache adds rustc identity, Cargo.lock/manifests and Cargo/Rust
           # environment hashes, with compatible dependency restore fallbacks.
           # Workspace crates and incremental files are pruned to bound size.
-          shared-key: build-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}
+          shared-key: build-${{ runner.os }}-${{ runner.arch }}-${{ matrix.name }}
           cache-bin: false
 
       - name: Locked release build
         if: needs.changes.outputs.heavy == 'true'
         shell: bash
         env:
-          TARGET: ${{ matrix.target }}
+          TARGETS: ${{ matrix.targets }}
         run: |
           set -euo pipefail
-          case "$TARGET" in
-            *linux-musl)
-              # The cc crate builds the bundled SQLite; point it at musl-gcc.
-              cc_var="CC_$(printf '%s' "$TARGET" | tr '-' '_')"
-              export "$cc_var=musl-gcc"
-              ;;
-          esac
-          cargo build --locked --release --target "$TARGET"
+          for target in $TARGETS; do
+            case "$target" in
+              *linux-musl)
+                # The cc crate builds the bundled SQLite; point it at musl-gcc.
+                cc_var="CC_$(printf '%s' "$target" | tr '-' '_')"
+                export "$cc_var=musl-gcc"
+                ;;
+            esac
+            cargo build --locked --release --target "$target"
+          done
 
   actionlint:
     if: always()
