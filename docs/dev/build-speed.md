@@ -448,7 +448,7 @@ the runner is free.
 
 ## Six CI slices: runner speed, not slice balance (ht-i4tm)
 
-Five slices left 3-50 s of headroom: run 40687941838 (main `6e918785b`) took slice 1/5 to
+Five slices left 24, 9 and 3 s of headroom on the slowest slice in the runs below; run 40687941838 (main `6e918785b`) took slice 1/5 to
 297 s. The spread between slices is the runners, not the split. In each run the identical
 `Locked build` step (same commands, same cache) varies about 1.6x between jobs, and the
 test step follows it:
