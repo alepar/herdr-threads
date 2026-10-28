@@ -242,8 +242,11 @@ fn the_backup_just_taken_survives_when_newer_names_exist() {
     }
     let (backup, _, prune) = taken(backup_and_prune(&state, "v2.5.0", at(NOW)).unwrap());
     assert!(backup.join(DATABASE_FILE).is_file());
-    assert!(prune.pruned.is_empty());
-    assert_eq!(names(&root).len(), 4);
+    // The first pass made room by dropping the oldest of the three newer entries; the new
+    // backup is kept by path although two names sort after it.
+    assert_eq!(prune.pruned.len(), 1);
+    assert!(prune.pruned[0].ends_with("pre-v3.0.1-20300101T000000Z"));
+    assert_eq!(names(&root).len(), 3);
 }
 
 #[test]
@@ -333,34 +336,57 @@ fn a_copy_that_fails_its_integrity_check_is_refused() {
 }
 
 #[test]
-fn prune_runs_before_the_copy_so_a_failed_copy_still_frees_space() {
+fn the_first_prune_makes_room_before_the_copy_in_the_steady_state() {
     let (_root, state) = state("early", 9);
     let root = backups(&state);
-    fs::create_dir_all(&root).unwrap();
-    for day in 1..=5 {
-        entry(
-            &root,
-            &format!("pre-v2.4.{day}-2026100{day}T000000Z"),
-            Some(5),
-        );
+    // What earlier installer runs leave: the newest 3 of one schema.
+    for day in 1..=3 {
+        taken(backup_and_prune(&state, "v2.4.0", at(NOW - 86_400 * (4 - day))).unwrap());
     }
+    assert_eq!(names(&root).len(), 3);
+    let oldest = names(&root)[0].clone();
+    let mut at_copy = Vec::new();
+    let (backup, _, prune) = taken(
+        backup_and_prune_with(&state, "v2.5.0", at(NOW), |root| at_copy = names(root)).unwrap(),
+    );
+    assert!(
+        !at_copy.contains(&oldest),
+        "removed before the copy: {at_copy:?}"
+    );
+    assert_eq!(
+        at_copy
+            .iter()
+            .filter(|name| name.starts_with("pre-v"))
+            .count(),
+        2
+    );
+    assert_eq!(prune.pruned.len(), 1);
+    assert!(prune.pruned[0].ends_with(&oldest));
+    assert_eq!(names(&root).len(), 3);
+    assert!(names(&root).contains(&backup.file_name().unwrap().to_str().unwrap().to_owned()));
+}
+
+#[test]
+fn the_first_prune_keeps_every_schema_head_and_reports_on_a_failed_copy() {
+    let (_root, state) = state("early-fail", 9);
+    let root = backups(&state);
+    fs::create_dir_all(&root).unwrap();
+    entry(&root, "pre-v2.0.1-20261001T000000Z", Some(1));
+    entry(&root, "pre-v2.4.1-20261005T000000Z", Some(5));
+    entry(&root, "pre-v2.4.2-20261006T000000Z", Some(9));
+    entry(&root, "pre-v2.4.3-20261007T000000Z", Some(9));
     let node = state.join("node");
     let _ = fs::remove_file(node.join("herdr-threads.db-wal"));
     let _ = fs::remove_file(node.join("herdr-threads.db-shm"));
     fs::write(node.join(DATABASE_FILE), b"not a database at all").unwrap();
     let failure = backup_and_prune(&state, "v2.5.0", at(NOW)).unwrap_err();
-    let mut pruned: Vec<String> = failure
-        .prune
-        .pruned
-        .iter()
-        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
-        .collect();
-    pruned.sort();
-    assert_eq!(
-        pruned,
-        vec!["pre-v2.4.1-20261001T000000Z", "pre-v2.4.2-20261002T000000Z"]
+    // Newest 2 are both schema 9; the schema 1 and 5 heads stay; nothing else to drop.
+    assert!(
+        failure.prune.pruned.is_empty(),
+        "{:?}",
+        failure.prune.pruned
     );
-    assert_eq!(names(&root).len(), 3, "the newest 3 stay; no staging left");
+    assert_eq!(names(&root).len(), 4, "no staging left, every head kept");
 }
 
 #[cfg(unix)]

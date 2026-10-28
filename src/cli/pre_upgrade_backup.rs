@@ -140,14 +140,24 @@ fn report_prune<W: Write>(prune: &PruneReport, writer: &mut W) -> io::Result<()>
 }
 
 /// Prune the backup root, take the backup of `state_dir`'s node store, then prune again
-/// with the new backup counted. Pruning first frees the space of entries the policy drops
-/// anyway (it never drops the newest per schema), so a full disk can still take the copy.
-/// An error means no backup exists (the staging directory is removed); pruning never fails
-/// the run.
+/// with the new backup counted. The first pass keeps one entry fewer than the policy (the
+/// newest 2), making room for the copy: it removes the entry the second pass would remove
+/// anyway, never the newest of a schema, so a full disk can still take the copy. An error
+/// means no backup exists (the staging directory is removed); pruning never fails the run.
 pub fn backup_and_prune(
     state_dir: &Path,
     version: &str,
     now: SystemTime,
+) -> Result<Outcome, Failure> {
+    backup_and_prune_with(state_dir, version, now, |_| {})
+}
+
+/// [`backup_and_prune`], calling `before_copy` with the backup root just before the copy.
+fn backup_and_prune_with(
+    state_dir: &Path,
+    version: &str,
+    now: SystemTime,
+    before_copy: impl FnOnce(&Path),
 ) -> Result<Outcome, Failure> {
     let source = node_dir(state_dir).join(DATABASE_FILE);
     match fs::symlink_metadata(&source) {
@@ -185,7 +195,7 @@ pub fn backup_and_prune(
         Err(error) => return Err(Failure::from(format!("{}: {error}", root.display()))),
     }
     sweep_stale_staging(&root);
-    let early = prune(&root, None);
+    let early = prune(&root, None, KEEP_NEWEST - 1);
     let fail = |reason: String| Failure {
         reason,
         prune: early.clone(),
@@ -194,6 +204,7 @@ pub fn backup_and_prune(
     create_private_dir(&staging)
         .map_err(|error| fail(format!("{}: {error}", staging.display())))?;
     let result = (|| {
+        before_copy(&root);
         let schema = copy_store(&source, &staging.join(DATABASE_FILE))?;
         for name in [
             crate::node::identity::KEY_FILE,
@@ -220,7 +231,7 @@ pub fn backup_and_prune(
         .map(|reason| format!("backup in place, but syncing its directory failed: {reason}"))
         .into_iter()
         .collect();
-    let late = prune(&root, Some(&backup));
+    let late = prune(&root, Some(&backup), KEEP_NEWEST);
     let mut prune = early;
     prune.pruned.extend(late.pruned);
     prune.unreadable = late.unreadable;
@@ -428,7 +439,7 @@ struct Candidate {
 
 /// Keep the backup just taken, the newest 3, the newest per schema and every entry whose
 /// schema cannot be read; remove the rest. Only entries on the grammar are considered.
-fn prune(root: &Path, taken: Option<&Path>) -> PruneReport {
+fn prune(root: &Path, taken: Option<&Path>, keep_newest: usize) -> PruneReport {
     let mut report = PruneReport::default();
     let Ok(entries) = fs::read_dir(root) else {
         return report;
@@ -467,7 +478,7 @@ fn prune(root: &Path, taken: Option<&Path>) -> PruneReport {
             }
             Ok(schema) => schemas.insert(*schema),
         };
-        if newest_of_schema || index < KEEP_NEWEST || Some(candidate.path.as_path()) == taken {
+        if newest_of_schema || index < keep_newest || Some(candidate.path.as_path()) == taken {
             continue;
         }
         match fs::remove_dir_all(&candidate.path) {

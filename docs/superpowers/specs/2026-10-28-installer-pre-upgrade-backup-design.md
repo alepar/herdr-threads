@@ -92,10 +92,12 @@ only.
 
 ### Pruning (helper, before the copy and after it)
 
-It runs twice: before the copy without a just-taken entry (so a full disk can still take the
-copy; the keep rules below never drop the newest backup of a schema, which is what a rollback
-needs), and after a successful copy with it. A failed copy still reports the first pass's
-deletions.
+It runs twice. Before the copy it keeps the newest 2 instead of 3 (the other rules
+unchanged): in the steady state that removes exactly the entry the second pass would remove
+once the copy lands, so a full disk can still take the copy, and it never drops the newest
+backup of a schema, which is what a rollback needs (roast pr-2). After a successful copy it
+runs with the rules below and the new entry. A failed copy still reports the first pass's
+deletions and so leaves one entry fewer than the newest 3.
 
 Candidates: entries of the root whose name matches the grammar exactly and that are real
 directories (`symlink_metadata`; a symlink is never followed or removed).
