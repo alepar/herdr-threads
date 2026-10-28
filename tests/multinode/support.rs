@@ -277,6 +277,21 @@ pub fn due_rows(cluster: &Cluster, node: usize, message: &str, seat: &Seat) -> i
         .expect("a due-row count")
 }
 
+/// Waits until `node` holds `count` due-tracking rows of `(message, seat)`.
+/// The effective view is pending as soon as the send commits, but the
+/// physical receipt (and its due row) is projected later by the send's
+/// `send_attention` work job.
+pub fn wait_due_rows(cluster: &Cluster, node: usize, message: &str, seat: &Seat, count: i64) {
+    cluster.wait_until(
+        &format!(
+            "node {node} to track {count} due row(s) of {message} for {}",
+            seat.id
+        ),
+        crate::WAIT,
+        || (due_rows(cluster, node, message, seat) == count).then_some(()),
+    );
+}
+
 /// How many derived `ack` info events `node` holds in `thread`, split by the
 /// settlement path that authored them: `ack:` for a displayed/explicit
 /// settlement and `ack_mod:` for a mod or policy completion.

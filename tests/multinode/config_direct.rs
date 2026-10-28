@@ -186,10 +186,8 @@ fn text_inbox_auto_ack_reaches_remote_sender_json_read_is_passive() {
     support::wait_receipt(&cluster, 1, &message, &b, "pending");
     assert!(support::inbox_ids(&cluster, &b).contains(&message));
     for node in [0, 1] {
-        assert_eq!(
-            support::receipt(&cluster, node, &message, &b).as_deref(),
-            Some("pending")
-        );
+        // Each node projects its physical receipt from its own work job.
+        support::wait_receipt(&cluster, node, &message, &b, "pending");
         assert!(!cluster.kinds(node).contains_key("receipt.settled"));
     }
     let (code, stdout, stderr) = cluster.text_as(Some(&b), 1, &["inbox"]);
