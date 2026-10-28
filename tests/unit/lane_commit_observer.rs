@@ -23,9 +23,11 @@ fn fixture() -> (TestIsolation, Arc<SqliteStore>, LaneProbe) {
     (iso, store, probe)
 }
 
-fn budget() -> CallBudget {
+/// Relative to the store's clock now, so the fixture's setup time on a loaded
+/// runner never eats the call's budget.
+fn budget(store: &SqliteStore) -> CallBudget {
     CallBudget {
-        deadline: MonoInstant(3000),
+        deadline: MonoInstant(store.clock().monotonic_now().0 + 3000),
         cancellation: Cancellation::default(),
     }
 }
@@ -36,7 +38,7 @@ fn legacy_commit_watchers_preserve_other_origins() {
     let wake = probe.next_commit_instant(Lane::Wakes);
     let deadline = probe.next_commit_instant(Lane::Deadlines);
     let _origin = crate::service::kicks::enter_lane(Lane::Wakes);
-    assert_eq!(store.prune_retention(&budget()).unwrap().jobs, 1);
+    assert_eq!(store.prune_retention(&budget(&store)).unwrap().jobs, 1);
     assert!(
         wake.lock().unwrap().is_some(),
         "a second origin must not overwrite the wake observer"
@@ -97,7 +99,7 @@ fn observers_are_exclusive_per_origin_ignore_noops_and_clean_up() {
                 .clear_wake_batch_if_empty(
                     crate::test_support::test_host_id(),
                     &crate::protocol::ids::SeatId::new("s"),
-                    &budget()
+                    &budget(&store)
                 )
                 .unwrap()
         );
@@ -108,7 +110,7 @@ fn observers_are_exclusive_per_origin_ignore_noops_and_clean_up() {
     );
     {
         let _origin = crate::service::kicks::enter_lane(Lane::Deadlines);
-        assert_eq!(store.prune_retention(&budget()).unwrap().jobs, 1);
+        assert_eq!(store.prune_retention(&budget(&store)).unwrap().jobs, 1);
     }
     assert!(
         samples.lock().unwrap().is_empty(),
@@ -117,7 +119,7 @@ fn observers_are_exclusive_per_origin_ignore_noops_and_clean_up() {
     for name in ["second", "third"] {
         seed_job(&iso, name);
         let _origin = crate::service::kicks::enter_lane(Lane::Wakes);
-        assert_eq!(store.prune_retention(&budget()).unwrap().jobs, 1);
+        assert_eq!(store.prune_retention(&budget(&store)).unwrap().jobs, 1);
     }
     let before = samples.lock().unwrap().clone();
     assert_eq!(
@@ -142,7 +144,7 @@ fn observers_are_exclusive_per_origin_ignore_noops_and_clean_up() {
     seed_job(&iso, "after-cleanup");
     {
         let _origin = crate::service::kicks::enter_lane(Lane::Wakes);
-        assert_eq!(store.prune_retention(&budget()).unwrap().jobs, 1);
+        assert_eq!(store.prune_retention(&budget(&store)).unwrap().jobs, 1);
     }
     assert_eq!(
         *samples.lock().unwrap(),
@@ -174,7 +176,7 @@ fn legacy_owners_release_after_capture_or_abandonment() {
     let captured = probe.next_commit_instant(Lane::Wakes);
     {
         let _origin = crate::service::kicks::enter_lane(Lane::Wakes);
-        store.prune_retention(&budget()).unwrap();
+        store.prune_retention(&budget(&store)).unwrap();
     }
     assert!(captured.lock().unwrap().is_some());
     drop(
@@ -209,7 +211,7 @@ fn observer_drop_waits_for_inflight_callback_and_disables_stale_snapshot() {
     let stale_entry = Arc::clone(&guard.entry);
     let producer = std::thread::spawn(move || {
         let _origin = crate::service::kicks::enter_lane(Lane::Wakes);
-        store.prune_retention(&budget()).unwrap();
+        store.prune_retention(&budget(&store)).unwrap();
     });
     entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
     let (dropping_tx, dropping_rx) = std::sync::mpsc::sync_channel(1);
@@ -264,13 +266,19 @@ fn reattaching_probe_cannot_observe_old_stores_commits() {
         )
         .unwrap();
     let _origin = crate::service::kicks::enter_lane(Lane::Wakes);
-    assert_eq!(old_store.prune_retention(&budget()).unwrap().jobs, 1);
+    assert_eq!(
+        old_store.prune_retention(&budget(&old_store)).unwrap().jobs,
+        1
+    );
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "an old store dispatcher must not invoke a new store's observer"
     );
-    assert_eq!(new_store.prune_retention(&budget()).unwrap().jobs, 1);
+    assert_eq!(
+        new_store.prune_retention(&budget(&new_store)).unwrap().jobs,
+        1
+    );
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
@@ -305,8 +313,8 @@ fn refused_reattachment_preserves_both_stores_observers_and_kick_sinks() {
         .is_err()
     );
     let _origin = crate::service::kicks::enter_lane(Lane::Wakes);
-    old_store.prune_retention(&budget()).unwrap();
-    new_store.prune_retention(&budget()).unwrap();
+    old_store.prune_retention(&budget(&old_store)).unwrap();
+    new_store.prune_retention(&budget(&new_store)).unwrap();
     assert_eq!(old_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(new_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(old_probe.kick_log().len(), 1);
