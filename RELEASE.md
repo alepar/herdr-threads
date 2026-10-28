@@ -27,7 +27,7 @@ A lane that adds a node schema delta (`migrations/node/NNNN_*.sql` and its `NODE
 
 ## 3. Qualify the candidate
 
-Start ordinary push/PR CI on the candidate SHA alongside local qualification; only changes confined to `RELEASE.md`, `AGENTS.md`, `CLAUDE.md` and `docs/superpowers/**` skip heavy CI steps. Other documentation, including `docs/release.md`, remains heavy because it can be embedded or consumed by checks; no manual `ci.yml` dispatch is required. Run from a Herdr pane in the release worktree:
+Start ordinary push/PR CI on the candidate SHA alongside local qualification; only changes confined to `RELEASE.md`, `AGENTS.md`, `CLAUDE.md`, `docs/release.md` and `docs/superpowers/**` skip heavy CI steps (the changes job runs `tests/release/docs_test.sh` on every push). Other documentation remains heavy because it can be embedded or consumed by checks; no manual `ci.yml` dispatch is required. Run from a Herdr pane in the release worktree:
 
 ```sh
 scripts/release-qualify --evidence-dir /tmp/release-X.Y.Z

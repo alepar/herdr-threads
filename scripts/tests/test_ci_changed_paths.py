@@ -9,12 +9,12 @@ class ChangedPaths(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('paths', path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        allowed = ['RELEASE.md', 'AGENTS.md', 'CLAUDE.md', 'docs/superpowers/plans/design.md',
-                   'docs/superpowers/runs/evidence.txt']
+        allowed = ['RELEASE.md', 'AGENTS.md', 'CLAUDE.md', 'docs/release.md',
+                   'docs/superpowers/plans/design.md', 'docs/superpowers/runs/evidence.txt']
         # Docs may be compiled assets or tested contracts: suffix alone is no exemption.
         heavy = ['README.md', 'CHANGELOG.md', 'CHANGELOG', 'TRUST-POLICY.md',
                  'integrations/skill/SKILL.md', 'integrations/claude/README.md',
-                 'docs/release.md', 'docs/install.md', 'docs/compatibility/harness-versions.json',
+                 'docs/install.md', 'docs/compatibility/harness-versions.json',
                  'docs/compatibility/policy.md', 'docs/evidence/report.md', 'docs/other.md',
                  'notes.md', 'src/main.rs', 'nested/RELEASE.md', 'docs/superpowers-other/file.md']
         for event in ['push', 'pull_request']:

@@ -46,6 +46,10 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci-changed-paths.py
+      # The release-document assertions run on every push: a release-record
+      # commit (docs/release.md only) skips the heavy jobs.
+      - name: Release document assertions
+        run: tests/release/docs_test.sh
 
   tests:
     if: always()

@@ -8,9 +8,10 @@ def heavy(event, ref_type, paths):
     if event not in ('push', 'pull_request') or ref_type == 'tag' or not paths or not all(paths):
         return True
     # Deny by default: Markdown includes embedded harness assets and tested
-    # contracts. docs/release.md is consumed by tests/release/docs_test.sh;
-    # docs/evidence and compatibility data are compiled into Rust tests/code.
-    allowed = {'RELEASE.md', 'AGENTS.md', 'CLAUDE.md'}
+    # contracts. docs/release.md is read only by tests/release/docs_test.sh,
+    # which the changes job runs on every push; docs/evidence and
+    # compatibility data are compiled into Rust tests/code.
+    allowed = {'RELEASE.md', 'AGENTS.md', 'CLAUDE.md', 'docs/release.md'}
     return any(p not in allowed and not p.startswith('docs/superpowers/') for p in paths)
 
 
