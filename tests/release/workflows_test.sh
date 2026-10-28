@@ -76,8 +76,8 @@ check "ci.yml: package-lifecycle cargo test enables test-support" bash -c \
   'yq ".jobs.package-lifecycle.steps[].run" "$1" | grep -qE -- "cargo test --locked (--features test-support|--all-features) --test package"' _ "$ci"
 check "ci.yml: deterministic job ends with an always() leak check" bash -c \
   'test "$(yq ".jobs.deterministic.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "$2"' _ "$ci" "always() && needs.changes.outputs.heavy == 'true'"
-check "ci.yml: tests job runs on Linux in five shards" bash -c \
-  'test "$(yq ".jobs.tests.runs-on" "$1")" = ubuntu-24.04 && test "$(yq -o=json -I=0 ".jobs.tests.strategy.matrix.shard" "$1")" = "[1,2,3,4,5]"' _ "$ci"
+check "ci.yml: tests job runs on Linux in six shards" bash -c \
+  'test "$(yq ".jobs.tests.runs-on" "$1")" = ubuntu-24.04 && test "$(yq -o=json -I=0 ".jobs.tests.strategy.matrix.shard" "$1")" = "[1,2,3,4,5,6]"' _ "$ci"
 check "ci.yml: tests job partitions nextest by slice of the matrix size" bash -c \
   'yq ".jobs.tests.steps[].run" "$1" | grep -qF -- "--partition \"slice:\$SHARD/\$SHARDS\"" && yq ".jobs.tests.steps[].env.SHARDS" "$1" | grep -qxF "\${{ strategy.job-total }}"' _ "$ci"
 check "ci.yml: tests job ends with an always() leak check" bash -c \

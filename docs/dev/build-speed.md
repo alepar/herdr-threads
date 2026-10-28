@@ -445,3 +445,30 @@ set; every step reads it back as `strategy.job-total`. On the same per-test dura
 duration 15% longer (the next run, 40446025838, was about 15% slower across unrelated tests).
 Each extra runner repeats the test build outside the timer; the repository is public, so
 the runner is free.
+
+## Six CI slices: runner speed, not slice balance (ht-i4tm)
+
+Five slices left 24, 9 and 3 s of headroom on the slowest slice in the runs below; run 40687941838 (main `6e918785b`) took slice 1/5 to
+297 s. The spread between slices is the runners, not the split. In each run the identical
+`Locked build` step (same commands, same cache) varies about 1.6x between jobs, and the
+test step follows it:
+
+| Run | Locked build (s) per slice 1-5 | Test step (s) per slice 1-5 |
+| --- | --- | --- |
+| 40638065892 | 564 / 411 / 556 / 381 / 539 | 225 / 156 / 276 / 155 / 242 |
+| 40680960206 | 462 / 551 / 599 / 540 / 529 | 173 / 291 / 287 / 286 / 252 |
+| 40687941838 | 592 / 556 / 382 / 457 / 576 | 297 / 267 / 175 / 211 / 275 |
+
+The median test duration moves with it (0.09-0.12 s on the fast runners, 0.14-0.20 s on the
+slow ones), across every module rather than in a few heavy tests, and the slow slice
+changes from run to run. Wall time stays about test-seconds / 7 (the `ci` profile's
+slots), so each slice is throughput-bound: the long tests named in the bead (30-45 s
+each: the 30 s wake-ladder retry, the sync hold window, the 257-send capacity drain, the
+Q4 SQLite work counts) are real-time or essential waits, worth about 5 s of slice wall
+each, and none is incidental.
+
+A time-informed partition would not help: it balances test-seconds, and the slices
+already carry equal tests; the runner each lands on is chance. CI therefore runs six
+slices. On the slowest observed runner (1994 test-seconds, 297 s for 1612 tests), a sixth
+of the suite projects to about 250 s. The step prints the runner's CPU model beside the
+timer, so a slow slice can be told from a slow test.

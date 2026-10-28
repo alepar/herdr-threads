@@ -3,7 +3,7 @@ name: Full suite gate
 # The AGENTS.md speed budget: the exact full-suite command,
 # `cargo nextest run --locked --all-targets --all-features`, unsharded and with
 # the default nextest profile, under 300 s wall clock. Push CI (ci.yml) runs
-# the same tests as five slice shards with their own 300 s guards; that proves
+# the same tests as six slice shards with their own 300 s guards; that proves
 # correctness, not this budget. Manual dispatch only, on the exact SHA a
 # release qualifies. Setup and prewarm are ci.yml's tests job; the timer covers
 # only the run. No retry, no native or authenticated harness runs.
