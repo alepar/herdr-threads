@@ -174,6 +174,9 @@ pub struct WakeDriveOutcome {
     /// out, unavailable, unsent outcome-unknown) or a notifier that does not
     /// verify adds no entry.
     pub verification: Vec<(SeatId, SubmissionVerification)>,
+    /// Per-drive reasons the notifier gave for wakes it refused before
+    /// sending (nothing for a wake that was no longer owed).
+    pub refusals: Vec<(SeatId, String)>,
     /// Earliest instant a seat in refusal backoff (or waiting on its ladder)
     /// can be tried again; the deadline/wake lane sleeps until then.
     pub next_due_at: Option<MonoInstant>,
@@ -445,6 +448,9 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             // entry a failed completion left behind can never be reported
             // against a later attempt.
             let verification = self.wakes.notifier.take_verification(&candidate.seat);
+            if let Some(detail) = self.wakes.notifier.take_refusal(&candidate.seat) {
+                outcome.refusals.push((candidate.seat.clone(), detail));
+            }
             if verification == Some(SubmissionVerification::Unsubmitted) {
                 self.wakes.arm_unsubmitted(&candidate.seat)?;
             }

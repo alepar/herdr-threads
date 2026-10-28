@@ -263,3 +263,28 @@ fn native_stub_reports_unknown() {
         AgentComposerState::Unknown
     );
 }
+
+/// Refuses every attempt as unsafe and says why, like `NativeWakeDispatcher`.
+struct ExplainingRefuser;
+impl NotificationPort for ExplainingRefuser {
+    fn attempt_wake(
+        &self,
+        _: WakeReservation,
+        _: &HostCallContext,
+    ) -> Result<WakeOutcome, ApiError> {
+        Ok(WakeOutcome::Refused(crate::ports::RefusalCause::Unsafe))
+    }
+    fn take_refusal(&self, _: &SeatId) -> Option<String> {
+        Some("composer is nonempty".into())
+    }
+}
+
+/// Kills: a drive that drops the notifier's refusal detail (ht-78f6: the wake lane then has
+/// nothing to write to daemon.log).
+#[test]
+fn drive_outcome_carries_the_refusal_detail() {
+    let wake = fake_wake_store();
+    let outcome = drive_once(&ExplainingRefuser, &wake);
+    assert_eq!(outcome.refusals.len(), 1, "{outcome:?}");
+    assert_eq!(outcome.refusals[0].1, "composer is nonempty");
+}

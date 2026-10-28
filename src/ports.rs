@@ -4417,6 +4417,11 @@ pub trait NotificationPort: Send + Sync {
     ) -> Option<crate::scheduler::SubmissionVerification> {
         None
     }
+    /// Why the last wake attempt for `seat` was refused before sending, taken
+    /// once. Notifiers that do not say report nothing.
+    fn take_refusal(&self, _seat: &SeatId) -> Option<String> {
+        None
+    }
 }
 
 /// Local client and service share the same typed command/result envelope.

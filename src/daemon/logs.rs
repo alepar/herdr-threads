@@ -36,6 +36,10 @@ pub trait LaneErrorLog: Send + Sync {
         _verification: crate::scheduler::SubmissionVerification,
     ) {
     }
+
+    /// A wake refused before anything was sent, with the refusing check's
+    /// detail. The default records nothing.
+    fn record_wake_refusal(&self, _seat: &crate::protocol::ids::SeatId, _detail: &str) {}
 }
 
 /// The default lane error log: records nothing.
@@ -232,6 +236,17 @@ impl LaneErrorLog for RateLimitedLaneLog {
             "lane wakes".to_owned(),
             format!("verification {}", verification.as_str()),
             &format!("seat {}: wake prompt {what}", seat.as_str()),
+            0,
+        );
+    }
+
+    /// One line per seat, then one summary per window while its wakes keep
+    /// being refused: `lane wakes: refused SEAT: DETAIL`.
+    fn record_wake_refusal(&self, seat: &crate::protocol::ids::SeatId, detail: &str) {
+        self.note(
+            "lane wakes".to_owned(),
+            format!("refused {}", seat.as_str()),
+            detail,
             0,
         );
     }

@@ -8631,3 +8631,68 @@ fn channel_woken_process_drops_its_same_process_siblings() {
         "every binding of the woken process is served by its channel's turn"
     );
 }
+
+/// Current, but no longer owed (served in its turn).
+struct NotOwedCheck;
+impl ReservationCheck for NotOwedCheck {
+    fn is_current(&self, _: &WakeReservation, _: &CallBudget) -> Result<bool, ApiError> {
+        Ok(true)
+    }
+    fn owes_wake(
+        &self,
+        _: &WakeReservation,
+        _: &[Option<&crate::protocol::ids::BindingId>],
+        _: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+}
+
+/// Kills: ht-78f6's blind spot. A wake refused before sending left no trace of which check
+/// refused it (CI evidence showed only `last_outcome = unsafe`). The dispatcher keeps the
+/// refusing check's detail for the scheduler, taken once, and none for a wake that is simply
+/// no longer owed.
+#[test]
+fn pre_send_refusal_keeps_its_detail_once() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    let host = || FakeNativeHost {
+        observation: fresh_observation(),
+        submitted: AtomicU64::new(0),
+        pane_states: Default::default(),
+        submit_keys: AtomicU64::new(0),
+    };
+    let seat = SeatId::new("seat");
+
+    let stale = host();
+    let check = FakeReservationCheck {
+        current: false,
+        calls: AtomicU64::new(0),
+    };
+    let dispatch = NativeWakeDispatcher::new(&stale, &check, &clock);
+    assert_eq!(
+        dispatch.attempt_wake(test_reservation(), &context).unwrap(),
+        WakeOutcome::Refused(RefusalCause::Unsafe)
+    );
+    assert_eq!(
+        dispatch.take_refusal(&seat).as_deref(),
+        Some("reservation no longer current")
+    );
+    assert_eq!(dispatch.take_refusal(&seat), None);
+
+    let served = host();
+    let dispatch = NativeWakeDispatcher::new(&served, &NotOwedCheck, &clock);
+    assert_eq!(
+        dispatch.attempt_wake(test_reservation(), &context).unwrap(),
+        WakeOutcome::Refused(RefusalCause::Unavailable)
+    );
+    assert_eq!(served.submitted.load(Ordering::SeqCst), 0);
+    assert_eq!(dispatch.take_refusal(&seat), None);
+}

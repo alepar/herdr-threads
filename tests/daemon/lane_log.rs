@@ -177,3 +177,33 @@ fn wake_verification_lines_are_rate_limited() {
         ]
     );
 }
+
+/// Kills: an unthrottled refusal line (one per backoff step), a limiter shared
+/// between seats (the second seat's first refusal would be hidden), and a line
+/// that drops the refusing check's detail.
+#[test]
+fn wake_refusal_lines_are_rate_limited_per_seat() {
+    let (clock, log, lines) = limiter();
+    let (a, b) = (
+        crate::protocol::ids::SeatId::new("seat_a"),
+        crate::protocol::ids::SeatId::new("seat_b"),
+    );
+    for ms in [0, 100, 300, 700] {
+        at(&clock, ms);
+        log.record_wake_refusal(
+            &a,
+            "wake prompt refused before submission: composer is nonempty",
+        );
+    }
+    log.record_wake_refusal(&b, "identity mismatch");
+    at(&clock, 31_000);
+    log.record_wake_refusal(&a, "identity mismatch");
+    assert_eq!(
+        lines.lock().unwrap().clone(),
+        vec![
+            "lane wakes: refused seat_a: wake prompt refused before submission: composer is nonempty".to_owned(),
+            "lane wakes: refused seat_b: identity mismatch".to_owned(),
+            "lane wakes: refused seat_a repeated 4 times in the last 30s (attempt 0)".to_owned(),
+        ]
+    );
+}

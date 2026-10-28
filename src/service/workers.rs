@@ -639,6 +639,16 @@ impl WorkerStatus {
             log.record_wake_verification(seat, verification);
         }
     }
+    /// Reports why a wake was refused before sending to the lane error log
+    /// (rate limited there, per seat). A no-op when no log is set; never
+    /// touches Health.
+    pub fn report_wake_refusal(&self, seat: &crate::protocol::ids::SeatId, detail: &str) {
+        // Clone out so the hook never runs under the status lock.
+        let log = self.error_log.lock().ok().and_then(|slot| slot.clone());
+        if let Some(log) = log {
+            log.record_wake_refusal(seat, detail);
+        }
+    }
     /// The only way a lane reports a good pass: clears the lane's reported
     /// failure and advances `last_tick`.
     pub fn record_success(&self, at: crate::protocol::time::UtcMillis) {
@@ -1747,6 +1757,9 @@ impl<'a, P: WakePort + ?Sized> ObservedWakePort<'a, P> {
                 if matches!(verification, NotChecked | Unsubmitted) {
                     self.status.report_wake_verification(seat, *verification);
                 }
+            }
+            for (seat, detail) in &outcome.refusals {
+                self.status.report_wake_refusal(seat, detail);
             }
         }
         if let Err(error) = result {

@@ -1705,6 +1705,43 @@ fn observe_drive_reports_unchecked_and_unsubmitted_wakes() {
     assert_eq!(wake.health(), health_before);
 }
 
+#[derive(Default)]
+struct RefusalLog(std::sync::Mutex<Vec<(crate::protocol::ids::SeatId, String)>>);
+impl crate::daemon::logs::LaneErrorLog for RefusalLog {
+    fn record(&self, _lane: crate::service::kicks::Lane, _error: &ApiError) {}
+    fn record_wake_refusal(&self, seat: &crate::protocol::ids::SeatId, detail: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((seat.clone(), detail.to_owned()));
+    }
+}
+
+/// Kills: `observe_drive` dropping a drive's refusals (the refusing check
+/// never reaches daemon.log) and counting a refusal as a lane failure.
+#[test]
+fn observe_drive_reports_wake_refusals() {
+    use crate::protocol::ids::SeatId;
+    let wake = Arc::new(WorkerStatus::default());
+    let production = Production::new([Default::default(), wake.clone(), Default::default()]);
+    let fixture = wake_store(
+        &production._dir.0.join("wakes"),
+        production.clock.clone(),
+        uuid::Uuid::new_v4(),
+    );
+    let log = Arc::new(RefusalLog::default());
+    wake.set_error_log(log.clone());
+    let health_before = wake.health();
+    let observed = ObservedWakePort::new(&fixture, &wake);
+    let refusals = vec![(SeatId::new("a"), "composer is nonempty".to_owned())];
+    observed.observe_drive(&Ok(crate::scheduler::WakeDriveOutcome {
+        refusals: refusals.clone(),
+        ..Default::default()
+    }));
+    assert_eq!(log.0.lock().unwrap().clone(), refusals);
+    assert_eq!(wake.health(), health_before);
+}
+
 /// Refuses before sending (pacer D5) and, like the real dispatcher,
 /// reports no verification for a prompt it never sent.
 struct RefusingNotifier;

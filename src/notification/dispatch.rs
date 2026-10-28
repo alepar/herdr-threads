@@ -76,6 +76,9 @@ pub struct NativeWakeDispatcher<'a, H: HostPort + ?Sized, C: ReservationCheck + 
     hook_pull: &'a dyn crate::ports::HookPullOutlook,
     /// Post-send verification per seat, taken by the scheduler drive.
     verifications: Mutex<HashMap<SeatId, SubmissionVerification>>,
+    /// Why the last wake attempt per seat was refused before sending, taken
+    /// by the scheduler drive.
+    refusals: Mutex<HashMap<SeatId, String>>,
 }
 
 static NO_HOOK_PULL: crate::ports::NoHookPullOutlook = crate::ports::NoHookPullOutlook;
@@ -87,6 +90,7 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
             clock,
             hook_pull: &NO_HOOK_PULL,
             verifications: Mutex::new(HashMap::new()),
+            refusals: Mutex::new(HashMap::new()),
         }
     }
 
@@ -169,27 +173,47 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             })
         };
         // A pre-send exit: `Refused(cause)` for a wake, the plain outcome
-        // (`poke_skip`) for a scheduled poke.
-        let refuse = |cause: RefusalCause, poke_skip: WakeOutcome| {
-            outcome(if poke_only {
-                poke_skip
-            } else {
-                WakeOutcome::Refused(cause)
-            })
+        // (`poke_skip`) for a scheduled poke. A wake keeps `detail` for the
+        // daemon log (`None`: nothing wrong, the wake is no longer owed).
+        let note_refusal = |detail: &str| {
+            if let Ok(mut refusals) = self.refusals.lock() {
+                refusals.insert(reservation.seat.clone(), detail.to_owned());
+            }
+        };
+        let refuse = |cause: RefusalCause, poke_skip: WakeOutcome, detail: Option<&str>| {
+            if poke_only {
+                return outcome(poke_skip);
+            }
+            if let Some(detail) = detail {
+                note_refusal(detail);
+            }
+            outcome(WakeOutcome::Refused(cause))
         };
         let refuse_error = |err: ApiError| {
             if poke_only {
                 return Err(err);
             }
-            refusal_for_error(&err).and_then(outcome)
+            let refused = refusal_for_error(&err).and_then(outcome);
+            if refused.is_ok() {
+                note_refusal(&err.detail);
+            }
+            refused
         };
         if context.expected_boot.as_ref() != Some(&reservation.host_boot)
             || context.expected_epoch != Some(reservation.host_epoch)
         {
-            return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+            return refuse(
+                RefusalCause::Unsafe,
+                WakeOutcome::Unsafe,
+                Some("host context changed"),
+            );
         }
         if context.budget.is_exhausted(self.clock) {
-            return refuse(RefusalCause::TimedOut, WakeOutcome::TimedOut);
+            return refuse(
+                RefusalCause::TimedOut,
+                WakeOutcome::TimedOut,
+                Some("budget spent"),
+            );
         }
         let read_deadline = context.budget.deadline.0.min(
             self.clock
@@ -219,7 +243,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             Err(err) => return refuse_error(err),
         };
         if read_context.budget.is_exhausted(self.clock) {
-            return refuse(RefusalCause::TimedOut, WakeOutcome::TimedOut);
+            return refuse(
+                RefusalCause::TimedOut,
+                WakeOutcome::TimedOut,
+                Some("target read spent the budget"),
+            );
         }
         let cooperative = matches!(
             reservation.authority,
@@ -255,13 +283,21 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 )
         };
         if !identity_ok {
-            return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+            return refuse(
+                RefusalCause::Unsafe,
+                WakeOutcome::Unsafe,
+                Some("identity mismatch"),
+            );
         }
         if matches!(
             observation.ui,
             HostUiState::HumanInput | HostUiState::ActiveTurn
         ) {
-            return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+            return refuse(
+                RefusalCause::Unsafe,
+                WakeOutcome::Unsafe,
+                Some("ui human input or active turn"),
+            );
         }
         // Every target set shares one composer (spec §3 Wake): type only to the target whose
         // process is the pane's foreground process (a process spanning seats: the target on its
@@ -277,7 +313,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             // Only a seat-attention wake can be exempt (one process, below): any other gated
             // wake is refused as before, with no host read.
             if gated && !reservation.for_seat_attention() {
-                return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+                return refuse(
+                    RefusalCause::Unsafe,
+                    WakeOutcome::Unsafe,
+                    Some("several targets, pane not idle"),
+                );
             }
             let foreground = match self
                 .host
@@ -285,7 +325,13 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             {
                 Ok(pids) => pids,
                 // A gated wake keeps the gate's own refusal when the read fails.
-                Err(_) if gated => return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe),
+                Err(_) if gated => {
+                    return refuse(
+                        RefusalCause::Unsafe,
+                        WakeOutcome::Unsafe,
+                        Some("foreground read failed (gated)"),
+                    );
+                }
                 Err(err) => return refuse_error(err),
             };
             let choice = reservation.authority.composer_choice(&foreground);
@@ -294,7 +340,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             // observation is `Unknown`); the adapter's final composer read before submission
             // still refuses typed input and a busy agent.
             if gated && !matches!(choice, ComposerChoice::Process(_)) {
-                return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+                return refuse(
+                    RefusalCause::Unsafe,
+                    WakeOutcome::Unsafe,
+                    Some("several targets, not one process"),
+                );
             }
             match choice {
                 ComposerChoice::Binding(chosen) => {
@@ -311,7 +361,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 ComposerChoice::Process(_)
                 | ComposerChoice::NoMatch
                 | ComposerChoice::Unspecified => {
-                    return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+                    return refuse(
+                        RefusalCause::Unsafe,
+                        WakeOutcome::Unsafe,
+                        Some("no unique composer binding"),
+                    );
                 }
             }
         }
@@ -321,7 +375,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             self.host.safe_wake_target(&reservation.seat, &observation)
         };
         let Some(mut target) = selected else {
-            return refuse(RefusalCause::Unsafe, WakeOutcome::Unavailable);
+            return refuse(
+                RefusalCause::Unsafe,
+                WakeOutcome::Unavailable,
+                Some("no safe wake target"),
+            );
         };
         // The host cannot know the bound harness; the reservation does
         // (TRUST-POLICY A4 wake rule). No bound harness, no prompt: a
@@ -329,7 +387,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         if let ReservedWakeAuthority::Cooperative { harness, .. } = &reservation.authority {
             let harness = composer_harness.as_ref().or(harness.as_ref());
             if harness.is_none() {
-                return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+                return refuse(
+                    RefusalCause::Unsafe,
+                    WakeOutcome::Unsafe,
+                    Some("no bound harness"),
+                );
             }
             target.bound_harness = harness.cloned();
         }
@@ -351,7 +413,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             || !basis_ok
             || observation.terminal.as_ref() != Some(&target.terminal)
         {
-            return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+            return refuse(
+                RefusalCause::Unsafe,
+                WakeOutcome::Unsafe,
+                Some("target changed since reservation"),
+            );
         }
         // Spec §10: decided from this fresh observation, immediately before
         // the prompt. A skip sends nothing and leaves `soft_poked_at` unset;
@@ -400,7 +466,13 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         };
         match self.check.is_current(&reservation, &context.budget) {
             Ok(true) => {}
-            Ok(false) => return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe),
+            Ok(false) => {
+                return refuse(
+                    RefusalCause::Unsafe,
+                    WakeOutcome::Unsafe,
+                    Some("reservation no longer current"),
+                );
+            }
             Err(err) => return refuse_error(err),
         }
         // A wake (not a scheduled poke) reaches one binding, or one process; one served in its
@@ -421,13 +493,17 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             {
                 Ok(true) => {}
                 Ok(false) => {
-                    return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable);
+                    return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable, None);
                 }
                 Err(err) => return refuse_error(err),
             }
         }
         if context.budget.is_exhausted(self.clock) {
-            return refuse(RefusalCause::TimedOut, WakeOutcome::TimedOut);
+            return refuse(
+                RefusalCause::TimedOut,
+                WakeOutcome::TimedOut,
+                Some("budget spent before prompt"),
+            );
         }
         let prompt_deadline = context
             .budget
@@ -530,7 +606,7 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         let diagnostic = None;
         let submitted = match submitted {
             Ok(Some(submitted)) => submitted,
-            Ok(None) => return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable),
+            Ok(None) => return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable, None),
             Err(err) => return refuse_error(err),
         };
         match submitted {
@@ -592,6 +668,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
 
     fn take_verification(&self, seat: &SeatId) -> Option<SubmissionVerification> {
         self.verifications.lock().ok()?.remove(seat)
+    }
+
+    fn take_refusal(&self, seat: &SeatId) -> Option<String> {
+        self.refusals.lock().ok()?.remove(seat)
     }
 }
 
