@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.6.1
+
+No schema or peer wire change (node schema stays 10). The agent skill text changes. Installed skill copies are refreshed by setup, so install with `--setup` (or run `herdr-threads setup` afterwards).
+
+### Fixed
+
+- **No wake for an item already handled.** A wake reserved for an ACK request or invitation is no longer typed if the item was ACKed or accepted while the wake was in flight.
+- **A lowered threshold is respected.** A wake for a delivery row is no longer typed if the seat's nudge threshold was lowered while the wake was in flight and no longer admits the row.
+- **No false warning on new tabs.** `handoff --new-tab` no longer sends the sender a `recipient_unavailable` warning for its own bootstrap message while the launched agent starts. A launch that never checks in still shows up as an overdue warning when the bootstrap ACK deadline passes.
+- **`seat list --label` matches local seats.** The label filter now also matches this machine's own resolved seats by their current workspace, tab or pane label. Previously it matched remote seats only.
+- **Sync resync keeps the running store.** After `sync resync`, a daemon start that loses the election no longer moves the store aside. Moving it pulled the store out from under the winning daemon (attempt to write a readonly database at journal open) and overwrote the `orig/` backup.
+- **No false HostUnavailable.** A first claim racing another first claim on a newly attached Herdr server no longer fails with HostUnavailable.
+- **Wake refusal reasons survive a failed pass.** `daemon.log` still records a wake refusal when the wake pass then fails.
+
+### Changed
+
+- **Relayed user statements.** The agent skill now treats a statement that a message attributes to the human user (`[human]`, `[relays user]` or stated plainly) as the user's own words, without asking the user to repeat it. Senders claim that the user said, approved, confirmed or asked for something, and use `--relays-user`, only for what their own user explicitly said in their session. TRUST-POLICY.md records this as an accepted limit.
+- The skill no longer explains `warning: SEAT wake=no_wake`, because no shipped harness can trigger it. The warning and the doctor row remain as a diagnostic.
+
+### Tests and CI
+
+- CI runs the test suite in six shards (was five).
+- About twenty load-sensitive tests are fixed at their root cause: fixed wall-clock windows, fixture races and early reads of lazily projected rows.
+- The wake e2e:
+  - reports Codex 429 throttling distinctly;
+  - fails fast with `auth rejected` when a harness rejects its credential at startup;
+  - sets the Hermes `client_env_passthrough` in its scratch profile.
+
 ## v2.6.0
 
 One-way store upgrade to node schema 10 (migration 0010, table `peer_requests`). Older binaries, 2.5.0 included, then refuse the store. The installer backs it up first; pass `--no-backup` only if you have your own. The peer wire gains two capability-gated frame uses: `addr_resolve` with a check target (cap `addr.check.v1`) and the `launch_request`/`launch_reply` pair (cap `peer.launch.v1`). Both are sent only to peers that advertise them, so an older peer refuses a remote handoff or launch by name instead of misreading it. No setup re-run is needed.
