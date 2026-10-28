@@ -778,28 +778,33 @@ fn shared_rules(
             managed_elsewhere(env, rules, &canonical_of)?.map(|owner| SharedRules::Owned { owner })
         );
     };
-    // Any record of the real file installed and unedited owns it, whichever root made it (a
-    // linked profile's record, made before its link, resolves to the same file), so no listing
-    // order decides. The verdict names the real file, never the lexical path of the record that
-    // validated. Otherwise an interrupted or unreadable record leaves it unowned.
-    let mut unsettled = false;
-    for manifest in lib::manifests_of_kind(env.state_dir()?, "codex-permissions") {
-        let Some(file) = CodexPermissions::recorded_file(&manifest) else {
-            continue;
-        };
-        if canonical_of(&file).as_ref() != Some(&canonical) {
-            continue;
-        }
-        match CodexPermissions::at(file, manifest).status() {
-            Ok(CodexPermissionState::Installed) => {
-                return Ok(Some(SharedRules::Owned { owner: canonical }));
-            }
-            Ok(CodexPermissionState::Missing | CodexPermissionState::Edited) => {}
-            _ => unsettled = true,
-        }
-    }
-    if unsettled {
-        return Ok(Some(SharedRules::Unowned { canonical }));
+    // Every record of the real file, whichever root made it (a linked profile's record, made
+    // before its link, resolves to the same file), in no particular order; the record of the root
+    // that holds the file (reached with no link below that root, even when the root itself is a
+    // link) decides. The verdict names the real file, never a record's lexical path.
+    let records: Vec<_> = lib::manifests_of_kind(env.state_dir()?, "codex-permissions")
+        .into_iter()
+        .filter_map(|manifest| {
+            let file = CodexPermissions::recorded_file(&manifest)?;
+            (canonical_of(&file).as_ref() == Some(&canonical)).then_some((file, manifest))
+        })
+        .map(|(file, manifest)| {
+            let real = file
+                .parent()
+                .and_then(Path::parent)
+                .is_some_and(|root| matches!(lib::shared_through_symlink(root, &file), Ok(None)));
+            let state = match CodexPermissions::at(file, manifest).status() {
+                Ok(CodexPermissionState::Installed) => lib::SharedRecord::Installed,
+                Ok(CodexPermissionState::Missing) => lib::SharedRecord::Missing,
+                _ => lib::SharedRecord::Unsettled,
+            };
+            (real, state)
+        })
+        .collect();
+    match lib::shared_ownership(&records) {
+        lib::SharedOwnership::Owned => return Ok(Some(SharedRules::Owned { owner: canonical })),
+        lib::SharedOwnership::Unowned => return Ok(Some(SharedRules::Unowned { canonical })),
+        lib::SharedOwnership::Undecided => {}
     }
     Ok(Some(
         if fs::symlink_metadata(&canonical)

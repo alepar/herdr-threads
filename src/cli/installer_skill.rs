@@ -131,28 +131,50 @@ fn inspect_shared(
             })
             .filter(|recorded| canonical_of(&recorded.path).as_deref() == Some(canonical))
             .collect();
-    // Any record of the real file installed and unedited owns it, whichever root made it (a
-    // linked profile's record, made before its link, resolves to the same file). The verdict
-    // names the real file, never the lexical path of the record that validated.
-    let mut present = false;
-    for recorded in owners {
-        let current = read_optional(&recorded.path).ok().flatten();
-        if recorded.version == 1
-            && recorded.harness == name
-            && recorded.complete
-            && current.as_deref().map(owned::fingerprint).as_deref() == Some(&recorded.fingerprint)
-        {
-            return Ok(SkillInspection::Shared(canonical.to_path_buf()));
-        }
-        present |= current.is_some() || fs::symlink_metadata(&recorded.path).is_ok();
-    }
-    if present {
-        return Err(conflict(format!(
+    // Every record of the real file, whichever root made it (a linked profile's record, made
+    // before its link, resolves to the same file), in no particular order; the record of the root
+    // that holds the file (reached with no link below that root, even when the root itself is a
+    // link) decides. The verdict names the real file, never a record's lexical path.
+    let records: Vec<_> = owners
+        .into_iter()
+        .map(|recorded| {
+            // The recorded path is `<root>/skills/herdr-threads/SKILL.md`.
+            let real = recorded.path.ancestors().nth(3).is_some_and(|root| {
+                matches!(
+                    owned::shared_through_symlink(root, &recorded.path),
+                    Ok(None)
+                )
+            });
+            let current = read_optional(&recorded.path).ok().flatten();
+            let state = if recorded.version == 1
+                && recorded.harness == name
+                && recorded.complete
+                && current.as_deref().map(owned::fingerprint).as_deref()
+                    == Some(&recorded.fingerprint)
+            {
+                owned::SharedRecord::Installed
+            } else if current.is_some() || fs::symlink_metadata(&recorded.path).is_ok() {
+                owned::SharedRecord::Unsettled
+            } else {
+                owned::SharedRecord::Missing
+            };
+            (real, state)
+        })
+        .collect();
+    let unowned = || {
+        conflict(format!(
             "{} is shared through a symlink to {}, which herdr-threads does not own unedited; {}",
             path.display(),
             canonical.display(),
             shared_remedy(name)
-        )));
+        ))
+    };
+    match owned::shared_ownership(&records) {
+        owned::SharedOwnership::Owned => {
+            return Ok(SkillInspection::Shared(canonical.to_path_buf()));
+        }
+        owned::SharedOwnership::Unowned => return Err(unowned()),
+        owned::SharedOwnership::Undecided => {}
     }
     if fs::symlink_metadata(canonical).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
         return Ok(SkillInspection::SharedMissing(format!(
@@ -162,12 +184,7 @@ fn inspect_shared(
             shared_remedy(name)
         )));
     }
-    Err(conflict(format!(
-        "{} is shared through a symlink to {}, which herdr-threads does not own unedited; {}",
-        path.display(),
-        canonical.display(),
-        shared_remedy(name)
-    )))
+    Err(unowned())
 }
 
 impl SkillFile {

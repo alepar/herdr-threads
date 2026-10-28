@@ -1235,3 +1235,68 @@ fn installer_names_the_real_rules_file_when_the_default_root_is_a_symlink() {
         );
     }
 }
+
+// Kills a shared check where any installed record owns the real file even though the record of
+// the root that holds it says edited (an older release recreated the file through a profile's
+// link): the real root's record decides, for the rules file and the skill alike (ht-mf2q).
+#[test]
+fn installer_lets_the_real_roots_edited_record_veto_a_linked_profiles_record() {
+    let f = Fixture::new();
+    success(&f.install());
+    let profile = f.0.join("aisw/p");
+    fs::create_dir_all(&profile).unwrap();
+    let root = format!("codex={}", profile.display());
+    let run = || {
+        f.run(&[
+            "internal",
+            "installer-integrations",
+            "--confirm-missing",
+            "--config-root",
+            &root,
+        ])
+    };
+    // The profile's records match the real files once its directories are links to them.
+    success(&run());
+    for dir in ["rules", "skills"] {
+        fs::remove_dir_all(profile.join(dir)).unwrap();
+        std::os::unix::fs::symlink(f.0.join("codex").join(dir), profile.join(dir)).unwrap();
+    }
+    // The real root's own records no longer match the files (they were rewritten elsewhere).
+    let real_rules = f.0.join("codex/rules/herdr-threads.rules");
+    for entry in fs::read_dir(f.0.join("state/setup")).unwrap() {
+        let path = entry.unwrap().path();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap_or_default();
+        if manifest["resources"][0]["file"].as_str() == real_rules.to_str() {
+            manifest["resources"][0]["fingerprint"] = "stale".into();
+        } else if manifest["path"].as_str() == f.skill("codex").to_str() {
+            manifest["fingerprint"] = "stale".into();
+        } else {
+            continue;
+        }
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    }
+    let rules = fs::read(&real_rules).unwrap();
+    let skill = fs::read(f.skill("codex")).unwrap();
+    let out = run();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    for component in ["skill", "permissions"] {
+        let line = text
+            .lines()
+            .find(|line| {
+                line.starts_with(&format!(
+                    "codex {component} (CODEX_HOME={}): ",
+                    profile.display()
+                ))
+            })
+            .unwrap_or_else(|| panic!("{component}: {text}"));
+        assert!(
+            line.contains(": failed (")
+                && line.contains("which herdr-threads does not own unedited"),
+            "{line}"
+        );
+    }
+    assert_eq!(fs::read(&real_rules).unwrap(), rules);
+    assert_eq!(fs::read(f.skill("codex")).unwrap(), skill);
+}
