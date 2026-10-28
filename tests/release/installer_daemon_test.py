@@ -4,8 +4,9 @@
 Stand-in executables model the daemon: `daemon ensure` starts a process whose
 argv[0] is the ensuring executable and publishes its endpoint.json; `daemon
 stop` stops it. A racing client models one that started before the swap: after
-each of the next N stops it ensures the daemon from its own old executable (on
-Linux a client's executable follows the rename to .old). No Herdr, no host and
+each of the next N stops it ensures the daemon from its own old executable,
+the old package's binary (before the swap) or <prefix>.old's (after it: on
+Linux a client's executable follows the rename). No Herdr, no host and
 no real configuration is used.
 """
 import hashlib
@@ -39,6 +40,14 @@ live() {
     pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$endpoint" 2>/dev/null)
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
+# The racing client's executable: the old package, renamed or not.
+old_client() {
+    if [ -x "$FAKE_PREFIX.old/bin/herdr-threads" ]; then
+        "$FAKE_PREFIX.old/bin/herdr-threads" "$@"
+    else
+        "$FAKE_PREFIX/bin/herdr-threads" "$@"
+    fi
+}
 start() {
     mkdir -p "$node"
     (exec -a "$self daemon run --state-dir $state" sleep 300) < /dev/null > /dev/null 2>&1 &
@@ -58,14 +67,14 @@ case "$1" in
                 n=$(cat "$FAKE_DIR/race" 2>/dev/null || echo 0)
                 if [ "$n" -gt 0 ]; then
                     echo $((n - 1)) > "$FAKE_DIR/race"
-                    "$FAKE_DIR/old-client/herdr-threads" --state-dir "$state" daemon ensure
+                    old_client --state-dir "$state" daemon ensure
                 fi ;;
             ensure)
                 # The old client wins the race to the next N ensures of this executable.
                 n=$(cat "$FAKE_DIR/race-ensure-$version" 2>/dev/null || echo 0)
                 if [ "$n" -gt 0 ]; then
                     echo $((n - 1)) > "$FAKE_DIR/race-ensure-$version"
-                    "$FAKE_DIR/old-client/herdr-threads" --state-dir "$state" daemon ensure
+                    old_client --state-dir "$state" daemon ensure
                 fi
                 if [ -e "$FAKE_DIR/ensure-fail-$version" ]; then echo "ensure refused" >&2; exit 1; fi
                 if live; then
@@ -130,7 +139,7 @@ class InstallerDaemonRace(unittest.TestCase):
                'CODEX_HOME': str(self.root / 'codex'), 'HERDR_BIN': str(self.root / 'no-host'),
                'PATH': f'{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin', 'TMPDIR': str(self.root),
                'XDG_STATE_HOME': str(self.state), 'XDG_CONFIG_HOME': str(self.root / 'config'),
-               'FAKE_DIR': str(self.root)}
+               'FAKE_DIR': str(self.root), 'FAKE_PREFIX': str(self.prefix)}
         if 'HT_LEAK_RUN_ID' in os.environ:
             env['HT_LEAK_RUN_ID'] = os.environ['HT_LEAK_RUN_ID']
         out = subprocess.run(['/bin/bash', str(REPO / 'scripts/install.sh'),
@@ -144,7 +153,7 @@ class InstallerDaemonRace(unittest.TestCase):
 
     def running(self):
         endpoint = json.loads(self.endpoint.read_text())
-        command = subprocess.check_output(['ps', '-p', str(endpoint['pid']), '-o', 'command='], text=True)
+        command = subprocess.check_output(['ps', '-ww', '-p', str(endpoint['pid']), '-o', 'command='], text=True)
         return endpoint['software_version'], command.split(' daemon run ')[0]
 
     def upgrade_with_racing_client(self, restarts, ensure_races=0):
@@ -152,10 +161,6 @@ class InstallerDaemonRace(unittest.TestCase):
         subprocess.run([str(self.prefix / 'bin/herdr-threads'), 'daemon', 'ensure'], check=True,
                        env={**os.environ, 'XDG_STATE_HOME': str(self.state), 'FAKE_DIR': str(self.root)})
         self.assertEqual(self.running(), ('0.1.0', str(self.prefix / 'bin/herdr-threads')))
-        client = self.root / 'old-client'
-        client.mkdir()
-        (client / 'herdr-threads').write_text(STUB.replace('__VERSION__', '0.1.0'))
-        (client / 'herdr-threads').chmod(0o755)
         (self.root / 'race').write_text(str(restarts))
         (self.root / 'race-ensure-0.1.1').write_text(str(ensure_races))
         return self.run_installer('0.1.1')
@@ -190,6 +195,23 @@ class InstallerDaemonRace(unittest.TestCase):
         self.assertIn('installed daemon verification failed', out)
         self.assertNotIn('replaced the stale daemon', out)
         self.assertNotIn('Check it: herdr-threads doctor', out)
+
+    def test_a_daemon_from_another_installation_is_left_alone(self):
+        # A dev checkout's newer daemon: reported, never stopped or downgraded.
+        self.run_installer('0.1.1')
+        dev = self.root / 'dev/bin'
+        dev.mkdir(parents=True)
+        (dev / 'herdr-threads').write_text(STUB.replace('__VERSION__', '0.2.0-dev'))
+        (dev / 'herdr-threads').chmod(0o755)
+        subprocess.run([str(dev / 'herdr-threads'), 'daemon', 'ensure'], check=True,
+                       env={**os.environ, 'XDG_STATE_HOME': str(self.state), 'FAKE_DIR': str(self.root)})
+        before = self.running()
+        out = self.run_installer('0.1.1')
+        self.assertEqual(self.running(), before, out)
+        self.assertEqual(before, ('0.2.0-dev', str(dev / 'herdr-threads')))
+        self.assertIn('runs 0.2.0-dev; installed executable is 0.1.1', out)
+        self.assertIn(f'runs from {dev}/herdr-threads, not from this installation; left alone', out)
+        self.assertNotIn('replaced the stale daemon', out)
 
     def test_replacement_is_bounded(self):
         start = time.monotonic()

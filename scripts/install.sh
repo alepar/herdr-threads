@@ -753,6 +753,7 @@ case ":$PATH:" in *":$bin_dir:"*) on_path=1 ;; esac
 # --- Herdr registration -----------------------------------------------------
 
 registered=0
+foreign_root=''       # the other plugin root Herdr has registered (left alone)
 herdr_cmd=${herdr:-herdr}
 link_cmd="$herdr_cmd plugin link $install_dir"
 if [ "$register" = 0 ]; then
@@ -768,6 +769,7 @@ else
         registered=1
         say "Herdr already has the plugin linked from $install_dir"
     elif [ -n "$root" ]; then
+        foreign_root=$root
         OUT_NOT_LINKED="Herdr already has $PLUGIN_ID registered from $root; left alone"
         OUT_REGISTER_CMD="$herdr_cmd plugin unlink $PLUGIN_ID && $link_cmd"
     elif link_output=$("$herdr" plugin link "$install_dir" 2>&1); then
@@ -922,8 +924,8 @@ real_file() {
 daemon_executable() { ps -ww -p "$1" -o command= 2>/dev/null | sed 's/ daemon run .*//'; }
 
 # Live instances whose daemon is not the installed executable, one
-# "INSTANCE<tab>REASON" line each: another version, or the same version
-# started from another file. A client that started before the swap (a
+# "INSTANCE<tab>EXECUTABLE<tab>REASON" line each: another version, or the
+# same version started from another file. A client that started before the swap (a
 # lifecycle hook, the mod watch's ensure) starts the daemon from its own
 # executable, which on Linux follows the rename to $install_dir.old, so it can
 # restart the old daemon after every stop above (ht-xe3v).
@@ -931,17 +933,30 @@ stale_instances() {
     local instance observed pid exe
     while IFS= read -r instance; do
         [ -n "$instance" ] || continue
-        observed=$(json_field software_version < "$instance/endpoint.json") || observed=unknown
-        if [ "$observed" != "$expected_version" ]; then
-            printf '%s\truns %s; installed executable is %s\n' "$instance" "$observed" "$expected_version"
-            continue
-        fi
         pid=$(instance_pid "$instance") || continue
         exe=$(daemon_executable "$pid")
-        if [ "$(real_file "$exe" 2>/dev/null)" != "$installed_real" ]; then
-            printf '%s\truns from %s; installed executable is %s\n' "$instance" "$exe" "$installed_binary"
+        observed=$(json_field software_version < "$instance/endpoint.json") || observed=unknown
+        if [ "$observed" != "$expected_version" ]; then
+            printf '%s\t%s\truns %s; installed executable is %s\n' "$instance" "$exe" "$observed" "$expected_version"
+        elif [ "$(real_file "$exe" 2>/dev/null)" != "$installed_real" ]; then
+            printf '%s\t%s\truns from %s; installed executable is %s\n' "$instance" "$exe" "$exe" "$installed_binary"
         fi
     done < <(live_instances)
+}
+
+# Whether a daemon started from EXECUTABLE belongs to this installation: run
+# from $install_dir or the retained $install_dir.old, while Herdr has no
+# other plugin root registered. Only such a daemon is replaced; another one
+# (a dev checkout Herdr runs, another prefix) is reported and left alone.
+owned_daemon() {
+    local exe dir
+    [ -z "$foreign_root" ] || return 1
+    exe=$(real_file "$1" 2>/dev/null) || exe=$1
+    for dir in "$install_dir" ${retained_old:+"$retained_old"}; do
+        [ -d "$dir" ] || continue
+        case "$exe" in "$(CDPATH='' cd -P -- "$dir" && pwd -P)"/*) return 0 ;; esac
+    done
+    return 1
 }
 
 # `daemon ensure` for one instance with the installed executable. The
@@ -997,7 +1012,7 @@ EOF_STOPPED
 # a stop or ensure that such a restart fails is followed by a fresh check.
 # This also catches a failed ensure action which left an old daemon serving.
 verify_installed_daemons() {
-    local round stale instance repaired=0 ensured pids
+    local round stale instance repaired=0 ensured pids foreign exe reason
     expected_version=$("$installed_binary" --version) || return 1
     expected_version=${expected_version#herdr-threads }
     installed_real=$(real_file "$installed_binary") || return 1
@@ -1023,11 +1038,17 @@ verify_installed_daemons() {
             fi
             return 0
         fi
-        while IFS="$(printf '\t')" read -r instance reason; do
+        foreign=0
+        while IFS="$(printf '\t')" read -r instance exe reason; do
             warn "daemon in $instance $reason"
+            if ! owned_daemon "$exe"; then
+                warn "daemon in $instance runs from $exe, not from this installation; left alone"
+                foreign=1
+            fi
         done <<EOF_STALE
 $stale
 EOF_STALE
+        [ "$foreign" = 0 ] || return 1
         if [ "$round" = 5 ]; then
             pids=$(daemon_pids | tr '\n' ' ')
             pids=${pids% }

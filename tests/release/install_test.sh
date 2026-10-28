@@ -341,23 +341,21 @@ install --no-setup
 # executable after the installer's stops, just before the installer's own
 # ensure (on Linux a client's executable follows the rename to .old; ht-xe3v).
 # The installer must end with the installed executable running the daemon.
-mkdir -p "$root/old-client/bin"
-cp "$prefix/bin/herdr-threads" "$root/old-client/bin/herdr-threads"
-printf '%s' "$root/old-client/bin/herdr-threads" > "$root/race-exe"
+printf '%s' "$prefix.old/bin/herdr-threads" > "$root/race-exe"
 touch "$root/real-actions"
 install --version v0.1.0 --no-setup
 [ "$status" = 0 ] || fail "upgrade with a racing old-executable ensure exits 0" "$(cat "$out")"
 pass "upgrade with a racing old-executable ensure exits 0"
 expect "the racing ensure ran" [ ! -s "$root/race-exe" ]
-expect "the stale daemon is named with its executable" has "runs from $root/old-client/bin/herdr-threads"
+expect "the stale daemon is named with its executable" has "runs from $prefix.old/bin/herdr-threads"
 expect "the stale daemon is reported replaced" has "replaced the stale daemon; the installed executable runs"
 raced_pid=$("$binary" internal json-field pid < "$root/st/herdr/plugins/herdr-threads/node/endpoint.json")
-raced_exe=$(ps -p "$raced_pid" -o command= | sed 's/ daemon run .*//')
+raced_exe=$(ps -ww -p "$raced_pid" -o command= | sed 's/ daemon run .*//')
 expect "the daemon runs the installed executable" \
     [ "$(cd -P "$(dirname "$raced_exe")" && pwd -P)/$(basename "$raced_exe")" = "$(cd -P "$prefix/bin" && pwd -P)/herdr-threads" ]
 expect "the old package is removed after verification" [ ! -e "$prefix.old" ]
 "${run_env[@]}" "$link" daemon stop >/dev/null
-rm -rf "$root/real-actions" "$root/race-exe" "$root/old-client"
+rm -rf "$root/real-actions" "$root/race-exe"
 install --no-setup
 [ "$status" = 0 ] || fail "restore latest after racing old-executable ensure" "$(cat "$out")"
 
