@@ -182,11 +182,11 @@ CI currently retains no release binaries or archives: `build-targets` compiles a
 
 ## Versioning
 
-Every release number follows one rule (the user's standing decision, 2026-10-16):
+Every release number follows one rule (the user's standing decision, 2026-10-16, refined 2026-10-28):
 
 - **Major:** backwards compatibility is broken, for example a new wire protocol version, a store that older versions cannot open, or removed or changed CLI behaviour that scripts rely on.
-- **Minor:** a new feature, with nothing broken.
-- **Patch:** fixes only.
+- **Minor:** only a new user-facing feature or a significant UX change, with nothing broken.
+- **Patch:** bug fixes, and small changes to existing features, such as a new parameter or flag on an existing command.
 
 A release takes the highest level among its changes. A schema migration alone does not force a major bump when the user decides it is a fix release (v1.2.1 adds schema 48 on protocol 8 as a patch). The p2p cross-node sync work (protocol 9 and a fresh node store) is breaking and ships as 2.0.0.
 
