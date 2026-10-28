@@ -3417,11 +3417,44 @@ mod continuity_gate {
             agent_id: None,
         }
     }
+    /// A clock that moves only when a test advances it: the in-process setup before the digest
+    /// (journal and seat-context writes) spends none of a window, however loaded the host is.
+    struct HeldClock {
+        base: Instant,
+        utc: crate::protocol::time::UtcMillis,
+        elapsed_ms: AtomicU64,
+    }
+    impl HeldClock {
+        fn new() -> Self {
+            Self {
+                base: Instant::now(),
+                utc: SystemClock::new().utc_now(),
+                elapsed_ms: AtomicU64::new(0),
+            }
+        }
+        fn advance(&self, by: Duration) {
+            self.elapsed_ms
+                .fetch_add(by.as_millis() as u64, Ordering::SeqCst);
+        }
+    }
+    impl Clock for HeldClock {
+        fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+            crate::protocol::time::UtcMillis(
+                self.utc.0 + self.elapsed_ms.load(Ordering::SeqCst) as i64,
+            )
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.elapsed_ms.load(Ordering::SeqCst))
+        }
+        fn instant_now(&self) -> Instant {
+            self.base + Duration::from_millis(self.elapsed_ms.load(Ordering::SeqCst))
+        }
+    }
     // Kills: choosing a lifecycle digest budget for matching Current, or
     // granting dispatch a fresh budget after the slow pre-dispatch digest.
     struct SlowDigest {
         delay: Duration,
-        clock: Arc<dyn Clock>,
+        clock: Arc<HeldClock>,
         seen: Mutex<Vec<(bool, u64, u64)>>,
     }
     impl LocalClient for SlowDigest {
@@ -3437,7 +3470,7 @@ mod continuity_gate {
                 self.clock.monotonic_now().0,
             ));
             if digest {
-                std::thread::sleep(self.delay);
+                self.clock.advance(self.delay);
             }
             Err(rejection(ErrorCode::DeadlineExceeded))
         }
@@ -3521,7 +3554,8 @@ mod continuity_gate {
             Role::TopLevel,
             Some(if reset { "S-2" } else { "S-1" }),
         );
-        let mut call_clock = clock();
+        let held = Arc::new(HeldClock::new());
+        let mut call_clock: Arc<dyn Clock> = held.clone();
         let turn = crate::harness::context::QualifiedTurn {
             lineage_parent: None,
             session: ev.native_session.clone().unwrap(),
@@ -3538,21 +3572,22 @@ mod continuity_gate {
         };
         let client = SlowDigest {
             // An expired-window case's digest overruns its window by 600 ms;
-            // otherwise the digest is quick. Windows are wide enough that the
-            // in-process setup before the digest (journal and context writes)
-            // cannot consume them on a loaded machine.
+            // otherwise the digest takes 100 ms. Only the digest moves the call's
+            // held clock, so every window and deadline below is exact.
             delay: Duration::from_millis(if current_budget_ms < 2000 {
                 current_budget_ms + 600
             } else {
                 100
             }),
-            clock: Arc::clone(&call_clock),
+            clock: Arc::clone(&held),
             seen: Mutex::new(vec![]),
         };
         let mut call = pane.call(&client);
+        // Both windows start at the held clock's zero, in the call clock's domain.
+        call.deadline = held.instant_now() + LIFECYCLE_BUDGET;
         let watchdog = Arc::new(AtomicU64::new(5000));
         call.current_deadline = CurrentDeadline {
-            at: Instant::now() + Duration::from_millis(current_budget_ms),
+            at: held.instant_now() + Duration::from_millis(current_budget_ms),
             watchdog: Some((Arc::clone(&watchdog), current_budget_ms)),
         };
         std::mem::swap(&mut call.clock, &mut call_clock);
@@ -3616,10 +3651,10 @@ mod continuity_gate {
         for (reset, registered) in [(false, false), (true, true)] {
             let seen = qualified_slow_digest(reset, registered, 2500);
             assert_eq!(seen.len(), 2);
-            assert!(
-                seen[0].1 - seen[0].2 > 4000,
-                "lifecycle budget was shortened: {seen:?}"
-            );
+            assert!(seen[0].0 && !seen[1].0);
+            // (is digest, deadline, now) on the held clock: the digest keeps the call's whole
+            // 5000 ms lifecycle deadline, not the 2500 ms current window.
+            assert_eq!(seen[0], (true, 5000, 0), "lifecycle budget was shortened");
             assert!(
                 seen[1].1 <= seen[0].1 + 2,
                 "dispatch extended lifecycle deadline: {seen:?}"
