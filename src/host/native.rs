@@ -2013,19 +2013,21 @@ impl NativeCli {
         if budget.cancellation.is_cancelled() {
             return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
         }
-        let left = remaining(self);
-        if left < MIN_PROMPT_MILLIS {
-            return Err(error(
-                ErrorCode::DeadlineExceeded,
-                "insufficient wake prompt budget",
-            ));
-        }
         // The agent is idle now, so a turn that served this attention has ended and its
         // completion is committed: ask whether the wake is still owed only after the recheck.
         if let Some(still_owed) = still_owed
             && !still_owed()?
         {
             return Ok(None);
+        }
+        // Sampled after the owed check: a slow store read must end in this pre-send
+        // refusal, not in a prompt that times out with nothing typed (OutcomeUnknown).
+        let left = remaining(self);
+        if left < MIN_PROMPT_MILLIS {
+            return Err(error(
+                ErrorCode::DeadlineExceeded,
+                "insufficient wake prompt budget",
+            ));
         }
         let limit = Duration::from_millis(left.min(PROMPT_SUBMIT_MILLIS));
         let (raw, witness) = match self.run_witnessed(
