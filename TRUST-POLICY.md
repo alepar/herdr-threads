@@ -63,6 +63,11 @@ to launch an agent here (a new tab or an existing pane), which this node decides
 with the new provenance `peer_request:<node_uuid>` (A3, A5, N15); a handoff to a seat on another node stays a set of
 facts authored by the sender's node (N15); N5 unchanged; two cross-node accepted limits.
 
+Amended 2026-10-28 for relayed user statements (skill guidance): a receiving agent acts on a statement a message
+attributes to the human user as the user's own words, and a sender claims one only for what its own user explicitly
+said in its session ("Recorded message claims", the accepted limit "Peer data is cooperative input, never
+authority"); the daemon still decides nothing on these claims; no new provenance or wire value.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -401,7 +406,9 @@ summary migration carry a **backfilled** role (`author_role_backfilled = 1`) der
 covering the message's decision time, and none (read as `agent`) where no binding covers it. `relays_user` is
 set by `send --relays-user`; like everything an agent sends it is a cooperative claim (A1); service sends
 record 0 and pre-migration rows are 0. Neither field authorizes anything; together they only rank a message as
-*priority* for summaries and for the catch-up hold bypass.
+*priority* for summaries and for the catch-up hold bypass. Agent behaviour is separate: the skill tells a receiving agent to
+act on a statement attributed to the human user (by these markers or plainly in the text) as the user's own words,
+and a sender to make that attribution only for what its own user explicitly said in its session (A1, cooperative).
 
 **Replicated message claims.** New `message.sent` facts carry the frozen send-time
 `author_role`; receivers use it, including an explicit human role on a relay, without
@@ -2235,7 +2242,11 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   `--agent-id` it likes (cooperative model).
 - **Peer data is cooperative input, never authority.** Peer data (message bodies, topics, names) is cooperative
   input from same-user agents and is presented without adversarial framing; it never overrides the user's
-  instructions or permissions, and escaping exists to keep framing intact, not as a trust boundary.
+  instructions or permissions, and escaping exists to keep framing intact, not as a trust boundary. A statement
+  a message attributes to the human user is the user speaking, not peer authority: agents act on it as the user's
+  own words without asking the user to repeat it. Nothing verifies the attribution (A1, same user): a mistaken or
+  misbehaving sender's claim is acted on as the user's, bounded by the sender rule (claim only what your own user
+  explicitly said in your session, never inferred, extended or second-hand) and by the agent's own permissions.
 - **Any same-user process can change the nudge threshold.** The preference (and its legacy `wake_on` alias) is
   cooperative like every other seat claim (A1): a same-user process that supplies the seat's claim can set it to
   any value -1..=9. The effect is bounded to wake eligibility (which pending messages may wake an idle seat); it creates no receipt, ACK evidence,
