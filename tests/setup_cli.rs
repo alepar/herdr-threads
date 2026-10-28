@@ -4346,10 +4346,13 @@ fn task51_snapshot(root: &Path) -> Vec<(PathBuf, u64, u32, Option<Vec<u8>>)> {
     result
 }
 
+/// Run one consumer to completion; with `fifo`, `None` means it blocked on that
+/// no-writer FIFO (see the wait loop).
 fn task51_bounded(
     command: &mut Command,
     log_root: &Path,
     label: &str,
+    fifo: Option<&Path>,
 ) -> (Option<std::process::ExitStatus>, String, String) {
     use herdr_threads::test_support::spawn::SpawnOwned;
     use std::os::unix::fs::OpenOptionsExt;
@@ -4410,13 +4413,26 @@ fn task51_bounded(
             identity.trim()
         }
     );
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // A consumer's run time scales with load (setup-status runs the Python
+    // launcher and helper, under the product's own 15 s probe limit), so no
+    // wall-clock bound tells a slow child from a blocked one (ht-peu9). The one
+    // way to block is waiting on a FIFO with no writer, so the verdict is the
+    // FIFO's state: each `FIFO_CHECK` while the child runs, a child that holds
+    // the FIFO open for reading is blocked on it. Without a FIFO nothing can
+    // block; the child is waited for (the suite's slow-timeout is the hang guard).
+    const FIFO_CHECK: Duration = Duration::from_secs(3);
+    let mut check = Instant::now() + FIFO_CHECK;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break Some(status);
         }
-        if Instant::now() >= deadline {
-            break None;
+        if let Some(fifo) = fifo
+            && Instant::now() >= check
+        {
+            if task51_fifo_has_reader(fifo) {
+                break None;
+            }
+            check = Instant::now() + FIFO_CHECK;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -4450,6 +4466,23 @@ fn task51_bounded(
         text(&fs::read(stdout).unwrap()),
         text(&fs::read(stderr).unwrap()),
     )
+}
+
+/// Whether any process holds `fifo` open for reading. A non-blocking write
+/// open fails with ENXIO exactly when there is no reader, and a reader blocked
+/// in open(2) already counts as one. A consumer opening with O_NONBLOCK holds
+/// it only between open and fstat, so a hit means a blocked consumer.
+fn task51_fifo_has_reader(fifo: &Path) -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+    match fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(fifo)
+    {
+        Ok(_) => true,
+        Err(error) if error.raw_os_error() == Some(libc::ENXIO) => false,
+        Err(error) => panic!("FIFO reader probe {}: {error}", fifo.display()),
+    }
 }
 
 fn task51_limit_child_raw_files(command: &mut Command) {
@@ -4517,7 +4550,7 @@ fn task51_locks_released(f: &HermesScopeFixture, log_root: &Path) {
         .env("HOME", &f.scratch.home)
         .env("CLAUDE_CONFIG_DIR", &f.scratch.claude_config)
         .env("CODEX_HOME", &f.scratch.codex_home);
-    let (status, stdout, stderr) = task51_bounded(&mut probe, log_root, "lock-probe");
+    let (status, stdout, stderr) = task51_bounded(&mut probe, log_root, "lock-probe", None);
     assert!(status.is_some_and(|s| s.success()), "{stdout}{stderr}");
     assert!(
         stdout.contains("1 passed"),
@@ -4550,7 +4583,7 @@ fn task51_target(f: &HermesScopeFixture, name: &str) -> PathBuf {
 // restored tree must equal the fresh install's snapshot before the next case.
 fn task51_fifo_refusals(cases: &[(&str, &str)]) {
     use std::ffi::CString;
-    let mut timeouts = Vec::new();
+    let mut blocked = Vec::new();
     let f = task51_installed();
     let fresh = task51_snapshot(&f.scratch.root);
     let spare = f.scratch.root.join("fifo-original");
@@ -4563,8 +4596,12 @@ fn task51_fifo_refusals(cases: &[(&str, &str)]) {
         let calls = fs::read(&f.calls).unwrap();
         let logs = Scratch::new();
         let label = format!("{name}-{verb}");
-        let (status, stdout, stderr) =
-            task51_bounded(&mut task51_command(&f, verb, true), &logs.root, &label);
+        let (status, stdout, stderr) = task51_bounded(
+            &mut task51_command(&f, verb, true),
+            &logs.root,
+            &label,
+            Some(&path),
+        );
         assert_eq!(
             task51_snapshot(&f.scratch.root),
             before,
@@ -4579,7 +4616,7 @@ fn task51_fifo_refusals(cases: &[(&str, &str)]) {
             );
         }
         match status {
-            None => timeouts.push(label.clone()),
+            None => blocked.push(label.clone()),
             Some(status) => assert!(
                 !status.success(),
                 "special file accepted: {label}: {stdout}{stderr}"
@@ -4594,8 +4631,8 @@ fn task51_fifo_refusals(cases: &[(&str, &str)]) {
         );
     }
     assert!(
-        timeouts.is_empty(),
-        "bounded-completion failed for no-writer FIFO consumers: {timeouts:?}"
+        blocked.is_empty(),
+        "consumers blocked on a no-writer FIFO: {blocked:?}"
     );
 }
 
@@ -4699,9 +4736,13 @@ fn task51_neighbors(name: &str) {
         let label = format!("{name}-{neighbor}");
         let before = task51_snapshot(&f.scratch.root);
         let calls = fs::read(&f.calls).unwrap();
-        let (status, stdout, stderr) =
-            task51_bounded(&mut task51_command(&f, verb, true), &logs.root, &label);
-        let status = status.unwrap_or_else(|| panic!("neighbor blocked: {label}"));
+        let (status, stdout, stderr) = task51_bounded(
+            &mut task51_command(&f, verb, true),
+            &logs.root,
+            &label,
+            None,
+        );
+        let status = status.expect("waited without a FIFO");
         let selector = name == "index" || name == "index-marker";
         let physical_marker = name == "physical-marker";
         let asset = ["__init__.py", "bridge_config.json", "plugin.yaml"].contains(&name);
