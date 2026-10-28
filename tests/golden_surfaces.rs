@@ -1165,7 +1165,10 @@ impl Topology {
     ) -> Seeded {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let native = NativeCli::new(context.host_endpoint.clone().unwrap(), clock.clone());
-        let ctx = HostCallContext {
+        // Each setup call gets its own budget from the moment it starts: one
+        // deadline across the whole seed (schema creation included) runs out
+        // under host load before the later calls start.
+        let ctx = || HostCallContext {
             budget: CallBudget {
                 deadline: MonoInstant(clock.monotonic_now().0 + 5000),
                 cancellation: Cancellation::default(),
@@ -1176,13 +1179,13 @@ impl Topology {
         let observed = native
             .observe_bootstrap_target(
                 &herdr_threads::protocol::ids::HostTargetId::new("w4:p1"),
-                &ctx,
+                &ctx(),
             )
             .unwrap();
         let observation = observed.observation();
         let store_context = StoreContext::new(paths.database_path.clone(), store_clock.clone())
             .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
-        let budget = CallBudget {
+        let budget = || CallBudget {
             deadline: MonoInstant(store_clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
         };
@@ -1201,14 +1204,14 @@ impl Topology {
             .begin_host_observation(
                 &instance.to_string(),
                 herdr_threads::test_support::test_host_id(),
-                &budget,
+                &budget(),
             )
             .unwrap();
-        let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx).unwrap();
+        let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx()).unwrap();
         let stage = store
             .begin_snapshot_stage(
                 SnapshotHeader::from_captured(admission, &snapshot).unwrap(),
-                &budget,
+                &budget(),
             )
             .unwrap();
         // A writer turn that spends its quantum (a scheduling stall on a
@@ -1224,16 +1227,16 @@ impl Topology {
                     offset as u64,
                     &snapshot.targets[offset..],
                     admission,
-                    &budget,
+                    &budget(),
                 )
                 .unwrap();
             assert!(progress.visited > 0, "a staging turn must advance");
             offset += usize::from(progress.visited);
             turns += 1;
         }
-        store.seal_snapshot_stage(&stage.id, &budget).unwrap();
+        store.seal_snapshot_stage(&stage.id, &budget()).unwrap();
         let epoch = store
-            .publish_snapshot_stage(&stage.id, &budget)
+            .publish_snapshot_stage(&stage.id, &budget())
             .unwrap()
             .epoch;
         let execution = uuid::Uuid::new_v4();
