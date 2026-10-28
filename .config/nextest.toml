@@ -158,6 +158,16 @@ binary_id(herdr-threads) & test(/^cli::hook::tests::registered_resume::(task52_a
 threads-required = "num-test-threads"
 priority = 100
 
+# The cold-daemon Hermes smoke: its start hook must bring the daemon up and
+# enroll the pane inside the bridge's production 4.5 s on_session_start cap
+# (configuration 8). In the suite's busy start on CI it ran out of that cap and
+# failed open, leaving no seat (ht-j7bn, runs 40710373544 and 40711454223). It runs
+# alone at the front (about 4 s); the caps and the strict assertion are unchanged.
+[[profile.default.overrides]]
+filter = "binary(integration) & test(=hermes_enrollment_smoke::hermes_bare_enrollment_cold_daemon_configurations)"
+threads-required = "num-test-threads"
+priority = 100
+
 [[profile.default.overrides]]
 filter = "binary(hook_entrypoint)"
 priority = 80

@@ -1124,7 +1124,14 @@ fn hermes_bare_enrollment_cold_daemon_configurations() {
         smoke.daemon_up(),
         "the start hook did not bring the daemon up"
     );
-    let seat = smoke.seat(&pane);
+    let seats = smoke.seat_ids(&pane);
+    assert_eq!(
+        seats.len(),
+        1,
+        "the start hook did not enroll {pane} inside its cap: {}",
+        started.steps[0]
+    );
+    let seat = seats[0].clone();
     assert_eq!(smoke.open_bindings(&pane), 0, "a start must not check in");
     let turn_after = smoke.drive(&pane, &[turn("S8", "T1")], true);
     assert_seated_turn(&turn_after, 0, "startup");
@@ -1146,8 +1153,14 @@ fn hermes_bare_enrollment_cold_daemon_configurations() {
     // completes the whole enrollment and check-in in that cap, or fails open
     // (null, or an unavailable notice) and leaves a daemon that is coming up;
     // both are the existing behavior, and either way the next turn ends with
-    // exactly one seat and one open binding.
+    // exactly one seat and one open binding. The cap may also run out after
+    // the daemon committed the startup check-in, so its ack never reaches the
+    // bridge: the next turn is then a current one. Only a turn that ran out
+    // of the cap (the bridge got no answer, or the turn took the driver's
+    // 1 s slow mark) may leave that; a fast answer without an ack may not.
     let checked_in_cold = first.ack_mode(0).is_some();
+    let cap_ran_out = first.steps[0]["child"].as_array().unwrap().is_empty()
+        || first.steps[0]["elapsed_ms"].as_u64().unwrap() >= 1000;
     let later = smoke.drive(&pane, &[turn("S10", "T2")], true);
     if checked_in_cold {
         assert!(first.context(0).is_some(), "{}", first.steps[0]);
@@ -1158,7 +1171,7 @@ fn hermes_bare_enrollment_cold_daemon_configurations() {
             "{}",
             later.steps[0]
         );
-    } else {
+    } else if !cap_ran_out || later.ack_mode(0).as_deref() != Some("current") {
         assert_seated_turn(&later, 0, "startup");
     }
     smoke.seat(&pane);
