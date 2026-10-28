@@ -1,0 +1,104 @@
+---
+super-roast verdict: Should-fix (3 confirmed) [low coverage] [review readiness incomplete]
+mode: pr        iteration: 1 of 3
+profile (assumed): Production developer tool (local CLI plus daemon) used daily on two hosts with real message stores. The installer runs via curl|bash on macOS and Linux. Data loss of the store is the main blast radius; everything else is local disk, install latency and operator ergonomics.
+inputs: installer-auto-backup@e10f2b409 vs main@71b3bc0c1
+coverage: scouts 15/15 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, deploy-safety, api-contract, observability, testing, test-causality-lifecycle, test-isolation-environment, test-suite-cost, hygiene-docs, data-migrations) · raw 74 → deduped 59 → panel 6 · spot 50 · promoted 0 · judge completion 100% · remainder-capped: 3 · review readiness: coverage unknown, provenance unknown — basis: ""
+independence: same-family (Claude) — seat-differentiated panel · rung: Workflow
+seat-agreement: panels 6 · rr 0.67 · rg 0.67 · fg 0.67 · unanimous 0.50 · ground-loo 0.75 (n=4) · reproduce 2/4/0 · refute 2/4/0 · ground 4/2/0
+lane-yield (found/confirmed/unique/refuted): correctness 5/0/0/4 · security 2/0/0/2 · premortem 6/0/0/6 · simplicity-design 8/0/0/5 · hot-path-perf 2/0/0/2 · concurrency-async 5/0/0/4 · deploy-safety 5/1/0/4 · api-contract 6/1/0/5 · observability 4/0/0/4 · testing 9/1/1/2 · test-causality-lifecycle 5/0/0/2 · test-isolation-environment 2/0/0/1 · test-suite-cost 2/0/0/2 · hygiene-docs 8/1/1/3 · data-migrations 5/0/0/5
+
+Readiness note: the engine supplied no review-readiness basis (coverage unknown, provenance unknown, empty basis), so the verdict carries `[review readiness incomplete]` and `[low coverage]`. Every stage ran (no dead triage, scout, dedupe or judge seat); the qualifier records the missing readiness evidence, not a stage loss.
+
+## Confirmed findings
+- [Should-fix] docs/install.md:517 — The documented restore procedure tells the operator to install the older version with `--no-backup`, which skips the one backup of the current (post-upgrade) store right before the procedure overwrites that store, so any data written since the upgrade is lost with no copy left. [lanes: deploy-safety, api-contract, hygiene-docs]
+  verdict: confirmed (reproduce ✗ / refute ✗-survived / ground ✓)
+  evidence: docs/install.md:517 at e10f2b409: "To restore: install the older version with `--no-backup`, stop the daemon ... copy the backup's three files into `node/`". The spec's only rationale for `--no-backup` (lines 107-111) is a full disk or an old `--version` where neither executable has the helper. A restorable backup exists only because a helper-bearing (>= 2.5.0) installer already ran, so the installed executable has the helper and install.sh falls back to it (`backup_helper "$package/bin/herdr-threads" "$installed_binary"`, scripts/install.sh:666 and 688). Prune keeps the newest backup per schema, so the older-schema entry being restored survives a fresh backup. The reproduce seat's rejection notes one real case: if the post-upgrade store fails `integrity_check`, the backup blocks the rollback, so the flag is a legitimate fallback there.
+  severity: promoted from the seats' Nit to Should-fix. Profile states data loss of the store is the main blast radius, and this recipe discards the only copy of the live store immediately before an irreversible overwrite during a manual disaster-recovery step. The fix is two lines of docs.
+  fix-shape hint: Drop `--no-backup` from the default restore recipe; mention it only as the fallback when the backup of the current store fails (corrupt or full disk), and say to copy `node/` by hand first in that case.
+
+- [Nit] docs/install.md:517 — The documented restore and RELEASE.md procedures tell the operator to pass `--no-backup`, but the tag-pinned pre-2.5.0 install.sh those procedures fetch rejects the flag as an unknown argument. [lanes: deploy-safety, api-contract, hygiene-docs]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: Base install.sh (71b3bc0c1, line 137) ends its argument loop with `*) usage >&2; die "unknown argument: $1"` and has no `--no-backup` case. docs/install.md:517 says "install the older version with `--no-backup`" without naming which script. RELEASE.md:60 says to pass `--no-backup` when installing a release older than 2.5.0, and RELEASE.md:62 uses `curl …/vX.Y.Z/scripts/install.sh`. The refute seat's point stands as a limiter: the release flow itself never installs an older tag, docs/install.md:18-20 show the canonical `main`-branch script plus `--version`, and the failure is an immediate harmless "unknown argument" exit. That keeps it at Nit.
+  fix-shape hint: One clause in docs/install.md and RELEASE.md §7.1 saying the restore uses the current (main) installer with `--version <old>`, never the old tag's script.
+
+- [Nit] src/cli/pre_upgrade_backup.rs:240 — AC 8's "the copy fails its check" branch (`integrity_check` returning something other than `ok`) has no test at any level. The only failure test feeds a non-SQLite file, which fails at open or at VACUUM INTO, before the integrity check runs. [lanes: testing]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: copy_store (src/cli/pre_upgrade_backup.rs:214-246) returns `Err("the copy failed its integrity check: ...")` at line 241 when the check is not `ok`. The only failing-store unit test, `a_store_that_is_not_sqlite_fails_and_leaves_no_staging` (src/cli/pre_upgrade_backup_tests.rs:121), writes `b"not a database at all"`, which fails before that branch. tests/release/installer_backup_test.py:167 and install_test.sh assert only the passing `ok` path. Replacing `check != "ok"` with `false` leaves every test green. The spec's Tests section maps AC 8 to the Rust unit tests. Impact is low: VACUUM INTO rebuilds indexes, so a copy that fails `integrity_check` is hard to produce without a seam.
+  fix-shape hint: Add a seam (an injectable check result, or a post-copy corruption step on the staging file) so a unit test drives the non-`ok` branch and asserts exit 1 plus no staging left.
+
+## Not verified (beyond panel cap)
+- none
+
+## Not verified (dedupe failed or judge lost)
+- none
+
+## Beyond remainder cap (count only)
+- 3 candidates dropped by the remainder cap — raise config.remainderCap and re-run to see them
+
+## Rejected (with reason)
+- [FYI] scripts/install.sh:680; scripts/install.sh:690; scripts/install.sh:678 — The backup snapshot is taken while the old daemon is still running, before the stop, so writes committed between the VACUUM INTO snapshot and the stop are missing from the backup.
+  reason: 3/3 REJECT. The ordering is the spec's deliberate contract: "When" and AC1 say the backup is taken before the old daemon's stop, and AC2 requires a failed backup to exit 1 before any stop action (fail closed, nothing touched). Moving the copy after the stop would break AC2. The spec promises a consistent point-in-time rollback snapshot, not the last pre-migration state; any restore already discards everything after the snapshot including all post-upgrade activity. At most a documentation note about the seconds-long window.
+
+- [FYI] src/cli/pre_upgrade_backup.rs:157 — Nothing in a backup records which installed version wrote it; the entry is named after the target version, so the restore procedure cannot be followed from the backup alone.
+  reason: 2 REJECT / 1 CONFIRM (Nit). The spec fixes the name as `pre-v<TAG>-<stamp>` with TAG the version being installed, and the contents as three files; it requires neither a version marker nor a restore-from-backup-alone property. The schema is readable from the backup's own `PRAGMA user_version`, the installer prints the "upgraded: X -> Y" pair, and a wrong older binary refuses loudly ("store is newer than this binary") with no data lost. The ground seat's dissent (install.sh:634-639 knows `$previous_version` but never passes it) is accurate but already answered by the majority; not material. A `from` marker file would be a cheap improvement if anyone wants it.
+
+- [FYI] src/cli/pre_upgrade_backup.rs:401; :392; :393; :400 — Retention keeps the newest backup of every schema version forever (and unreadable entries too), so the backup root grows by one full store copy per migrating release with no cap, while the spec calls this bounded.
+  reason: 3/3 REJECT. Spec line 97 and AC5 state the keep rule exactly ("the newest 3; the newest per schema; every entry whose schema is unknown"), and the Risks section names the bound as "3 + one per older schema". The per-schema term is a stated tradeoff that keeps an older-schema rollback target alive past a one-way migration. It grows with distinct schema versions (9 so far), not with installs, and replaces manual backups that nothing pruned (23 dirs, 1.5 GiB). Loose use of "bounded" is a wording nit, not a defect.
+
+## Unverified nits (spot-checked)
+One refute-seat pass each; not panel-strength. The spot verdict is noted per entry.
+- [Nit] src/cli/pre_upgrade_backup.rs:166; :153 — free_name's existence check and the later fs::rename are not atomic; two helper runs in the same UTC second can collide and the second install dies instead of retrying the next suffix. (spot CONFIRM, Nit: fail-closed, no data lost; retry on EEXIST/ENOTEMPTY would close it)
+- [FYI] src/cli/pre_upgrade_backup.rs:383; :378 — Future-stamped entries from a once-skewed clock permanently occupy the newest-3 slots. (spot REJECT: AC5 defines "newest" by name stamp; the just-taken and per-schema newest are kept regardless)
+- [FYI] src/cli/pre_upgrade_backup.rs:253 — A missing node.key or node.json is skipped silently and the success line is unqualified. (spot REJECT: spec step 5 says "copied byte for byte when present"; node.key is created lazily)
+- [FYI] scripts/install.sh:688 — An explicit older `--version` over a store now refuses with exit 1 when neither executable has the helper. (spot REJECT: spec lines 26-28 specify the fail-closed refusal and name `--no-backup`)
+- [FYI] scripts/install.sh:686 — A noexec TMPDIR with an existing store now aborts upgrades. (spot REJECT: spec lines 27-31 choose this refusal; the die names TMPDIR)
+- [FYI] scripts/install.sh:664; :662 — With a symlinked state dir the backups land beside the symlink target, not the documented path. (spot REJECT: spec defines the root as the state dir's physical parent; the success line prints the actual path)
+- [FYI] src/cli/pre_upgrade_backup.rs:166 — Pruning runs only after a successful backup, so a full disk blocks every later upgrade. (spot REJECT: spec names a full disk as a warranted `--no-backup` case; pruning before backup would delete the last good copy first)
+- [FYI] src/cli/pre_upgrade_backup.rs:388 — Private-key copies accumulate under the per-schema and unknown-schema keep rules. (spot REJECT: same key, same user, 0600 in 0700; node.key is never rewritten; cooperative same-user trust model)
+- [FYI] src/cli/pre_upgrade_backup.rs:398 — Unknown-schema entries consume newest-3 slots. (spot REJECT: AC5 counts by name stamp; the just-taken and newest-per-schema backups still survive)
+- [FYI] src/cli/pre_upgrade_backup.rs:366 — read_dir failure on the root silently skips pruning. (spot REJECT: the root was just created/validated and written to; practically unreachable)
+- [FYI] src/cli/pre_upgrade_backup.rs:195 — Staging cleanup errors are discarded. (spot REJECT: spec makes staging removal best-effort and re-sweeps on later runs; leftover is 0700 inside 0700)
+- [FYI] tests/release/installer_backup_test.py:166 — `test_repeated_upgrades_keep_the_newest_three` asserts only count and survival; cross-tag same-second ties order by name. (spot REJECT: spec specifies the tie-break; real upgrades take seconds)
+- [FYI] src/cli/pre_upgrade_backup.rs:295 — Stamp built via `harness::manifest::format_rfc3339_utc` and re-parsed by offsets. (spot REJECT: repo convention reuses that formatter; a changed format fails safe in prune)
+- [FYI] src/cli/pre_upgrade_backup.rs:335 — entry_key hand parser with fixed byte offsets. (spot REJECT: parser is correct and ascii-guarded; no `regex` dependency exists)
+- [FYI] src/cli/pre_upgrade_backup.rs:136 — An existing backup root's mode is never narrowed to 0700. (spot REJECT: spec line 65 requires 0700 only on create; entries and files are themselves 0700/0600)
+- [FYI] src/cli/pre_upgrade_backup.rs:227 — VACUUM INTO on the same filesystem with no free-space check. (spot REJECT: spec accepts a full disk as a `--no-backup` case; staging is removed on error; no daemon failure observed)
+- [FYI] src/cli/pre_upgrade_backup.rs:192; :186 — sweep_stale_staging liveness via local kill(pid,0) across PID namespaces or hosts. (spot REJECT: spec step 2 specifies the mechanism; needs a shared HOME across namespaces; worst case a loud failed backup)
+- [FYI] src/cli/pre_upgrade_backup.rs:399 — Unknown-schema entries are kept forever and warned on every install. (spot REJECT: spec lines 94-98 specify exactly this)
+- [Nit] tests/release/install_test.sh:468; :213 — The failing-backup case relies on chmod 500 with no `id -u` root guard. (spot CONFIRM, Nit: the file already guards another case at line 973; CI and the container are non-root)
+- [Nit] src/cli/pre_upgrade_backup_tests.rs:129; tests/release/install_test.sh:221 — "node.key never in the output" and the e2e "no staging left" assertions are vacuous because the injected failures precede staging creation and key read. (spot CONFIRM, Nit: unit test does cover staging cleanup; no test covers a failure after copy_private)
+- [FYI] src/cli/pre_upgrade_backup.rs:117 — Symlinked store, symlinked/directory node.key and missing node.key branches untested. (spot REJECT: spec's test plan does not call for them; they are defensive and fail safe)
+- [Nit] src/cli/pre_upgrade_backup.rs:379 — Prune's deletion-failure branch ("could not prune", never fails the install) is never exercised. (spot CONFIRM, Nit: spec lines 102-103 require it; no test makes a removal fail)
+- [Nit] src/cli/pre_upgrade_backup_tests.rs:133 — The symlinked-root refusal has no test; the existing test uses a regular file and asserts only `is_err()`. (spot CONFIRM, Nit: switching to `fs::metadata` would break spec line 65 silently)
+- [Nit] tests/release/install_test.sh:213; :470 — The backup root stays 0500 across one installer run and cleanup's `rm -rf` cannot remove it after an interrupt. (spot CONFIRM, Nit: `chmod -R u+w "$root"` in cleanup() fixes it; not observed)
+- [FYI] scripts/install.sh:675 — `internal pre-upgrade-backup` is now a cross-release CLI contract with nothing marking it frozen. (spot REJECT: fallback is spec'd and tested end to end; failure is loud and fail-closed)
+- [FYI] src/cli/mod.rs:35 — `pub mod pre_upgrade_backup` and its pub items are wider than needed. (spot REJECT: matches the file's dominant `pub mod` convention; no behavioral effect)
+- [Nit] scripts/install.sh:658 — `store_states` duplicates `live_instances`' two default roots. (spot CONFIRM, Nit: spec says the lists are meant to be identical; drift would back up a store whose daemon is never stopped, or the reverse)
+- [FYI] scripts/install.sh:660 — The shell hardcodes `node/herdr-threads.db` although the helper already handles NoStore. (spot REJECT: spec specifies the shell-side check; filtering keeps fresh installs silent and non-failing)
+- [FYI] src/cli/pre_upgrade_backup.rs:89 — run() writes warnings and the failure line via `eprintln!`, not the injected writer. (spot REJECT: spec assigns stderr-text checks to the release tests; pattern matches src/cli)
+- [FYI] src/cli/pre_upgrade_backup.rs:302 — free_name tries up to 999 suffixes. (spot REJECT: `-N` suffix is in the spec's grammar; ~8 bounded lines)
+- [Nit] RELEASE.md:60 — §7.1 omits the custom `--state-dir` manual-backup case the spec required and hard-codes `~/.local/state` instead of the XDG form. (spot CONFIRM, Nit: docs/install.md carries the caveat; RELEASE.md is the maintainer's checklist for two default-state hosts)
+- [FYI] docs/install.md:61 — "Before that," has no clear antecedent and the link targets `#updating`. (spot REJECT: next sentence supplies the referent; markdown has no anchor for a bold lead-in)
+- [Nit] src/cli/mod.rs:1121; :1120 — The shared `unreachable!` message names only `internal json-field`, not the new variant. (spot CONFIRM, Nit: one-line fix; the mislabel was already shared with InstallerIntegrations on base)
+- [FYI] scripts/install.sh:690 — Fail-closed backup gate with only a per-invocation `--no-backup` opt-out and no env/config switch. (spot REJECT: spec explicitly states "HERDR_THREADS_NO_BACKUP is not added: flags only")
+- [FYI] scripts/install.sh:688 (external) — The not-yet-installed executable reads the live store with a possibly different bundled SQLite while the old daemon runs; real skew not exercised in CI. (spot REJECT: read-only open, WAL/-shm format stable across builds; the finding calls itself speculative; no web research done)
+- [FYI] scripts/install.sh:688 — The fallback to the installed executable does not say which binary took the backup. (spot REJECT: spec'd fallback; only the `--help` probe is silenced)
+- [Nit] scripts/install.sh:656 — The multi-state loop (physical-path dedup of the two roots, partial failure on the second state) has no test. (spot CONFIRM, Nit: no test sets XDG_STATE_HOME equal or symlinked to ~/.local/state; a regression costs a duplicate backup or a refused install, not data)
+- [Nit] src/cli/mod.rs:531 — No test of the "needs --state-dir" refusal or of the helper's `error: pre-upgrade backup failed:` stderr line and exit 1. (spot CONFIRM, Nit: spec lines 80-81 fix that text; install.sh always passes --state-dir)
+- [FYI] src/cli/pre_upgrade_backup_tests.rs:513 — The "live connection" test has no concurrent writer during VACUUM INTO. (spot REJECT: the test checks WAL-only rows reach the copy; a concurrent-writer test would be flaky and tests SQLite, not this code)
+- [FYI] src/cli/pre_upgrade_backup_tests.rs:694 (external) — The "changes no mtime" assertion can pass falsely on coarse-timestamp kernels/filesystems. (spot REJECT: can only false-pass a secondary assertion, never flake; the test is at line 244, not 694; no web research done)
+- [FYI] src/cli/pre_upgrade_backup.rs:146 — intents/, contexts/, launches.jsonl and harness-manifest/ are outside the rollback point. (spot REJECT: spec scopes the backup to three files on purpose; no conflicting migration named)
+- [FYI] src/cli/pre_upgrade_backup.rs:228 — The read transaction blocks checkpoints and the 10 s busy timeout can fail closed under an exclusive lock. (spot REJECT: the only checkpoint in the repo is PASSIVE, src/store/journal.rs:2561-2566)
+- [FYI] src/cli/pre_upgrade_backup.rs:399 — Concurrent prunes can race and produce a spurious "could not prune" warning. (spot REJECT: spec line 102 makes a failed deletion a warning only; no data lost)
+- [FYI] src/cli/pre_upgrade_backup.rs:221 — Full VACUUM INTO plus full integrity_check per install, before the daemon stops. (spot REJECT: spec steps 3-4 prescribe exactly this; once per install, not a hot path)
+- [FYI] scripts/install.sh:136 — `--no-backup` is silently accepted with `--uninstall` and on an unchanged reinstall. (spot REJECT: consistent with the spec's "skip the backup" semantics; rejecting it would break wrappers)
+- [FYI] src/cli/pre_upgrade_backup.rs:72 — New stdout/stderr lines change the installer's output shape. (spot REJECT: spec lines 79-101 specify each line and its size; no parsing consumer named)
+- [FYI] tests/release/install_test.sh:406 — The helper-capability fallback and refusal have no install_test.sh case. (spot REJECT: spec assigns them to installer_backup_test.py, which has `test_a_release_without_the_helper_uses_the_installed_one` and `test_no_helper_anywhere_refuses_until_no_backup`)
+- [FYI] tests/release/install_test.sh:416 — Section 3c's first check depends on section 3's racing-daemon side effects. (spot REJECT: fixed-order script; 3c builds its own fixture for every other assertion)
+- [FYI] tests/release/installer_backup_test.py:174 — `test_repeated_upgrades_keep_the_newest_three` runs six installer invocations for a unit-tested rule. (spot REJECT: ~0.4 s outside the nextest budget; covers installer-to-helper wiring the unit tests lack)
+- [FYI] tests/release/installer_backup_test.py:127 — `test_upgrade_prunes_only_its_own_backups` mirrors the Rust prune matrix. (spot REJECT: it adds the manual-dir untouched check through the real installer, the user's scope requirement; ~0.29 s)
+
+## Escalations (need human)
+- none
+---

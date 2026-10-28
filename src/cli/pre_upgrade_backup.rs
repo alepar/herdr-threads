@@ -229,6 +229,11 @@ fn copy_store(source: &Path, target: &Path) -> Result<i64, String> {
     drop(connection);
     set_private(target)?;
     sync_file(target)?;
+    check_copy(target)
+}
+
+/// The copy's check: `integrity_check` must be exactly `ok`. Returns its `user_version`.
+fn check_copy(target: &Path) -> Result<i64, String> {
     let copy = Connection::open_with_flags(
         target,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,

@@ -295,3 +295,33 @@ fn a_staging_directory_left_by_a_dead_run_is_swept() {
     assert!(!dead.exists());
     assert!(live.exists(), "a live run's staging is left alone");
 }
+
+#[test]
+fn a_copy_that_fails_its_integrity_check_is_refused() {
+    let root = temp_path(format!("ht-backup-check-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let store = root.join(DATABASE_FILE);
+    let db = Connection::open(&store).unwrap();
+    db.execute_batch(
+        "CREATE TABLE t(x INTEGER); CREATE INDEX t_x ON t(x); \
+         INSERT INTO t VALUES (1), (2), (3);",
+    )
+    .unwrap();
+    drop(db);
+    assert_eq!(check_copy(&store), Ok(0));
+    // Point the index's definition at another expression: the file still opens and reads,
+    // but the stored index entries no longer match the table.
+    let db = Connection::open(&store).unwrap();
+    db.execute_batch(
+        "PRAGMA writable_schema=ON; \
+         UPDATE sqlite_schema SET sql = 'CREATE INDEX t_x ON t(x + 1)' WHERE name = 't_x'; \
+         PRAGMA writable_schema=OFF;",
+    )
+    .unwrap();
+    drop(db);
+    let error = check_copy(&store).unwrap_err();
+    assert!(
+        error.starts_with("the copy failed its integrity check"),
+        "{error}"
+    );
+}

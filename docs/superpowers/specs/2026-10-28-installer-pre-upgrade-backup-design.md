@@ -120,7 +120,9 @@ continues: pruning never fails the install.
 - RELEASE.md §7.1: the installer backs up and prunes automatically; a manual backup is needed
   only for a store outside the default state roots, or with `--no-backup`.
 - docs/install.md: a "Pre-upgrade backup" paragraph (location, contents, retention, opt-out,
-  restore by hand: install the older version with `--no-backup`, stop the daemon and keep it
+  restore by hand: install the older version with the current installer (it backs up the
+  store being replaced; `--no-backup` only if that fails, after copying `node/` aside; roast
+  pr-1), stop the daemon and keep it
   from restarting, delete `node/herdr-threads.db-wal` and `-shm` (a leftover WAL replayed onto
   the restored file corrupts it; roast design-1), copy the three files into `node/`, then
   `daemon ensure`; the old manual
