@@ -399,7 +399,7 @@ impl Fixture {
             assert_eq!(instance, copied.instance);
         }
         drop(owner);
-        Self::seed(&paths, &context, instance);
+        let seeded_epoch = Self::seed(&paths, &context, instance);
         let mut cmd = iso.command(BIN);
         cmd.args(["daemon", "run", "--state-dir"])
             .arg(&context.state_dir)
@@ -410,13 +410,18 @@ impl Fixture {
             .stdout(fs::File::create(iso.path("daemon.stdout")).unwrap())
             .stderr(fs::File::create(iso.path("daemon.stderr")).unwrap());
         let mut daemon = cmd.spawn_owned().unwrap();
+        // The seed publishes before any seat exists, so its empty recovery
+        // completes at publication and the reconciled marker already matches
+        // before the daemon has observed anything. Wait for the daemon's own,
+        // newer epoch instead: its startup observation and its reconciliation
+        // of the seeded seats finish before a test reads or edits them.
         wait("owned elected daemon descriptor/reconciliation", || {
             assert!(daemon.try_wait().unwrap().is_none(), "owned daemon exited");
             if !paths.descriptor_path.exists() {
                 return false;
             }
             let db = Connection::open(&paths.database_path).unwrap();
-            db.query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
+            db.query_row("SELECT count(*) FROM herdr_hosts WHERE recovery_epoch>?1 AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[seeded_epoch as i64],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
         });
         println!(
             "fixture instance={instance} root={} host={} daemon={}",
@@ -434,7 +439,12 @@ impl Fixture {
             cli_log: Mutex::new(Vec::new()),
         }
     }
-    fn seed(paths: &NodePaths, context: &RuntimeContext, instance: herdr_threads::node::NodeUuid) {
+    /// Seeds the host snapshot and both seats; returns the seed's epoch.
+    fn seed(
+        paths: &NodePaths,
+        context: &RuntimeContext,
+        instance: herdr_threads::node::NodeUuid,
+    ) -> u64 {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let native = NativeCli::new(context.host_endpoint.clone().unwrap(), clock.clone());
         let budget = CallBudget {
@@ -507,7 +517,10 @@ impl Fixture {
             targets = &targets[visited..];
         }
         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
-        store.publish_snapshot_stage(&stage.id, &budget).unwrap();
+        let seeded_epoch = store
+            .publish_snapshot_stage(&stage.id, &budget)
+            .unwrap()
+            .epoch;
         let execution = Uuid::new_v4();
         for (seat, target, terminal) in [
             ("sender", "w4:p1", "term_1"),
@@ -544,6 +557,7 @@ impl Fixture {
                 role: Role::TopLevel,
             })
             .unwrap();
+        seeded_epoch
     }
     fn owned_path(&self) -> std::ffi::OsString {
         let mut paths = vec![self.iso.path("")];
