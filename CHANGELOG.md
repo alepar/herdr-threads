@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.6.3
+
+No schema or peer wire change (node schema stays 10), and no setup re-run is needed.
+
+### Fixed
+
+- **A refused operator command no longer leaves a pending intent behind.** When the daemon definitively refuses a `human ... --operator` command, the CLI now discards that command's local intent file. Examples are `thread_not_orphaned`, or Herdr reporting that the named pane does not exist. Cooperative commands already worked this way. Before, each refusal stayed in `pending-ops` forever: a timer that retried a refused operator invite every two minutes left about 2,800 of them on one node. An unknown outcome or a transient refusal still keeps the intent for `herdr-threads retry`.
+
+### CI
+
+- Both macOS targets build in one CI job, so a run needs one fewer hosted macOS runner.
+- The sync_link backoff test reads the backoff recorded in the dial target instead of sampling a millisecond-long state.
+
 ## v2.6.2
 
 No schema or peer wire change (node schema stays 10), and no setup re-run is needed.
