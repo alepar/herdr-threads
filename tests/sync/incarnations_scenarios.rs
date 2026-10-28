@@ -361,12 +361,13 @@ async fn two_nodes_link_and_converge() {
     let (ra, rb) = (start(&a, 11, 1), start(&b, 12, 2));
     ra.link(&rb).await;
     // Both directions: A's thread reaching B says nothing of B's own entries
-    // (its node genesis) reaching A.
+    // (its node genesis) reaching A. Vectors first: an entry they count is
+    // ingested, so a later zero pending count proves it applied.
     wait_until("A and B converge", PATIENCE, || {
         has_thread(&b, &thread)
+            && ra.vector() == rb.vector()
             && pending(&a) == 0
             && pending(&b) == 0
-            && ra.vector() == rb.vector()
     })
     .await;
     assert_projections_equal(&[&a, &b]);
