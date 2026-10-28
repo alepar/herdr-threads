@@ -645,9 +645,12 @@ impl WorkerStatus {
         self.record(FailureKey::LaneFailure, None);
         self.record_tick(at);
     }
-    /// The only way a lane reports a failed pass: records the typed failure
-    /// for Health (`last_tick` does not advance) and calls the lane-error hook.
+    /// The only way a lane reports a failed pass: calls the lane-error hook,
+    /// then records the typed failure for Health (`last_tick` does not
+    /// advance). Log first: Health's remedy points at daemon.log, so a reader
+    /// that sees the lane degraded finds its line there.
     pub fn record_failure(&self, lane: Lane, error: &ApiError) {
+        self.report_to_error_log(lane, error);
         self.record(
             FailureKey::LaneFailure,
             Some((
@@ -655,12 +658,12 @@ impl WorkerStatus {
                 error_diagnostic(lane.name(), error),
             )),
         );
-        self.report_to_error_log(lane, error);
     }
     /// Records that `lane`'s thread failed to spawn so Health shows it
     /// degraded instead of the lane being silently absent.
     pub fn record_spawn_failure(&self, lane: Lane, error: &std::io::Error) {
         let api = error_for_spawn(lane, error);
+        self.report_to_error_log(lane, &api);
         self.record(
             FailureKey::LaneSpawn,
             Some((
@@ -668,7 +671,6 @@ impl WorkerStatus {
                 error_diagnostic(lane.name(), &api),
             )),
         );
-        self.report_to_error_log(lane, &api);
     }
     /// Guard held for the lane thread's whole body: if the thread unwinds or
     /// returns without a requested stop, the lane is recorded dead so Health
