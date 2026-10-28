@@ -120,7 +120,7 @@ fn inspect_shared(
                 .join(file.file_name()?),
         )
     };
-    let mut owners: Vec<Manifest> =
+    let owners: Vec<Manifest> =
         owned::manifests_of_kind(env.state_dir()?, &format!("{name}-skill"))
             .into_iter()
             .filter_map(|manifest| {
@@ -131,13 +131,9 @@ fn inspect_shared(
             })
             .filter(|recorded| canonical_of(&recorded.path).as_deref() == Some(canonical))
             .collect();
-    // Any record of the real file installed and unedited owns it. Deterministic order: a record
-    // of the real path first, then other roots' (another linked profile's may be stale), and a
-    // record of this very link path (an earlier release wrote before the link existed) last.
-    owners.sort_by(|a, b| {
-        let rank = |recorded: &Manifest| (recorded.path != canonical, recorded.path == path);
-        rank(a).cmp(&rank(b)).then_with(|| a.path.cmp(&b.path))
-    });
+    // Any record of the real file installed and unedited owns it, whichever root made it (a
+    // linked profile's record, made before its link, resolves to the same file). The verdict
+    // names the real file, never the lexical path of the record that validated.
     let mut present = false;
     for recorded in owners {
         let current = read_optional(&recorded.path).ok().flatten();
@@ -146,12 +142,7 @@ fn inspect_shared(
             && recorded.complete
             && current.as_deref().map(owned::fingerprint).as_deref() == Some(&recorded.fingerprint)
         {
-            // A record of the link path names the real file instead.
-            return Ok(SkillInspection::Shared(if recorded.path == path {
-                canonical.to_path_buf()
-            } else {
-                recorded.path
-            }));
+            return Ok(SkillInspection::Shared(canonical.to_path_buf()));
         }
         present |= current.is_some() || fs::symlink_metadata(&recorded.path).is_ok();
     }

@@ -1042,3 +1042,51 @@ fn installer_reports_a_recorded_profile_skill_shared_once_its_skills_is_a_symlin
     );
     assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 1);
 }
+
+// Kills a shared verdict that names whichever record validated (a sibling profile's link path)
+// instead of the real file, when the default root is itself a dotfile manager's symlink (ht-lmjf).
+#[test]
+fn installer_names_the_real_skill_when_the_default_root_is_a_symlink() {
+    let f = Fixture::new();
+    let real = f.0.join("dotfiles/codex");
+    fs::create_dir_all(&real).unwrap();
+    std::os::unix::fs::symlink(&real, f.0.join("codex")).unwrap();
+    success(&f.install());
+    // Profiles sort before the default root, and their records stay valid (same revision).
+    let profiles = [f.0.join("aisw/a"), f.0.join("aisw/b")];
+    let roots: Vec<String> = profiles
+        .iter()
+        .map(|profile| {
+            fs::create_dir_all(profile).unwrap();
+            format!("codex={}", profile.display())
+        })
+        .collect();
+    let run = || {
+        let mut args = vec!["internal", "installer-integrations", "--confirm-missing"];
+        for root in &roots {
+            args.extend(["--config-root", root.as_str()]);
+        }
+        f.run(&args)
+    };
+    success(&run());
+    for profile in &profiles {
+        fs::remove_dir_all(profile.join("skills")).unwrap();
+        std::os::unix::fs::symlink(f.0.join("codex/skills"), profile.join("skills")).unwrap();
+    }
+    let out = run();
+    success(&out);
+    let text = String::from_utf8_lossy(&out.stdout);
+    let canonical = fs::canonicalize(&real)
+        .unwrap()
+        .join("skills/herdr-threads/SKILL.md");
+    for profile in &profiles {
+        assert!(
+            text.contains(&format!(
+                "codex skill (CODEX_HOME={}): shared (shared via symlink; managed at {})",
+                profile.display(),
+                canonical.display()
+            )),
+            "{text}"
+        );
+    }
+}
