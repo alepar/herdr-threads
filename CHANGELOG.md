@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.5.0
+
+No schema change (the store stays at node schema 9). The peer wire gains one capability-gated frame pair (`addr_resolve`/`addr_resolved`, cap `addr.resolve.v1`), which is sent only to peers that advertise it. No setup re-run is needed.
+
+### Added
+
+- **Seat addresses on other machines.** Seat arguments (`--seat`, `--require-ack`, and the seat argument of `seat inspect`, `rebind` and `retire`) accept a trailing `@MACHINE`, for example `--seat 'office/main/claude@laptop'`.
+  - The named machine resolves the name against its own live Herdr view, and the command then runs as if it had been given that seat's ID.
+  - A machine is named by its node uuid (or an 8+ hex prefix), its tag, or its host name (or the host name's first DNS label).
+  - A name that matches more than one machine is refused, with the matching node uuids listed so you can pass `@<uuid>`.
+  - A known machine that can't answer is refused, never resolved locally instead.
+  - A local label that contains `@` keeps working unless its suffix names a known machine. In `path:` names, `\@` is a literal `@`.
+  - `peer list` shows each node's host name (`host=`), the name `@MACHINE` matches.
+  - Not yet covered: remote `--space`/`--tab`/`--pane` and remote launch or handoff.
+- **The installer backs up the store before an upgrade.** Before an upgrade replaces anything, the installer backs up the daemon store (the store, `node.key` and `node.json`, integrity-checked) into `~/.local/state/herdr/plugins/herdr-threads-backups/`.
+  - It prunes older backups there, keeping the newest 3 and the newest per store schema.
+  - A failed or impossible backup stops the install. That includes a symlinked or unreadable store. `--no-backup` skips the backup.
+  - A manual pre-upgrade backup is no longer needed for a default install. Earlier `herdr-threads-pre-v*-backup-*` directories are left alone; remove them by hand.
+
+### Fixed
+
+- **No wake prompt for a p0 the busy turn already got.** An agent whose busy turn already received a p0 item no longer gets a wake prompt for it when the turn ends. The wake re-checks that it is still owed right before typing.
+- **Log line before Health.** When a background lane fails, its `daemon.log` line is written before Health reports the lane degraded.
+- **Harness-neutral help.** `--help` and agent-facing CLI text no longer name one harness's hook mechanisms or internal design references. `--agent-id`, which the harness integrations insert, is hidden from help but still accepted. `scripts/check-harness-neutral` and a test that renders every help page keep it that way.
+
 ## v2.4.3
 
 No schema or peer wire change, and no setup re-run is needed.
