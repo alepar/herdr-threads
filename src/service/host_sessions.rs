@@ -1182,7 +1182,7 @@ mod tests {
 
         fn budget(&self, ms: u64) -> CallBudget {
             CallBudget {
-                deadline: MonoInstant(crate::app::SystemClock::default().monotonic_now().0 + ms),
+                deadline: MonoInstant(self.store.clock().monotonic_now().0 + ms),
                 cancellation: Cancellation::default(),
             }
         }

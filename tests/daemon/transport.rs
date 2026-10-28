@@ -3676,7 +3676,7 @@ async fn automatic_recovery_response_larger_than_one_mib_survives_actual_local_c
         .call_async(
             command,
             &CallBudget {
-                deadline: crate::protocol::time::MonoInstant(10_000),
+                deadline: crate::protocol::time::MonoInstant(TestClock.monotonic_now().0 + 10_000),
                 cancellation: Cancellation::default(),
             },
         )
@@ -3726,7 +3726,7 @@ async fn automatic_response_embedded_identity_must_match_exact_request() {
         .call_async(
             command,
             &CallBudget {
-                deadline: crate::protocol::time::MonoInstant(10_000),
+                deadline: crate::protocol::time::MonoInstant(TestClock.monotonic_now().0 + 10_000),
                 cancellation: Cancellation::default(),
             },
         )
@@ -3825,7 +3825,7 @@ async fn automatic_response_path_alias_is_not_exact_identity_in_either_family() 
                 .call_async(
                     command,
                     &CallBudget {
-                        deadline: MonoInstant(10_000),
+                        deadline: MonoInstant(TestClock.monotonic_now().0 + 10_000),
                         cancellation: Cancellation::default(),
                     },
                 )
@@ -3968,7 +3968,7 @@ async fn automatic_historical_response_keeps_one_mib_client_allocation_limit() {
             .call_async(
                 command,
                 &CallBudget {
-                    deadline: MonoInstant(10_000),
+                    deadline: MonoInstant(TestClock.monotonic_now().0 + 10_000),
                     cancellation: Cancellation::default(),
                 },
             )
@@ -4112,7 +4112,7 @@ async fn automatic_known_request_rejects_unrelated_success_result_family() {
         .call_async(
             command,
             &CallBudget {
-                deadline: crate::protocol::time::MonoInstant(10000),
+                deadline: crate::protocol::time::MonoInstant(TestClock.monotonic_now().0 + 10_000),
                 cancellation: Default::default(),
             },
         )

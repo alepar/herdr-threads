@@ -1543,7 +1543,9 @@ mod tests {
             home: home.clone(),
         };
         let budget = crate::protocol::time::CallBudget {
-            deadline: crate::protocol::time::MonoInstant(5000),
+            deadline: crate::protocol::time::MonoInstant(
+                environment.clock.monotonic_now().0 + 15_000,
+            ),
             cancellation: Default::default(),
         };
         let inspection = super::super::runtime::ProfileInspection {

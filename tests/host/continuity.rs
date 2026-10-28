@@ -354,7 +354,7 @@ impl PrivateProcess {
         self.request = Some(std::thread::spawn(move || {
             let clock = TestClock(Instant::now());
             let budget = CallBudget {
-                deadline: MonoInstant(2000),
+                deadline: MonoInstant(10_000),
                 cancellation,
             };
             request_witnessed(
@@ -364,7 +364,7 @@ impl PrivateProcess {
                 serde_json::json!({}),
                 &clock,
                 &budget,
-                Duration::from_secs(2),
+                Duration::from_secs(10),
             )
         }));
     }

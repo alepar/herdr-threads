@@ -603,7 +603,7 @@ mod tests {
             ..Default::default()
         };
         let budget = crate::protocol::time::CallBudget {
-            deadline: crate::protocol::time::MonoInstant(5000),
+            deadline: crate::protocol::time::MonoInstant(env.clock.monotonic_now().0 + 15_000),
             cancellation: Default::default(),
         };
         (tmp, path, env, budget)

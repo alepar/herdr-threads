@@ -1617,7 +1617,7 @@ mod task23_tests {
         }
         let env = scratch.env.snapshot();
         let budget = CallBudget {
-            deadline: MonoInstant(10000),
+            deadline: MonoInstant(env.clock.monotonic_now().0 + 15_000),
             cancellation: Default::default(),
         };
         let observed = crate::harness::hermes::runtime::discover_selected_profile(

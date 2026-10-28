@@ -1114,7 +1114,7 @@ mod tests {
             ServiceIntentJournal::open(root.join("intents")).unwrap(),
         ));
         let generous = CallBudget {
-            deadline: MonoInstant(1000),
+            deadline: MonoInstant(progress.monotonic_now().0 + 10_000),
             cancellation: Cancellation::default(),
         };
         client.register(&generous).await.unwrap();
