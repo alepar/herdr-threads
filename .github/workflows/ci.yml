@@ -591,8 +591,19 @@ jobs:
           # Short TMPDIR: tests bind Unix sockets (108-byte limit on Linux).
           TMPDIR=$(mktemp -d /tmp/htci.XXXXXX)
           export TMPDIR
+          # Per-test evidence (stand-in logs, Herdr server log, daemon log and store) for a
+          # failing column; uploaded below only on failure.
+          export HT_HERDR_MATRIX_EVIDENCE="$RUNNER_TEMP/herdr-matrix-evidence"
           scripts/herdr-release-smoke --cache "$RUNNER_TEMP/herdr-releases" \
-            --report "$RUNNER_TEMP/herdr-releases.md"
+            --report "$RUNNER_TEMP/herdr-releases.md" --logs-dir "$RUNNER_TEMP/herdr-matrix-evidence/logs"
+
+      - name: Matrix evidence (on failure)
+        if: failure() && needs.changes.outputs.heavy == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: herdr-matrix-evidence-${{ matrix.arch }}
+          path: ${{ runner.temp }}/herdr-matrix-evidence
+          if-no-files-found: ignore
 
       - name: Matrix (job summary)
         if: always() && needs.changes.outputs.heavy == 'true'

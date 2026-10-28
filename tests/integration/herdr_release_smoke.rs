@@ -466,6 +466,13 @@ impl Drop for Matrix {
                     let _ = fs::copy(source, dir.join(name));
                 }
             }
+            // The daemon's store (wake ladder, reservations and attempt outcomes), with its WAL.
+            let node = self.host.root().join("st/herdr/plugins/herdr-threads/node");
+            for name in ["herdr-threads.db", "herdr-threads.db-wal"] {
+                if node.join(name).is_file() {
+                    let _ = fs::copy(node.join(name), dir.join(name));
+                }
+            }
         }
         // The daemon Herdr's startup entry started; the root teardown that
         // follows also stops anything naming the private root.
