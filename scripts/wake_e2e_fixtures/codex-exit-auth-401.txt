@@ -1,0 +1,3 @@
+alepar@blacky:~/proj$ codex --approve-for-me
+Error: account/read failed: workspace routing discovery unauthorized (401)
+alepar@blacky:~/proj$
