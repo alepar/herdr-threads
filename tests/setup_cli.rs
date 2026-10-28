@@ -4485,7 +4485,8 @@ fn task51_bounded(
 /// reader, and a reader blocked in open(2) already counts as one. A consumer
 /// that opens with O_NONBLOCK holds the FIFO only until its fstat refuses it,
 /// so a hit is a blocked consumer unless the probe lands in that window. A
-/// path that is gone or no longer a FIFO is left to the snapshot assertions.
+/// path that is gone, no longer a FIFO, replaced by a directory or no longer
+/// writable is left to the snapshot assertions.
 fn task51_fifo_reader_probe(fifo: &Path) -> Option<fs::File> {
     use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
     match fs::OpenOptions::new()
@@ -4502,7 +4503,7 @@ fn task51_fifo_reader_probe(fifo: &Path) -> Option<fs::File> {
         Err(error)
             if matches!(
                 error.raw_os_error(),
-                Some(libc::ENXIO | libc::ENOENT | libc::ELOOP)
+                Some(libc::ENXIO | libc::ENOENT | libc::ELOOP | libc::EISDIR | libc::EACCES)
             ) =>
         {
             None
