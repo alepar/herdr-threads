@@ -404,3 +404,21 @@ fn a_symlinked_store_is_refused() {
         failure.reason
     );
 }
+
+#[test]
+fn a_failed_copy_reports_what_the_first_prune_removed() {
+    let (_root, state) = state("early-report", 9);
+    let root = backups(&state);
+    for day in 1..=3 {
+        taken(backup_and_prune(&state, "v2.4.0", at(NOW - 86_400 * (4 - day))).unwrap());
+    }
+    let oldest = names(&root)[0].clone();
+    let node = state.join("node");
+    let _ = fs::remove_file(node.join("herdr-threads.db-wal"));
+    let _ = fs::remove_file(node.join("herdr-threads.db-shm"));
+    fs::write(node.join(DATABASE_FILE), b"not a database at all").unwrap();
+    let failure = backup_and_prune(&state, "v2.5.0", at(NOW)).unwrap_err();
+    assert_eq!(failure.prune.pruned.len(), 1, "{:?}", failure.prune.pruned);
+    assert!(failure.prune.pruned[0].ends_with(&oldest));
+    assert_eq!(names(&root).len(), 2, "no staging left");
+}
