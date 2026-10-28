@@ -288,3 +288,55 @@ fn drive_outcome_carries_the_refusal_detail() {
     assert_eq!(outcome.refusals.len(), 1, "{outcome:?}");
     assert_eq!(outcome.refusals[0].1, "composer is nonempty");
 }
+
+/// Refuses like `ExplainingRefuser`, then makes the attempt's record fail, so
+/// the drive returns an error after the refusal.
+struct RefuserThenFailedRecord {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+impl NotificationPort for RefuserThenFailedRecord {
+    fn attempt_wake(
+        &self,
+        _: WakeReservation,
+        _: &HostCallContext,
+    ) -> Result<WakeOutcome, ApiError> {
+        self.events.lock().unwrap().push("fail-complete");
+        Ok(WakeOutcome::Refused(crate::ports::RefusalCause::Unsafe))
+    }
+    fn take_refusal(&self, _: &SeatId) -> Option<String> {
+        Some("composer is nonempty".into())
+    }
+}
+
+/// Kills: a failed drive dropping the refusal details it already collected
+/// (ht-78f6 follow-up: the wake lane then logs only the lane error).
+#[test]
+fn failed_drive_keeps_the_refusal_detail() {
+    let wake = fake_wake_store();
+    let notifier = RefuserThenFailedRecord {
+        events: wake.events.clone(),
+    };
+    let due = FakeDeadlinePort {
+        clock: wake.clock.clone(),
+        due_calls: AtomicU64::new(0),
+    };
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &wake,
+        &notifier,
+        RetryConfig::default(),
+        daemon_boot(),
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(5_000),
+        cancellation: Cancellation::default(),
+    };
+    let mut outcome = WakeDriveOutcome::default();
+    let result = scheduler.drive_wakes_into(&budget, &mut outcome);
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(
+        outcome.refusals,
+        vec![(SeatId::new("seat"), "composer is nonempty".to_owned())]
+    );
+}

@@ -369,6 +369,22 @@ impl Matrix {
         logs.pop().unwrap_or_default()
     }
 
+    /// The daemon's wake-lane lines (`lane wakes: refused SEAT (CHECK): ...`,
+    /// verification), so a wake timeout names the refusing check in the test
+    /// output itself.
+    fn wake_lane_log(&self) -> Vec<String> {
+        fs::read_to_string(
+            self.host
+                .root()
+                .join("st/herdr/plugins/herdr-threads/node/daemon.log"),
+        )
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains("lane wakes"))
+        .map(str::to_owned)
+        .collect()
+    }
+
     /// Submit one line to the stand-in in `pane` (a turn) and wait until the
     /// turn ended; returns the turn's events.
     fn turn(&self, pane: &str, line: &str) -> Vec<Value> {
@@ -457,6 +473,11 @@ impl Drop for Matrix {
             }
             for (source, name) in [
                 (self.host.root().join("server-1.out"), "server.log"),
+                // Herdr's own log (its `agent prompt` answers), not its stdout banner.
+                (
+                    self.host.root().join("cfg/herdr/herdr-server.log"),
+                    "herdr-server.log",
+                ),
                 (
                     self.host
                         .root()
@@ -1055,7 +1076,8 @@ fn herdr_release_wake() {
     let diagnose = || {
         let out = m.ht_out(&["diagnostics", "--seat", &agent]);
         format!(
-            "diagnostics: {} {} log: {:?}",
+            "daemon: {:?} diagnostics: {} {} log: {:?}",
+            m.wake_lane_log(),
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr),
             m.log_of(&agent_pane)
@@ -1522,7 +1544,11 @@ fn herdr_release_move() {
                     if wakes() > before {
                         Ok(())
                     } else {
-                        Err(format!("{:?}", m.log_of(&agent_env)))
+                        Err(format!(
+                            "daemon: {:?} log: {:?}",
+                            m.wake_lane_log(),
+                            m.log_of(&agent_env)
+                        ))
                     }
                 });
                 // The per-seat wake spacing before the next step's wake.
