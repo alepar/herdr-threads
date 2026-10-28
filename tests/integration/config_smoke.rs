@@ -624,15 +624,19 @@ fn p0_to_a_harness_without_idle_wake_warns_each_sender_once_and_doctor_lists_it(
         &["send", "--seat", &seat, "--body", "now", "--nudge"],
     );
     assert_eq!(nudged, warning, "the direct target is p0");
-    let (created, _) = person("w1:p1", &["thread", "create", "--topic", "no wake"]);
+    // Another sender's first p0 is an invitation: it warns, and its later `--nudge` does not.
+    let (created, _) = person("w1:p2", &["thread", "create", "--topic", "no wake"]);
     let thread = created["result"]["data"].as_str().unwrap().to_owned();
-    let (_, invited) = person("w1:p1", &["invite", &thread, "--seat", &seat]);
-    assert_eq!(invited, "", "reported once per sender and seat");
-    let (_, other) = person(
+    let (_, invited) = person("w1:p2", &["invite", &thread, "--seat", &seat]);
+    assert_eq!(
+        invited, warning,
+        "an invitation is p0; each sender gets its own report"
+    );
+    let (_, repeat) = person(
         "w1:p2",
         &["send", "--seat", &seat, "--body", "now", "--nudge"],
     );
-    assert_eq!(other, warning, "another sender gets its own report");
+    assert_eq!(repeat, "", "reported once per sender and seat");
 
     let doctor = daemon.json(&["doctor"]);
     let rows = doctor["doctor"]["wake"]["seats"]
