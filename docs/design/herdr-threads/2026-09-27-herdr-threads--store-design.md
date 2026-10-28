@@ -128,7 +128,7 @@ Due scans retain independent invitation/receipt physical cursors, captured bound
 
 ## Idempotency and provenance
 
-Operation keys scope to durable seat or explicit verified operator identity, not disposable transcript. Digests include semantic operation/arguments, excluding short-lived credentials. New mutations require current authorization; replay of a committed matching operation may return the original result without repeating the mutation. A successor can inspect old provenance without reattribution. Payload mismatch rejects. Intentional repeated send uses a new key. Nothing here changes CLI journal retention: intent stays until complete committed output succeeds, including permanently unauthorized entries (rejected F5).
+Operation keys scope to durable seat or explicit verified operator identity, not disposable transcript. Digests include semantic operation/arguments, excluding short-lived credentials. New mutations require current authorization; replay of a committed matching operation may return the original result without repeating the mutation. A successor can inspect old provenance without reattribution. Payload mismatch rejects. Intentional repeated send uses a new key. Nothing here changes CLI journal retention: intent stays until complete committed output succeeds, except a definitively rejected first submission (CLI design "Durable client intent").
 
 ## Bounded reads and complete collections
 

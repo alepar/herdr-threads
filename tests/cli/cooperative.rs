@@ -2273,6 +2273,8 @@ mod scoped_runtime {
         capabilities: Arc<Mutex<Vec<String>>>,
         /// The `resolve address` answer (`@MACHINE`); `None` answers `unsupported`.
         address: Arc<Mutex<Option<crate::protocol::sync_admin::AddressReply>>>,
+        /// A correlated refusal of `OperatorOrphanInvite`; `None` answers success.
+        orphan_invite_refusal: Arc<Mutex<Option<ErrorCode>>>,
         stop: Arc<AtomicBool>,
         workers: Vec<thread::JoinHandle<()>>,
     }
@@ -2314,6 +2316,7 @@ mod scoped_runtime {
                 crate::protocol::capabilities::INBOX_BATCH.to_owned(),
             ]));
             let address = Arc::new(Mutex::new(None));
+            let orphan_invite_refusal = Arc::new(Mutex::new(None));
             let stop = Arc::new(AtomicBool::new(false));
             let host_stop = Arc::clone(&stop);
             let host_current = Arc::clone(&current);
@@ -2357,6 +2360,7 @@ mod scoped_runtime {
             let daemon_seats = Arc::clone(&seats);
             let daemon_capabilities = Arc::clone(&capabilities);
             let daemon_address = Arc::clone(&address);
+            let daemon_orphan_invite_refusal = Arc::clone(&orphan_invite_refusal);
             let seen = Arc::clone(&calls);
             let journal_seen = Arc::clone(&journals);
             let intents = paths.node_dir.join("intents");
@@ -2416,7 +2420,12 @@ mod scoped_runtime {
                             Ok(CommandResult::SeatResolved(SeatId::new(id)))
                         }
                         Command::OperatorOrphanInvite(_) => {
-                            Ok(CommandResult::OperatorInvited(InvitationId::new("i123")))
+                            match daemon_orphan_invite_refusal.lock().unwrap().clone() {
+                                Some(code) => Err(ApiError::new(code, "fixture refuses invite")),
+                                None => {
+                                    Ok(CommandResult::OperatorInvited(InvitationId::new("i123")))
+                                }
+                            }
                         }
                         Command::OperatorRebind(_) | Command::OperatorFreshSeat(_) => {
                             Err(ApiError::not_found("fixture refuses repair"))
@@ -2526,6 +2535,7 @@ mod scoped_runtime {
                 snapshot,
                 capabilities,
                 address,
+                orphan_invite_refusal,
                 stop,
                 workers: vec![host_worker, daemon_worker],
             }
@@ -2718,6 +2728,74 @@ mod scoped_runtime {
                 .iter()
                 .any(|entry| entry.to_string().contains("pending-pane-selector"))
         );
+    }
+
+    fn intent_files(runtime: &Runtime) -> Vec<Value> {
+        fs::read_dir(runtime.paths.node_dir.join("intents"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "intent"))
+            .map(|entry| {
+                let text = fs::read_to_string(entry.path()).unwrap();
+                serde_json::from_str::<Value>(text.split_once('\n').unwrap().1).unwrap()
+            })
+            .collect()
+    }
+
+    /// ht-2cbu: a definitive refusal of an operator command's first submission
+    /// (a timer retrying a refused orphan invite left one intent per attempt)
+    /// discards its intent, as a cooperative one does; an unknown outcome or a
+    /// transient refusal keeps it, and a retry of a kept intent never discards.
+    #[test]
+    fn operator_first_submission_refusal_discards_intent_only_when_definitive() {
+        let invite = [
+            "human",
+            "invite",
+            "t123",
+            "--tab",
+            "tryout",
+            "--pane",
+            "alice",
+            "--operator",
+        ];
+        let runtime = Runtime::new(snapshot());
+        *runtime.orphan_invite_refusal.lock().unwrap() = Some(ErrorCode::ThreadNotOrphaned);
+        assert!(
+            matches!(runtime.run(&invite), Err(crate::cli::RunError::Api(error)) if error.code == ErrorCode::ThreadNotOrphaned)
+        );
+        assert!(
+            runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| matches!(call, Command::OperatorOrphanInvite(_)))
+        );
+        assert_eq!(intent_files(&runtime), Vec::<Value>::new());
+
+        for code in [ErrorCode::UnknownOutcome, ErrorCode::StoreBusy] {
+            let runtime = Runtime::new(snapshot());
+            *runtime.orphan_invite_refusal.lock().unwrap() = Some(code.clone());
+            assert!(
+                matches!(runtime.run(&invite), Err(crate::cli::RunError::Api(ref error)) if error.code == code)
+            );
+            let kept = intent_files(&runtime);
+            assert_eq!(kept.len(), 1, "{code:?}: {kept:?}");
+            assert_eq!(kept[0]["kind"], "operator_orphan_invite", "{code:?}");
+
+            // A retry of the kept intent, now definitively refused, keeps it.
+            *runtime.orphan_invite_refusal.lock().unwrap() = Some(ErrorCode::ThreadNotOrphaned);
+            let journal =
+                crate::cli::journal::Journal::open(runtime.paths.node_dir.join("intents")).unwrap();
+            let reference = journal.page(&Default::default()).unwrap().items[0]
+                .recovery_ref
+                .clone();
+            assert!(
+                matches!(runtime.run(&["human", "retry", reference.as_str()]), Err(crate::cli::RunError::Api(error)) if error.code == ErrorCode::ThreadNotOrphaned)
+            );
+            assert_eq!(intent_files(&runtime), kept, "{code:?}: retry discarded");
+        }
     }
 
     #[test]

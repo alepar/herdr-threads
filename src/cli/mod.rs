@@ -3097,7 +3097,7 @@ fn run_operator<W: Write>(
     require_operator_actor(parsed)?;
     let (instance, _, client) = connect(paths, clock)?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
-    retry::run_new_api_to_writer(
+    retry::run_new_api_to_writer_discarding_rejection(
         &journal,
         IntentScope::Operator {
             instance: instance.to_string(),
@@ -3112,7 +3112,11 @@ fn run_operator<W: Write>(
             ))
         },
         |command| {
-            client.call_with_output(command, &parsed.output, &cooperative_budget(clock.as_ref()))
+            client.call_with_output_definitive(
+                command,
+                &parsed.output,
+                &cooperative_budget(clock.as_ref()),
+            )
         },
         &parsed.output,
         writer,
