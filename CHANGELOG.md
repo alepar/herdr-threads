@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.6.0
+
+One-way store upgrade to node schema 10 (migration 0010, table `peer_requests`). Older binaries, 2.5.0 included, then refuse the store. The installer backs it up first; pass `--no-backup` only if you have your own. The peer wire gains two capability-gated frame uses: `addr_resolve` with a check target (cap `addr.check.v1`) and the `launch_request`/`launch_reply` pair (cap `peer.launch.v1`). Both are sent only to peers that advertise them, so an older peer refuses a remote handoff or launch by name instead of misreading it. No setup re-run is needed.
+
+### Added
+
+- **Hand off into a seat on another machine.** `handoff --existing --seat S` accepts a seat on another machine: an exact seat ID, `SEAT_ID@MACHINE` or `PATH@MACHINE`.
+  - The thread, invitation, task and ACK request stay with the sender's node, and the recipient's machine delivers them as it delivers any send.
+  - Before authoring, the CLI asks that machine whether the seat can take a handoff now, and refuses if it can't.
+  - If that machine can't answer, the handoff goes ahead on the replicated view with a stderr note.
+- **Launch agents on another machine.** `launch --pane PANE@MACHINE`, `handoff --pane PANE@MACHINE` and `handoff --new-tab LABEL --space SPACE@MACHINE --cwd DIR` ask that machine to launch the agent there.
+  - The machine decides against its own view and records the request before acting. It runs its own binary with a scrubbed environment, and a new tab's label ends in `[from <tag>]`.
+  - A rerun after a dropped link resumes the same request and never launches twice. A remote handoff then continues as `handoff --existing --seat <launched seat>`.
+  - A restarted machine fails its running requests and never resumes them.
+  - `daemon.log` and `peer list` (`peer_launches=N last=STATE:ID`) show peer-requested launches per node.
+  - Any linked node can launch agents on this one. TRUST-POLICY.md records this as an accepted limit equivalent to ssh access between the two machines.
+  - `--harness-binary`, `--name` and `--profile-dir` are refused for a remote launch.
+- **Wake refusal reasons in `daemon.log`.** A wake the daemon refuses logs `lane wakes: refused SEAT (CHECK): DETAIL`, rate-limited per seat and check.
+
+### Changed
+
+- In `launch` and `handoff`, an `@` in `--pane` or `--space` always names a machine. To name a local pane whose label contains `@`, pass its pane ID.
+- `handoff --existing --pane PANE@MACHINE` is refused; use `--seat` instead.
+
+### Fixed
+
+- **Tests.** `two_nodes_link_and_converge` waits for two-way convergence (a CI flake).
+
 ## v2.5.0
 
 No schema change (the store stays at node schema 9). The peer wire gains one capability-gated frame pair (`addr_resolve`/`addr_resolved`, cap `addr.resolve.v1`), which is sent only to peers that advertise it. No setup re-run is needed.
