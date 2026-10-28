@@ -48,14 +48,19 @@
 # `harness_claude`, `ClaudeContract`, `CLAUDE_CONFIG_DIR`, `NotClaude`, `~/.gemini`; not
 # `strategy`, `legacy`, `claudette`, `Agyle`.
 #
-# Prose literals: inside a string literal whose contents hold a space (text a model or operator
-# reads, not a data key), these tokens are also flagged: the native hook-event and
-# harness-marker names in MECHANISMS (whole token), and design references: `§`, requirement
-# ids `[ACDPR]N` / `[ACDPR]NN` (whole token), bead ids `ht-xxx` (three [a-z0-9], not followed
-# by [a-z0-9-]) and `docs/superpowers`. A bare literal such as "SessionStart" is data and is
-# not flagged; identifiers and comments never are. Clap help comes from `///` doc comments,
-# which this scan cannot see: the in-crate test every_help_page_is_harness_neutral
-# (tests/cli/commands.rs) renders every --help page and checks it instead.
+# Prose literals: a string literal whose contents hold a space (text a model or operator reads,
+# not a data key) is prose; a literal spanning lines is judged as a whole, after decoding the
+# \n, \r, \t and \u{a7} escapes. Inside prose these tokens are also flagged: the native
+# hook-event and harness-marker names in MECHANISMS (whole token), and design references: `§`,
+# requirement ids `[ACDPR]N` / `[ACDPR]NN` (whole token; `C0`/`C1` followed by "control" or
+# `/C1 control` is the control-character class, not a reference), bead ids `ht-` plus 3-5
+# [a-z0-9] (not after [A-Za-z0-9-], not followed by `-`) and `docs/superpowers`. A bare
+# literal such as "SessionStart" is data and is not flagged; identifiers and comments never are.
+# Limits: text composed at run time escapes the prose test when each literal piece is bare: a
+# const or `format!`/`concat!` argument such as "SessionStart" spliced into prose elsewhere.
+# Clap help comes from `///` doc comments, which this scan cannot see: the in-crate test
+# every_help_page_is_harness_neutral (tests/cli/commands.rs) renders every --help page and
+# checks it instead.
 #
 # Lexer (POSIX awk, runs on one-true-awk and gawk/mawk): keeps state across lines: normal,
 # "…" string (\ escapes, b"…"), raw string r#*"…"#*, nested /* */ comment. `//` starts a
@@ -85,7 +90,7 @@ export LC_ALL=C
 ALIASES="agy:antigravity+gemini"
 PLANNED_IDS="agy"
 # Native hook-event and harness-marker names, flagged only inside prose literals (see header).
-MECHANISMS="CLAUDECODE PostToolUse PreCompact PreInvocation PreToolUse SessionEnd SessionStart SubagentStart SubagentStop UserPromptSubmit post_llm_call pre_llm_call"
+MECHANISMS="CLAUDECODE PostToolUse PreCompact PreInvocation PreToolUse SessionEnd SessionStart SubagentStart SubagentStop UserPromptSubmit on_session_end on_session_finalize on_session_reset on_session_start post_llm_call post_tool_call pre_llm_call subagent_start subagent_stop"
 
 root=""
 allowlist=""
@@ -355,6 +360,7 @@ function scan_piece(q,    seg, rest, tok, k, n, m, prev) {
     while (match(rest, /[A-Za-z0-9_]+/)) {
         tok = substr(rest, RSTART, RLENGTH)
         rest = substr(rest, RSTART + RLENGTH)
+        if (tok ~ /^C[01]$/ && rest ~ /^(\/C1)? control/) continue
         if ((tok in mech) || tok ~ /^[ACDPR][0-9][0-9]?$/) report(q, tok)
     }
     if (index(seg, "\302\247")) report(q, "\302\247")

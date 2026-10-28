@@ -4639,66 +4639,71 @@ fn seat_inspect_binding_details_refuses_an_older_daemon_before_query() {
 }
 
 /// Every `--help` page is harness-neutral: no harness name, native hook event or design
-/// reference in core-authored text. Allowed: harness ids as data (`[possible values: ...]`),
-/// adapter-owned sentences (found verbatim in an adapter's source), the registry-generated
-/// spans in `SPANS` and the harness-keyed paragraphs in `KEYED`. Hidden args are not
-/// rendered, so their doc comments are outside this test's reach.
+/// reference in core-authored text. Removed before the check, as exact strings only: the
+/// `[possible values: ...]` lists, every string an adapter supplies to help (its text
+/// fragments, config-root hints, native-options variables, guard-marker names and the
+/// `--kind` list built from them) and the frozen wire spellings in `FROZEN`. Whole lines are
+/// exempt only under a `KEYED` prefix. Hidden args are not rendered, so their doc comments
+/// are outside this test's reach.
 #[test]
 fn every_help_page_is_harness_neutral() {
     use clap::CommandFactory;
-    // (span start, span end, reason): the span is removed and the rest of the line is checked.
-    const SPANS: &[(&str, &str, &str)] = &[
-        ("HERDR_THREADS_", "_OPTS", "HERDR_THREADS_<ID>_OPTS name, generated from the registry"),
-        ("--kind claude|", " ", "--kind id list, generated from the registry"),
-        ("agent markers (", ")", "agent-marker list, generated from the adapters"),
-        ("{\"claude\": ID", "}}", "contract-id --json keys: frozen v1 wire shape"),
-        ("hook file of the ", " the agent", "config-dir variable list, generated from the adapters"),
-        ("(wire code not_claude)", ")", "not_claude: frozen watch wire code"),
+    // (exact text, reason)
+    const FROZEN: &[(&str, &str)] = &[
+        (
+            "`{\"claude\": ID, \"codex\": ID, \"normalize\": {...}}`",
+            "contract-id --json keys: frozen v1 wire shape",
+        ),
+        ("(wire code not_claude)", "not_claude: frozen watch wire code"),
     ];
-    // (paragraph prefix, reason): a paragraph keyed to one harness, exempt as a whole.
+    // (line prefix, reason): a paragraph keyed to one harness, exempt as a whole.
     const KEYED: &[(&str, &str)] =
         &[("setup (claude): ", "flag honoured only by `setup claude`, labelled with its harness")];
     const MECHANISMS: &[&str] = &[
         "CLAUDECODE", "PostToolUse", "PreCompact", "PreInvocation", "PreToolUse", "SessionEnd",
-        "SessionStart", "SubagentStart", "SubagentStop", "UserPromptSubmit", "post_llm_call",
-        "pre_llm_call",
+        "SessionStart", "SubagentStart", "SubagentStop", "UserPromptSubmit", "on_session_end",
+        "on_session_finalize", "on_session_reset", "on_session_start", "post_llm_call",
+        "post_tool_call", "pre_llm_call", "subagent_start", "subagent_stop",
     ];
     let registry = crate::harness::registry::builtins();
     let ids: Vec<&str> = registry.registrations().iter().map(|r| r.metadata().id).collect();
     let mut names: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
     names.extend(["antigravity".into(), "gemini".into()]);
 
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/harness");
-    let mut adapter_text = String::new();
-    let mut stack = vec![root.clone()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            let rel = path.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
-            let stem = rel.split('/').next().unwrap().trim_end_matches(".rs");
-            let owned = ids
-                .iter()
-                .any(|id| stem == *id || stem.starts_with(&format!("{id}_")));
-            if path.is_dir() {
-                if owned {
-                    stack.push(path);
-                }
-            } else if owned && rel.ends_with(".rs") {
-                adapter_text.push_str(&std::fs::read_to_string(&path).unwrap());
-                adapter_text.push('\n');
+    // Every string an adapter supplies to help, longest first so a fragment is removed whole.
+    let mut supplied: Vec<String> = Vec::new();
+    for registration in registry.registrations() {
+        let text = registration.text();
+        for fragment in [
+            text.setup_scope,
+            text.setup_foreground,
+            text.setup_notes,
+            text.launch_notes,
+            text.config_root_hint,
+        ] {
+            if !fragment.is_empty() {
+                supplied.push(fragment.to_owned());
             }
         }
     }
-    // A sentence piece found verbatim in adapter source, optionally after a leading `<id>` label.
-    let adapter_owned = |piece: &str| {
-        let mut t = piece.trim();
-        if let Some((head, rest)) = t.split_once(char::is_whitespace)
-            && ids.contains(&head.trim_end_matches(':'))
-        {
-            t = rest.trim();
-        }
-        !t.is_empty() && adapter_text.contains(t)
-    };
+    supplied.push(crate::cli::help::config_root_hints(registry));
+    supplied.extend(
+        crate::cli::launch::registered_options_keys(registry, |_| true)
+            .into_iter()
+            .map(str::to_owned),
+    );
+    let markers: Vec<_> = registry.person_guard_markers().map(|m| m.name).collect();
+    supplied.push(format!("agent markers ({})", markers.join(", ")));
+    let kinds: Vec<_> = ids
+        .iter()
+        .copied()
+        .filter(|id| crate::harness::launch::bootstrap_target(registry, id).is_some())
+        .collect();
+    supplied.push(format!("--kind {}", kinds.join("|")));
+    supplied.extend(FROZEN.iter().map(|(text, _)| text.to_string()));
+    supplied.sort_by_key(|text| std::cmp::Reverse(text.len()));
+    supplied.dedup();
+
     // Components split on `_` and case boundaries, as scripts/check-harness-neutral does.
     let names_harness = |token: &str| {
         let chars: Vec<char> = token.chars().collect();
@@ -4729,6 +4734,11 @@ fn every_help_page_is_harness_neutral() {
     };
     let id_char = |c: &u8| c.is_ascii_lowercase() || c.is_ascii_digit();
     let hits = |text: &str| {
+        // `C0`/`C1` before "control" name the control-character class, not a reference.
+        let text = &text
+            .replace("C0/C1 control", "")
+            .replace("C0 control", "")
+            .replace("C1 control", "");
         let bytes = text.as_bytes();
         let bead = text.match_indices("ht-").any(|(i, _)| {
             let n = bytes[i + 3..].iter().take_while(|c| id_char(c)).count();
@@ -4742,6 +4752,49 @@ fn every_help_page_is_harness_neutral() {
             || text.contains("docs/superpowers")
             || bead
     };
+    // The offending lines of one rendered page; `used` collects the exemptions that applied.
+    let check_page = |page: &str, used: &mut std::collections::BTreeSet<String>| {
+        let mut text = page.to_owned();
+        // Only a closed list on one line; an unclosed one stays and is checked.
+        while let Some(start) = text.find("[possible values:") {
+            let Some(len) = text[start..].find([']', '\n']).filter(|&e| text[start + e..].starts_with(']'))
+            else {
+                break;
+            };
+            text.replace_range(start..start + len + 1, " ");
+        }
+        for exact in &supplied {
+            if text.contains(exact.as_str()) {
+                text = text.replace(exact.as_str(), " ");
+                used.insert(exact.clone());
+            }
+        }
+        let mut offending = Vec::new();
+        for line in text.lines().filter(|line| hits(line)) {
+            match KEYED.iter().find(|(p, _)| line.trim().starts_with(p)) {
+                Some((prefix, _)) => {
+                    used.insert(prefix.to_string());
+                }
+                None => offending.push(line.trim().to_owned()),
+            }
+        }
+        offending
+    };
+
+    // The check itself: core text next to or inside exempted shapes is still caught.
+    let mut scratch = std::collections::BTreeSet::new();
+    for core in [
+        "claude: SessionStart",
+        "hermes: pre_llm_call",
+        "codex: CODEX_HOME",
+        "Restart Codex first",
+        "the Claude Code agent",
+        "HERDR_THREADS_CLAUDE_OPTS prepend; then Claude runs SessionStart",
+        "see C1 and spec \u{a7}2 (ht-xe3v)",
+        "[possible values: a, b\nClaude SessionStart",
+    ] {
+        assert!(!check_page(core, &mut scratch).is_empty(), "not flagged: {core}");
+    }
 
     let mut used = std::collections::BTreeSet::new();
     let mut stack = vec![(String::new(), Cli::command())];
@@ -4749,33 +4802,9 @@ fn every_help_page_is_harness_neutral() {
     let mut pages = 0;
     while let Some((path, mut cmd)) = stack.pop() {
         pages += 1;
+        let at = if path.is_empty() { "(root)".to_owned() } else { path.clone() };
         let help = cmd.render_long_help().to_string();
-        for line in help.lines() {
-            if !hits(line) {
-                continue;
-            }
-            if let Some((prefix, _)) = KEYED.iter().find(|(p, _)| line.trim().starts_with(p)) {
-                used.insert(*prefix);
-                continue;
-            }
-            let mut text = line.to_string();
-            for (start, end, _) in std::iter::once(&("[possible values:", "]", "")).chain(SPANS) {
-                while let Some(s) = text.find(start) {
-                    let from = s + start.len();
-                    let e = text[from..].find(end).map_or(text.len(), |e| from + e + end.len());
-                    text.replace_range(s..e, " ");
-                    used.insert(*start);
-                }
-            }
-            let rest: Vec<&str> = text
-                .split(". ")
-                .filter(|piece| hits(piece) && !adapter_owned(piece))
-                .collect();
-            if !rest.is_empty() {
-                let at = if path.is_empty() { "(root)" } else { &path };
-                violations.push(format!("{at}: {}", line.trim()));
-            }
-        }
+        violations.extend(check_page(&help, &mut used).into_iter().map(|line| format!("{at}: {line}")));
         for sub in cmd.get_subcommands() {
             if sub.get_name() == "help" {
                 continue;
@@ -4789,11 +4818,11 @@ fn every_help_page_is_harness_neutral() {
         }
     }
     assert!(pages > 50, "rendered only {pages} help pages");
-    let stale: Vec<&str> = SPANS
+    let stale: Vec<&str> = FROZEN
         .iter()
-        .map(|(s, _, _)| *s)
-        .chain(KEYED.iter().map(|(p, _)| *p))
-        .filter(|s| !used.contains(s))
+        .map(|(text, _)| *text)
+        .chain(KEYED.iter().map(|(prefix, _)| *prefix))
+        .filter(|text| !used.contains(*text))
         .collect();
     assert!(stale.is_empty(), "stale help exemptions: {stale:?}");
     violations.sort();

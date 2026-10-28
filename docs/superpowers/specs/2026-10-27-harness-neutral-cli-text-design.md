@@ -23,7 +23,7 @@ binary), plus a scan of core string literals that read as prose (contain a space
 | H1 | `src/cli/commands.rs:960` | `--agent-id`: "inserted by herdr-threads' Claude PreToolUse hook (spec §1) ... no behaviour change until session bindings land" (global: on all 83 subcommand pages) | `hide = true` (plumbing the harness integration inserts; agents never type it) and neutral text |
 | H2 | `src/cli/commands.rs:1097` | `setup` about: "Claude: `$CLAUDE_CONFIG_DIR/settings.json` ... Codex: `$CODEX_HOME/hooks.json`" (two of four harnesses) | dropped; the per-harness scope list in the long help already comes from each adapter |
 | H3 | `src/cli/commands.rs:1120` | `launch` about: "Start Codex or Claude" | "Start a registered agent harness" |
-| H4 | `src/cli/commands.rs:1290` | `harness-version normalize`: examples `codex-cli 0.158.0`, `2.1.286 (Claude Code)` | points at `contract-id --json`, which lists each harness's accepted forms |
+| H4 | `src/cli/commands.rs:1290` | `harness-version normalize`: examples `codex-cli 0.158.0`, `2.1.286 (Claude Code)` | points at `contract-id --json`, which shows accepted forms under `normalize` |
 | H5 | `src/cli/commands.rs:1834`, `:1869` | `--harness-binary`: "default: the first `claude`/`codex` on PATH" | "default: the harness's executable on PATH" |
 | H6 | `src/cli/help.rs:97`, `:102` | `launch` long help: "SessionStart hook" | "session-start hook" |
 
@@ -35,6 +35,7 @@ binary), plus a scan of core string literals that read as prose (contain a space
 | O2 | `src/daemon/health.rs:466` | doctor/health line: "reattach when their session claims them (C1)" | design id dropped |
 | O3 | `src/harness/launch.rs:742` | launch refusal: "(TRUST-POLICY A4)" | policy id dropped |
 | O4 | `src/store/service_controls.rs:177` | error: "notification publication belongs to C3" | design id dropped |
+| O5 | `src/cli/commands.rs:2060` | `--hooks-only` refusal: "unsetup removes the mod with the hooks" (the mod is one harness's) | "unsetup removes everything setup installed" |
 
 ### Kept (allowed by the task's rules)
 
@@ -61,11 +62,17 @@ binary), plus a scan of core string literals that read as prose (contain a space
      `docs/superpowers`.
    Bare literals (`"SessionStart"`), identifiers and comments stay unflagged. Same
    allowlist file and categories; no new entries were needed.
-2. A test (`every_help_page_is_harness_neutral`, `tests/cli/commands.rs`) renders long help for every command in `Cli::command()` and fails on a
-   harness id or alias, a hook-event name or a design reference, after removing
-   `[possible values: ...]`, registry-generated lists, and lines that occur verbatim in
-   an adapter-owned source file. Remaining exceptions sit in a reasoned in-test table.
+2. A test (`every_help_page_is_harness_neutral`, `tests/cli/commands.rs`) renders long
+   help for every command and fails on a harness id or alias (case-boundary split), a
+   hook-event name or a design reference. Before the check it removes, as exact strings
+   only, `[possible values: ...]` lists and every string an adapter supplies to help
+   (text fragments, config-root hints, native-options variables, guard-marker names, the
+   `--kind` list) plus two frozen wire spellings; a line is exempt as a whole only under the
+   `setup (claude): ` prefix. Stale exemptions fail; built-in negative cases (`claude:
+   SessionStart`, a bare `Codex`, harness text after a generated variable) must be flagged.
    This backstops doc comments, which the source scan cannot see.
+3. Known limit of the source scan: text composed at run time escapes the prose test when
+   each literal piece is bare (a const or `format!`/`concat!` argument spliced into prose).
 
 ## Acceptance criteria
 

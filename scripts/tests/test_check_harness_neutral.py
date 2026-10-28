@@ -464,6 +464,19 @@ class ProseLiteralTests(Case):
     def test_multiline_data_literal_not_flagged(self):
         self.assertViolations(self.flagged('let a = r#"SessionStart\nPreToolUse"#;\n'), 0)
 
+    def test_escaped_section_sign_and_hermes_events(self):
+        src = 'let a = "see spec \\u{a7}1 now";\nlet b = "the on_session_start hook runs";\n'
+        p = self.flagged(src)
+        self.assertViolations(p, 2)
+        self.assertIn("src/cli/x.rs:1: \u00a7:", p.stdout)
+        self.assertIn("src/cli/x.rs:2: on_session_start:", p.stdout)
+
+    def test_control_character_class_not_a_reference(self):
+        src = 'let a = "strips C0/C1 control characters and C1 controls";\nlet b = "per C1 rules";\n'
+        p = self.flagged(src)
+        self.assertViolations(p, 1)
+        self.assertIn("src/cli/x.rs:2: C1:", p.stdout)
+
     def test_test_code_skipped(self):
         src = '#[cfg(test)]\nmod t {\n    const E: &str = "the SessionStart hook (C1)";\n}\n'
         self.assertViolations(self.flagged(src), 0)

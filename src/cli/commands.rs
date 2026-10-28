@@ -1285,7 +1285,7 @@ enum SummarySub {
 #[derive(Subcommand)]
 enum HarnessVersionSub {
     /// Print the canonical bare `MAJOR.MINOR.PATCH` of a raw `--version`
-    /// string (`contract-id --json` lists each harness's accepted forms under `normalize`);
+    /// string (`contract-id --json` shows accepted forms under `normalize`);
     /// exits non-zero for a string it does not recognize.
     Normalize {
         harness: String,
@@ -2057,7 +2057,7 @@ fn setup_action(
             }))
     {
         return Err(invalid(
-            "--hooks-only applies to `setup <harness>` only, for a harness that declares it (unsetup removes the mod with the hooks)",
+            "--hooks-only applies to `setup <harness>` only, for a harness that declares it (unsetup removes everything setup installed)",
         ));
     }
     if args.keep_prompt_suggestions {
