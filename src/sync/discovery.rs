@@ -883,6 +883,47 @@ mod tests {
         assert_eq!(rig.store.retires.lock().unwrap().as_slice(), [true]);
     }
 
+    #[test]
+    fn the_sqlite_store_reports_rows_kept_mid_dial() {
+        use crate::store::sync_dial_targets::DialTransition;
+        use crate::sync::sync_store::SyncStorePort;
+        let iso = crate::test_support::isolation::TestIsolation::new("discovery-deferred");
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let store = crate::store::SqliteStore::new(
+            crate::store::connection::StoreContext::new(iso.path("store.db"), clock.clone())
+                .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap();
+        let budget = CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 10_000),
+            cancellation: Cancellation::default(),
+        };
+        let found = [("stray".to_owned(), DiscoverySource::HerdrRemoteProcess)];
+        store.upsert_discovered(&found, false, &budget).unwrap();
+        let id = store.enabled_targets(&budget).unwrap()[0].target_id;
+        store
+            .record_transition(id, &DialTransition::Dialing, clock.utc_now(), &budget)
+            .unwrap();
+        let tally = store.upsert_discovered(&[], true, &budget).unwrap();
+        assert_eq!((tally.retired, tally.deferred), (0, 1));
+        store
+            .record_transition(
+                id,
+                &DialTransition::Backoff {
+                    attempts: 1,
+                    next_at: 0,
+                    error: "unresolvable".into(),
+                },
+                clock.utc_now(),
+                &budget,
+            )
+            .unwrap();
+        let tally = store.upsert_discovered(&[], true, &budget).unwrap();
+        assert_eq!((tally.retired, tally.deferred), (1, 0));
+    }
+
     #[tokio::test]
     async fn a_row_kept_mid_dial_is_retired_on_a_later_pass() {
         let rig = rig(true, machines(&[]), vec!["r1".into()]);
