@@ -284,6 +284,9 @@ LINUX_DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folde
 # waits for a settled recipient; it is Claude's onboarding UI, not a herdr-threads outcome.
 HARNESS_NOTICE = re.compile(r"Teach auto mode about your environment\?")
 LINUX_LOGIN = re.compile(r"Not logged in|Please run /login|Select login method")
+# A harness that refuses its credential at startup and exits (Codex 0.163.0 on 2026-10-28, ht-8f0g: "account/read
+# failed: workspace routing discovery unauthorized (401)"): no agent is ever detected, so the start fails at once.
+AUTH_REJECTED = re.compile(r"account/read failed|unauthorized \(401\)")
 HARNESS_MODES = ("macos", "linux")
 CODEX_SANDBOXED_ARGS = "--approve-for-me"
 CODEX_BYPASS_ARGS = "--dangerously-bypass-approvals-and-sandbox"
@@ -611,6 +614,8 @@ def agy_composer_up(screen):
 def linux_startup_refusal(screen, status):
     """The linux mode: why a freshly started agent must not be prompted, or None. Checked on the whole visible
     screen: the theme picker reports `idle` and its prompt sits far above the screen's last 400 characters."""
+    if AUTH_REJECTED.search(screen):
+        return "auth rejected"
     if LINUX_LOGIN.search(screen):
         return "is not logged in (set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)"
     if status == "blocked" or LINUX_DIALOG.search(screen):
@@ -1505,18 +1510,27 @@ class Recipient:
             return "idle" if hermes_idle(screen) else "working"
         return self.run.herdr("agent", "get", self.pane)["result"]["agent"]["agent_status"]
 
+    def read(self, source, *extra):
+        """The pane's `source` snapshot: `agent read`, else `pane read` (once the agent has exited, e.g. at startup,
+        `agent read` answers agent_not_found and only the pane still shows why), else None."""
+        for kind in ("agent", "pane"):
+            data = self.run.herdr(kind, "read", self.pane, "--source", source, *extra, check=False)
+            if "raw" in data:
+                return data["raw"]
+        return None
+
+    def visible(self):
+        return self.read("visible") or ""
+
     def screen(self, lines=400):
-        data = self.run.herdr("agent", "read", self.pane, "--source", "recent-unwrapped", "--lines", str(lines),
-                              check=False)
-        if "raw" in data:
-            return data["raw"]
-        return self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        data = self.read("recent-unwrapped", "--lines", str(lines))
+        return data if data is not None else self.visible()
 
     def dismiss_notice(self):
         """Cancel Claude's between-turn notice (HARNESS_NOTICE) when it covers the composer; True when one was."""
         if self.harness != "claude":
             return False
-        visible = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        visible = self.visible()
         if not HARNESS_NOTICE.search(visible):
             return False
         self.run.herdr("agent", "send-keys", self.pane, "esc", check=False)
@@ -1542,12 +1556,12 @@ class Recipient:
         """The macOS startup observation: the raw last 400 characters of the visible screen, exactly as before the
         linux mode (matching only, never written to evidence). Redacting first would shrink a credential on screen
         and pull older text, e.g. a stale "Not logged in" banner, into the window."""
-        text = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        text = self.visible()
         return " | ".join(l.strip() for l in text.splitlines() if l.strip())[-400:]
 
     def tail(self):
         """The same screen as diagnostic text for errors and evidence: redacted whole, then the last 400 characters."""
-        text = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        text = self.visible()
         return clip(" | ".join(l.strip() for l in text.splitlines() if l.strip()), 400,
                     getattr(self.run, "secrets", None), tail=True)
 
@@ -1570,7 +1584,7 @@ class Recipient:
         the RECEIVED line and later visible reads held it. The viewport is read first, before this check's deep
         read can leave the view scrolled."""
         hit = (lambda text: needle in text) if isinstance(needle, str) else (lambda text: bool(needle.search(text)))
-        visible = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        visible = self.visible()
         return hit(visible) or hit(self.screen())
 
     def on_screen(self, needle, tries=15):
@@ -1622,14 +1636,19 @@ class Recipient:
                 agent = (data.get("result") or {}).get("agent") or {}
                 if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE + ("blocked",):
                     break
+                if AUTH_REJECTED.search(self.run.herdr("pane", "read", self.pane, "--source", "visible",
+                                                       check=False).get("raw", "")):
+                    raise RuntimeError(f"{self.name}: {self.harness} auth rejected: {self.tail()}")
                 time.sleep(1)
             else:
                 raise RuntimeError(f"{self.name}: {self.harness} not detected in {self.pane}: {self.tail()}")
         if getattr(self.run.args, "harness_mode", "macos") == "linux":
-            screen = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+            screen = self.visible()
             why = linux_startup_refusal(screen, self.status())
             if why and why.startswith("is not logged in"):
                 raise RuntimeError(f"{self.name}: {self.harness} {why}")
+            if why == "auth rejected":
+                raise RuntimeError(f"{self.name}: {self.harness} {why}: {self.tail()}")
             if why:
                 raise RuntimeError(f"{self.name}: {why}: {self.tail()}")
         else:

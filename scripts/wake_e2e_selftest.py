@@ -2058,6 +2058,44 @@ class StartupScreens(unittest.TestCase):
             rec.start()
         self.assertEqual([a[:2] for a in typed], [("pane", "run")])
 
+    def exited_codex(self, mode, screen):
+        """A Codex that printed `screen` and exited at startup: `agent get` and `agent read` answer agent_not_found
+        (herdr() maps the failure to {}), only `pane read` still shows the shell and the error. The fixture
+        codex-exit-auth-401.txt is rebuilt from the error line Codex 0.163.0 printed: that run kept no capture."""
+        reads = []
+
+        def herdr(*argv, **kw):
+            if argv[:2] == ("pane", "read"):
+                reads.append(argv)
+                return {"raw": screen}
+            return {}
+        run = SimpleNamespace(herdr=herdr, launch_line=lambda h: "launch", args=SimpleNamespace(harness_mode=mode),
+                              coord_seats=lambda: "s", codex_start=threading.Lock())
+        return W.Recipient(run, "co-t0", "codex", 0, "w1:p2", "sAAAAAAAA"), reads
+
+    def test_codex_auth_rejection_fails_the_start_at_once(self):
+        # ht-8f0g: the 401 exit waited the full 180 s startup timeout and reported "codex not detected in ...: "
+        screen = self.screen("codex-exit-auth-401.txt")
+        for mode in ("linux", "macos"):
+            rec, _ = self.exited_codex(mode, screen)
+            t0 = time.time()
+            with self.assertRaisesRegex(RuntimeError, r"^co-t0: codex auth rejected: .*unauthorized \(401\)"):
+                rec.start()
+            self.assertLess(time.time() - t0, 10, mode)
+
+    def test_auth_rejection_is_refused_after_detection_too(self):
+        self.assertEqual(W.linux_startup_refusal(self.screen("codex-exit-auth-401.txt"), "idle"), "auth rejected")
+        for name in ("claude-composer-api-key.txt", "claude-composer-oauth-token.txt", "codex-composer-bypass.txt"):
+            self.assertIsNone(W.AUTH_REJECTED.search(self.screen(name)), name)
+
+    def test_an_exited_agent_is_read_from_the_pane(self):
+        """The error detail and the evidence capture (screen(1000)) come from `pane read` once `agent read` fails."""
+        screen = self.screen("codex-exit-auth-401.txt")
+        rec, reads = self.exited_codex("linux", screen)
+        self.assertIn("unauthorized (401)", rec.tail())
+        self.assertEqual(rec.screen(1000), screen)
+        self.assertIn(("pane", "read", "w1:p2", "--source", "recent-unwrapped", "--lines", "1000"), reads)
+
 
 class Redaction(TempDir):
     """No Claude credential reaches the evidence: commands.jsonl, result rows (error tails quote screens), panes."""
