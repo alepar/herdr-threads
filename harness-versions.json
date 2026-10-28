@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "generated_from": "harness-canary e87571f7f2a3862acc453085652357c976704dc1",
-  "generated_at": "2026-10-28T08:01:14Z",
+  "generated_from": "harness-canary 6e918785b8990eafd0df803f63eff3f9fa6b3033",
+  "generated_at": "2026-10-28T12:59:54Z",
   "latest_release": "2.4.3",
   "contracts": {
     "claude": "3fe315da64a17fe6",
