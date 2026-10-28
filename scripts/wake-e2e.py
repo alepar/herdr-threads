@@ -1333,13 +1333,23 @@ class BusyBarrier:
                           "    time.sleep(.02)\n")
         return shlex.join([sys.executable, str(helper)])
 
-    def wait_entered(self, timeout=60):
-        end = time.monotonic() + timeout
+    def wait_entered(self, timeout=60, throttled=None, throttled_timeout=180):
+        """Wait for the held tool to start. A provider rate limit backs the agent off before its first tool call (Codex
+        waited 58-99 s after a 429 in the 2.5.0 qualification): when `throttled()` names one at `timeout`, the wait
+        runs on to `throttled_timeout`, and a tool that still never entered fails as provider throttled. Returns the
+        throttle a late entry waited out (row evidence), else None. The tool's watchdog counts from its own start, so a
+        longer entry wait never shortens the hold."""
+        end, cause = time.monotonic() + timeout, None
         while not (self.path / "entered").exists():
             if time.monotonic() >= end:
-                raise RuntimeError("busy tool did not enter")
+                if cause is None and throttled is not None and (cause := throttled()):
+                    end += throttled_timeout - timeout
+                    continue
+                raise RuntimeError(f"provider throttled ({cause}); busy tool did not enter" if cause
+                                   else "busy tool did not enter")
             time.sleep(.02)
         self.assert_held()
+        return cause
 
     def assert_held(self):
         if (self.path / "expired").exists():
@@ -1352,6 +1362,29 @@ class BusyBarrier:
             raise RuntimeError("busy tool exited before publication completed") from exc
         if age > self.stale:
             raise RuntimeError("busy tool exited before publication completed")
+
+
+def codex_throttle(codex_home, since):
+    """The latest 429 retry Codex logged (`codex_core::responses_retry` in CODEX_HOME's logs_2.sqlite) at or after
+    `since` (epoch seconds), as `429 retry N/M in Ss`; None without one or without a readable log. The Codex
+    recipients share one scratch CODEX_HOME and one account, so a 429 on any of them counts."""
+    db = Path(codex_home) / "logs_2.sqlite"
+    if not db.is_file():
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as c:
+            row = c.execute("SELECT feedback_log_body FROM logs WHERE target = 'codex_core::responses_retry' AND ts >= ?"
+                            " AND feedback_log_body LIKE '%status: 429%' ORDER BY ts DESC, ts_nanos DESC, id DESC LIMIT 1",
+                            (int(since),)).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    m = re.search(r"\((\d+/\d+) in ([\d.]+)(m?s)\)", row[0] or "")
+    if not m:
+        return "429 retry"
+    delay = float(m.group(2)) / (1000 if m.group(3) == "ms" else 1)
+    return f"429 retry {m.group(1)} in {delay:.0f}s"
 
 
 def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROMPT_END, last=False):
@@ -1678,6 +1711,12 @@ class Recipient:
             time.sleep(0.5)
         return None
 
+    def throttle_probe(self, since):
+        """What `BusyBarrier.wait_entered` asks when the tool is late: a Codex 429 since `since`; None elsewhere."""
+        if self.harness != "codex":
+            return None
+        return lambda: codex_throttle(self.run.codex_home, since)
+
     # ---------- busy cases ----------
     def busy_case(self, case, record=None):
         action, channel = case.split("/")
@@ -1695,10 +1734,13 @@ class Recipient:
                 prompt = BUSY_TOOL_PROMPT.format(tag=tag, hold=hold.command(), tool=BUSY_TOOL[self.harness].format(dir=hold.path))
             else:
                 prompt = (BUSY_FAIL_PROMPT if fail else BUSY_PROMPT).format(tag=tag, hold=hold.command())
+            since = time.time()
             self.run.herdr("agent", "prompt", self.pane, prompt)
-            hold.wait_entered()
+            throttled = hold.wait_entered(throttled=self.throttle_probe(since))
             busy_at_send = self.status()
             checks = {"busy_at_send": busy_at_send}
+            if throttled:
+                checks["provider_throttled"] = throttled
             role = "main"
             if kind == "invite" and channel == "1:1":
                 # First contact from the fresh coordinator, mid-turn: the pair auto-joins (no invitation) and the opener
@@ -1787,10 +1829,13 @@ class Recipient:
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
         with BusyBarrier(self.run.root) as hold:
+            since = time.time()
             self.run.herdr("agent", "prompt", self.pane, EOT_PROMPT.format(tag=tag, hold=hold.command()))
-            hold.wait_entered()
+            throttled = hold.wait_entered(throttled=self.throttle_probe(since))
             busy_at_send = self.status()
             checks = {"busy_at_send": busy_at_send}
+            if throttled:
+                checks["provider_throttled"] = throttled
             mid = self.send("p0", f"{case} {self.run.run_id}", direct=False)
             hold.assert_held()
         anchor = f"End-of-turn test {tag}"
