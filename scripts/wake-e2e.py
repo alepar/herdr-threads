@@ -64,11 +64,12 @@ harnesses get their credentials:
 - hermes (opt-in only, `--harness hermes --hermes-home DIR`, never in the default matrix): DIR is a scratch HOME that
   Hermes' own installer (`HOME=DIR bash setup-hermes.sh`) installed into, with its model credential and the telemetry
   answer already in DIR/.hermes (docs/evidence/hermes-composer/README.md). The driver runs `setup hermes` and
-  `hermes plugins enable herdr-threads` with HOME=DIR (writing only there) and starts one recipient, `he-t0` (T=0):
-  every Hermes pane of a profile shares one gateway, and a gateway session reaches its own pane only through the
-  profile's terminal.client_env_passthrough (ht-hermes-identity), which the driver does not set up, so it runs one
-  recipient. No Hermes from DIR may be running at start;
-  cleanup stops the gateway the recipient spawned. Herdr reports a Hermes pane `idle` throughout a turn, so the
+  `hermes plugins enable herdr-threads` with HOME=DIR (writing only there), adds HERDR_PANE_ID and HERDR_ENV to the
+  default profile's terminal.client_env_passthrough (merged with the names listed there), and starts the usual
+  recipients, `he-t0`, `he-t-1` and `he-t3`: every Hermes pane of a profile shares one gateway, and a gateway
+  session reaches its own pane only through that passthrough (ht-hermes-identity; without it no session is seated).
+  No Hermes from DIR may be running at start;
+  cleanup stops the gateway the recipients' sessions run in. Herdr reports a Hermes pane `idle` throughout a turn, so the
   driver reads a Hermes recipient's state from its screen (hermes_idle): idle only while the composer's top rule
   carries no live status. Hermes 0.22 hosts its sessions in the gateway, so the native wake matches the
   binding's own pane rather than its process (ht-f0xn; TRUST-POLICY, Hermes composer reader).
@@ -291,6 +292,8 @@ CONTAINER_MARKER = "HT_LINUX_E2E_CONTAINER"
 DOCKERENV = Path("/.dockerenv")
 CLAUDE_CREDENTIAL_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 HARNESSES = ("claude", "codex", "agy", "hermes")
+# What a Hermes 0.22.1+ pane's client must send its gateway session for the session to take that pane's seat.
+HERMES_PASSTHROUGH = ("HERDR_PANE_ID", "HERDR_ENV")
 DEFAULT_HARNESSES = "claude,codex"
 # agy (opt-in): its model credential, and the optional endpoint override the agy relay uses.
 AGY_CREDENTIAL_ENV = "GEMINI_API_KEY"
@@ -825,6 +828,30 @@ class Run:
         env.update(HOME=str(self.hermes_home), PATH=f"{self.hermes_bin().parent}:{env.get('PATH', '')}")
         return env
 
+    def hermes_passthrough(self):
+        """Add HERDR_PANE_ID and HERDR_ENV to the scratch default profile's terminal.client_env_passthrough, kept
+        after the names already listed there: from Hermes 0.22.1 every pane's session runs in one gateway, and a
+        session carries its own pane only through this list (integrations/hermes/README.md)."""
+        key = "terminal.client_env_passthrough"
+        hermes = [str(self.hermes_bin()), "--profile", "default", "config"]
+        rc, out, err = self.run([*hermes, "get", key, "--json"], env=self.hermes_env(), tag="hermes:passthrough-get",
+                                timeout=60)
+        if rc == 0:
+            names = json.loads(out)
+            if not isinstance(names, list):
+                raise RuntimeError(f"hermes config get {key}: not a list: {clip(out.strip(), 200, self.secrets)}")
+        elif "not set" in err:
+            names = []
+        else:
+            raise RuntimeError(f"hermes config get {key}: rc={rc} {clip((err or out).strip(), 300, self.secrets)}")
+        merged = names + [n for n in HERMES_PASSTHROUGH if n not in names]
+        if merged == names:
+            return
+        rc, out, err = self.run([*hermes, "set", key, json.dumps(merged)], env=self.hermes_env(),
+                                tag="hermes:passthrough-set", timeout=60)
+        if rc != 0:
+            raise RuntimeError(f"hermes config set {key}: rc={rc} {clip((err or out).strip(), 300, self.secrets)}")
+
     def codex_auth_home(self):
         return Path(self.args.codex_auth_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
 
@@ -875,6 +902,7 @@ class Run:
                                         timeout=120)
                 if rc != 0:
                     raise RuntimeError(f"hermes plugins enable: rc={rc} {clip((err or out).strip(), 300, self.secrets)}")
+                self.hermes_passthrough()
                 continue
             self.ht("setup", h, "--with-permissions", env=setup_env, tag=f"setup:{h}", timeout=120)
         if self.linux and "claude" in self.args.harness:
@@ -926,7 +954,7 @@ class Run:
             self.coords[role] = {"pane": pane, "seat": seat}
         self.recipients = []
         for h in self.args.harness:
-            for threshold in (0,) if h == "hermes" else THRESHOLDS:  # one Hermes: its gateway binds one pane
+            for threshold in THRESHOLDS:
                 name = f"{h[:2]}-t{threshold}"
                 pane = self.tab(name)
                 self.recipients.append(Recipient(self, name, h, threshold, pane, self.seat(pane)))

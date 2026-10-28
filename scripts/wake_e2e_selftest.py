@@ -695,6 +695,71 @@ class CoordinatorCalls(TempDir):
         self.assertEqual({k: v["seat"] for k, v in r.coords.items()}, {"main": "sCCCCCCCCCCC", "fresh": "sDDDDDDDDDDD"})
 
 
+class HermesSetup(TempDir):
+    """--harness hermes: the scratch profile gets the pane passthrough (merged, written only with HOME at the scratch
+    Hermes home), and the layout seats one Hermes recipient per threshold."""
+
+    def passthrough(self, get):
+        calls = []
+        r = object.__new__(W.Run)
+        r.hermes_home, r.secrets = self.tmp / "hermes-home", ()
+
+        def run(argv, env=None, timeout=60, tag=None, cleanup=False):
+            calls.append((argv, env))
+            return get() if "get" in argv else (0, "", "")
+        r.run = run
+        r.hermes_passthrough()
+        for argv, env in calls:
+            self.assertEqual(argv[:4], [str(r.hermes_bin()), "--profile", "default", "config"])
+            self.assertEqual(env["HOME"], str(r.hermes_home))
+            self.assertNotIn("HERDR_PANE_ID", env)
+        return [argv[4:] for argv, _ in calls]
+
+    def test_unset_list_gets_both_names(self):
+        calls = self.passthrough(lambda: (1, "", "Config key not set: terminal.client_env_passthrough\n"))
+        self.assertEqual(calls[-1], ["set", "terminal.client_env_passthrough", '["HERDR_PANE_ID", "HERDR_ENV"]'])
+
+    def test_listed_names_are_kept(self):
+        calls = self.passthrough(lambda: (0, '["NODE_OPTIONS", "HERDR_ENV"]\n', ""))
+        self.assertEqual(calls, [["get", "terminal.client_env_passthrough", "--json"],
+                                 ["set", "terminal.client_env_passthrough",
+                                  '["NODE_OPTIONS", "HERDR_ENV", "HERDR_PANE_ID"]']])
+
+    def test_already_listed_writes_nothing(self):
+        calls = self.passthrough(lambda: (0, '["HERDR_PANE_ID", "HERDR_ENV"]', ""))
+        self.assertEqual([c[0] for c in calls], ["get"])
+
+    def test_unreadable_list_fails_setup(self):
+        with self.assertRaisesRegex(RuntimeError, "config get"):
+            self.passthrough(lambda: (2, "", "usage: hermes config ..."))
+        with self.assertRaisesRegex(RuntimeError, "not a list"):
+            self.passthrough(lambda: (0, '"HERDR_PANE_ID"', ""))
+
+    def test_layout_seats_a_hermes_recipient_per_threshold(self):
+        r = object.__new__(W.Run)
+        r.state, r.endpoint, r.bin, r.cwd, r.run_id = self.tmp / "state", "/fake/sock", "/fake/ht", "/repo", "x"
+        r.args = SimpleNamespace(harness=["hermes"])
+        r.coords, r.layout_attempted, r.workspace = {}, False, None
+        panes = iter(f"w1:p{i}" for i in range(2, 10))
+        seats = iter(f"s{c * 11}" for c in "CDEFGHIJ")
+
+        def run(argv, env=None, timeout=60, tag=None, cleanup=False):
+            words = " ".join(argv)
+            if "workspace create" in words:
+                return 0, json.dumps({"result": {"workspace": {"workspace_id": "w1"}, "tab": {"tab_id": "w1:t1"},
+                                                 "root_pane": {"pane_id": "w1:p1"}}}), ""
+            if "tab create" in words:
+                return 0, json.dumps({"result": {"root_pane": {"pane_id": next(panes)}}}), ""
+            if "me init" in words or "seat resolve" in words:
+                return 0, json.dumps({"result": {"seat": next(seats)}}), ""
+            return 0, "{}", ""
+        r.run = run
+        r.layout()
+        self.assertEqual([(x.name, x.harness, x.threshold) for x in r.recipients],
+                         [(f"he-t{t}", "hermes", t) for t in W.THRESHOLDS])
+        self.assertEqual(len({x.pane for x in r.recipients} | {x.seat for x in r.recipients}), 2 * len(W.THRESHOLDS))
+
+
 class ExpectationTable(unittest.TestCase):
     """The pure wake expectation: an idle recipient wakes iff the item's priority <= its nudge threshold T
     (T < 0: every item); invitations and ACK requests are p0, so they wake at every T."""
