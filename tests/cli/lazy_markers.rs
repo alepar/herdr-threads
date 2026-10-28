@@ -430,7 +430,15 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
     };
     use std::sync::Arc;
     let iso = TestIsolation::new("lazy-marker-store");
-    let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new())).with_test_host();
+    // The subject is markers and byte bounds on the real store, not search's
+    // 100 ms wall budget (store::queries search_clipped_budget_* covers it);
+    // on a real clock a loaded host spends it and the search fails with
+    // ReadBudgetExhausted (ht-3wm).
+    let context = StoreContext::new(
+        iso.path("db"),
+        Arc::new(herdr_threads::test_support::slow_clock::SlowMonotonicClock::new()),
+    )
+    .with_test_host();
     let mut db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=10000;
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
