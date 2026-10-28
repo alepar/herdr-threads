@@ -938,3 +938,93 @@ fn installer_extra_config_roots_label_verdicts_and_report_shared_files() {
         assert!(!text.contains("a\nb"), "{bad}: {text}");
     }
 }
+
+// Kills a skill check that treats a profile's own record (made before its skills/ became a
+// symlink) as a reason to require a regular directory, prefers that stale record over the
+// real root's, or writes through a link to an unmanaged directory (ht-lmjf).
+#[test]
+fn installer_reports_a_recorded_profile_skill_shared_once_its_skills_is_a_symlink() {
+    let f = Fixture::new();
+    success(&f.install());
+    let shared = f.0.join("profiles/codex/shared");
+    let foreign = f.0.join("profiles/codex/foreign");
+    let plain = f.0.join("profiles/codex/plain");
+    let roots: Vec<String> = [&shared, &foreign, &plain]
+        .iter()
+        .map(|profile| {
+            fs::create_dir_all(profile).unwrap();
+            format!("codex={}", profile.display())
+        })
+        .collect();
+    let run = |roots: &[&String]| {
+        let mut args = vec!["internal", "installer-integrations", "--confirm-missing"];
+        for root in roots {
+            args.extend(["--config-root", root.as_str()]);
+        }
+        f.run(&args)
+    };
+    // Each profile gets its own record while skills/ is still a regular directory.
+    success(&run(&roots.iter().collect::<Vec<_>>()));
+    let profile_skill = shared.join("skills/herdr-threads/SKILL.md");
+    assert!(profile_skill.is_file());
+    // An external tool then links skills/ to the default root's and to an unmanaged directory.
+    fs::remove_dir_all(shared.join("skills")).unwrap();
+    std::os::unix::fs::symlink(f.0.join("codex/skills"), shared.join("skills")).unwrap();
+    let elsewhere = f.0.join("elsewhere/skills");
+    fs::create_dir_all(elsewhere.join("herdr-threads")).unwrap();
+    fs::write(elsewhere.join("herdr-threads/SKILL.md"), "foreign\n").unwrap();
+    fs::remove_dir_all(foreign.join("skills")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, foreign.join("skills")).unwrap();
+    // The profile's own record is stale (an older revision's fingerprint): the real root's
+    // record decides.
+    for entry in fs::read_dir(f.0.join("state/setup")).unwrap() {
+        let path = entry.unwrap().path();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap_or_default();
+        if manifest["path"] == profile_skill.display().to_string() {
+            manifest["fingerprint"] = "stale".into();
+            fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        }
+    }
+    let out = run(&[&roots[0], &roots[2]]);
+    success(&out);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(&format!(
+            "codex skill (CODEX_HOME={}): shared (shared via symlink; managed at {})",
+            shared.display(),
+            f.skill("codex").display()
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "codex skill (CODEX_HOME={}): updated",
+            plain.display()
+        )),
+        "{text}"
+    );
+    assert!(fs::symlink_metadata(plain.join("skills")).unwrap().is_dir());
+    // A link to a directory no managed root owns is refused and nothing is written through it.
+    let out = run(&[&roots[1]]);
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(&format!(
+            "codex skill (CODEX_HOME={}): failed ({} is shared through a symlink to {}, which \
+             herdr-threads does not own unedited",
+            foreign.display(),
+            foreign.join("skills/herdr-threads/SKILL.md").display(),
+            fs::canonicalize(elsewhere.join("herdr-threads"))
+                .unwrap()
+                .join("SKILL.md")
+                .display()
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        fs::read_to_string(elsewhere.join("herdr-threads/SKILL.md")).unwrap(),
+        "foreign\n"
+    );
+    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 1);
+}

@@ -105,8 +105,8 @@ fn shared_remedy(name: &str) -> String {
     }
 }
 
-/// A skill reached through a symbolic link with no ownership record of its own: shared with the
-/// root that holds the real file, whose own record decides. Read-only.
+/// A skill reached through a symbolic link: shared with the root that holds the real file, whose
+/// own record decides. Read-only.
 fn inspect_shared(
     env: &setup::SetupEnv,
     name: &str,
@@ -120,34 +120,42 @@ fn inspect_shared(
                 .join(file.file_name()?),
         )
     };
-    for manifest in owned::manifests_of_kind(env.state_dir()?, &format!("{name}-skill")) {
-        let Some(recorded) = read_optional(&manifest)
-            .ok()
-            .flatten()
-            .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
-        else {
-            continue;
-        };
-        if canonical_of(&recorded.path).as_deref() != Some(canonical) {
-            continue;
-        }
+    let mut owners: Vec<Manifest> =
+        owned::manifests_of_kind(env.state_dir()?, &format!("{name}-skill"))
+            .into_iter()
+            .filter_map(|manifest| {
+                read_optional(&manifest)
+                    .ok()
+                    .flatten()
+                    .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
+            })
+            .filter(|recorded| canonical_of(&recorded.path).as_deref() == Some(canonical))
+            .collect();
+    // A record of this very link path (an earlier release wrote before the link existed) is
+    // only the owner of last resort, after any record made at another root.
+    owners.sort_by_key(|recorded| recorded.path == path);
+    if let Some(recorded) = owners.into_iter().next() {
         let current = read_optional(&recorded.path).ok().flatten();
         if recorded.version == 1
             && recorded.harness == name
             && recorded.complete
             && current.as_deref().map(owned::fingerprint).as_deref() == Some(&recorded.fingerprint)
         {
-            return Ok(SkillInspection::Shared(recorded.path));
+            // A record of the link path names the real file instead.
+            return Ok(SkillInspection::Shared(if recorded.path == path {
+                canonical.to_path_buf()
+            } else {
+                recorded.path
+            }));
         }
-        if current.is_none() && fs::symlink_metadata(&recorded.path).is_err() {
-            break;
+        if current.is_some() || fs::symlink_metadata(&recorded.path).is_ok() {
+            return Err(conflict(format!(
+                "{} is shared through a symlink to {}, which herdr-threads does not own unedited; {}",
+                path.display(),
+                canonical.display(),
+                shared_remedy(name)
+            )));
         }
-        return Err(conflict(format!(
-            "{} is shared through a symlink to {}, which herdr-threads does not own unedited; {}",
-            path.display(),
-            canonical.display(),
-            shared_remedy(name)
-        )));
     }
     if fs::symlink_metadata(canonical).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
         return Ok(SkillInspection::SharedMissing(format!(
@@ -177,12 +185,9 @@ impl SkillFile {
             .parent()
             .ok_or_else(|| conflict("skill path has no parent"))?;
         let manifest = setup::manifest_path(env.state_dir()?, &format!("{name}-skill"), &path);
-        // Only a path without a record of its own can be shared; a recorded one keeps the
-        // regular-directory checks below.
-        if fs::symlink_metadata(&manifest)
-            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
-            && let Some(canonical) = owned::shared_through_symlink(root, &path)?
-        {
+        // Shared even with a record of its own (made before the link existed): nothing is ever
+        // written through the link.
+        if let Some(canonical) = owned::shared_through_symlink(root, &path)? {
             return inspect_shared(env, name, &path, &canonical);
         }
         // The config root itself may be a symbolic link (a dotfile manager's); every directory
