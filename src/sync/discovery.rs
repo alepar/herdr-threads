@@ -896,17 +896,17 @@ mod tests {
             crate::store::StoreSettings::default(),
         )
         .unwrap();
-        let budget = CallBudget {
+        let budget = || CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 10_000),
             cancellation: Cancellation::default(),
         };
         let found = [("stray".to_owned(), DiscoverySource::HerdrRemoteProcess)];
-        store.upsert_discovered(&found, false, &budget).unwrap();
-        let id = store.enabled_targets(&budget).unwrap()[0].target_id;
+        store.upsert_discovered(&found, false, &budget()).unwrap();
+        let id = store.enabled_targets(&budget()).unwrap()[0].target_id;
         store
-            .record_transition(id, &DialTransition::Dialing, clock.utc_now(), &budget)
+            .record_transition(id, &DialTransition::Dialing, clock.utc_now(), &budget())
             .unwrap();
-        let tally = store.upsert_discovered(&[], true, &budget).unwrap();
+        let tally = store.upsert_discovered(&[], true, &budget()).unwrap();
         assert_eq!((tally.retired, tally.deferred), (0, 1));
         store
             .record_transition(
@@ -917,10 +917,10 @@ mod tests {
                     error: "unresolvable".into(),
                 },
                 clock.utc_now(),
-                &budget,
+                &budget(),
             )
             .unwrap();
-        let tally = store.upsert_discovered(&[], true, &budget).unwrap();
+        let tally = store.upsert_discovered(&[], true, &budget()).unwrap();
         assert_eq!((tally.retired, tally.deferred), (1, 0));
     }
 

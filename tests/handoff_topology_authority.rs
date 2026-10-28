@@ -785,7 +785,7 @@ fn direct_marker_delivery_refuses_before_preparation_and_preserves_original_send
         before,
         "unsupported envelope must not stage its altered digest or audience"
     );
-    let budget = CallBudget {
+    let budget = || CallBudget {
         deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
         cancellation: Cancellation::default(),
     };
@@ -795,7 +795,7 @@ fn direct_marker_delivery_refuses_before_preparation_and_preserves_original_send
                 &request.plan.payload.namespace,
                 &request,
                 DurableWorkAdmission::new(16).unwrap(),
-                &budget
+                &budget()
             )
             .unwrap_err()
             .code,
@@ -807,7 +807,7 @@ fn direct_marker_delivery_refuses_before_preparation_and_preserves_original_send
                 &request.plan.payload.namespace,
                 &marked,
                 DurableWorkAdmission::new(16).unwrap(),
-                &budget
+                &budget()
             )
             .unwrap_err()
             .code,
@@ -2312,7 +2312,7 @@ fn automatic_canonical_real_leave_between_preparation_and_publication_refuses() 
     let ensured = automatic_call(&f, request.ensure()).unwrap();
     let thread = automatic_selected_thread(&ensured).unwrap().clone();
     let send = request.send(thread.clone());
-    let budget = CallBudget {
+    let budget = || CallBudget {
         deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
         cancellation: Cancellation::default(),
     };
@@ -2323,7 +2323,7 @@ fn automatic_canonical_real_leave_between_preparation_and_publication_refuses() 
                 &request.plan().payload.namespace,
                 &send,
                 DurableWorkAdmission::new(16).unwrap(),
-                &budget,
+                &budget(),
             )
             .unwrap()
         {
@@ -2349,12 +2349,12 @@ fn automatic_canonical_real_leave_between_preparation_and_publication_refuses() 
                 inner.clone(),
             ))
             .unwrap(),
-            &budget,
+            &budget(),
         )
         .unwrap();
     assert!(
         f.store
-            .automatic_delivery_mutate(&request.plan().payload.namespace, &send, permit, &budget)
+            .automatic_delivery_mutate(&request.plan().payload.namespace, &send, permit, &budget())
             .is_err()
     );
     assert_eq!(

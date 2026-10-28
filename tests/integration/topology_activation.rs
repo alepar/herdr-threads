@@ -114,6 +114,8 @@ struct Fixture {
     daemon: Option<JoinHandle<std::io::Result<bool>>>,
     /// The sender's harness: its CLI runs as that harness's session `session` (decision 15).
     harness: &'static str,
+    /// The epoch the seed published before the daemon started.
+    seeded_epoch: u64,
 }
 impl Fixture {
     fn new() -> Self {
@@ -282,18 +284,22 @@ impl Fixture {
             context.host_endpoint.clone().unwrap(),
             clock.clone(),
         ));
-        let budget = CallBudget {
+        // Each setup call gets its own budget from the moment it starts: one
+        // deadline across the whole seed (schema creation included) runs out
+        // under host load before the later calls start.
+        let budget = || CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
+        };
+        let ctx = || HostCallContext {
+            budget: budget(),
+            expected_boot: None,
+            expected_epoch: None,
         };
         let pane = native
             .observe_bootstrap_target(
                 &herdr_threads::protocol::ids::HostTargetId::new("w4:p1"),
-                &HostCallContext {
-                    budget: budget.clone(),
-                    expected_boot: None,
-                    expected_epoch: None,
-                },
+                &ctx(),
             )
             .unwrap();
         let observation = pane.observation();
@@ -314,22 +320,15 @@ impl Fixture {
             .begin_host_observation(
                 &instance.to_string(),
                 herdr_threads::test_support::test_host_id(),
-                &budget,
+                &budget(),
             )
             .unwrap();
-        let snapshot = herdr_threads::ports::HostPort::enumerate_targets(
-            native.as_ref(),
-            &HostCallContext {
-                budget: budget.clone(),
-                expected_boot: None,
-                expected_epoch: None,
-            },
-        )
-        .unwrap();
+        let snapshot =
+            herdr_threads::ports::HostPort::enumerate_targets(native.as_ref(), &ctx()).unwrap();
         let stage = store
             .begin_snapshot_stage(
                 SnapshotHeader::from_captured(admission, &snapshot).unwrap(),
-                &budget,
+                &budget(),
             )
             .unwrap();
         // A writer turn stages only a prefix when its 5 ms quantum runs out
@@ -344,14 +343,17 @@ impl Fixture {
                     staged as u64,
                     &snapshot.targets[staged..],
                     admission_limit,
-                    &budget,
+                    &budget(),
                 )
                 .unwrap();
             assert!(progress.visited > 0, "snapshot staging must advance");
             staged += usize::from(progress.visited);
         }
-        store.seal_snapshot_stage(&stage.id, &budget).unwrap();
-        store.publish_snapshot_stage(&stage.id, &budget).unwrap();
+        store.seal_snapshot_stage(&stage.id, &budget()).unwrap();
+        let seeded_epoch = store
+            .publish_snapshot_stage(&stage.id, &budget())
+            .unwrap()
+            .epoch;
         // The sender's binding carries its session's execution, as every claim of that session
         // does.
         let execution = herdr_threads::harness::context::session_execution(
@@ -364,9 +366,9 @@ impl Fixture {
             ("sender", "w4:p1", "term_1"),
             ("recipient", "w4:p2", "term_2"),
         ] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",rusqlite::params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,?6,'native_current_target',?6,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",rusqlite::params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str(),seeded_epoch as i64]).unwrap();
         }
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,1,1,?3,'session',?2,'cooperative_top_level',0,0,'term_1',?1)",rusqlite::params![observation.host_boot.as_str(),execution.to_string(), original_harness.as_str()]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,?4,1,?3,'session',?2,'cooperative_top_level',0,0,'term_1',?1)",rusqlite::params![observation.host_boot.as_str(),execution.to_string(), original_harness.as_str(),seeded_epoch as i64]).unwrap();
         drop(db);
         drop(store);
         let stop = Cancellation::default();
@@ -444,13 +446,41 @@ impl Fixture {
             stop,
             daemon: pending_daemon.daemon.take(),
             harness: original_harness.as_str(),
+            seeded_epoch,
         };
-        let until = Instant::now() + Duration::from_secs(5);
-        while fixture.db().query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap() == 0 {
-            assert!(Instant::now() < until, "canonical reconciliation");
+        fixture.wait_for_daemon_reconciliation();
+        fixture
+    }
+    /// Waits until the daemon has reconciled an epoch of its own. The seed
+    /// publishes before any seat exists, so its empty recovery completes at
+    /// publication and the reconciled marker already matches at the seed's
+    /// epoch before the daemon has observed anything; the daemon's startup
+    /// observation and its reconciliation of the seeded seats would then run
+    /// inside the test body.
+    fn wait_for_daemon_reconciliation(&self) {
+        // The daemon's startup observation and reconciliation pass run inside
+        // this wait under suite load; the same bound as the identical wait
+        // in handoff_topology_cli (WAIT).
+        let until = Instant::now() + Duration::from_secs(15);
+        loop {
+            let row = self.db().query_row(
+                "SELECT recovery_epoch,reconciled_epoch,reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot FROM herdr_hosts",
+                [],
+                |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<bool>>(2)?)),
+            );
+            if let Ok((Some(recovery), Some(reconciled), Some(true))) = row
+                && recovery > self.seeded_epoch as i64
+                && reconciled == recovery
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < until,
+                "canonical reconciliation of an epoch after the seed's {}; last (recovery_epoch, reconciled_epoch, boot_matches)={row:?}",
+                self.seeded_epoch
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
-        fixture
     }
     fn call(
         &self,
@@ -791,7 +821,7 @@ fn registered_begin_create_replay_matrix(
         StoreSettings::default(),
     )
     .unwrap();
-    let budget = CallBudget {
+    let budget = || CallBudget {
         deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
         cancellation: Cancellation::default(),
     };
@@ -799,7 +829,7 @@ fn registered_begin_create_replay_matrix(
         let result = generic.handle(
             command.clone(),
             herdr_threads::test_support::peer_identity(unsafe { libc::geteuid() }),
-            &budget,
+            &budget(),
         );
         if result.is_ok() {
             accepted.push(format!(
@@ -833,10 +863,10 @@ fn registered_begin_create_replay_matrix(
                     payload_hash: digest,
                     check_in_mode: None,
                 },
-                &budget,
+                &budget(),
             )
             .unwrap();
-        let result = store.mutate(mutation, permit, &budget);
+        let result = store.mutate(mutation, permit, &budget());
         if result.is_ok() {
             accepted.push(format!(
                 "direct/{}={result:?}",
@@ -965,8 +995,6 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
             .iter()
             .any(|v| v == herdr_threads::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1)
     );
-    let until = Instant::now() + Duration::from_secs(5);
-    while f.db().query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap()==0 {assert!(Instant::now()<until,"reconciliation"); std::thread::sleep(Duration::from_millis(10));}
     let out = f.cli(
         &[
             "--cooperative-seat",
@@ -1272,19 +1300,19 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
     endpoint_spelling.host_endpoint = PathBuf::from(format!("{}//h.sock", f.root.display()));
     for wrong in [wrong_root, wrong_endpoint, spelling, endpoint_spelling] {
         let foreign = f.domain_in_namespace(wrong);
-        let budget = CallBudget {
+        let budget = || CallBudget {
             deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
         };
         let foreign_invite = foreign.handle(
             invite.clone(),
             herdr_threads::test_support::peer_identity(unsafe { libc::geteuid() }),
-            &budget,
+            &budget(),
         );
         let foreign_send = foreign.handle(
             send.clone(),
             herdr_threads::test_support::peer_identity(unsafe { libc::geteuid() }),
-            &budget,
+            &budget(),
         );
         assert!(
             foreign_invite.is_err() && foreign_send.is_err(),
@@ -1292,19 +1320,19 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
         );
     }
     let generic = f.unconfigured_domain();
-    let budget = CallBudget {
+    let budget = || CallBudget {
         deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
         cancellation: Cancellation::default(),
     };
     let generic_invite = generic.handle(
         invite.clone(),
         herdr_threads::test_support::peer_identity(unsafe { libc::geteuid() }),
-        &budget,
+        &budget(),
     );
     let generic_send = generic.handle(
         send.clone(),
         herdr_threads::test_support::peer_identity(unsafe { libc::geteuid() }),
-        &budget,
+        &budget(),
     );
     let store = SqliteStore::new(
         StoreContext::new(f.paths.database_path.clone(), f.clock.clone())
@@ -1329,13 +1357,13 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
                 payload_hash: old_hash,
                 check_in_mode: None,
             },
-            &budget,
+            &budget(),
         )
         .unwrap();
     let direct = store.mutate(
         herdr_threads::protocol::commands::PermitMutation::Invite(direct_invite),
         permit,
-        &budget,
+        &budget(),
     );
     let Command::SendMessage(direct_send) = send.clone() else {
         unreachable!()
@@ -1343,7 +1371,7 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
     let prepare = store.prepare_send_step(
         &direct_send,
         DurableWorkAdmission::new(16).unwrap(),
-        &budget,
+        &budget(),
     );
     assert!(
         generic_invite.is_err() && generic_send.is_err() && direct.is_err() && prepare.is_err(),

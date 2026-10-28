@@ -1023,21 +1023,25 @@ mod tests {
         assert!(!page_output.is_empty());
         assert_eq!(snapshot(&intents_dir), intents_before);
         assert_eq!(fs::read(directory.join("context.json")).unwrap(), before);
+        // Each live read gets its own budget: `budget` was taken before the
+        // cooperative page run above and would expire under load.
+        let live = || CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
+            cancellation: Cancellation::default(),
+        };
         let mut wrong = key.clone();
         wrong.operation_id = Uuid::from_u128(9);
         assert_eq!(
-            journal.read_completed(&wrong, &budget, &clock).unwrap_err(),
+            journal.read_completed(&wrong, &live(), &clock).unwrap_err(),
             CacheReadError::NotFound
         );
+        // Cancellation is checked before the deadline, so the old budget
+        // serves the cancelled control.
         budget.cancellation.cancel();
         assert_eq!(
             journal.read_completed(&key, &budget, &clock).unwrap_err(),
             CacheReadError::Cancelled
         );
-        let live = CallBudget {
-            deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
-            cancellation: Cancellation::default(),
-        };
         let mut successor = request.clone();
         successor.operation_id = Uuid::from_u128(4);
         successor.event_id = "successor".into();
@@ -1058,7 +1062,7 @@ mod tests {
         let current_before = journal.current().unwrap();
         assert_eq!(
             journal
-                .read_completed(&key, &live, &clock)
+                .read_completed(&key, &live(), &clock)
                 .unwrap()
                 .response
                 .output,
@@ -1068,7 +1072,7 @@ mod tests {
         let complete_bytes = fs::read(directory.join("context.json")).unwrap();
         fs::write(directory.join("context.json"), b"{broken").unwrap();
         assert_eq!(
-            journal.read_completed(&key, &live, &clock).unwrap_err(),
+            journal.read_completed(&key, &live(), &clock).unwrap_err(),
             CacheReadError::Context(crate::harness::context::ContextError::Corrupt)
         );
         fs::write(directory.join("context.json"), &complete_bytes).unwrap();
@@ -1081,7 +1085,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            journal.read_completed(&key, &live, &clock).unwrap_err(),
+            journal.read_completed(&key, &live(), &clock).unwrap_err(),
             CacheReadError::Context(crate::harness::context::ContextError::Corrupt)
         );
         fs::write(directory.join("context.json"), &complete_bytes).unwrap();
@@ -1098,7 +1102,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            journal.read_completed(&key, &live, &clock).unwrap_err(),
+            journal.read_completed(&key, &live(), &clock).unwrap_err(),
             CacheReadError::Context(crate::harness::context::ContextError::Corrupt)
         );
         fs::write(directory.join("context.json"), &complete_bytes).unwrap();
@@ -1119,7 +1123,7 @@ mod tests {
         drop(lock_file);
         fs::remove_file(directory.join("context.lock")).unwrap();
         assert_eq!(
-            journal.read_completed(&key, &live, &clock).unwrap_err(),
+            journal.read_completed(&key, &live(), &clock).unwrap_err(),
             CacheReadError::NotFound
         );
         assert!(!directory.join("context.lock").exists());
