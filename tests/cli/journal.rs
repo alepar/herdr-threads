@@ -2822,12 +2822,36 @@ fn the_record_hook_sees_each_intent_as_it_is_recorded() {
     let journal = Journal::open(&dir).unwrap();
     let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&seen);
-    set_record_hook_on_this_thread(Box::new(move |reference| {
+    let lock_free = std::rc::Rc::new(std::cell::Cell::new(false));
+    let free = std::rc::Rc::clone(&lock_free);
+    let allocator = dir.join("allocator.lock");
+    let guard = set_record_hook_on_this_thread(Box::new(move |reference| {
         sink.borrow_mut().push(reference.to_owned());
+        // The allocator lock is released before the hook runs.
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&allocator)
+            .unwrap();
+        // SAFETY: a non-blocking flock on a descriptor this closure owns.
+        let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        free.set(taken == 0);
     }));
     let reference = journal.record(scope(), send(), 1).unwrap();
     assert_eq!(*seen.borrow(), [reference.recovery_ref()]);
-    clear_record_hook_on_this_thread();
+    assert!(lock_free.get(), "the hook ran under the allocator lock");
+    drop(guard);
     journal.record(scope(), send(), 2).unwrap();
     assert_eq!(seen.borrow().len(), 1, "cleared");
+    // An unwind clears it too.
+    let sink = std::rc::Rc::clone(&seen);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = set_record_hook_on_this_thread(Box::new(move |reference| {
+            sink.borrow_mut().push(reference.to_owned());
+        }));
+        panic!("unwind");
+    }));
+    assert!(unwound.is_err());
+    journal.record(scope(), send(), 3).unwrap();
+    assert_eq!(seen.borrow().len(), 1, "cleared by the unwind");
 }

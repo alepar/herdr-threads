@@ -2751,7 +2751,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         // starts), the launch's request keeps that reference: a crash or Ctrl-C
         // after it never lets a rerun hand the task off a second time.
         let launched = launched.map(std::rc::Rc::new);
-        if let Some(launched) = &launched {
+        let hook = launched.as_ref().map(|launched| {
             let launched = std::rc::Rc::clone(launched);
             journal::set_record_hook_on_this_thread(Box::new(move |reference| {
                 if let Err(error) = launched.record_journaled(reference) {
@@ -2761,8 +2761,8 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
                          use `herdr-threads retry {reference}`"
                     );
                 }
-            }));
-        }
+            }))
+        });
         let topology = match &parsed.action {
             CliAction::TopologyHandoff(_) => true,
             CliAction::Retry(recovery) => topology_runtime::is_compound(
@@ -2775,7 +2775,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         } else {
             handoff::run(parsed, claim, &journal, paths, writer)
         };
-        journal::clear_record_hook_on_this_thread();
+        drop(hook);
         // The intent this handoff journaled on this thread, if it got that far.
         let journaled = journal::take_recorded_on_this_thread();
         if let Some(launched) = launched {

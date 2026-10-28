@@ -1340,8 +1340,11 @@ impl Journal {
         }
         semantic.validate()?;
         let body = serde_json::to_vec(&semantic)?;
-        let _lock = self.lock()?;
+        let lock = self.lock()?;
         let recorded = self.record_locked(scope, semantic, created_at_millis, body)?;
+        // The intent is durable: the hook runs outside the allocator lock, so no
+        // lock it takes ever nests under it.
+        drop(lock);
         let reference = recorded.recovery_ref();
         ON_RECORD.with(|hook| {
             if let Some(hook) = hook.borrow().as_ref() {
@@ -2202,9 +2205,21 @@ thread_local! {
 }
 
 /// Run `hook` with the recovery reference of every intent this thread
-/// records until [`clear_record_hook_on_this_thread`].
-pub fn set_record_hook_on_this_thread(hook: RecordHook) {
+/// records while the returned guard lives; dropping it (an unwind included)
+/// clears the hook.
+#[must_use = "the hook is cleared when the guard drops"]
+pub fn set_record_hook_on_this_thread(hook: RecordHook) -> RecordHookGuard {
     ON_RECORD.with(|slot| *slot.borrow_mut() = Some(hook));
+    RecordHookGuard(())
+}
+
+/// Clears this thread's record hook when dropped.
+pub struct RecordHookGuard(());
+
+impl Drop for RecordHookGuard {
+    fn drop(&mut self) {
+        clear_record_hook_on_this_thread();
+    }
 }
 
 pub fn clear_record_hook_on_this_thread() {

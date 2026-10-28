@@ -919,7 +919,10 @@ mod tests {
         };
         assert_eq!(error.code, ErrorCode::HostUnavailable);
         assert!(error.detail.contains("no longer the node"), "{error:?}");
-        assert_eq!(*client.polled.lock().unwrap(), std::slice::from_ref(&resolved));
+        assert_eq!(
+            *client.polled.lock().unwrap(),
+            std::slice::from_ref(&resolved)
+        );
         let (record, _) =
             request_id(&dir, &resolved, Some("s1"), &remote("task"), |_| Ok(false)).unwrap();
         let kept = std::fs::read_dir(dir.join("remote-launch"))

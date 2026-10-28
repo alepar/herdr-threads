@@ -128,6 +128,38 @@ fn claim_slot(live: &Live, id: &str, node: &str) -> Result<LiveGuard, Claim> {
     })
 }
 
+/// A boxed thread body.
+type ThreadBody = Box<dyn FnOnce() + Send>;
+
+/// Spawns `body` on a new thread named for peer launches.
+fn spawn_named(body: ThreadBody) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("peer-launch".into())
+        .spawn(body)
+        .map(|_| ())
+}
+
+/// Runs `run(value)` on a thread from `spawn`. The value reaches the thread
+/// over a channel only after the thread exists, so when `spawn` fails the
+/// value comes back intact (with any guard it holds still alive).
+fn hand_to_thread<T: Send + 'static>(
+    value: T,
+    spawn: impl FnOnce(ThreadBody) -> std::io::Result<()>,
+    run: impl FnOnce(T) + Send + 'static,
+) -> Result<(), (T, std::io::Error)> {
+    let (hand, take) = std::sync::mpsc::channel::<T>();
+    if let Err(error) = spawn(Box::new(move || {
+        if let Ok(value) = take.recv() {
+            run(value);
+        }
+    })) {
+        return Err((value, error));
+    }
+    // The thread waits for it; a send fails only if that thread is gone.
+    let _ = hand.send(value);
+    Ok(())
+}
+
 /// Removes a request from [`Live`] when its worker ends, a panic included.
 struct LiveGuard {
     live: Live,
@@ -491,18 +523,17 @@ impl PeerLaunchService {
         };
         let request = request.clone();
         let target = placement.target;
-        let worker_id = row.id.clone();
-        let started = std::thread::Builder::new()
-            .name("peer-launch".into())
-            .spawn(move || worker.run(&request, target));
-        if let Err(error) = started {
-            // Nothing started: a plain failure, never an unconfirmed one (the worker
-            // and its slot dropped with the closure).
+        // If the thread cannot be created, this side still holds the worker, and
+        // with it the request's slot until the failed row is written (a repeat
+        // never reads it as lost).
+        let started = hand_to_thread(worker, spawn_named, move |worker: Worker| {
+            worker.run(&request, target)
+        });
+        if let Err((worker, error)) = started {
+            // Nothing started: a plain failure, never an unconfirmed one.
             let detail = clamp_detail(&format!("could not start the launch worker: {error}"));
-            let now = now_ms(self.clock.as_ref());
-            let _ = self.write(|conn| {
-                peer_requests::record(conn, &worker_id, "failed", None, None, Some(&detail), now)
-            });
+            worker.record("failed", None, None, Some(&detail));
+            drop(worker);
             return Ok(LaunchState::Failed {
                 detail,
                 pane: None,
@@ -1054,5 +1085,31 @@ mod tests {
                 .collect::<Vec<_>>()
         });
         assert_eq!(won.len() as u64, MAX_RUNNING_PER_PEER);
+    }
+
+    // Kills: a failed worker-thread spawn dropping the request's slot before
+    // its failed row is written (a repeat would read the row as lost, i.e.
+    // unconfirmed, and lock the requester out), and a spawned thread not
+    // getting the worker.
+    #[test]
+    fn a_worker_whose_thread_cannot_start_keeps_its_slot_until_recorded() {
+        let live: Live = Arc::default();
+        let slot = claim_slot(&live, "id1", "nodeA").unwrap();
+        let refused = |_: ThreadBody| Err(std::io::Error::other("no threads"));
+        let Err((slot, error)) = hand_to_thread(slot, refused, |_slot: LiveGuard| {}) else {
+            panic!("the spawn failed")
+        };
+        assert_eq!(error.to_string(), "no threads");
+        assert!(live.lock().unwrap().contains_key("id1"), "still claimed");
+        drop(slot);
+        assert!(
+            !live.lock().unwrap().contains_key("id1"),
+            "freed once dropped"
+        );
+        let (seen, ran) = std::sync::mpsc::channel();
+        hand_to_thread(7u32, spawn_named, move |value| seen.send(value).unwrap())
+            .map_err(|(_, e)| e)
+            .unwrap();
+        assert_eq!(ran.recv().unwrap(), 7);
     }
 }
