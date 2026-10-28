@@ -194,25 +194,70 @@ fn pid_alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-/// The probe's reaper finishes its bounded teardown: it removes its lock dir
-/// (`/tmp/ih-reaper.<owner>`) as its last step. Its own bounds add up to
-/// ~36 s (group TERM wait 2 s, Herdr graceful stop 5 s, then TERM wait 15 s
-/// and socket wait 10 s, root sweep 2 s, tagged pids 2 s), so a fixed window
-/// shorter than that, counted from the kill, fails a reaper that is merely
-/// slow on a loaded host. 60 s is a hang guard, not a budget.
+/// The probe's reaper (scripts/lib/isolated-herdr.sh `ih_reaper_loop`)
+/// removes its lock dir `/tmp/ih-reaper.<owner>` as its last step and then
+/// exits. Its teardown is bounded by sleep-loop counts that add up to ~36 s
+/// (group TERM wait 2 s, Herdr graceful stop 5 s, then TERM wait 15 s and
+/// socket wait 10 s, root sweep 2 s, tagged pids 2 s), so a fixed window
+/// counted from the kill fails a reaper that is merely slow on a loaded host.
+/// 60 s is a hang guard, not a budget.
 const REAPER_HANG_GUARD: Duration = Duration::from_secs(60);
+
+/// Live reaper processes for `owner` (`sh -c '. LIB; ih_reaper_loop "$2"' sh LIB OWNER`).
+fn reaper_pids(owner: u32) -> Vec<i32> {
+    let listing = Command::new("ps")
+        .args(["axww", "-o", "pid=", "-o", "command="])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let owner = owner.to_string();
+    listing
+        .lines()
+        .filter(|line| {
+            line.contains("ih_reaper_loop") && line.split_whitespace().last() == Some(&owner)
+        })
+        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+        .collect()
+}
+
+/// Wait for the probe's reaper to finish. Returns what is wrong with it, if
+/// anything; a stuck reaper is stopped and a lock without a reaper removed.
+fn wait_for_reaper(owner: u32) -> Option<String> {
+    let lock = PathBuf::from(format!("/tmp/ih-reaper.{owner}"));
+    let deadline = Instant::now() + REAPER_HANG_GUARD;
+    loop {
+        // Process first: the reaper removes its lock before it exits.
+        let live = reaper_pids(owner);
+        if !lock.exists() {
+            return None;
+        }
+        if live.is_empty() {
+            let _ = fs::remove_dir_all(&lock);
+            return Some(format!(
+                "  reaper lock {} with no reaper (never started, or a stale lock from a reused pid)\n",
+                lock.display()
+            ));
+        }
+        if Instant::now() >= deadline {
+            for pid in &live {
+                // SAFETY: cleanup of this probe's own reaper.
+                unsafe { libc::kill(*pid, libc::SIGKILL) };
+            }
+            let _ = fs::remove_dir_all(&lock);
+            return Some(format!(
+                "  reaper {live:?} still running after {REAPER_HANG_GUARD:?} (stopped)\n"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
 
 /// After the probe's reaper has finished, every recorded pid is gone (5 s
 /// for the killed ones to be reaped); the survivors are named, killed
 /// (cleanup) and then fail the test. The isolated root is removed too.
 fn assert_all_gone(probe: &Probe) {
     let dir = &probe.dir;
-    let reaper_lock = PathBuf::from(format!("/tmp/ih-reaper.{}", probe.child.id()));
-    let reaper_deadline = Instant::now() + REAPER_HANG_GUARD;
-    while reaper_lock.exists() && Instant::now() < reaper_deadline {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let reaper_stuck = reaper_lock.exists();
+    let reaper_problem = wait_for_reaper(probe.child.id());
     let recorded = fs::read_to_string(dir.join("pids")).expect("probe wrote its pids");
     let entries: Vec<(String, i32)> = recorded
         .lines()
@@ -240,13 +285,7 @@ fn assert_all_gone(probe: &Probe) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let mut report = String::new();
-    if reaper_stuck {
-        report.push_str(&format!(
-            "  reaper still running after {REAPER_HANG_GUARD:?}: {}\n",
-            reaper_lock.display()
-        ));
-    }
+    let mut report = reaper_problem.unwrap_or_default();
     for (label, pid) in &survivors {
         let cmd = Command::new("ps")
             .args(["-o", "command=", "-p", &pid.to_string()])
