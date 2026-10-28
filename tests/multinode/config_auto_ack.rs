@@ -100,11 +100,8 @@ fn text_inbox_display_clears_the_remote_senders_due_tracking() {
     let (thread, message) = send_ack_request(&cluster, &a, &b, "due body", Some("3600"));
     support::wait_pending(&cluster, 1, &message, &b);
     support::wait_pending(&cluster, 0, &message, &b);
-    assert_eq!(
-        support::due_rows(&cluster, 0, &message, &b),
-        1,
-        "the sender node tracks the pending deadline"
-    );
+    // The sender node tracks the pending deadline.
+    support::wait_due_rows(&cluster, 0, &message, &b, 1);
     assert_eq!(support::due_rows(&cluster, 1, &message, &b), 0);
 
     let (code, stdout, stderr) = cluster.text_as(Some(&b), 1, &["inbox"]);
@@ -126,7 +123,7 @@ fn mod_channel_delivery_settles_the_remote_senders_receipt() {
     assert_eq!(line["ack_required"], true, "{line}");
     assert_ne!(line["truncated"], true, "{line}");
     assert!(support::is_pending(&cluster, 1, &message, &b));
-    assert_eq!(support::due_rows(&cluster, 0, &message, &b), 1);
+    support::wait_due_rows(&cluster, 0, &message, &b, 1);
 
     let (code, lines) = support::watch_ack(&cluster, &b, "append", &[&message]);
     assert_eq!(code, 0, "{lines:?}");
@@ -214,11 +211,8 @@ fn incomplete_read_only_and_refused_displays_leave_the_receipt_pending() {
             "node {node}: nothing was settled"
         );
     }
-    assert_eq!(
-        support::due_rows(&cluster, 0, &passive, &b),
-        1,
-        "the sender node still tracks the read-only message's deadline"
-    );
+    // The sender node still tracks the read-only message's deadline.
+    support::wait_due_rows(&cluster, 0, &passive, &b, 1);
     drop(watch);
 }
 
@@ -242,7 +236,7 @@ fn offline_settlement_applies_once_after_heal_and_resync() {
         support::is_pending(&cluster, 0, &message, &b),
         "the cut sender node still sees it pending"
     );
-    assert_eq!(support::due_rows(&cluster, 0, &message, &b), 1);
+    support::wait_due_rows(&cluster, 0, &message, &b, 1);
     assert_eq!(cluster.kinds(0).get("receipt.settled"), None);
     let (code, _, stderr) = cluster.text_as(Some(&b), 1, &["inbox"]);
     assert_eq!(code, 0, "repeat text inbox failed: {stderr}");
