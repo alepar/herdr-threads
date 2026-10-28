@@ -1652,23 +1652,32 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs
   seat the sender's node holds as remote (N5); the recipient's home node delivers and wakes them under the
   unchanged delivery contract. Before authoring, the sender's CLI asks the recipient's home node, on
   `addr_resolve`, whether the seat is eligible (resolved, nonretired, unheld, target present); that answer is
-  advisory link data, read only, and a node that cannot answer leaves the handoff refused, never sent blind.
+  advisory link data, read only, and an ineligible answer refuses the handoff. When the home node cannot
+  answer (asleep, unlinked, no cap), a handoff to an exact seat ID (or `SEAT_ID@M`) that this node holds as
+  a remote, nonretired seat is authored anyway, like a send that queues until the node returns, and the CLI
+  says the check used replicated state only; a path address (`SPACE/TAB/PANE@M`) still needs the home node
+  live (N14).
 - *Remote launch* (`handoff --new-tab --space SPACE@M`, `handoff --pane P@M`, `launch --pane P@M`) is the one
   action a node takes on another node's request. The request (`launch_request`, cap `peer.launch.v1`) carries
   only a frozen plan (target, harness id, profile, argv, an absolute `cwd` on this node, agent name) and the
-  requesting seat as a claim. This node decides it in its own daemon against its own canonical view, exactly as
-  a local bootstrap or launch: the target exists and is not held (C2), the harness is registered here, the
-  `cwd` exists here, and the existing bootstrap fences, `ResolveBootstrapSeat` and `ObservedStartup` guards
-  apply unchanged. It never verifies the requesting seat (cooperative, A1, same user), and it never acts as
+  requesting seat as a claim. This node decides it against its own canonical view: its daemon checks the target
+  pane or workspace exists, and then runs this node's own `launch` for it as a child process, so the launch is
+  exactly a local `launch`: an available shell pane, the pane's seat through ordinary guarded resolution (a
+  held target refuses, C2), a registered harness here, the `cwd` existing here, and the `ObservedStartup`
+  guard before `managed_launch` (A3). A new tab is created first in the named workspace with a label that ends
+  in `[from <tag>]`, the requesting node's tag. It never verifies the requesting seat (cooperative, A1, same user), and it never acts as
   that seat: the launch is attributed to the peer node (`peer_request:<node_uuid>`), the new seat is a local
   seat of this node, and its binding is `managed_launch` until its own agent checks in. A request names only
   a launch; it cannot send, ACK, invite, join, repair, rebind or retire anything here.
 - The request's id is derived by the requester from its frozen intent, so a retry after a link drop, a crash
-  or a restart repeats the same id; this node records each id (`peer_requests`) before acting and answers a
-  repeat with the recorded outcome, never a second launch. A launch interrupted on this node is settled from
-  its bootstrap attempt records under the existing bootstrap recovery (interrupted with no tab: failed; a
-  created tab: adopted or refused as for a local interrupted bootstrap), and the operator of this node
-  (`operator:local-user:<uid>`) remains the only one who can decide an administrative recovery here.
+  or a restart repeats the same id; this node records each id and its progress (received, tab created with its
+  pane, launched with its seat) in `peer_requests` before each step and answers a repeat with the recorded
+  outcome, never a second launch. A request still running when this node's daemon restarts, or whose child
+  exits without an outcome, is recorded failed (`interrupted`, naming any tab it created); it is never resumed
+  or relaunched automatically, and this node's operator (`operator:local-user:<uid>`) is the only one who
+  decides what happens to a tab it left. Rows are kept 7 days.
+- Every peer-requested launch is visible here: one `daemon.log` line per request and outcome naming the
+  requesting node and the request id, and `peer list` shows each node's peer-requested launches.
 - A peer without `peer.launch.v1` gets no frame, and the requester refuses with that reason; nothing is ever
   launched through the requester's own Herdr instead.
 
@@ -2322,10 +2331,13 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   argv and any existing directory as `cwd`: what `ssh <this node> herdr-threads launch` could do as the same
   user. In-contract (A1, SSH is the link boundary, cooperative): the request is decided here like a local
   launch (N15), holds and fences apply, the requesting seat is only a claim, and the launch is recorded as the
-  peer node's (`peer_request:<node_uuid>`). A requester's claimed seat can be wrong or stale; nothing here
-  depends on it.
-- **A cross-node handoff checks eligibility once.** The recipient's eligibility is read from its home node
-  before the sender authors the handoff; the seat can become held, retired or unbound in between. The task then
+  peer node's (`peer_request:<node_uuid>`) and shown in `daemon.log`, `peer list` and the tab label. A
+  requester's claimed seat can be wrong or stale; nothing here depends on it.
+- **A cross-node handoff checks eligibility once, or not live at all.** The recipient's eligibility is read
+  from its home node before the sender authors the handoff; the seat can become held, retired or unbound in
+  between. When the home node cannot answer, an exact remote seat ID is checked only against this node's
+  replicated view (it exists here as that node's nonretired seat; holds and bindings are not replicated), and
+  the CLI says so. The task then
   waits on the recipient's node like any message to a seat in that state, and the sender's node reports the
   ACK overdue on its own clock (N5 accepted limit). A remote launch's `Launched` answer names a seat that the
   sender's node must hold as that node's seat (after replication) before the handoff is authored; a seat that
