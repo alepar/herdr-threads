@@ -123,6 +123,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
         sql: include_str!("../../migrations/node/0009_restored_pane_retirement.sql"),
         rebuild: None,
     },
+    NodeDelta {
+        version: 10,
+        sql: include_str!("../../migrations/node/0010_peer_requests.sql"),
+        rebuild: None,
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.

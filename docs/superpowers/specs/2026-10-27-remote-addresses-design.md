@@ -615,3 +615,36 @@ only the launch path.
 - The self-node dual reading refuses an ambiguous split reading instead of
   taking the whole string's pane; `addr_resolved` is fitted to the link's
   `max_frame` (candidates dropped into `omitted`).
+
+### 2026-10-28, phase 2 as built
+
+- **Handoff into a remote seat (2a).** `CheckRemoteSeat` asks the home node on
+  `addr_resolve` with a `Check` target, gated by its own cap `addr.check.v1`
+  (not `peer.launch.v1`, so 2a stands alone); the home node decides it with
+  `eligible_delivery_recipient`. Ineligible refuses; a home node that cannot
+  answer leaves the replicated view as the check (the seat exists here as that
+  node's nonretired seat), with a stderr note (TRUST-POLICY N15 as amended).
+- **Remote launch (2b).** `launch_request`/`launch_reply` under
+  `peer.launch.v1`. The launching node records the request in `peer_requests`
+  (migration 0010) and runs two children of its own binary with a scrubbed
+  environment (`peer_launcher::child_env`: login variables only, never
+  `HERDR_*`, harness session or caller variables): `internal peer-tab-create`
+  for a new tab (label `<label> [from <tag>]`), then the ordinary `launch
+  --pane`. No bootstrap compound: an interrupted request is failed at the next
+  daemon start, never resumed. The requester derives the request id from the
+  frozen plan and keeps it in `node_dir/remote-launch/` until the launch
+  settles, polls every 2 s for up to 120 s, and a rerun resumes the same id.
+  A remote `handoff` then continues as `handoff --existing --seat <seat>`.
+- **Not in 2b.** `--harness-binary`, `--name` and `--profile-dir` are refused
+  for a remote launch or handoff. In `launch`/`handoff`, an `@` in `--pane` or
+  `--space` always names a machine: a local pane whose label holds an `@`
+  needs its pane ID there (the unknown-machine refusal says so).
+- **Visibility.** `daemon.log`: `peer launch <id8> from <tag>: accepted|
+  launched seat S on P|failed: ...`; `peer list` node rows end in
+  ` peer_launches=N last=<state>:<id8>` (~40 bytes).
+- **Tests.** Multinode `remote_launch_runs_on_the_target_machine_once` drives
+  the real wire, daemons and CLIs with a recording stand-in for the children
+  (`HT_TEST_PEER_LAUNCH_STUB`): scrubbed child environment, a held target
+  refused before anything runs, a dropped link mid-launch with exactly one
+  child run, the `[from <tag>]` tab label, `peer list`, and the older-peer
+  refusal; the real `launch` path itself is the existing launch suite's.

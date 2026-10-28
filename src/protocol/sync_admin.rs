@@ -74,6 +74,15 @@ pub enum SyncCommand {
         #[serde(default)]
         seat: String,
     },
+    /// Ask machine `machine` to launch per `request` (or report how that
+    /// request id stands): remote launch, TRUST-POLICY N15. The request's
+    /// launch happens there; nothing is written here.
+    RemoteLaunch {
+        #[serde(default)]
+        machine: String,
+        #[serde(default)]
+        request: Box<crate::sync::frame::LaunchRequest>,
+    },
 }
 
 impl SyncCommand {
@@ -122,6 +131,7 @@ impl SyncCommand {
             }
             Self::ResolveAddress { machine, .. } => text(machine),
             Self::CheckRemoteSeat { seat } => text(seat),
+            Self::RemoteLaunch { machine, .. } => text(machine),
             Self::PeerList
             | Self::Verify
             | Self::UnappliedList { .. }
@@ -160,6 +170,10 @@ pub struct NodeRow {
     /// (captured at the node's genesis).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// Launches this node ran for that node in the last 7 days (remote
+    /// launch, TRUST-POLICY N15), and the newest one's state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_launches: Option<PeerLaunches>,
     /// `linked`, `stalled`, `reachable` or `unreachable`.
     #[serde(default)]
     pub state: String,
@@ -400,6 +414,78 @@ pub enum SyncReply {
     },
     /// The answer to [`SyncCommand::ResolveAddress`].
     Address(AddressReply),
+    /// The answer to [`SyncCommand::RemoteLaunch`].
+    Launch(LaunchReply),
+}
+
+/// Peer-requested launches of one node (`peer list`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerLaunches {
+    #[serde(default)]
+    pub count: u64,
+    /// `running`, `launched`, `refused` or `failed`.
+    #[serde(default)]
+    pub last_state: String,
+    /// The newest request's id (first 8 characters).
+    #[serde(default)]
+    pub last_request: String,
+}
+
+/// How the daemon handled a remote launch request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum LaunchReply {
+    /// The machine is this node: launch here directly.
+    SelfNode,
+    UnknownMachine {
+        #[serde(default)]
+        known: Vec<MachineRow>,
+    },
+    AmbiguousMachine {
+        #[serde(default)]
+        matches: Vec<MachineRow>,
+    },
+    Remote {
+        #[serde(default)]
+        node: MachineRow,
+        #[serde(default)]
+        answer: RemoteLaunchAnswer,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+/// What became of one remote launch request (or status poll).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum RemoteLaunchAnswer {
+    /// The machine's own state of the request. A `launched` state names a
+    /// seat this node already holds as that machine's (the daemon waited).
+    Answered {
+        #[serde(default)]
+        state: crate::sync::frame::LaunchState,
+    },
+    Unreachable {
+        #[serde(default)]
+        last_contact_at: Option<i64>,
+    },
+    /// The link does not carry `peer.launch.v1`.
+    NoCap {
+        #[serde(default)]
+        version: Option<String>,
+    },
+    Timeout {
+        #[serde(default)]
+        secs: u64,
+    },
+    /// Launched there, but the seat has not replicated here yet; ask again.
+    NotReplicated {
+        #[serde(default)]
+        seat: String,
+    },
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 /// One machine (node) as an address names it.

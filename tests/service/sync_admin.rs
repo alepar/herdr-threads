@@ -1335,6 +1335,7 @@ fn node_rows_render_compactly() {
     let row = |state: &str, stalled: &[&str]| NodeRow {
         node: "Q0V".into(),
         host: None,
+        peer_launches: None,
         state: state.into(),
         stalled: stalled.iter().map(|s| (*s).to_owned()).collect(),
         last_contact_at: Some(now - 4_000),

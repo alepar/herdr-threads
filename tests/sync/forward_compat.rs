@@ -343,6 +343,47 @@ fn addr_frames_are_unknown_to_2_1_1() {
     }
 }
 
+// Kills: a launch_request or launch_reply frame (remote launch, sent only to
+// a peer advertising peer.launch.v1), or an addr_resolve Check target, that a
+// 2.1.1 peer would refuse instead of ignoring.
+#[test]
+fn launch_frames_are_unknown_to_2_1_1() {
+    use herdr_threads::sync::frame::{
+        AddrResolve, AddrTarget, LaunchPlan, LaunchReply, LaunchRequest, LaunchState, LaunchTarget,
+    };
+    for frame in [
+        PeerFrame::LaunchRequest(LaunchRequest {
+            id: Uuid::from_u128(7),
+            requester_seat: "sQ0Vseat0001".into(),
+            plan: LaunchPlan {
+                target: LaunchTarget::NewTab {
+                    space: "w1".into(),
+                    label: "review".into(),
+                },
+                kind: "codex".into(),
+                argv: vec!["--model".into(), "x".into()],
+                cwd: Some("/tmp".into()),
+            },
+        }),
+        PeerFrame::LaunchReply(LaunchReply {
+            id: Uuid::from_u128(7),
+            state: LaunchState::Launched {
+                seat: "snSGseat0001".into(),
+                pane: "w1:p9".into(),
+            },
+        }),
+        PeerFrame::AddrResolve(AddrResolve {
+            id: Uuid::from_u128(8),
+            target: AddrTarget::Check {
+                seat: "snSGseat0001".into(),
+            },
+        }),
+    ] {
+        let shadow = legacy::decode(&frame.encode().unwrap()).expect("2.1.1 decodes it");
+        assert!(matches!(shadow, legacy::PeerFrame::Unknown), "{frame:?}");
+    }
+}
+
 #[test]
 fn emitted_hello_envelope_is_one() {
     let mut seen = 0;

@@ -2309,6 +2309,22 @@ where
                     clock: Arc::clone(&factory_clock),
                 },
             ));
+            // Remote launch (TRUST-POLICY N15): linked peers' `launch_request`
+            // is decided here and run as this node's own `launch`; requests the
+            // previous daemon left running are failed first, never resumed.
+            let peer_launcher = Arc::new(crate::service::peer_launcher::PeerLaunchService {
+                store: Arc::clone(&publisher_store),
+                sessions: Arc::clone(&host_sessions),
+                writer: Arc::clone(&writer),
+                clock: Arc::clone(&factory_clock),
+                state_dir: sync_admin_paths.state_dir.clone(),
+                log: {
+                    let log = Arc::clone(&rate_limited_log);
+                    Arc::new(move |line: &str| log.write_line(line))
+                },
+            });
+            peer_launcher.settle_at_start();
+            sync_handle.set_peer_launcher(peer_launcher);
             // Seat status (ht-xg88): publishes this node's seats while a
             // linked peer takes them; ends on the stop token like discovery.
             let (check_every, refresh_every) = factory_probe.seat_publisher_periods();

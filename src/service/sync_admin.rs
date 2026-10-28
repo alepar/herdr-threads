@@ -161,6 +161,9 @@ impl SyncAdmin {
                 self.resolve_address(&machine, target, budget)
             }
             SyncCommand::CheckRemoteSeat { seat } => self.check_remote_seat(&seat, budget),
+            SyncCommand::RemoteLaunch { machine, request } => {
+                self.remote_launch(&machine, *request, budget)
+            }
         }
     }
 
@@ -529,6 +532,90 @@ impl SyncAdmin {
             },
         };
         Ok(SyncReply::Address(AddressReply::Remote { node, answer }))
+    }
+
+    /// N15: forward a launch request to `machine` and report its state there.
+    /// A `launched` state is reported only once the seat replicated here as
+    /// that machine's.
+    fn remote_launch(
+        &self,
+        machine: &str,
+        request: crate::sync::frame::LaunchRequest,
+        budget: &CallBudget,
+    ) -> Result<SyncReply, ApiError> {
+        use crate::protocol::sync_admin::{LaunchReply, MachineRow, RemoteLaunchAnswer};
+        use crate::sync::coordinator::remote_launch::LaunchAnswer;
+        use crate::sync::frame::LaunchState;
+        let (rows, own) = self.store.sync_read(budget, |conn, _| {
+            let rows = node_directory::all(conn)
+                .map_err(crate::store::connection::store_error)?
+                .into_iter()
+                .map(|row| MachineRow {
+                    uuid: row.node_uuid.to_string(),
+                    tag: row.tag.to_string(),
+                    host: row.host_label,
+                })
+                .collect::<Vec<_>>();
+            let own: String = conn
+                .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+                .map_err(crate::store::connection::store_error)?;
+            Ok((rows, own))
+        })?;
+        let found = crate::protocol::address::match_machine(machine, &rows);
+        let node = match found.as_slice() {
+            [] => {
+                return Ok(SyncReply::Launch(LaunchReply::UnknownMachine {
+                    known: rows.iter().take(KNOWN_MACHINES_LISTED).cloned().collect(),
+                }));
+            }
+            [one] => (*one).clone(),
+            many => {
+                return Ok(SyncReply::Launch(LaunchReply::AmbiguousMachine {
+                    matches: many.iter().map(|row| (*row).clone()).collect(),
+                }));
+            }
+        };
+        if node.uuid == own {
+            return Ok(SyncReply::Launch(LaunchReply::SelfNode));
+        }
+        let uuid: crate::node::NodeUuid = node
+            .uuid
+            .parse()
+            .map_err(|_| ApiError::new(ErrorCode::StoreCorrupt, "malformed node directory uuid"))?;
+        let remaining = budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        let wait = std::time::Duration::from_millis(remaining.min(REMOTE_RESOLVE_WAIT_MS));
+        let answer = self.runtime.block_on(self.sync.launch_remote(
+            uuid,
+            request,
+            wait,
+            &budget.cancellation,
+        ));
+        let answer = match answer {
+            None => RemoteLaunchAnswer::Timeout {
+                secs: wait.as_secs(),
+            },
+            Some(LaunchAnswer::NotLinked | LaunchAnswer::LinkLost) => {
+                let last = self.store.sync_read(budget, |conn, _| {
+                    crate::store::sync_contacts::get(conn, &uuid)
+                })?;
+                RemoteLaunchAnswer::Unreachable {
+                    last_contact_at: last.and_then(|c| i64::try_from(c.last_contact_at).ok()),
+                }
+            }
+            Some(LaunchAnswer::NoCap { version }) => RemoteLaunchAnswer::NoCap { version },
+            Some(LaunchAnswer::Answered(state)) => match &state {
+                LaunchState::Launched { seat, .. }
+                    if !self.wait_replicated(seat, &uuid, REPLICA_WAIT_MS, budget)? =>
+                {
+                    RemoteLaunchAnswer::NotReplicated { seat: seat.clone() }
+                }
+                _ => RemoteLaunchAnswer::Answered { state },
+            },
+        };
+        Ok(SyncReply::Launch(LaunchReply::Remote { node, answer }))
     }
 
     /// N15: ask `seat`'s home node whether it can take a handoff now. Only a

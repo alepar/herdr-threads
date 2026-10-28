@@ -464,6 +464,13 @@ pub enum CliAction {
     InternalPreUpgradeBackup {
         target_version: String,
     },
+    /// A launch (and, with `then`, a handoff) on another machine (remote launch).
+    RemoteLaunch(Box<super::peer_launch::RemoteLaunch>),
+    InternalPeerTabCreate {
+        workspace: String,
+        label: String,
+        cwd: std::path::PathBuf,
+    },
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
     Follow(FollowRequest),
@@ -620,6 +627,7 @@ pub fn dispatch<B: CliBackend>(
         CliAction::Setup(_)
         | CliAction::SetupAll(..)
         | CliAction::Launch(_)
+        | CliAction::RemoteLaunch(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::TopologyRecover(_)
@@ -634,6 +642,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::InstallerIntegrations { .. }
         | CliAction::InternalJsonField { .. }
         | CliAction::InternalPreUpgradeBackup { .. }
+        | CliAction::InternalPeerTabCreate { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
         | CliAction::Summary(_)
@@ -1329,6 +1338,16 @@ enum InternalSub {
         /// The version being installed; names the backup.
         #[arg(long, value_name = "TAG")]
         target_version: String,
+    },
+    /// Create the tab of a peer-requested launch on --host-endpoint (run only by this
+    /// node's daemon for a recorded request; prints the root pane).
+    PeerTabCreate {
+        #[arg(long, value_name = "WORKSPACE_ID")]
+        workspace: String,
+        #[arg(long)]
+        label: String,
+        #[arg(long, value_name = "DIR")]
+        cwd: std::path::PathBuf,
     },
 }
 
@@ -2256,6 +2275,44 @@ fn message_id(value: String) -> Result<MessageId, ApiError> {
     }
     id(value, MessageId::parse)
 }
+/// The machine a launch or handoff selector names with an `@MACHINE` suffix on
+/// `--space`, `--tab` or `--pane` (remote launch), if it names one.
+fn remote_machine(selector: &super::panes::PaneSelector) -> Option<String> {
+    [&selector.space, &selector.tab, &selector.pane]
+        .into_iter()
+        .flatten()
+        .find_map(|text| super::seat_selector::split_machine(text).map(|(_, m)| m.to_owned()))
+}
+
+/// The remote launch target of `--space/--tab/--pane` with `@MACHINE`: every
+/// suffixed part must name the same machine; unsuffixed parts inherit it.
+fn remote_pane_target(
+    selector: &super::panes::PaneSelector,
+) -> Result<(String, crate::sync::frame::LaunchTarget), ApiError> {
+    let mut machine: Option<String> = None;
+    let mut part = |text: &Option<String>| -> Result<Option<String>, ApiError> {
+        let Some(text) = text else { return Ok(None) };
+        match super::seat_selector::split_machine(text) {
+            Some((location, m)) => {
+                if machine.as_deref().is_some_and(|seen| seen != m) {
+                    return Err(invalid("--space/--tab/--pane name different machines"));
+                }
+                machine = Some(m.to_owned());
+                Ok(Some(location.to_owned()))
+            }
+            None => Ok(Some(text.clone())),
+        }
+    };
+    let space = part(&selector.space)?;
+    let tab = part(&selector.tab)?;
+    let pane = part(&selector.pane)?.ok_or_else(|| invalid("handoff requires --pane PANE"))?;
+    let machine = machine.ok_or_else(|| invalid("no @MACHINE given"))?;
+    Ok((
+        machine,
+        crate::sync::frame::LaunchTarget::Pane { space, tab, pane },
+    ))
+}
+
 fn bounded(value: String, name: &str) -> Result<String, ApiError> {
     if value.is_empty() || value.len() > 1024 {
         Err(invalid(format!("{name} must contain 1..1024 UTF-8 bytes")))
@@ -2771,6 +2828,13 @@ fn parse_cli_in_registry(
             }
             Some(selector.clone())
         }
+        Top::Launch(LaunchArgs { selector, .. }) if remote_machine(selector).is_some() => {
+            if selector.pane.is_none() {
+                return Err(invalid("launch, handoff and rebind require --pane PANE"));
+            }
+            None
+        }
+        Top::Handoff(args) if !args.existing && (remote_machine(&args.selector).is_some()) => None,
         Top::Seat {
             command: SeatSub::Rebind { selector, .. },
         }
@@ -3395,6 +3459,25 @@ fn parse_cli_in_registry(
         Top::Me {
             command: MeSub::Init { operator },
         } => CliAction::MeInit { operator },
+        Top::Launch(args) if remote_machine(&args.selector).is_some() => {
+            harness_arg(&args.kind, registry)?;
+            if args.harness_binary.is_some() || args.name.is_some() {
+                return Err(invalid(
+                    "--harness-binary and --name are not supported for a launch on another machine",
+                ));
+            }
+            let (machine, target) = remote_pane_target(&args.selector)?;
+            CliAction::RemoteLaunch(Box::new(super::peer_launch::RemoteLaunch {
+                machine,
+                plan: crate::sync::frame::LaunchPlan {
+                    target,
+                    kind: args.kind,
+                    argv: args.agent_args,
+                    cwd: None,
+                },
+                then: None,
+            }))
+        }
         Top::Launch(args) => {
             let harness = harness_arg(&args.kind, registry)?;
             if let Some(name) = &args.name
@@ -3473,7 +3556,69 @@ fn parse_cli_in_registry(
                     registry,
                 )?;
             }
-            if args.new_tab.is_some() || args.existing {
+            if !args.existing && remote_machine(&args.selector).is_some() {
+                if args.harness_binary.is_some()
+                    || args.name.is_some()
+                    || args.profile_dir.is_some()
+                {
+                    return Err(invalid(
+                        "--harness-binary, --name and --profile-dir are not supported for a \
+                         handoff to another machine",
+                    ));
+                }
+                let kind = args.kind.clone().expect("kind required");
+                let (machine, target) = match &args.new_tab {
+                    Some(label) => {
+                        let space = args.selector.space.as_deref().unwrap_or_default();
+                        let (space, machine) = super::seat_selector::split_machine(space)
+                            .ok_or_else(|| {
+                                invalid("a new tab on another machine needs --space SPACE@MACHINE")
+                            })?;
+                        if args.cwd.as_ref().is_none_or(|cwd| !cwd.is_absolute()) {
+                            return Err(invalid(
+                                "a new tab on another machine needs --cwd DIR (absolute, on that machine)",
+                            ));
+                        }
+                        (
+                            machine.to_owned(),
+                            crate::sync::frame::LaunchTarget::NewTab {
+                                space: space.to_owned(),
+                                label: label.clone(),
+                            },
+                        )
+                    }
+                    None => remote_pane_target(&args.selector)?,
+                };
+                let then = super::topology_handoff::Request {
+                    policy: Some(policy),
+                    automatic: !args.new_thread && args.thread.is_none(),
+                    new_tab: None,
+                    existing: true,
+                    selector: super::panes::PaneSelector::default(),
+                    seat: None,
+                    cwd: None,
+                    profile_dir: None,
+                    thread: args.thread,
+                    thread_name: args.thread_name,
+                    topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
+                    goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
+                    body,
+                    kind: None,
+                    binary: None,
+                    name: None,
+                    argv: Vec::new(),
+                };
+                CliAction::RemoteLaunch(Box::new(super::peer_launch::RemoteLaunch {
+                    machine,
+                    plan: crate::sync::frame::LaunchPlan {
+                        target,
+                        kind,
+                        argv: args.agent_args,
+                        cwd: args.cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
+                    },
+                    then: Some(Box::new(then)),
+                }))
+            } else if args.new_tab.is_some() || args.existing {
                 if args.existing
                     && (args.harness_binary.is_some()
                         || args.name.is_some()
@@ -3667,6 +3812,18 @@ fn parse_cli_in_registry(
         Top::Internal {
             command: InternalSub::PreUpgradeBackup { target_version },
         } => CliAction::InternalPreUpgradeBackup { target_version },
+        Top::Internal {
+            command:
+                InternalSub::PeerTabCreate {
+                    workspace,
+                    label,
+                    cwd,
+                },
+        } => CliAction::InternalPeerTabCreate {
+            workspace,
+            label,
+            cwd,
+        },
         Top::Retry { recovery_ref } => CliAction::Retry(id(recovery_ref, LocalRecoveryRef::parse)?),
         Top::View(args) => CliAction::View {
             once: args.once,

@@ -106,5 +106,6 @@ neither callback activation nor model consumption. No composer stash/restore.
 
 agy launch accepts --add-dir, --agent, --conversation, --effort, --mode, --model, --project, --log-file, -i/--prompt-interactive, -c/--continue and --new-project (Go flag grammar: --name value or --name=value). It refuses -p/--print/--prompt, --dangerously-skip-permissions, --sandbox, --remote-control, the print-only flags, single-dash long forms, unknown flags, positionals, subcommands, `--`, and -c together with --conversation. -c continues the most recent conversation; it is not an alias of --conversation. Extra arguments come from HERDR_THREADS_AGY_OPTS in the same grammar.
 
+--pane PANE@MACHINE launches on another machine: it runs its own launch there.
 Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
 inspect the pane (`herdr agent get` / `herdr agent read`) before launching again.

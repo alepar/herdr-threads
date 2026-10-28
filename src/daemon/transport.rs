@@ -556,6 +556,7 @@ async fn serve_connection(
         Command::Sync(
             crate::protocol::sync_admin::SyncCommand::ResolveAddress { .. }
                 | crate::protocol::sync_admin::SyncCommand::CheckRemoteSeat { .. }
+                | crate::protocol::sync_admin::SyncCommand::RemoteLaunch { .. }
         )
     ) {
         tokio::time::Instant::now()

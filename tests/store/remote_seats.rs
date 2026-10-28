@@ -891,3 +891,77 @@ fn remote_resolution_answers_only_published_local_seats() {
         None
     );
 }
+
+// Kills: a repeated request id recorded twice (a second launch), a settled
+// request changed again, a request left running by a restarted daemon
+// resumed instead of failed, old rows kept forever, and `peer list` miscounting
+// a node's peer-requested launches (remote launch, N15).
+#[test]
+fn peer_requests_record_once_settle_once_and_fail_interrupted_runs() {
+    use herdr_threads::store::peer_requests::{self, PeerRequest};
+    use herdr_threads::sync::frame::LaunchState;
+    let f = fixture();
+    let node = "ab".repeat(16);
+    let request = |id: &str, at: i64| PeerRequest {
+        id: id.into(),
+        node_uuid: node.clone(),
+        requester_seat: Some("sQ0Vseat0001".into()),
+        kind: "pane".into(),
+        plan: "{}".into(),
+        state: "running".into(),
+        pane: None,
+        seat: None,
+        detail: None,
+        created_at: at,
+        updated_at: 0,
+    };
+    let id1 = "00000000-0000-0000-0000-000000000001";
+    let id2 = "00000000-0000-0000-0000-000000000002";
+    let old = "00000000-0000-0000-0000-000000000003";
+    let now = 10 * peer_requests::RETENTION_MS;
+    let (_, inserted) = peer_requests::insert_or_get(&f.db, &request(id1, now)).unwrap();
+    assert!(inserted);
+    let (again, inserted) = peer_requests::insert_or_get(&f.db, &request(id1, now + 5)).unwrap();
+    assert!(!inserted, "one row per id");
+    assert_eq!(again.answer(), LaunchState::Running { pane: None });
+    assert!(
+        peer_requests::record(
+            &f.db,
+            id1,
+            "launched",
+            Some("w1:p2"),
+            Some("sAAAseat0001"),
+            None,
+            now
+        )
+        .unwrap()
+    );
+    assert!(
+        !peer_requests::record(&f.db, id1, "failed", None, None, Some("late"), now).unwrap(),
+        "settled once"
+    );
+    assert_eq!(
+        peer_requests::get(&f.db, id1).unwrap().unwrap().answer(),
+        LaunchState::Launched {
+            seat: "sAAAseat0001".into(),
+            pane: "w1:p2".into()
+        }
+    );
+    peer_requests::insert_or_get(&f.db, &request(id2, now + 10)).unwrap();
+    peer_requests::insert_or_get(&f.db, &request(old, 1)).unwrap();
+    peer_requests::record(&f.db, old, "launched", None, Some("s"), None, 1).unwrap();
+    let failed = peer_requests::settle_at_start(&f.db, now + 20).unwrap();
+    assert_eq!(failed, [id2]);
+    assert!(matches!(
+        peer_requests::get(&f.db, id2).unwrap().unwrap().answer(),
+        LaunchState::Failed { detail, .. } if detail.contains("interrupted")
+    ));
+    assert!(
+        peer_requests::get(&f.db, old).unwrap().is_none(),
+        "past retention"
+    );
+    let by_node = peer_requests::by_node(&f.db).unwrap();
+    assert_eq!(by_node.len(), 1);
+    assert_eq!(by_node[0].1, 2);
+    assert_eq!(by_node[0].2.id, id2, "the newest");
+}

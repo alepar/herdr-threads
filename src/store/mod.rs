@@ -26,6 +26,7 @@ pub mod messages;
 pub mod node_directory;
 pub mod operator;
 pub mod page_fit;
+pub mod peer_requests;
 pub mod poke;
 mod presentation_reader;
 mod presentation_relevance;

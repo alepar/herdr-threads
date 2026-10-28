@@ -405,6 +405,21 @@ pub fn nodes(conn: &Connection, now_ms: u64, live: &[LiveNode]) -> Result<Vec<No
         )
         .map_err(store_error)?;
     let at = |v: u64| i64::try_from(v).ok();
+    let launches: BTreeMap<String, crate::protocol::sync_admin::PeerLaunches> =
+        crate::store::peer_requests::by_node(conn)
+            .map_err(store_error)?
+            .into_iter()
+            .map(|(node, count, last)| {
+                (
+                    node,
+                    crate::protocol::sync_admin::PeerLaunches {
+                        count,
+                        last_state: last.state,
+                        last_request: last.id.chars().take(8).collect(),
+                    },
+                )
+            })
+            .collect();
     let mut out = Vec::new();
     for text in known {
         let uuid: NodeUuid = text
@@ -423,6 +438,7 @@ pub fn nodes(conn: &Connection, now_ms: u64, live: &[LiveNode]) -> Result<Vec<No
         out.push(NodeRow {
             node: node_label(tag.as_deref(), &text),
             host,
+            peer_launches: launches.get(&text).cloned(),
             state: node_state(reach, live).as_str().to_owned(),
             stalled: live
                 .map(|l| l.stalled.names().into_iter().map(str::to_owned).collect())

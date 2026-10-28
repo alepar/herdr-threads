@@ -1206,6 +1206,16 @@ fn node_row(node: &NodeRow, now: i64, out: &mut String) {
     if let Some(host) = &node.host {
         let _ = write!(out, " host={}", token(host));
     }
+    // Launches this node ran for that node (remote launch; ~40 bytes).
+    if let Some(launches) = &node.peer_launches {
+        let _ = write!(
+            out,
+            " peer_launches={} last={}:{}",
+            launches.count,
+            token(&launches.last_state),
+            token(&launches.last_request)
+        );
+    }
     out.push('\n');
 }
 
@@ -1347,6 +1357,13 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
         }
         // Consumed by seat resolution, never printed on its own; the JSON
         // form is the debugging view.
+        SyncReply::Launch(reply) => {
+            let _ = writeln!(
+                out,
+                "launch {}",
+                one_line(&serde_json::to_string(reply).unwrap_or_default())
+            );
+        }
         SyncReply::Address(reply) => {
             let _ = writeln!(
                 out,

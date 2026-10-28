@@ -107,7 +107,8 @@ A harness that exits right after the start (for example a harness refusing its a
 fails launch at once with invalid_request and the pane's last lines.
 
 Harness choices come from the same-binary registry."#;
-const LAUNCH_TAIL: &str = r#"Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
+const LAUNCH_TAIL: &str = r#"--pane PANE@MACHINE launches on another machine: it runs its own launch there.
+Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
 inspect the pane (`herdr agent get` / `herdr agent read`) before launching again."#;
 
 const HANDOFF_TEMPLATE: &str = r#"Omit --new-thread and --thread for the canonical automatic two-seat channel.
@@ -117,6 +118,8 @@ Choose one target mode:
   --new-tab LABEL --kind @KINDS@ creates a tab and launches there;
   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
     to an existing canonical seat without launching or restarting its session.
+On another machine: --pane PANE@MACHINE, or --new-tab LABEL --space SPACE@MACHINE
+  --cwd DIR (DIR on that machine); --existing --seat SEAT@MACHINE.
 Handoff requires an original top-level Agent and the guarded daemon capability.
 --new-tab conflicts with --existing, --tab, --pane and --seat. Directory example:
   handoff --new-tab review --kind HARNESS --profile-dir /absolute/profile --cwd /absolute/workdir -- "Review this change"

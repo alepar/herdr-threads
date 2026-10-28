@@ -224,6 +224,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "housekeeping (link pings, request failover, penalty and pin expiry, flushes) must keep running while the sync lane Pacer backs off, so it is a tokio timer, which coordinator tests pause",
     ),
     (
+        "src/service/peer_launcher.rs",
+        "std::thread::sleep(CHILD_POLL)",
+        "one peer-requested launch's worker thread waiting for its child to exit, bounded by CHILD_TIMEOUT; not a periodic daemon loop",
+    ),
+    (
         "src/sync/coordinator.rs",
         "recv_timeout(Duration::from_secs(10))",
         "unit-test resolver holding remote address requests until the test releases them, 10 s cap; not daemon code",

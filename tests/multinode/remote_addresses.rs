@@ -255,3 +255,217 @@ fn handoff_into_a_remote_seat_is_authored_by_the_sender() {
         delivered("second task")
     });
 }
+
+/// The stand-in for the launching node's children (`internal
+/// peer-tab-create`, `launch`): records each call's argv and environment in
+/// the log dir, waits while `hold` exists, and answers like the real ones.
+const LAUNCH_STUB: &str = r#"#!/bin/sh
+log="$HT_TEST_PEER_LAUNCH_LOG"
+n=$(ls "$log" | grep -c '^call-' )
+{ printf '%s\n' "$@"; echo '--env--'; env; } > "$log/call-$n"
+while [ -e "$log/hold" ]; do sleep 0.1; done
+for a in "$@"; do
+  case "$a" in
+    peer-tab-create) echo '{"pane":"w1:p9","tab":"w1:t9"}'; exit 0;;
+    launch) printf '{"result":{"data":{"seat":"%s"}}}\n' "$(cat "$log/seat")"; exit 0;;
+  esac
+done
+exit 1
+"#;
+
+fn calls(log: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<_> = std::fs::read_dir(log)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().into_string().unwrap())
+        .filter(|n| n.starts_with("call-"))
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|n| std::fs::read_to_string(log.join(n)).unwrap())
+        .collect()
+}
+
+// Kills: a launch on another machine refused or run through the asking
+// node's own Herdr, the launching node's child inheriting a caller pane or
+// harness session (stray attribution), a retry after a dropped link
+// launching twice, a held target launched, a new tab not labelled with the
+// requesting node, and an older peer not refused (N15).
+#[test]
+fn remote_launch_runs_on_the_target_machine_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let log = herdr_threads::test_support::scratch::temp_path(format!(
+        "ht-peer-launch-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&log).unwrap();
+    let stub = log.join("stub.sh");
+    std::fs::write(&stub, LAUNCH_STUB).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let calls_dir = log.join("calls");
+    std::fs::create_dir_all(&calls_dir).unwrap();
+    let mut env = vec![
+        (
+            1,
+            "HT_TEST_PEER_LAUNCH_STUB".to_owned(),
+            stub.display().to_string(),
+        ),
+        (
+            1,
+            "HT_TEST_PEER_LAUNCH_LOG".to_owned(),
+            calls_dir.display().to_string(),
+        ),
+        // A stray caller pane and session in the daemon's own environment.
+        (1, "HERDR_PANE_ID".to_owned(), "w1:p1".to_owned()),
+        (1, "CODEX_SESSION_ID".to_owned(), "stray".to_owned()),
+    ];
+    env.push((
+        2,
+        "HT_TEST_WITHHOLD_CAPS".to_owned(),
+        "peer.launch.v1".to_owned(),
+    ));
+    let mut cluster = Cluster::start(
+        "mn-remote-launch",
+        crate::BIN,
+        3,
+        ClusterOptions {
+            links: vec![(0, 1), (0, 2)],
+            env,
+            ..Default::default()
+        },
+    );
+    cluster.add_host(0, &[P1]);
+    cluster.add_host(1, &[P1, P2, P3]);
+    cluster.add_host(2, &[P1]);
+    let a = cluster.seat(0, P1);
+    let b = cluster.seat(1, P1);
+    let _c = cluster.seat(2, P1);
+    support::wait_seats(&cluster, 0, 3);
+    cluster.wait_converged(crate::WAIT);
+    // The stub answers with b's seat: a seat node 0 holds as node 1's.
+    std::fs::write(calls_dir.join("seat"), &b.id).unwrap();
+    let b_tag = tag_of(&cluster, 0, 1);
+    let c_tag = tag_of(&cluster, 0, 2);
+    let a_tag = tag_of(&cluster, 0, 0);
+    let launch = |pane: &str, arg: &str| {
+        cluster.text_as(
+            Some(&a),
+            0,
+            &[
+                "launch",
+                "--pane",
+                &format!("{pane}@{b_tag}"),
+                "--kind",
+                "claude",
+                "--",
+                arg,
+            ],
+        )
+    };
+
+    // A launch into a pane on node 1, run there as its own `launch`.
+    let (code, stdout, stderr) = launch(P2, "--first");
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    assert!(
+        stdout.contains(&format!("launched seat={}", b.id)),
+        "{stdout}"
+    );
+    let first = calls(&calls_dir);
+    assert_eq!(first.len(), 1, "{first:?}");
+    let (argv, env) = first[0].split_once("--env--").unwrap();
+    assert!(
+        argv.contains("launch\n--pane\nw1:p2\n--kind\nclaude\n--\n--first"),
+        "{argv}"
+    );
+    assert!(!env.contains("HERDR_PANE_ID"), "{env}");
+    assert!(!env.contains("CODEX_SESSION_ID"), "{env}");
+    assert!(env.contains("HOME="), "{env}");
+
+    // A held target is refused on node 1, before anything runs there.
+    cluster.write_sql(
+        1,
+        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) \
+         SELECT host_id,'w1:p3','fixture',0,'fixture' FROM herdr_hosts LIMIT 1",
+    );
+    let (code, stdout, stderr) = launch(P3, "--held");
+    assert_ne!(code, 0, "{stdout}");
+    assert!(stderr.contains("held for recovery"), "{stderr}");
+    assert_eq!(calls(&calls_dir).len(), 1, "nothing ran for the held pane");
+
+    // A dropped link mid-launch: the rerun reuses the request id and gets
+    // the one launch's outcome; the child ran once.
+    std::fs::write(calls_dir.join("hold"), b"").unwrap();
+    let (code, stdout, stderr) = std::thread::scope(|scope| {
+        let run = scope.spawn(|| launch(P2, "--second"));
+        cluster.wait_until("node 1 to start the launch", crate::WAIT, || {
+            (calls(&calls_dir).len() == 2).then_some(())
+        });
+        cluster.partition(0, 1);
+        // The asker keeps asking with the same id while the link is down.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        cluster.heal(0, 1);
+        std::fs::remove_file(calls_dir.join("hold")).unwrap();
+        run.join().unwrap()
+    });
+    // It rode out the drop, or gave up and a rerun resumes the same request;
+    // either way the launch ran once.
+    let (code, stdout, stderr) = if code == 0 {
+        (code, stdout, stderr)
+    } else {
+        assert!(stderr.contains("rerun to resume"), "{stderr}");
+        cluster.wait_until("the rerun to get the outcome", crate::WAIT, || {
+            let out = launch(P2, "--second");
+            (out.0 == 0).then_some(out)
+        })
+    };
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("launched seat="), "{stdout}");
+    assert_eq!(calls(&calls_dir).len(), 2, "one launch for one request");
+
+    // A new tab, labelled with the requesting node.
+    let (code, stdout, stderr) = cluster.text_as(
+        Some(&a),
+        0,
+        &[
+            "handoff",
+            "--new-tab",
+            "review",
+            "--space",
+            &format!("w1@{b_tag}"),
+            "--cwd",
+            "/tmp",
+            "--kind",
+            "claude",
+            "--",
+            "look at this",
+        ],
+    );
+    let tab_call = calls(&calls_dir)
+        .into_iter()
+        .find(|c| c.contains("peer-tab-create"))
+        .unwrap_or_else(|| panic!("no tab created: {code} {stdout}{stderr}"));
+    assert!(
+        tab_call.contains(&format!("--label\nreview [from {a_tag}]")),
+        "{tab_call}"
+    );
+
+    // peer list on node 1 shows node 0's launches.
+    let (_, peers, _) = cluster.text_as(None, 1, &["peer", "list"]);
+    assert!(peers.contains("peer_launches="), "{peers}");
+
+    // An older peer without peer.launch.v1: refused, nothing local.
+    let (code, _, stderr) = cluster.text_as(
+        Some(&a),
+        0,
+        &[
+            "launch",
+            "--pane",
+            &format!("{P1}@{c_tag}"),
+            "--kind",
+            "claude",
+        ],
+    );
+    assert_ne!(code, 0);
+    assert!(stderr.contains("needs peer.launch.v1"), "{stderr}");
+}

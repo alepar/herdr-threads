@@ -544,7 +544,7 @@ pub enum AddrOutcome {
 /// A request to launch an agent on the receiving node (cap
 /// [`PEER_LAUNCH_CAP`]). Sending the same `id` again asks for the recorded
 /// outcome; the receiver never launches twice for one id.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchRequest {
     #[serde(default)]
     pub id: Uuid,

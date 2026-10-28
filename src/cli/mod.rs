@@ -36,6 +36,7 @@ pub mod pre_upgrade_backup;
 pub mod retry;
 mod seat_resolution;
 pub use crate::protocol::address as seat_selector;
+pub mod peer_launch;
 pub(crate) mod send_priority;
 pub mod setup;
 pub mod skill;
@@ -528,6 +529,27 @@ fn run_parsed_in_pane<W: Write>(
         io::Read::read_to_end(&mut io::stdin().lock(), &mut input)?;
         return internal::json_field_bytes(&input, path, *keys, writer);
     }
+    if let CliAction::InternalPeerTabCreate {
+        workspace,
+        label,
+        cwd,
+    } = &parsed.action
+    {
+        let endpoint = parsed
+            .output
+            .context
+            .host
+            .as_deref()
+            .ok_or_else(|| invalid_request("internal peer-tab-create needs --host-endpoint"))?;
+        return peer_launch::create_tab(
+            std::path::Path::new(endpoint),
+            workspace,
+            label,
+            cwd,
+            Arc::new(crate::app::SystemClock::new()),
+            writer,
+        );
+    }
     if let CliAction::InternalPreUpgradeBackup { target_version } = &parsed.action {
         let state_dir = parsed
             .output
@@ -629,6 +651,39 @@ fn run_parsed_in_pane<W: Write>(
     };
     if topology_runtime::run_operator(&parsed, &context, &paths, &clock, writer)? {
         return Ok(());
+    }
+    // A launch on another machine (TRUST-POLICY N15): that machine launches; a
+    // handoff then continues here as `--existing --seat <launched seat>`.
+    if let CliAction::RemoteLaunch(remote) = &parsed.action {
+        let remote = (**remote).clone();
+        let (_, _, client) = connect(&paths, &clock)?;
+        let requester = parsed
+            .cooperative
+            .as_ref()
+            .map(|c| c.seat.as_str().to_owned());
+        let (seat, pane) = peer_launch::run_remote(
+            &remote,
+            requester.as_deref(),
+            &paths.node_dir,
+            &client,
+            clock.as_ref(),
+            &mut io::stderr(),
+        )?;
+        match remote.then {
+            None => {
+                writeln!(
+                    writer,
+                    "launched seat={seat} pane={pane}@{}",
+                    remote.machine
+                )?;
+                writer.flush()?;
+                return Ok(());
+            }
+            Some(mut then) => {
+                then.seat = Some(seat);
+                parsed.action = CliAction::TopologyHandoff(*then);
+            }
+        }
     }
     // The claim host's adapter, built only when a pane selector needs the host:
     // a store-only command (sync, peer, daemon, pending-ops) never asks.
@@ -1117,10 +1172,12 @@ fn run_parsed_in_pane<W: Write>(
         }
         CliAction::InstallerIntegrations { .. }
         | CliAction::InternalJsonField { .. }
-        | CliAction::InternalPreUpgradeBackup { .. } => {
+        | CliAction::InternalPreUpgradeBackup { .. }
+        | CliAction::InternalPeerTabCreate { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
         CliAction::Launch(_)
+        | CliAction::RemoteLaunch(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::TopologyRecover(_) => {

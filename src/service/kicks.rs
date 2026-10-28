@@ -248,6 +248,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // Restored-pane watches (ht-wpq4) are read and written only by the
     // observation lane's own reconciliation pass.
     "restored_pane_watch",
+    // Peer-requested launches (remote launch) are written and read only by the
+    // peer launcher and `peer list`.
+    "peer_requests",
     "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",

@@ -741,6 +741,14 @@ impl Cluster {
         seat.session.clone()
     }
 
+    /// Runs one write on `node`'s live store (a fixture row the scenario
+    /// needs, such as a recovery hold).
+    pub fn write_sql(&self, node: usize, sql: &str) -> usize {
+        let conn = Connection::open(db_path(&self.nodes[node].state)).expect("open store");
+        conn.busy_timeout(Duration::from_secs(5)).unwrap();
+        conn.execute(sql, []).expect("fixture write")
+    }
+
     /// A read-only view of `node`'s store; `None` while it is missing or busy.
     pub fn open_store(&self, node: usize) -> Option<Connection> {
         open_db(&self.nodes[node].state)
