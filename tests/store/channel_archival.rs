@@ -2358,7 +2358,7 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
     )
     .unwrap();
     let db = Connection::open(&path).unwrap();
-    let budget = herdr_threads::protocol::time::CallBudget {
+    let budget = || herdr_threads::protocol::time::CallBudget {
         deadline: herdr_threads::protocol::time::MonoInstant(
             store.clock().monotonic_now().0 + 5000,
         ),
@@ -2375,7 +2375,7 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
         retained_completion: None,
     }];
     assert_eq!(
-        store.archival_pass(&rt, &hints, &budget).unwrap(),
+        store.archival_pass(&rt, &hints, &budget()).unwrap(),
         archival::Progress::default()
     );
     assert_eq!(
@@ -2384,7 +2384,7 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
             .unwrap(),
         0
     );
-    let next = store.archival_next(&rt, &budget).unwrap();
+    let next = store.archival_next(&rt, &budget()).unwrap();
     assert!(next.ticket.is_none());
     assert!(!next.has_more);
     assert_eq!(
@@ -2407,7 +2407,7 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
     thread(&db);
     assert!(
         store
-            .archival_pass(&rt, &hints, &budget)
+            .archival_pass(&rt, &hints, &budget())
             .unwrap()
             .archived
             .is_empty()
@@ -2419,7 +2419,13 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
         1,
         "fresh retry imports the veto after canonical initialization"
     );
-    assert!(store.archival_next(&rt, &budget).unwrap().ticket.is_none());
+    assert!(
+        store
+            .archival_next(&rt, &budget())
+            .unwrap()
+            .ticket
+            .is_none()
+    );
     assert_eq!(
         db.query_row("SELECT count(*) FROM archival_instances", [], |r| r
             .get::<_, i64>(0))

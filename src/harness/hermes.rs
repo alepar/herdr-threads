@@ -2477,11 +2477,12 @@ mod adapter_tests {
             ..Default::default()
         };
         // Real Python inspection under a loaded test pool: the probe's own
-        // ceiling (PROBE_LIMIT), not a 2 s budget, bounds it.
-        let budget = CallBudget {
-            deadline: crate::protocol::time::MonoInstant(
-                environment.clock.monotonic_now().0 + 15_000,
-            ),
+        // ceiling (PROBE_LIMIT), not a 2 s budget, bounds it. Each call gets
+        // its own budget: one deadline across every probe below runs out
+        // under load before the later calls start.
+        let clock = environment.clock.clone();
+        let budget = move || CallBudget {
+            deadline: crate::protocol::time::MonoInstant(clock.monotonic_now().0 + 15_000),
             cancellation: Default::default(),
         };
         // Project an explicit root over a conflicting inherited root without
@@ -2515,7 +2516,7 @@ mod adapter_tests {
             native_binary: Some(launcher.clone()),
         };
         let scope = policy
-            .resolve_scope(&launch_request, &NoShell, &budget)
+            .resolve_scope(&launch_request, &NoShell, &budget())
             .unwrap();
         assert_eq!(
             scope.setup,
@@ -2532,7 +2533,7 @@ mod adapter_tests {
         };
         assert_eq!(
             policy
-                .resolve_scope(&default_request, &NoShell, &budget)
+                .resolve_scope(&default_request, &NoShell, &budget())
                 .unwrap()
                 .setup,
             ResolvedSetupScope::Profile {
@@ -2540,7 +2541,7 @@ mod adapter_tests {
                 home: home.clone()
             }
         );
-        let observed = inspect_profile("work", Some(&launcher), &environment, &budget)
+        let observed = inspect_profile("work", Some(&launcher), &environment, &budget())
             .expect("actual discovery cannot reach setup consumer");
         assert_eq!(observed.home, home.join("profiles/work"));
         let mut request = SetupRequest {
@@ -2553,13 +2554,13 @@ mod adapter_tests {
             native_binary: Some(launcher),
             options: Default::default(),
         };
-        assert!(HermesAdapter.setup(&request, &budget).is_err());
+        assert!(HermesAdapter.setup(&request, &budget()).is_err());
         assert!(!home.join("plugins/herdr-threads").exists());
         request.scope = ResolvedSetupScope::Profile {
             name: "work".into(),
             home: observed.home.clone(),
         };
-        let installed = HermesAdapter.setup(&request, &budget).unwrap();
+        let installed = HermesAdapter.setup(&request, &budget()).unwrap();
         assert_eq!(installed.projection["native_acceptance"], "unmet");
         assert!(
             observed
@@ -2573,7 +2574,7 @@ mod adapter_tests {
                 environment: environment.clone(),
                 native_binary: request.native_binary.clone(),
             },
-            &budget,
+            &budget(),
         );
         let SetupStatus::Detailed(status) = status else {
             panic!("actual status producer refused")
@@ -2583,7 +2584,7 @@ mod adapter_tests {
         assert_eq!(status.admitted, None);
         assert_eq!(status.observed, None);
         let captured = policy
-            .observe_prelaunch(&launch_request, &scope, &budget)
+            .observe_prelaunch(&launch_request, &scope, &budget())
             .unwrap();
         let prepared = policy
             .prepare_prelaunch(
@@ -2592,7 +2593,7 @@ mod adapter_tests {
                 captured.as_ref(),
                 &status,
                 &NoShell,
-                &budget,
+                &budget(),
             )
             .unwrap();
         assert!(prepared.hook.is_some());
@@ -2605,12 +2606,12 @@ mod adapter_tests {
         assert_eq!(prepared.report["hermes"]["native_acceptance"], "unmet");
         assert_eq!(prepared.report["hermes"]["callback_qualified"], false);
         policy
-            .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget)
+            .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget())
             .unwrap();
         std::fs::write(package.join("config.py"), "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':[],'disabled':['herdr-threads']}}\n").unwrap();
         assert_eq!(
             policy
-                .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget)
+                .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget())
                 .unwrap_err()
                 .code,
             crate::protocol::results::ErrorCode::Conflict
@@ -2621,7 +2622,7 @@ mod adapter_tests {
                     scope: request.scope,
                     environment,
                 },
-                &budget,
+                &budget(),
             )
             .unwrap();
         assert!(removed.residue.is_empty());

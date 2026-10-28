@@ -400,7 +400,9 @@ impl Fixture {
             db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('saved',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
         }
         if seed {
-            let budget = CallBudget {
+            // Each seed call gets its own budget: one deadline across the whole
+            // seed runs out under suite load before the later calls start.
+            let budget = || CallBudget {
                 deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
                 cancellation: Cancellation::default(),
             };
@@ -420,13 +422,13 @@ impl Fixture {
                 .begin_host_observation(
                     &instance.to_string(),
                     herdr_threads::test_support::test_host_id(),
-                    &budget,
+                    &budget(),
                 )
                 .unwrap();
             let stage = store
                 .begin_snapshot_stage(
                     SnapshotHeader::from_captured(admission, &captured).unwrap(),
-                    &budget,
+                    &budget(),
                 )
                 .unwrap();
             herdr_threads::test_support::snapshot::stage_all(
@@ -437,13 +439,13 @@ impl Fixture {
                         offset,
                         targets,
                         DurableWorkAdmission::new(16).unwrap(),
-                        &budget,
+                        &budget(),
                     )
                 },
             )
             .unwrap();
-            store.seal_snapshot_stage(&stage.id, &budget).unwrap();
-            store.publish_snapshot_stage(&stage.id, &budget).unwrap();
+            store.seal_snapshot_stage(&stage.id, &budget()).unwrap();
+            store.publish_snapshot_stage(&stage.id, &budget()).unwrap();
         }
         let stop = Cancellation::default();
         let thread_stop = stop.clone();

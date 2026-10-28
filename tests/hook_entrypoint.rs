@@ -844,7 +844,9 @@ fn publish_fixture_snapshot(
     clock: &dyn Clock,
 ) {
     use herdr_threads::ports::{DurableWorkAdmission, HostCallContext, SnapshotHeader};
-    let budget = CallBudget {
+    // Each seed call gets its own budget: one deadline across the whole
+    // seed runs out under suite load before the later calls start.
+    let budget = || CallBudget {
         deadline: herdr_threads::protocol::time::MonoInstant(clock.monotonic_now().0 + 5000),
         cancellation: Cancellation::default(),
     };
@@ -852,12 +854,12 @@ fn publish_fixture_snapshot(
         .begin_host_observation(
             instance,
             herdr_threads::test_support::test_host_id(),
-            &budget,
+            &budget(),
         )
         .unwrap();
     let snapshot = host
         .enumerate_targets(&HostCallContext {
-            budget: budget.clone(),
+            budget: budget(),
             expected_boot: None,
             expected_epoch: None,
         })
@@ -865,7 +867,7 @@ fn publish_fixture_snapshot(
     let stage = store
         .begin_snapshot_stage(
             SnapshotHeader::from_captured(admission, &snapshot).unwrap(),
-            &budget,
+            &budget(),
         )
         .unwrap();
     // A writer turn may stage only a prefix (its quantum ran out under load);
@@ -880,7 +882,7 @@ fn publish_fixture_snapshot(
                 offset,
                 targets,
                 DurableWorkAdmission::new(16).unwrap(),
-                &budget,
+                &budget(),
             )
             .unwrap();
         let visited = usize::from(progress.visited);
@@ -891,20 +893,20 @@ fn publish_fixture_snapshot(
         );
         targets = &targets[visited..];
     }
-    store.seal_snapshot_stage(&stage.id, &budget).unwrap();
-    let published = store.publish_snapshot_stage(&stage.id, &budget).unwrap();
+    store.seal_snapshot_stage(&stage.id, &budget()).unwrap();
+    let published = store.publish_snapshot_stage(&stage.id, &budget()).unwrap();
     let page = store
-        .saved_seats_page(&published.id, 0, None, 16, &budget)
+        .saved_seats_page(&published.id, 0, None, 16, &budget())
         .unwrap();
     assert!(!page.has_more);
     for transition in herdr_threads::identity::reconcile::plan_page(&page).unwrap() {
         store
-            .apply_reconciliation_transition(transition, &budget)
+            .apply_reconciliation_transition(transition, &budget())
             .unwrap();
     }
     assert!(
         store
-            .record_reconciliation_pass(&published, &budget)
+            .record_reconciliation_pass(&published, &budget())
             .unwrap()
     );
 }

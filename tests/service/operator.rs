@@ -246,13 +246,15 @@ impl Fixture {
             store,
             instance,
         });
-        let budget = CallBudget {
+        // Each seed call gets its own budget: one deadline across the whole
+        // seed runs out under suite load before the later calls start.
+        let budget = || CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
         };
         let captured = host
             .enumerate_targets(&HostCallContext {
-                budget: budget.clone(),
+                budget: budget(),
                 expected_boot: None,
                 expected_epoch: None,
             })
@@ -262,14 +264,14 @@ impl Fixture {
             .begin_host_observation(
                 &host.instance,
                 herdr_threads::test_support::test_host_id(),
-                &budget,
+                &budget(),
             )
             .unwrap();
         let stage = host
             .store
             .begin_snapshot_stage(
                 SnapshotHeader::from_captured(admission, &captured).unwrap(),
-                &budget,
+                &budget(),
             )
             .unwrap();
         // A writer turn stages only a prefix when its 5 ms quantum runs out
@@ -285,15 +287,17 @@ impl Fixture {
                     staged as u64,
                     &captured.targets[staged..],
                     admission_limit,
-                    &budget,
+                    &budget(),
                 )
                 .unwrap();
             assert!(progress.visited > 0, "snapshot staging must advance");
             staged += usize::from(progress.visited);
         }
-        host.store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         host.store
-            .publish_snapshot_stage(&stage.id, &budget)
+            .seal_snapshot_stage(&stage.id, &budget())
+            .unwrap();
+        host.store
+            .publish_snapshot_stage(&stage.id, &budget())
             .unwrap();
         let stop = Cancellation::default();
         let (tx, rx) = mpsc::sync_channel(1);

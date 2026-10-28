@@ -131,7 +131,7 @@ fn fourth_author_consumers() {
         herdr_threads::harness::composer::ComposerRead::Unreadable
     );
     assert!(registration.canary_strategy().is_none());
-    let budget = CallBudget {
+    let budget = || CallBudget {
         deadline: MonoInstant(env.clock.monotonic_now().0 + 30_000),
         cancellation: Default::default(),
     };
@@ -143,7 +143,7 @@ fn fourth_author_consumers() {
                 runtime_candidate: None,
                 admitted_at: None,
             },
-            &budget,
+            &budget(),
         )
         .unwrap();
     assert_eq!(admitted.kind(), AdmissionKind::ContractDeclared);
@@ -241,7 +241,7 @@ fn fourth_author_consumers() {
         state_dir: env.state_dir.clone(),
     };
     assert!(
-        matches!(registration.observe_install(&explicit_install, &budget),
+        matches!(registration.observe_install(&explicit_install, &budget()),
         InstallObservation::ExecutableAvailable { binary: observed } if observed == binary)
     );
     let undeclared_install = InstallEnvironment {
@@ -250,7 +250,7 @@ fn fourth_author_consumers() {
     };
     assert!(
         matches!(
-            registration.observe_install(&undeclared_install, &budget),
+            registration.observe_install(&undeclared_install, &budget()),
             InstallObservation::Unavailable { .. }
         ),
         "PATH alone must not imply a fourth fixture root"
@@ -300,7 +300,7 @@ fn fourth_author_consumers() {
             environment: env.clone(),
             native_binary: Some(binary.clone()),
         },
-        &budget,
+        &budget(),
     ) else {
         panic!("actual fourth local status unavailable")
     };
@@ -324,7 +324,7 @@ fn fourth_author_consumers() {
             &admitted,
             &status,
             &NoShell,
-            &budget,
+            &budget(),
         )
         .unwrap();
     assert_eq!(prepared.argv, ["--synthetic-only", "synthetic-prompt"]);
@@ -347,7 +347,7 @@ fn fourth_author_consumers() {
             argv: vec!["synthetic-prompt".into()],
             name_hint: Some("synthetic author fixture".into()),
         },
-        &budget,
+        &budget(),
         Some(prepared.argv.clone()),
     )
     .unwrap();
@@ -404,7 +404,7 @@ fn fourth_author_consumers() {
     )
     .with_registry(registry)
     .with_observations(Box::new(|| Ok(Default::default())));
-    let health = provider.report_v2(&budget).unwrap();
+    let health = provider.report_v2(&budget()).unwrap();
     assert_eq!(
         health
             .harnesses
@@ -425,7 +425,7 @@ fn fourth_author_consumers() {
     );
     assert!(
         provider
-            .health_lines(&budget)
+            .health_lines(&budget())
             .unwrap()
             .iter()
             .all(|line| !line.contains("runtime verified"))
@@ -878,7 +878,7 @@ fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
         config_root: None,
         state_dir: None,
     };
-    let budget = CallBudget {
+    let budget = || CallBudget {
         deadline: MonoInstant(clock.monotonic_now().0 + 10_000),
         cancellation: Cancellation::default(),
     };
@@ -888,11 +888,11 @@ fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
     // A regular file and an executable are different installation observations.
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(matches!(
-        r.observe_daemon(&env, &budget).status,
+        r.observe_daemon(&env, &budget()).status,
         HarnessStatus::NotInstalled(_)
     ));
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let installed = r.observe_install(&env, &budget);
+    let installed = r.observe_install(&env, &budget());
     assert!(
         matches!(&installed, InstallObservation::ExecutableAvailable { binary } if binary == &path)
     );
@@ -904,11 +904,11 @@ fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
                 runtime_candidate: None,
                 admitted_at: None,
             },
-            &budget
+            &budget()
         )
         .is_err()
     );
-    let observed = r.observe_daemon(&env, &budget);
+    let observed = r.observe_daemon(&env, &budget());
     assert!(matches!(
         observed.status,
         HarnessStatus::PresentUnqualified { .. }
@@ -921,7 +921,7 @@ fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
         observed.callback_observation.state,
         CallbackObservationState::Unknown
     );
-    assert_eq!(observed, r.observe_daemon(&env, &budget));
+    assert_eq!(observed, r.observe_daemon(&env, &budget()));
     assert!(!sentinel.exists());
 
     let expired = CallBudget {
@@ -929,7 +929,7 @@ fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
         cancellation: Cancellation::default(),
     };
     let cancelled = CallBudget {
-        deadline: budget.deadline,
+        deadline: budget().deadline,
         cancellation: Cancellation::default(),
     };
     cancelled.cancellation.cancel();
@@ -950,24 +950,24 @@ fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
     // Actual inaccessible directory: restore its permissions before assertions
     // so even a failed control cannot strand the isolated fixture at teardown.
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let inaccessible = r.observe_daemon(&env, &budget);
+    let inaccessible = r.observe_daemon(&env, &budget());
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(inaccessible.status, HarnessStatus::Refused(_)));
     std::fs::remove_file(&path).unwrap();
     symlink("hermes", &path).unwrap();
     assert!(matches!(
-        r.observe_daemon(&env, &budget).status,
+        r.observe_daemon(&env, &budget()).status,
         HarnessStatus::Refused(_)
     ));
     std::fs::remove_file(&path).unwrap();
     std::fs::create_dir(&path).unwrap();
     assert!(matches!(
-        r.observe_daemon(&env, &budget).status,
+        r.observe_daemon(&env, &budget()).status,
         HarnessStatus::NotInstalled(_)
     ));
     std::fs::remove_dir(&path).unwrap();
     assert!(matches!(
-        r.observe_daemon(&env, &budget).status,
+        r.observe_daemon(&env, &budget()).status,
         HarnessStatus::NotInstalled(_)
     ));
     assert!(!sentinel.exists());
@@ -983,14 +983,14 @@ fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
             state_dir: None,
         };
         assert!(matches!(
-            r.observe_daemon(&bounded, &budget).status,
+            r.observe_daemon(&bounded, &budget()).status,
             HarnessStatus::Refused(_)
         ));
     }
     // Do not inherit the caller's PATH when the captured environment has none.
     let no_path = InstallEnvironment { path: None, ..env };
     assert!(matches!(
-        r.observe_daemon(&no_path, &budget).status,
+        r.observe_daemon(&no_path, &budget()).status,
         HarnessStatus::NotInstalled(_)
     ));
 }

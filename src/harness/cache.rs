@@ -1034,7 +1034,7 @@ mod tests {
             journal.read_completed(&key, &budget, &clock).unwrap_err(),
             CacheReadError::Cancelled
         );
-        let live = CallBudget {
+        let live = || CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
             cancellation: Cancellation::default(),
         };
@@ -1058,7 +1058,7 @@ mod tests {
         let current_before = journal.current().unwrap();
         assert_eq!(
             journal
-                .read_completed(&key, &live, &clock)
+                .read_completed(&key, &live(), &clock)
                 .unwrap()
                 .response
                 .output,
@@ -1068,7 +1068,7 @@ mod tests {
         let complete_bytes = fs::read(directory.join("context.json")).unwrap();
         fs::write(directory.join("context.json"), b"{broken").unwrap();
         assert_eq!(
-            journal.read_completed(&key, &live, &clock).unwrap_err(),
+            journal.read_completed(&key, &live(), &clock).unwrap_err(),
             CacheReadError::Context(crate::harness::context::ContextError::Corrupt)
         );
         fs::write(directory.join("context.json"), &complete_bytes).unwrap();
@@ -1081,7 +1081,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            journal.read_completed(&key, &live, &clock).unwrap_err(),
+            journal.read_completed(&key, &live(), &clock).unwrap_err(),
             CacheReadError::Context(crate::harness::context::ContextError::Corrupt)
         );
         fs::write(directory.join("context.json"), &complete_bytes).unwrap();
@@ -1098,7 +1098,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            journal.read_completed(&key, &live, &clock).unwrap_err(),
+            journal.read_completed(&key, &live(), &clock).unwrap_err(),
             CacheReadError::Context(crate::harness::context::ContextError::Corrupt)
         );
         fs::write(directory.join("context.json"), &complete_bytes).unwrap();
@@ -1119,7 +1119,7 @@ mod tests {
         drop(lock_file);
         fs::remove_file(directory.join("context.lock")).unwrap();
         assert_eq!(
-            journal.read_completed(&key, &live, &clock).unwrap_err(),
+            journal.read_completed(&key, &live(), &clock).unwrap_err(),
             CacheReadError::NotFound
         );
         assert!(!directory.join("context.lock").exists());
