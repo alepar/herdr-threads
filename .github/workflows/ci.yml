@@ -1,7 +1,7 @@
 name: CI
 
 # Deterministic checks on Linux x86_64 (Ubuntu 24.04, Herdr 0.9.1): the test
-# suite in five parallel shards, plus format, packaging, installer and Python
+# suite in six parallel shards, plus format, packaging, installer and Python
 # suites; clippy on macOS and Linux; release-target build checks (macOS and
 # Linux musl) and workflow lint. macOS arm64 runs the same suite locally
 # before a merge. herdr-plugin.toml declares platforms ["macos", "linux"].
@@ -60,8 +60,9 @@ jobs:
       fail-fast: false
       matrix:
         # The one place the slice count is set: the steps read it back as
-        # strategy.job-total (ht-v9v1: five slices project each under ~250 s).
-        shard: [1, 2, 3, 4, 5]
+        # strategy.job-total (ht-v9v1: five slices; ht-i4tm: six, because runner
+        # speed varies ~1.6x between jobs and a slow runner took a fifth to 297 s).
+        shard: [1, 2, 3, 4, 5, 6]
     env:
       # ht-p03.131: every process a step starts carries this id, so the final
       # leak check can tell this run's leftovers from anyone else's.
@@ -155,7 +156,8 @@ jobs:
         # serialized chains are test groups in .config/nextest.toml. Every test
         # isolates its own state (ht-zo4, scripts/full-suite-gate). The suite
         # is split round-robin over the sorted test list (slice), so each shard
-        # carries about an equal share of the test time; each shard has the five-minute
+        # carries about an equal share of the tests; the wall time follows the
+        # runner's speed (docs/dev/build-speed.md). Each shard has the five-minute
         # wall-clock budget. --all-features enables `test-support`.
         # The release-proof job owns the exact excluded package test once;
         # no shard cold-builds release fixtures inside this timer. #[ignore] tests (package lifecycle gate,
@@ -167,6 +169,7 @@ jobs:
           SHARDS: ${{ strategy.job-total }}
         run: |
           set -euo pipefail
+          echo "Runner CPU: $(nproc) x $(lscpu | sed -n 's/^Model name: *//p')"
           start=$(date +%s)
           cargo nextest run --locked --all-targets --all-features --profile ci \
             --partition "slice:$SHARD/$SHARDS" \
