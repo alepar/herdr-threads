@@ -2855,3 +2855,172 @@ fn the_record_hook_sees_each_intent_as_it_is_recorded() {
     journal.record(scope(), send(), 3).unwrap();
     assert_eq!(seen.borrow().len(), 1, "cleared by the unwind");
 }
+
+fn cooperative_scope() -> IntentScope {
+    IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
+        instance: "i".into(),
+        seat: SeatId::new("legacy-fixture"),
+    }
+}
+
+/// Publish `count` foreign-scope pending intents after the recorded ones, as a
+/// long-lived node journal accumulates them (ht-l4bg: ~2800 on one host).
+fn populate_foreign_intents(journal: &Journal, count: u64) {
+    let template = journal.record(scope(), send(), 1).unwrap();
+    let text = std::fs::read_to_string(journal.path(&template)).unwrap();
+    let (header, body) = text.split_once('\n').unwrap();
+    let mut header: IntentHeader = serde_json::from_str(header).unwrap();
+    let first = template.ordinal + 1;
+    for ordinal in first..first + count {
+        header.reference = IntentRef {
+            ordinal,
+            operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
+        };
+        let mut bytes = serde_json::to_vec(&header).unwrap();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(body.as_bytes());
+        std::fs::write(journal.path(&header.reference), bytes).unwrap();
+    }
+    std::fs::write(
+        journal.root().join("next-ordinal"),
+        format!("{}\n", first + count - 1),
+    )
+    .unwrap();
+}
+
+/// Intent headers read while this thread held the allocator lock during `run`.
+fn headers_read_under_lock(run: impl FnOnce()) -> usize {
+    LOCKED_HEADER_READS.with(|reads| reads.set(0));
+    run();
+    LOCKED_HEADER_READS.with(|reads| reads.get())
+}
+
+/// The hook and send paths' critical sections read no foreign intent headers,
+/// so the lock hold does not grow with the journal (ht-l4bg: a `send` timed out
+/// on the lock while hooks scanned ~2800 headers under it).
+#[test]
+fn allocator_lock_hold_reads_no_headers_as_the_journal_grows() {
+    let mut counts = Vec::new();
+    for foreign in [0, 3000] {
+        let dir = temp();
+        let journal = Journal::open(&dir).unwrap();
+        populate_foreign_intents(&journal, foreign);
+        let reads = headers_read_under_lock(|| {
+            let journal = Journal::open(&dir).unwrap();
+            let recorded = journal.record(scope(), send(), 2).unwrap();
+            let check_in = journal
+                .record_check_in(cooperative_scope(), "evt", 3, || {
+                    Ok((claim(), CheckInMode::Current))
+                })
+                .unwrap();
+            let replayed = journal
+                .record_check_in(cooperative_scope(), "evt", 4, || {
+                    panic!("the published check-in is reused")
+                })
+                .unwrap();
+            assert_eq!(replayed, check_in);
+            assert!(
+                journal
+                    .find_check_in(&cooperative_scope(), "evt")
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                journal
+                    .pending_continuity("i", &HostTargetId::new("w1:p1"))
+                    .unwrap()
+                    .is_none()
+            );
+            journal.complete_operation(&check_in.operation).unwrap();
+            journal.complete_operation(&recorded.operation).unwrap();
+            assert!(!journal.path(&check_in).exists());
+            assert!(!journal.path(&recorded).exists());
+        });
+        counts.push(reads);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    assert_eq!(counts[0], counts[1], "locked header reads by journal size");
+    assert!(
+        counts[1] <= 2,
+        "only the completed entries' own headers: {counts:?}"
+    );
+}
+
+/// A check-in published between the unlocked scan and the locked pass is found
+/// by the locked pass, never recorded twice.
+#[test]
+fn check_in_published_between_scan_phases_is_reused() {
+    let dir = temp();
+    let journal = Arc::new(Journal::open(&dir).unwrap());
+    let racer = Arc::clone(&journal);
+    let raced = Arc::new(std::sync::Mutex::new(None));
+    let slot = Arc::clone(&raced);
+    BETWEEN_SCAN_PHASES.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            let reference = racer
+                .record_check_in(cooperative_scope(), "evt", 1, || {
+                    Ok((claim(), CheckInMode::Current))
+                })
+                .unwrap();
+            *slot.lock().unwrap() = Some(reference);
+        }));
+    });
+    let reference = journal
+        .record_check_in(cooperative_scope(), "evt", 2, || {
+            panic!("the raced check-in is reused")
+        })
+        .unwrap();
+    assert_eq!(Some(reference), raced.lock().unwrap().clone());
+    assert_eq!(journal.page(&Default::default()).unwrap().items.len(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// An early match completed before the locked pass is not returned; the locked
+/// pass rescans and finds the event's current check-in.
+#[test]
+fn check_in_completed_between_scan_phases_is_rescanned() {
+    let dir = temp();
+    let journal = Arc::new(Journal::open(&dir).unwrap());
+    let first = journal
+        .record_check_in(cooperative_scope(), "evt", 1, || {
+            Ok((claim(), CheckInMode::Current))
+        })
+        .unwrap();
+    let racer = Arc::clone(&journal);
+    let raced = Arc::new(std::sync::Mutex::new(None));
+    let slot = Arc::clone(&raced);
+    let completed = first.clone();
+    BETWEEN_SCAN_PHASES.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            racer.complete(&completed).unwrap();
+            let reference = racer
+                .record_check_in(cooperative_scope(), "evt", 2, || {
+                    Ok((claim(), CheckInMode::Current))
+                })
+                .unwrap();
+            *slot.lock().unwrap() = Some(reference);
+        }));
+    });
+    let found = journal
+        .find_check_in(&cooperative_scope(), "evt")
+        .unwrap()
+        .expect("the current check-in");
+    assert_ne!(found.header.reference, first);
+    assert_eq!(Some(found.header.reference), raced.lock().unwrap().clone());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Opening an initialized journal takes no allocator lock: it succeeds while
+/// another holder keeps the lock (ht-l4bg).
+#[test]
+fn open_of_initialized_journal_does_not_wait_for_the_allocator_lock() {
+    let dir = temp();
+    Journal::open(&dir).unwrap();
+    let holder = private_open(&dir.join("allocator.lock")).unwrap();
+    holder.try_lock().unwrap();
+    let opened = Journal::open(&dir);
+    holder.unlock().unwrap();
+    opened.expect("open must not wait for the allocator lock");
+    std::fs::remove_dir_all(dir).unwrap();
+}

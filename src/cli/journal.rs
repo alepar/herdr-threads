@@ -1062,8 +1062,14 @@ impl Journal {
         let journal = Self {
             root: root.canonicalize()?,
         };
-        let _lock = journal.lock()?;
         let marker = journal.root.join("journal-format");
+        // An initialized journal is only validated: `counter` lists before it
+        // reads the monotonic allocator, so it needs no lock (ht-l4bg).
+        if fs::read_to_string(&marker).is_ok_and(|format| format == "1\n") {
+            journal.counter()?;
+            return Ok(journal);
+        }
+        let _lock = journal.lock()?;
         if marker.exists() {
             if fs::read_to_string(&marker)? != "1\n" {
                 return Err(invalid("intent journal format corrupt"));
@@ -1112,12 +1118,12 @@ impl Journal {
         Ok(journal)
     }
 
-    fn lock(&self) -> io::Result<File> {
+    fn lock(&self) -> io::Result<AllocatorLock> {
         let file = private_open(&self.root.join("allocator.lock"))?;
         let start = std::time::Instant::now();
         loop {
             match file.try_lock() {
-                Ok(()) => return Ok(file),
+                Ok(()) => return Ok(AllocatorLock::held(file)),
                 Err(std::fs::TryLockError::WouldBlock) => {
                     if start.elapsed() >= std::time::Duration::from_secs(1) {
                         return Err(io::Error::new(
@@ -1132,7 +1138,6 @@ impl Journal {
         }
     }
     fn counter(&self) -> io::Result<u64> {
-        let path = self.root.join("next-ordinal");
         let mut highest_published = 0;
         for entry in fs::read_dir(&self.root)? {
             let name = entry?.file_name().to_string_lossy().to_string();
@@ -1144,18 +1149,109 @@ impl Journal {
                 highest_published = highest_published.max(ordinal);
             }
         }
-        if !path.exists() {
-            return Err(invalid("intent allocator missing"));
-        }
-        let raw = fs::read_to_string(path)?;
-        let counter: u64 = raw
-            .trim_end_matches('\n')
-            .parse()
-            .map_err(|_| invalid("intent allocator corrupt"))?;
+        let counter = self.reserved_counter()?;
         if counter < highest_published {
             return Err(invalid("intent allocator behind published entries"));
         }
         Ok(counter)
+    }
+    /// The allocator's last reserved ordinal, without the published-entry check.
+    fn reserved_counter(&self) -> io::Result<u64> {
+        let path = self.root.join("next-ordinal");
+        if !path.exists() {
+            return Err(invalid("intent allocator missing"));
+        }
+        let raw = fs::read_to_string(path)?;
+        raw.trim_end_matches('\n')
+            .parse()
+            .map_err(|_| invalid("intent allocator corrupt"))
+    }
+    /// The last reserved ordinal, read under the lock. Reservation and
+    /// publication share one critical section, so every intent at or below it
+    /// is published, already removed or a crash gap: an unlocked scan taken
+    /// afterwards sees each one that remains, and a later locked pass only has
+    /// to read the entries above it (ht-l4bg).
+    fn published_high_water(&self) -> io::Result<u64> {
+        let _lock = self.lock()?;
+        self.reserved_counter()
+    }
+    /// Headers (hardened reader) of the intents `keep` selects whose filename
+    /// ordinal exceeds `above`; a name without an ordinal is read regardless.
+    /// Ordinal ascending.
+    fn scan_headers(
+        &self,
+        above: u64,
+        keep: impl Fn(&IntentHeader) -> bool,
+    ) -> io::Result<Vec<IntentHeader>> {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(&self.root)? {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.ends_with(".intent")
+                || name
+                    .get(..20)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .is_some_and(|ordinal| ordinal <= above)
+            {
+                continue;
+            }
+            if let Some(header) = read_intent_header(&entry.path())
+                && keep(&header)
+            {
+                found.push(header);
+            }
+        }
+        found.sort_by_key(|header| header.reference.ordinal);
+        Ok(found)
+    }
+    /// The published CheckIn of `event_id` in `scope`, with the allocator lock
+    /// held on return. The O(entries) header scan runs before the lock is
+    /// taken; under it only the entries published since the captured high
+    /// water are read, so the critical section does not grow with the journal.
+    fn locked_check_in(
+        &self,
+        scope: &IntentScope,
+        event_id: &str,
+    ) -> io::Result<(AllocatorLock, Option<PendingIntent>)> {
+        let high = self.published_high_water()?;
+        let early = self.matching_check_in(scope, event_id, 0)?;
+        #[cfg(test)]
+        if let Some(hook) = BETWEEN_SCAN_PHASES.with(|hook| hook.borrow_mut().take()) {
+            hook();
+        }
+        let lock = self.lock()?;
+        let found = match early {
+            Some(pending) => match self.load(&pending.header.reference) {
+                Ok(pending) => Some(pending),
+                // Completed since the unlocked scan: decide on a full scan under the lock.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    self.matching_check_in(scope, event_id, 0)?
+                }
+                Err(e) => return Err(e),
+            },
+            None => self.matching_check_in(scope, event_id, high)?,
+        };
+        Ok((lock, found))
+    }
+    fn matching_check_in(
+        &self,
+        scope: &IntentScope,
+        event_id: &str,
+        above: u64,
+    ) -> io::Result<Option<PendingIntent>> {
+        for header in self.scan_headers(above, |header| &header.scope == scope)? {
+            let pending = match self.load(&header.reference) {
+                Ok(pending) => pending,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            if matches!(&pending.semantic, SemanticMutation::CooperativeCheckIn { event_id: stored, .. } if stored == event_id)
+            {
+                return Ok(Some(pending));
+            }
+        }
+        Ok(None)
     }
     fn reserve(&self, ordinal: u64) -> io::Result<()> {
         let path = self.root.join(format!(".counter-{}", Uuid::new_v4()));
@@ -1387,24 +1483,9 @@ impl Journal {
         lineage_parent: Option<NativeSessionId>,
         factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
     ) -> io::Result<IntentRef> {
-        let _lock = self.lock()?;
-        for entry in fs::read_dir(&self.root)? {
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("intent") {
-                continue;
-            }
-            let Some(header) = read_intent_header(&path) else {
-                continue;
-            };
-            if header.scope != scope {
-                continue;
-            }
-            let pending = self.load(&header.reference)?;
-            if matches!(&pending.semantic, SemanticMutation::CooperativeCheckIn { event_id: stored, .. } if stored == event_id)
-            {
-                return Ok(header.reference);
-            }
+        let (_lock, found) = self.locked_check_in(&scope, event_id)?;
+        if let Some(pending) = found {
+            return Ok(pending.header.reference);
         }
         let (claim, mode) = factory()?;
         let semantic = SemanticMutation::CooperativeCheckIn {
@@ -1428,26 +1509,7 @@ impl Journal {
         scope: &IntentScope,
         event_id: &str,
     ) -> io::Result<Option<PendingIntent>> {
-        let _lock = self.lock()?;
-        for entry in fs::read_dir(&self.root)? {
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("intent") {
-                continue;
-            }
-            let Some(header) = read_intent_header(&path) else {
-                continue;
-            };
-            if &header.scope != scope {
-                continue;
-            }
-            let pending = self.load(&header.reference)?;
-            if matches!(&pending.semantic, SemanticMutation::CooperativeCheckIn { event_id: stored, .. } if stored == event_id)
-            {
-                return Ok(Some(pending));
-            }
-        }
-        Ok(None)
+        Ok(self.locked_check_in(scope, event_id)?.1)
     }
     /// The pending continuity intent of this pane under `instance`, if a
     /// previous hook recorded one and did not finish it (lost reply, crash,
@@ -1466,25 +1528,17 @@ impl Journal {
             instance: instance.into(),
             target: target.clone(),
         };
+        // The full scan runs unlocked; under the lock only entries above the
+        // high water are read (see `published_high_water`).
+        let high = self.published_high_water()?;
+        let mut found = self.scan_headers(0, |header| header.scope == scope)?;
         let _lock = self.lock()?;
-        let mut found: Vec<IntentRef> = Vec::new();
-        for entry in fs::read_dir(&self.root)? {
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("intent") {
-                continue;
-            }
-            let Some(header) = read_intent_header(&path) else {
-                continue;
-            };
-            if header.scope == scope {
-                found.push(header.reference);
-            }
-        }
-        found.sort_by_key(|reference| reference.ordinal);
+        found.extend(self.scan_headers(high, |header| header.scope == scope)?);
+        found.sort_by_key(|header| header.reference.ordinal);
+        found.dedup_by_key(|header| header.reference.ordinal);
         Ok(found
             .into_iter()
-            .find_map(|reference| self.load(&reference).ok()))
+            .find_map(|header| self.load(&header.reference).ok()))
     }
     fn record_locked(
         &self,
@@ -1747,16 +1801,21 @@ impl Journal {
         })
     }
     /// Idempotent hook completion after output flush, under the allocator lock.
-    /// The scan reads headers through the hardened reader (see `pending_continuity`).
+    /// The entry is found by the operation in its filename; only that entry's
+    /// header is read, through the hardened reader (see `pending_continuity`).
     pub fn complete_operation(&self, operation: &OperationId) -> io::Result<()> {
+        let suffix = format!("-{}.intent", operation.as_str());
         let _lock = self.lock()?;
         for entry in fs::read_dir(&self.root)? {
             let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("intent") {
+            if !entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with(&suffix))
+            {
                 continue;
             }
-            let Some(header) = read_intent_header(&path) else {
+            let Some(header) = read_intent_header(&entry.path()) else {
                 continue;
             };
             if &header.reference.operation == operation {
@@ -2167,6 +2226,10 @@ fn private_new(path: &Path) -> io::Result<File> {
 /// not a readable intent: a vanished entry, a symlink, a FIFO or device (opened
 /// without blocking and rejected by `is_file`), a read error or garbage.
 fn read_intent_header(path: &Path) -> Option<IntentHeader> {
+    #[cfg(test)]
+    if LOCK_HELD.with(|held| held.get()) > 0 {
+        LOCKED_HEADER_READS.with(|reads| reads.set(reads.get() + 1));
+    }
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -2182,6 +2245,32 @@ fn read_intent_header(path: &Path) -> Option<IntentHeader> {
     serde_json::from_str(&line).ok()
 }
 
+/// The held allocator lock; released on drop (with the file).
+struct AllocatorLock {
+    _file: File,
+}
+impl AllocatorLock {
+    fn held(file: File) -> Self {
+        #[cfg(test)]
+        LOCK_HELD.with(|held| held.set(held.get() + 1));
+        Self { _file: file }
+    }
+}
+#[cfg(test)]
+impl Drop for AllocatorLock {
+    fn drop(&mut self) {
+        LOCK_HELD.with(|held| held.set(held.get() - 1));
+    }
+}
+#[cfg(test)]
+thread_local! {
+    /// Allocator locks this thread holds, and intent headers it read under one.
+    static LOCK_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static LOCKED_HEADER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Runs once, between the unlocked scan and the locked pass of a check-in lookup.
+    static BETWEEN_SCAN_PHASES: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 fn private_open(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
