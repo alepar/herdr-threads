@@ -439,11 +439,13 @@ impl Drop for Matrix {
     fn drop(&mut self) {
         // Preserve child-observed records and private server/daemon logs before teardown,
         // including on assertion failure. Fixtures contain no real config or credentials.
-        if let Some(dir) = std::env::var_os("HT_HERDR_MATRIX_EVIDENCE") {
-            let dir = PathBuf::from(dir)
+        let evidence = std::env::var_os("HT_HERDR_MATRIX_EVIDENCE").map(|dir| {
+            PathBuf::from(dir)
                 .join(&self.version)
-                .join(self.host.root().file_name().unwrap());
-            let _ = fs::create_dir_all(&dir);
+                .join(self.host.root().file_name().unwrap())
+        });
+        if let Some(dir) = &evidence {
+            let _ = fs::create_dir_all(dir);
             for name in [".fake-codex", ".fake-claude", ".fake-agy"] {
                 if let Ok(entries) = fs::read_dir(self.home().join(name)) {
                     let target = dir.join(name);
@@ -466,7 +468,13 @@ impl Drop for Matrix {
                     let _ = fs::copy(source, dir.join(name));
                 }
             }
-            // The daemon's store (wake ladder, reservations and attempt outcomes), with its WAL.
+        }
+        // The daemon Herdr's startup entry started; the root teardown that
+        // follows also stops anything naming the private root.
+        let _ = self.ht_out(&["daemon", "stop"]);
+        // The daemon's store (wake ladder, reservations and attempt outcomes), with its WAL,
+        // copied once the daemon stopped so the two files are one consistent snapshot.
+        if let Some(dir) = &evidence {
             let node = self.host.root().join("st/herdr/plugins/herdr-threads/node");
             for name in ["herdr-threads.db", "herdr-threads.db-wal"] {
                 if node.join(name).is_file() {
@@ -474,9 +482,6 @@ impl Drop for Matrix {
                 }
             }
         }
-        // The daemon Herdr's startup entry started; the root teardown that
-        // follows also stops anything naming the private root.
-        let _ = self.ht_out(&["daemon", "stop"]);
     }
 }
 
