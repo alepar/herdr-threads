@@ -3010,3 +3010,17 @@ fn check_in_completed_between_scan_phases_is_rescanned() {
     assert_eq!(Some(found.header.reference), raced.lock().unwrap().clone());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// Opening an initialized journal takes no allocator lock: it succeeds while
+/// another holder keeps the lock (ht-l4bg).
+#[test]
+fn open_of_initialized_journal_does_not_wait_for_the_allocator_lock() {
+    let dir = temp();
+    Journal::open(&dir).unwrap();
+    let holder = private_open(&dir.join("allocator.lock")).unwrap();
+    holder.try_lock().unwrap();
+    let opened = Journal::open(&dir);
+    holder.unlock().unwrap();
+    opened.expect("open must not wait for the allocator lock");
+    std::fs::remove_dir_all(dir).unwrap();
+}
