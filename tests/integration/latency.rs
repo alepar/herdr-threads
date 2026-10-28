@@ -505,7 +505,7 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
     let prompts = host_calls.iter().filter(|m| *m == "agent.prompt").count();
     eprintln!(
         "latency: history n={} p50={h50:?} p95={h95:?} max={hmax:?}; health n={} p50={k50:?} p95={k95:?}; \
-         sends={} host calls={} (agent.prompt {prompts}); party failures={}",
+         sends={} host calls={} (agent.prompt {prompts}); party failures={}; final send attempts={attempts}",
         history.len(),
         health.len(),
         sent.load(Ordering::SeqCst),
