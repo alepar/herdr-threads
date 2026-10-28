@@ -57,9 +57,9 @@ After the tag, `scripts/freeze-peer-wire X.Y.Z --at vX.Y.Z --check` confirms the
 
 ## 7. Install and verify
 
-1. **Back up first** on each host: a `sqlite3 .backup` copy of the store plus `node.key` and `node.json` (directory mode 700, files 600), under `~/.local/state/herdr/plugins/herdr-threads-pre-vX.Y.Z-backup-*`.
+1. **Backup:** from 2.5.0 the installer backs up the store, `node.key` and `node.json` into `~/.local/state/herdr/plugins/herdr-threads-backups/` and prunes older backups ([docs/install.md](docs/install.md#updating), "Pre-upgrade backup"); check its `backed up ... (schema N, integrity ok)` line on each host. Back up by hand (a `sqlite3 .backup` or python `sqlite3` copy of the three files, directory 700, files 600) only when installing a release older than 2.5.0 over a store, where neither executable can take the backup, then pass `--no-backup`.
 2. **This Mac:** `scripts/install.sh --version vX.Y.Z`, then `herdr-threads daemon stop; herdr-threads daemon ensure`, and compare the binary hash with the archive's.
-3. **blacky.dayton:** python `sqlite3` backup, then `curl …/vX.Y.Z/scripts/install.sh | bash -s -- --setup --version vX.Y.Z`, `daemon stop` and `daemon ensure`, then check `/proc/PID/exe` against the archive.
+3. **blacky.dayton:** `curl …/vX.Y.Z/scripts/install.sh | bash -s -- --setup --version vX.Y.Z`, `daemon stop` and `daemon ensure`, then check `/proc/PID/exe` against the archive.
 4. Confirm both daemons report the new version and the peer link is active.
 
 ## 8. Record and announce

@@ -128,12 +128,12 @@ def qualify(evidence: Path, self_test: bool) -> int:
     try:
         step('package', ['nice', 'cargo', 'test', '--locked', '--all-features', '--test', 'package',
                          'install::clean_package_install_lifecycle', '--', '--ignored', '--exact', '--nocapture'], branch)
-        for name in ('alias', 'integrations', 'daemon', 'terminal'):
+        for name in ('alias', 'integrations', 'daemon', 'terminal', 'backup'):
             argv = ['python3', f'tests/release/installer_{name}_test.py']
-            if name == 'terminal':
+            if name in ('terminal', 'backup'):
                 argv.append('bin/herdr-threads')
-            if name == 'terminal' and not candidate_ok:
-                blocked('installer-terminal')
+            if name in ('terminal', 'backup') and not candidate_ok:
+                blocked('installer-' + name)
             else:
                 step('installer-' + name, argv, branch)
         if candidate_ok:

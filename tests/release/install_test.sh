@@ -237,6 +237,8 @@ if command -v script > /dev/null || fail "script(1) is needed for the terminal c
 fi
 expect "exactly one final status line" [ "$(grep -c '^installed and linked' "$out")" = 1 ]
 expect "checksum verified" has "checksum verified"
+expect "fresh install with no store: no backup taken" bash -c "! grep -qF 'backed up' '$out'"
+expect "fresh install with no store: no backup directory" [ ! -e "$root/st/herdr/plugins/herdr-threads-backups" ]
 expect "package installed with VERSION 0.1.0" [ "$(cat "$prefix/VERSION")" = 0.1.0 ]
 expect "install marker records the version" grep -qx "version=0.1.0" "$prefix/.herdr-threads-install"
 expect "executable symlinked" [ "$(readlink "$link")" = "$prefix/bin/herdr-threads" ]
@@ -399,6 +401,82 @@ install --no-setup
     expect "failing stop without a live daemon: no warning" bash -c "! grep -qF 'could not stop' '$out'"
     expect "back on 0.1.1" [ "$(cat "$prefix/VERSION")" = 0.1.1 ]
     rm -rf "$root/stop.fail" "$fake_instance"
+}
+
+# --- 3c. pre-upgrade backup -----------------------------------------------------
+# A store under the default state root: an upgrade backs it up (checked) before
+# the stop, an identical re-run and --no-backup take none, a failing backup
+# aborts before any stop or replace, node.key never reaches the output, and the
+# manual herdr-threads-pre-v*-backup-* directories are never touched.
+{
+    plugins="$root/st/herdr/plugins"
+    state="$plugins/herdr-threads"
+    backups="$plugins/herdr-threads-backups"
+    key_marker=SECRET-NODE-KEY-MARKER-0123456789
+    # The racing-daemon upgrades above had a real store, so they left backups.
+    expect "earlier upgrades over a real store took backups" [ -d "$backups" ]
+    rm -rf "$backups"
+    mkdir -p "$state/node"
+    chmod 700 "$state/node"
+    python3 - "$state/node/herdr-threads.db" <<'EOF_DB'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.executescript("PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES (1); PRAGMA user_version=9;")
+db.commit()
+db.close()
+EOF_DB
+    printf '%s' "$key_marker" > "$state/node/node.key"
+    printf '{"node":1}' > "$state/node/node.json"
+    manual="$plugins/herdr-threads-pre-v0.0.9-backup-20261017T160720Z"
+    mkdir -p "$manual" && printf 'manual' > "$manual/herdr-threads.db"
+    : > "$root/actions"
+    install --version v0.1.0 --no-setup
+    [ "$status" = 0 ] || fail "upgrade with a store exits 0" "$(cat "$out")"
+    pass "upgrade with a store exits 0"
+    expect "backup reported with its check" has "integrity ok)"
+    backup_line=$(grep -n 'backed up' "$out" | head -n 1 | cut -d: -f1)
+    stop_line=$(grep -n 'stopped the running daemon' "$out" | head -n 1 | cut -d: -f1)
+    expect "backup taken before the old daemon is stopped" \
+        bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$1" -lt "$2" ]' _ "$backup_line" "$stop_line"
+    taken_all=("$backups"/pre-v0.1.0-*)
+    expect "exactly one backup" bash -c '[ "$#" = 1 ] && [ -d "$1" ]' _ "${taken_all[@]}"
+    taken=${taken_all[0]}
+    expect "backup directory is private" [ "$(stat -c %a "$taken" 2>/dev/null || stat -f %Lp "$taken")" = 700 ]
+    for f in herdr-threads.db node.key node.json; do
+        expect "backup $f is 0600" [ "$(stat -c %a "$taken/$f" 2>/dev/null || stat -f %Lp "$taken/$f")" = 600 ]
+    done
+    expect "backup node.key equals the source" cmp -s "$taken/node.key" "$state/node/node.key"
+    expect "backup store passes integrity_check with the source schema and rows" python3 - "$taken/herdr-threads.db" <<'EOF_CHECK'
+import sqlite3, sys
+db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+assert db.execute("SELECT count(*) FROM t").fetchone()[0] == 1
+EOF_CHECK
+    expect "node.key never appears in the output" bash -c "! grep -qF '$key_marker' '$out'"
+    expect "manual backup directory untouched" [ "$(cat "$manual/herdr-threads.db")" = manual ]
+
+    install --version v0.1.0 --no-setup
+    expect "identical re-run exits 0" [ "$status" = 0 ]
+    expect "identical re-run takes no backup" bash -c "! grep -qF 'backed up' '$out'"
+
+    install --no-setup --no-backup
+    [ "$status" = 0 ] || fail "--no-backup upgrade exits 0" "$(cat "$out")"
+    expect "--no-backup warns" has "--no-backup: no pre-upgrade backup of"
+    expect "--no-backup takes no backup" [ "$(ls "$backups" | wc -l | tr -d ' ')" = 1 ]
+
+    chmod 500 "$backups"
+    : > "$root/actions"
+    install --version v0.1.0 --no-setup
+    chmod 700 "$backups"
+    expect "failing backup exits 1" [ "$status" = 1 ]
+    expect "failing backup names the store and the outcome" has "pre-upgrade backup of $(cd -P "$state" && pwd -P) failed; nothing was stopped or replaced"
+    expect "failing backup: no stop action" [ ! -s "$root/actions" ]
+    expect "failing backup: old version still installed" [ "$(cat "$prefix/VERSION")" = 0.1.1 ]
+    expect "failing backup: no staging left" [ -z "$(ls -A "$backups" | grep -v '^pre-v')" ]
+    expect "failing backup: node.key never in the output" bash -c "! grep -qF '$key_marker' '$out'"
+    expect "manual backup directory still untouched" [ "$(cat "$manual/herdr-threads.db")" = manual ]
+    rm -rf "$state/node" "$backups" "$manual"
 }
 
 # --- 4. refusals --------------------------------------------------------------

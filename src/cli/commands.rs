@@ -459,6 +459,11 @@ pub enum CliAction {
         path: String,
         keys: bool,
     },
+    /// `internal pre-upgrade-backup`: back up the node store of the global `--state-dir`
+    /// before an upgrade, then prune.
+    InternalPreUpgradeBackup {
+        target_version: String,
+    },
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
     Follow(FollowRequest),
@@ -628,6 +633,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::HarnessVersionNormalize { .. }
         | CliAction::InstallerIntegrations { .. }
         | CliAction::InternalJsonField { .. }
+        | CliAction::InternalPreUpgradeBackup { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
         | CliAction::Summary(_)
@@ -1315,6 +1321,14 @@ enum InternalSub {
         /// Print the keys of the object at the path, one per line (exit 3 when not an object).
         #[arg(long)]
         keys: bool,
+    },
+    /// Back up the node store of --state-dir (store, node.key, node.json) into the
+    /// installer-owned herdr-threads-backups directory beside it, check the copy, then prune
+    /// older backups.
+    PreUpgradeBackup {
+        /// The version being installed; names the backup.
+        #[arg(long, value_name = "TAG")]
+        target_version: String,
     },
 }
 
@@ -3650,6 +3664,9 @@ fn parse_cli_in_registry(
         Top::Internal {
             command: InternalSub::JsonField { path, keys },
         } => CliAction::InternalJsonField { path, keys },
+        Top::Internal {
+            command: InternalSub::PreUpgradeBackup { target_version },
+        } => CliAction::InternalPreUpgradeBackup { target_version },
         Top::Retry { recovery_ref } => CliAction::Retry(id(recovery_ref, LocalRecoveryRef::parse)?),
         Top::View(args) => CliAction::View {
             once: args.once,

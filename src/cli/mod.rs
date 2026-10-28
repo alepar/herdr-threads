@@ -32,6 +32,7 @@ pub mod peer;
 pub(crate) mod peer_locations;
 mod pending_hint;
 mod picker;
+pub mod pre_upgrade_backup;
 pub mod retry;
 mod seat_resolution;
 pub mod seat_selector;
@@ -526,6 +527,15 @@ fn run_parsed_in_pane<W: Write>(
         let mut input = Vec::new();
         io::Read::read_to_end(&mut io::stdin().lock(), &mut input)?;
         return internal::json_field_bytes(&input, path, *keys, writer);
+    }
+    if let CliAction::InternalPreUpgradeBackup { target_version } = &parsed.action {
+        let state_dir = parsed
+            .output
+            .context
+            .state_dir
+            .as_deref()
+            .ok_or_else(|| invalid_request("internal pre-upgrade-backup needs --state-dir"))?;
+        return pre_upgrade_backup::run(std::path::Path::new(state_dir), target_version, writer);
     }
     if let CliAction::Doctor { .. } = &parsed.action {
         return doctor::run(&parsed, writer);
@@ -1105,7 +1115,9 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::Watch(_) | CliAction::WatchAck(_) => {
             unreachable!("watch is handled before context resolution")
         }
-        CliAction::InstallerIntegrations { .. } | CliAction::InternalJsonField { .. } => {
+        CliAction::InstallerIntegrations { .. }
+        | CliAction::InternalJsonField { .. }
+        | CliAction::InternalPreUpgradeBackup { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
         CliAction::Launch(_)

@@ -9,7 +9,11 @@
 #   1. detects the OS (macOS, Linux) and architecture (aarch64, x86_64);
 #   2. downloads herdr-threads-OS-ARCH.tar.gz and SHA256SUMS from the release
 #      (latest, or --version) and verifies the checksum;
-#   3. on an upgrade, stops the running daemon with the still-installed old
+#   3. when a new package replaces an install over an existing store, first
+#      backs the store up (store, node.key, node.json, checked) into
+#      herdr-threads-backups/ beside the state directory and prunes older
+#      backups there, refusing to continue when the backup fails (--no-backup
+#      skips it); then, on an upgrade, stops the running daemon with the still-installed old
 #      executable before replacing anything (Herdr's stop action, else
 #      `herdr-threads daemon stop`, retried per live instance with its state
 #      directory and host endpoint named) and, if it cannot, warns with its
@@ -73,6 +77,7 @@ force=0
 yes=0
 without_permissions=0
 aisw_profiles=1
+backup=1
 
 say() { printf '%s\n' "herdr-threads: $*"; }
 warn() { printf '%s\n' "herdr-threads: warning: $*" >&2; }
@@ -106,6 +111,7 @@ usage: install.sh [options]
   --no-aisw-profiles do not reconcile the Claude and Codex profiles of aisw
                      ($AISW_HOME, default ~/.aisw) besides the default roots
   --no-herdr         do not register the plugin with Herdr
+  --no-backup        skip the pre-upgrade backup of the daemon's store
   --prefix DIR       install directory (default ~/.local/share/herdr-threads)
   --bin-dir DIR      herdr-threads and ht symlink directory (default ~/.local/bin)
   --release-url URL  release base URL (default https://github.com/alepar/herdr-threads/releases)
@@ -127,6 +133,7 @@ while [ $# -gt 0 ]; do
         --without-permissions) without_permissions=1; shift ;;
         --no-aisw-profiles) aisw_profiles=0; shift ;;
         --no-herdr) register=0; shift ;;
+        --no-backup) backup=0; shift ;;
         --prefix) [ $# -ge 2 ] || die "--prefix needs a value"; install_dir=$2; shift 2 ;;
         --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a value"; bin_dir=$2; shift 2 ;;
         --release-url) [ $# -ge 2 ] || die "--release-url needs a value"; release_url=$2; shift 2 ;;
@@ -633,6 +640,58 @@ if [ -e "$install_dir" ]; then
     if grep -qx "sha256=$actual" "$install_dir/$MARKER" && [ -x "$installed_binary" ]; then
         changed=0
     fi
+fi
+
+# --- pre-upgrade backup -------------------------------------------------------
+# Before anything is stopped or replaced: the new version may migrate the store
+# one way. The helper (`internal pre-upgrade-backup`) copies the store with
+# VACUUM INTO (consistent while the daemon runs), checks the copy, copies
+# node.key and node.json, and prunes older backups in herdr-threads-backups/
+# beside the state directory. The new package's executable runs it; one
+# without the helper (an older --version) falls back to the installed one.
+# Fail closed: no backup, no install (unless --no-backup).
+
+# State directories with a node store under Herdr's default plugin state
+# roots, one per line, deduplicated by physical path.
+store_states() {
+    local state
+    for state in "${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$PLUGIN_ID" \
+        "$HOME/.local/state/herdr/plugins/$PLUGIN_ID"; do
+        [ -f "$state/node/herdr-threads.db" ] && [ ! -L "$state/node/herdr-threads.db" ] || continue
+        (CDPATH='' cd -P -- "$state" && pwd -P)
+    done | sort -u
+}
+
+# The first of the given executables that has the backup helper.
+backup_helper() {
+    local exe
+    for exe in "$@"; do
+        [ -x "$exe" ] || continue
+        if "$exe" internal pre-upgrade-backup --help >/dev/null 2>&1; then
+            printf '%s\n' "$exe"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [ "$changed" = 1 ]; then
+    while IFS= read -r state; do
+        [ -n "$state" ] || continue
+        if [ "$backup" = 0 ]; then
+            warn "--no-backup: no pre-upgrade backup of $state; a one-way schema migration cannot be rolled back"
+            continue
+        fi
+        # A probe failure must not read as "no helper" when the download cannot run at all.
+        "$package/bin/herdr-threads" --version >/dev/null 2>&1 ||
+            die "the downloaded $new_version executable does not run here (a noexec ${TMPDIR:-/tmp}? set TMPDIR to another directory); nothing was stopped or replaced"
+        helper=$(backup_helper "$package/bin/herdr-threads" "$installed_binary") ||
+            die "pre-upgrade backup of $state failed: neither $new_version nor the installed executable can take it; nothing was stopped or replaced. Back it up by hand and re-run with --no-backup"
+        "$helper" internal pre-upgrade-backup --state-dir "$state" --target-version "$new_version" ||
+            die "pre-upgrade backup of $state failed; nothing was stopped or replaced. Fix the cause and re-run, or pass --no-backup to install without a backup"
+    done <<EOF_STATES
+$(store_states)
+EOF_STATES
 fi
 
 # --- stop the old daemon (upgrade) -------------------------------------------
