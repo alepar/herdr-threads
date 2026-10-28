@@ -919,7 +919,7 @@ real_file() {
 
 # The executable a daemon was started from: its argv[0], the path the client
 # that ensured it resolved as its own executable.
-daemon_executable() { ps -p "$1" -o command= 2>/dev/null | sed 's/ daemon run .*//'; }
+daemon_executable() { ps -ww -p "$1" -o command= 2>/dev/null | sed 's/ daemon run .*//'; }
 
 # Live instances whose daemon is not the installed executable, one
 # "INSTANCE<tab>REASON" line each: another version, or the same version
@@ -964,7 +964,8 @@ ensure_instance() {
 
 # Stop the stale daemons (with the retained old executable, else the
 # installed one) and ensure the installed executable in their instances.
-# Never ensures over a stale daemon that is still running.
+# Never ensures over a stale daemon that is still running. Status 1 when the
+# stop or an ensure failed; the caller checks again either way.
 replace_stale() {
     local stale=$1 instance new_binary=$installed_binary stopped=0
     if [ -n "$retained_old" ] && [ -x "$retained_old/bin/herdr-threads" ]; then
@@ -976,36 +977,41 @@ replace_stale() {
         warn "could not stop the stale daemon${stop_err:+: $stop_err}"
         return 1
     fi
+    local ok=0
     while IFS="$(printf '\t')" read -r instance _; do
         [ -n "$instance" ] || continue
-        ensure_instance "$instance" || return 1
+        ensure_instance "$instance" || ok=1
     done <<EOF_STALE
 $stale
 EOF_STALE
+    return "$ok"
 }
 
 # Verify the live instances against the executable we actually installed, not
 # the archive's VERSION label: its version, and the file each daemon was
 # started from. `ensure` performs the version/boot handshake and waits for a
 # daemon that is still starting. A stale daemon is replaced, at most four
-# times, since an old client can restart it once more while it is replaced.
+# times, since an old client can restart it once more while it is replaced;
+# a stop or ensure that such a restart fails is followed by a fresh check.
 # This also catches a failed ensure action which left an old daemon serving.
 verify_installed_daemons() {
-    local round stale instance repaired=0
+    local round stale instance repaired=0 ensured pids
     expected_version=$("$installed_binary" --version) || return 1
     expected_version=${expected_version#herdr-threads }
     installed_real=$(real_file "$installed_binary") || return 1
     for round in 1 2 3 4 5; do
         stale=$(stale_instances)
         if [ -z "$stale" ]; then
+            ensured=1
             while IFS= read -r instance; do
                 [ -n "$instance" ] || continue
-                ensure_instance "$instance" || return 1
+                ensure_instance "$instance" || ensured=0
             done < <(live_instances)
             # An ensure may have waited for a daemon a client was starting.
             stale=$(stale_instances)
         fi
         if [ -z "$stale" ]; then
+            [ "$ensured" = 1 ] || return 1
             if [ "$repaired" = 1 ]; then
                 say "replaced the stale daemon; the installed executable runs"
                 OUT_DAEMON_UP=1
@@ -1018,8 +1024,15 @@ verify_installed_daemons() {
         done <<EOF_STALE
 $stale
 EOF_STALE
-        [ "$round" -lt 5 ] || return 1
-        replace_stale "$stale" || return 1
+        if [ "$round" = 5 ]; then
+            pids=$(daemon_pids | tr '\n' ' ')
+            pids=${pids% }
+            if [ -n "$pids" ]; then
+                warn "could not replace the stale daemon (pid $pids); stop it by hand: kill $pids, then herdr plugin action invoke ensure --plugin $PLUGIN_ID"
+            fi
+            return 1
+        fi
+        replace_stale "$stale" || true
         repaired=1
     done
 }

@@ -61,6 +61,12 @@ case "$1" in
                     "$FAKE_DIR/old-client/herdr-threads" --state-dir "$state" daemon ensure
                 fi ;;
             ensure)
+                # The old client wins the race to the next N ensures of this executable.
+                n=$(cat "$FAKE_DIR/race-ensure-$version" 2>/dev/null || echo 0)
+                if [ "$n" -gt 0 ]; then
+                    echo $((n - 1)) > "$FAKE_DIR/race-ensure-$version"
+                    "$FAKE_DIR/old-client/herdr-threads" --state-dir "$state" daemon ensure
+                fi
                 if live; then
                     observed=$(sed -n 's/.*"software_version":"\([^"]*\)".*/\1/p' "$endpoint")
                     [ "$observed" = "$version" ] || { echo "daemon version mismatch: $observed" >&2; exit 1; }
@@ -140,7 +146,7 @@ class InstallerDaemonRace(unittest.TestCase):
         command = subprocess.check_output(['ps', '-p', str(endpoint['pid']), '-o', 'command='], text=True)
         return endpoint['software_version'], command.split(' daemon run ')[0]
 
-    def upgrade_with_racing_client(self, restarts):
+    def upgrade_with_racing_client(self, restarts, ensure_races=0):
         self.run_installer('0.1.0')
         subprocess.run([str(self.prefix / 'bin/herdr-threads'), 'daemon', 'ensure'], check=True,
                        env={**os.environ, 'XDG_STATE_HOME': str(self.state), 'FAKE_DIR': str(self.root)})
@@ -150,6 +156,7 @@ class InstallerDaemonRace(unittest.TestCase):
         (client / 'herdr-threads').write_text(STUB.replace('__VERSION__', '0.1.0'))
         (client / 'herdr-threads').chmod(0o755)
         (self.root / 'race').write_text(str(restarts))
+        (self.root / 'race-ensure-0.1.1').write_text(str(ensure_races))
         return self.run_installer('0.1.1')
 
     def test_old_daemon_restarted_after_the_swap_is_replaced(self):
@@ -164,6 +171,17 @@ class InstallerDaemonRace(unittest.TestCase):
         self.assertEqual((self.root / 'race').read_text().strip(), '0')
         self.assertFalse((self.root / 'package.old').exists())
 
+    def test_old_daemon_started_between_stop_and_ensure_is_replaced(self):
+        # The old client starts the daemon right before each of the installer's
+        # first two ensures: the ensure meets a version mismatch, and the next
+        # check replaces it again.
+        out = self.upgrade_with_racing_client(4, ensure_races=2)
+        self.assertEqual(self.running(), ('0.1.1', str(self.prefix / 'bin/herdr-threads')), out)
+        self.assertIn('daemon version mismatch', out)
+        self.assertIn('replaced the stale daemon; the installed executable runs', out)
+        self.assertNotIn('running daemon does not match', out)
+        self.assertEqual((self.root / 'race-ensure-0.1.1').read_text().strip(), '0')
+
     def test_replacement_is_bounded(self):
         start = time.monotonic()
         out = self.upgrade_with_racing_client(100)
@@ -171,7 +189,8 @@ class InstallerDaemonRace(unittest.TestCase):
         self.assertIn('runs 0.1.0; installed executable is 0.1.1', out)
         self.assertNotIn('replaced the stale daemon', out)
         self.assertIn('could not stop the stale daemon', out)
-        self.assertGreater(int((self.root / 'race').read_text()), 80)
+        self.assertIn('could not replace the stale daemon (pid ', out)
+        self.assertGreater(int((self.root / 'race').read_text()), 50)
         self.assertFalse((self.root / 'package.old').exists())
 
 
