@@ -3602,19 +3602,24 @@ fn a_mixed_receipt_and_lazy_wake_is_owed_while_any_binding_has_the_row_unread() 
 
 /// Inserts the p0 delivery row of the neighbouring test (message `msg-1`, frontier `decision_seq` 2).
 fn insert_p0_delivery_row(db: &Connection) {
+    insert_delivery_row(db, 0);
+}
+
+/// `insert_p0_delivery_row` at `priority`.
+fn insert_delivery_row(db: &Connection, priority: i64) {
     db.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
-        [],
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',?1)",
+        [priority],
     )
     .unwrap();
     db.execute(
-        "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-1','msg-1','t','s',0)",
-        [],
+        "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-1','msg-1','t','s',?1)",
+        [priority],
     )
     .unwrap();
     db.execute(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-1','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',2,'passive',0,'lazy')",
-        [],
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('msg-1','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',2,'passive',0,'lazy',?1)",
+        [priority],
     )
     .unwrap();
     db.execute(
@@ -3857,6 +3862,64 @@ fn an_item_resolved_before_the_prompt_is_not_typed() {
             WakeOutcome::Refused(crate::ports::RefusalCause::Unavailable),
             "{kind:?}"
         );
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// ht-98ih: a p3 delivery row reserved at threshold 3 that the seat lowers to 0 after the early
+/// fence no longer admits (delivery contract rule 2): the check right before the prompt finds that
+/// and nothing is typed, the same pre-send refusal as a displayed row. Raising the threshold only
+/// admits more, so it is still typed. Kills: a pre-prompt delivery-row check that only asks whether
+/// the row is unread.
+#[test]
+fn a_threshold_lowered_before_the_prompt_types_nothing() {
+    for (threshold, typed_count) in [(0, 0), (5, 1)] {
+        let (store, path) = multi_store(&[row("a", "codex", 10)]);
+        serve_in_turn(&store, "a", "inv");
+        {
+            let db = store.context.open_writer().unwrap();
+            db.execute(
+                "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('a','t',0)",
+                [],
+            )
+            .unwrap();
+            db.execute("UPDATE seats SET nudge_threshold=3 WHERE id='s'", [])
+                .unwrap();
+            insert_delivery_row(&db, 3);
+        }
+        let reservation = StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &owed_candidate(&store).unwrap(),
+            &budget(),
+        )
+        .unwrap()
+        .expect("T = 3 admits the p3 row");
+        assert_eq!(reservation.reasons, ["lazy"]);
+        let resolve: &'static str = if threshold == 0 {
+            "UPDATE seats SET nudge_threshold=0 WHERE id='s'"
+        } else {
+            "UPDATE seats SET nudge_threshold=5 WHERE id='s'"
+        };
+        let fence = ResolvedAfterEarlyFence {
+            store: &store,
+            resolve,
+            owed_checks: Default::default(),
+        };
+        let (outcome, typed) = dispatch_through(&fence, &reservation, FOREGROUND_A);
+        assert_eq!(
+            fence.owed_checks.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "T={threshold}: early and final owed checks"
+        );
+        assert_eq!(typed.len(), typed_count, "T={threshold}: {typed:?}");
+        let expected = if typed_count == 0 {
+            WakeOutcome::Refused(crate::ports::RefusalCause::Unavailable)
+        } else {
+            WakeOutcome::Submitted
+        };
+        assert_eq!(outcome, expected, "T={threshold}");
         drop(store);
         let _ = std::fs::remove_file(path);
     }

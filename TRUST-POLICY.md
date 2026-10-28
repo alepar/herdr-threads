@@ -730,7 +730,9 @@ model open work, and summary closure never changes receipt state or installs glo
   it, but a one-process composer wake for that row stays owed while any binding of the process still finds it
   unread, and is refused (pre-send, nothing typed) only once every reached binding displayed it (main review I4,
   ht-yha.62; this reverses the ht-yha.45 wording, under which a `/side` sibling's display refused the idle main
-  binding's wake on every retry). The accepted cost is at most one composer wake after a sibling's display: a
+  binding's wake on every retry). The row is owed only while the seat's current nudge threshold still admits it
+  (`THRESHOLD_ADMITS_SQL`): a threshold lowered past it since the reservation owes no wake (pre-send refusal;
+  ht-98ih); a raised threshold only admits more. The accepted cost is at most one composer wake after a sibling's display: a
   submitted wake keeps the frontier reserved, so it is not retried until a newer row is admitted. A wake
   reserved for several reasons is owed while any of them is (receipts and invitations by the every-binding
   rule, the row by the any-binding rule).
