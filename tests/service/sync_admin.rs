@@ -1349,6 +1349,7 @@ fn node_rows_render_compactly() {
     let render = |nodes: Vec<NodeRow>| {
         crate::protocol::output::with_render_now(UtcMillis(now), || {
             text(Reply::Peers {
+                forgotten: 0,
                 rows: vec![],
                 discovery: None,
                 nodes,

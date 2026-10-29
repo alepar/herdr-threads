@@ -168,7 +168,7 @@ fn one_line(detail: &str) -> String {
     }
 }
 
-// ---- `peer add|forget|list` (ht-5fr.8) ------------------------------------------
+// ---- `peer add|forget|list|events|prune` (ht-5fr.8, 2.8.0) ------------------------
 //
 // The operator commands build a wire `Command::Sync` from their arguments and
 // refuse a malformed one before any daemon call; the daemon decides.
@@ -201,6 +201,39 @@ pub fn forget(target: String) -> Result<Command, ApiError> {
 /// `peer list`: every dial target, read-only.
 pub fn list() -> Command {
     Command::Sync(SyncCommand::PeerList)
+}
+
+/// `peer events [--node N] [--before SEQ] [--limit L]`: read-only.
+pub fn events(
+    node: Option<String>,
+    before: Option<i64>,
+    limit: Option<u16>,
+) -> Result<Command, ApiError> {
+    checked(SyncCommand::PeerEvents {
+        node,
+        before,
+        limit: limit.unwrap_or(crate::protocol::sync_admin::DEFAULT_EVENTS_PAGE),
+    })
+}
+
+/// `peer prune [--host H] [--older-than-days D] [--yes | --list]`: a dry run
+/// or the list is read-only; `--yes` is operator-gated.
+pub fn prune(
+    host: Option<String>,
+    older_than_days: Option<u32>,
+    apply: bool,
+    list: bool,
+) -> Result<Command, ApiError> {
+    let older_than_ms = older_than_days.map_or(
+        crate::protocol::sync_admin::DEFAULT_PRUNE_OLDER_THAN_MS,
+        |days| u64::from(days) * 24 * 3_600_000,
+    );
+    checked(SyncCommand::PeerPrune {
+        host,
+        older_than_ms,
+        apply,
+        list,
+    })
 }
 
 #[cfg(test)]

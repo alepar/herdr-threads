@@ -25,6 +25,7 @@
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use super::connection::{api_error, store_error};
+use super::sync_link_events::{self, LinkEvent, LinkEventKind, LinkOrigin};
 use crate::node::NodeUuid;
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::sync::frame::{CloseClass, CloseReason};
@@ -218,6 +219,20 @@ pub struct DialTarget {
 }
 
 impl DialTarget {
+    /// The last error while it is current: the target is not linked and the
+    /// error is not older than its last link. A healthy link shows none; the
+    /// history is `peer events`.
+    pub fn current_error(&self) -> Option<&str> {
+        let newer = match (self.last_error_at, self.last_linked_at) {
+            (Some(error), Some(linked)) => error >= linked,
+            (_, None) => true,
+            (None, Some(_)) => false,
+        };
+        (self.state != DialState::Linked && newer)
+            .then_some(self.last_error.as_deref())
+            .flatten()
+    }
+
     /// Applies `transition` to the row's state columns. The one definition of
     /// what each transition means; [`record_transition`] stores its result and
     /// the in-memory test store runs it too.
@@ -550,7 +565,33 @@ pub fn record_transition(
         .optional()
         .map_err(store_error)?
         .ok_or_else(|| invalid("unknown dial target"))?;
+    let was_linked = row.state == DialState::Linked;
     row.apply(transition, now);
+    // Link up and down are the coordinator's events; these are the dial
+    // outcomes only it cannot see.
+    let event = match transition {
+        DialTransition::Backoff { error, .. } if !was_linked => {
+            Some((LinkEventKind::DialFailed, Some(error.clone())))
+        }
+        DialTransition::NotInstalled => Some((LinkEventKind::NotInstalled, None)),
+        DialTransition::Stopped { reason, .. } => {
+            Some((LinkEventKind::Stopped, Some(reason.as_str().to_owned())))
+        }
+        _ => None,
+    };
+    if let Some((kind, detail)) = event {
+        sync_link_events::record(
+            tx,
+            &LinkEvent {
+                at: now,
+                kind,
+                origin: LinkOrigin::Dialed,
+                node: row.learned_node,
+                dest: Some(row.ssh_dest.clone()),
+                detail,
+            },
+        )?;
+    }
     let (reason, version) = match &row.stopped {
         Some((reason, version)) => (Some(reason.as_str()), version.as_deref()),
         None => (None, None),

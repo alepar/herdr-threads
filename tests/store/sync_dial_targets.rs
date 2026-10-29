@@ -510,3 +510,147 @@ fn retire_unseen_deletes_only_never_linked_process_rows_absent_from_the_pass() {
         Discovered::Inserted(_)
     ));
 }
+
+fn events(db: &Connection) -> Vec<herdr_threads::store::sync_link_events::StoredLinkEvent> {
+    herdr_threads::store::sync_link_events::page(db, None, None, 64)
+        .unwrap()
+        .0
+}
+
+// Kills: a stale error shown on a healthy link (ht-peer-hygiene), and a
+// current one hidden while the target backs off.
+#[test]
+fn current_error_only_while_not_linked_and_newer_than_the_link() {
+    let mut db = db();
+    let id = add(&mut db, "host", 1);
+    let backoff = |error: &str| DialTransition::Backoff {
+        attempts: 1,
+        next_at: 100,
+        error: error.into(),
+    };
+    transition(&mut db, id, DialTransition::Dialing, 2);
+    transition(&mut db, id, backoff("no route"), 3);
+    assert_eq!(
+        row(&db, id).current_error(),
+        Some("no route"),
+        "never linked"
+    );
+    transition(&mut db, id, DialTransition::Linked { node: node(1) }, 4);
+    let linked = row(&db, id);
+    assert_eq!(
+        linked.last_error.as_deref(),
+        Some("no route"),
+        "kept for history"
+    );
+    assert_eq!(linked.current_error(), None, "a healthy link shows none");
+    transition(&mut db, id, backoff("peer closed the link: Shutdown"), 5);
+    assert_eq!(
+        row(&db, id).current_error(),
+        Some("peer closed the link: Shutdown"),
+        "the link ended: current again"
+    );
+    transition(&mut db, id, DialTransition::Dialing, 6);
+    assert_eq!(
+        row(&db, id).current_error(),
+        Some("peer closed the link: Shutdown"),
+        "still current while redialing"
+    );
+}
+
+// Kills: link ends double-recorded (the coordinator records ups and downs),
+// a dial failure or stop missing from the history, and a backoff loop that
+// floods it.
+#[test]
+fn dial_outcomes_are_recorded_and_repeats_collapse() {
+    let mut db = db();
+    let id = add(&mut db, "host", 1);
+    let backoff = |error: &str| DialTransition::Backoff {
+        attempts: 1,
+        next_at: 100,
+        error: error.into(),
+    };
+    transition(&mut db, id, DialTransition::Dialing, 2);
+    transition(&mut db, id, backoff("no route"), 3);
+    transition(&mut db, id, DialTransition::Dialing, 4);
+    transition(&mut db, id, backoff("no route"), 5);
+    transition(&mut db, id, DialTransition::Linked { node: node(1) }, 6);
+    transition(&mut db, id, backoff("peer closed the link: Shutdown"), 7);
+    transition(&mut db, id, DialTransition::NotInstalled, 8);
+    transition(
+        &mut db,
+        id,
+        DialTransition::Stopped {
+            reason: StopReason::AuthFailed,
+            version: "1".into(),
+        },
+        9,
+    );
+    let rows = events(&db);
+    let shape: Vec<(&str, i64, Option<&str>)> = rows
+        .iter()
+        .map(|e| (e.kind.as_str(), e.n, e.detail.as_deref()))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("stopped", 1, Some("auth_failed")),
+            ("not_installed", 1, None),
+            ("dial_failed", 2, Some("no route")),
+        ],
+        "newest first; the end of a link is the coordinator's"
+    );
+    let failed = rows.last().unwrap();
+    assert_eq!((failed.at, failed.last_at), (3, 5));
+    assert_eq!(failed.dest.as_deref(), Some("host"));
+    assert_eq!(failed.origin, "dialed");
+    assert_eq!(rows[0].node.as_deref(), Some(node(1).to_string().as_str()));
+}
+
+// Kills: an unbounded history, a detail stored past its bound, and a page
+// that skips or repeats rows.
+#[test]
+fn link_events_are_bounded_and_paged() {
+    use herdr_threads::store::sync_link_events::{
+        self as history, LinkEvent, LinkEventKind, LinkOrigin, MAX_AGE_MS, MAX_DETAIL_BYTES,
+        MAX_ROWS,
+    };
+    let mut db = db();
+    let record = |db: &mut Connection, at: i64, detail: String| {
+        let tx = db.transaction().unwrap();
+        history::record(
+            &tx,
+            &LinkEvent {
+                at,
+                kind: LinkEventKind::Down,
+                origin: LinkOrigin::Inbound,
+                node: Some(node(7)),
+                dest: None,
+                detail: Some(detail),
+            },
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    };
+    record(&mut db, 1, "é".repeat(MAX_DETAIL_BYTES));
+    let stored = events(&db).remove(0).detail.unwrap();
+    assert_eq!(stored.len(), MAX_DETAIL_BYTES, "cut on a char boundary");
+    for i in 0..(MAX_ROWS + 5) {
+        record(&mut db, 2 + i, format!("e{i}"));
+    }
+    let total: i64 = db
+        .query_row("SELECT COUNT(*) FROM sync_link_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(total, MAX_ROWS);
+    let (first, more) = history::page(&db, Some(node(7)), None, 3).unwrap();
+    assert!(more);
+    let (second, _) = history::page(&db, None, Some(first[2].seq), 3).unwrap();
+    assert_eq!(second[0].seq, first[2].seq - 1, "no gap, no repeat");
+    assert!(
+        history::page(&db, Some(node(8)), None, 3)
+            .unwrap()
+            .0
+            .is_empty()
+    );
+    record(&mut db, 2_000 + MAX_AGE_MS, "late".into());
+    assert_eq!(events(&db).len(), 1, "older than 30 days is pruned");
+}

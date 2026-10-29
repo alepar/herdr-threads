@@ -1696,6 +1696,27 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs
 - A peer without `peer.launch.v1` gets no frame, and the requester refuses with that reason; nothing is ever
   launched through the requester's own Herdr instead.
 
+**N16. Forgetting a dead node is a local view repair.** `peer prune` (an operator command; a dry run unless
+`--yes`, recorded `operator:local-user:<uid>` per A3 in `sync_forgotten_nodes` and one `daemon.log` line per node)
+forgets the nodes of one host label that are provably dead and unreferenced. The host label is a required scope
+filter, never proof of identity: no replicated evidence ties two keys to one machine (N1), and none is inferred. A
+node is forgotten only when, in one transaction against this node's canonical view (A2):
+- it is not this node, has no live link and no enabled dial target that learned it;
+- no contact (direct or relayed; with none, its first sight) within `--older-than-days` (default 7);
+- no fork or open clone evidence names it (N7, N8: that evidence stays visible) and no `peer_requests` row does;
+- every node of its island passes the same checks, where two nodes share an island when a journal entry of one
+  needs an entity (`journal.needs`) an entry of the other creates (`journal.creates`). Facts are the only
+  replicated references and the journal is never compacted, so a node a kept node references, or that references
+  a kept node, is kept (`referenced_by`). A log holding entries of an unknown layout (`parked_layout`, whose
+  references cannot be read) keeps every candidate unless it is itself prunable.
+
+Forgetting deletes nothing and is not replicated. Its rows, logs, seats and threads stay as they are (N5: a remote
+seat is retired only by its home node). This node leaves the forgotten nodes out of `peer list`, `sync status`,
+`sync unapplied` and `@MACHINE` matching (N14), and its coordinator neither wants nor advertises their logs: a
+receiver-side pull policy with no frame change, so a peer that still holds the logs keeps them. Every node decides
+for itself: the same command on each node forgets the same islands, because the island rule reads replicated data
+only (the contact times are each node's own). `peer prune --list` shows the tombstones.
+
 ## Accepted limits
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
@@ -2362,6 +2383,13 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   sender's node must hold as that node's seat (after replication) before the handoff is authored; a seat that
   never replicates leaves the handoff refused after the launch, which a retry of the same intent resumes at
   delivery, never relaunching.
+- **A forgotten island stays forgotten (N16).** No command removes a tombstone. The island's facts already held
+  stay held and applied, so a fact a kept node authors later against one of its entities (for example, inviting
+  one of its seats, which the island rule ruled out at prune time but cannot prevent afterwards) applies as
+  before; only entries the forgotten nodes author after the prune are never pulled here, so such a fact can park
+  as `parked_dep` behind one of them. Held journal rows still count toward store size and `sync verify` still
+  checks them. A forgotten node that comes back links as before (links are not refused), but its logs are not
+  pulled here.
 
 ## Decision record
 

@@ -2451,6 +2451,14 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {
         vector(&db)
     }
 
+    fn forgotten(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<std::collections::BTreeSet<crate::node::NodeUuid>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        super::node_prune::forgotten(&db)
+    }
+
     fn stored_hash(
         &self,
         log: &LogKey,

@@ -565,6 +565,19 @@ mod tests {
         scan_remote_clients();
     }
 
+    // Kills: a test daemon's machine list read from the real `herdr` on PATH
+    // (or `$HERDR_BIN_PATH`), whose machines it then dials: how 54 test
+    // nodes reached a real store on 10-17 (ht-978d).
+    #[test]
+    fn isolated_machine_list_never_names_the_real_herdr() {
+        let program = HerdrCli::from_env().program;
+        assert_ne!(program, OsString::from("herdr"));
+        if let Some(real) = std::env::var_os("HERDR_BIN_PATH") {
+            assert_ne!(program, real);
+        }
+        assert_eq!(program, crate::test_support::isolation::discovery_program());
+    }
+
     #[test]
     fn parse_machine_list_enabled_targets() {
         let json = br#"[

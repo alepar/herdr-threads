@@ -4,7 +4,8 @@
 //! - Owns: the runtime's reads and writes of its own two tables:
 //!   [`SyncStorePort::enabled_targets`], [`SyncStorePort::record_transition`],
 //!   [`SyncStorePort::record_contacts`] and
-//!   [`SyncStorePort::record_peer_status`]. Each write takes its own
+//!   [`SyncStorePort::record_peer_status`] (and the link history,
+//!   [`SyncStorePort::record_link_events`]). Each write takes its own
 //!   `FairWriter` background turn, because the writes are rare and small.
 //! - Hides: SQLite, the background turn and the store modules behind it.
 //! - Must not: grow into a general store API; `StorePort` and `JournalPort`
@@ -25,6 +26,7 @@ use crate::protocol::time::{CallBudget, UtcMillis};
 use crate::store::remote_seat_status::RemoteSeatUpdate;
 use crate::store::sync_contacts::NodeContact;
 use crate::store::sync_dial_targets::{DialTarget, DialTransition, TargetId};
+use crate::store::sync_link_events::LinkEvent;
 use crate::store::sync_peer_status::PeerStatus;
 
 /// See the module documentation.
@@ -59,6 +61,18 @@ pub trait SyncStorePort: Send + Sync {
         updates: &[RemoteSeatUpdate],
         budget: &CallBudget,
     ) -> Result<(), ApiError>;
+
+    /// Appends link up and down events to the `peer events` history
+    /// (`store::sync_link_events`). Display data only; a store that keeps no
+    /// history drops them.
+    fn record_link_events(
+        &self,
+        events: &[LinkEvent],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let _ = (events, budget);
+        Ok(())
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -78,6 +92,7 @@ mod memory {
     use crate::store::sync_dial_targets::{
         DialSource, DialState, DialTarget, DialTransition, TargetId,
     };
+    use crate::store::sync_link_events::LinkEvent;
     use crate::store::sync_peer_status::PeerStatus;
 
     #[derive(Default)]
@@ -86,6 +101,7 @@ mod memory {
         contacts: BTreeMap<NodeUuid, NodeContact>,
         peers: BTreeMap<NodeUuid, PeerStatus>,
         seat_updates: Vec<RemoteSeatUpdate>,
+        link_events: Vec<LinkEvent>,
     }
 
     /// An in-memory [`SyncStorePort`] for coordinator and dialer tests. It
@@ -177,6 +193,11 @@ mod memory {
             self.state.lock().unwrap().peers.values().cloned().collect()
         }
 
+        /// Every recorded link event, in order.
+        pub fn link_events(&self) -> Vec<LinkEvent> {
+            self.state.lock().unwrap().link_events.clone()
+        }
+
         /// Every recorded seat-status update, in order.
         pub fn seat_updates(&self) -> Vec<RemoteSeatUpdate> {
             self.state.lock().unwrap().seat_updates.clone()
@@ -249,6 +270,15 @@ mod memory {
                 .unwrap()
                 .seat_updates
                 .extend_from_slice(updates);
+            Ok(())
+        }
+
+        fn record_link_events(&self, events: &[LinkEvent], _: &CallBudget) -> Result<(), ApiError> {
+            self.state
+                .lock()
+                .unwrap()
+                .link_events
+                .extend_from_slice(events);
             Ok(())
         }
     }

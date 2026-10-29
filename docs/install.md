@@ -150,7 +150,11 @@ The tag appears inside every ID the node mints (`<prefix><tag><8 characters>`). 
 peer 1 backoff explicit off node=- reach=unknown attempts=1: me@example.invalid err=ssh: Could not resolve hostname ...
 ```
 
-That is the target id, its dial state, its source (`explicit`, or `herdr_machine` / `herdr_remote_process` when discovered), `off` when disabled, the learned node, reachability and attempts, the destination, and the last error. `peer add --remote-command C` replaces the command run on the remote side (default `herdr-threads peer --stdio`). Re-adding a stopped target restarts it.
+That is the target id, its dial state, its source (`explicit`, or `herdr_machine` / `herdr_remote_process` when discovered), `off` when disabled, the learned node, reachability and attempts, the destination, and the current error (shown only while the target is not linked). `peer add --remote-command C` replaces the command run on the remote side (default `herdr-threads peer --stdio`). Re-adding a stopped target restarts it.
+
+**Link history.** `peer events [--node NODE] [--limit N] [--before SEQ]` lists past link events, newest first: `up` and `down` (with why), `dial_failed`, `not_installed` and `stopped`, each with its node, `dialed` or `inbound`, and destination. A repeat of the same event shows as `xN to=TIME`. The newest 1000 events of the last 30 days are kept.
+
+**Dead nodes.** Every fresh state dir is a new node. A store that is gone for good, such as a deleted scratch or test store that once linked, stays in `peer list` as `unreachable`. `peer prune` lists the nodes of this machine's host label (`--host LABEL` for another) that can be forgotten, and why each other one is kept. A node can be forgotten when it has no link, no enabled dial target (`peer forget` it first), no contact for 7 days (`--older-than-days N`), no fork or clone evidence, and nothing a kept node references. `herdr-threads human peer prune --yes` forgets them: `peer list`, `sync status`, `sync unapplied` and `@MACHINE` addresses leave them out, and this node stops pulling their logs. Nothing is deleted. `peer prune --list` shows what was forgotten. Run it on each node that lists them.
 
 **Remote install requirement.** The dial runs `ssh -o BatchMode=yes DEST` and starts `herdr-threads peer --stdio` there: key-based ssh login must work without a prompt, and `herdr-threads` must be on the remote's `PATH` or in `~/.local/bin`. A remote without it is shown as `not_installed` and retried every 30 minutes.
 

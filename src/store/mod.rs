@@ -24,6 +24,7 @@ pub mod materialization;
 pub mod materialize;
 pub mod messages;
 pub mod node_directory;
+pub mod node_prune;
 pub mod operator;
 pub mod page_fit;
 pub mod peer_requests;
@@ -46,6 +47,7 @@ pub mod service_substrate;
 pub mod summary;
 pub mod sync_contacts;
 pub mod sync_dial_targets;
+pub mod sync_link_events;
 pub mod sync_peer_status;
 pub mod sync_status;
 pub mod thread_registers;
@@ -1436,6 +1438,29 @@ impl crate::sync::sync_store::SyncStorePort for SqliteStore {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(store_error)?;
         sync_contacts::record(&tx, contacts, now)?;
+        tx.commit().map_err(store_error)
+    }
+
+    fn record_link_events(
+        &self,
+        events: &[sync_link_events::LinkEvent],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        for event in events {
+            sync_link_events::record(&tx, event)?;
+        }
         tx.commit().map_err(store_error)
     }
 

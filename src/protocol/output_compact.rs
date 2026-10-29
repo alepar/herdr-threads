@@ -1243,6 +1243,7 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
             rows,
             discovery,
             nodes,
+            forgotten,
         } => {
             out.push_str("peers\n");
             if let Some(state) = discovery {
@@ -1278,6 +1279,10 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
             let now = super::render_now().0;
             for node in nodes {
                 node_row(node, now, out);
+            }
+            // 11 to 30 bytes, only when `peer prune` forgot nodes.
+            if *forgotten > 0 {
+                let _ = writeln!(out, "forgotten {forgotten}");
             }
         }
         SyncReply::Status(status) => sync_status(status, out),
@@ -1371,6 +1376,153 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
                 one_line(&serde_json::to_string(reply).unwrap_or_default())
             );
         }
+        SyncReply::Events(page) => peer_events(page, spec, out),
+        SyncReply::Pruned(reply) => peer_prune(reply, spec, out),
+    }
+}
+
+/// `HH:MM:SSZ`, with `MM-DD ` before it on another date than the render
+/// date (like [`clock`], with seconds).
+fn clock_s(at: i64) -> String {
+    let seconds = at.div_euclid(1_000).rem_euclid(24 * 3_600);
+    let time = format!(
+        "{:02}:{:02}:{:02}Z",
+        seconds / 3_600,
+        seconds / 60 % 60,
+        seconds % 60
+    );
+    match other_day(UtcMillis(at)) {
+        Some((month, day)) => format!("{month:02}-{day:02} {time}"),
+        None => time,
+    }
+}
+
+/// `peer events`: `peer_events` (12 bytes), then one row per event, newest
+/// first, `event SEQ TIME NODE KIND ORIGIN[ xN to=TIME][: DEST DETAIL]`:
+/// about 40 to 70 bytes plus the destination and at most 160 bytes of
+/// detail; `empty` with none; a `next:` line when older rows remain.
+fn peer_events(
+    page: &crate::protocol::sync_admin::EventsPage,
+    spec: &OutputSpec,
+    out: &mut String,
+) {
+    use std::fmt::Write as _;
+    out.push_str("peer_events\n");
+    if page.rows.is_empty() {
+        out.push_str("empty\n");
+    }
+    for row in &page.rows {
+        let _ = write!(
+            out,
+            "event {} {} {} {} {}",
+            row.seq,
+            clock_s(row.at),
+            row.node.as_deref().map_or_else(|| "-".to_owned(), token),
+            token(&row.kind),
+            token(&row.origin)
+        );
+        if row.n > 1 {
+            let _ = write!(out, " x{} to={}", row.n, clock_s(row.last_at));
+        }
+        let text = [row.dest.as_deref(), row.detail.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !text.is_empty() {
+            let _ = write!(out, ": {}", one_line(&text));
+        }
+        out.push('\n');
+    }
+    if let Some(before) = page.next_before {
+        let before = before.to_string();
+        let limit = page.limit.to_string();
+        let mut argv = vec!["peer", "events", "--before", &before];
+        if let Some(node) = &page.node {
+            argv.extend(["--node", node.as_str()]);
+        }
+        if page.limit != crate::protocol::sync_admin::DEFAULT_EVENTS_PAGE {
+            argv.extend(["--limit", &limit]);
+        }
+        out.push_str("next: ");
+        out.push_str(&format_command_argv(&detail_argv(spec, &argv)));
+        out.push('\n');
+    }
+}
+
+/// `peer prune`: `peer_prune HOST dry_run|applied` (or `peer_forgotten_list`
+/// for `--list`), then one row per node, prunable ones first:
+/// `node TAG prune|pruned|keep last=TIME logs=N entries=N[: REASON]`, about
+/// 50 to 75 bytes (a forgotten row: `node TAG forgotten at=TIME: PROVENANCE`);
+/// `rows_omitted N`, a `prunable N kept N` total, and in a dry run with
+/// something to prune a `next:` line with the `--yes` command.
+fn peer_prune(
+    reply: &crate::protocol::sync_admin::PruneReply,
+    spec: &OutputSpec,
+    out: &mut String,
+) {
+    use std::fmt::Write as _;
+    if reply.list {
+        out.push_str("peer_forgotten_list\n");
+        if reply.rows.is_empty() {
+            out.push_str("empty\n");
+        }
+        for row in &reply.rows {
+            let _ = writeln!(
+                out,
+                "node {} forgotten at={} host={}: {}",
+                token(&row.node),
+                clock(UtcMillis(row.at)),
+                row.host.as_deref().map_or_else(|| "-".to_owned(), token),
+                one_line(row.reason.as_deref().unwrap_or_default())
+            );
+        }
+        if reply.omitted > 0 {
+            let _ = writeln!(out, "rows_omitted {}", reply.omitted);
+        }
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "peer_prune {} {}",
+        token(&reply.host),
+        if reply.applied { "applied" } else { "dry_run" }
+    );
+    for row in &reply.rows {
+        let _ = write!(
+            out,
+            "node {} {} last={} logs={} entries={}",
+            token(&row.node),
+            token(&row.verdict),
+            clock(UtcMillis(row.at)),
+            row.logs,
+            row.entries
+        );
+        if let Some(reason) = &row.reason {
+            let _ = write!(out, ": {}", one_line(reason));
+        }
+        out.push('\n');
+    }
+    if reply.omitted > 0 {
+        let _ = writeln!(out, "rows_omitted {}", reply.omitted);
+    }
+    let _ = writeln!(out, "prunable {} kept {}", reply.prunable, reply.kept);
+    if !reply.applied && reply.prunable > 0 {
+        let days = (reply.older_than_ms / (24 * 3_600_000)).to_string();
+        let mut argv = vec![
+            "human",
+            "peer",
+            "prune",
+            "--yes",
+            "--host",
+            reply.host.as_str(),
+        ];
+        if reply.older_than_ms != crate::protocol::sync_admin::DEFAULT_PRUNE_OLDER_THAN_MS {
+            argv.extend(["--older-than-days", &days]);
+        }
+        out.push_str("next: ");
+        out.push_str(&format_command_argv(&detail_argv(spec, &argv)));
+        out.push('\n');
     }
 }
 
@@ -1418,6 +1570,10 @@ fn sync_status(status: &StatusReply, out: &mut String) {
             "logs_omitted {}: narrow with --log NODE",
             status.logs_omitted
         );
+    }
+    // 11 to 30 bytes, only when `peer prune` forgot nodes.
+    if status.forgotten > 0 {
+        let _ = writeln!(out, "forgotten {}", status.forgotten);
     }
     if status.coordinator_unavailable {
         out.push_str("links unavailable: the sync coordinator did not answer\n");

@@ -1185,8 +1185,9 @@ enum Top {
         #[command(subcommand)]
         command: LegacySub,
     },
-    /// Cross-node sync peers: the ssh destinations this node dials. `add` and
-    /// `forget` are operator commands (`herdr-threads human peer ...`).
+    /// Cross-node sync peers: the ssh destinations this node dials. `add`,
+    /// `forget` and `prune --yes` are operator commands (`herdr-threads human
+    /// peer ...`).
     Peer {
         #[command(subcommand)]
         command: PeerSub,
@@ -1409,6 +1410,36 @@ enum PeerSub {
     Forget { target: String },
     /// List every dial target with its state and learned node.
     List,
+    /// Past link events, newest first: links up and down, failed dials,
+    /// remotes without herdr-threads, stops.
+    Events {
+        /// Only the events of this node (uuid or tag).
+        #[arg(long)]
+        node: Option<String>,
+        /// Only events older than this one (a `seq` from a `next:` line).
+        #[arg(long)]
+        before: Option<i64>,
+        /// Page size, 1..=64 (default 20).
+        #[arg(long)]
+        limit: Option<u16>,
+    },
+    /// Forget dead node islands of one host (TRUST-POLICY N16): unlinked,
+    /// unheard of for --older-than-days, no fork evidence, and nothing a kept
+    /// node references. A dry run unless --yes; deletes nothing.
+    Prune {
+        /// The host label to prune; default this node's own.
+        #[arg(long)]
+        host: Option<String>,
+        /// Only nodes with no contact for this many days (default 7).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        older_than_days: Option<u32>,
+        /// Write the tombstones (operator: `herdr-threads human peer prune --yes`).
+        #[arg(long, conflicts_with = "list")]
+        yes: bool,
+        /// List the forgotten nodes instead.
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3735,6 +3766,17 @@ fn parse_cli_in_registry(
             } => super::peer::add(ssh_dest, remote_command)?,
             PeerSub::Forget { target } => super::peer::forget(target)?,
             PeerSub::List => super::peer::list(),
+            PeerSub::Events {
+                node,
+                before,
+                limit,
+            } => super::peer::events(node, before, limit)?,
+            PeerSub::Prune {
+                host,
+                older_than_days,
+                yes,
+                list,
+            } => super::peer::prune(host, older_than_days, yes, list)?,
         }),
         Top::Sync { command } => CliAction::Wire(match command {
             SyncSub::Status { log } => super::sync::status(log)?,

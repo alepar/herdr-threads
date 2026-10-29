@@ -94,6 +94,7 @@ use crate::store::sync_dial_targets::TargetId;
 use crate::store::sync_peer_status::PeerStatus;
 
 mod ingest;
+mod link_events;
 mod peer_status;
 pub mod remote_addr;
 pub mod remote_launch;
@@ -101,6 +102,7 @@ mod routing;
 mod seat_status;
 mod serve;
 
+use crate::store::sync_link_events::LinkEventKind;
 use ingest::{IngestDone, IngestJob};
 pub use routing::ResyncPin;
 use routing::{DupKey, SourceView};
@@ -947,6 +949,7 @@ impl SyncCoordinator {
             rx: BTreeMap::new(),
             replaced: BTreeMap::new(),
             local: Vector::default(),
+            forgotten: BTreeSet::new(),
             paused: BTreeSet::new(),
             headroom_until: None,
             probes: BTreeMap::new(),
@@ -978,6 +981,7 @@ impl SyncCoordinator {
             seats: seat_status::SeatStatusState::new(seat_status_wanted),
             addr: remote_addr::RemoteAddrState::new(resolver),
             launch: remote_launch::RemoteLaunchState::new(launcher),
+            link_events: link_events::LinkEventLog::default(),
         };
         let join = tokio::spawn(actor.run(Inputs {
             intake: intake_rx,
@@ -1173,6 +1177,10 @@ struct Actor {
     replaced: BTreeMap<(LogKey, u64), MonoInstant>,
     /// The last read of `journal.vector()`.
     local: Vector,
+    /// Nodes `peer prune` forgot (N16): their logs are left out of `local`
+    /// and of every peer vector, so they are never wanted or advertised.
+    /// Read with each local vector.
+    forgotten: BTreeSet<NodeUuid>,
     /// Logs not to be pulled (a fork the sink holds).
     paused: BTreeSet<LogKey>,
     /// All wants are paused until then (`Headroom`).
@@ -1180,7 +1188,7 @@ struct Actor {
     /// Clone probes by the newer link's id.
     probes: BTreeMap<u64, CloneProbe>,
     /// `journal.vector()` reads in flight (at most one).
-    refresh: JoinSet<Result<Vector, String>>,
+    refresh: JoinSet<Result<(Vector, BTreeSet<NodeUuid>), String>>,
     /// Another read was asked for while one was in flight.
     refresh_again: bool,
     /// The last value given to the own-history `Links` flag.
@@ -1234,6 +1242,8 @@ struct Actor {
     addr: remote_addr::RemoteAddrState,
     /// Remote launch requests, outbound and inbound.
     launch: remote_launch::RemoteLaunchState,
+    /// Link up and down events for the `peer events` history.
+    link_events: link_events::LinkEventLog,
 }
 
 /// A [`ResyncPin`] and when it took hold (the coordinator's monotonic
@@ -1281,6 +1291,9 @@ impl Actor {
                 }
                 Some(joined) = self.peer_flushes.join_next(), if !self.peer_flushes.is_empty() => {
                     self.on_peer_status_joined(joined);
+                }
+                Some(joined) = self.link_events.writes.join_next(), if !self.link_events.writes.is_empty() => {
+                    self.on_link_events_written(joined);
                 }
                 Some(joined) = self.seats.writes.join_next(), if !self.seats.writes.is_empty() => {
                     self.on_seat_status_written(joined);
@@ -1436,6 +1449,7 @@ impl Actor {
                 if let Origin::Dialed { report, .. } = &origin {
                     let _ = report.try_send(DialReport::Established { node_uuid: node });
                 }
+                self.note_link_event(LinkEventKind::Up, &origin, node, None);
                 // A live older link of this node with another boot: the
                 // newer link waits for the probe of it.
                 let older = self.by_node.get(&node).and_then(|ids| {
@@ -1959,6 +1973,9 @@ impl Actor {
         };
         let mut changed: BTreeSet<LogKey> = BTreeSet::new();
         for log in logs {
+            if self.forgotten.contains(&log.node) {
+                continue;
+            }
             let Some(head) = have_head(log) else {
                 continue;
             };
@@ -2027,17 +2044,26 @@ impl Actor {
                 deadline: MonoInstant(u64::MAX),
                 cancellation: Cancellation::default(),
             };
+            let forgotten = journal.forgotten(&budget).unwrap_or_default();
             journal
                 .vector(&budget)
+                .map(|vector| (vector, forgotten))
                 .map_err(|e| format!("{:?}: {:?}", e.code, e.detail))
         });
     }
 
     /// A fresh local vector: answer the owed `have`s, re-pick every source
     /// and refresh the own-history flag.
-    fn on_local(&mut self, result: Result<Vector, String>) {
+    fn on_local(&mut self, result: Result<(Vector, BTreeSet<NodeUuid>), String>) {
         match result {
-            Ok(vector) => {
+            Ok((mut vector, forgotten)) => {
+                if forgotten != self.forgotten {
+                    self.forget_logs(&forgotten);
+                    self.forgotten = forgotten;
+                }
+                vector
+                    .0
+                    .retain(|key, _| !self.forgotten.contains(&key.node));
                 self.local = vector;
                 let owed: Vec<(u64, bool)> = self
                     .links
@@ -2218,6 +2244,27 @@ impl Actor {
         }
     }
 
+    /// Drops `forgotten` nodes' logs from every peer vector and ends their rx
+    /// sources, so nothing wants them again.
+    fn forget_logs(&mut self, forgotten: &BTreeSet<NodeUuid>) {
+        for entry in self.links.values_mut() {
+            entry
+                .peer_vector
+                .0
+                .retain(|key, _| !forgotten.contains(&key.node));
+        }
+        let ended: Vec<(LogKey, u64)> = self
+            .rx
+            .iter()
+            .filter(|(key, _)| forgotten.contains(&key.node))
+            .map(|(key, src)| (*key, src.link))
+            .collect();
+        for (key, link) in ended {
+            self.send_unwant(link, &key);
+            self.rx.remove(&key);
+        }
+    }
+
     fn reselect_all(&mut self) {
         let mut logs: BTreeSet<LogKey> = self.rx.keys().copied().collect();
         for entry in self.links.values() {
@@ -2314,6 +2361,7 @@ impl Actor {
             self.send_seen_if_due(id, now);
         }
         self.flush_contacts();
+        self.flush_link_events();
         self.track_progress();
         self.flush_peer_status();
         self.seat_status_tick();
@@ -2419,6 +2467,8 @@ impl Actor {
             super::link::up_for_text(up_for, Duration::from_millis(wall)),
             why
         ));
+        let detail = why.to_string();
+        self.note_link_event(LinkEventKind::Down, &entry.origin, node, Some(detail));
         self.probes.remove(&link_id);
         self.addr_link_ended(link_id);
         self.launch_link_ended(link_id);
@@ -2795,6 +2845,7 @@ impl Actor {
             let _ = timeout(CLOSE_WRITE_TIMEOUT, worker).await;
         }
         self.final_flush().await;
+        self.final_link_events_flush().await;
         self.final_peer_status_flush().await;
         self.final_seat_status_flush().await;
         self.dialer.shutdown().await;
