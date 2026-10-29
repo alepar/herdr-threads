@@ -7,7 +7,8 @@
 #
 # Writes DIR/herdr-threads-OS-ARCH.tar.gz with one top-level directory,
 # herdr-threads/, holding what the Herdr plugin needs at run time:
-# herdr-plugin.toml, scripts/view.sh, scripts/build.sh, bin/herdr-threads,
+# herdr-plugin.toml, scripts/view.sh, scripts/build.sh, scripts/install.sh (run by
+# `herdr-threads update` from the verified archive), bin/herdr-threads,
 # the README files, LICENSE-MIT, LICENSE-APACHE, THIRD_PARTY_LICENSES.html (the
 # cargo-about output FILE, default THIRD_PARTY_LICENSES.html in the repository
 # root; required), VERSION, TARGET and the PREBUILT marker that makes the
@@ -55,11 +56,12 @@ mkdir -p "$package/bin" "$package/scripts" "$package/integrations/claude" "$pack
 cp "$repo_root/herdr-plugin.toml" "$package/"
 cp "$repo_root/README.md" "$repo_root/LICENSE-MIT" "$repo_root/LICENSE-APACHE" "$package/"
 cp "$third" "$package/THIRD_PARTY_LICENSES.html"
-cp "$repo_root/scripts/view.sh" "$repo_root/scripts/build.sh" "$package/scripts/"
+cp "$repo_root/scripts/view.sh" "$repo_root/scripts/build.sh" "$repo_root/scripts/install.sh" "$package/scripts/"
 cp "$repo_root/integrations/claude/README.md" "$package/integrations/claude/"
 cp "$repo_root/integrations/codex/README.md" "$package/integrations/codex/"
 cp "$binary" "$package/bin/herdr-threads"
-chmod 755 "$package/bin/herdr-threads" "$package/scripts/view.sh" "$package/scripts/build.sh"
+chmod 755 "$package/bin/herdr-threads" "$package/scripts/view.sh" "$package/scripts/build.sh" \
+    "$package/scripts/install.sh"
 printf '%s\n' "$version" > "$package/VERSION"
 printf '%s-%s\n' "$os" "$arch" > "$package/TARGET"
 printf '%s\n' 'Prebuilt release package: scripts/build.sh keeps bin/herdr-threads.' > "$package/PREBUILT"

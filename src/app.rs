@@ -1590,6 +1590,11 @@ where
         std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
     );
     let manifest_cache_dir = crate::harness::manifest::cache_dir(&paths.node_dir);
+    let update_check = crate::update::check::enabled(
+        &instance_settings,
+        std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
+    )
+    .then(|| paths.node_dir.clone());
     let mod_delivery = instance_settings.mod_delivery;
     let database_path = paths.database_path.clone();
     let archival_paths = paths.clone();
@@ -2369,6 +2374,16 @@ where
                     Arc::new(move |line: &str| log.write_line(line))
                 },
             ));
+            // The daily check for a newer release (installer-managed installs only).
+            if let Some(node_dir) = update_check.clone() {
+                let log = Arc::clone(&rate_limited_log);
+                crate::update::check::spawn_daemon_timer(
+                    node_dir,
+                    Arc::clone(&factory_clock),
+                    factory_stop.clone(),
+                    move |line| log.write_line(line),
+                );
+            }
             let states_harnesses = Arc::clone(&harnesses);
             let observer_manifest = Arc::clone(&manifest);
             let observer_store = Arc::clone(&store);

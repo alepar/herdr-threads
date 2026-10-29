@@ -35,6 +35,7 @@ mod picker;
 pub mod pre_upgrade_backup;
 pub mod retry;
 mod seat_resolution;
+pub mod update;
 pub use crate::protocol::address as seat_selector;
 pub mod peer_launch;
 pub(crate) mod send_priority;
@@ -558,6 +559,18 @@ fn run_parsed_in_pane<W: Write>(
             .as_deref()
             .ok_or_else(|| invalid_request("internal pre-upgrade-backup needs --state-dir"))?;
         return pre_upgrade_backup::run(std::path::Path::new(state_dir), target_version, writer);
+    }
+    if let CliAction::Update(request) = &parsed.action {
+        return update::run(request, writer);
+    }
+    if let CliAction::InternalStoreCheck = &parsed.action {
+        let state_dir = parsed
+            .output
+            .context
+            .state_dir
+            .as_deref()
+            .ok_or_else(|| invalid_request("internal store-check needs --state-dir"))?;
+        return update::store_check(std::path::Path::new(state_dir), writer);
     }
     if let CliAction::Doctor { .. } = &parsed.action {
         return doctor::run(&parsed, writer);
@@ -1175,6 +1188,8 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::InstallerIntegrations { .. }
         | CliAction::InternalJsonField { .. }
         | CliAction::InternalPreUpgradeBackup { .. }
+        | CliAction::Update(_)
+        | CliAction::InternalStoreCheck
         | CliAction::InternalPeerTabCreate { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
@@ -1235,6 +1250,76 @@ fn caller_needs_identity(action: &CliAction) -> bool {
             | CliAction::TopologyHandoff(_)
             | CliAction::TopologyRecover(_)
     ) || matches!(action, CliAction::RemoteLaunch(remote) if remote.then.is_some())
+}
+
+/// The update notice (`crate::update::check`): one line on top of a text command, the pending
+/// hint's gate (text, not machine presentation), for a top-level agent or a person, at most
+/// once a day per caller (an agent's session, a person's pane). Never on commands that display
+/// or check in mail, never for subagents; a local file read, no daemon call.
+fn write_update_notice<W: Write>(
+    parsed: &commands::ParsedCli,
+    caller_pane: Option<&str>,
+    state_dir: &std::path::Path,
+    writer: &mut W,
+) {
+    use crate::update::check;
+    if parsed.output.format != OutputFormat::Text
+        || parsed.presentation == output::Presentation::Machine
+        || matches!(
+            &parsed.action,
+            CliAction::Wire(Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_))
+                | CliAction::CachedCheckIn(_)
+                | CliAction::Mutation(
+                    MutationSpec::CheckIn
+                        | MutationSpec::CheckInLifecycle { .. }
+                        | MutationSpec::Accept(_)
+                        | MutationSpec::AcceptRequired { .. }
+                )
+        )
+    {
+        return;
+    }
+    let pane = || caller_pane.unwrap_or(check::NO_CALLER).to_owned();
+    let caller = if parsed.actor == actor_route::InvocationActor::Human {
+        pane()
+    } else {
+        match caller::active() {
+            Some(caller::CallerOrigin::Human) => pane(),
+            Some(caller::CallerOrigin::Agent(env))
+                if env.role == crate::protocol::authority::CallerRole::TopLevel =>
+            {
+                format!(
+                    "{}:{}",
+                    crate::harness::context::Harness::from(env.harness).as_str(),
+                    env.native_session.as_str()
+                )
+            }
+            _ => return,
+        }
+    };
+    let node = crate::daemon::paths::node_dir(state_dir);
+    let Ok(settings) = crate::daemon::settings::load(&node) else {
+        return;
+    };
+    if !check::enabled(
+        &settings,
+        std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
+    ) {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        });
+    if let Some(line) = check::notice_line(
+        &node,
+        crate::update::release::Version::current(),
+        &caller,
+        now,
+    ) {
+        let _ = writeln!(writer, "{line}");
+    }
 }
 
 /// The caller origin of a non-`human` command, refusing an agent without a session id for the
@@ -1354,6 +1439,7 @@ where
     // its own guard (TRUST-POLICY A4) refuses it under an agent harness.
     let origin = derive_refusing_origin(&parsed)?;
     let _origin = caller::ActiveGuard::enter(origin);
+    write_update_notice(&parsed, caller_pane, &context.state_dir, writer);
     match &parsed.action {
         CliAction::Handoff(request) => {
             let (_, client) = connection.get()?;

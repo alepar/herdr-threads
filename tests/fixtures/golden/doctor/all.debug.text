@@ -10,6 +10,7 @@ daemon_log: <root>/state/node/daemon.log
 harness states unavailable: the daemon is not running
 harness manifest: auto
 manifest cache: never fetched (using the embedded copy)
+update check: auto
 daemon: not_running
 daemon.hint: run `herdr-threads daemon ensure`
 skill.summary_procedure: present

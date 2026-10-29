@@ -196,3 +196,5 @@ mod priority_config_smoke;
 
 #[path = "integration/priority_sweep.rs"]
 mod priority_sweep;
+#[path = "update/update_cli.rs"]
+mod update_cli;

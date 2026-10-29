@@ -344,6 +344,31 @@ pub(crate) fn harness_manifest_report(
     })
 }
 
+/// `report["update_check"]`: whether the daily update check and notice are on (this process's
+/// settings and environment) and the last recorded result. Informational only.
+fn update_check_report(node_dir: &std::path::Path, offline_env: Option<&std::ffi::OsStr>) -> Value {
+    let on = crate::daemon::settings::load(node_dir)
+        .is_ok_and(|settings| crate::update::check::enabled(&settings, offline_env));
+    let state = crate::update::check::read_state(node_dir);
+    json!({
+        "policy": if on { "auto" } else { "off" },
+        "latest": state.latest,
+        "checked_at_ms": state.checked_at_ms,
+    })
+}
+
+fn update_check_text(check: &Value) -> String {
+    let mut line = format!("update check: {}", scalar(&check["policy"]));
+    if let (Some(latest), Some(at)) = (check["latest"].as_str(), check["checked_at_ms"].as_i64()) {
+        line.push_str(&format!(
+            " (latest {latest}, checked {})",
+            crate::harness::manifest::format_rfc3339_utc(at)
+        ));
+    }
+    line.push('\n');
+    line
+}
+
 /// The text lines for [`harness_manifest_report`].
 fn harness_manifest_text(manifest: &Value) -> String {
     let mut out = String::new();
@@ -968,6 +993,10 @@ fn report_captured(
                 &paths.node_dir,
                 std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
             );
+            report["update_check"] = update_check_report(
+                &paths.node_dir,
+                std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
+            );
             match probe_daemon(&paths, clock, budget) {
                 Ok(Daemon::NotRunning) => {
                     states = Err("the daemon is not running".into());
@@ -1333,6 +1362,9 @@ pub(crate) fn render_debug_text_in(
         out.push_str(&harness_states_text(report));
         if report["harness_manifest"].is_object() {
             out.push_str(&harness_manifest_text(&report["harness_manifest"]));
+        }
+        if report["update_check"].is_object() {
+            out.push_str(&update_check_text(&report["update_check"]));
         }
         let daemon = &report["daemon"];
         out.push_str(&format!("daemon: {}\n", scalar(&daemon["state"])));

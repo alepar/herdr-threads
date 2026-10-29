@@ -55,6 +55,11 @@
 # releases: latest/download/ASSET and download/TAG/ASSET),
 # HERDR_THREADS_HOME (install dir), HERDR_THREADS_BIN_DIR, HERDR_BIN (herdr),
 # AISW_HOME (the aisw directory whose profiles are reconciled; default ~/.aisw).
+# `herdr-threads update` runs this script from the verified release archive with
+# --version, --release-url (a file:// mirror of the verified files), --prefix,
+# --bin-dir, --no-herdr and the setup flags; keep those flags stable.
+# The marker records --bin-dir and the opt-outs (--no-herdr,
+# --without-permissions, --no-aisw-profiles), which `update` replays.
 # The whole script is one brace group: bash parses all of it before running
 # anything, so under `curl | bash` no command can read the rest of the script
 # from stdin, and a truncated download runs nothing.
@@ -545,7 +550,10 @@ uninstall() {
         rm -rf "$install_dir"
         say "removed $install_dir"
     fi
-    rm -rf "$install_dir.new" "$install_dir.old"
+    rm -rf "$install_dir.new" "$install_dir.old" "$install_dir.prev" "$install_dir.prev.tmp" \
+        "$install_dir.prev.old"
+    rm -f "$install_dir.update.json" "$install_dir.update.lock" "$install_dir.update.log" \
+        "$install_dir.rollback.log"
     say "Daemon state in Herdr's plugin state directory was kept."
     if [ "$OUT_HOOKS_KEPT" = 1 ]; then
         say "harness hooks were left in place: re-run with --yes to remove them (they do nothing without herdr-threads)"
@@ -627,7 +635,17 @@ for required in herdr-plugin.toml bin/herdr-threads scripts/view.sh scripts/buil
 done
 [ -x "$package/bin/herdr-threads" ] || die "release archive's bin/herdr-threads is not executable"
 new_version=$(cat "$package/VERSION")
-printf 'version=%s\nsha256=%s\nasset=%s\n' "$new_version" "$actual" "$asset" > "$package/$MARKER"
+# The recorded choices (bin dir and opt-outs) `herdr-threads update` replays.
+marker_choices() {
+    printf 'bin_dir=%s\n' "$bin_dir"
+    [ "$register" = 1 ] || printf 'herdr=0\n'
+    [ "$without_permissions" = 0 ] || printf 'permissions=0\n'
+    [ "$aisw_profiles" = 1 ] || printf 'aisw_profiles=0\n'
+}
+{
+    printf 'version=%s\nsha256=%s\nasset=%s\n' "$new_version" "$actual" "$asset"
+    marker_choices
+} > "$package/$MARKER"
 
 # --- install files ----------------------------------------------------------
 
@@ -775,6 +793,11 @@ if [ "$changed" = 1 ]; then
     fi
 else
     say "$new_version is already installed in $install_dir"
+    # This run's choices replace the recorded ones, so `update` replays the latest.
+    {
+        grep -E '^(version|sha256|asset)=' "$install_dir/$MARKER"
+        marker_choices
+    } > "$install_dir/$MARKER.tmp" && mv -f "$install_dir/$MARKER.tmp" "$install_dir/$MARKER"
 fi
 
 mkdir -p "$bin_dir"

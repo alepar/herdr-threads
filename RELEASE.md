@@ -51,7 +51,7 @@ When CI is green on the release SHA: annotated tag `vX.Y.Z` (`git -c user.email=
 
 ## 6. Verify the archives
 
-For each of the four archives: `SHA256SUMS` equals the digests GitHub reports, `VERSION` and `TARGET` are right, modes are correct, the licenses are present, and a credential scan of the extracted tree is clean. Extract each archive into its own empty directory; never run anything from inside it.
+For each of the four archives: `SHA256SUMS` equals the digests GitHub reports, `VERSION` and `TARGET` are right, it holds 14 files (from 2.7.0 including `scripts/install.sh`, which `herdr-threads update` runs) with modes 755/644, the licenses are present, and a credential scan of the extracted tree is clean. Extract each archive into its own empty directory; never run anything from inside it.
 
 After the tag, `scripts/freeze-peer-wire X.Y.Z --at vX.Y.Z --check` confirms the committed fixtures match what the tagged codec emits.
 
