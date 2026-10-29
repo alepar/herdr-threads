@@ -2,6 +2,35 @@
 
 ## Current release status
 
+[v2.6.3 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.3) from source `afe4704a9`. It is a patch release with no schema change (node schema stays 10) and no peer wire change. `scripts/freeze-peer-wire 2.4.0 --at v2.6.3 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+**What changed:**
+- **Refused operator intents are discarded** (ht-2cbu, user-approved). A definitive first-submission refusal of an operator command now discards its local intent, as cooperative commands already did. An unknown outcome, a transient refusal or a host-observation refusal keeps it. The two design docs' retention rule is updated to match.
+- **One macOS CI job** (ht-yjhb). Both darwin targets now build in a single job.
+- **Sync backoff test fix** (ht-uk8t).
+
+On blacky, the 2,795 refused intents left by the removed `durak-dev-invites` timer were deleted by hand before this release. Copies are in `~/.cache/herdr-threads-release/intents-removed-20261028T231536Z`.
+
+**Qualification** ran on `afe4704a9` (blacky, `nice -n 19`, heavy steps through the shared lock; evidence in `~/.cache/herdr-threads-release/2.6.3`):
+- fmt, harness-neutral, wire-compat, both clippy variants and default-features: pass.
+- Candidate build (`1867a216…`) and the wake e2e self-test: pass.
+- Herdr matrix 0.9.1-0.9.5: all pass. Every leak check: pass.
+- Package lifecycle gate: pass (536 s). Installer daemon suite 5/5, installer backup suite 7/7.
+- Full suite: 8076/8079. The three failures are the zsh tests.
+- Wake e2e: 120/120, run with `--codex-auth-home ~/.aisw/profiles/codex/codex-2`, no credential refresh.
+
+**CI**: [run 40790398560](https://github.com/alepar/herdr-threads/actions/runs/40790398560) passed on its first attempt; [release run 40796322718](https://github.com/alepar/herdr-threads/actions/runs/40796322718) passed every job.
+
+**Archives**:
+- SHA256SUMS matches GitHub's digests.
+- Each archive has VERSION 2.6.3, the right TARGET and 13 files with modes 755/644; licenses are present.
+- The credential scan is clean.
+
+**Installed on blacky** with the tag's installer (`--setup --version v2.6.3`, identical to `git show v2.6.3:scripts/install.sh`); exit 0:
+- Backup: `herdr-threads-backups/pre-v2.6.3-20261029T010029Z` (schema 10, integrity ok). Four backups are kept: the newest three plus the newest schema-9 one.
+- The installer stopped the 2.6.2 daemon and started 2.6.3. The `/proc` exe hash `74452fa4…` matches the linux-x86_64 archive.
+- doctor reports the daemon healthy.
+
 [v2.6.2 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.2) from source `9cd43ea9d`, a patch release. There is no schema change (node schema stays 10) and no peer wire change; `scripts/freeze-peer-wire 2.4.0 --at v2.6.2 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 **What changed.** Each change was roasted by its fixer and independently reviewed.
