@@ -929,13 +929,14 @@ fn dropping_the_lease_releases_it_despite_a_transient_descriptor_copy() {
     drop(next.expect("the dropped lease was released despite the descriptor copy"));
 }
 
-/// Rewrite the published descriptor in place (mode 0600 is kept).
+/// Write the published descriptor, private (0600) as the owner publishes it.
 fn rewrite_descriptor(paths: &NodePaths, descriptor: &EndpointDescriptor) {
     fs::write(
         &paths.descriptor_path,
         serde_json::to_vec(descriptor).unwrap(),
     )
     .unwrap();
+    fs::set_permissions(&paths.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 /// macOS renumbers an APFS volume's st_dev across reboots while the socket
@@ -961,11 +962,9 @@ fn dead_boot_socket_with_renumbered_device_is_reclaimed() {
     let error = read_descriptor(&instance, owner.node_uuid().unwrap()).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert!(is_socket_substituted(&error), "{error}");
-    let text = error.to_string();
-    assert!(text.contains("`herdr-threads daemon ensure`"), "{text}");
-    assert!(
-        text.contains(&instance.descriptor_path.display().to_string()),
-        "{text}"
+    assert_eq!(
+        error.to_string(),
+        "socket pathname was substituted; run `herdr-threads daemon ensure` to reclaim it"
     );
     owner.remove_stale_endpoint().unwrap();
     assert!(fs::symlink_metadata(&instance.socket_path).is_err());
@@ -980,10 +979,12 @@ fn dead_boot_socket_with_renumbered_device_is_reclaimed() {
 }
 
 /// The renumbered-device relaxation (ht-tyt7) removes only a dead socket that
-/// is the descriptor's own inode: a live listener, a different inode, a
-/// symlink, a regular file and a foreign-owned socket are refused and left in
-/// place, with the descriptor kept. Kills: accepting any device or inode
-/// mismatch, skipping the connect probe, or following the pathname.
+/// is the descriptor's own inode: a live listener, a different inode (with
+/// the device matching or not), a symlink, a regular file and a socket of
+/// another uid are refused and left in place, with the descriptor kept.
+/// Kills: accepting any inode mismatch (including weakening the inode guard
+/// to apply only when the device differs too), skipping the connect probe,
+/// following the pathname, or dropping the uid check.
 #[test]
 fn renumbered_device_never_reclaims_live_or_unsafe_artifacts() {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -991,20 +992,19 @@ fn renumbered_device_never_reclaims_live_or_unsafe_artifacts() {
     let instance = paths(&root, root.sock("renumbered-neg.sock"));
     let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let at = instance.socket_path.clone();
-    let describe = |meta: &fs::Metadata, inode: u64| {
-        rewrite_descriptor(
-            &instance,
-            &EndpointDescriptor {
-                software_version: "0.1.0".into(),
-                protocol_version: 1,
-                node_uuid: owner.node_uuid().unwrap(),
-                boot_id: uuid::Uuid::new_v4(),
-                endpoint: at.clone(),
-                pid: 1,
-                socket_device: meta.dev() ^ 1,
-                socket_inode: inode,
-            },
-        );
+    let describe = |device: u64, inode: u64| {
+        let descriptor = EndpointDescriptor {
+            software_version: "0.1.0".into(),
+            protocol_version: 1,
+            node_uuid: owner.node_uuid().unwrap(),
+            boot_id: uuid::Uuid::new_v4(),
+            endpoint: at.clone(),
+            pid: 4242,
+            socket_device: device,
+            socket_inode: inode,
+        };
+        rewrite_descriptor(&instance, &descriptor);
+        descriptor
     };
     let refused = |kind: io::ErrorKind, what: &str| {
         let error = owner.remove_stale_endpoint().unwrap_err();
@@ -1014,21 +1014,40 @@ fn renumbered_device_never_reclaims_live_or_unsafe_artifacts() {
             fs::symlink_metadata(&at).is_ok(),
             "{what}: artifact removed"
         );
+        error
     };
 
     // A live listener at the descriptor's inode: it answers, so it stays.
     let bound = owner.bind_socket().unwrap();
-    let published = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
-    describe(&fs::symlink_metadata(&at).unwrap(), published.socket_inode);
+    let meta = fs::symlink_metadata(&at).unwrap();
+    describe(meta.dev() ^ 1, meta.ino());
     refused(io::ErrorKind::AddrInUse, "live listener");
-    // A dead socket whose inode differs too is substituted, not renumbered.
+    // A dead socket whose inode differs is substituted, not renumbered,
+    // whether or not the device matches too.
     drop(bound);
     let meta = fs::symlink_metadata(&at).unwrap();
-    describe(&meta, meta.ino() + 1);
-    refused(io::ErrorKind::PermissionDenied, "inode mismatch");
-    assert!(is_socket_substituted(
-        &owner.remove_stale_endpoint().unwrap_err()
-    ));
+    for (device, what) in [
+        (meta.dev(), "inode mismatch, same device"),
+        (meta.dev() ^ 1, "inode and device mismatch"),
+    ] {
+        describe(device, meta.ino() + 1);
+        let error = refused(io::ErrorKind::PermissionDenied, what);
+        assert!(is_socket_substituted(&error), "{what}: {error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "socket pathname was substituted; no daemon holds the owner lock: remove {}, then run `herdr-threads daemon ensure`",
+                instance.descriptor_path.display()
+            )
+        );
+    }
+    // A socket of another uid: refused before any probe or unlink. The uid
+    // is injected, so this runs on every host (no foreign socket is needed).
+    let descriptor = describe(meta.dev() ^ 1, meta.ino());
+    let error = remove_dead_boot_socket_as(&descriptor, &instance.descriptor_path, meta.uid() + 1)
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+    assert!(fs::symlink_metadata(&at).unwrap().file_type().is_socket());
     fs::remove_file(&at).unwrap();
 
     // A symlink to a dead socket elsewhere, described by the target's inode.
@@ -1037,7 +1056,7 @@ fn renumbered_device_never_reclaims_live_or_unsafe_artifacts() {
     fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
     symlink(&target, &at).unwrap();
     let meta = fs::metadata(&target).unwrap();
-    describe(&meta, meta.ino());
+    describe(meta.dev() ^ 1, meta.ino());
     refused(io::ErrorKind::PermissionDenied, "symlink");
     assert!(fs::symlink_metadata(&at).unwrap().file_type().is_symlink());
     assert!(
@@ -1053,48 +1072,10 @@ fn renumbered_device_never_reclaims_live_or_unsafe_artifacts() {
     fs::write(&at, b"must survive").unwrap();
     fs::set_permissions(&at, fs::Permissions::from_mode(0o600)).unwrap();
     let meta = fs::symlink_metadata(&at).unwrap();
-    describe(&meta, meta.ino());
+    describe(meta.dev() ^ 1, meta.ino());
     refused(io::ErrorKind::PermissionDenied, "regular file");
     assert_eq!(fs::read(&at).unwrap(), b"must survive");
     fs::remove_file(&at).unwrap();
     drop(owner);
-
-    // A socket owned by another user as the node's socket, when one exists.
-    let foreign = ["/var/run", "/run", "/private/var/run"]
-        .iter()
-        .filter_map(|dir| fs::read_dir(dir).ok())
-        .flat_map(|entries| entries.flatten())
-        .map(|entry| entry.path())
-        .find(|path| {
-            fs::symlink_metadata(path).is_ok_and(|meta| {
-                meta.file_type().is_socket() && meta.uid() != crate::daemon::paths::effective_uid()
-            })
-        });
-    match foreign {
-        Some(foreign) => {
-            let mut elsewhere = instance.clone();
-            elsewhere.socket_path = foreign.clone();
-            let owner = OwnerLock::acquire_with_test_hint(&elsewhere).unwrap();
-            let meta = fs::symlink_metadata(&foreign).unwrap();
-            rewrite_descriptor(
-                &elsewhere,
-                &EndpointDescriptor {
-                    software_version: "0.1.0".into(),
-                    protocol_version: 1,
-                    node_uuid: owner.node_uuid().unwrap(),
-                    boot_id: uuid::Uuid::new_v4(),
-                    endpoint: foreign.clone(),
-                    pid: 1,
-                    socket_device: meta.dev() ^ 1,
-                    socket_inode: meta.ino(),
-                },
-            );
-            let error = owner.remove_stale_endpoint().unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-            assert!(foreign.exists());
-            assert!(elsewhere.descriptor_path.exists());
-        }
-        None => eprintln!("no foreign-owned socket on this host; foreign case skipped"),
-    }
     fs::remove_dir_all(root).unwrap();
 }

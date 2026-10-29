@@ -1297,8 +1297,9 @@ async fn dead_boot_with_renumbered_socket_device_recovers() {
 }
 
 /// A live owner whose published socket no longer matches its descriptor is
-/// never displaced: ensure launches nothing, removes nothing and reports the
-/// mismatch with its recovery instead of a generic timeout (ht-tyt7).
+/// never displaced: ensure launches nothing, removes nothing, and once the
+/// lock has stayed held past the grace it reports the mismatch with a
+/// recovery that names the holder, well before its deadline (ht-tyt7).
 #[tokio::test]
 async fn live_owner_with_mismatched_socket_is_kept_and_reported() {
     let (root, context, paths) = fixture();
@@ -1313,32 +1314,78 @@ async fn live_owner_with_mismatched_socket_is_kept_and_reported() {
     };
     let bytes = serde_json::to_vec(&renumbered).unwrap();
     std::fs::write(&paths.descriptor_path, &bytes).unwrap();
+    let started = std::time::Instant::now();
     let error = ensure_running_with_timeout(
         &context,
         PathBuf::from("/bin/false").as_path(),
         Arc::new(TestClock),
-        Duration::from_millis(300),
+        Duration::from_secs(10),
     )
     .await
     .unwrap_err();
-    assert!(
-        error.detail.contains("socket pathname was substituted"),
-        "{}",
-        error.detail
-    );
-    assert!(
-        error.detail.contains("`herdr-threads daemon ensure`"),
-        "{}",
-        error.detail
-    );
-    assert!(
-        !error.detail.contains("did not become ready"),
-        "{}",
-        error.detail
+    let elapsed = started.elapsed();
+    assert!(elapsed >= SUBSTITUTED_OWNER_GRACE, "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    assert_eq!(
+        error.detail,
+        format!(
+            "daemon startup: socket pathname was substituted; a live process holds the owner lock: stop it (pid {} if still a herdr-threads daemon), remove {}, then run `herdr-threads daemon ensure`",
+            published.pid,
+            paths.descriptor_path.display()
+        )
     );
     assert_eq!(std::fs::read(&paths.descriptor_path).unwrap(), bytes);
     assert!(published.endpoint.exists());
     drop(listener);
     drop(lock);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A dead boot whose socket inode differs (a genuine substitution, not a
+/// renumbered device) with the owner lock free: ensure's elected cleanup
+/// refuses it, nothing is removed and no daemon is launched (ht-tyt7).
+#[tokio::test]
+async fn dead_boot_with_substituted_socket_inode_is_refused_without_launch() {
+    use std::os::unix::fs::PermissionsExt;
+    let (root, context, paths) = fixture();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let listener = lock.bind_socket().unwrap();
+    let stale = lock
+        .publish_endpoint(&listener, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION)
+        .unwrap();
+    drop(listener);
+    drop(lock);
+    let substituted = EndpointDescriptor {
+        socket_inode: stale.socket_inode + 1,
+        ..stale.clone()
+    };
+    let bytes = serde_json::to_vec(&substituted).unwrap();
+    std::fs::write(&paths.descriptor_path, &bytes).unwrap();
+    let marker = root.join("launched");
+    let launcher = root.join("mark.sh");
+    std::fs::write(
+        &launcher,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let error = ensure_running_with_timeout(
+        &context,
+        &launcher,
+        Arc::new(TestClock),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.detail,
+        format!(
+            "daemon startup: socket pathname was substituted; no daemon holds the owner lock: remove {}, then run `herdr-threads daemon ensure`",
+            paths.descriptor_path.display()
+        )
+    );
+    assert!(!marker.exists(), "a daemon was launched");
+    assert_eq!(std::fs::read(&paths.descriptor_path).unwrap(), bytes);
+    assert!(stale.endpoint.exists());
     std::fs::remove_dir_all(root).unwrap();
 }
