@@ -2,6 +2,19 @@
 
 ## Current release status
 
+[v2.6.4 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.4) from source `cdc8423f5`, a patch release. There is no schema change (node schema stays 10) and no peer wire change; `scripts/freeze-peer-wire 2.4.0 --at v2.6.4 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+**Fix.** It carries ht-tyt7: after a macOS reboot that renumbers the APFS volume device, the elected owner reclaims the dead boot's socket. That happens only when the inode matches, the socket is private to this user, and nothing answers on it. `daemon ensure` heals instead of failing, and the recovery texts name the remedy. The laptop had been down 12 h. The independent review found no safety defect and two doc nits, both fixed. It also carries the ht-mw10 regression test.
+
+**Qualification** on `cdc8423f5` (evidence in `~/.cache/herdr-threads-release/2.6.4`):
+- Every step passed: package gate 624 s, installer suites 5/5 and 7/7, Herdr matrix 0.9.1-0.9.5.
+- The full suite passed 8082/8085; the three failures are the zsh tests.
+- The wake e2e (codex-2 credential) passed 120/120.
+
+**CI and release.** [CI run 40827585609](https://github.com/alepar/herdr-threads/actions/runs/40827585609) passed on its first attempt. [Release run 40833317910](https://github.com/alepar/herdr-threads/actions/runs/40833317910) passed every job. All four archives check out: digests match, each has 13 files with the right modes and licenses, and the credential scan is clean.
+
+**Installed on blacky**, with the installer's backup `pre-v2.6.4-20261029T072101Z` (schema 10, integrity ok). The first run exited 3 with "upgraded, not linked". Herdr's plugin registration had been re-pointed at a deleted scratch directory by a review subagent's experiment during the `feat/update` review. The registration was restored with `herdr plugin unlink herdr-threads && herdr plugin link ~/.local/share/herdr-threads`, and a rerun of the installer then exited 0 ("installed and linked"). The daemon's exe hash is `4c8a042c…`, which matches the linux-x86_64 archive, and doctor reports it healthy. At the user's request, the laptop skips 2.6.4 and goes straight to 2.7.0.
+
 [v2.6.3 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.3) from source `afe4704a9`. It is a patch release with no schema change (node schema stays 10) and no peer wire change. `scripts/freeze-peer-wire 2.4.0 --at v2.6.3 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 **What changed:**
