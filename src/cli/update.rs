@@ -206,7 +206,7 @@ pub fn run<W: Write>(request: &UpdateRequest, writer: &mut W) -> Result<(), RunE
         work.path(),
         &mut |pid| {
             journal.installer_pid = Some(pid);
-            let _ = journal.write(&journal_path);
+            journal.write(&journal_path)
         },
     );
     let outcome = match outcome {
@@ -546,7 +546,9 @@ fn live_daemon(state: &Path) -> Option<(u32, String)> {
 }
 
 fn preflight(installation: &Installation) -> Result<Vec<StateInfo>, String> {
-    let current = std::env::current_exe().map_err(|error| error.to_string())?;
+    // The installed executable, not this process's: an update that waited for the lock may run
+    // from a file an earlier update replaced.
+    let current = installation.binary();
     let mut states = Vec::new();
     for dir in store_state_dirs() {
         let (daemon, pid, exe) = match live_daemon(&dir) {
@@ -766,7 +768,7 @@ fn run_installer(
     flags: &[String],
     log: &Path,
     work: &Path,
-    on_spawn: &mut dyn FnMut(u32),
+    on_spawn: &mut dyn FnMut(u32) -> io::Result<()>,
 ) -> Result<InstallOutcome, String> {
     let file = fs::OpenOptions::new()
         .create(true)
@@ -836,7 +838,15 @@ fn run_installer(
             return Err(format!("the installer did not run: {error}"));
         }
     };
-    on_spawn(child.id());
+    // Released only once the pid is recorded; otherwise the trampoline reads EOF and exits 1
+    // without starting the installer.
+    if let Err(error) = on_spawn(child.id()) {
+        unsafe { libc::close(go_write) };
+        let _ = child.wait();
+        return Err(format!(
+            "could not record the installer in the journal ({error}); the installer did not run"
+        ));
+    }
     unsafe {
         libc::write(go_write, b"\n".as_ptr().cast(), 1);
         libc::close(go_write);
@@ -1186,7 +1196,7 @@ fn roll_back(
         &mut |pid| {
             let mut recorded = journal.clone();
             recorded.installer_pid = Some(pid);
-            let _ = recorded.write(journal_path);
+            recorded.write(journal_path)
         },
     )?;
     judge(installation, &journal.previous, &journal.states).map_err(|error| {
@@ -1477,6 +1487,50 @@ mod tests {
             .unwrap();
         });
         assert!(refusal(&release, &work).contains("does not run here"));
+    }
+
+    #[test]
+    fn the_installer_starts_only_once_the_journal_records_it() {
+        let root = crate::test_support::scratch::temp_path(format!(
+            "update-gate-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("install.sh");
+        fs::write(&script, "touch \"$TMPDIR/ran\"\n").unwrap();
+        let installation = Installation {
+            prefix: root.join("p"),
+            marker: Marker {
+                bin_dir: Some(root.join("bin")),
+                ..Marker::default()
+            },
+        };
+        let run = |record: &mut dyn FnMut(u32) -> io::Result<()>| {
+            run_installer(
+                &installation,
+                &script,
+                &root,
+                Version(1, 0, 0),
+                &[],
+                &root.join("log"),
+                &root,
+                record,
+            )
+        };
+        let refused = run(&mut |_| Err(io::Error::other("disk full")));
+        assert!(refused.err().unwrap().contains("did not run"));
+        assert!(
+            !root.join("ran").exists(),
+            "an unrecorded installer never starts"
+        );
+        let mut recorded = None;
+        let ran = run(&mut |pid| {
+            recorded = Some(pid);
+            Ok(())
+        });
+        assert_eq!(ran.unwrap().status, Some(0));
+        assert!(recorded.is_some());
+        assert!(root.join("ran").exists());
     }
 
     #[test]
