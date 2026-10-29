@@ -54,7 +54,7 @@ Needs Herdr 0.9.1+ and Claude Code or Codex on `PATH`.
 curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/install.sh | bash -s -- --setup
 ```
 
-Installs `~/.local/bin/herdr-threads`, registers the plugin and, with `--setup`, adds hooks, the agent skill and permissions for each harness found. Re-run to upgrade. Codex asks once to review hooks ([details](docs/install.md#harness-hooks)).
+Installs `~/.local/bin/herdr-threads`, registers the plugin and, with `--setup`, adds hooks, the agent skill and permissions for each harness found. Upgrade with `herdr-threads update`. Codex asks once to review hooks ([details](docs/install.md#harness-hooks)).
 
 Linux is experimental: x86_64 and agent harness sessions remain unverified until the [rehearsal on a clean machine](docs/release.md#post-merge-follow-on-checklist). Intel macOS is untested, and Windows is unsupported. More in the [installation guide](docs/install.md).
 

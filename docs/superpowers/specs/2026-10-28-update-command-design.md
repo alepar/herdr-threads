@@ -143,10 +143,12 @@ herdr-threads update [--version vX.Y.Z] [--dry-run | --check]
     - each state directory that had a running **owned** daemon at preflight has one now,
       running the target version (`daemon ensure` with the new executable, which does the version and
       boot handshake);
-    - each state directory with a store whose daemon was **not** running at preflight also
-      gets `daemon ensure` with the new executable. That opens the store at the target schema
-      and runs its migration now, while rollback is still possible, instead of at the next
-      start. The daemon it starts idle-exits as usual (review 2).
+    - each state directory with a store whose daemon was **not** running at preflight is
+      opened by the new executable at the target schema, with no daemon: a new hidden
+      `internal store-check --state-dir S`. It runs the migration now, while rollback is still
+      possible, instead of at the next start (review 2). `daemon ensure` cannot do this: it
+      needs a reachable Herdr host. The directory therefore stays daemon-less, as it was
+      (review 2 follow-up).
     The script's exit 3 for setup alone (`setup incomplete`, not linked) is reported but does
     not fail the update. The binary and the daemon are what an update changes.
 12. **Roll back or report** (Rollback below).
@@ -248,8 +250,10 @@ every 24 h, cached in the node directory and switched off by a setting or by
 
 **State: a node-local file, not the store.** The file is `<node_dir>/update-check.json`,
 `{"attempted_at_ms", "checked_at_ms", "latest", "notified": {"<key>": ms}}`, written mode
-0600 by atomic rename. `<key>` is the caller's seat id, or `-` for a caller without a seat.
-Entries older than 24 h are pruned on each write. It is advisory and node-local; it must not ride peer sync or need a schema
+0600 by atomic rename. `<key>` names the caller locally, with no daemon round trip: for an
+agent, `<harness>:<native session id>` (one session holds one seat); for a person, the pane
+(`HERDR_PANE_ID`); `-` when there is neither. Entries older than 24 h are pruned on each
+write. It is advisory and node-local; it must not ride peer sync or need a schema
 migration, and a lost or corrupt file only means "unknown". Concurrent writers (the daemon's
 check, the CLI's `notified` entries) are last-writer-wins on a tiny advisory file. The worst
 case is one extra notice.
@@ -259,7 +263,8 @@ own `CARGO_PKG_VERSION`. An update therefore silences it by itself, with no writ
 also writes `latest = target`.
 
 **The notice.** One line written to the command's stdout writer before its own output, the
-same way and in the same place as the pending hint (after it when both show):
+same way as the pending hint. When both show, the notice comes first: it is written as soon
+as the caller is known, and the pending hint later, during dispatch:
 
 ```text
 [herdr-threads] 2.7.1 available: herdr-threads update
@@ -277,8 +282,8 @@ when all of these hold:
 - the caller is top-level or a person, never a subagent;
 - the command is not `hook`, `internal`, `daemon run`, `watch`, a delivery or check-in path,
   or `update` itself;
-- at most once per 24 h **per caller seat** (`notified[<seat>]`), so the first agent does not
-  use up the person's notice (review 2).
+- at most once per 24 h **per caller** (`notified[<key>]`), so the first agent does not use
+  up the person's notice (review 2).
 
 Its cost is one small file read on the local disk: no daemon round trip and no network. A
 missing or unreadable file prints nothing. Hook output, delivery output and subagents never

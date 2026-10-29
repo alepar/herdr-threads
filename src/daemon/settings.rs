@@ -10,6 +10,9 @@
 //! Keys (all optional):
 //! - `"harness_manifest": "auto" | "off"` (default `auto`): `off` stops the
 //!   daemon fetching the harness version manifest; the embedded copy is used.
+//! - `"update_check": "auto" | "off"` (default `auto`): `off` stops the daily
+//!   check for a newer release (installer-managed installs only) and the CLI's
+//!   update notice (`crate::update::check`).
 //! - `"invitation_default_ms"` (default 300000) and `"receipt_default_ms"`
 //!   (default 300000): default invitation and receipt deadlines.
 //! - `"minimum_wake_delay_ms"` (default 30000, at least 30000): minimum
@@ -48,6 +51,14 @@ pub enum HarnessManifestSetting {
     Off,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateCheckSetting {
+    #[default]
+    Auto,
+    Off,
+}
+
 pub const DEFAULT_INVITATION_MS: u64 = 300_000;
 pub const DEFAULT_RECEIPT_MS: u64 = 300_000;
 pub const DEFAULT_MINIMUM_WAKE_DELAY_MS: u64 = 30_000;
@@ -57,6 +68,7 @@ pub const DEFAULT_WAKE_BATCH_DELAY_MS: u64 = 0;
 #[serde(default, deny_unknown_fields)]
 pub struct InstanceSettings {
     pub harness_manifest: HarnessManifestSetting,
+    pub update_check: UpdateCheckSetting,
     pub invitation_default_ms: u64,
     pub receipt_default_ms: u64,
     pub minimum_wake_delay_ms: u64,
@@ -92,6 +104,7 @@ impl Default for InstanceSettings {
     fn default() -> Self {
         Self {
             harness_manifest: HarnessManifestSetting::Auto,
+            update_check: UpdateCheckSetting::Auto,
             invitation_default_ms: DEFAULT_INVITATION_MS,
             receipt_default_ms: DEFAULT_RECEIPT_MS,
             minimum_wake_delay_ms: DEFAULT_MINIMUM_WAKE_DELAY_MS,

@@ -464,6 +464,11 @@ pub enum CliAction {
     InternalPreUpgradeBackup {
         target_version: String,
     },
+    /// `update`: upgrade the installer-managed installation; local, never via the daemon.
+    Update(super::update::UpdateRequest),
+    /// `internal store-check`: open the node store of the global `--state-dir` at this
+    /// build's schema (applying its migrations), without a daemon.
+    InternalStoreCheck,
     /// A launch (and, with `then`, a handoff) on another machine (remote launch).
     RemoteLaunch(Box<super::peer_launch::RemoteLaunch>),
     InternalPeerTabCreate {
@@ -642,6 +647,8 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::InstallerIntegrations { .. }
         | CliAction::InternalJsonField { .. }
         | CliAction::InternalPreUpgradeBackup { .. }
+        | CliAction::Update(_)
+        | CliAction::InternalStoreCheck
         | CliAction::InternalPeerTabCreate { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
@@ -980,6 +987,34 @@ struct Cli {
     command: Top,
 }
 
+#[derive(Args)]
+struct UpdateArgs {
+    /// Install this release (vX.Y.Z or X.Y.Z) instead of the latest; never an older one.
+    #[arg(long, value_name = "TAG")]
+    version: Option<String>,
+    /// Resolve, download and verify, then print what would change; change nothing.
+    #[arg(long, conflicts_with = "check")]
+    dry_run: bool,
+    /// Check for a newer release now and print the result; change nothing else.
+    #[arg(long, conflicts_with_all = ["version", "setup", "no_setup"])]
+    check: bool,
+    /// Also add missing harness integrations (owned ones are always reconciled).
+    #[arg(long, conflicts_with = "no_setup")]
+    setup: bool,
+    /// Skip all harness integration reconciliation.
+    #[arg(long)]
+    no_setup: bool,
+    /// Never grant agent permissions (recorded; later updates keep it).
+    #[arg(long)]
+    without_permissions: bool,
+    /// Do not reconcile aisw profiles (recorded; later updates keep it).
+    #[arg(long)]
+    no_aisw_profiles: bool,
+    /// Do not register the plugin with Herdr (recorded; later updates keep it).
+    #[arg(long)]
+    no_herdr: bool,
+}
+
 #[derive(Subcommand)]
 enum Top {
     /// Create, list and inspect threads and their participants.
@@ -1167,6 +1202,11 @@ enum Top {
     /// Also available as `--skill`. Local only; never contacts the daemon.
     #[command(long_flag = "skill")]
     Skill,
+    /// Update this installation to the latest release (or --version): download, verify
+    /// SHA256SUMS and the release digest, back up the store, replace the package and the
+    /// daemon with the release's own installer, and roll back a failed update while the store
+    /// schema is unchanged. Local; never prompts.
+    Update(UpdateArgs),
     /// Thread summary for compaction recovery: returns the summary when
     /// ready, else jobs for summary workers (see the 'Thread summaries'
     /// section of `herdr-threads skill`).
@@ -1339,6 +1379,9 @@ enum InternalSub {
         #[arg(long, value_name = "TAG")]
         target_version: String,
     },
+    /// Open the existing node store of --state-dir at this build's schema, applying its
+    /// migrations, without a daemon (`update` judges a store this way).
+    StoreCheck,
     /// Create the tab of a peer-requested launch on --host-endpoint (run only by this
     /// node's daemon for a recorded request; prints the root pane).
     PeerTabCreate {
@@ -3707,6 +3750,21 @@ fn parse_cli_in_registry(
             SyncSub::CloneCleared => super::sync::clone_cleared(),
         }),
         Top::Skill => CliAction::Skill,
+        Top::Update(args) => CliAction::Update(super::update::UpdateRequest {
+            version: args.version,
+            dry_run: args.dry_run,
+            check: args.check,
+            setup: if args.setup {
+                Some(true)
+            } else if args.no_setup {
+                Some(false)
+            } else {
+                None
+            },
+            without_permissions: args.without_permissions,
+            no_aisw_profiles: args.no_aisw_profiles,
+            no_herdr: args.no_herdr,
+        }),
         Top::Legacy {
             command: LegacySub::Purge { confirm, operator },
         } => CliAction::LegacyPurge { confirm, operator },
@@ -3821,6 +3879,9 @@ fn parse_cli_in_registry(
         Top::Internal {
             command: InternalSub::PreUpgradeBackup { target_version },
         } => CliAction::InternalPreUpgradeBackup { target_version },
+        Top::Internal {
+            command: InternalSub::StoreCheck,
+        } => CliAction::InternalStoreCheck,
         Top::Internal {
             command:
                 InternalSub::PeerTabCreate {
