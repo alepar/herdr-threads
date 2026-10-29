@@ -4,7 +4,8 @@
 //! - Owns: the `sync_link_events` table: [`record`] (with the repeat collapse
 //!   and the retention prune) and the bounded, newest-first [`page`].
 //! - Hides: the collapse rule (a repeat of the newest row's kind, origin,
-//!   node, dest and detail bumps its `n` and `last_at`) and the retention
+//!   node, dest and detail, or of a matching row seen within
+//!   [`FLAP_WINDOW_MS`], bumps its `n` and `last_at`) and the retention
 //!   bounds ([`MAX_ROWS`], [`MAX_AGE_MS`]).
 //! - Must not: decide anything. The history is diagnostic display data: no
 //!   dial, link, seat or binding decision reads it (N13).
@@ -22,6 +23,9 @@ use crate::protocol::results::ApiError;
 pub const MAX_ROWS: i64 = 1000;
 /// Rows kept: at most 30 days old (by `last_at`).
 pub const MAX_AGE_MS: i64 = 30 * 24 * 3_600_000;
+/// A repeat within this long of its last time collapses into it even when
+/// other events came between (a link flapping up and down stays two rows).
+pub const FLAP_WINDOW_MS: i64 = 60_000;
 /// Longest stored detail, in bytes (cut on a character boundary).
 pub const MAX_DETAIL_BYTES: usize = 160;
 
@@ -38,6 +42,8 @@ pub enum LinkEventKind {
     NotInstalled,
     /// The remote closed with a stop-class reason; the detail is the reason.
     Stopped,
+    /// A forgotten node linked again and its tombstone was removed (N16).
+    Unforgotten,
 }
 
 impl LinkEventKind {
@@ -48,6 +54,7 @@ impl LinkEventKind {
             Self::DialFailed => "dial_failed",
             Self::NotInstalled => "not_installed",
             Self::Stopped => "stopped",
+            Self::Unforgotten => "unforgotten",
         }
     }
 }
@@ -115,14 +122,17 @@ pub fn record(tx: &Transaction<'_>, event: &LinkEvent) -> Result<(), ApiError> {
     let dest = event.dest.as_deref().map(|dest| cut(dest, 1024));
     let newest: Option<i64> = tx
         .query_row(
-            "SELECT seq FROM sync_link_events WHERE seq = (SELECT MAX(seq) FROM sync_link_events) \
-             AND kind=?1 AND origin=?2 AND node_uuid IS ?3 AND dest IS ?4 AND detail IS ?5",
+            "SELECT seq FROM sync_link_events \
+             WHERE kind=?1 AND origin=?2 AND node_uuid IS ?3 AND dest IS ?4 AND detail IS ?5 \
+             AND (seq = (SELECT MAX(seq) FROM sync_link_events) OR last_at >= ?6) \
+             ORDER BY seq DESC LIMIT 1",
             params![
                 event.kind.as_str(),
                 event.origin.as_str(),
                 node,
                 dest,
-                detail
+                detail,
+                event.at.saturating_sub(FLAP_WINDOW_MS)
             ],
             |row| row.get(0),
         )

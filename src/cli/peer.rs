@@ -216,6 +216,12 @@ pub fn events(
     })
 }
 
+/// `peer unforget NODE [--yes]`: a dry run is read-only; `--yes` is
+/// operator-gated.
+pub fn unforget(target: String, apply: bool) -> Result<Command, ApiError> {
+    checked(SyncCommand::PeerUnforget { target, apply })
+}
+
 /// `peer prune [--host H] [--older-than-days D] [--yes | --list]`: a dry run
 /// or the list is read-only; `--yes` is operator-gated.
 pub fn prune(

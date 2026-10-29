@@ -26,7 +26,7 @@ use crate::protocol::authority::OperatorActor;
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::sync_admin::{
     EventRow, EventsPage, EvidenceRow, LinkRow, MAX_PRUNE_ROWS, MAX_STATUS_LOGS, PruneReply,
-    PruneRow, RepairRow, ReplayReply, StatusReply, SyncCommand, SyncReply,
+    PruneRow, RepairRow, ReplayReply, StatusReply, SyncCommand, SyncReply, UnforgetReply,
 };
 use crate::protocol::time::{CallBudget, Cancellation, Clock};
 use crate::service::fair_writer::FairWriter;
@@ -178,6 +178,9 @@ impl SyncAdmin {
                 apply,
                 list,
             } => self.peer_prune(host, older_than_ms, apply, list, label, budget),
+            SyncCommand::PeerUnforget { target, apply } => {
+                self.peer_unforget(&target, apply, label, budget)
+            }
         }
     }
 
@@ -603,6 +606,45 @@ impl SyncAdmin {
             rows,
             prunable,
             kept,
+        }))
+    }
+
+    /// `peer unforget` (N16): names the tombstone (dry run) or removes it
+    /// (`apply`); the coordinator wants the node's logs again with its next
+    /// local vector.
+    fn peer_unforget(
+        &self,
+        target: &str,
+        apply: bool,
+        operator: &str,
+        budget: &CallBudget,
+    ) -> Result<SyncReply, ApiError> {
+        let row = if apply {
+            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+            self.store.sync_operator_quantum(budget, |tx, _, _| {
+                let row = node_prune::find(tx, target)?;
+                node_prune::unforget(tx, row.node)?;
+                Ok(row)
+            })?
+        } else {
+            self.store
+                .sync_read(budget, |conn, _| node_prune::find(conn, target))?
+        };
+        if apply {
+            self.note(
+                operator,
+                &format!("peer unforget {} ({})", row.tag, row.node),
+            );
+            self.sync
+                .signals()
+                .request_round(self.clock.monotonic_now());
+        }
+        Ok(SyncReply::Unforgotten(UnforgetReply {
+            node: row.tag,
+            uuid: row.node.to_string(),
+            host: row.host,
+            forgotten_at: row.forgotten_at,
+            applied: apply,
         }))
     }
 

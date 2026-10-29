@@ -217,3 +217,20 @@ above:
   An older daemon refuses the unknown `op` with its decode error.
 - **Item 2 guard.** `isolated_machine_list_never_names_the_real_herdr` covers the machine-list path that let
   the 54 test daemons in. The process-scan and lane-probe paths already had guard tests from ht-978d.
+
+### Review round 2 (coordinator and independent review)
+
+- **Undo:** `human peer unforget NODE [--yes]` removes one tombstone. Separately, a forgotten node that
+  completes a direct link handshake is unforgotten automatically, with an `unforgotten` `peer events` row.
+  Relayed contact never counts. N16 is amended, and the "stays forgotten" accepted limit is replaced.
+- **Version skew:** client capabilities `peer.prune_v1` (prune and unforget) and `peer.events_v1`. An older
+  daemon gets one line, 129 (events) or 137 (prune/unforget) bytes plus the version, 135 or 143 bytes with v2.6.4:
+
+  ```
+  the running daemon (vX) does not support peer prune/unforget; after upgrading run: herdr-threads daemon stop && herdr-threads daemon ensure
+  ```
+- **Serving:** forgotten logs stay in the coordinator's local vector, so an explicit `want` is still served.
+  Only our `have` leaves them out. A change of the forgotten set owes every active link a full `have` with
+  `ask`.
+- **Flap collapse:** a repeat of a matching row within `FLAP_WINDOW_MS` (60 s) collapses into it even when other
+  events came between, so a flapping link stays two rows.

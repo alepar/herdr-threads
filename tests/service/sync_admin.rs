@@ -487,6 +487,10 @@ fn mutating_commands_need_the_operator_actor() {
             apply: true,
             list: false,
         },
+        SyncCommand::PeerUnforget {
+            target: "Abc".into(),
+            apply: true,
+        },
     ];
     for command in mutating {
         assert!(command.is_mutating());
@@ -523,6 +527,15 @@ fn mutating_commands_need_the_operator_actor() {
         assert!(!command.is_mutating());
         rig.read(command).expect("reads need no operator");
     }
+    // A dry-run unforget is a read too: refused only for the missing
+    // tombstone, never for the missing operator.
+    let command = SyncCommand::PeerUnforget {
+        target: "Abc".into(),
+        apply: false,
+    };
+    assert!(!command.is_mutating());
+    let error = rig.read(command).unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound);
 }
 
 fn restored_with_unknown_newer() -> (Node, Node) {

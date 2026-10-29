@@ -5,7 +5,7 @@
 
 use crate::support::{self, P1, P2};
 use herdr_threads::test_support::multinode::Cluster;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const EIGHT_DAYS: Duration = Duration::from_secs(8 * 24 * 3_600);
 
@@ -172,28 +172,55 @@ fn prune_forgets_a_dead_island_and_keeps_referenced_nodes() {
             .then_some(())
     });
 
-    // The island returns and authors more; node 0 links it again but never
-    // pulls its log.
+    // The operator undo while the island is away: a dry run names the
+    // tombstone and writes nothing; `--yes` removes it and the node is shown
+    // again; a second one has nothing to remove. Then it is pruned again.
+    let dry = text(&cluster, 0, &["peer", "unforget", &island]);
+    assert!(
+        dry.starts_with(&format!("peer_unforget {island} would_restore ")),
+        "{dry}"
+    );
+    assert!(
+        line_with(&dry, "next: ")
+            .is_some_and(|next| next.contains("human peer unforget ") && next.ends_with(" --yes")),
+        "{dry}"
+    );
+    assert_eq!(forgotten_rows(&cluster), 1, "a dry run removes nothing");
+    let undone = human(&cluster, 0, &["peer", "unforget", &island, "--yes"]);
+    assert!(
+        undone.starts_with(&format!("peer_unforget {island} restored ")),
+        "{undone}"
+    );
+    let peers = text(&cluster, 0, &["peer", "list"]);
+    assert!(
+        line_with(&peers, &format!("node {island} ")).is_some(),
+        "{peers}"
+    );
+    assert!(!peers.contains("\nforgotten "), "{peers}");
+    let gone = cluster.human(0, &["peer", "unforget", &island, "--yes"]);
+    assert!(!gone.status.success(), "no tombstone left to remove");
+    let again = human(&cluster, 0, &["peer", "prune", "--yes"]);
+    assert!(
+        line_with(&again, &format!("node {island} pruned ")).is_some(),
+        "{again}"
+    );
+    assert_eq!(forgotten_rows(&cluster), 1);
+
+    // The island returns linked only to node 1: relayed contact proves
+    // nothing, so node 0 keeps it forgotten and never pulls what it authors.
     let before = held(&cluster, 0, 2);
     cluster.start_node(2);
-    cluster.link(2, 0);
-    cluster.wait_until("node 0 to see node 2 up again", crate::WAIT, || {
-        let events = text(&cluster, 0, &["peer", "events", "--node", &island]);
-        events
-            .lines()
-            .any(|line| line.contains(&format!(" {island} up inbound")))
-            .then_some(())
-    });
+    cluster.link(2, 1);
     support::send(
         &cluster,
         &c,
         &["--seat", &c2.id, "--body", "after the prune"],
     );
-    cluster.wait_until("node 2 to author it", crate::WAIT, || {
-        (held(&cluster, 2, 2) > before).then_some(())
+    cluster.wait_until("node 1 to pull node 2's new entry", crate::WAIT, || {
+        let authored = held(&cluster, 2, 2);
+        (authored > before && held(&cluster, 1, 2) == authored).then_some(())
     });
-    let end = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < end {
+    for _ in 0..12 {
         assert_eq!(
             held(&cluster, 0, 2),
             before,
@@ -201,17 +228,43 @@ fn prune_forgets_a_dead_island_and_keeps_referenced_nodes() {
         );
         std::thread::sleep(Duration::from_millis(250));
     }
+    assert_eq!(forgotten_rows(&cluster), 1);
+
+    // Its direct link proves it alive: node 0 drops the tombstone by itself
+    // and pulls the log.
+    cluster.link(2, 0);
+    cluster.wait_until("node 0 to unforget node 2 on its link", crate::WAIT, || {
+        let events = text(&cluster, 0, &["peer", "events", "--node", &island]);
+        events
+            .lines()
+            .any(|line| line.contains(&format!(" {island} unforgotten ")))
+            .then_some(())
+    });
+    assert_eq!(forgotten_rows(&cluster), 0);
+    cluster.wait_until("node 0 to pull node 2's log again", crate::WAIT, || {
+        (held(&cluster, 0, 2) == held(&cluster, 2, 2)).then_some(())
+    });
+    let peers = text(&cluster, 0, &["peer", "list"]);
+    assert!(
+        line_with(&peers, &format!("node {island} linked ")).is_some(),
+        "{peers}"
+    );
 
     // The history: the dialed link to node 2 went down, the inbound one came
     // up; a short page continues with `next:`.
-    let events = text(&cluster, 0, &["peer", "events", "--node", &island]);
-    assert!(events.starts_with("peer_events\n"), "{events}");
-    assert!(
-        events
-            .lines()
-            .any(|line| line.contains(&format!(" {island} down dialed"))),
-        "{events}"
-    );
+    // The coordinator writes its events on the next 1 s tick.
+    cluster.wait_until("the link history of node 2", crate::WAIT, || {
+        let events = text(&cluster, 0, &["peer", "events", "--node", &island]);
+        assert!(events.starts_with("peer_events\n"), "{events}");
+        [" down dialed", " up inbound"]
+            .iter()
+            .all(|kind| {
+                events
+                    .lines()
+                    .any(|line| line.contains(&format!(" {island}{kind}")))
+            })
+            .then_some(())
+    });
     let page = text(
         &cluster,
         0,
@@ -229,4 +282,11 @@ fn prune_forgets_a_dead_island_and_keeps_referenced_nodes() {
             && next.contains("--limit 1"),
         "{next}"
     );
+}
+
+fn forgotten_rows(cluster: &Cluster) -> i64 {
+    cluster
+        .scalar(0, "SELECT COUNT(*) FROM sync_forgotten_nodes", &[])
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1)
 }

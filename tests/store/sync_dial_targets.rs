@@ -654,3 +654,40 @@ fn link_events_are_bounded_and_paged() {
     record(&mut db, 2_000 + MAX_AGE_MS, "late".into());
     assert_eq!(events(&db).len(), 1, "older than 30 days is pruned");
 }
+
+// Kills: a link flapping up and down filling the history with one row per
+// flap.
+#[test]
+fn a_flapping_link_collapses_into_two_rows() {
+    use herdr_threads::store::sync_link_events::{
+        self as history, FLAP_WINDOW_MS, LinkEvent, LinkEventKind, LinkOrigin,
+    };
+    let mut db = db();
+    let mut record = |at: i64, kind: LinkEventKind| {
+        let tx = db.transaction().unwrap();
+        history::record(
+            &tx,
+            &LinkEvent {
+                at,
+                kind,
+                origin: LinkOrigin::Inbound,
+                node: Some(node(3)),
+                dest: None,
+                detail: (kind == LinkEventKind::Down)
+                    .then(|| "peer closed the link: Shutdown".into()),
+            },
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    };
+    for i in 0..10 {
+        record(1_000 + i * 10_000, LinkEventKind::Up);
+        record(6_000 + i * 10_000, LinkEventKind::Down);
+    }
+    // Past the window the next flap starts new rows.
+    record(96_000 + FLAP_WINDOW_MS + 1, LinkEventKind::Up);
+    drop(record);
+    let rows = events(&db);
+    let shape: Vec<(&str, i64)> = rows.iter().map(|e| (e.kind.as_str(), e.n)).collect();
+    assert_eq!(shape, vec![("up", 1), ("down", 10), ("up", 10)]);
+}

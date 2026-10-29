@@ -24,12 +24,20 @@ pub(super) struct LinkEventsDone {
     result: Result<(), ApiError>,
 }
 
-/// The queue and its write in flight.
+/// A finished tombstone removal for `node`.
+pub(super) struct UnforgetDone {
+    node: NodeUuid,
+    result: Result<bool, ApiError>,
+}
+
+/// The queue and its write in flight, and the tombstone removals of nodes
+/// that linked again.
 #[derive(Default)]
 pub(super) struct LinkEventLog {
     pending: VecDeque<LinkEvent>,
     pub(super) writes: JoinSet<LinkEventsDone>,
     failure_logged: bool,
+    pub(super) unforgets: JoinSet<UnforgetDone>,
 }
 
 impl Actor {
@@ -57,6 +65,58 @@ impl Actor {
             dest,
             detail,
         });
+    }
+
+    /// A forgotten node completed a direct link handshake (N16): it is not
+    /// dead, so its tombstone goes, with an `unforgotten` event. The forgotten
+    /// set changes only once the removal is stored, at the next local read.
+    pub(super) fn unforget_on_link(&mut self, node: NodeUuid, origin: &Origin) {
+        let (origin, dest) = match origin {
+            Origin::Inbound => (LinkOrigin::Inbound, None),
+            Origin::Dialed { dest, .. } => (LinkOrigin::Dialed, Some(dest.clone())),
+        };
+        let event = LinkEvent {
+            at: self.deps.clock.utc_now().0,
+            kind: crate::store::sync_link_events::LinkEventKind::Unforgotten,
+            origin,
+            node: Some(node),
+            dest,
+            detail: Some("linked again".into()),
+        };
+        let store = self.deps.sync_store.clone();
+        self.link_events
+            .unforgets
+            .spawn_blocking(move || UnforgetDone {
+                node,
+                result: store.unforget_node(node, &event, &unbounded_budget()),
+            });
+    }
+
+    pub(super) fn on_unforgotten(&mut self, joined: Result<UnforgetDone, tokio::task::JoinError>) {
+        match joined {
+            Ok(UnforgetDone {
+                node,
+                result: Ok(removed),
+            }) => {
+                if removed {
+                    (self.deps.log)(&format!(
+                        "sync: forgotten node {} linked again; unforgotten",
+                        uuid8(&node)
+                    ));
+                }
+                self.request_local();
+            }
+            Ok(UnforgetDone {
+                node,
+                result: Err(e),
+            }) => (self.deps.log)(&format!(
+                "sync: unforgetting {} failed: {:?}: {:?}",
+                uuid8(&node),
+                e.code,
+                e.detail
+            )),
+            Err(e) => (self.deps.log)(&format!("sync: unforget write failed: {e}")),
+        }
     }
 
     /// Writes the queued events in one background call.

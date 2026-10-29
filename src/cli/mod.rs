@@ -1575,6 +1575,25 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     run_wire_result(command, output_spec, client, budget, writer).map(|_| ())
 }
 
+/// The one line an older daemon's missing peer-hygiene command gets: 129
+/// (events) or 137 (prune/unforget) bytes plus the version, `the running daemon (vX) does not support WHAT;
+/// after upgrading run: herdr-threads daemon stop && herdr-threads daemon
+/// ensure`. The version comes from one health read, only on this path.
+fn older_daemon_refusal<C: LocalClient + ?Sized>(
+    client: &C,
+    what: &str,
+    budget: &dyn Fn() -> CallBudget,
+) -> String {
+    let version = match client.call(Command::Health, &budget()) {
+        Ok(CommandResult::Health(health)) => format!("v{}", health.software_version),
+        _ => "an older version".to_owned(),
+    };
+    format!(
+        "the running daemon ({version}) does not support {what}; after upgrading run: \
+         herdr-threads daemon stop && herdr-threads daemon ensure"
+    )
+}
+
 /// [`run_wire`], returning the result exactly as it was written.
 fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
     command: Command,
@@ -1592,6 +1611,23 @@ fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
         return Err(invalid_request(
             "seat binding details unavailable; daemon requires seat.binding_details_v1",
         ));
+    }
+    // Peer hygiene (2.8.0): an older daemon cannot decode these, so they go
+    // only to one that advertises them.
+    if let Command::Sync(sync) = &command {
+        use crate::protocol::{capabilities, sync_admin::SyncCommand};
+        let needed = match sync {
+            SyncCommand::PeerPrune { .. } | SyncCommand::PeerUnforget { .. } => {
+                Some((capabilities::PEER_PRUNE_V1, "peer prune/unforget"))
+            }
+            SyncCommand::PeerEvents { .. } => Some((capabilities::PEER_EVENTS_V1, "peer events")),
+            _ => None,
+        };
+        if let Some((name, what)) = needed
+            && !client.supports_capability(name, &budget())
+        {
+            return Err(invalid_request(&older_daemon_refusal(client, what, budget)));
+        }
     }
     let command = match command {
         Command::Inbox(query)

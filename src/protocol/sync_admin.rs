@@ -120,6 +120,14 @@ pub enum SyncCommand {
         #[serde(default)]
         list: bool,
     },
+    /// Undo a `peer prune` for one node (uuid or tag of a tombstone): its
+    /// logs are wanted and it is shown again. A dry run unless `apply`.
+    PeerUnforget {
+        #[serde(default)]
+        target: String,
+        #[serde(default)]
+        apply: bool,
+    },
 }
 
 impl SyncCommand {
@@ -133,6 +141,7 @@ impl SyncCommand {
                 | Self::Resync { .. }
                 | Self::CloneCleared
                 | Self::PeerPrune { apply: true, .. }
+                | Self::PeerUnforget { apply: true, .. }
         )
     }
 
@@ -183,6 +192,7 @@ impl SyncCommand {
                 Err("peer prune --older-than must be positive")
             }
             Self::PeerPrune { host, .. } => host.as_deref().map_or(Ok(()), text),
+            Self::PeerUnforget { target, .. } => text(target),
             Self::PeerList
             | Self::Verify
             | Self::UnappliedList { .. }
@@ -478,6 +488,26 @@ pub enum SyncReply {
     Events(EventsPage),
     /// The answer to [`SyncCommand::PeerPrune`].
     Pruned(PruneReply),
+    /// The answer to [`SyncCommand::PeerUnforget`].
+    Unforgotten(UnforgetReply),
+}
+
+/// The tombstone a `peer unforget` names, and whether it was removed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnforgetReply {
+    /// The node's tag, as forgotten.
+    #[serde(default)]
+    pub node: String,
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    /// When it was forgotten (unix ms).
+    #[serde(default)]
+    pub forgotten_at: i64,
+    /// The tombstone was removed (`--yes`).
+    #[serde(default)]
+    pub applied: bool,
 }
 
 /// One link event, as `peer events` shows it.

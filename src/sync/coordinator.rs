@@ -1295,6 +1295,9 @@ impl Actor {
                 Some(joined) = self.link_events.writes.join_next(), if !self.link_events.writes.is_empty() => {
                     self.on_link_events_written(joined);
                 }
+                Some(joined) = self.link_events.unforgets.join_next(), if !self.link_events.unforgets.is_empty() => {
+                    self.on_unforgotten(joined);
+                }
                 Some(joined) = self.seats.writes.join_next(), if !self.seats.writes.is_empty() => {
                     self.on_seat_status_written(joined);
                 }
@@ -1450,6 +1453,9 @@ impl Actor {
                     let _ = report.try_send(DialReport::Established { node_uuid: node });
                 }
                 self.note_link_event(LinkEventKind::Up, &origin, node, None);
+                if self.forgotten.contains(&node) {
+                    self.unforget_on_link(node, &origin);
+                }
                 // A live older link of this node with another boot: the
                 // newer link waits for the probe of it.
                 let older = self.by_node.get(&node).and_then(|ids| {
@@ -2060,14 +2066,21 @@ impl Actor {
     /// and refresh the own-history flag.
     fn on_local(&mut self, result: Result<(Vector, BTreeSet<NodeUuid>), String>) {
         match result {
-            Ok((mut vector, forgotten)) => {
+            Ok((vector, forgotten)) => {
+                // Forgotten logs stay in `local`, so an explicit `want` is
+                // still served; only our `have` leaves them out. A changed
+                // set owes every link a full `have` that asks for theirs, so
+                // a peer drops what we no longer advertise and an unforgotten
+                // log is advertised to us again.
                 if forgotten != self.forgotten {
                     self.forget_logs(&forgotten);
                     self.forgotten = forgotten;
+                    for entry in self.links.values_mut() {
+                        if entry.mode == LinkMode::Active && !entry.closing {
+                            entry.have_pending = Some(true);
+                        }
+                    }
                 }
-                vector
-                    .0
-                    .retain(|key, _| !self.forgotten.contains(&key.node));
                 self.local = vector;
                 let owed: Vec<(u64, bool)> = self
                     .links
@@ -2107,22 +2120,24 @@ impl Actor {
         let Some(entry) = self.links.get(&link_id) else {
             return;
         };
-        let logs = self
-            .local
-            .0
-            .iter()
+        let advertised = || {
+            self.local
+                .0
+                .iter()
+                .filter(|(key, _)| !self.forgotten.contains(&key.node))
+        };
+        let logs = advertised()
             .take(MAX_HAVE_LOGS)
             .map(|(key, head)| serve::have_log(key, head))
             .collect();
-        if self.local.0.len() > MAX_HAVE_LOGS
-            && !entry.have_truncation_logged.swap(true, Ordering::AcqRel)
-        {
+        let total = advertised().count();
+        if total > MAX_HAVE_LOGS && !entry.have_truncation_logged.swap(true, Ordering::AcqRel) {
             // The frame has no field for a marker; the peer learns the rest
             // through deltas and `want`.
             (self.deps.log)(&format!(
                 "sync: have to {} lists {MAX_HAVE_LOGS} of {} logs",
                 uuid8(&entry.handle.peer().node),
-                self.local.0.len()
+                total
             ));
         }
         let forks = if entry.fork_cap() {

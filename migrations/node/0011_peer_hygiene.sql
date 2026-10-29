@@ -11,7 +11,7 @@ CREATE TABLE sync_link_events (
     n INTEGER NOT NULL DEFAULT 1 CHECK(n >= 1),
     node_uuid TEXT CHECK(node_uuid IS NULL OR length(node_uuid) = 32),
     dest TEXT CHECK(dest IS NULL OR length(CAST(dest AS BLOB)) <= 1024),
-    kind TEXT NOT NULL CHECK(kind IN ('up', 'down', 'dial_failed', 'not_installed', 'stopped')),
+    kind TEXT NOT NULL CHECK(kind IN ('up', 'down', 'dial_failed', 'not_installed', 'stopped', 'unforgotten')),
     origin TEXT NOT NULL CHECK(origin IN ('dialed', 'inbound')),
     detail TEXT CHECK(detail IS NULL OR length(CAST(detail AS BLOB)) <= 160)
 ) STRICT;

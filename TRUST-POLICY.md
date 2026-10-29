@@ -1713,9 +1713,17 @@ node is forgotten only when, in one transaction against this node's canonical vi
 Forgetting deletes nothing and is not replicated. Its rows, logs, seats and threads stay as they are (N5: a remote
 seat is retired only by its home node). This node leaves the forgotten nodes out of `peer list`, `sync status`,
 `sync unapplied` and `@MACHINE` matching (N14), and its coordinator neither wants nor advertises their logs: a
-receiver-side pull policy with no frame change, so a peer that still holds the logs keeps them. Every node decides
-for itself: the same command on each node forgets the same islands, because the island rule reads replicated data
-only (the contact times are each node's own). `peer prune --list` shows the tombstones.
+receiver-side pull policy with no frame change, so a peer that still holds the logs keeps them, and a peer's
+explicit `want` for a log this node holds is still served. Every node decides for itself: the same command on each
+node forgets the same islands, because the island rule reads replicated data only (the contact times are each
+node's own). `peer prune --list` shows the tombstones.
+
+A tombstone is removed, and the node is shown and its logs wanted again, in exactly two ways, each recorded:
+- the operator undoes it: `peer unforget NODE` (a dry run unless `--yes`, `operator:local-user:<uid>`, one
+  `daemon.log` line);
+- the node itself completes a direct link handshake with this node (N6 binds the link to its key), which proves it
+  alive: the daemon removes the tombstone in the same write as an `unforgotten` `peer events` row and logs it.
+  Relayed contact, gossip or a third node's link never removes one.
 
 ## Accepted limits
 
@@ -2383,13 +2391,11 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   sender's node must hold as that node's seat (after replication) before the handoff is authored; a seat that
   never replicates leaves the handoff refused after the launch, which a retry of the same intent resumes at
   delivery, never relaunching.
-- **A forgotten island stays forgotten (N16).** No command removes a tombstone. The island's facts already held
-  stay held and applied, so a fact a kept node authors later against one of its entities (for example, inviting
-  one of its seats, which the island rule ruled out at prune time but cannot prevent afterwards) applies as
-  before; only entries the forgotten nodes author after the prune are never pulled here, so such a fact can park
-  as `parked_dep` behind one of them. Held journal rows still count toward store size and `sync verify` still
-  checks them. A forgotten node that comes back links as before (links are not refused), but its logs are not
-  pulled here.
+- **A forgotten node is unknown until it links (N16).** While a tombstone stands, this node pulls nothing the
+  forgotten node authors. When that node comes back only through relays (it links to other nodes but never to this
+  one), what it sent this node's seats waits unpulled until it links here directly or the operator runs
+  `peer unforget`. The island's facts already held stay held and applied, so a fact a kept node authors later
+  against one of them applies as before.
 
 ## Decision record
 

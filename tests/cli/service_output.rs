@@ -118,3 +118,82 @@ fn service_inspect_uses_default_wire_request_and_selected_local_output() {
     }
     assert_eq!(*client.0.lock().unwrap(), ["default", "default"]);
 }
+
+/// A daemon from before 2.8.0: no capabilities, and no health answer either.
+#[derive(Default)]
+struct OlderDaemon(Mutex<Vec<String>>);
+
+impl LocalClient for OlderDaemon {
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.0.lock().unwrap().push(format!("{command:?}"));
+        Err(ApiError::unsupported("older daemon"))
+    }
+
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        _: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        panic!("{command:?} reached a daemon without its capability")
+    }
+}
+
+// Kills: a new peer-hygiene command sent to an older daemon (a raw
+// unknown-variant decode error mid-upgrade instead of one clear line).
+#[test]
+fn peer_hygiene_commands_refuse_one_line_on_an_older_daemon() {
+    use crate::protocol::sync_admin::SyncCommand;
+    for (sync, what) in [
+        (
+            SyncCommand::PeerPrune {
+                host: None,
+                older_than_ms: 1,
+                apply: false,
+                list: false,
+            },
+            "peer prune/unforget",
+        ),
+        (
+            SyncCommand::PeerUnforget {
+                target: "Abc".into(),
+                apply: true,
+            },
+            "peer prune/unforget",
+        ),
+        (
+            SyncCommand::PeerEvents {
+                node: None,
+                before: None,
+                limit: 1,
+            },
+            "peer events",
+        ),
+    ] {
+        let client = OlderDaemon::default();
+        let mut bytes = Vec::new();
+        let error = run_wire(
+            Command::Sync(sync),
+            &OutputSpec {
+                format: OutputFormat::Text,
+                context: ContinuationContext::default(),
+            },
+            &client,
+            &|| CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: Default::default(),
+            },
+            &mut bytes,
+        )
+        .unwrap_err();
+        let text = format!("{error:?}");
+        assert!(
+            text.contains(&format!(
+                "the running daemon (an older version) does not support {what}; after upgrading run: herdr-threads daemon stop && herdr-threads daemon ensure"
+            )),
+            "{text}"
+        );
+        assert!(bytes.is_empty());
+        assert_eq!(client.0.lock().unwrap().len(), 1, "one health read only");
+    }
+}

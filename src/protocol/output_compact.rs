@@ -1378,6 +1378,32 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
         }
         SyncReply::Events(page) => peer_events(page, spec, out),
         SyncReply::Pruned(reply) => peer_prune(reply, spec, out),
+        // `peer_unforget TAG would_restore|restored at=TIME host=HOST: UUID`,
+        // about 75 to 95 bytes, then in a dry run a `next:` line with the
+        // `--yes` command.
+        SyncReply::Unforgotten(reply) => {
+            let _ = writeln!(
+                out,
+                "peer_unforget {} {} at={} host={}: {}",
+                token(&reply.node),
+                if reply.applied {
+                    "restored"
+                } else {
+                    "would_restore"
+                },
+                clock(UtcMillis(reply.forgotten_at)),
+                reply.host.as_deref().map_or_else(|| "-".to_owned(), token),
+                token(&reply.uuid)
+            );
+            if !reply.applied {
+                out.push_str("next: ");
+                out.push_str(&format_command_argv(&detail_argv(
+                    spec,
+                    &["human", "peer", "unforget", &reply.uuid, "--yes"],
+                )));
+                out.push('\n');
+            }
+        }
     }
 }
 

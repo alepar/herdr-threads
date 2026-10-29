@@ -2,8 +2,8 @@
 //!
 //! Responsibility (NodePrune)
 //! - Owns: the candidate rule ([`evaluate`]), the tombstone write
-//!   ([`apply`]) and the `sync_forgotten_nodes` reads ([`forgotten`],
-//!   [`list`]).
+//!   ([`apply`]) and its undo ([`find`], [`unforget`]), and the
+//!   `sync_forgotten_nodes` reads ([`forgotten`], [`list`]).
 //! - Hides: the island rule. Two nodes are joined when a journal entry of
 //!   one needs an entity (`journal.needs`) another's entry creates
 //!   (`journal.creates`); every replicated reference is such an edge, because
@@ -145,6 +145,34 @@ pub fn list(conn: &Connection) -> Result<Vec<Forgotten>, ApiError> {
         });
     }
     Ok(out)
+}
+
+/// Removes `node`'s tombstone (`peer unforget`); whether there was one.
+pub fn unforget(tx: &Transaction<'_>, node: NodeUuid) -> Result<bool, ApiError> {
+    tx.execute(
+        "DELETE FROM sync_forgotten_nodes WHERE node_uuid = ?1",
+        [node.to_string()],
+    )
+    .map(|deleted| deleted > 0)
+    .map_err(store_error)
+}
+
+/// The tombstone `name` names: a 32-hex uuid, or a tag one tombstone holds.
+/// `NotFound` when none does, `InvalidRequest` when a tag is ambiguous.
+pub fn find(conn: &Connection, name: &str) -> Result<Forgotten, ApiError> {
+    let rows = list(conn)?;
+    let mut found: Vec<Forgotten> = match name.parse::<NodeUuid>() {
+        Ok(uuid) => rows.into_iter().filter(|row| row.node == uuid).collect(),
+        Err(_) => rows.into_iter().filter(|row| row.tag == name).collect(),
+    };
+    match found.len() {
+        0 => Err(api_error(ErrorCode::NotFound, "no forgotten node matches")),
+        1 => Ok(found.remove(0)),
+        _ => Err(api_error(
+            ErrorCode::InvalidRequest,
+            "ambiguous forgotten node tag; use the uuid",
+        )),
+    }
 }
 
 /// Union-find over node uuids.

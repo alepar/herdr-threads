@@ -1186,7 +1186,7 @@ enum Top {
         command: LegacySub,
     },
     /// Cross-node sync peers: the ssh destinations this node dials. `add`,
-    /// `forget` and `prune --yes` are operator commands (`herdr-threads human
+    /// `forget`, `prune --yes` and `unforget --yes` are operator commands (`herdr-threads human
     /// peer ...`).
     Peer {
         #[command(subcommand)]
@@ -1439,6 +1439,14 @@ enum PeerSub {
         /// List the forgotten nodes instead.
         #[arg(long)]
         list: bool,
+    },
+    /// Undo `peer prune` for one forgotten node (uuid or tag): it is shown
+    /// and its logs are pulled again. A dry run unless --yes.
+    Unforget {
+        target: String,
+        /// Remove the tombstone (operator: `herdr-threads human peer unforget NODE --yes`).
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -3777,6 +3785,7 @@ fn parse_cli_in_registry(
                 yes,
                 list,
             } => super::peer::prune(host, older_than_days, yes, list)?,
+            PeerSub::Unforget { target, yes } => super::peer::unforget(target, yes)?,
         }),
         Top::Sync { command } => CliAction::Wire(match command {
             SyncSub::Status { log } => super::sync::status(log)?,

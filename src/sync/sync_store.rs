@@ -73,6 +73,19 @@ pub trait SyncStorePort: Send + Sync {
         let _ = (events, budget);
         Ok(())
     }
+
+    /// Removes `node`'s `peer prune` tombstone and records `event` with it,
+    /// in one write; whether there was one. A store without tombstones has
+    /// none to remove.
+    fn unforget_node(
+        &self,
+        node: crate::node::NodeUuid,
+        event: &LinkEvent,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let _ = (node, event, budget);
+        Ok(false)
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]

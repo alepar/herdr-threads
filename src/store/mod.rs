@@ -1441,6 +1441,29 @@ impl crate::sync::sync_store::SyncStorePort for SqliteStore {
         tx.commit().map_err(store_error)
     }
 
+    fn unforget_node(
+        &self,
+        node: crate::node::NodeUuid,
+        event: &sync_link_events::LinkEvent,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let removed = node_prune::unforget(&tx, node)?;
+        if removed {
+            sync_link_events::record(&tx, event)?;
+        }
+        tx.commit().map_err(store_error)?;
+        Ok(removed)
+    }
+
     fn record_link_events(
         &self,
         events: &[sync_link_events::LinkEvent],
