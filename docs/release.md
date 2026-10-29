@@ -2,6 +2,36 @@
 
 ## Current release status
 
+[v2.7.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.7.0) from source `51ae69bc4`, a minor release. It has no schema change (node schema stays 10) and no peer wire change; `scripts/freeze-peer-wire 2.4.0 --at v2.7.0 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+**What it adds**: `herdr-threads update` and the daily update notice (ht-r4eg), which the user asked for through the office coordinator.
+- `update` verifies the release against SHA256SUMS and the GitHub asset digest. It then runs that release's own installer from the verified files. It keeps `<install dir>.prev`, rolls back automatically while the store schema is unchanged, and offers `--dry-run` and `--check`.
+- The notice is one line, `[herdr-threads] X.Y.Z available: herdr-threads update`, shown at most once a day per caller, gated like the pending hint.
+- The archive now carries `scripts/install.sh` (14 files).
+- Reviews: the design had a fixer roast plus an independent review (3 blocking and 4 should-fix items, all folded in). The PR had a fixer roast plus two independent rounds (5 should-fix, then 2 nits, all fixed).
+
+**Qualification** on `51ae69bc4`, evidence in `~/.cache/herdr-threads-release/2.7.0`:
+- Static checks and builds pass: fmt, harness-neutral, wire-compat, both clippy variants, default-features, and the candidate build (`518b3b86…`).
+- The wake e2e self-test passes.
+- The Herdr matrix passes on every release (0.9.1 through 0.9.5), and every leak check is clean.
+- Package and installer: the package lifecycle gate passes (548 s); the installer suites pass 5/5 and 7/7.
+- The full suite passes 8110/8113. The 3 failures are the zsh tests.
+- Wake e2e: 119/120, run with the codex-2 credential and no refresh. The one FAIL was Claude `busy-send-ack/1:1` at T=0. The model printed `BUSY-DONECorrection: ...` on one line, so the driver missed its end marker and recorded `busy_turn_end_seen=false`. Every herdr-threads check on that row passed: delivered in turn, acknowledged, and 0 wake prompts during or after the turn. A rerun of the case (evidence `wake-rerun1`) passed 3/3.
+- **The user accepted this model-formatting failure for 2.7.0 on 2026-10-29 and asked for the driver to be hardened.** That is done in ht-v8ky, merged at `60f7730b8`.
+
+**CI**: [run 40833700333](https://github.com/alepar/herdr-threads/actions/runs/40833700333) passed on attempt 2. Attempt 1 failed only Herdr 0.9.4 on aarch64, `herdr_release_smoke` "the hook must display the body"; that flake is filed. The [release run 40897948945](https://github.com/alepar/herdr-threads/actions/runs/40897948945) passed every job.
+
+**Archives**:
+- SHA256SUMS equals GitHub's digests.
+- Each archive has VERSION 2.7.0, the right TARGET, and 14 files: modes 755 for 4 files and 644 for 10.
+- `scripts/install.sh` is identical to `git show v2.7.0:scripts/install.sh`.
+- Licenses are present, and the credential scan is clean.
+
+**Installed on blacky** with the tag's installer (`--setup --version v2.7.0`), exit 0, "upgraded 2.6.4 -> 2.7.0 (linked)".
+- Backup: `pre-v2.7.0-20261029T155852Z` (schema 10, integrity ok).
+- The `/proc` exe hash is `5b23fb1a…`, equal to the linux-x86_64 archive, and doctor reports the daemon healthy.
+- `herdr-threads update --dry-run` and `update --check` both report `up to date: 2.7.0`.
+
 [v2.6.4 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.6.4) from source `cdc8423f5`, a patch release. There is no schema change (node schema stays 10) and no peer wire change; `scripts/freeze-peer-wire 2.4.0 --at v2.6.4 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 **Fix.** It carries ht-tyt7: after a macOS reboot that renumbers the APFS volume device, the elected owner reclaims the dead boot's socket. That happens only when the inode matches, the socket is private to this user, and nothing answers on it. `daemon ensure` heals instead of failing, and the recovery texts name the remedy. The laptop had been down 12 h. The independent review found no safety defect and two doc nits, both fixed. It also carries the ht-mw10 regression test.
