@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.7.0
+
+No schema or peer wire change (node schema stays 10). `herdr-threads update` needs an installation made by this release's installer or later, so install 2.7.0 itself with `install.sh`.
+
+### Added
+
+- **`herdr-threads update` (`ht update`).** Upgrades an installation made by `install.sh` in one command.
+  - **Release:** it resolves the latest release, or `--version`, through the GitHub releases API and refuses older ones.
+  - **Verification:** the archive must match both SHA256SUMS and the API's asset digest. Its VERSION, TARGET and executable are checked.
+  - **Install:** it runs that release's own `install.sh` against the verified files. Backup, daemon stop and replace, swap and setup are the installer's.
+  - It replays the installer's recorded opt-outs and never prompts, so an agent can run it when asked.
+  - **Rollback:** it keeps the previous package as `<install dir>.prev`. A failed update is rolled back automatically while every store schema is unchanged. After a migration, it prints the backup and the restore steps instead.
+  - `--dry-run` shows what would change, and `--check` checks now. An interrupted update is finished by the next one.
+- **Update notice.** An installer-managed daemon checks once a day for a newer release. Text commands then show one line, at most once a day per caller: `[herdr-threads] X.Y.Z available: herdr-threads update`.
+  - It never appears in `--machine`/`--json`, hook or delivery output, and never for subagents.
+  - Turn it off with `"update_check": "off"` in settings.json or with `HERDR_THREADS_OFFLINE=1`. `doctor` shows the check's state.
+  - A settings.json that sets `update_check` makes releases older than 2.7.0 refuse to start, so remove the key before installing an older release by hand.
+
+### Changed
+
+- The release archive includes `scripts/install.sh` (14 files).
+- The installer records `--bin-dir`, `--no-herdr`, `--without-permissions` and `--no-aisw-profiles` in its marker on every run. `--uninstall` also removes `.prev` and update's lock, journal and logs.
+
 ## v2.6.4
 
 No schema or peer wire change (node schema stays 10), and no setup re-run is needed.
