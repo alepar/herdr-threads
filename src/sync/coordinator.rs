@@ -2044,11 +2044,15 @@ impl Actor {
                 deadline: MonoInstant(u64::MAX),
                 cancellation: Cancellation::default(),
             };
-            let forgotten = journal.forgotten(&budget).unwrap_or_default();
+            // A failed read fails the whole refresh: the held vector and
+            // forgotten set stay, never an empty set that would pull and
+            // advertise forgotten logs again.
+            let text = |e: ApiError| format!("{:?}: {:?}", e.code, e.detail);
+            let forgotten = journal.forgotten(&budget).map_err(text)?;
             journal
                 .vector(&budget)
                 .map(|vector| (vector, forgotten))
-                .map_err(|e| format!("{:?}: {:?}", e.code, e.detail))
+                .map_err(text)
         });
     }
 

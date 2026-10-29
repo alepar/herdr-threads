@@ -666,21 +666,11 @@ impl SyncAdmin {
         target: crate::sync::frame::AddrTarget,
         budget: &CallBudget,
     ) -> Result<SyncReply, ApiError> {
-        use crate::protocol::sync_admin::{AddressReply, MachineRow, RemoteAddress};
+        use crate::protocol::sync_admin::{AddressReply, RemoteAddress};
         use crate::sync::coordinator::remote_addr::RemoteAnswer;
         use crate::sync::frame::AddrOutcome;
         let (rows, own) = self.store.sync_read(budget, |conn, _| {
-            let forgotten = crate::store::node_prune::forgotten(conn)?;
-            let rows = node_directory::all(conn)
-                .map_err(crate::store::connection::store_error)?
-                .into_iter()
-                .filter(|row| !forgotten.contains(&row.node_uuid))
-                .map(|row| MachineRow {
-                    uuid: row.node_uuid.to_string(),
-                    tag: row.tag.to_string(),
-                    host: row.host_label,
-                })
-                .collect::<Vec<_>>();
+            let rows = sync_status::machine_rows(conn)?;
             let own: String = conn
                 .query_row("SELECT id FROM local_node", [], |r| r.get(0))
                 .map_err(crate::store::connection::store_error)?;
@@ -798,21 +788,11 @@ impl SyncAdmin {
         request: Option<crate::sync::frame::LaunchRequest>,
         budget: &CallBudget,
     ) -> Result<SyncReply, ApiError> {
-        use crate::protocol::sync_admin::{LaunchReply, MachineRow, RemoteLaunchAnswer};
+        use crate::protocol::sync_admin::{LaunchReply, RemoteLaunchAnswer};
         use crate::sync::coordinator::remote_launch::LaunchAnswer;
         use crate::sync::frame::LaunchState;
         let (rows, own) = self.store.sync_read(budget, |conn, _| {
-            let forgotten = crate::store::node_prune::forgotten(conn)?;
-            let rows = node_directory::all(conn)
-                .map_err(crate::store::connection::store_error)?
-                .into_iter()
-                .filter(|row| !forgotten.contains(&row.node_uuid))
-                .map(|row| MachineRow {
-                    uuid: row.node_uuid.to_string(),
-                    tag: row.tag.to_string(),
-                    host: row.host_label,
-                })
-                .collect::<Vec<_>>();
+            let rows = sync_status::machine_rows(conn)?;
             let own: String = conn
                 .query_row("SELECT id FROM local_node", [], |r| r.get(0))
                 .map_err(crate::store::connection::store_error)?;

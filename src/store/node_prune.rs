@@ -302,11 +302,6 @@ pub fn evaluate(conn: &Connection, scope: &PruneScope) -> Result<Vec<Candidate>,
             on_host,
         ));
     }
-    let blocked_by_opaque = opaque.iter().any(|node| {
-        !all.iter().any(|(candidate, on_host)| {
-            *on_host && candidate.keep.is_none() && candidate.node == *node
-        })
-    });
     let mut islands = islands(conn)?;
     // The first blocker of each island, in directory order.
     let mut blocker: BTreeMap<NodeUuid, NodeUuid> = BTreeMap::new();
@@ -337,11 +332,24 @@ pub fn evaluate(conn: &Connection, scope: &PruneScope) -> Result<Vec<Candidate>,
             let root = islands.root(candidate.node);
             if let Some(&by) = blocker.get(&root) {
                 candidate.keep = Some(KeepReason::ReferencedBy(by));
-            } else if blocked_by_opaque {
-                candidate.keep = Some(KeepReason::OpaqueEntries);
             }
         }
         out.push(candidate);
+    }
+    // Entries of an unknown layout hide their references: unless every log
+    // holding them is itself pruned (or already forgotten), nothing is.
+    let pruned: BTreeSet<NodeUuid> = out
+        .iter()
+        .filter(|c| c.keep.is_none())
+        .map(|c| c.node)
+        .collect();
+    if opaque
+        .iter()
+        .any(|node| !pruned.contains(node) && !forgotten.contains(node))
+    {
+        for candidate in out.iter_mut().filter(|c| c.keep.is_none()) {
+            candidate.keep = Some(KeepReason::OpaqueEntries);
+        }
     }
     Ok(out)
 }

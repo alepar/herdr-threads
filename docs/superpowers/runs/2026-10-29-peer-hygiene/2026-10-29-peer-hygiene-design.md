@@ -152,7 +152,7 @@ reports `last_error: None`.
 ### Display rule
 
 `err=` shows only while it is current. The rule: the target is not `linked`, and `last_error_at >=
-last_linked_at` (or the target has never linked). The column stays in the store for history and for `--json`.
+last_linked_at` (or the target has never linked). The column stays in the store; `last_error` in the `peer list` and `sync status` replies (text and `--json`) carries the current error only, and the history is `peer events`.
 `sync status` link rows drop the dial-target fallback when the link is active.
 
 ### `peer events`

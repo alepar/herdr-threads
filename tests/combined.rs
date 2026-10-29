@@ -110,6 +110,8 @@ mod setup_cli;
 #[path = "store/sync_contacts.rs"]
 mod sync_contacts;
 
+#[path = "store/node_prune.rs"]
+mod node_prune;
 #[path = "store/sync_dial_targets.rs"]
 mod sync_dial_targets;
 #[path = "daemon/sync_dialer.rs"]

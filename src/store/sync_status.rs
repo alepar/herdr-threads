@@ -295,6 +295,24 @@ pub fn unapplied_page(
     })
 }
 
+/// The machines an `@MACHINE` address is matched against (N14): every
+/// directory node except the forgotten ones (N16).
+pub fn machine_rows(
+    conn: &Connection,
+) -> Result<Vec<crate::protocol::sync_admin::MachineRow>, ApiError> {
+    let forgotten = crate::store::node_prune::forgotten(conn)?;
+    Ok(node_directory::all(conn)
+        .map_err(store_error)?
+        .into_iter()
+        .filter(|row| !forgotten.contains(&row.node_uuid))
+        .map(|row| crate::protocol::sync_admin::MachineRow {
+            uuid: row.node_uuid.to_string(),
+            tag: row.tag.to_string(),
+            host: row.host_label,
+        })
+        .collect())
+}
+
 /// How many nodes `peer prune` forgot (the views leave them out).
 pub fn forgotten_count(conn: &Connection) -> Result<u64, ApiError> {
     conn.query_row("SELECT COUNT(*) FROM sync_forgotten_nodes", [], |r| {

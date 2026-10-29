@@ -481,6 +481,12 @@ fn mutating_commands_need_the_operator_actor() {
             logs: Vec::new(),
         },
         SyncCommand::CloneCleared,
+        SyncCommand::PeerPrune {
+            host: Some("h".into()),
+            older_than_ms: 1,
+            apply: true,
+            list: false,
+        },
     ];
     for command in mutating {
         assert!(command.is_mutating());
@@ -494,6 +500,23 @@ fn mutating_commands_need_the_operator_actor() {
         SyncCommand::Verify,
         SyncCommand::UnappliedList {
             after: None,
+            limit: 8,
+        },
+        SyncCommand::PeerPrune {
+            host: Some("h".into()),
+            older_than_ms: 1,
+            apply: false,
+            list: false,
+        },
+        SyncCommand::PeerPrune {
+            host: None,
+            older_than_ms: 1,
+            apply: false,
+            list: true,
+        },
+        SyncCommand::PeerEvents {
+            node: None,
+            before: None,
             limit: 8,
         },
     ] {
