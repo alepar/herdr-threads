@@ -2019,6 +2019,166 @@ fn idle_mod_session_reattaches_through_its_watch_and_is_woken() {
     }
 }
 
+/// ht-mw10: a full reboot. The daemon is down across the Herdr restart, so it never observes
+/// the new incarnation live: when it next starts, the store still maps the seat, resolved, to
+/// the restored pane id. The resumed session's SessionStart reached no daemon (none could
+/// start), so nothing is kept; the session sits idle and only the mod's `watch` runs, restarted
+/// after every exit as the mod does. Its runs ensure the daemon (D1b) and, once the first pass
+/// has unresolved the seat, claim it (D1). No run may end with a status the mod treats as
+/// terminal for the session.
+#[test]
+fn reboot_with_daemon_down_idle_mod_session_reattaches_through_its_watch() {
+    let mut world = World::start(
+        "htrb",
+        vec![claude("w1:p1", "term-a", "SA"), pane("w1:p2", "term-b")],
+    );
+    let (a, b) = (world.resolve("w1:p1"), world.resolve("w1:p2"));
+    let (a_pane, b_pane) = (
+        Caller {
+            seat: &a,
+            pane: "w1:p1",
+            harness: "claude",
+        },
+        Caller {
+            seat: &b,
+            pane: "w1:p2",
+            harness: "claude",
+        },
+    );
+    let (code, _, stderr) =
+        world.hook("claude", "w1:p1", &session_start("claude", "SA", "startup"));
+    assert_eq!(code, 0, "{stderr}");
+    world
+        .run(
+            None,
+            Some(b_pane),
+            &["check-in", "--lifecycle-event", "b-start"],
+        )
+        .data("check-in");
+    let thread = world
+        .run(None, Some(b_pane), &["thread", "create", "--topic", "mw10"])
+        .text("thread create");
+    world
+        .run(None, Some(b_pane), &["invite", &thread, "--seat", &a])
+        .data("invite");
+    world
+        .run(None, Some(a_pane), &["accept", &thread])
+        .data("accept");
+    assert_eq!(world.seat_state(&a), "resolved");
+    // The reboot: the daemon goes first, Herdr comes back as a new incarnation with the
+    // same pane ids, and no daemon runs until a watch ensures one.
+    *world.stale_marker.borrow_mut() = world.marker();
+    world.stop();
+    world.herdr.restart(vec![
+        claude("w1:p1", "term-a2", "SA"),
+        pane("w1:p2", "term-b2"),
+    ]);
+    assert_eq!(
+        world.seat_state(&a),
+        "resolved",
+        "nothing observed the restart"
+    );
+    assert_eq!(world.kept_claims(), 0);
+
+    // `register.js` stops for the session on exit 3 with one of these reasons.
+    const TERMINAL: [&str; 6] = [
+        "not_claude",
+        "disabled",
+        "replaced",
+        "no_pane",
+        "env_disabled",
+        "unsupported",
+    ];
+    let reattached =
+        |world: &World| world.seat_state(&a) == "resolved" && world.continuity_decisions() >= 1;
+    let mut seen = Vec::new();
+    let mut live = None;
+    for _ in 0..30 {
+        let watch = world.watch("w1:p1", "SA");
+        // Whether this run's latest status is `connected`: only such a run holds the
+        // session's channel, so only it counts as the reattached session.
+        let mut connected = false;
+        loop {
+            // A connected run is never restarted by the mod: it must end by itself (closed by
+            // the pass that unresolves its seat) or be the reattached one.
+            let within = Duration::from_secs(if connected { 60 } else { 20 });
+            let Some(line) = watch.next(within) else {
+                assert!(
+                    !connected || reattached(&world),
+                    "a connected watch stayed open on an unresolved seat: {seen:?}"
+                );
+                break;
+            };
+            if line["kind"] != "status" {
+                continue;
+            }
+            seen.push(format!("{}:{}", line["state"], line["reason"]));
+            assert!(
+                !(line["exit"] == 3 && TERMINAL.contains(&line["reason"].as_str().unwrap_or(""))),
+                "the mod would stop for the session: {seen:?}"
+            );
+            connected = line["state"] == "connected";
+            if !connected || reattached(&world) {
+                break;
+            }
+        }
+        if connected && reattached(&world) {
+            live = Some(watch);
+            break;
+        }
+        drop(watch);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let watch = live.unwrap_or_else(|| panic!("no connected run reattached the seat: {seen:?}"));
+    assert_eq!(
+        world.open_binding(&a),
+        vec![("claude".into(), "cooperative_top_level".into(), "SA".into())],
+        "{seen:?}"
+    );
+
+    // B gets its seat back from the operator and sends A an ACK request (p0), which
+    // reaches the reattached session through its channel.
+    world
+        .run(
+            None,
+            None,
+            &[
+                "human",
+                "seat",
+                "rebind",
+                &b,
+                "--pane",
+                "w1:p2",
+                "--operator",
+            ],
+        )
+        .data("rebind B");
+    world
+        .run(
+            None,
+            Some(b_pane),
+            &["check-in", "--lifecycle-event", "b-again"],
+        )
+        .data("check-in");
+    world
+        .run(
+            None,
+            Some(b_pane),
+            &["send", &thread, "--body", "wake", "--require-ack", &a],
+        )
+        .data("send");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let line = watch
+            .next(deadline.saturating_duration_since(Instant::now()))
+            .expect("the ACK request reached the reattached session's channel");
+        if line["kind"] == "message" && line["body"] == "wake" {
+            assert_eq!(line["ack_required"], true, "{line}");
+            break;
+        }
+    }
+}
+
 /// ht-dtx0 acceptance 2: Herdr is down while a resumed session's SessionStart reaches the
 /// daemon, so the claim is refused as not ready and the hook gives up. The daemon keeps the
 /// claim and, once Herdr is back and the new incarnation reconciled, reattaches the seat with
