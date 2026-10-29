@@ -1256,7 +1256,8 @@ class BusyTurnBoundary(unittest.TestCase):
 
     def test_agent_end_line_shapes(self):
         prompt = f"\u203a {self.ANCHOR}: ... and finally print\n  BUSY-DONE.\n\n"
-        for line in ("\u2022 BUSY-DONE", "  BUSY-DONE", "\u23fa BUSY-DONE.", "**BUSY-DONE**", "`BUSY-DONE`"):
+        for line in ("\u2022 BUSY-DONE", "  BUSY-DONE", "\u23fa BUSY-DONE.", "**BUSY-DONE**", "`BUSY-DONE`",
+                     "BUSY-DONECorrection: I dropped a marker", "\u2022 BUSY-DONE \u2014 handled 1 item"):
             self.assertTrue(W.busy_turn_split(prompt + line + "\n", self.ANCHOR)[2], line)
         for line in ("\u2022 I'll run both sleeps, then print BUSY-DONE", "Done. BUSY-DONE"):
             self.assertFalse(W.busy_turn_split(prompt + line + "\n", self.ANCHOR)[2], line)
@@ -1265,6 +1266,50 @@ class BusyTurnBoundary(unittest.TestCase):
         in_turn, _after, seen = W.busy_turn_split(echoed, self.ANCHOR)
         self.assertTrue(seen)
         self.assertIn("mEARLY", in_turn)  # the turn starts at the prompt, not at the agent's echo of its tag
+
+
+class BusyTurnEndGlued(unittest.TestCase):
+    """2.7.0 Claude busy-send-ack/1:1 at T=0 (scripts/wake_e2e_fixtures/claude-busy-done-glued.txt): the model glued
+    a correction to its end line ("BUSY-DONECorrection: ..."). Every herdr-threads check passed, but the exact-line
+    match missed the end and failed the row."""
+
+    ANCHOR = "Busy-turn test busy-send-ack/1:1 003228-4211"
+
+    def setUp(self):
+        self.SCREEN = (FIXTURES / "claude-busy-done-glued.txt").read_text()
+
+    def test_glued_end_line_ends_the_turn(self):
+        in_turn, after, seen = W.busy_turn_split(self.SCREEN, self.ANCHOR)
+        self.assertTrue(seen)
+        self.assertIn("m7CGGLpZKWPx", in_turn)
+        self.assertTrue(in_turn.rstrip().endswith("Here it is again, verbatim:"))  # the whole end line is in-turn
+        self.assertEqual((W.wake_count(in_turn), W.wake_count(after)), (0, 0))
+
+    def test_no_end_line_is_still_unseen(self):
+        """Negative control: the same turn without its BUSY-DONE line never ended as far as the driver can tell."""
+        lines = [l for l in self.SCREEN.splitlines(keepends=True) if "BUSY-DONEC" not in l]
+        self.assertEqual(W.busy_turn_split("".join(lines), self.ANCHOR)[2], False)
+        cut = self.SCREEN[:self.SCREEN.index("BUSY-DONEC")]  # captured mid-turn, before the end line
+        self.assertEqual(W.busy_turn_split(cut, self.ANCHOR)[2], False)
+
+    def test_eot_end_line_matches_the_same_way(self):
+        prompt = "End-of-turn test eot-send-p0/group r1: run `hold`, then print EOT-DONE and end your turn.\n"
+        for line, seen in (("\u2022 EOT-DONE", True), ("EOT-DONECorrection: again", True), ("**EOT-DONE**.", True),
+                           ("\u2022 I will print EOT-DONE", False)):
+            split = W.busy_turn_split(prompt + line + "\n", "End-of-turn test", W.EOT_DONE_LINE, "EOT-DONE and end")
+            self.assertEqual(split[2], seen, line)
+
+
+class SetupDoneReport(unittest.TestCase):
+    def test_value_matches_whatever_follows_it(self):
+        for threshold, line in ((0, "SETUP-DONE nudge_threshold=0"), (0, "SETUP-DONE nudge_threshold=0Correction"),
+                                (-1, "\u23fa SETUP-DONE nudge_threshold=-1."), (3, "SETUP-DONE nudge_threshold=3 (ok)")):
+            self.assertTrue(W.setup_done(threshold).search(line), line)
+
+    def test_another_value_does_not_match(self):
+        for threshold, line in ((3, "SETUP-DONE nudge_threshold=30"), (-1, "SETUP-DONE nudge_threshold=-10"),
+                                (0, "SETUP-DONE nudge_threshold=-1"), (0, "SETUP-DONE nudge_threshold=")):
+            self.assertFalse(W.setup_done(threshold).search(line), line)
 
 
 class BusyQuietWindow(unittest.TestCase):
