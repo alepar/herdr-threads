@@ -2377,10 +2377,10 @@ where
             // The daily check for a newer release (installer-managed installs only).
             if let Some(node_dir) = update_check.clone() {
                 let log = Arc::clone(&rate_limited_log);
-                let clock = Arc::clone(&factory_clock);
                 crate::update::check::spawn_daemon_timer(
                     node_dir,
-                    move || clock.utc_now().0,
+                    Arc::clone(&factory_clock),
+                    factory_stop.clone(),
                     move |line| log.write_line(line),
                 );
             }

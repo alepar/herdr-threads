@@ -158,11 +158,13 @@ herdr-threads update [--version vX.Y.Z] [--dry-run | --check]
 **Interruption** (roast design-1). From step 9 to step 13, `update` ignores SIGINT, SIGHUP and
 SIGTERM and runs `install.sh` in its own session (`setsid`), so a terminal Ctrl-C, a closed
 pane or an agent's tool timeout cannot stop it between the backup and the judge. A `kill -9`
-still can. The `flock` descriptor of step 2 is inherited by `install.sh` (not close-on-exec
-for that child), and a `flock` lives as long as any process holds the open file description.
-An `install.sh` orphaned by a killed `update` therefore keeps the lock until it exits, and
-the next `update` waits for it, bounded at 120 s, then refuses with `an earlier update is
-still running (pid N)` (review 2). The journal covers the rest: any `update` (including `--check` and `--dry-run`,
+still can. The `flock` of step 2 stays close-on-exec: inherited by `install.sh`, it would also
+pass to every daemon the installer starts and hold the lock for the daemon's lifetime (roast
+pr-1). Instead the journal records the installer's pid, which leads its own process group
+(`setsid`). An `update` resuming a journal whose installer group is still alive waits for it,
+bounded at 120 s, then refuses with `an earlier update's installer is still running (pid N)`
+(review 2). Children get the default SIGINT, SIGHUP and SIGTERM dispositions back, so a daemon
+started during the update stays stoppable (roast pr-1). The journal covers the rest: any `update` (including `--check` and `--dry-run`,
 which only report it) that finds `P.update.json` under the lock first finishes the earlier
 run, judging and then completing or rolling back, before it compares versions. A retry
 after an interrupted run therefore never prints "up to date" over an unjudged install.

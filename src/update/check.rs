@@ -98,11 +98,20 @@ pub fn due_at_ms(state: &CheckState) -> i64 {
         .map_or(i64::MIN, |at| at.saturating_add(interval_ms()))
 }
 
-/// What a check found.
+/// What a check found: the newest published release, newer than the installed one or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Newer(Version),
     UpToDate(Version),
+}
+
+impl Outcome {
+    /// The newest published release.
+    pub fn latest(&self) -> Version {
+        match self {
+            Self::Newer(latest) | Self::UpToDate(latest) => *latest,
+        }
+    }
 }
 
 /// Fetch the latest release, record the attempt and, on success, `latest`. `installed` is the
@@ -125,7 +134,7 @@ pub fn run_check(
     Ok(if latest > installed {
         Outcome::Newer(latest)
     } else {
-        Outcome::UpToDate(installed)
+        Outcome::UpToDate(latest)
     })
 }
 
@@ -159,14 +168,17 @@ pub fn notice_line(node_dir: &Path, own: Version, caller: &str, now_ms: i64) -> 
     ))
 }
 
-/// The daemon's daily check for `node_dir`, on a detached thread, when this daemon's
-/// executable is installer-managed (the caller checks [`enabled`]). `log` gets one line per
-/// outcome.
+/// The daemon's daily check for `node_dir`, on a detached thread that waits on a Pacer (the
+/// daemon's clock and stop), when this daemon's executable is installer-managed (the caller
+/// checks [`enabled`]). The last attempt is also kept in memory, so a state file that cannot
+/// be written never turns the daily check into a tight one. `log` gets one line per outcome.
 pub fn spawn_daemon_timer(
     node_dir: PathBuf,
-    now_ms: impl Fn() -> i64 + Send + 'static,
+    clock: std::sync::Arc<dyn crate::protocol::time::Clock>,
+    stop: crate::protocol::time::Cancellation,
     log: impl Fn(&str) + Send + 'static,
 ) {
+    use crate::service::pacer::{Pacer, Wake};
     let Some(installation) = Installation::current() else {
         return;
     };
@@ -176,19 +188,33 @@ pub fn spawn_daemon_timer(
         .as_deref()
         .and_then(Version::parse)
         .unwrap_or_else(Version::current);
+    let now_ms = {
+        let clock = std::sync::Arc::clone(&clock);
+        move || clock.utc_now().0
+    };
+    let pacer = Pacer::new("update-check", clock, stop);
     let spawned = std::thread::Builder::new()
         .name("update-check".into())
         .spawn(move || {
+            let mut attempted: Option<i64> = None;
+            // Another daemon run or `update --check` may have checked meanwhile: the later of
+            // the file's attempt and this thread's own.
+            let due = |attempted: Option<i64>| {
+                let mut state = read_state(&node_dir);
+                state.attempted_at_ms = state.attempted_at_ms.max(attempted);
+                due_at_ms(&state)
+            };
             loop {
-                let due = due_at_ms(&read_state(&node_dir));
-                let wait_ms = due.saturating_sub(now_ms()).max(0);
+                let wait_ms = due(attempted).saturating_sub(now_ms()).max(0);
                 let wait =
                     Duration::from_millis(u64::try_from(wait_ms).unwrap_or(0)).max(START_DELAY);
-                std::thread::sleep(wait);
-                // Another daemon run or `update --check` may have checked meanwhile.
-                if due_at_ms(&read_state(&node_dir)) > now_ms() {
+                if pacer.wait_blocking(wait) == Wake::Cancelled {
+                    return;
+                }
+                if due(attempted) > now_ms() {
                     continue;
                 }
+                attempted = Some(now_ms());
                 match run_check(&node_dir, installed, now_ms(), release::API_TIMEOUT_SECS) {
                     Ok(Outcome::Newer(latest)) => log(&format!("update check: {latest} available")),
                     Ok(Outcome::UpToDate(_)) => {}

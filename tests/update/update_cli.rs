@@ -22,6 +22,14 @@ use std::{
 const REPO: &str = env!("CARGO_MANIFEST_DIR");
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pkg {
+    Good,
+    Broken,
+    Migrating,
+    Real,
+}
+
 struct Env {
     root: PathBuf,
     prefix: PathBuf,
@@ -93,17 +101,27 @@ impl Env {
             .expect("wait")
     }
 
-    /// A package executable for `version`: a wrapper that execs this build, or one whose
-    /// daemon commands fail (a release that cannot start its daemon).
-    fn wrapper(&self, version: &str, broken: bool) -> PathBuf {
+    /// A package executable for `version`: a wrapper that execs this build, a copy of this
+    /// build itself (its daemons run from the installation), or a wrapper whose store check
+    /// fails, optionally after advancing the store's schema (a one-way migration that broke).
+    fn wrapper(&self, version: &str, pkg: Pkg) -> PathBuf {
+        if pkg == Pkg::Real {
+            return PathBuf::from(BIN);
+        }
         let path = self
             .root
             .join("wrappers")
-            .join(format!("{version}{}", if broken { "-broken" } else { "" }));
-        let guard = if broken {
-            "case \"$1\" in --state-dir) [ \"$3\" = internal ] && exit 1 ;; esac\n"
-        } else {
-            ""
+            .join(format!("{version}-{pkg:?}"));
+        let guard = match pkg {
+            Pkg::Broken => "case \"$1\" in --state-dir) [ \"$3\" = internal ] && exit 1 ;; esac\n",
+            Pkg::Migrating => {
+                "case \"$1\" in --state-dir) if [ \"$3\" = internal ]; then python3 -c \
+                 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
+                 v = c.execute(\"pragma user_version\").fetchone()[0]; \
+                 c.execute(\"pragma user_version = %d\" % (v + 1)); c.commit()' \
+                 \"$2/node/herdr-threads.db\"; exit 1; fi ;; esac\n"
+            }
+            _ => "",
         };
         fs::write(
             &path,
@@ -116,13 +134,13 @@ impl Env {
 
     /// Publish `version` (archive, SHA256SUMS, API document); `bad_digest` misstates the
     /// archive's API digest.
-    fn release(&self, version: &str, broken: bool, bad_digest: bool) {
+    fn release(&self, version: &str, pkg: Pkg, bad_digest: bool) {
         let platform = platform().unwrap();
         let (os, arch) = platform.split_once('-').unwrap();
         let tag = format!("v{version}");
         let dir = self.rel.join("download").join(&tag);
         fs::create_dir_all(&dir).unwrap();
-        let wrapper = self.wrapper(version, broken);
+        let wrapper = self.wrapper(version, pkg);
         let out = self.run(
             self.command(Path::new(REPO).join("scripts/package-release.sh"))
                 .arg("--binary")
@@ -227,12 +245,16 @@ impl Env {
         PathBuf::from(format!("{}{suffix}", self.prefix.display()))
     }
 
-    fn daemon_running(&self) -> bool {
+    fn daemon_pid(&self) -> Option<i64> {
         fs::read(self.state.join("node/endpoint.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .and_then(|value| value["pid"].as_i64())
-            .is_some_and(|pid| unsafe { libc::kill(pid as i32, 0) } == 0)
+            .filter(|pid| unsafe { libc::kill(*pid as i32, 0) } == 0)
+    }
+
+    fn daemon_running(&self) -> bool {
+        self.daemon_pid().is_some()
     }
 }
 
@@ -255,12 +277,12 @@ fn text(output: &Output) -> String {
 #[test]
 fn update_installs_verifies_rotates_refuses_and_resumes() {
     let env = Env::new("flow");
-    env.release("0.1.0", false, false);
+    env.release("0.1.0", Pkg::Good, false);
     env.install("0.1.0");
     // A store and no running daemon: the judge opens it at the target schema, no daemon.
     env.create_store();
 
-    env.release("0.1.1", false, false);
+    env.release("0.1.1", Pkg::Good, false);
     let dry = env.update(&["--dry-run"]);
     assert!(dry.status.success(), "{}", text(&dry));
     assert!(
@@ -299,7 +321,7 @@ fn update_installs_verifies_rotates_refuses_and_resumes() {
     assert_eq!(check["latest"], "0.1.1");
 
     // A second update rotates P.prev.
-    env.release("0.1.2", false, false);
+    env.release("0.1.2", Pkg::Good, false);
     let out = env.update(&[]);
     assert!(out.status.success(), "{}", text(&out));
     assert_eq!(env.marker_version(), "0.1.2");
@@ -325,14 +347,14 @@ fn update_installs_verifies_rotates_refuses_and_resumes() {
     assert!(text(&out).contains("downgrade refused"), "{}", text(&out));
 
     // A misstated digest refuses before anything changes.
-    env.release("0.1.3", false, true);
+    env.release("0.1.3", Pkg::Good, true);
     let out = env.update(&[]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(text(&out).contains("checksum mismatch"), "{}", text(&out));
     assert_eq!(env.marker_version(), "0.1.2");
 
     // A release whose daemon cannot start is rolled back (the schema is unchanged).
-    env.release("0.1.4", true, false);
+    env.release("0.1.4", Pkg::Broken, false);
     let out = env.update(&[]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
@@ -342,6 +364,14 @@ fn update_installs_verifies_rotates_refuses_and_resumes() {
     );
     assert_eq!(env.marker_version(), "0.1.2");
     assert!(!env.sibling(".update.json").exists());
+
+    let out = env.update(&["--check"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("0.1.4 available (installed 0.1.2): herdr-threads update"),
+        "{}",
+        text(&out)
+    );
 
     // An interrupted run is finished first; --dry-run only reports it.
     let journal = serde_json::json!({
@@ -368,6 +398,8 @@ fn update_installs_verifies_rotates_refuses_and_resumes() {
         "{}",
         text(&out)
     );
+    let out = env.update(&["--check"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     let out = env.update(&[]);
     assert!(out.status.success(), "{}", text(&out));
     assert!(text(&out).contains("finishing an interrupted update 0.1.1 -> 0.1.2"));
@@ -377,8 +409,11 @@ fn update_installs_verifies_rotates_refuses_and_resumes() {
 #[test]
 fn update_waits_for_a_held_lock_then_refuses() {
     let env = Env::new("lock");
-    env.release("0.1.0", false, false);
+    env.release("0.1.0", Pkg::Good, false);
     env.install("0.1.0");
+    let out = env.update(&["--check"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("up to date: 0.1.0"), "{}", text(&out));
     let lock = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -427,10 +462,10 @@ fn update_refuses_an_executable_outside_an_installation() {
 #[test]
 fn dry_run_names_a_foreign_daemon_it_would_stop() {
     let env = Env::new("foreign");
-    env.release("0.1.0", false, false);
+    env.release("0.1.0", Pkg::Good, false);
     env.install("0.1.0");
     env.create_store();
-    env.release("0.1.1", false, false);
+    env.release("0.1.1", Pkg::Good, false);
     // A live process that looks like a daemon run from elsewhere (a dev checkout).
     let mut foreign = env
         .command("bash")
@@ -527,4 +562,97 @@ fn the_notice_follows_the_pending_hint_gate_once_per_caller() {
             .arg(&env.state)
             .args(["daemon", "stop"]),
     );
+}
+
+#[test]
+fn a_migration_that_breaks_after_the_swap_is_reported_not_rolled_back() {
+    if !command("python3")
+        .arg("-c")
+        .arg("import sqlite3")
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        eprintln!("skipped: no python3 with sqlite3");
+        return;
+    }
+    let env = Env::new("schema");
+    env.release("0.1.0", Pkg::Good, false);
+    env.install("0.1.0");
+    env.create_store();
+    env.release("0.1.1", Pkg::Migrating, false);
+    let out = env.update(&[]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    let shown = text(&out);
+    assert!(
+        shown.contains("no automatic rollback (the store schema advanced)"),
+        "{shown}"
+    );
+    assert!(shown.contains("herdr-threads: backup: "), "{shown}");
+    assert!(shown.contains("restore: docs/install.md"), "{shown}");
+    assert_eq!(env.marker_version(), "0.1.1", "nothing was rolled back");
+    assert!(!env.sibling(".update.json").exists());
+}
+
+#[test]
+fn update_replaces_a_running_owned_daemon_and_leaves_it_stoppable() {
+    use herdr_threads::test_support::fake_herdr::FakeHerdr;
+    let env = Env::new("live");
+    let socket = env.root.join("h.sock");
+    let _herdr = FakeHerdr::start("u", &socket, &[]);
+    let with_host = |command: &mut std::process::Command| {
+        command.env("HERDR_SOCKET_PATH", &socket);
+    };
+    env.release("0.1.0", Pkg::Real, false);
+    env.install("0.1.0");
+    fs::create_dir_all(&env.state).unwrap();
+    fs::set_permissions(&env.state, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut ensure = env.command(env.prefix.join("bin/herdr-threads"));
+    ensure
+        .arg("--state-dir")
+        .arg(&env.state)
+        .args(["daemon", "ensure"]);
+    with_host(&mut ensure);
+    let out = env.run(&mut ensure);
+    assert!(out.status.success(), "ensure: {}", text(&out));
+    let daemon_exe = |pid: i64| {
+        fs::read_link(format!("/proc/{pid}/exe"))
+            .map(|exe| exe.display().to_string())
+            .unwrap_or_default()
+    };
+    for (version, previous) in [("0.1.1", "0.1.0"), ("0.1.2", "0.1.1")] {
+        env.release(version, Pkg::Real, false);
+        let mut update = env.command(env.bin_dir.join("herdr-threads"));
+        update
+            .arg("update")
+            .env("HT_TEST_UPDATE_LOCK_WAIT_MS", "2000");
+        with_host(&mut update);
+        let out = env.run(&mut update);
+        assert!(out.status.success(), "update to {version}: {}", text(&out));
+        assert!(
+            text(&out).contains(&format!("updated {previous} -> {version}")),
+            "{}",
+            text(&out)
+        );
+        assert!(
+            text(&out).contains(&format!("daemon {version} running in 1 state dir(s)")),
+            "{}",
+            text(&out)
+        );
+        assert!(env.daemon_running(), "the owned daemon runs again");
+    }
+    let pid = env.daemon_pid().expect("daemon pid");
+    if cfg!(target_os = "linux") {
+        assert!(
+            daemon_exe(pid).starts_with(&env.prefix.display().to_string()),
+            "the daemon runs from the installation: {}",
+            daemon_exe(pid)
+        );
+    }
+    // A daemon started during an update keeps the default SIGTERM disposition.
+    unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    let gone = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        (unsafe { libc::kill(pid as i32, 0) }) != 0
+    });
+    assert!(gone, "SIGTERM stops a daemon an update started");
 }

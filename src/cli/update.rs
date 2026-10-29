@@ -113,16 +113,16 @@ pub fn run<W: Write>(request: &UpdateRequest, writer: &mut W) -> Result<(), RunE
         ),
         None => None,
     };
-    let lock = Lock::acquire(&installation.sibling(".update.lock"))?;
+    let _lock = Lock::acquire(&installation.sibling(".update.lock"))?;
     let journal_path = installation.sibling(".update.json");
-    if let Some(journal) = Journal::read(&journal_path) {
+    if let Some(journal) = Journal::read(&journal_path).map_err(refuse)? {
         if request.dry_run || request.check {
             return Err(refuse(format!(
                 "an interrupted update to {} needs finishing: run herdr-threads update",
                 journal.target
             )));
         }
-        return resume(&installation, journal, &journal_path, lock.fd(), writer);
+        return resume(&installation, journal, &journal_path, writer);
     }
     if request.check {
         return run_check(&installation, installed, writer);
@@ -170,21 +170,24 @@ pub fn run<W: Write>(request: &UpdateRequest, writer: &mut W) -> Result<(), RunE
     // From here to the judge, a terminal Ctrl-C, a closed pane or a tool timeout must not stop
     // the update halfway; an interrupted run (kill -9) is finished by the next one.
     ignore_signals();
-    let journal = Journal {
+    let mut journal = Journal {
+        version: JOURNAL_VERSION,
         target: plan.target.to_string(),
         previous: plan.previous.to_string(),
         work: work.path().to_path_buf(),
         flags: plan.flags.clone(),
         states: plan.states.clone(),
+        installer_pid: None,
     };
     journal.write(&journal_path)?;
-    work.keep();
-    keep_previous(&installation).map_err(|error| {
+    if let Err(error) = keep_previous(&installation) {
         let _ = fs::remove_file(&journal_path);
-        refuse(format!(
+        return Err(refuse(format!(
             "could not keep the previous package: {error}; nothing changed"
-        ))
-    })?;
+        )));
+    }
+    // From here the journal owns the work directory: the run's conclusion removes it.
+    work.keep();
     let log = installation.sibling(".prev").join("update.log");
     let outcome = run_installer(
         &installation,
@@ -194,15 +197,21 @@ pub fn run<W: Write>(request: &UpdateRequest, writer: &mut W) -> Result<(), RunE
         &plan.flags,
         &log,
         work.path(),
-        lock.fd(),
+        &mut |pid| {
+            journal.installer_pid = Some(pid);
+            let _ = journal.write(&journal_path);
+        },
     );
+    let outcome = match outcome {
+        Ok(installed) => Run::Installed(installed),
+        Err(error) => Run::Failed(error),
+    };
     conclude(
         &installation,
         &journal,
         &journal_path,
         outcome,
         &log,
-        lock.fd(),
         writer,
     )
 }
@@ -233,10 +242,7 @@ fn run_check<W: Write>(
     let now = now_ms();
     let outcome = check::run_check(&first, installed, now, release::API_TIMEOUT_SECS)
         .map_err(|error| refuse(format!("update check failed: {error}")))?;
-    let latest = match outcome {
-        check::Outcome::Newer(latest) => latest,
-        check::Outcome::UpToDate(_) => installed,
-    };
+    let latest = outcome.latest();
     for node in nodes.iter().skip(1) {
         check::record_latest(node, latest, now);
     }
@@ -472,7 +478,7 @@ fn verify(release: &Release, platform: &str, work: &Path) -> Result<Verified, St
 
 /// The version an executable prints for `--version` (`herdr-threads X.Y.Z`).
 fn exe_version(binary: &Path) -> Result<String, String> {
-    let output = Command::new(binary)
+    let output = default_signals(&mut Command::new(binary))
         .arg("--version")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -563,7 +569,7 @@ fn preflight(installation: &Installation) -> Result<Vec<StateInfo>, String> {
 
 /// `<exe> --state-dir <state> daemon <verb>`; the last stderr line on failure.
 fn daemon_command(exe: &Path, state: &Path, verb: &str) -> Result<(), String> {
-    let output = Command::new(exe)
+    let output = default_signals(&mut Command::new(exe))
         .arg("--state-dir")
         .arg(state)
         .args(["daemon", verb])
@@ -586,7 +592,7 @@ fn daemon_command(exe: &Path, state: &Path, verb: &str) -> Result<(), String> {
 
 /// `<exe> --state-dir <state> internal store-check`; the last stderr line on failure.
 fn store_command(exe: &Path, state: &Path) -> Result<(), String> {
-    let output = Command::new(exe)
+    let output = default_signals(&mut Command::new(exe))
         .arg("--state-dir")
         .arg(state)
         .args(["internal", "store-check"])
@@ -610,18 +616,38 @@ fn store_command(exe: &Path, state: &Path) -> Result<(), String> {
 // -- the run -----------------------------------------------------------------------------
 
 /// The serialized run: target, previous version, work directory and preflight states.
+/// The journal format; a release that changes it bumps this and keeps reading older ones.
+const JOURNAL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Journal {
+    #[serde(default)]
+    version: u32,
     target: String,
     previous: String,
     work: PathBuf,
     flags: Vec<String>,
     states: Vec<StateInfo>,
+    /// The installer's pid, which leads its own process group (`setsid`), once it runs.
+    #[serde(default)]
+    installer_pid: Option<u32>,
 }
 
 impl Journal {
-    fn read(path: &Path) -> Option<Self> {
-        serde_json::from_slice(&fs::read(path).ok()?).ok()
+    /// The pending journal, if any. One that exists but cannot be read is an error, never
+    /// silently "no interrupted run".
+    fn read(path: &Path) -> Result<Option<Self>, String> {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+        };
+        serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+            format!(
+                "cannot parse {} ({error}); check the installation, then remove it",
+                path.display()
+            )
+        })
     }
 
     fn write(&self, path: &Path) -> io::Result<()> {
@@ -636,6 +662,20 @@ impl Journal {
         file.sync_all()?;
         fs::rename(&tmp, path)
     }
+}
+
+/// Children get the default dispositions back: a daemon started during the update must stay
+/// stoppable by SIGTERM.
+fn default_signals(command: &mut Command) -> &mut Command {
+    unsafe {
+        command.pre_exec(|| {
+            for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGTERM] {
+                libc::signal(signal, libc::SIG_DFL);
+            }
+            Ok(())
+        });
+    }
+    command
 }
 
 fn ignore_signals() {
@@ -689,6 +729,15 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// How the installer step of the run being concluded went.
+enum Run {
+    Installed(InstallOutcome),
+    /// The installer could not be run.
+    Failed(String),
+    /// An earlier, interrupted run is being concluded: its installer outcome is unknown.
+    Interrupted,
+}
+
 /// The installer's exit status and final status line.
 struct InstallOutcome {
     status: Option<i32>,
@@ -704,7 +753,7 @@ fn run_installer(
     flags: &[String],
     log: &Path,
     work: &Path,
-    lock_fd: i32,
+    on_spawn: &mut dyn FnMut(u32),
 ) -> Result<InstallOutcome, String> {
     let file = fs::OpenOptions::new()
         .create(true)
@@ -733,20 +782,22 @@ fn run_installer(
         .stdin(Stdio::null())
         .stdout(file)
         .stderr(stderr);
-    // Its own session: no terminal signal reaches it. It inherits the update lock, so an
-    // installer orphaned by a killed update keeps the next update waiting.
+    // Its own session, so no terminal signal reaches it; its pid is its process group, which
+    // the journal records so a later update can tell an orphaned installer is still running.
+    default_signals(&mut command);
     unsafe {
-        command.pre_exec(move || {
+        command.pre_exec(|| {
             libc::setsid();
-            if libc::fcntl(lock_fd, libc::F_SETFD, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
             Ok(())
         });
     }
-    let status = command
-        .status()
+    let mut child = command
+        .spawn()
         .map_err(|error| format!("the installer did not run: {error}"))?;
+    on_spawn(child.id());
+    let status = child
+        .wait()
+        .map_err(|error| format!("the installer did not finish: {error}"))?;
     let text = fs::read_to_string(log).unwrap_or_default();
     Ok(InstallOutcome {
         status: status.code(),
@@ -853,9 +904,8 @@ fn conclude<W: Write>(
     installation: &Installation,
     journal: &Journal,
     journal_path: &Path,
-    outcome: Result<InstallOutcome, String>,
+    outcome: Run,
     log: &Path,
-    lock_fd: i32,
     writer: &mut W,
 ) -> Result<(), RunError> {
     let judged = judge(installation, &journal.target, &journal.states);
@@ -908,24 +958,39 @@ fn conclude<W: Write>(
                 }
             }
             finish(installation, journal, journal_path);
+            // The judge passed, but anything the installer did not finish is reported: its
+            // status line and the log, exit 3. `--no-herdr` alone is the asked-for state.
             return match outcome {
-                Ok(InstallOutcome {
+                Run::Interrupted
+                | Run::Installed(InstallOutcome {
+                    status: Some(0), ..
+                }) => Ok(()),
+                Run::Installed(InstallOutcome {
                     status: Some(3),
                     last_line,
-                }) if !last_line.contains("not linked: --no-herdr") => {
+                }) if last_line.contains("not linked: --no-herdr") => Ok(()),
+                Run::Installed(InstallOutcome { last_line, .. }) => {
                     say(writer, &last_line)?;
                     say(writer, &format!("log: {}", log.display()))?;
                     Err(RunError::Exit(3))
                 }
-                _ => Ok(()),
+                Run::Failed(run_error) => {
+                    say(writer, &format!("{run_error}; log: {}", log.display()))?;
+                    Err(RunError::Exit(3))
+                }
             };
         }
     }
     let error = judged.err().unwrap_or_default();
     let reason = match &outcome {
-        Err(run_error) => run_error.clone(),
-        Ok(installed) if installed.last_line.is_empty() || installed.status == Some(0) => error,
-        Ok(installed) => format!("{error} (installer: {})", installed.last_line),
+        Run::Interrupted => format!("the earlier update was interrupted: {error}"),
+        Run::Failed(run_error) => format!("{run_error}: {error}"),
+        Run::Installed(installed)
+            if installed.last_line.is_empty() || installed.status == Some(0) =>
+        {
+            error
+        }
+        Run::Installed(installed) => format!("{error} (installer: {})", installed.last_line),
     };
     let marker = Marker::read(&installation.prefix).unwrap_or_default();
     if marker.version.as_deref() == Some(journal.previous.as_str()) {
@@ -970,7 +1035,7 @@ fn conclude<W: Write>(
         .join("scripts")
         .join("install.sh");
     if unchanged && script.is_file() {
-        match roll_back(installation, journal, &script, lock_fd) {
+        match roll_back(installation, journal, journal_path, &script) {
             Ok(rollback_log) => {
                 finish(installation, journal, journal_path);
                 return Err(refuse(format!(
@@ -1022,8 +1087,8 @@ fn backups_in(log: &Path) -> Vec<String> {
 fn roll_back(
     installation: &Installation,
     journal: &Journal,
+    journal_path: &Path,
     script: &Path,
-    lock_fd: i32,
 ) -> Result<PathBuf, String> {
     let previous =
         Version::parse(&journal.previous).ok_or("the journal's previous version is invalid")?;
@@ -1063,7 +1128,11 @@ fn roll_back(
         &journal.flags,
         &log,
         &journal.work,
-        lock_fd,
+        &mut |pid| {
+            let mut recorded = journal.clone();
+            recorded.installer_pid = Some(pid);
+            let _ = recorded.write(journal_path);
+        },
     )?;
     judge(installation, &journal.previous, &journal.states).map_err(|error| {
         format!(
@@ -1080,9 +1149,28 @@ fn resume<W: Write>(
     installation: &Installation,
     journal: Journal,
     journal_path: &Path,
-    lock_fd: i32,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    // An installer orphaned by a killed update may still be running in its own process group:
+    // wait for it, then judge what it left.
+    if let Some(pid) = journal
+        .installer_pid
+        .and_then(|pid| i32::try_from(pid).ok())
+    {
+        let started = Instant::now();
+        let alive = || unsafe { libc::kill(-pid, 0) } == 0;
+        if alive() {
+            eprintln!("herdr-threads: waiting for an earlier update's installer (pid {pid})");
+        }
+        while alive() {
+            if started.elapsed() >= lock_wait() {
+                return Err(refuse(format!(
+                    "an earlier update's installer is still running (pid {pid}); try again later"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
     ignore_signals();
     say(
         writer,
@@ -1096,18 +1184,20 @@ fn resume<W: Write>(
         installation,
         &journal,
         journal_path,
-        Err("the earlier update was interrupted".to_owned()),
+        Run::Interrupted,
         &log,
-        lock_fd,
         writer,
     )
 }
 
 // -- lock and work directory ---------------------------------------------------------------
 
-/// The exclusive `flock` on `P.update.lock`, held for the whole run and inherited by the
-/// installer.
-struct Lock(fs::File);
+/// The exclusive `flock` on `P.update.lock`, held for the whole run. Close-on-exec: no child
+/// (above all a daemon the installer starts) inherits it.
+struct Lock {
+    /// Held open for the lock's lifetime; closing it releases the `flock`.
+    _file: fs::File,
+}
 
 impl Lock {
     fn acquire(path: &Path) -> Result<Self, RunError> {
@@ -1122,7 +1212,7 @@ impl Lock {
         let mut announced = false;
         loop {
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok(Self(file));
+                return Ok(Self { _file: file });
             }
             let error = io::Error::last_os_error();
             if error.raw_os_error() != Some(libc::EWOULDBLOCK) {
@@ -1139,10 +1229,6 @@ impl Lock {
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-    }
-
-    fn fd(&self) -> i32 {
-        self.0.as_raw_fd()
     }
 }
 
@@ -1186,6 +1272,175 @@ impl Drop for WorkDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::update::release::Asset;
+
+    /// A release of `version` for `platform` under a fresh directory, published as `file://`
+    /// assets with correct digests; `tweak` edits the package tree before it is packed.
+    fn fixture(version: &str, platform: &str, tweak: impl FnOnce(&Path)) -> (Release, PathBuf) {
+        let root = crate::test_support::scratch::temp_path(format!(
+            "update-verify-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let package = root.join("stage").join("herdr-threads");
+        fs::create_dir_all(package.join("bin")).unwrap();
+        fs::create_dir_all(package.join("scripts")).unwrap();
+        fs::write(package.join("VERSION"), format!("{version}\n")).unwrap();
+        fs::write(package.join("TARGET"), format!("{platform}\n")).unwrap();
+        fs::write(package.join("scripts/install.sh"), "#!/bin/sh\n").unwrap();
+        let binary = package.join("bin/herdr-threads");
+        fs::write(
+            &binary,
+            format!("#!/bin/sh\necho 'herdr-threads {version}'\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        tweak(&root.join("stage"));
+        let asset = release::asset_name(platform);
+        let published = root.join("published");
+        fs::create_dir_all(&published).unwrap();
+        let archive = published.join(&asset);
+        let entries: Vec<_> = fs::read_dir(root.join("stage"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(
+            Command::new("tar")
+                .arg("-czf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(root.join("stage"))
+                .args(&entries)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let hash = release::sha256_file(&archive).unwrap();
+        let sums = published.join(release::SUMS_ASSET);
+        fs::write(&sums, format!("{hash}  {asset}\n")).unwrap();
+        let release = Release {
+            version: Version::parse(version).unwrap(),
+            assets: vec![
+                Asset {
+                    name: asset,
+                    sha256: Some(hash),
+                    url: file_url(&archive),
+                },
+                Asset {
+                    name: release::SUMS_ASSET.to_owned(),
+                    sha256: Some(release::sha256_file(&sums).unwrap()),
+                    url: file_url(&sums),
+                },
+            ],
+        };
+        let work = root.join("work");
+        fs::create_dir_all(&work).unwrap();
+        (release, work)
+    }
+
+    const PLATFORM: &str = "linux-x86_64";
+
+    fn refusal(release: &Release, work: &Path) -> String {
+        match verify(release, PLATFORM, work) {
+            Ok(_) => panic!("verified"),
+            Err(reason) => reason,
+        }
+    }
+
+    #[test]
+    fn a_correct_release_verifies() {
+        let (release, work) = fixture("2.7.1", PLATFORM, |_| {});
+        let verified = verify(&release, PLATFORM, &work).unwrap();
+        assert!(verified.install_script.is_file());
+        assert_eq!(Some(&verified.sha256), release.assets[0].sha256.as_ref());
+    }
+
+    #[test]
+    fn each_digest_disagreement_refuses() {
+        let (mut release, work) = fixture("2.7.1", PLATFORM, |_| {});
+        release.assets[0].sha256 = Some("0".repeat(64));
+        assert!(refusal(&release, &work).contains("checksum mismatch"));
+
+        let (mut release, work) = fixture("2.7.1", PLATFORM, |_| {});
+        release.assets[1].sha256 = Some("0".repeat(64));
+        assert!(refusal(&release, &work).contains("SHA256SUMS digest mismatch"));
+
+        let (mut release, work) = fixture("2.7.1", PLATFORM, |_| {});
+        release.assets[0].sha256 = None;
+        assert!(refusal(&release, &work).contains("gives no sha256 digest"));
+
+        let (release, work) = fixture("2.7.1", PLATFORM, |_| {});
+        let sums = release.assets[1]
+            .url
+            .trim_start_matches("file://")
+            .to_owned();
+        fs::write(&sums, format!("{}  other.tar.gz\n", "a".repeat(64))).unwrap();
+        let mut release = release;
+        release.assets[1].sha256 = Some(release::sha256_file(Path::new(&sums)).unwrap());
+        assert!(refusal(&release, &work).contains("SHA256SUMS has no entry"));
+
+        let (mut release, work) = fixture("2.7.1", PLATFORM, |_| {});
+        release.assets.remove(0);
+        assert!(refusal(&release, &work).contains("has no herdr-threads-linux-x86_64.tar.gz"));
+    }
+
+    #[test]
+    fn each_archive_content_mismatch_refuses() {
+        let (release, work) = fixture("2.7.1", PLATFORM, |stage| {
+            fs::write(stage.join("herdr-threads/VERSION"), "2.7.0\n").unwrap();
+        });
+        assert!(refusal(&release, &work).contains("VERSION is 2.7.0"));
+
+        let (release, work) = fixture("2.7.1", PLATFORM, |stage| {
+            fs::write(stage.join("herdr-threads/TARGET"), "macos-aarch64\n").unwrap();
+        });
+        assert!(refusal(&release, &work).contains("TARGET is macos-aarch64"));
+
+        let (release, work) = fixture("2.7.1", PLATFORM, |stage| {
+            fs::remove_file(stage.join("herdr-threads/scripts/install.sh")).unwrap();
+        });
+        assert!(refusal(&release, &work).contains("no scripts/install.sh"));
+
+        let (release, work) = fixture("2.7.1", PLATFORM, |stage| {
+            fs::write(stage.join("extra"), "x").unwrap();
+        });
+        assert!(refusal(&release, &work).contains("exactly one herdr-threads/ directory"));
+
+        let (release, work) = fixture("2.7.1", PLATFORM, |stage| {
+            fs::write(
+                stage.join("herdr-threads/bin/herdr-threads"),
+                "#!/bin/sh\necho 'herdr-threads 9.9.9'\n",
+            )
+            .unwrap();
+        });
+        assert!(refusal(&release, &work).contains("executable reports 9.9.9"));
+
+        let (release, work) = fixture("2.7.1", PLATFORM, |stage| {
+            fs::write(
+                stage.join("herdr-threads/bin/herdr-threads"),
+                "#!/bin/sh\nexit 1\n",
+            )
+            .unwrap();
+        });
+        assert!(refusal(&release, &work).contains("does not run here"));
+    }
+
+    #[test]
+    fn an_unreadable_journal_refuses_instead_of_reading_as_none() {
+        let path = crate::test_support::scratch::temp_path(format!(
+            "update-journal-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        assert_eq!(Journal::read(&path).unwrap().map(|j| j.target), None);
+        fs::write(&path, b"{not json").unwrap();
+        assert!(Journal::read(&path).unwrap_err().contains("cannot parse"));
+        fs::write(
+            &path,
+            br#"{"target":"2.7.1","previous":"2.7.0","work":"/w","flags":[],"states":[]}"#,
+        )
+        .unwrap();
+        let journal = Journal::read(&path).unwrap().unwrap();
+        assert_eq!((journal.version, journal.installer_pid), (0, None));
+    }
 
     #[test]
     fn flags_replay_the_marker_opt_outs() {
