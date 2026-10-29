@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.8.0
+
+One-way store upgrade to node schema 11 (migration 0011: the `sync_forgotten_nodes` and `sync_link_events` tables). Binaries before 2.8.0 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. There is no peer wire change, and no setup re-run is needed. After upgrading, restart the daemon (`herdr-threads daemon stop && herdr-threads daemon ensure`) to use the new peer commands. This is the first release that 2.7.0 installs can take with `herdr-threads update`.
+
+### Added
+
+- **`herdr-threads peer prune`** forgets dead peer nodes of one host.
+  - **What counts as dead:** a node that has been unlinked and silent for 7 days, has no fork or clone evidence, and that nothing a kept node references depends on.
+  - **Dry run** by default. `--list` reviews the candidates and `human peer prune --yes` applies.
+  - **Nothing is deleted.** Forgotten nodes leave `peer list`, `sync status`, `sync unapplied` and `@MACHINE` addresses, and their logs are no longer pulled.
+- **`herdr-threads human peer unforget NODE [--yes]`** undoes a prune for one node. A forgotten node that links to this node directly again is unforgotten automatically; relayed contact does not count.
+- **`herdr-threads peer events`** lists past link events (up, down, dial_failed, not_installed, stopped, unforgotten), newest first and paged. A link flapping within 60 s collapses into one row per state.
+
+### Changed
+
+- `peer list` and `sync status` show `err=` only for a current error, never on a healthy link. Past errors are in `peer events`.
+- A new CLI talking to an older daemon refuses `peer prune`, `peer unforget` and `peer events` with one line naming the daemon's version and the restart command.
+
+### Fixed
+
+- **Tests:** the wake e2e driver detects a turn end even when the model glues text after BUSY-DONE or EOT-DONE, and a wrapped prompt can no longer pass for the turn end.
+
 ## v2.7.0
 
 No schema or peer wire change (node schema stays 10). `herdr-threads update` needs an installation made by this release's installer or later, so install 2.7.0 itself with `install.sh`.
