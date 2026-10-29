@@ -1253,3 +1253,92 @@ fn spawn_detached_passes_the_host_only_when_the_client_resolved_one() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// A dead boot whose socket device was renumbered (macOS APFS across a
+/// reboot, ht-tyt7) does not block `ensure`: the next owner reclaims the
+/// stale socket at the stable pathname and publishes a new healthy boot.
+/// Kills: failing every ensure with "socket pathname was substituted".
+#[tokio::test]
+async fn dead_boot_with_renumbered_socket_device_recovers() {
+    let (root, context, paths) = fixture();
+    let launcher = launcher(&root);
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = lock.node_uuid().unwrap();
+    let listener = lock.bind_socket().unwrap();
+    let stale = lock
+        .publish_endpoint(&listener, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION)
+        .unwrap();
+    drop(listener);
+    drop(lock);
+    let renumbered = EndpointDescriptor {
+        socket_device: stale.socket_device ^ 1,
+        ..stale.clone()
+    };
+    std::fs::write(
+        &paths.descriptor_path,
+        serde_json::to_vec(&renumbered).unwrap(),
+    )
+    .unwrap();
+    let recovered = ensure_running_with_timeout(&context, &launcher, Arc::new(TestClock), LIVENESS)
+        .await
+        .unwrap();
+    assert_eq!(recovered.node_uuid, instance);
+    assert_ne!(recovered.boot_id, stale.boot_id);
+    assert_eq!(recovered.endpoint, stale.endpoint);
+    std::fs::write(root.join("stop"), b"stop").unwrap();
+    tokio::time::timeout(LIVENESS, async {
+        while recovered.endpoint.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A live owner whose published socket no longer matches its descriptor is
+/// never displaced: ensure launches nothing, removes nothing and reports the
+/// mismatch with its recovery instead of a generic timeout (ht-tyt7).
+#[tokio::test]
+async fn live_owner_with_mismatched_socket_is_kept_and_reported() {
+    let (root, context, paths) = fixture();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let listener = lock.bind_socket().unwrap();
+    let published = lock
+        .publish_endpoint(&listener, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION)
+        .unwrap();
+    let renumbered = EndpointDescriptor {
+        socket_device: published.socket_device ^ 1,
+        ..published.clone()
+    };
+    let bytes = serde_json::to_vec(&renumbered).unwrap();
+    std::fs::write(&paths.descriptor_path, &bytes).unwrap();
+    let error = ensure_running_with_timeout(
+        &context,
+        PathBuf::from("/bin/false").as_path(),
+        Arc::new(TestClock),
+        Duration::from_millis(300),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.detail.contains("socket pathname was substituted"),
+        "{}",
+        error.detail
+    );
+    assert!(
+        error.detail.contains("`herdr-threads daemon ensure`"),
+        "{}",
+        error.detail
+    );
+    assert!(
+        !error.detail.contains("did not become ready"),
+        "{}",
+        error.detail
+    );
+    assert_eq!(std::fs::read(&paths.descriptor_path).unwrap(), bytes);
+    assert!(published.endpoint.exists());
+    drop(listener);
+    drop(lock);
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -9,8 +9,8 @@ use crate::daemon::logs::{
     startup_log_path, startup_logs_dir, startup_tail_text,
 };
 use crate::daemon::ownership::{
-    EndpointDescriptor, OwnerLock, owner_lock_identity, previous_owner_released, read_descriptor,
-    read_node_uuid_hint,
+    EndpointDescriptor, OwnerLock, is_socket_substituted, owner_lock_identity,
+    previous_owner_released, read_descriptor, read_node_uuid_hint,
 };
 use crate::daemon::paths::{NodePaths, RuntimeContext, effective_uid};
 use crate::daemon::remedy::{RemedyContext, remedy};
@@ -199,17 +199,26 @@ pub(crate) fn live_skew(
     )))
 }
 
+/// `substituted` is set when the published socket no longer matches its
+/// descriptor: not ready, since only the elected owner can tell a dead boot's
+/// renumbered socket from a substituted one (ht-tyt7).
 async fn handshake(
     paths: &NodePaths,
     clock: Arc<dyn Clock>,
     remaining: Duration,
+    substituted: &mut Option<ApiError>,
 ) -> Result<Option<EndpointDescriptor>, ApiError> {
+    *substituted = None;
     let Some(instance) = instance_uuid(paths).map_err(io_error)? else {
         return Ok(None);
     };
     let descriptor = match read_descriptor(paths, instance) {
         Ok(descriptor) => descriptor,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if is_socket_substituted(&error) => {
+            *substituted = Some(io_error(error));
+            return Ok(None);
+        }
         Err(error) => return Err(io_error(error)),
     };
     if descriptor.protocol_version != PROTOCOL_VERSION {
@@ -478,9 +487,17 @@ pub async fn ensure_running_with_timeout(
     let deadline = Instant::now() + timeout;
     let mut attempt = StartAttempt::new();
     let mut launched: Option<Launched> = None;
+    let mut substituted: Option<ApiError> = None;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
+            // A live lock holder kept a mismatched socket published: report
+            // the mismatch and its recovery, not a generic timeout.
+            if launched.is_none()
+                && let Some(error) = substituted
+            {
+                return Err(error);
+            }
             let log = launched.as_ref().map_or_else(
                 || startup_log_path(&paths, &attempt),
                 |launched| launched.remedy_log(&paths),
@@ -506,6 +523,7 @@ pub async fn ensure_running_with_timeout(
             &paths,
             clock.clone(),
             remaining.min(Duration::from_millis(250)),
+            &mut substituted,
         )
         .await
         {
