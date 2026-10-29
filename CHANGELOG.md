@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.6.4
+
+No schema or peer wire change (node schema stays 10), and no setup re-run is needed.
+
+### Fixed
+
+- **The daemon starts again after a macOS reboot.** macOS can renumber the APFS volume's device across a reboot. When it did, every client and `daemon ensure` failed with "socket pathname was substituted" until `endpoint.json` and `daemon.sock` were removed by hand; one laptop was down for 12 hours.
+  - `daemon ensure` and the startup hook now reclaim that dead boot's socket. They do so only when its inode still matches, it is a private socket of this user, and nothing answers on it.
+  - Any other mismatch is still refused. The error now says how to recover: run `daemon ensure`, remove `endpoint.json`, or stop the live process named by its pid.
+  - A state directory shared across kernels, such as a VM or container shared folder, is documented as unsupported.
+
 ## v2.6.3
 
 No schema or peer wire change (node schema stays 10), and no setup re-run is needed.
