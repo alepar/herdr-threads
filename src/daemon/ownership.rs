@@ -282,13 +282,15 @@ impl OwnerLock {
 
     /// Remove a prior published socket only if its recorded inode remains at
     /// the recorded pathname. Unpublished sockets are never removed here.
+    /// Only the elected owner calls this, so the descriptor's boot is dead; a
+    /// device number alone may differ (see [`remove_dead_boot_socket`]).
     pub fn remove_stale_endpoint(&self) -> io::Result<()> {
         let descriptor = match parse_descriptor(&self.paths, hint_uuid(&self.paths)) {
             Ok(value) => value,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(err) => return Err(err),
         };
-        remove_matching_socket(&descriptor)?;
+        remove_dead_boot_socket(&descriptor, &self.paths.descriptor_path)?;
         remove_if_present(&self.paths.descriptor_path)
     }
 
@@ -357,15 +359,98 @@ impl OwnerLock {
                 "endpoint boot changed",
             ));
         }
-        remove_matching_socket(&descriptor)?;
+        remove_matching_socket(&descriptor, &self.paths.descriptor_path)?;
         remove_if_present(&self.paths.descriptor_path)
     }
 }
 
 pub fn read_descriptor(paths: &NodePaths, node_uuid: NodeUuid) -> io::Result<EndpointDescriptor> {
     let descriptor = parse_descriptor(paths, Some(node_uuid))?;
-    validate_descriptor_socket(&descriptor)?;
+    validate_descriptor_socket(&descriptor, &paths.descriptor_path)?;
     Ok(descriptor)
+}
+
+/// The published socket's device or inode differs from its descriptor. The
+/// text keeps the `socket pathname was substituted` prefix and names the
+/// recovery that fits where it is raised (ht-tyt7).
+#[derive(Debug)]
+struct SocketSubstituted {
+    descriptor: std::path::PathBuf,
+    pid: u32,
+    recovery: Recovery,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Recovery {
+    /// A client: the elected owner reclaims a dead boot's renumbered socket.
+    Ensure,
+    /// The elected owner refused it: no daemon holds the lock.
+    Remove,
+    /// A live process holds the owner lock and keeps it published.
+    StopOwner,
+}
+
+impl std::fmt::Display for SocketSubstituted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::daemon::remedy::{RemedyContext, remedy};
+        let descriptor = self.descriptor.clone();
+        let context = match self.recovery {
+            Recovery::Ensure => RemedyContext::SocketReclaim,
+            Recovery::Remove => RemedyContext::SocketRemove { descriptor },
+            Recovery::StopOwner => RemedyContext::SocketStopOwner {
+                descriptor,
+                pid: self.pid,
+            },
+        };
+        write!(
+            f,
+            "socket pathname was substituted; {}",
+            remedy(None, &context)
+        )
+    }
+}
+
+impl std::error::Error for SocketSubstituted {}
+
+fn socket_substituted(
+    descriptor: &EndpointDescriptor,
+    descriptor_path: &Path,
+    recovery: Recovery,
+) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        SocketSubstituted {
+            descriptor: descriptor_path.to_path_buf(),
+            pid: descriptor.pid,
+            recovery,
+        },
+    )
+}
+
+/// Whether `error` is a published socket that no longer matches its descriptor.
+pub fn is_socket_substituted(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<SocketSubstituted>())
+}
+
+/// The same mismatch, restated for a live process holding the owner lock:
+/// `daemon ensure` cannot reclaim it, so the text says to stop that process.
+pub fn substituted_under_live_owner(error: io::Error) -> io::Error {
+    match error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<SocketSubstituted>())
+    {
+        Some(inner) => io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            SocketSubstituted {
+                descriptor: inner.descriptor.clone(),
+                pid: inner.pid,
+                recovery: Recovery::StopOwner,
+            },
+        ),
+        None => error,
+    }
 }
 
 /// The node uuid named by the `node.json` hint; a missing or corrupt hint is
@@ -481,15 +566,71 @@ fn parse_descriptor(
     Ok(descriptor)
 }
 
-fn validate_descriptor_socket(descriptor: &EndpointDescriptor) -> io::Result<()> {
+fn validate_descriptor_socket(
+    descriptor: &EndpointDescriptor,
+    descriptor_path: &Path,
+) -> io::Result<()> {
     let meta = validate_socket(&descriptor.endpoint)?;
     if meta.dev() != descriptor.socket_device || meta.ino() != descriptor.socket_inode {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "socket pathname was substituted",
+        return Err(socket_substituted(
+            descriptor,
+            descriptor_path,
+            Recovery::Ensure,
         ));
     }
     Ok(())
+}
+
+/// [`remove_matching_socket`] for the elected owner retiring a dead boot's
+/// endpoint. macOS renumbers an APFS volume's `st_dev` across reboots while
+/// the socket keeps its inode (ht-tyt7), so a socket whose inode matches but
+/// whose device alone differs is that dead boot's socket and is removed once
+/// it accepts no connection. The owner lock proves no live owner of this
+/// instance holds it; the refused connect proves nothing else listens; the
+/// lstat before and after (a same-uid 0600 socket, never a symlink, with an
+/// unchanged device and inode) proves the unlinked file is the one checked.
+/// An inode mismatch is not explained by a renumbered mount and stays
+/// refused, as does a socket that answers.
+fn remove_dead_boot_socket(
+    descriptor: &EndpointDescriptor,
+    descriptor_path: &Path,
+) -> io::Result<()> {
+    remove_dead_boot_socket_as(descriptor, descriptor_path, effective_uid())
+}
+
+/// [`remove_dead_boot_socket`] with the owning uid supplied, so a test can
+/// show that a socket of another uid is refused on any host.
+fn remove_dead_boot_socket_as(
+    descriptor: &EndpointDescriptor,
+    descriptor_path: &Path,
+    uid: u32,
+) -> io::Result<()> {
+    let substituted = || socket_substituted(descriptor, descriptor_path, Recovery::Remove);
+    let meta = match validate_socket_as(&descriptor.endpoint, uid) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if meta.ino() != descriptor.socket_inode {
+        return Err(substituted());
+    }
+    if meta.dev() != descriptor.socket_device {
+        match std::os::unix::net::UnixStream::connect(&descriptor.endpoint) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    "a live listener holds the daemon socket pathname without the owner lock",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {}
+            Err(error) => return Err(error),
+        }
+        let again = validate_socket_as(&descriptor.endpoint, uid)?;
+        if again.dev() != meta.dev() || again.ino() != meta.ino() {
+            return Err(substituted());
+        }
+    }
+    fs::remove_file(&descriptor.endpoint)
 }
 
 /// Clear the stable pathname before binding. Only the elected owner calls
@@ -531,8 +672,11 @@ fn reclaim_dead_socket(path: &Path) -> io::Result<()> {
     fs::remove_file(path)
 }
 
-fn remove_matching_socket(descriptor: &EndpointDescriptor) -> io::Result<()> {
-    match validate_descriptor_socket(descriptor) {
+fn remove_matching_socket(
+    descriptor: &EndpointDescriptor,
+    descriptor_path: &Path,
+) -> io::Result<()> {
+    match validate_descriptor_socket(descriptor, descriptor_path) {
         Ok(()) => fs::remove_file(&descriptor.endpoint),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
@@ -643,9 +787,13 @@ fn remove_if_present(path: &Path) -> io::Result<()> {
 }
 
 fn validate_socket(path: &Path) -> io::Result<fs::Metadata> {
+    validate_socket_as(path, effective_uid())
+}
+
+fn validate_socket_as(path: &Path, uid: u32) -> io::Result<fs::Metadata> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_socket()
-        || meta.uid() != effective_uid()
+        || meta.uid() != uid
         || meta.permissions().mode() & 0o777 != 0o600
     {
         Err(io::Error::new(
