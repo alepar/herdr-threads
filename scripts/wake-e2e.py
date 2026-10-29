@@ -153,7 +153,9 @@ EOT_CASES = ("eot-send-p0/group",)
 EOT_PROMPT = ("End-of-turn test {tag}: run the shell command `{hold}` and no other command, then print EOT-DONE and end "
               "your turn. If herdr-threads items reach you after that, handle them exactly as your standing "
               "instructions say without running any command, and print EOT-DONE again.")
-EOT_DONE_LINE = re.compile(r"^[^\w\n]*EOT-DONE[^\w\n]*$", re.M)
+# Matched as BUSY_DONE_LINE is, after the prompt's last mention of the marker.
+EOT_DONE_LINE = re.compile(r"^[^\w\n]*EOT-DONE.*$", re.M)
+EOT_PROMPT_END = "EOT-DONE again."
 # Opt-in Codex case (ht-wake-loop), T=0 recipient only: our hooks stop running, as after an upgrade that breaks them.
 # Right after an ACK request the candidate binary is made non-executable (the coordinator keeps a private copy), so the
 # woken turn's hooks and any herdr-threads call the model makes fail and the session never reaches the daemon. When
@@ -197,9 +199,10 @@ BUSY_TOOL_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}`, then 
 BUSY_TOOL = {"codex": "use your apply_patch tool (not the shell) to add the file `{dir}/patched.txt` containing `x`",
              "claude": "read the file `README.md` with your Read tool (not the shell)"}
 BUSY_AFTER_S = 40.0
-# The busy turn's native end: a line of the agent's output that is BUSY-DONE apart from bullets, markup or a final
-# period. It is searched only after the prompt's own "BUSY-DONE." so a wrapped prompt line never matches.
-BUSY_DONE_LINE = re.compile(r"^[^\w\n]*BUSY-DONE[^\w\n]*$", re.M)
+# The busy turn's native end: a line of the agent's output that starts with BUSY-DONE after bullets or markup,
+# whatever follows on that line (2.7.0: a model glued text to it, "BUSY-DONECorrection: ..."); the match runs to the
+# line's end. It is searched only after the prompt's own "BUSY-DONE." so a wrapped prompt line never matches.
+BUSY_DONE_LINE = re.compile(r"^[^\w\n]*BUSY-DONE.*$", re.M)
 BUSY_PROMPT_END = "BUSY-DONE."
 BUSY_END_GRACE_S = 10.0  # idle this long with no BUSY-DONE line: the turn is over without one
 # Channel literal pinned to policy::CHANNEL_WAKE_UP by tests/harness/claude_mod.rs.
@@ -325,6 +328,11 @@ STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run
             "verbatim, a space and its body; never send, reply or leave via "
             "herdr-threads. Keep every turn minimal. Now run `herdr-threads nudge-threshold {threshold}`, then print exactly one "
             "line `SETUP-DONE nudge_threshold=<the value it reports>`.")
+
+
+def setup_done(threshold):
+    """The standing turn's report of `threshold`; text glued after the value does not hide it, a longer number does."""
+    return re.compile(r"SETUP-DONE nudge_threshold=%s(?!\d)" % re.escape(str(threshold)))
 
 
 def expect_wake(action, channel, threshold):
@@ -1400,8 +1408,10 @@ def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROM
     if at < 0:
         return None
     rest = text[at:]
-    prompt_end = rest.find(prompt_end_text)
-    ends = list(done.finditer(rest, prompt_end + len(prompt_end_text) if prompt_end >= 0 else 0))
+    # The prompt's last marker mention, found across the terminal's line wrapping (at spaces or after a hyphen).
+    words = (re.escape(w).replace(r"\-", r"-\s*") for w in prompt_end_text.split())
+    prompt_end = re.compile(r"\s+".join(words)).search(rest)
+    ends = list(done.finditer(rest, prompt_end.end() if prompt_end else 0))
     if not ends:
         return rest, "", False
     end = ends[-1] if last else ends[0]
@@ -1657,7 +1667,7 @@ class Recipient:
             if self.status() == "blocked" or DIALOG.search(self.observed_tail()):
                 raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
         for _attempt in range(2):  # one retry: a transient model/capacity error ends the first turn early
-            reported = re.compile(r"SETUP-DONE nudge_threshold=%s\b" % re.escape(str(self.threshold)))
+            reported = setup_done(self.threshold)
             self.prompt(STANDING.format(coord=self.run.coord_seats(), threshold=self.threshold)
                         + (PLAIN_HINT.format(shim=self.run.bindir / "herdr-threads") if self.plain else ""),
                         expect=reported)
@@ -1858,7 +1868,7 @@ class Recipient:
             mid = self.send("p0", f"{case} {self.run.run_id}", direct=False)
             hold.assert_held()
         anchor = f"End-of-turn test {tag}"
-        split_at = lambda: busy_turn_split(self.screen(1000), anchor, EOT_DONE_LINE, "EOT-DONE and end", last=True)
+        split_at = lambda: busy_turn_split(self.screen(1000), anchor, EOT_DONE_LINE, EOT_PROMPT_END, last=True)
         end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
         while time.time() < end:
             idle_since = (idle_since or time.time()) if self.status() in IDLE else None

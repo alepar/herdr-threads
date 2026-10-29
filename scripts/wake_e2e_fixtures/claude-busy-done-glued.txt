@@ -1,0 +1,22 @@
+❯ Busy-turn test busy-send-ack/1:1 003228-4211: run the shell command /usr/bin/python3
+  /tmp/ht-wake-e2e.pn5ke06_/busy-hold.gpufk887/hold.py, then run the shell command sleep 1, then handle any
+  herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE.
+
+● Bash(/usr/bin/python3 /tmp/ht-wake-e2e.pn5ke06_/busy-hold.gpufk887/hold.py)
+  ⎿  (No output)
+  ⎿  Allowed by auto mode classifier
+
+● herdr-threads: delivered 1 message(s)
+
+● Bash(sleep 1)
+  ⎿  (No output)
+  ⎿  Allowed by auto mode classifier
+
+● RECEIVED [herdr-threads] message m7CGGLpZKWPx in deQV8OHwdPW "1:1 s7CGZkCfntyc s7CGyJfoIhSA" from s7CGZkCfntyc
+  [human]: busy-send-ack/1:1 003228-4211
+  BUSY-DONECorrection: I dropped the [p0] marker from the header in my last line. Here it is again, verbatim:
+
+  RECEIVED [herdr-threads] message m7CGGLpZKWPx in deQV8OHwdPW "1:1 s7CGZkCfntyc s7CGyJfoIhSA" from s7CGZkCfntyc [p0]
+  [human]: busy-send-ack/1:1 003228-4211
+
+✻ Crunched for 7s · done 12:51 AM
