@@ -177,6 +177,10 @@ impl Env {
     }
 
     fn install(&self, version: &str) {
+        self.install_with(version, &[]);
+    }
+
+    fn install_with(&self, version: &str, extra: &[&str]) {
         let out = self.run(
             self.command("bash")
                 .arg(Path::new(REPO).join("scripts/install.sh"))
@@ -191,7 +195,8 @@ impl Env {
                 .arg("--prefix")
                 .arg(&self.prefix)
                 .arg("--bin-dir")
-                .arg(&self.bin_dir),
+                .arg(&self.bin_dir)
+                .args(extra),
         );
         assert!(
             self.marker_version() == version,
@@ -291,6 +296,11 @@ fn update_installs_verifies_rotates_refuses_and_resumes() {
         text(&dry)
     );
     assert!(text(&dry).contains("dry run; nothing changed"));
+    assert!(
+        text(&dry).contains("would skip harness setup: the installer sets up harnesses only"),
+        "{}",
+        text(&dry)
+    );
     assert_eq!(env.marker_version(), "0.1.0");
     assert!(!env.sibling(".prev").exists(), "dry run keeps nothing");
 
@@ -302,6 +312,19 @@ fn update_installs_verifies_rotates_refuses_and_resumes() {
         text(&out)
     );
     assert_eq!(env.marker_version(), "0.1.1");
+    assert!(
+        text(&out).contains("harness setup skipped: the plugin is not registered with Herdr"),
+        "{}",
+        text(&out)
+    );
+    assert!(
+        !env.sibling(".prev/.herdr-threads-install").exists(),
+        "P.prev is not an installation"
+    );
+    assert!(
+        !env.sibling(".prev/update.log").exists(),
+        "the log stays out of P.prev"
+    );
     assert_eq!(
         fs::read_to_string(env.sibling(".prev/VERSION"))
             .unwrap()
@@ -310,7 +333,7 @@ fn update_installs_verifies_rotates_refuses_and_resumes() {
     );
     assert!(!env.sibling(".update.json").exists(), "journal removed");
     assert!(!env.daemon_running(), "the judge starts no daemon");
-    let log = fs::read_to_string(env.sibling(".prev/update.log")).unwrap();
+    let log = fs::read_to_string(env.sibling(".update.log")).unwrap();
     assert!(
         log.contains("--no-herdr"),
         "the recorded opt-out is replayed: {log}"
@@ -655,4 +678,50 @@ fn update_replaces_a_running_owned_daemon_and_leaves_it_stoppable() {
         (unsafe { libc::kill(pid as i32, 0) }) != 0
     });
     assert!(gone, "SIGTERM stops a daemon an update started");
+}
+
+#[test]
+fn reinstalling_the_same_version_rewrites_the_recorded_choices() {
+    let env = Env::new("marker");
+    env.release("0.1.0", Pkg::Good, false);
+    env.install("0.1.0");
+    let marker = || fs::read_to_string(env.prefix.join(".herdr-threads-install")).unwrap();
+    assert!(!marker().contains("permissions=0"), "{}", marker());
+    env.install_with("0.1.0", &["--without-permissions"]);
+    assert!(marker().contains("permissions=0"), "{}", marker());
+    assert!(marker().contains("herdr=0"), "{}", marker());
+    assert!(marker().contains("version=0.1.0"), "{}", marker());
+}
+
+#[test]
+fn an_update_queued_behind_the_lock_reads_the_installation_it_left() {
+    use std::os::unix::io::AsRawFd;
+    let env = Env::new("queued");
+    env.release("0.1.0", Pkg::Good, false);
+    env.install("0.1.0");
+    env.release("0.1.1", Pkg::Good, false);
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(env.sibling(".update.lock"))
+        .unwrap();
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let queued = env
+        .command(env.bin_dir.join("herdr-threads"))
+        .arg("update")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn_owned()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Meanwhile the lock holder finished its own update to 0.1.1.
+    let path = env.prefix.join(".herdr-threads-install");
+    let marker = fs::read_to_string(&path).unwrap();
+    fs::write(&path, marker.replace("version=0.1.0", "version=0.1.1")).unwrap();
+    drop(lock);
+    let out = queued.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("up to date: 0.1.1"), "{}", text(&out));
 }

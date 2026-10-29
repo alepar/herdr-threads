@@ -1252,9 +1252,6 @@ fn caller_needs_identity(action: &CliAction) -> bool {
     ) || matches!(action, CliAction::RemoteLaunch(remote) if remote.then.is_some())
 }
 
-/// The caller origin of a non-`human` command, refusing an agent without a session id for the
-/// actions that call the daemon as a cooperative caller. It depends only on the action kind and
-/// the actor, so the seat stage runs it before pass 1 reads any seat.
 /// The update notice (`crate::update::check`): one line on top of a text command, the pending
 /// hint's gate (text, not machine presentation), for a top-level agent or a person, at most
 /// once a day per caller (an agent's session, a person's pane). Never on commands that display
@@ -1325,6 +1322,9 @@ fn write_update_notice<W: Write>(
     }
 }
 
+/// The caller origin of a non-`human` command, refusing an agent without a session id for the
+/// actions that call the daemon as a cooperative caller. It depends only on the action kind and
+/// the actor, so the seat stage runs it before pass 1 reads any seat.
 fn derive_refusing_origin(
     parsed: &commands::ParsedCli,
 ) -> Result<Option<caller::CallerOrigin>, RunError> {

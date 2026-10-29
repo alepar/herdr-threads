@@ -234,14 +234,8 @@ fn fetch_to(url: &str, out: &Path, timeout_secs: u64, api: bool) -> Result<(), F
     let curl = curl().ok_or(FetchError::NoCurl)?;
     let mut command = Command::new(curl);
     command
-        .args([
-            "-fsSL",
-            "--retry",
-            "2",
-            "--connect-timeout",
-            "10",
-            "--max-time",
-        ])
+        // No retries: --max-time then bounds the whole operation.
+        .args(["-fsSL", "--connect-timeout", "10", "--max-time"])
         .arg(timeout_secs.to_string());
     if api {
         command.args(["-H", "Accept: application/vnd.github+json"]);

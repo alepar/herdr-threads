@@ -113,9 +113,10 @@ herdr-threads update [--version vX.Y.Z] [--dry-run | --check]
      whoever owns it, and only its post-swap replace loop checks ownership. `--dry-run` and
      the result name each foreign daemon that will be (or was) stopped and not restarted
      (review 2);
-   - where an `endpoint.json` exists, run `daemon ensure` with this executable first. After
-     ht-tyt7, ensure heals a dead boot whose socket device was renumbered, and does so
-     silently. Then check that this executable reaches the daemon.
+   - for a live owned daemon only, run `daemon ensure` with this executable. After ht-tyt7,
+     ensure heals a dead boot whose socket device was renumbered, and does so silently. A
+     state directory without a live daemon gets no ensure here; the judge's `store-check`
+     covers it.
    A remaining `socket pathname was substituted` error (ht-tyt7: the inode changed too, or a
    live owner has a mismatched socket) stops the update with nothing changed. The output
    prints the error, whose recovery text names the `endpoint.json` to remove. It is matched
@@ -133,7 +134,8 @@ herdr-threads update [--version vX.Y.Z] [--dry-run | --check]
     and run `<extracted>/scripts/install.sh --version vX.Y.Z --release-url file://<mirror>
     --prefix P --bin-dir B <pass-through and replayed flags>` with `TMPDIR=<work dir>`, so the
     installer's own extraction also runs on P's filesystem and not on a noexec `/tmp` (roast
-    design-1). Its stdout and stderr go to `P.prev/update.log`.
+    design-1). Its stdout and stderr go to `P.update.log`, outside both `P` and `P.prev`, so a rollback
+    never carries an old log into `P` (review 3).
     It re-verifies the checksum, backs up every store (fail closed), stops the old daemon with the old
     executable, swaps, runs the ht-xe3v verify and replace loop, ensures and reconciles setup.
     Nothing in it is reimplemented.

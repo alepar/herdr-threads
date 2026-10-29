@@ -552,7 +552,8 @@ uninstall() {
     fi
     rm -rf "$install_dir.new" "$install_dir.old" "$install_dir.prev" "$install_dir.prev.tmp" \
         "$install_dir.prev.old"
-    rm -f "$install_dir.update.json" "$install_dir.update.lock"
+    rm -f "$install_dir.update.json" "$install_dir.update.lock" "$install_dir.update.log" \
+        "$install_dir.rollback.log"
     say "Daemon state in Herdr's plugin state directory was kept."
     if [ "$OUT_HOOKS_KEPT" = 1 ]; then
         say "harness hooks were left in place: re-run with --yes to remove them (they do nothing without herdr-threads)"
@@ -634,11 +635,16 @@ for required in herdr-plugin.toml bin/herdr-threads scripts/view.sh scripts/buil
 done
 [ -x "$package/bin/herdr-threads" ] || die "release archive's bin/herdr-threads is not executable"
 new_version=$(cat "$package/VERSION")
-{
-    printf 'version=%s\nsha256=%s\nasset=%s\nbin_dir=%s\n' "$new_version" "$actual" "$asset" "$bin_dir"
+# The recorded choices (bin dir and opt-outs) `herdr-threads update` replays.
+marker_choices() {
+    printf 'bin_dir=%s\n' "$bin_dir"
     [ "$register" = 1 ] || printf 'herdr=0\n'
     [ "$without_permissions" = 0 ] || printf 'permissions=0\n'
     [ "$aisw_profiles" = 1 ] || printf 'aisw_profiles=0\n'
+}
+{
+    printf 'version=%s\nsha256=%s\nasset=%s\n' "$new_version" "$actual" "$asset"
+    marker_choices
 } > "$package/$MARKER"
 
 # --- install files ----------------------------------------------------------
@@ -787,6 +793,11 @@ if [ "$changed" = 1 ]; then
     fi
 else
     say "$new_version is already installed in $install_dir"
+    # This run's choices replace the recorded ones, so `update` replays the latest.
+    {
+        grep -E '^(version|sha256|asset)=' "$install_dir/$MARKER"
+        marker_choices
+    } > "$install_dir/$MARKER.tmp" && mv -f "$install_dir/$MARKER.tmp" "$install_dir/$MARKER"
 fi
 
 mkdir -p "$bin_dir"

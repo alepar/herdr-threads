@@ -100,12 +100,6 @@ pub fn run<W: Write>(request: &UpdateRequest, writer: &mut W) -> Result<(), RunE
             exe.display()
         ))
     })?;
-    let installed = installation
-        .marker
-        .version
-        .as_deref()
-        .and_then(Version::parse)
-        .unwrap_or_else(Version::current);
     let target = match &request.version {
         Some(text) => Some(
             Version::parse(text)
@@ -114,6 +108,18 @@ pub fn run<W: Write>(request: &UpdateRequest, writer: &mut W) -> Result<(), RunE
         None => None,
     };
     let _lock = Lock::acquire(&installation.sibling(".update.lock"))?;
+    // An update that waited for the lock reads the installation the earlier one left.
+    let installation = Installation {
+        marker: Marker::read(&installation.prefix)
+            .map_err(|error| refuse(format!("cannot read the installation marker: {error}")))?,
+        ..installation
+    };
+    let installed = installation
+        .marker
+        .version
+        .as_deref()
+        .and_then(Version::parse)
+        .unwrap_or_else(Version::current);
     let journal_path = installation.sibling(".update.json");
     if let Some(journal) = Journal::read(&journal_path).map_err(refuse)? {
         if request.dry_run || request.check {
@@ -188,7 +194,8 @@ pub fn run<W: Write>(request: &UpdateRequest, writer: &mut W) -> Result<(), RunE
     }
     // From here the journal owns the work directory: the run's conclusion removes it.
     work.keep();
-    let log = installation.sibling(".prev").join("update.log");
+    let log = installation.sibling(".update.log");
+    let _ = fs::remove_file(&log);
     let outcome = run_installer(
         &installation,
         &verified.install_script,
@@ -346,6 +353,9 @@ fn print_plan<W: Write>(
     }
     let setup = if plan.flags.iter().any(|flag| flag == "--no-setup") {
         "would skip harness setup (--no-setup)"
+    } else if plan.flags.iter().any(|flag| flag == "--no-herdr") {
+        "would skip harness setup: the installer sets up harnesses only for a plugin registered \
+         with Herdr (--no-herdr)"
     } else if plan.flags.iter().any(|flag| flag == "--setup") {
         "would reconcile harness integrations, adding missing ones (--setup)"
     } else {
@@ -547,8 +557,9 @@ fn preflight(installation: &Installation) -> Result<Vec<StateInfo>, String> {
             Some((pid, exe)) => (DaemonState::Foreign, Some(pid), Some(exe)),
         };
         if daemon == DaemonState::Owned {
-            // `ensure` heals what it can (a dead boot with a renumbered socket device) and
-            // otherwise names why this executable cannot reach the daemon.
+            // Only for a live owned daemon: `ensure` heals what it can (a dead boot with a
+            // renumbered socket device) and otherwise names why this executable cannot reach
+            // the daemon. A state directory with no live daemon is left alone here.
             daemon_command(&current, &dir, "ensure").map_err(|error| {
                 format!(
                     "cannot reach the daemon in {}: {error}; nothing changed",
@@ -687,7 +698,8 @@ fn ignore_signals() {
 }
 
 /// Copy `P` to `P.prev` through `P.prev.tmp`; the old `P.prev` is renamed aside first, so a
-/// rename never targets a non-empty directory and an interrupted copy never replaces it.
+/// rename never targets a non-empty directory and an interrupted copy never replaces it. The
+/// copy has no installer marker, so its executable is not an installation `update` acts on.
 fn keep_previous(installation: &Installation) -> io::Result<()> {
     let prev = installation.sibling(".prev");
     let tmp = installation.sibling(".prev.tmp");
@@ -695,6 +707,7 @@ fn keep_previous(installation: &Installation) -> io::Result<()> {
     remove_tree(&tmp)?;
     remove_tree(&old)?;
     copy_tree(&installation.prefix, &tmp)?;
+    remove_tree(&tmp.join(crate::update::install::MARKER))?;
     if fs::symlink_metadata(&prev).is_ok() {
         fs::rename(&prev, &old)?;
     }
@@ -765,8 +778,14 @@ fn run_installer(
     let bin_dir = installation
         .bin_dir()
         .ok_or_else(|| "cannot tell the bin directory (no HOME)".to_owned())?;
-    let mut command = Command::new("bash");
+    // `sh` waits for the go byte on fd 3, then execs the installer under the same pid.
+    let mut command = Command::new("/bin/sh");
     command
+        .args([
+            "-c",
+            "read _ <&3 || exit 1; exec 3<&-; exec bash \"$@\"",
+            "sh",
+        ])
         .arg(script)
         .arg("--version")
         .arg(version.tag())
@@ -784,17 +803,44 @@ fn run_installer(
         .stderr(stderr);
     // Its own session, so no terminal signal reaches it; its pid is its process group, which
     // the journal records so a later update can tell an orphaned installer is still running.
+    // The child waits for one byte on a pipe before it execs, sent once the journal holds its
+    // pid: an update killed in between leaves no installer the journal does not name.
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
+        return Err(format!(
+            "cannot create a pipe: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    let (go_read, go_write) = (fds[0], fds[1]);
     default_signals(&mut command);
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             libc::setsid();
+            libc::close(go_write);
+            if libc::dup2(go_read, 3) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if go_read != 3 {
+                libc::close(go_read);
+            }
             Ok(())
         });
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("the installer did not run: {error}"))?;
+    let spawned = command.spawn();
+    unsafe { libc::close(go_read) };
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            unsafe { libc::close(go_write) };
+            return Err(format!("the installer did not run: {error}"));
+        }
+    };
     on_spawn(child.id());
+    unsafe {
+        libc::write(go_write, b"\n".as_ptr().cast(), 1);
+        libc::close(go_write);
+    }
     let status = child
         .wait()
         .map_err(|error| format!("the installer did not finish: {error}"))?;
@@ -956,6 +1002,14 @@ fn conclude<W: Write>(
                         ),
                     )?;
                 }
+            }
+            if journal.flags.iter().any(|flag| flag == "--no-herdr")
+                && !journal.flags.iter().any(|flag| flag == "--no-setup")
+            {
+                say(
+                    writer,
+                    "harness setup skipped: the plugin is not registered with Herdr (--no-herdr)",
+                )?;
             }
             finish(installation, journal, journal_path);
             // The judge passed, but anything the installer did not finish is reported: its
@@ -1119,7 +1173,8 @@ fn roll_back(
     let hash = release::sha256_file(&archive).map_err(|e| e.to_string())?;
     fs::write(dir.join(release::SUMS_ASSET), format!("{hash}  {asset}\n"))
         .map_err(|e| e.to_string())?;
-    let log = installation.sibling(".prev").join("rollback.log");
+    let log = installation.sibling(".rollback.log");
+    let _ = fs::remove_file(&log);
     let outcome = run_installer(
         installation,
         script,
@@ -1179,7 +1234,7 @@ fn resume<W: Write>(
             journal.previous, journal.target
         ),
     )?;
-    let log = installation.sibling(".prev").join("update.log");
+    let log = installation.sibling(".update.log");
     conclude(
         installation,
         &journal,
