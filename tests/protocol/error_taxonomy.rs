@@ -185,6 +185,14 @@ fn contexts(log: &std::path::Path) -> Vec<RemedyContext> {
         RemedyContext::Doctor {
             log: log.to_path_buf(),
         },
+        RemedyContext::SocketReclaim,
+        RemedyContext::SocketRemove {
+            descriptor: "/state/node/endpoint.json".into(),
+        },
+        RemedyContext::SocketStopOwner {
+            descriptor: "/state/node/endpoint.json".into(),
+            pid: 4242,
+        },
     ]
 }
 
@@ -224,6 +232,21 @@ fn remedy_text_table() {
                             "daemon is version {daemon}, CLI is {cli}: run `herdr-threads daemon stop` then `herdr-threads daemon ensure`"
                         )
                     );
+                }
+                // A mismatched daemon socket (ht-tyt7): the remedy is the
+                // same for every class and ends in `daemon ensure`; the manual
+                // steps name endpoint.json, and the live holder its pid.
+                RemedyContext::SocketReclaim => {
+                    assert_eq!(text, "run `herdr-threads daemon ensure` to reclaim it");
+                }
+                RemedyContext::SocketRemove { .. } => {
+                    assert!(text.contains("remove /state/node/endpoint.json"), "{text}");
+                    assert!(text.ends_with("`herdr-threads daemon ensure`"), "{text}");
+                }
+                RemedyContext::SocketStopOwner { .. } => {
+                    assert!(text.contains("stop it (pid 4242"), "{text}");
+                    assert!(text.contains("remove /state/node/endpoint.json"), "{text}");
+                    assert!(text.ends_with("`herdr-threads daemon ensure`"), "{text}");
                 }
                 RemedyContext::StartupFailure { .. }
                 | RemedyContext::StartupTimeout { .. }

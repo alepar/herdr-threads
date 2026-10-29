@@ -392,22 +392,21 @@ enum Recovery {
 
 impl std::fmt::Display for SocketSubstituted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let path = self.descriptor.display();
-        match self.recovery {
-            Recovery::Ensure => write!(
-                f,
-                "socket pathname was substituted; run `herdr-threads daemon ensure` to reclaim it"
-            ),
-            Recovery::Remove => write!(
-                f,
-                "socket pathname was substituted; no daemon holds the owner lock: remove {path}, then run `herdr-threads daemon ensure`"
-            ),
-            Recovery::StopOwner => write!(
-                f,
-                "socket pathname was substituted; a live process holds the owner lock: stop it (pid {} if still a herdr-threads daemon), remove {path}, then run `herdr-threads daemon ensure`",
-                self.pid
-            ),
-        }
+        use crate::daemon::remedy::{RemedyContext, remedy};
+        let descriptor = self.descriptor.clone();
+        let context = match self.recovery {
+            Recovery::Ensure => RemedyContext::SocketReclaim,
+            Recovery::Remove => RemedyContext::SocketRemove { descriptor },
+            Recovery::StopOwner => RemedyContext::SocketStopOwner {
+                descriptor,
+                pid: self.pid,
+            },
+        };
+        write!(
+            f,
+            "socket pathname was substituted; {}",
+            remedy(None, &context)
+        )
     }
 }
 

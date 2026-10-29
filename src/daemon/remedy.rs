@@ -8,12 +8,35 @@ use std::path::{Path, PathBuf};
 /// The site that asks for a remedy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemedyContext {
-    StartupFailure { log: PathBuf },
-    StartupTimeout { log: PathBuf },
+    StartupFailure {
+        log: PathBuf,
+    },
+    StartupTimeout {
+        log: PathBuf,
+    },
     Exit3,
-    LaneDegraded { log: PathBuf },
-    VersionSkew { daemon: String, cli: String },
-    Doctor { log: PathBuf },
+    LaneDegraded {
+        log: PathBuf,
+    },
+    VersionSkew {
+        daemon: String,
+        cli: String,
+    },
+    Doctor {
+        log: PathBuf,
+    },
+    /// A client found the published socket mismatching `endpoint.json`: the
+    /// elected owner reclaims a dead boot's renumbered socket (ht-tyt7).
+    SocketReclaim,
+    /// The elected owner refused the mismatch: no daemon holds the lock.
+    SocketRemove {
+        descriptor: PathBuf,
+    },
+    /// A live process holds the owner lock and keeps the mismatch published.
+    SocketStopOwner {
+        descriptor: PathBuf,
+        pid: u32,
+    },
 }
 
 /// The state directory a log path lives under, for "back up <state>": the
@@ -62,6 +85,17 @@ pub fn remedy(class: Option<ErrorClass>, context: &RemedyContext) -> String {
                 ),
             }
         }
+        RemedyContext::SocketReclaim => {
+            "run `herdr-threads daemon ensure` to reclaim it".to_owned()
+        }
+        RemedyContext::SocketRemove { descriptor } => format!(
+            "no daemon holds the owner lock: remove {}, then run `herdr-threads daemon ensure`",
+            descriptor.display()
+        ),
+        RemedyContext::SocketStopOwner { descriptor, pid } => format!(
+            "a live process holds the owner lock: stop it (pid {pid} if still a herdr-threads daemon), remove {}, then run `herdr-threads daemon ensure`",
+            descriptor.display()
+        ),
         RemedyContext::LaneDegraded { log } | RemedyContext::Doctor { log } => match class {
             Some(ErrorClass::Corrupt) => corrupt(log),
             Some(ErrorClass::Unavailable) => {
