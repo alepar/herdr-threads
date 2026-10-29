@@ -251,6 +251,11 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // Peer-requested launches (remote launch) are written and read only by the
     // peer launcher and `peer list`.
     "peer_requests",
+    // The link history (`peer events`) is display data; forgotten nodes are
+    // read by the views and by the coordinator with its next local vector,
+    // which `peer prune --yes` asks for with a round.
+    "sync_link_events",
+    "sync_forgotten_nodes",
     "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",
