@@ -2,6 +2,40 @@
 
 ## Current release status
 
+[v2.8.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.0) from source `ebdd821f2`, a minor release. It carries a one-way store upgrade to node schema 11: migration 0011 adds `sync_forgotten_nodes` and `sync_link_events`. The peer wire is unchanged: `scripts/freeze-peer-wire 2.4.0 --at v2.8.0 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It adds the three peer items the user asked for through the office coordinator:
+- `human peer prune`: dry-run by default; it writes a reversible tombstone and deletes nothing.
+- `human peer unforget`, plus an automatic unforget when a forgotten node links again directly.
+- `peer events`, and `err=` only for a current error.
+
+The 54 `host=Mac.dayton` nodes turned out to be test daemons from 10-17, from before ht-978d. Identity stability has no defect.
+
+The work went through three review rounds after the fixer's roast. The user's tombstone + hide choice made a supported undo a requirement. The rounds caught three things, all fixed with mutation-checked tests:
+- a forgotten node that relinks had stayed hidden;
+- the prune-vs-link race;
+- the order of collapsed events.
+
+The release also includes the wake e2e driver hardening (ht-v8ky).
+
+**Qualification** on `ebdd821f2`, with the wake e2e using the claude-1 token (claude-2 was out of weekly quota) and the codex-2 credential. Evidence is in `~/.cache/herdr-threads-release/2.8.0`.
+- All other steps passed: Herdr matrix 0.9.1-0.9.5, package gate (826 s), installer suites 5/5 and 7/7, leak checks.
+- The full suite passed 8120/8124. Failures: the 3 zsh tests, plus `service::pacer::tests::kick_wakes_a_blocked_lane_immediately`. That test has a 20 ms wall-clock bound under load and passed 5/5 alone; it is filed as a flake.
+- The wake e2e passed 120/120 with no Codex credential refresh.
+
+**CI** ([run 40921181473](https://github.com/alepar/herdr-threads/actions/runs/40921181473)) passed on the first attempt, as did the [release run 40930765854](https://github.com/alepar/herdr-threads/actions/runs/40930765854). The archives check out:
+- SHA256SUMS matches GitHub's digests.
+- Each archive has 14 files with the right modes, plus licenses.
+- Its `scripts/install.sh` is identical to the tag's.
+- The credential scan is clean.
+
+**Installed on blacky with `herdr-threads update`**, the first real use of the command.
+- `--dry-run` listed the verified archive, the schema-10 backup, the daemon restart and `.prev`.
+- `update` finished in 3.7 s: "updated 2.7.0 -> 2.8.0 (sha256 verified twice; backup pre-v2.8.0-20261029T183807Z)", with `.prev` holding 2.7.0.
+- The daemon runs 2.8.0: `/proc` exe hash `4fb2279c…`, equal to the linux-x86_64 archive.
+- The store is at user_version 11, doctor reports healthy, and the Herdr plugin link is unchanged.
+- `peer prune --host Mac.dayton` (dry run) selects exactly the 54 test nodes and keeps the linked laptop Q0V.
+
 [v2.7.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.7.0) from source `51ae69bc4`, a minor release. It has no schema change (node schema stays 10) and no peer wire change; `scripts/freeze-peer-wire 2.4.0 --at v2.7.0 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 **What it adds**: `herdr-threads update` and the daily update notice (ht-r4eg), which the user asked for through the office coordinator.
