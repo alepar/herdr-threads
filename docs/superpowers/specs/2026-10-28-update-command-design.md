@@ -18,7 +18,7 @@ downgrades, a system timer.
 The installer already holds the hard-won upgrade logic, about 600 lines: the pre-upgrade backup
 with fallback executables; the stop with the old executable before the swap; the crash-safe
 package swap; the post-swap stop that catches a hook restarting the old daemon; and the ht-xe3v
-loop that replaces daemons of this installation and leaves foreign ones alone. It also covers
+loop that replaces daemons of this installation and does not replace foreign ones. It also covers
 Herdr registration, `ensure` and setup reconciliation, including aisw profiles. Porting it to
 Rust forks that logic, and every future installer fix would then have to land twice. So `update`
 does only what the installer cannot do safely itself (resolve, download, verify twice, preflight,
@@ -107,18 +107,27 @@ herdr-threads update [--version vX.Y.Z] [--dry-run | --check]
    - record `PRAGMA user_version` through a read-only connection;
    - record whether a daemon runs (from `endpoint.json` and a live pid) and its executable;
      a daemon is **owned** only by the installer's rule (`owned_daemon`: started from P or
-     `P.old`). A foreign daemon (a dev checkout, another prefix) is recorded as foreign, left
-     to the installer, which leaves it alone, and never judged (roast design-1);
-   - if one runs, check that this executable reaches it (`daemon` health handshake).
-   A transport refusal such as the macOS `socket pathname was substituted` (ht-tyt7) stops
-   the update with nothing changed, the daemon's error and `see ht-tyt7`; an update into a
-   daemon that cannot start helps nobody. Keying on the error kind instead of the text is
-   being agreed with the ht-tyt7 owner.
+     `P.old`). A foreign daemon (a dev checkout, another prefix) is recorded as foreign and
+     never judged (roast design-1). It is not necessarily left running: the installer's
+     pre-swap `stop_with_installed` stops every live daemon under the default state roots,
+     whoever owns it, and only its post-swap replace loop checks ownership. `--dry-run` and
+     the result name each foreign daemon that will be (or was) stopped and not restarted
+     (review 2);
+   - where an `endpoint.json` exists, run `daemon ensure` with this executable first. After
+     ht-tyt7, ensure heals a dead boot whose socket device was renumbered, and does so
+     silently. Then check that this executable reaches the daemon.
+   A remaining `socket pathname was substituted` error (ht-tyt7: the inode changed too, or a
+   live owner has a mismatched socket) stops the update with nothing changed. The output
+   prints the error, whose recovery text names the `endpoint.json` to remove. It is matched
+   with `daemon::ownership::is_socket_substituted` once ht-tyt7 is merged, and by its stable
+   message prefix until then. An update into a daemon that cannot start helps nobody.
 8. **`--dry-run` stops here** and prints the plan (Output).
 9. **Journal and keep the previous package.** Write `P.update.json` (target, previous
    version, work directory, recorded `user_version`s and owned daemons) by atomic rename. Copy P
-   to `P.prev.tmp`, then rename it over `P.prev` (one generation; an interrupted copy never
-   replaces a good `P.prev`). `install.sh --uninstall` removes `P.prev`, `P.update.json` and `P.update.lock` from 2.7.0 on.
+   to `P.prev.tmp`. Rename the existing `P.prev`, if any, to `P.prev.old`, rename `P.prev.tmp`
+   to `P.prev`, then remove `P.prev.old`. A rename never targets a non-empty directory (review
+   2), and an interrupted copy never replaces a good `P.prev`. Leftover `.tmp` and `.old`
+   siblings from a killed run are removed at the start of this step. `install.sh --uninstall` removes `P.prev`, `P.update.json` and `P.update.lock` from 2.7.0 on.
 10. **Install.** Lay the verified archive and `SHA256SUMS` out as a `file://` mirror in the work
     directory (`download/vX.Y.Z/...`, the layout `HERDR_THREADS_RELEASE_URL` already accepts)
     and run `<extracted>/scripts/install.sh --version vX.Y.Z --release-url file://<mirror>
@@ -133,7 +142,11 @@ herdr-threads update [--version vX.Y.Z] [--dry-run | --check]
     - `P/bin/herdr-threads --version` prints it;
     - each state directory that had a running **owned** daemon at preflight has one now,
       running the target version (`daemon ensure` with the new executable, which does the version and
-      boot handshake).
+      boot handshake);
+    - each state directory with a store whose daemon was **not** running at preflight also
+      gets `daemon ensure` with the new executable. That opens the store at the target schema
+      and runs its migration now, while rollback is still possible, instead of at the next
+      start. The daemon it starts idle-exits as usual (review 2).
     The script's exit 3 for setup alone (`setup incomplete`, not linked) is reported but does
     not fail the update. The binary and the daemon are what an update changes.
 12. **Roll back or report** (Rollback below).
@@ -143,7 +156,11 @@ herdr-threads update [--version vX.Y.Z] [--dry-run | --check]
 **Interruption** (roast design-1). From step 9 to step 13, `update` ignores SIGINT, SIGHUP and
 SIGTERM and runs `install.sh` in its own session (`setsid`), so a terminal Ctrl-C, a closed
 pane or an agent's tool timeout cannot stop it between the backup and the judge. A `kill -9`
-still can. The journal covers that case: any `update` (including `--check` and `--dry-run`,
+still can. The `flock` descriptor of step 2 is inherited by `install.sh` (not close-on-exec
+for that child), and a `flock` lives as long as any process holds the open file description.
+An `install.sh` orphaned by a killed `update` therefore keeps the lock until it exits, and
+the next `update` waits for it, bounded at 120 s, then refuses with `an earlier update is
+still running (pid N)` (review 2). The journal covers the rest: any `update` (including `--check` and `--dry-run`,
 which only report it) that finds `P.update.json` under the lock first finishes the earlier
 run, judging and then completing or rolling back, before it compares versions. A retry
 after an interrupted run therefore never prints "up to date" over an unjudged install.
@@ -160,16 +177,11 @@ after an interrupted run therefore never prints "up to date" over an unjudged in
 - **Old code in live sessions.** Running Claude sessions keep the old mod JS until they restart.
   Old mod and old hook clients talk to the new daemon over the version-tolerant wire
   (`check-wire-compat`). Setup reconciliation updates the files on disk for new sessions.
-- **Atomic swap.** Today the installer does `mv P P.old; mv P.new P`, two renames with a short
-  window in which `P/bin/herdr-threads` (the `ht` symlink target) does not exist. From 2.7.0 it
-  uses a new hidden `internal exchange-dirs A B`: `renameat2(RENAME_EXCHANGE)` on Linux
-  (through `libc::syscall(SYS_renameat2)`, not the libc wrapper, which older or static libcs
-  may lack), `renamex_np(RENAME_SWAP)` on macOS, both through the existing `libc` dependency. That swaps
-  the two trees in one step, after which `P.new` holds the old tree and is renamed to `P.old`.
-  The installer uses it when the new package's executable has the command. Where the filesystem
-  refuses (EINVAL, ENOTSUP, ENOSYS or EPERM), it falls back to the two renames. Its test runs
-  in CI on every release target, macOS (APFS) included. A daemon already running keeps
-  its open inode either way (the ht-xe3v concern, unchanged).
+- **Swap.** The installer's swap stays as it is: `mv P P.old; mv P.new P`, two renames on one
+  filesystem. That leaves a sub-millisecond window in which `P/bin/herdr-threads` does not
+  exist, and a hook that hits it fails once, like any call during the daemon gap. An exchange
+  syscall layer (`renameat2` and `renamex_np`) is not worth it for that window (review 2). A
+  running daemon keeps its open inode (the ht-xe3v concern, unchanged).
 
 ## Rollback
 
@@ -206,7 +218,9 @@ about 15 MB.
 ## Periodic update check
 
 **Where it runs.** The check runs inside the daemon, not on a system timer and not from the
-CLI. The daemon is long-lived on every node; a CLI-triggered background fetch would need a
+CLI. That meets "a CLI command runs the check on a schedule" this way: the daemon runs the
+same code as `update --check` daily, and `update --check` is the CLI entry for running it
+by hand. The daemon is long-lived on every node; a CLI-triggered background fetch would need a
 detached child from arbitrary commands, which leaks processes in tests and on short-lived calls.
 The pattern already exists: the harness manifest fetch, a detached `curl --max-time` at most
 every 24 h, cached in the node directory and switched off by a setting or by
@@ -233,40 +247,51 @@ every 24 h, cached in the node directory and switched off by a setting or by
   the state.
 
 **State: a node-local file, not the store.** The file is `<node_dir>/update-check.json`,
-`{"attempted_at_ms", "checked_at_ms", "latest", "notified_at_ms"}`, written mode 0600 by
-atomic rename. It is advisory and node-local; it must not ride peer sync or need a schema
+`{"attempted_at_ms", "checked_at_ms", "latest", "notified": {"<key>": ms}}`, written mode
+0600 by atomic rename. `<key>` is the caller's seat id, or `-` for a caller without a seat.
+Entries older than 24 h are pruned on each write. It is advisory and node-local; it must not ride peer sync or need a schema
 migration, and a lost or corrupt file only means "unknown". Concurrent writers (the daemon's
-check, the CLI's `notified_at_ms`) are last-writer-wins on a tiny advisory file. The worst case
-is one extra notice.
+check, the CLI's `notified` entries) are last-writer-wins on a tiny advisory file. The worst
+case is one extra notice.
 
 **Invalidation.** The notice shows only while `latest` is newer than the reading executable's
 own `CARGO_PKG_VERSION`. An update therefore silences it by itself, with no write. `update`
 also writes `latest = target`.
 
-**The notice.** One line on stderr before the command's own output:
+**The notice.** One line written to the command's stdout writer before its own output, the
+same way and in the same place as the pending hint (after it when both show):
 
 ```text
 [herdr-threads] 2.7.1 available: herdr-threads update
 ```
 
-That is 53 bytes for a five-character version (AGENTS.md (f)). It is shown only when all of
-these hold:
+That is 53 bytes plus a newline for a five-character version (AGENTS.md (f)). It is shown only
+when all of these hold:
 
 - the check is not off: the CLI reads the same `update_check` setting and
   `HERDR_THREADS_OFFLINE`, so "off" silences the notice as well as the fetch (roast design-1);
-- the format is text (never `--json` or `--machine`; a non-terminal stdout defaults to
-  `--machine`, so an agent's ordinary call already counts as machine output and never sees it);
+- the gate is exactly the pending hint's: format text and presentation not `Machine`. An
+  agent's non-tty call is presentation `Auto`, not `Machine`, so agents do see it. Explicit
+  `--machine` and `--json` never do (review 2: the user asked for it "the same way" as the
+  pending hint);
 - the caller is top-level or a person, never a subagent;
 - the command is not `hook`, `internal`, `daemon run`, `watch`, a delivery or check-in path,
   or `update` itself;
-- at most once per 24 h per node (`notified_at_ms`).
+- at most once per 24 h **per caller seat** (`notified[<seat>]`), so the first agent does not
+  use up the person's notice (review 2).
 
 Its cost is one small file read on the local disk: no daemon round trip and no network. A
-missing or unreadable file prints nothing.
+missing or unreadable file prints nothing. Hook output, delivery output and subagents never
+see it.
 
-In practice, with these rules the notice reaches people at a terminal, which is the audience
-that runs `update`. Machine output, hook output and subagents see nothing, so agent sessions
-pay no context for it.
+**Skill line.** `integrations/skill/SKILL.md` gains one line, loaded once per session with the
+skill, about 110 B:
+
+```text
+An "N available: herdr-threads update" line is informational: tell your user; run update only if asked.
+```
+
+Model-visible cost per agent: at most 54 B a day, plus the skill line once per session.
 
 ## Output
 
@@ -283,12 +308,13 @@ the installer uses. Sizes below are without paths.
 - Rolled back (exit 1): `herdr-threads: error: <reason>; rolled back to 2.6.3; log: <path>`.
 - No rollback (exit 1): the reason, the backup entry and
   `restore: docs/install.md#pre-upgrade-backup`, plus the log path.
-- `--dry-run` (exit 0, at most 6 lines):
+- `--dry-run` (exit 0, one line per step and per daemon):
 
   ```text
   herdr-threads: would update 2.6.3 -> 2.7.0 (linux-x86_64, sha256 <hex> verified)
   herdr-threads: would back up <state> (schema 4)
   herdr-threads: would restart daemon pid 12345 (<state>)
+  herdr-threads: would stop foreign daemon pid 23456 (<state>, runs <exe>); not restarted
   herdr-threads: would reconcile owned harness integrations (no missing ones added; --setup adds)
   herdr-threads: would keep <P> as <P.prev>
   herdr-threads: dry run; nothing changed
@@ -323,12 +349,10 @@ installer's.
 - `scripts/install.sh`:
   - write `bin_dir=` and the opt-outs (`herdr=0`, `permissions=0`, `aisw_profiles=0`) to
     the marker;
-  - use `internal exchange-dirs` when it is available;
   - remove `P.prev`, `P.update.json` and `P.update.lock` on `--uninstall`.
 - `src/cli/`:
   - an `update` module: resolve, verify, preflight, run, judge, roll back;
   - an `update_check` module: state file, notice, and the shared fetch with the daemon;
-  - `internal exchange-dirs`.
 - Daemon: schedule the check, following `ManifestService`, plus a `settings.json` key and a
   `doctor` line.
 - docs/install.md: an "Update" section, the setting, and the notice. README: one line.
@@ -349,7 +373,6 @@ installation, HOME and state directory is a scratch directory, created through
   - each verification refusal;
   - notice gating (format, role, command, rate limit, version comparison);
   - the check cadence and state file round trip;
-  - `exchange-dirs` on a temp directory, including the fallback on EINVAL.
 - **Integration** (`tests/`, through `HERDR_THREADS_RELEASE_API` and a `file://` release tree;
   how the "newer" package is produced follows `tests/release/install_test.sh`):
   - update from an installed old package to a new one with `--no-herdr`-style isolation (no
@@ -361,12 +384,16 @@ installation, HOME and state directory is a scratch directory, created through
   - the lock;
   - an interrupted run, killed after the swap, is finished by the next `update`;
   - recorded opt-outs are replayed;
-  - a foreign daemon does not fail the judge;
+  - a foreign daemon does not fail the judge, and `--dry-run` names it as stopped;
+  - a second `P.prev` rotation (the second update) succeeds;
+  - an orphaned installer holding the inherited lock makes the next `update` wait, then refuse;
+  - a state directory without a running daemon is ensured and judged;
+  - notice gating: `Auto` shows, `Machine` and `--json` do not; per-seat rate limit;
   - automatic binary rollback, when a target whose executable fails `--version` after the swap
     is simulated;
   - the no-rollback report after a simulated schema advance.
 - **Installer:** the existing `tests/release/*` installer suites stay green with the archive and
-  exchange changes.
+  marker changes.
 - **Release (manual):** before tagging 2.7.0, a real `update` from 2.6.3 is impossible, since
   2.6.3 has no `update`. The first real `update` is 2.7.0 to 2.7.1. For 2.7.0,
   `RELEASE.md`'s install step still uses `install.sh`. Its record notes that the update path is
@@ -381,5 +408,4 @@ installation, HOME and state directory is a scratch directory, created through
   `--release-url`, `--prefix`, `--bin-dir`, the setup flags) become a stable interface, noted in
   the script's header.
 - **First-release gap.** As above, the first real upgrade through `update` is 2.7.0 to 2.7.1.
-- **Notice audience.** In practice the notice reaches only people at terminals. Agents learn of
-  updates only through `update --check` or a person. This is deliberate, for token cost.
+- **Notice cost.** Agents see the notice: at most 54 B per seat per day, plus the skill line.
