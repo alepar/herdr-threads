@@ -153,8 +153,9 @@ EOT_CASES = ("eot-send-p0/group",)
 EOT_PROMPT = ("End-of-turn test {tag}: run the shell command `{hold}` and no other command, then print EOT-DONE and end "
               "your turn. If herdr-threads items reach you after that, handle them exactly as your standing "
               "instructions say without running any command, and print EOT-DONE again.")
-# Matched as BUSY_DONE_LINE is.
+# Matched as BUSY_DONE_LINE is, after the prompt's last mention of the marker.
 EOT_DONE_LINE = re.compile(r"^[^\w\n]*EOT-DONE.*$", re.M)
+EOT_PROMPT_END = "EOT-DONE again."
 # Opt-in Codex case (ht-wake-loop), T=0 recipient only: our hooks stop running, as after an upgrade that breaks them.
 # Right after an ACK request the candidate binary is made non-executable (the coordinator keeps a private copy), so the
 # woken turn's hooks and any herdr-threads call the model makes fail and the session never reaches the daemon. When
@@ -1407,8 +1408,10 @@ def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROM
     if at < 0:
         return None
     rest = text[at:]
-    prompt_end = rest.find(prompt_end_text)
-    ends = list(done.finditer(rest, prompt_end + len(prompt_end_text) if prompt_end >= 0 else 0))
+    # The prompt's last marker mention, found across the terminal's line wrapping (at spaces or after a hyphen).
+    words = (re.escape(w).replace(r"\-", r"-\s*") for w in prompt_end_text.split())
+    prompt_end = re.compile(r"\s+".join(words)).search(rest)
+    ends = list(done.finditer(rest, prompt_end.end() if prompt_end else 0))
     if not ends:
         return rest, "", False
     end = ends[-1] if last else ends[0]
@@ -1865,7 +1868,7 @@ class Recipient:
             mid = self.send("p0", f"{case} {self.run.run_id}", direct=False)
             hold.assert_held()
         anchor = f"End-of-turn test {tag}"
-        split_at = lambda: busy_turn_split(self.screen(1000), anchor, EOT_DONE_LINE, "EOT-DONE and end", last=True)
+        split_at = lambda: busy_turn_split(self.screen(1000), anchor, EOT_DONE_LINE, EOT_PROMPT_END, last=True)
         end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
         while time.time() < end:
             idle_since = (idle_since or time.time()) if self.status() in IDLE else None

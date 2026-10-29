@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import itertools
 import json
 import os
 import shlex
@@ -14,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -1276,7 +1278,7 @@ class BusyTurnEndGlued(unittest.TestCase):
     ANCHOR = "Busy-turn test busy-send-ack/1:1 003228-4211"
 
     def setUp(self):
-        self.SCREEN = (FIXTURES / "claude-busy-done-glued.txt").read_text()
+        self.SCREEN = (FIXTURES / "claude-busy-done-glued.txt").read_text(encoding="utf-8")
 
     def test_glued_end_line_ends_the_turn(self):
         in_turn, after, seen = W.busy_turn_split(self.SCREEN, self.ANCHOR)
@@ -1293,11 +1295,28 @@ class BusyTurnEndGlued(unittest.TestCase):
         self.assertEqual(W.busy_turn_split(cut, self.ANCHOR)[2], False)
 
     def test_eot_end_line_matches_the_same_way(self):
-        prompt = "End-of-turn test eot-send-p0/group r1: run `hold`, then print EOT-DONE and end your turn.\n"
+        prompt = W.EOT_PROMPT.format(tag="eot-send-p0/group r1", hold="/usr/bin/python3 /tmp/x/hold.py") + "\n"
         for line, seen in (("\u2022 EOT-DONE", True), ("EOT-DONECorrection: again", True), ("**EOT-DONE**.", True),
                            ("\u2022 I will print EOT-DONE", False)):
-            split = W.busy_turn_split(prompt + line + "\n", "End-of-turn test", W.EOT_DONE_LINE, "EOT-DONE and end")
+            split = W.busy_turn_split(prompt + line + "\n", "End-of-turn test", W.EOT_DONE_LINE, W.EOT_PROMPT_END,
+                                      last=True)
             self.assertEqual(split[2], seen, line)
+
+    def test_no_wrapping_of_a_prompt_ends_its_turn(self):
+        """Negative control: every prompt, wrapped at any width so a marker mention starts a line, followed by a
+        tool call and no agent end line, is a turn that has not ended (roast: "EOT-DONE again." once matched)."""
+        hold = "/usr/bin/python3 /tmp/ht-wake-e2e.pn5ke06_/busy-hold.gpufk887/hold.py"
+        cases = [(W.EOT_PROMPT.format(tag="eot-send-p0/group 003228-4211", hold=hold), "End-of-turn test",
+                  W.EOT_DONE_LINE, W.EOT_PROMPT_END, True)]
+        for template in (W.BUSY_PROMPT, W.BUSY_FAIL_PROMPT, W.BUSY_TOOL_PROMPT):
+            text = template.format(tag="busy-send-ack/1:1 003228-4211", hold=hold, tool=W.BUSY_TOOL["claude"])
+            cases.append((text, "Busy-turn test", W.BUSY_DONE_LINE, W.BUSY_PROMPT_END, False))
+        for text, anchor, done, prompt_end, last in cases:
+            for width, hyphens in itertools.product(range(30, 200), (False, True)):
+                wrapped = "\n  ".join(textwrap.wrap(text, width, break_on_hyphens=hyphens))
+                screen = "\u276f " + wrapped + "\n\n\u25cf Bash(hold)\n  \u23bf  (No output)\n"
+                self.assertEqual(W.busy_turn_split(screen, anchor, done, prompt_end, last=last)[2], False,
+                                 (anchor, width, hyphens))
 
 
 class SetupDoneReport(unittest.TestCase):
