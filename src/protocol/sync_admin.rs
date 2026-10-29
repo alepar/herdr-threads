@@ -28,6 +28,14 @@ pub const MAX_UNAPPLIED_PAGE: u16 = 64;
 pub const DEFAULT_UNAPPLIED_PAGE: u16 = 32;
 /// Most per-log rows `sync status` lists.
 pub const MAX_STATUS_LOGS: usize = 64;
+/// Largest page of `peer events`.
+pub const MAX_EVENTS_PAGE: u16 = 64;
+/// The `peer events` page size when the CLI does not ask for one.
+pub const DEFAULT_EVENTS_PAGE: u16 = 20;
+/// Most node rows one `peer prune` answer lists.
+pub const MAX_PRUNE_ROWS: usize = 64;
+/// `peer prune --older-than` when the CLI does not give one: 7 days.
+pub const DEFAULT_PRUNE_OLDER_THAN_MS: u64 = 7 * 24 * 3_600_000;
 
 /// One operator or status request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +97,37 @@ pub enum SyncCommand {
         #[serde(default)]
         machine: String,
     },
+    /// The link event history, newest first: at most `limit` rows before
+    /// `before` (a `seq`), narrowed to `node` (uuid or tag) when given.
+    PeerEvents {
+        #[serde(default)]
+        node: Option<String>,
+        #[serde(default)]
+        before: Option<i64>,
+        #[serde(default)]
+        limit: u16,
+    },
+    /// Forget dead node islands of host `host` (TRUST-POLICY N16; `None` is
+    /// this node's own host label) unheard of for `older_than_ms`. A dry run
+    /// unless `apply`; `list` shows the tombstones instead.
+    PeerPrune {
+        #[serde(default)]
+        host: Option<String>,
+        #[serde(default)]
+        older_than_ms: u64,
+        #[serde(default)]
+        apply: bool,
+        #[serde(default)]
+        list: bool,
+    },
+    /// Undo a `peer prune` for one node (uuid or tag of a tombstone): its
+    /// logs are wanted and it is shown again. A dry run unless `apply`.
+    PeerUnforget {
+        #[serde(default)]
+        target: String,
+        #[serde(default)]
+        apply: bool,
+    },
 }
 
 impl SyncCommand {
@@ -101,6 +140,8 @@ impl SyncCommand {
                 | Self::UnappliedReplay
                 | Self::Resync { .. }
                 | Self::CloneCleared
+                | Self::PeerPrune { apply: true, .. }
+                | Self::PeerUnforget { apply: true, .. }
         )
     }
 
@@ -138,6 +179,20 @@ impl SyncCommand {
             Self::ResolveAddress { machine, .. } => text(machine),
             Self::CheckRemoteSeat { seat } => text(seat),
             Self::RemoteLaunch { machine, .. } | Self::ResolveMachine { machine } => text(machine),
+            Self::PeerEvents { limit, .. } if *limit == 0 || *limit > MAX_EVENTS_PAGE => {
+                Err("events page size out of range")
+            }
+            Self::PeerEvents { node, .. } => node.as_deref().map_or(Ok(()), text),
+            Self::PeerPrune {
+                apply: true,
+                list: true,
+                ..
+            } => Err("peer prune takes --yes or --list, not both"),
+            Self::PeerPrune { older_than_ms, .. } if *older_than_ms == 0 => {
+                Err("peer prune --older-than must be positive")
+            }
+            Self::PeerPrune { host, .. } => host.as_deref().map_or(Ok(()), text),
+            Self::PeerUnforget { target, .. } => text(target),
             Self::PeerList
             | Self::Verify
             | Self::UnappliedList { .. }
@@ -343,6 +398,10 @@ pub struct StatusReply {
     /// discovery worker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<String>,
+    /// Nodes `peer prune` forgot: their logs are left out of `logs` and of
+    /// `logs_omitted`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub forgotten: u64,
 }
 
 /// One broken invariant, for `sync verify`.
@@ -404,6 +463,9 @@ pub enum SyncReply {
         /// Every known peer node's status (ht-xg88).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         nodes: Vec<NodeRow>,
+        /// Nodes `peer prune` forgot, left out of `nodes`.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        forgotten: u64,
     },
     Status(Box<StatusReply>),
     Verified {
@@ -422,6 +484,130 @@ pub enum SyncReply {
     Address(AddressReply),
     /// The answer to [`SyncCommand::RemoteLaunch`].
     Launch(LaunchReply),
+    /// The answer to [`SyncCommand::PeerEvents`].
+    Events(EventsPage),
+    /// The answer to [`SyncCommand::PeerPrune`].
+    Pruned(PruneReply),
+    /// The answer to [`SyncCommand::PeerUnforget`].
+    Unforgotten(UnforgetReply),
+}
+
+/// The tombstone a `peer unforget` names, and whether it was removed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnforgetReply {
+    /// The node's tag, as forgotten.
+    #[serde(default)]
+    pub node: String,
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    /// When it was forgotten (unix ms).
+    #[serde(default)]
+    pub forgotten_at: i64,
+    /// The tombstone was removed (`--yes`).
+    #[serde(default)]
+    pub applied: bool,
+}
+
+/// One link event, as `peer events` shows it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventRow {
+    #[serde(default)]
+    pub seq: i64,
+    /// When it first happened (unix ms).
+    #[serde(default)]
+    pub at: i64,
+    /// When its last repeat happened (unix ms; equals `at` when `n` is 1).
+    #[serde(default)]
+    pub last_at: i64,
+    /// How often it happened in a row.
+    #[serde(default)]
+    pub n: i64,
+    /// The peer node's tag, else its uuid prefix; `None` before any link.
+    #[serde(default)]
+    pub node: Option<String>,
+    /// The dial destination; `None` for an inbound link.
+    #[serde(default)]
+    pub dest: Option<String>,
+    /// `up`, `down`, `dial_failed`, `not_installed` or `stopped`.
+    #[serde(default)]
+    pub kind: String,
+    /// `dialed` or `inbound`.
+    #[serde(default)]
+    pub origin: String,
+    /// Why (peer text, at most 160 bytes).
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// A bounded page of link events, newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventsPage {
+    #[serde(default)]
+    pub rows: Vec<EventRow>,
+    /// The `before` for the next (older) page, when there is more.
+    #[serde(default)]
+    pub next_before: Option<i64>,
+    /// The request's node filter and page size, for the `next:` line.
+    #[serde(default)]
+    pub node: Option<String>,
+    #[serde(default)]
+    pub limit: u16,
+}
+
+/// One node a `peer prune` considered, or one tombstone (`--list`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PruneRow {
+    /// The node's tag (`--list`: as forgotten).
+    #[serde(default)]
+    pub node: String,
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    /// `prune`, `keep`, `pruned` or `forgotten` (`--list`).
+    #[serde(default)]
+    pub verdict: String,
+    /// With `keep`: why (`linked`, `dial_target`, `recent`, `fork_evidence`,
+    /// `peer_request`, `opaque_entries`, `referenced_by <node>`).
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Last contact, else first sight; with `forgotten`, when (unix ms).
+    #[serde(default)]
+    pub at: i64,
+    #[serde(default)]
+    pub logs: u64,
+    #[serde(default)]
+    pub entries: u64,
+}
+
+/// What `peer prune` found or did.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PruneReply {
+    /// The host label it was scoped to (empty with `--list`).
+    #[serde(default)]
+    pub host: String,
+    /// The request's `older_than_ms`, for the `next:` line.
+    #[serde(default)]
+    pub older_than_ms: u64,
+    /// Tombstones were written (`--yes`).
+    #[serde(default)]
+    pub applied: bool,
+    /// `--list`: the rows are tombstones.
+    #[serde(default)]
+    pub list: bool,
+    #[serde(default)]
+    pub rows: Vec<PruneRow>,
+    /// Rows beyond [`MAX_PRUNE_ROWS`] left out.
+    #[serde(default)]
+    pub omitted: u64,
+    /// Nodes it would prune (dry run) or pruned.
+    #[serde(default)]
+    pub prunable: u64,
+    /// Nodes it keeps.
+    #[serde(default)]
+    pub kept: u64,
 }
 
 /// Peer-requested launches of one node (`peer list`).

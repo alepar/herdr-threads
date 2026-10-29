@@ -127,6 +127,16 @@ pub trait JournalPort: Send + Sync {
     /// The head of every log this node holds.
     fn vector(&self, budget: &CallBudget) -> Result<Vector, ApiError>;
 
+    /// The nodes `peer prune` forgot (TRUST-POLICY N16): the coordinator
+    /// neither wants nor advertises their logs. None by default.
+    fn forgotten(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<std::collections::BTreeSet<crate::node::NodeUuid>, ApiError> {
+        let _ = budget;
+        Ok(std::collections::BTreeSet::new())
+    }
+
     /// The stored hash at `counter` of `log`, if held.
     fn stored_hash(
         &self,

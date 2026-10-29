@@ -292,6 +292,8 @@ fn capability_constants_are_stable() {
     assert_eq!(CLI_PENDING_HINT, "attention.cli_pending_hint_v1");
     assert_eq!(TURN_END_DUE, "turn_end.due_v1");
     assert_eq!(WAKE_STATUS_V1, "seat.wake_status_v1");
+    assert_eq!(PEER_PRUNE_V1, "peer.prune_v1");
+    assert_eq!(PEER_EVENTS_V1, "peer.events_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -336,9 +338,25 @@ fn capability_constants_are_stable() {
             "inbox.pushed_hold_v1",
             "attention.cli_pending_hint_v1",
             "turn_end.due_v1",
-            "seat.wake_status_v1"
+            "seat.wake_status_v1",
+            "peer.prune_v1",
+            "peer.events_v1"
         ]
     );
+}
+
+/// The sync operator handlers (`service::sync_admin`) are driven by
+/// `tests/service/sync_admin.rs` and the multinode suite; here each command
+/// must validate and round-trip the wire.
+fn probe_sync_commands(commands: &[crate::protocol::sync_admin::SyncCommand]) {
+    for sync in commands {
+        assert!(sync.validate().is_ok(), "{sync:?}");
+        let command = Command::Sync(sync.clone());
+        assert_eq!(
+            serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+            command
+        );
+    }
 }
 
 /// Every capability this daemon advertises names a feature it serves: a bead
@@ -502,6 +520,25 @@ fn every_advertised_capability_has_a_handler() {
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
             SEATS_DIRECTORY_V1 => probe_seats_directory(),
             WAKE_STATUS_V1 => probe_wake_status(),
+            PEER_PRUNE_V1 => probe_sync_commands(&[
+                crate::protocol::sync_admin::SyncCommand::PeerPrune {
+                    host: None,
+                    older_than_ms: 1,
+                    apply: false,
+                    list: false,
+                },
+                crate::protocol::sync_admin::SyncCommand::PeerUnforget {
+                    target: "Abc".into(),
+                    apply: false,
+                },
+            ]),
+            PEER_EVENTS_V1 => {
+                probe_sync_commands(&[crate::protocol::sync_admin::SyncCommand::PeerEvents {
+                    node: None,
+                    before: None,
+                    limit: 1,
+                }])
+            }
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
             ATTENTION_NOTICE_DELIVERY => {
@@ -1099,6 +1136,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "attention.cli_pending_hint_v1",
             "turn_end.due_v1",
             "seat.wake_status_v1",
+            "peer.prune_v1",
+            "peer.events_v1",
             "invitation.confirmation_v1"
         ]
     );

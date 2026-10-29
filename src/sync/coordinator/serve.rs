@@ -341,6 +341,7 @@ impl Actor {
                 .0
                 .iter()
                 .filter(|(key, head)| entry.last_have_sent.0.get(key) != Some(head))
+                .filter(|(key, _)| !self.forgotten.contains(&key.node))
                 .take(MAX_HAVE_LOGS)
                 .map(|(key, head)| (*key, *head))
                 .collect();

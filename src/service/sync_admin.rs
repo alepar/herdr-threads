@@ -25,15 +25,15 @@ use crate::daemon::paths::NodePaths;
 use crate::protocol::authority::OperatorActor;
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::sync_admin::{
-    EvidenceRow, LinkRow, MAX_STATUS_LOGS, RepairRow, ReplayReply, StatusReply, SyncCommand,
-    SyncReply,
+    EventRow, EventsPage, EvidenceRow, LinkRow, MAX_PRUNE_ROWS, MAX_STATUS_LOGS, PruneReply,
+    PruneRow, RepairRow, ReplayReply, StatusReply, SyncCommand, SyncReply, UnforgetReply,
 };
 use crate::protocol::time::{CallBudget, Cancellation, Clock};
 use crate::service::fair_writer::FairWriter;
 use crate::store::SqliteStore;
 use crate::store::incarnations::{self, ForkOrigin};
 use crate::store::sync_status::{self, node_label, resolve_node};
-use crate::store::{node_directory, sync_dial_targets};
+use crate::store::{node_directory, node_prune, sync_dial_targets, sync_link_events};
 use crate::sync::LogKey;
 use crate::sync::coordinator::{LinkMode, LinkStatus, LogFn, SyncHandle};
 use crate::sync::incarnations::IncarnationsSink;
@@ -129,16 +129,18 @@ impl SyncAdmin {
                     .block_on(self.sync.snapshot(&ask))
                     .map(|snapshot| live_nodes(&snapshot.links))
                     .unwrap_or_default();
-                let (rows, nodes) = self.store.sync_read(budget, |conn, _| {
+                let (rows, nodes, forgotten) = self.store.sync_read(budget, |conn, _| {
                     Ok((
                         sync_status::peers(conn, now)?,
                         sync_status::nodes(conn, now, &live)?,
+                        sync_status::forgotten_count(conn)?,
                     ))
                 })?;
                 Ok(SyncReply::Peers {
                     rows,
                     discovery: self.discovery_state(),
                     nodes,
+                    forgotten,
                 })
             }
             SyncCommand::Status { log } => self.status(log.as_deref(), budget),
@@ -165,6 +167,20 @@ impl SyncAdmin {
                 self.remote_launch(&machine, Some(*request), budget)
             }
             SyncCommand::ResolveMachine { machine } => self.remote_launch(&machine, None, budget),
+            SyncCommand::PeerEvents {
+                node,
+                before,
+                limit,
+            } => self.peer_events(node.as_deref(), before, limit, budget),
+            SyncCommand::PeerPrune {
+                host,
+                older_than_ms,
+                apply,
+                list,
+            } => self.peer_prune(host, older_than_ms, apply, list, label, budget),
+            SyncCommand::PeerUnforget { target, apply } => {
+                self.peer_unforget(&target, apply, label, budget)
+            }
         }
     }
 
@@ -223,7 +239,7 @@ impl SyncAdmin {
     }
 
     fn status(&self, log: Option<&str>, budget: &CallBudget) -> Result<SyncReply, ApiError> {
-        let (logs, omitted, repair, directory, targets) =
+        let (logs, omitted, repair, directory, targets, forgotten) =
             self.store.sync_read(budget, |conn, ctx| {
                 let node = log.map(|name| resolve_node(conn, name)).transpose()?;
                 let (logs, omitted) = sync_status::per_log(conn, node, MAX_STATUS_LOGS)?;
@@ -245,7 +261,8 @@ impl SyncAdmin {
                     }
                 }
                 let targets = sync_dial_targets::list(conn)?;
-                Ok((logs, omitted, repair, directory, targets))
+                let forgotten = sync_status::forgotten_count(conn)?;
+                Ok((logs, omitted, repair, directory, targets, forgotten))
             })?;
         let name = |node: &crate::node::NodeUuid| {
             node_label(directory.get(node).map(String::as_str), &node.to_string())
@@ -275,7 +292,7 @@ impl SyncAdmin {
                         targets
                             .iter()
                             .find(|target| &target.ssh_dest == dest)
-                            .and_then(|target| target.last_error.clone())
+                            .and_then(|target| target.current_error().map(str::to_owned))
                     })
                 });
                 LinkRow {
@@ -363,6 +380,7 @@ impl SyncAdmin {
             headroom_until: snapshot.headroom_until.map(|until| until.0),
             coordinator_unavailable,
             discovery: self.discovery_state(),
+            forgotten,
         })))
     }
 
@@ -411,6 +429,225 @@ impl SyncAdmin {
         })
     }
 
+    fn peer_events(
+        &self,
+        node: Option<&str>,
+        before: Option<i64>,
+        limit: u16,
+        budget: &CallBudget,
+    ) -> Result<SyncReply, ApiError> {
+        let node_filter = node;
+        let page = self.store.sync_read(budget, |conn, _| {
+            let node = node.map(|name| resolve_node(conn, name)).transpose()?;
+            let (rows, more) = sync_link_events::page(conn, node, before, limit)?;
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                let tag = match row.node.as_deref().map(str::parse) {
+                    Some(Ok(uuid)) => node_directory::get(conn, uuid)
+                        .map_err(crate::store::connection::store_error)?
+                        .map(|dir| dir.tag.to_string()),
+                    _ => None,
+                };
+                out.push(EventRow {
+                    seq: row.seq,
+                    at: row.at,
+                    last_at: row.last_at,
+                    n: row.n,
+                    node: row
+                        .node
+                        .as_deref()
+                        .map(|uuid| node_label(tag.as_deref(), uuid)),
+                    dest: row.dest,
+                    kind: row.kind,
+                    origin: row.origin,
+                    detail: row.detail,
+                });
+            }
+            let next_before = more.then(|| out.last().map(|row| row.seq)).flatten();
+            Ok(EventsPage {
+                rows: out,
+                next_before,
+                node: node_filter.map(str::to_owned),
+                limit,
+            })
+        })?;
+        Ok(SyncReply::Events(page))
+    }
+
+    /// `peer prune` (N16): a dry run, the tombstone write (`apply`) or the
+    /// tombstone list.
+    fn peer_prune(
+        &self,
+        host: Option<String>,
+        older_than_ms: u64,
+        apply: bool,
+        list: bool,
+        operator: &str,
+        budget: &CallBudget,
+    ) -> Result<SyncReply, ApiError> {
+        if list {
+            let rows = self
+                .store
+                .sync_read(budget, |conn, _| node_prune::list(conn))?;
+            let total = rows.len();
+            let rows: Vec<PruneRow> = rows
+                .into_iter()
+                .take(MAX_PRUNE_ROWS)
+                .map(|row| PruneRow {
+                    node: row.tag,
+                    uuid: row.node.to_string(),
+                    host: row.host,
+                    verdict: "forgotten".into(),
+                    reason: Some(row.provenance),
+                    at: row.forgotten_at,
+                    logs: 0,
+                    entries: 0,
+                })
+                .collect();
+            return Ok(SyncReply::Pruned(PruneReply {
+                list: true,
+                omitted: (total - rows.len()) as u64,
+                prunable: total as u64,
+                rows,
+                ..PruneReply::default()
+            }));
+        }
+        // Every node with any link now is live, whatever its mode. Without
+        // the coordinator's answer a dry run still runs on the stored
+        // contact times; a write does not.
+        let live: std::collections::BTreeSet<crate::node::NodeUuid> =
+            match self.runtime.block_on(self.sync.snapshot(budget)) {
+                Ok(snapshot) => snapshot.links.iter().map(|link| link.node).collect(),
+                Err(e) if apply => return Err(e),
+                Err(_) => Default::default(),
+            };
+        let host = match host {
+            Some(host) => host,
+            None => self.store.sync_read(budget, |conn, _| {
+                conn.query_row(
+                    "SELECT d.host_label FROM node_directory d JOIN local_node n ON n.id=d.node_uuid",
+                    [],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .map_err(crate::store::connection::store_error)?
+                .ok_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::InvalidRequest,
+                        "this node has no host label; pass --host",
+                    )
+                })
+            })?,
+        };
+        let scope = node_prune::PruneScope {
+            now_ms: self.clock.utc_now().0,
+            host: host.clone(),
+            older_than_ms: i64::try_from(older_than_ms).unwrap_or(i64::MAX),
+            live,
+        };
+        let (candidates, names) = if apply {
+            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+            self.store.sync_operator_quantum(budget, |tx, _, _| {
+                let candidates = node_prune::apply(tx, &scope, operator)?;
+                Ok((candidates, prune_names(tx)?))
+            })?
+        } else {
+            self.store.sync_read(budget, |conn, _| {
+                Ok((node_prune::evaluate(conn, &scope)?, prune_names(conn)?))
+            })?
+        };
+        let prunable = candidates.iter().filter(|c| c.keep.is_none()).count() as u64;
+        let kept = candidates.len() as u64 - prunable;
+        if apply {
+            for candidate in candidates.iter().filter(|c| c.keep.is_none()) {
+                self.note(
+                    operator,
+                    &format!("peer prune forgot {} ({})", candidate.tag, candidate.node),
+                );
+            }
+            // The coordinator reads the forgotten set with its next local
+            // vector; a round asks for one.
+            self.sync
+                .signals()
+                .request_round(self.clock.monotonic_now());
+        }
+        let total = candidates.len();
+        // Prunable rows first, then kept ones, each in directory order.
+        let mut ordered: Vec<_> = candidates.iter().filter(|c| c.keep.is_none()).collect();
+        ordered.extend(candidates.iter().filter(|c| c.keep.is_some()));
+        let rows: Vec<PruneRow> = ordered
+            .into_iter()
+            .take(MAX_PRUNE_ROWS)
+            .map(|c| PruneRow {
+                node: c.tag.clone(),
+                uuid: c.node.to_string(),
+                host: c.host.clone(),
+                verdict: match (&c.keep, apply) {
+                    (Some(_), _) => "keep",
+                    (None, true) => "pruned",
+                    (None, false) => "prune",
+                }
+                .into(),
+                reason: c.keep.as_ref().map(|reason| {
+                    reason.text(|node| {
+                        node_label(names.get(node).map(String::as_str), &node.to_string())
+                    })
+                }),
+                at: c.last_seen_at,
+                logs: c.logs,
+                entries: c.entries,
+            })
+            .collect();
+        Ok(SyncReply::Pruned(PruneReply {
+            host,
+            older_than_ms,
+            applied: apply,
+            list: false,
+            omitted: (total - rows.len()) as u64,
+            rows,
+            prunable,
+            kept,
+        }))
+    }
+
+    /// `peer unforget` (N16): names the tombstone (dry run) or removes it
+    /// (`apply`); the coordinator wants the node's logs again with its next
+    /// local vector.
+    fn peer_unforget(
+        &self,
+        target: &str,
+        apply: bool,
+        operator: &str,
+        budget: &CallBudget,
+    ) -> Result<SyncReply, ApiError> {
+        let row = if apply {
+            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+            self.store.sync_operator_quantum(budget, |tx, _, _| {
+                let row = node_prune::find(tx, target)?;
+                node_prune::unforget(tx, row.node)?;
+                Ok(row)
+            })?
+        } else {
+            self.store
+                .sync_read(budget, |conn, _| node_prune::find(conn, target))?
+        };
+        if apply {
+            self.note(
+                operator,
+                &format!("peer unforget {} ({})", row.tag, row.node),
+            );
+            self.sync
+                .signals()
+                .request_round(self.clock.monotonic_now());
+        }
+        Ok(SyncReply::Unforgotten(UnforgetReply {
+            node: row.tag,
+            uuid: row.node.to_string(),
+            host: row.host,
+            forgotten_at: row.forgotten_at,
+            applied: apply,
+        }))
+    }
+
     fn clone_cleared(&self, operator: &str, budget: &CallBudget) -> Result<SyncReply, ApiError> {
         let cleared = {
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
@@ -431,6 +668,17 @@ impl SyncAdmin {
 #[cfg(test)]
 #[path = "../../tests/service/sync_admin.rs"]
 mod tests;
+
+/// Every directory node's tag, for the `referenced_by` names.
+fn prune_names(
+    conn: &rusqlite::Connection,
+) -> Result<BTreeMap<crate::node::NodeUuid, String>, ApiError> {
+    Ok(node_directory::all(conn)
+        .map_err(crate::store::connection::store_error)?
+        .into_iter()
+        .map(|row| (row.node_uuid, row.tag.to_string()))
+        .collect())
+}
 
 /// One [`sync_status::LiveNode`] per node with an active link.
 fn live_nodes(links: &[LinkStatus]) -> Vec<sync_status::LiveNode> {
@@ -460,19 +708,11 @@ impl SyncAdmin {
         target: crate::sync::frame::AddrTarget,
         budget: &CallBudget,
     ) -> Result<SyncReply, ApiError> {
-        use crate::protocol::sync_admin::{AddressReply, MachineRow, RemoteAddress};
+        use crate::protocol::sync_admin::{AddressReply, RemoteAddress};
         use crate::sync::coordinator::remote_addr::RemoteAnswer;
         use crate::sync::frame::AddrOutcome;
         let (rows, own) = self.store.sync_read(budget, |conn, _| {
-            let rows = node_directory::all(conn)
-                .map_err(crate::store::connection::store_error)?
-                .into_iter()
-                .map(|row| MachineRow {
-                    uuid: row.node_uuid.to_string(),
-                    tag: row.tag.to_string(),
-                    host: row.host_label,
-                })
-                .collect::<Vec<_>>();
+            let rows = sync_status::machine_rows(conn)?;
             let own: String = conn
                 .query_row("SELECT id FROM local_node", [], |r| r.get(0))
                 .map_err(crate::store::connection::store_error)?;
@@ -590,19 +830,11 @@ impl SyncAdmin {
         request: Option<crate::sync::frame::LaunchRequest>,
         budget: &CallBudget,
     ) -> Result<SyncReply, ApiError> {
-        use crate::protocol::sync_admin::{LaunchReply, MachineRow, RemoteLaunchAnswer};
+        use crate::protocol::sync_admin::{LaunchReply, RemoteLaunchAnswer};
         use crate::sync::coordinator::remote_launch::LaunchAnswer;
         use crate::sync::frame::LaunchState;
         let (rows, own) = self.store.sync_read(budget, |conn, _| {
-            let rows = node_directory::all(conn)
-                .map_err(crate::store::connection::store_error)?
-                .into_iter()
-                .map(|row| MachineRow {
-                    uuid: row.node_uuid.to_string(),
-                    tag: row.tag.to_string(),
-                    host: row.host_label,
-                })
-                .collect::<Vec<_>>();
+            let rows = sync_status::machine_rows(conn)?;
             let own: String = conn
                 .query_row("SELECT id FROM local_node", [], |r| r.get(0))
                 .map_err(crate::store::connection::store_error)?;

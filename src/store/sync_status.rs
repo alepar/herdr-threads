@@ -77,7 +77,8 @@ pub fn per_log(
     let filter = node.map(|node| node.to_string());
     let total: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM sync_logs WHERE (?1 IS NULL OR node_uuid=?1)",
+            "SELECT COUNT(*) FROM sync_logs WHERE (?1 IS NULL OR node_uuid=?1) \
+             AND node_uuid NOT IN (SELECT node_uuid FROM sync_forgotten_nodes)",
             [&filter],
             |r| r.get(0),
         )
@@ -138,7 +139,7 @@ pub fn per_log(
             "SELECT l.log_ix,l.node_uuid,l.incarnation,l.is_self,l.contiguous_counter,l.head_hash, \
              l.applied_through,l.frozen_at_counter,l.skew_ahead_ms,d.tag,l.blocked_on \
              FROM sync_logs l LEFT JOIN node_directory d ON d.node_uuid=l.node_uuid \
-             WHERE (?1 IS NULL OR l.node_uuid=?1) \
+             WHERE (?1 IS NULL OR l.node_uuid=?1) AND l.node_uuid NOT IN (SELECT node_uuid FROM sync_forgotten_nodes) \
              ORDER BY l.is_self DESC,l.node_uuid,l.incarnation LIMIT ?2",
         )
         .map_err(store_error)?;
@@ -233,7 +234,7 @@ pub fn unapplied_page(
              LEFT JOIN node_directory d ON d.node_uuid=l.node_uuid \
              WHERE j.apply_state <> 'applied' \
                AND j.apply_state IN ('parked_unknown','parked_dep','failed') \
-               AND j.ingest_seq > ?1 \
+               AND j.ingest_seq > ?1 AND l.node_uuid NOT IN (SELECT node_uuid FROM sync_forgotten_nodes) \
              ORDER BY j.ingest_seq LIMIT ?2",
         )
         .map_err(store_error)?;
@@ -277,7 +278,8 @@ pub fn unapplied_page(
         .flatten();
     let count = |state: &str| -> Result<u64, ApiError> {
         conn.query_row(
-            "SELECT COUNT(*) FROM journal WHERE apply_state <> 'applied' AND apply_state=?1",
+            "SELECT COUNT(*) FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+             WHERE j.apply_state <> 'applied' AND j.apply_state=?1 AND l.node_uuid NOT IN (SELECT node_uuid FROM sync_forgotten_nodes)",
             [state],
             |r| r.get::<_, i64>(0),
         )
@@ -291,6 +293,33 @@ pub fn unapplied_page(
         failed: count("failed")?,
         next_after,
     })
+}
+
+/// The machines an `@MACHINE` address is matched against (N14): every
+/// directory node except the forgotten ones (N16).
+pub fn machine_rows(
+    conn: &Connection,
+) -> Result<Vec<crate::protocol::sync_admin::MachineRow>, ApiError> {
+    let forgotten = crate::store::node_prune::forgotten(conn)?;
+    Ok(node_directory::all(conn)
+        .map_err(store_error)?
+        .into_iter()
+        .filter(|row| !forgotten.contains(&row.node_uuid))
+        .map(|row| crate::protocol::sync_admin::MachineRow {
+            uuid: row.node_uuid.to_string(),
+            tag: row.tag.to_string(),
+            host: row.host_label,
+        })
+        .collect())
+}
+
+/// How many nodes `peer prune` forgot (the views leave them out).
+pub fn forgotten_count(conn: &Connection) -> Result<u64, ApiError> {
+    conn.query_row("SELECT COUNT(*) FROM sync_forgotten_nodes", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|n| u64::try_from(n).unwrap_or(0))
+    .map_err(store_error)
 }
 
 /// Every dial target, enabled or not, with its learned node's name and
@@ -312,6 +341,7 @@ pub fn peers(conn: &Connection, now_ms: u64) -> Result<Vec<PeerRow>, ApiError> {
             }
             None => (None, "unknown"),
         };
+        let last_error = target.current_error().map(str::to_owned);
         out.push(PeerRow {
             target_id: target.target_id.0,
             ssh_dest: target.ssh_dest,
@@ -323,7 +353,7 @@ pub fn peers(conn: &Connection, now_ms: u64) -> Result<Vec<PeerRow>, ApiError> {
             node,
             reach: reach.to_owned(),
             attempts: target.attempts,
-            last_error: target.last_error,
+            last_error,
         });
     }
     Ok(out)
@@ -386,7 +416,8 @@ pub fn nodes(conn: &Connection, now_ms: u64, live: &[LiveNode]) -> Result<Vec<No
         let mut statement = conn
             .prepare_cached(
                 "SELECT node_uuid FROM node_directory \
-                 WHERE node_uuid NOT IN (SELECT id FROM local_node) ORDER BY tag, node_uuid",
+                 WHERE node_uuid NOT IN (SELECT id FROM local_node) \
+                 AND node_uuid NOT IN (SELECT node_uuid FROM sync_forgotten_nodes) ORDER BY tag, node_uuid",
             )
             .map_err(store_error)?;
         let rows = statement
