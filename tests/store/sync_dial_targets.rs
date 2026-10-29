@@ -684,10 +684,54 @@ fn a_flapping_link_collapses_into_two_rows() {
         record(1_000 + i * 10_000, LinkEventKind::Up);
         record(6_000 + i * 10_000, LinkEventKind::Down);
     }
+    // The latest state is on top: up again within the window moves the
+    // merged up row above the down one.
+    record(100_000, LinkEventKind::Up);
     // Past the window the next flap starts new rows.
-    record(96_000 + FLAP_WINDOW_MS + 1, LinkEventKind::Up);
+    record(106_000, LinkEventKind::Down);
+    record(100_000 + FLAP_WINDOW_MS + 1, LinkEventKind::Up);
+    drop(record);
+    let shape: Vec<(String, i64)> = events(&db).iter().map(|e| (e.kind.clone(), e.n)).collect();
+    let want = |rows: &[(&str, i64)]| -> Vec<(String, i64)> {
+        rows.iter().map(|(k, n)| ((*k).to_owned(), *n)).collect()
+    };
+    assert_eq!(
+        shape,
+        want(&[("up", 1), ("down", 11), ("up", 11)]),
+        "newest first"
+    );
+}
+
+// Kills: a merged row that keeps its old place, so `peer events` lists an
+// older state above the newest one.
+#[test]
+fn a_merged_link_event_moves_to_the_top() {
+    use herdr_threads::store::sync_link_events::{
+        self as history, LinkEvent, LinkEventKind, LinkOrigin,
+    };
+    let mut db = db();
+    let mut record = |at: i64, kind: LinkEventKind| {
+        let tx = db.transaction().unwrap();
+        history::record(
+            &tx,
+            &LinkEvent {
+                at,
+                kind,
+                origin: LinkOrigin::Inbound,
+                node: Some(node(4)),
+                dest: None,
+                detail: None,
+            },
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    };
+    record(1_000, LinkEventKind::Up);
+    record(2_000, LinkEventKind::Down);
+    record(3_000, LinkEventKind::Up);
     drop(record);
     let rows = events(&db);
-    let shape: Vec<(&str, i64)> = rows.iter().map(|e| (e.kind.as_str(), e.n)).collect();
-    assert_eq!(shape, vec![("up", 1), ("down", 10), ("up", 10)]);
+    assert_eq!(rows[0].kind, "up", "{rows:?}");
+    assert_eq!((rows[0].at, rows[0].last_at, rows[0].n), (1_000, 3_000, 2));
+    assert!(rows[0].seq > rows[1].seq);
 }

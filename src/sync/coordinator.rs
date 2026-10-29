@@ -102,7 +102,7 @@ mod routing;
 mod seat_status;
 mod serve;
 
-use crate::store::sync_link_events::LinkEventKind;
+use crate::store::sync_link_events::{LinkEventKind, LinkOrigin};
 use ingest::{IngestDone, IngestJob};
 pub use routing::ResyncPin;
 use routing::{DupKey, SourceView};
@@ -2074,6 +2074,25 @@ impl Actor {
                 // log is advertised to us again.
                 if forgotten != self.forgotten {
                     self.forget_logs(&forgotten);
+                    // A node pruned while (or just before) it linked here is
+                    // alive: its link came up before this set was known.
+                    let linked: Vec<(NodeUuid, LinkOrigin, Option<String>)> = forgotten
+                        .difference(&self.forgotten)
+                        .filter_map(|node| {
+                            self.by_node.get(node)?.iter().find_map(|id| {
+                                let entry = self.links.get(id).filter(|l| !l.closing)?;
+                                Some(match &entry.origin {
+                                    Origin::Inbound => (*node, LinkOrigin::Inbound, None),
+                                    Origin::Dialed { dest, .. } => {
+                                        (*node, LinkOrigin::Dialed, Some(dest.clone()))
+                                    }
+                                })
+                            })
+                        })
+                        .collect();
+                    for (node, origin, dest) in linked {
+                        self.unforget_linked(node, origin, dest);
+                    }
                     self.forgotten = forgotten;
                     for entry in self.links.values_mut() {
                         if entry.mode == LinkMode::Active && !entry.closing {

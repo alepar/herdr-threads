@@ -75,6 +75,16 @@ impl Actor {
             Origin::Inbound => (LinkOrigin::Inbound, None),
             Origin::Dialed { dest, .. } => (LinkOrigin::Dialed, Some(dest.clone())),
         };
+        self.unforget_linked(node, origin, dest);
+    }
+
+    /// [`Self::unforget_on_link`] for a link already up when the set arrived.
+    pub(super) fn unforget_linked(
+        &mut self,
+        node: NodeUuid,
+        origin: LinkOrigin,
+        dest: Option<String>,
+    ) {
         let event = LinkEvent {
             at: self.deps.clock.utc_now().0,
             kind: crate::store::sync_link_events::LinkEventKind::Unforgotten,

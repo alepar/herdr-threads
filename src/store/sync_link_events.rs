@@ -139,12 +139,18 @@ pub fn record(tx: &Transaction<'_>, event: &LinkEvent) -> Result<(), ApiError> {
         .optional()
         .map_err(store_error)?;
     match newest {
+        // A merged row moves to the top (a new `seq`), so the newest state
+        // is always listed first: a flap of up, down, up reads up on top.
         Some(seq) => {
             tx.execute(
-                "UPDATE sync_link_events SET n = n + 1, last_at = MAX(last_at, ?2) WHERE seq = ?1",
+                "INSERT INTO sync_link_events(at,last_at,n,node_uuid,dest,kind,origin,detail) \
+                 SELECT at,MAX(last_at,?2),n+1,node_uuid,dest,kind,origin,detail \
+                 FROM sync_link_events WHERE seq = ?1",
                 params![seq, event.at],
             )
             .map_err(store_error)?;
+            tx.execute("DELETE FROM sync_link_events WHERE seq = ?1", [seq])
+                .map_err(store_error)?;
         }
         None => {
             tx.execute(

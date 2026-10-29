@@ -234,3 +234,11 @@ above:
   `ask`.
 - **Flap collapse:** a repeat of a matching row within `FLAP_WINDOW_MS` (60 s) collapses into it even when other
   events came between, so a flapping link stays two rows.
+
+### Delta review (e9d519f6d)
+
+- **Prune racing a link-up:** when the coordinator loads a changed forgotten set, it unforgets every newly
+  forgotten node that has a live, non-closing link, the same way a link-up does. This covers a prune that
+  commits after its snapshot, or before the next local read.
+- **Collapse order:** a merged link event is re-inserted with a new `seq`, so the newest state is always listed
+  first.

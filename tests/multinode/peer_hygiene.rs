@@ -172,6 +172,31 @@ fn prune_forgets_a_dead_island_and_keeps_referenced_nodes() {
             .then_some(())
     });
 
+    // A prune that raced a link-up: the live node 1's tombstone lands while
+    // its link is already up (forced here by writing it directly). The next
+    // local read sees a linked node forgotten and unforgets it.
+    let uuid1 = cluster.node_uuid(1).to_string();
+    cluster.write_sql(
+        0,
+        &format!(
+            "INSERT INTO sync_forgotten_nodes(node_uuid,tag,host_label,forgotten_at,provenance) \
+             VALUES ('{uuid1}','{live}',NULL,1,'operator:local-user:1')"
+        ),
+    );
+    human(
+        &cluster,
+        0,
+        &["peer", "prune", "--yes", "--host", "no-such-host"],
+    );
+    cluster.wait_until("node 0 to unforget the linked node 1", crate::WAIT, || {
+        let events = text(&cluster, 0, &["peer", "events", "--node", &live]);
+        (events
+            .lines()
+            .any(|line| line.contains(&format!(" {live} unforgotten ")))
+            && forgotten_rows(&cluster) == 1)
+            .then_some(())
+    });
+
     // The operator undo while the island is away: a dry run names the
     // tombstone and writes nothing; `--yes` removes it and the node is shown
     // again; a second one has nothing to remove. Then it is pruned again.
