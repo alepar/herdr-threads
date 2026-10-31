@@ -17,6 +17,7 @@ branch: super-auto/environments-named-seats-herdr-app
 base: main
 spec: 2026-10-31-environments-named-seats-herdr-app-design.md
 epic: ht-kqrt
+nodeDeltaSlot: F3 takes NODE_DELTAS version 12 (migrations/node/0012_host_environments.sql; main merged at 3c02db71f, last delta 0011_peer_hygiene.sql) · renumber-on-merge: if main gains a node delta before hand-back, the coordinator renumbers this one on merge (file name and NODE_DELTAS position together); the final pre-handoff check re-checks the slot against main
 
 approvals:
 - reserved-decisions · none reserved by the user; the proposal's Part 5 decisions D1-D21 are taken at their stated recommendations (autonomous run), each recorded as an assumption and surfaced in the report
