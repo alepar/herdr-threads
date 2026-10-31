@@ -1374,6 +1374,7 @@ fn automatic_canonical_full_outer_original_is_frozen_and_oversize_refuses_before
     let request = automatic_request(&f);
     let mut handoff = request.clone();
     handoff.original = AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
+        summary: None,
         version: 2,
         delivery: request.plan().clone(),
         launch: LaunchRequest {
@@ -2423,6 +2424,7 @@ fn automatic_canonical_first_begin_admits_future_startup_before_any_effect() {
     let mut template = StartupInputTemplate::positional(0);
     template.max_arg_bytes = 1;
     let original = AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
+        summary: None,
         version: 2,
         delivery,
         launch: LaunchRequest {

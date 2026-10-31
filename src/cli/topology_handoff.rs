@@ -17,6 +17,9 @@ pub struct Request {
     pub thread_name: Option<String>,
     pub topic: Option<String>,
     pub goal: Option<String>,
+    /// The sender's one-line purpose for the launch prompt (`--summary`, else `--goal`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub body: String,
     pub kind: Option<String>,
     pub binary: Option<String>,
@@ -298,6 +301,11 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
                     // The automatic plan freezes its startup input on the payload, not the V2 launch.
                     composed_argv: None,
                     startup_input: None,
+                    summary_prompt: super::handoff::frozen_prompt(
+                        inputs.client,
+                        inputs.clock,
+                        request.summary.as_deref(),
+                    ),
                 },
                 startup_input: Some(startup_input),
             },
@@ -332,7 +340,8 @@ pub(super) fn preflight_automatic_launch_request(
         .startup_input
         .as_ref()
         .ok_or_else(|| super::invalid_request("automatic bootstrap lacks frozen startup input"))?;
-    let prompt = super::handoff::bootstrap_v1::prompt(
+    let prompt = super::handoff::launch_prompt(
+        p.launch.summary_prompt.as_ref(),
         ThreadId::new("t".repeat(128)).as_str(),
         &crate::protocol::output::ContinuationContext {
             state_dir: ns.state_dir.to_str().map(str::to_owned),
@@ -548,6 +557,11 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
                     &launch.argv,
                 )?)
             },
+            summary_prompt: super::handoff::frozen_prompt(
+                inputs.client,
+                inputs.clock,
+                request.summary.as_deref(),
+            ),
             argv: launch.argv,
         },
         handoff_key: child("handoff"),
@@ -594,8 +608,12 @@ pub(super) fn preflight_launch_request(
         }
         HandoffChannel::New { .. } => &longest,
     };
-    let prompt =
-        super::handoff::bootstrap_v1::prompt(thread.as_str(), &context, &identity.claim.instance);
+    let prompt = super::handoff::launch_prompt(
+        identity.payload.launch.summary_prompt.as_ref(),
+        thread.as_str(),
+        &context,
+        &identity.claim.instance,
+    );
     let argv = match &identity.payload.launch.startup_input {
         Some(template) => {
             template
@@ -1084,6 +1102,8 @@ fn downstream_plan(
     let plan = super::handoff::HandoffPlan {
         startup_input: None,
         bootstrap_input: payload.launch.startup_input.clone(),
+        // The template-free path's frozen prompt: the summary prompt, or V1 without one.
+        summary_prompt: payload.launch.summary_prompt.clone(),
         request: super::handoff::HandoffRequest {
             policy: payload.handoff.policy.clone(),
             automatic: false,
@@ -1091,6 +1111,7 @@ fn downstream_plan(
             thread_name,
             topic,
             goal,
+            summary: None,
             body: payload.handoff.body.clone(),
             launch: super::launch::LaunchRequest {
                 directory_context: payload.directory_context.clone(),

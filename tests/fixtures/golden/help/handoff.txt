@@ -54,6 +54,8 @@ Options:
           
       --goal <GOAL>
           
+      --summary <SUMMARY>
+          One-line purpose the launched agent's first prompt shows (at most 200 bytes; default: --goal). It appears in native argv; the body never does and arrives as the thread message
       --kind <KIND>
           [possible values: claude, codex, hermes, agy, synthetic_fourth]
       --harness-binary <HARNESS_BINARY>
