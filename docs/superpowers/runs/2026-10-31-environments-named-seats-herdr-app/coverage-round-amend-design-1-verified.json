@@ -1,0 +1,166 @@
+{
+ "findings": [
+  {
+   "type": "GAP",
+   "subject": "R27/R32 idle exit vs ht-kqrt.69 keep-alive",
+   "line": "R32: 'idle exit with only the named host still exits with tmux-hinted bindings present'; ht-kqrt.69 'ActivityProbe::active term counting wake-armed named bindi'",
+   "verified": true,
+   "reason": "Quotes exist; spec (N2 Idle exit, acceptance) adopts the keep-alive, so the requirement text is stale and contradicts the bead",
+   "fix": "Amend R27 and R32 to the spec's keep-alive: a wake-armed binding (connected top-level named binding, tmux hint verified at bind, live fingerprint) keeps the daemon up; unhinted or dead bindings do not. Give ht-kqrt.69 acceptance for both directions",
+   "ledger": ""
+  },
+  {
+   "type": "GAP",
+   "subject": "R34 tmux docs and evidence after ht-kqrt.39 superseded",
+   "line": "C1-4: ht-kqrt.39 owns contract table, AGENTS.md rule 6/tmux line, TRUST-POLICY N2 A4, T1-T5 record",
+   "verified": true,
+   "reason": "New evidence: .39 superseded by .69, whose visible Owns and missing owns: line do not carry these items",
+   "fix": "Add a .69 owns: line with the contract table, AGENTS.md rule 6 and tmux line, TRUST-POLICY N2 A4 row incl. keep-alive and pane-mode limits; T1-T5 on .69 or .62; close .39",
+   "ledger": "C1-4"
+  },
+  {
+   "type": "GAP",
+   "subject": "R38 C2 on core-id rotation, status:null to Unknown, doctor source, TRUST D10/C2/wiped-core rows after ht-kqrt.42 superseded",
+   "line": "ht-kqrt.42 owns: finish-reason closure mapping; C2 holds on core-id rotation; status: null \u2192 Unknown and the doctor status source; TRUST-POLICY H1 D10 closure table...",
+   "verified": true,
+   "reason": "New evidence: .42 superseded by .67, which has no owns: line and visible text lacks these items; .63/.52 now depend on .67",
+   "fix": "Copy these owns onto a .67 owns: line with fake_hc acceptance (C2 on rotation, status:null Unknown, TRUST rows rewritten for keep/reason); close .42",
+   "ledger": "C1-10"
+  },
+  {
+   "type": "GAP",
+   "subject": "Codex/agy turn_state_edge after ht-kqrt.36 superseded",
+   "line": "ht-kqrt.36 owns: turn_state_edge implementations for Codex and agy over their existing hook events",
+   "verified": true,
+   "reason": "New evidence: replacement .70's visible owns name only trait, TurnEdge, daemon state and Claude Stop/StopFailure; spec says Codex and agy map their existing events",
+   "fix": "Add Codex/agy turn_state_edge implementations (src/harness/codex, src/harness/agy only) with hook-driven tests to a .70 owns: line",
+   "ledger": "C1-11"
+  },
+  {
+   "type": "GAP",
+   "subject": "R28/R17 S5 named half, D12 row, D1 row, E1 reader after ht-kqrt.22/.27 superseded",
+   "line": "ht-kqrt.22 owns: TRUST-POLICY D12 restore placement row; ht-kqrt.27 owns: TRUST-POLICY D1 inherited-name refusal row",
+   "verified": true,
+   "reason": "New evidence: replacements .71/.72 have no owns: lines and visible text lacks the TRUST rows and S5",
+   "fix": "Put the D12 row, S5 named-half acceptance and nameless-hold limit on .71; the D1 row (same-name limit, revised M6) and E1 Linux/macOS reader acceptance on .72",
+   "ledger": "C1-3, C2-1"
+  },
+  {
+   "type": "GAP",
+   "subject": "R22 vs ht-kqrt.71 nameless hold",
+   "line": "R22: 'or stays for the operator when a live seat holds that name'; ht-kqrt.71 'on collision with a non-retired seat of'",
+   "verified": true,
+   "reason": "Quotes exist; spec restore rule uses non-retired (resolved or unresolved) and name NULL hold, so R22 is stale",
+   "fix": "Rewrite R22 to the spec rule: collision with any non-retired seat inserts the restored row unresolved with name NULL; seat inspect/doctor show the held name; .71 acceptance quotes it",
+   "ledger": ""
+  },
+  {
+   "type": "GAP",
+   "subject": "R38 exit semantics vs ht-kqrt.68 keep:false",
+   "line": "R38: 'exit/signal/server_stop/host_shutdown unresolve and resume reattaches'; ht-kqrt.68 'retires its seat through D10 when it exits'",
+   "verified": true,
+   "reason": "Quotes exist; spec D10 makes any keep:false final finish retire, R38 does not distinguish keep",
+   "fix": "Amend R38 to split on keep (keep:false final finish retires; keep:true exit/signal/server_stop/host_shutdown unresolve) and add the launched-worker R-new served by .68",
+   "ledger": ""
+  },
+  {
+   "type": "GAP",
+   "subject": "join/accept-invitation for named and hc seats",
+   "line": "Goal: 'full messaging: join, send, inbox, ACK, turn-hook and channel delivery'",
+   "verified": true,
+   "reason": "Goal quote exists; R16/R35 omit join and accept; no ledger entry covers it",
+   "fix": "Add join and accept-invitation acceptance (including text accept backlog print from the site) to ht-kqrt.34 (Named) and ht-kqrt.48 (Terminal)",
+   "ledger": ""
+  },
+  {
+   "type": "ORPHAN",
+   "subject": "superseded ht-kqrt.22, .27, .36, .39, .42",
+   "line": "changes: ht-kqrt.67..72 supersede .42/.39/.36/.22/.27; ht-kqrt.39 deps include ht-kqrt.36",
+   "verified": true,
+   "reason": "All five remain with live owns duplicating replacements; no dependents; .39 -> .36 edge keeps them in the ready queue",
+   "fix": "Move missing owns to replacements, close all five as superseded, drop the .39 -> .36 edge",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "consumed labels N4-inherit, N3-restore, H1c-closure, N2-wake, N2-turn without owns: on ht-kqrt.67-.74",
+   "line": "ht-kqrt.61 consumes: tmux composer wake (N2-wake); per-binding turn state and turn_state_edge (N2-turn)",
+   "verified": true,
+   "reason": "Consumers .28, .47, .50, .52, .59, .61 name labels whose owners are superseded; .67-.74 carry no structured owns: lines (r1 and r2 merged)",
+   "fix": "Add owns:/consumes: lines to .67-.74 reusing N4-inherit (.72), N3-restore (.71), H1c-closure (.67), N2-wake (.69), N2-turn (.70); re-point consumers",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "ht-kqrt.68 <-> ht-kqrt.57 daemon LaunchGate handler",
+   "line": "ht-kqrt.68 deps: ht-kqrt.54, ht-kqrt.55, ht-kqrt.67",
+   "verified": true,
+   "reason": "The launched worker exists end to end only with .57's LaunchGate handler (C2-5), not a dep of .68",
+   "fix": "Add dep .68 -> .57 and name the LaunchGate handler in .68's consumes",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "terminal.run keep parameter (ht-kqrt.55 <-> .68/.67)",
+   "line": "ht-kqrt.55 owns: terminal.run client method and its parameter set (no_notify, outlive_parent, no_parent, labels; no caller, no first_message ...)",
+   "verified": true,
+   "reason": "Spec says terminal.run sets keep: false; neither .55 nor R43 includes keep, while .68 relies on it",
+   "fix": "Add schema-checked keep: false to .55's owned parameter set and to R43 with a fake_hc assertion; .68 consumes it",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "idle-exit predicate shared by ht-kqrt.6 and ht-kqrt.69",
+   "line": "ht-kqrt.6 owns: dialled-only consumer filters per 07 \u00a75.3 (idle exit, ...); ht-kqrt.69 deps: .35, .37, .38, .5, .70",
+   "verified": true,
+   "reason": "Both change the same idle-exit decision; no direct dep, no owner of the combined rule",
+   "fix": "Make .69 depend on .6 and own the combined predicate with a dialled hosts x wake-armed bindings test matrix; re-run .50's idle-exit cases against it",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "host::foreign_terminal_process_names() move into host::hc (ht-kqrt.74 -> .41/.46)",
+   "line": "ht-kqrt.74: 'a const list in src/host/mod.rs with herdr-core and hc, moving into host::hc in H1'",
+   "verified": true,
+   "reason": "No H1 bead owns the move; .46 has no dep on .74",
+   "fix": "Owns: line for the move on .41 or .46; .46 consumes the terminal-root wall and start-stamped cache key; direct dep on .74",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "ScreenIdle emission between ht-kqrt.69 capture-pane and ht-kqrt.70 TurnEdge::ScreenIdle",
+   "line": "ht-kqrt.70 title: 'screen-idle clear'; Owns 'TurnEdge (including ScreenIdle)'; .69 deps include .70",
+   "verified": true,
+   "reason": "No bead names who emits ScreenIdle from screen reads; spec uses ComposerPolicy::screen_turn_running (not screen_blocked as the reviewer guessed), owned by no bead",
+   "fix": "Name the owner of ComposerPolicy::screen_turn_running and the two-read (60 s busy, 5 s apart) ScreenIdle emission into turn state; the other bead consumes it; test that a stale busy is cleared only by that path",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "spawn_detached shared by ht-kqrt.2 and ht-kqrt.73",
+   "line": "ht-kqrt.2 'K5 env scrub: child_env_scrub_list() and spawn_detached'; ht-kqrt.73 'spawn the daemon with the scrubbed env'",
+   "verified": true,
+   "reason": "Neither bead owns the R9 assertion across the extra daemon-detach hop",
+   "fix": "Put the R9 assertion against the reparented daemon's environ on .73, consuming child_env_scrub_list (F1-scrub) from .2",
+   "ledger": ""
+  },
+  {
+   "type": "NEEDS-SPEC",
+   "subject": "ht-kqrt (N2) keep-alive vs R27/R32",
+   "line": "NEEDS-SPEC: ht-kqrt (N2) \u2014 idle-exit keep-alive ... contradicts R27/R32",
+   "verified": false,
+   "reason": "Spec settles it: N2 'Idle exit' and its acceptance adopt the keep-alive; the stale requirement text is the R27/R32 GAP",
+   "fix": "",
+   "ledger": ""
+  },
+  {
+   "type": "NEEDS-SPEC",
+   "subject": "ht-kqrt (H1/H3) R38 vs .68 keep:false and R22 vs .71 nameless hold",
+   "line": "NEEDS-SPEC: ht-kqrt (H1/H3) \u2014 R38's 'exit unresolves' vs .68 ... R22's operator hold vs .71's nameless hold",
+   "verified": false,
+   "reason": "Spec settles both: D10 closure (keep:false final finish retires) and Restore rule (name NULL hold on non-retired collision); stale requirement text is the R38 and R22 GAPs",
+   "fix": "",
+   "ledger": ""
+  }
+ ]
+}

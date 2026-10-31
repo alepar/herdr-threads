@@ -2,12 +2,12 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 phase: roast-design
-roastDesignRound: 1
+roastDesignRound: 2
 roast-design: 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md
 findingsLedgerDesign: findings-ledger-design.md
 redesignCycles-design: 1
 stepBackDesign-round-1: redesign — applied: D10 finish-reason closure (invented reason vocabulary, finished records dropped, no keep split) → closure keyed on herdr-core Registry::finish finality (keep, reason) over a coherent capture (dissolves 3)
-redesign-design-1: round 1 · triggers shared-cause, defect-type · amended §Caller location, §Named host, §Wake and delivery contract, §hc host (H1), §hc launch (H3), §TRUST-POLICY and AGENTS.md amendments, §Model-visible strings, §Testing and evidence, §Phase F, §Phase N, §Phase N2, §Phase H1, §Phase H3, §Key abstractions, §Unchanged behavior · lastGood 1bde32346 · designRoast - · state beads-filed
+redesign-design-1: round 1 · triggers shared-cause, defect-type · amended §Caller location, §Named host, §Wake and delivery contract, §hc host (H1), §hc launch (H3), §TRUST-POLICY and AGENTS.md amendments, §Model-visible strings, §Testing and evidence, §Phase F, §Phase N, §Phase N2, §Phase H1, §Phase H3, §Key abstractions, §Unchanged behavior · lastGood 1bde32346 · designRoast - · state applied
 codeMechanism: Workflow
 runTag: environments-named-seats-herdr-app-20261031T201115
 context: Context: claude · planner=200K/167K · implementer=200K/167K · reviewer=200K/167K · finalReview=200K/167K · assembler=200K/167K · warn: planner, finalReview on a 200K model → set ANTHROPIC_DEFAULT_OPUS_MODEL=<model>[1m] or config.models.<role> to a 1M model · warn: implementer, reviewer, assembler on a 200K model → set ANTHROPIC_DEFAULT_SONNET_MODEL=<model>[1m] or config.models.<role> to a 1M model
@@ -29,3 +29,4 @@ parked:
 - 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md · escalation · "D1 premise unverified: Herdr TUI pane env may not come from the Herdr server process's exec-time environ, so the M6 inherited-name check may read the wrong process (cheapest check: isolated Herdr server without the name, client shell exporting it, compare pane env with /proc/<server pid>/environ)"
 - 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md · escalation · "Codex daemon mode may run hooks with the daemon's env, dropping HERDR_THREADS_SEAT_NAME or folding several named Codex sessions into one seat (cheapest check: two Codex sessions with different names, log env from a hook stand-in)"
 - 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md · degraded-verdict · "design roast r1 verdict carries [low coverage] [review readiness incomplete]: readiness companion qualifier only (no review-readiness evidence was supplied); no stage lost"
+- coverage-amend-design-1 · C3-1, C3-2 precheck fixes applied auto; C3-3..C3-18 applied auto (owns carried onto replacements .67-.74, R22/R27/R32/R38/R43 rewritten, R48 appended, deps .68->.57, .69->.6, .46->.74, .50->.69); C3-19, C3-20 rejected auto

@@ -45,3 +45,21 @@ C2-18 · r2 · NEEDS-SPEC · ht-kqrt (root) goal lacks H3 outcome · rejected �
 C2-19 · r2 · GAP · cross-node hc case in the .59 smoke · rejected — owned and tested by ht-kqrt.60 (named cross-node by .33); a second end-to-end copy fills no gap
 C3-1 · amend-design-1 · unstated · 16 stale edges to superseded beads · applied — removed (reason lines already re-pointed to replacements)
 C3-2 · amend-design-1 · citation · ht-kqrt.59/.50 cited superseded ht-kqrt.39/.22 · applied — re-pointed to ht-kqrt.69/.71
+C3-3 · amend-design-1 · GAP · R27/R32 idle exit vs ht-kqrt.69 keep-alive · applied — R27/R32 rewritten to the spec keep-alive; ht-kqrt.69 acceptance covers both directions (wake-armed stays up, dead/unhinted idle-exits)
+C3-4 · amend-design-1 · GAP · R34 tmux docs and evidence after ht-kqrt.39 superseded · applied — ht-kqrt.69 owns: contract table, AGENTS.md rule 6 + tmux line, TRUST-POLICY N2 A4 row incl. keep-alive and pane-mode limits, T1/T3/T5 (T2 .70, T4 .38, all recorded by .62); .39 already closed
+C3-5 · amend-design-1 · GAP · R38 C2 rotation, status:null, doctor source, TRUST D10/C2/wiped-core rows after ht-kqrt.42 superseded · applied — ht-kqrt.67 owns: line + fake_hc acceptance (C2 on rotation, status:null Unknown, keep/reason rows, TRUST rows rewritten); .42 already closed
+C3-6 · amend-design-1 · GAP · Codex/agy turn_state_edge after ht-kqrt.36 superseded · applied — ht-kqrt.70 owns Codex/agy implementations (src/harness/codex*, agy/ only) with hook-driven tests
+C3-7 · amend-design-1 · GAP · R28/R17 S5 named half, D12, D1, E1 after ht-kqrt.22/.27 superseded · applied — ht-kqrt.71 owns D12 row, S5 named half, nameless-hold limit; ht-kqrt.72 owns D1 row (same-name limit, revised M6) and E1 Linux/macOS reader acceptance
+C3-8 · amend-design-1 · GAP · R22 vs ht-kqrt.71 nameless hold · applied — R22 rewritten to the spec rule (non-retired collision, name NULL hold, inspect/doctor show it); ht-kqrt.71 acceptance quotes it
+C3-9 · amend-design-1 · GAP · R38 exit semantics vs ht-kqrt.68 keep:false · applied — R38 split on keep; R48 (launched keep:false worker retires) added, served by ht-kqrt.68
+C3-10 · amend-design-1 · GAP · join/accept-invitation for named and hc seats · applied — join + accept (text accept backlog print from the site) acceptance on ht-kqrt.34 (Named) and ht-kqrt.48 (Terminal)
+C3-11 · amend-design-1 · ORPHAN · superseded ht-kqrt.22/.27/.36/.39/.42 · applied — owns carried to .71/.72/.70/.69/.67 (C3-4..C3-7); all five already closed; no edges from open beads to them remain (.39 -> .36 is from a closed bead, kept)
+C3-12 · amend-design-1 · UNOWNED-SEAM · labels N4-inherit/N3-restore/H1c-closure/N2-wake/N2-turn on ht-kqrt.67-.74 · applied — owns:/consumes:/Key lines on .67-.74 (labels .72/.71/.67/.69/.70, new H3-launch-final .68, F1-detach .73, F8-wall .74); consumer lines already name labels, none named old ids
+C3-13 · amend-design-1 · UNOWNED-SEAM · ht-kqrt.68 <-> .57 LaunchGate handler · applied — dep ht-kqrt.68 -> .57; .68 consumes the LaunchGate handler (H3d2)
+C3-14 · amend-design-1 · UNOWNED-SEAM · terminal.run keep parameter · applied — ht-kqrt.55 owns schema-checked keep: false with fake_hc assertion; R43 amended; .68 consumes it
+C3-15 · amend-design-1 · UNOWNED-SEAM · idle-exit predicate .6/.69 · applied — dep ht-kqrt.69 -> .6; .69 owns the combined predicate (N2-idle-exit) with a dialled-hosts x wake-armed-bindings matrix; .50 runs its idle-exit cases against it (dep .50 -> .69)
+C3-16 · amend-design-1 · UNOWNED-SEAM · foreign_terminal_process_names() move into host::hc · applied — ht-kqrt.46 owns the move and consumes F8-wall from .74 (dep .46 -> .74); .74 owns the F const list
+C3-17 · amend-design-1 · UNOWNED-SEAM · ScreenIdle emission .69/.70 · applied — .70 owns screen_turn_running and the ScreenIdle turn-state entry; .69 owns the two-read (60 s busy, 5 s apart) emission and the only-path test; .70's reverse consume of the composer read removed
+C3-18 · amend-design-1 · UNOWNED-SEAM · spawn_detached .2/.73 · applied — ht-kqrt.73 owns the R9 assertion on the reparented daemon's environ, consuming F1-scrub from .2
+C3-19 · amend-design-1 · NEEDS-SPEC · N2 keep-alive vs R27/R32 · rejected — spec settles it; handled as C3-3
+C3-20 · amend-design-1 · NEEDS-SPEC · R38 vs .68 and R22 vs .71 · rejected — spec settles both; handled as C3-8 and C3-9
