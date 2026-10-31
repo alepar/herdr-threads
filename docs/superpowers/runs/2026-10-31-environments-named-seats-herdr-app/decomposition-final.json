@@ -1,0 +1,1358 @@
+{
+  "children": [
+    {
+      "key": "F1",
+      "title": "Bring main into the run branch",
+      "description": "Merge local `main` (contains ht-tod8 5e19e9bce: `lifecycle::scrub_env`, `host::PANE_SCOPED_ENV_VARS`) into the run branch so every later leaf starts from that base. First run `git merge-base --is-ancestor 5e19e9bce main` once and stop (report) if it fails. Resolve conflicts only; no behaviour change of its own. Gates every other leaf by the bottleneck rule, so it lands nothing else.\n\nowns: main merged into the run branch (base for every leaf)\n\nAcceptance:\n- [ ] `git merge-base --is-ancestor 5e19e9bce HEAD` succeeds on the run branch after the merge.\n- [ ] `lifecycle::scrub_env` and `host::PANE_SCOPED_ENV_VARS` exist on the run branch (src/daemon/lifecycle.rs, src/host/mod.rs).\n- [ ] The run branch's existing tests that main touched pass (focused: lifecycle, host).\n- [ ] The next free `NODE_DELTAS` slot after the merge is recorded in run.md for F3 (and the renumber-on-merge rule is noted there).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Run constraints 6; Store and schema (One NodeDelta); Phases and acceptance (F1)",
+      "files": [
+        "src/daemon/lifecycle.rs",
+        "src/host/mod.rs",
+        "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md"
+      ],
+      "deps": [],
+      "dep_reasons": {},
+      "kind": "leaf"
+    },
+    {
+      "key": "F1-scrub",
+      "title": "K5 env scrub: child_env_scrub_list() and spawn_detached",
+      "description": "Make `scrub_env` `pub(crate)`, add `host::child_env_scrub_list()` (union of `PANE_SCOPED_ENV_VARS`, the named scrub-only list `HERDR_THREADS_SEAT_NAME`/`HERDR_THREADS_SEAT_READONLY`, and the hc scrub-only list `HC_TERMINAL_ID`/`HC_TERMINAL_SOCKET`/`HC_SCOPE`/`HC_SESSION`, as consts in src/host/mod.rs until N and H1 move them into their modules), and have `spawn_detached` remove the union. `lifecycle` holds no host literal.\n\nowns: `host::child_env_scrub_list()` (Env scrub list); host scrub-only `ENV_VARS` consts for named and hc in src/host/mod.rs\nconsumes: `lifecycle::scrub_env` and `host::PANE_SCOPED_ENV_VARS` from main (F1)\n\nAcceptance:\n- [ ] A daemon spawned with `HC_SCOPE`, `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, `HC_SESSION`, `HERDR_THREADS_SEAT_NAME` and every `PANE_SCOPED_ENV_VARS` name in its parent env has none of them in `/proc/<pid>/environ` (child via `test_support::spawn`).\n- [ ] `child_env_scrub_list()` is the only list source; src/daemon/lifecycle.rs contains none of those variable literals (grep test or review).\n- [ ] `scrub_env` is `pub(crate)`; existing lifecycle tests pass.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Env scrub (K5, SA2 scrub); Run constraints 6; Phase F scope",
+      "files": [
+        "src/daemon/lifecycle.rs",
+        "src/host/mod.rs",
+        "tests/daemon/lifecycle.rs"
+      ],
+      "deps": [
+        "F1"
+      ],
+      "dep_reasons": {
+        "F1": "main merged (scrub_env, PANE_SCOPED_ENV_VARS)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F2",
+      "title": "HostPort capability answers: HostKind{Herdr,Unknown}, six defaulted methods, G4 implemented-kinds set",
+      "description": "In src/ports.rs add `HostKind{Herdr, Unknown}`, `WakeCapability{None, Composer(ComposerTraits{submit_budget})}` with `ComposerTraits::HERDR_TUI`, `ArchivalEvidence`, `ClosureAuthority`, and the six defaulted `HostPort` methods (`kind`, `wake_capability`, `target_root_process`, `server_process`, `archival_evidence`, `closure_authority`). Defaults reproduce today's Herdr behaviour and never return `ErrorCode::Unsupported`. NativeCli answers `target_root_process` = `pane.process_info.shell_pid`. The dispatcher budget reads `submit_budget` (src/notification/dispatch.rs:39). Add the static implemented-kinds set `{herdr}` beside `HostKind`. Seam-contract shaped: types plus defaults only, no consumers rewired here.\n\nowns: HostPort capability answers; HostKind implemented set; `HostKind`, `WakeCapability`, `ComposerTraits::HERDR_TUI`, `ArchivalEvidence`, `ClosureAuthority` enums\n\nAcceptance:\n- [ ] The 40 existing `HostPort` impls and the self-test at src/ports.rs (around :4533-4572) compile and pass unchanged.\n- [ ] A test asserts every default returns a value (not `Unsupported`) and that NativeCli's `target_root_process` returns the pane's shell pid against `fake_herdr`.\n- [ ] The dispatcher's submit budget comes from `wake_capability()`'s `submit_budget`, and the Herdr budget is unchanged (test).\n- [ ] The implemented-kinds set contains exactly `Herdr`; `Unknown` is not in it (test).\n- [ ] The `HostPort` doc comment lists the four permitted `kind()` readers (`any_reachable`, G4 check/probe comparison, adapter `host_launch_argv`, doctor/diagnostics).\n- [ ] The type's responsibility comment states what it owns, what it does not, where new behaviour goes, and the pattern or role it plays (Key abstractions entry below).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Environment model and host seam (HostPort capability answers; HostKind and implemented kinds); Key abstractions (HostPort capability answers, HostKind implemented set)\n\nKey abstractions entry (HostPort capability answers):\n**HostPort capability answers** (`HostKind`, `WakeCapability`/`ComposerTraits`, `ClosureAuthority`, `ArchivalEvidence`): new closed enums in src/ports.rs. Each `HostPort` reports through them what it can do.\n- Owns: one defaulted answer per policy question: kind, wake (host-level and, from N2, per target via `target_wake_capability`), closure authority, archival evidence, target root pid and server pid. Every default reproduces today's Herdr behaviour.\n- Hides: which environment a host is. Delivery, closure, wake, archival, placement and binding policy branch on the answer, never on the kind.\n- Must not: be read by `kind()` outside the four listed readers (`any_reachable`, the G4 implemented-kinds check and probe comparison, adapter `host_launch_argv`, doctor/diagnostics). A default must never return `ErrorCode::Unsupported`; methods a built-in host cannot serve return a non-Unsupported `Err` that a capability answer refuses before it is reached.\n- Relationships: these are defaulted methods on the existing trait, so the 40 impls compile unchanged. Policy code (host_sessions, dispatch, archival, peer_launcher, idle_exit, reconcile) depends on the answers. Hosts depend on nothing new.\n- Errors: only `target_root_process` is fallible (`ApiError`, i.e. host unreachable). The others are plain values, so a forgotten case cannot pass a test vacuously.\nDigest: HostPort capability answers: own each host's answer to every policy question (kind, wake, closure, archival, root/server pid). New per-environment behaviour is a different answer in that host's impl. Policy callers never branch on `kind()` outside the four listed readers.\n\nKey abstractions entry (HostKind implemented set (G4)):\n**HostKind implemented set (G4)**: a new static set beside `HostKind`. It grows one variant per phase.\n- Owns: the answer to whether this build can construct a persisted kind. `Unknown` is fail-closed.\n- Hides: phase skew between binaries and stored rows.\n- Must not: be bypassed by reattach, restore or rebind. A row whose kind is outside the set is skipped and named by `doctor`, never dialled as Herdr.\nDigest: HostKind implemented set: owns \"can this build construct this persisted kind\". A new kind is added beside its `HostKind` variant in the phase that builds it. Reattach, restore and rebind never dial a kind outside it.",
+      "files": [
+        "src/ports.rs",
+        "src/host/native.rs",
+        "src/notification/dispatch.rs",
+        "tests/host_adapter.rs"
+      ],
+      "deps": [
+        "F1"
+      ],
+      "dep_reasons": {
+        "F1": "main merged into run branch (base)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F3",
+      "title": "NodeDelta 0012_host_environments.sql, Herdr kind writes, unknown-kind fail-closed",
+      "description": "Add `migrations/node/0012_host_environments.sql` (next free slot after F1; renumber rule in run.md) registered in `NODE_DELTAS`, carrying every column of 07 §6.4: `herdr_hosts.kind` (DEFAULT 'herdr', no CHECK), `herdr_hosts.kind_probed_at`, partial unique index `herdr_hosts_one_named`, `seats.name` with the superset CHECK and `seats_live_name` on `(host_id, name)` over non-retired local rows including unresolved, `occupant_bindings.locator_hint`, `occupant_bindings.readonly`, and table `no_wake_reports(observer, seat_id, PRIMARY KEY(observer, seat_id))`. Write `kind`/`kind_probed_at` for Herdr hosts on attach; reattach skips a row whose kind is outside the implemented set and `doctor` names it. Other columns stay unwritten until N/H1.\n\nowns: NodeDelta 0012 schema (`herdr_hosts.kind`/`kind_probed_at`, `seats.name`, `seats_live_name`, `herdr_hosts_one_named`, `occupant_bindings.locator_hint`/`readonly`, `no_wake_reports`)\nconsumes: `HostKind` and the implemented-kinds set (F2)\n\nAcceptance:\n- [ ] The migration applies on a populated fixture store; existing Herdr rows read `kind='herdr'` and `kind_probed_at IS NULL`, and are re-stamped on reattach.\n- [ ] A row with an unknown kind is never attached on reattach and is named by `doctor` (needs: F2).\n- [ ] Schema tests for every new column, index and table exist (names, defaults, the CHECK accepts/rejects a small sample).\n- [ ] `NODE_DELTAS` registration and the store's schema digest/manifest artifacts are updated; a repo search for `0011_peer_hygiene` shows every list that enumerates deltas carries 0012 as well.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Store and schema (One NodeDelta; seats.name; locator_hint, readonly, no_wake_reports); Phase F scope (Store)",
+      "files": [
+        "migrations/node/0012_host_environments.sql",
+        "src/store/schema.rs",
+        "src/store/hosts.rs",
+        "src/service/host_sessions.rs",
+        "src/cli/doctor.rs",
+        "tests/store/"
+      ],
+      "deps": [
+        "F2"
+      ],
+      "dep_reasons": {
+        "F2": "`HostKind` and the implemented-kinds set"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F4",
+      "title": "HostSessions builtin slot, attach_builtin, all_for_reads, Option wake lane",
+      "description": "Extend src/service/host_sessions.rs: `builtin: OnceLock<Arc<HostSession>>`, `attach_builtin(port, observer, locator)` (skips `factory.exists`, the canonical check and `MAX_ATTACHED_HOSTS`), `by_locator`/`resolve` answer from the built-in slot first, `all_for_reads()` = dialled plus built-in, `attached()` stays dialled-only. `HostSession.wake` becomes `Option<LaneHandle>`, started only when `wake_capability() != None`; consumers (`first_host_pacer`/`Lane::Wakes` in src/app.rs, `reachability.attach_wake_pacer`, Health) take `Option`. Herdr-only callers in F; N is the first production caller of `attach_builtin`. Lands only the unblocking API; the 07 §5.3 consumer filters are F4-audit.\n\nowns: `HostSessions::attach_builtin`, `all_for_reads`, built-in slot; `HostSession.wake: Option<LaneHandle>`\nconsumes: HostPort capability answers (F2)\n\nAcceptance:\n- [ ] A test asserts `attached()` never contains a session attached through `attach_builtin` (test fake).\n- [ ] A session whose port returns `WakeCapability::None` starts no wake lane (test fake), and every `wake()` consumer compiles against `Option`.\n- [ ] `by_locator`/`resolve` find the built-in session by its locator; `all_for_reads()` returns dialled plus built-in (test).\n- [ ] Existing multi-host daemon tests (tests/daemon/multi_host.rs, health_hosts.rs) pass unchanged.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Built-in vs dialled hosts; Key abstractions (HostSessions extended)",
+      "files": [
+        "src/service/host_sessions.rs",
+        "src/app.rs",
+        "src/service/host_reachability.rs",
+        "src/daemon/health.rs",
+        "tests/daemon/multi_host.rs"
+      ],
+      "deps": [
+        "F2"
+      ],
+      "dep_reasons": {
+        "F2": "`wake_capability()` answer and `WakeCapability` type"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F4-audit",
+      "title": "07 §5.3 attached()/all_for_reads consumer audit (G1) and operator_host text",
+      "description": "Apply the verified consumer table in 07 §5.3 at each call site: idle exit counts only dialled hosts holding a resolved local seat; cap and reattach sweep dialled-only; `startup_primary` falls back to a dialled host filtered to `HostGuardedStart`; archival filters on `archival_evidence() == Supported`; `operator_host` tries dialled then built-in with the text \"no host attached\" (G5); `wake_status`, `RemoteResolver::answer`, seat publisher `read_labels` and `HostTopologies` use `all_for_reads`; peer `place()` uses only dialled hosts with a creation capability; the discovery gate `any_reachable` uses only `kind()==Herdr` sessions. Each consumer's choice is per call site (deliberate exception in Key abstractions).\n\nconsumes: `all_for_reads`/`attached()` (F4); HostPort capability answers (F2, via F4)\n\nAcceptance:\n- [ ] A test: idle exit with only a built-in (named-shaped test fake) session attached exits.\n- [ ] A test per filtered consumer with one dialled fake plus one built-in fake: archival skips a `NoEvidence` host, `operator_host` falls back to the built-in host and prints \"no host attached\" when none, `any_reachable` ignores non-Herdr kinds, `place()` ignores hosts without creation capability, `startup_primary` picks only a `HostGuardedStart` dialled host.\n- [ ] The only new `kind()` reader is `any_reachable` (review checklist item recorded in the commit message).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: attached() / all_for_reads audit (G1); Phase F scope (audit filters)",
+      "files": [
+        "src/service/dispatch.rs",
+        "src/service/archival.rs",
+        "src/service/peer_launcher.rs",
+        "src/service/seat_publisher.rs",
+        "src/service/remote_resolver.rs",
+        "src/daemon/idle_exit.rs",
+        "src/app.rs",
+        "tests/daemon/"
+      ],
+      "deps": [
+        "F4"
+      ],
+      "dep_reasons": {
+        "F4": "`attach_builtin`, `all_for_reads`, dialled-only `attached()`"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F5",
+      "title": "HarnessRegistry::idle_wake_on and its table test",
+      "description": "Add `HarnessRegistry::idle_wake_on(harness, WakeCapability, channel_live) -> Option<IdleWakeOn{Composer, Channel, None}>` in src/harness/registry.rs. `has_idle_wake` stays as the `pub(crate)` oracle. `channel_live` is supplied by callers from `ModChannels::mod_suppressed(seat, now)`.\n\nowns: `HarnessRegistry::idle_wake_on` and `IdleWakeOn`\nconsumes: `WakeCapability` (F2)\n\nAcceptance:\n- [ ] The table test passes: `idle_wake_on(h, Composer(HERDR_TUI), c).map(|w| w != IdleWakeOn::None) == has_idle_wake(h)` for every registration `h` and both `c`.\n- [ ] Every cell of the spec table holds (claude, codex/hermes/agy, `synthetic_fourth`, unregistered `human`/`pi`; Composer/None × c).\n- [ ] No harness id appears in core outside the registry (check-harness-neutral passes with no new entry).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: WakeCapability and idle_wake_on; Key abstractions (HarnessRegistry extended)",
+      "files": [
+        "src/harness/registry.rs"
+      ],
+      "deps": [
+        "F2"
+      ],
+      "dep_reasons": {
+        "F2": "`WakeCapability` and `ComposerTraits::HERDR_TUI`"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F5w",
+      "title": "wake_status per-row host through all_for_reads",
+      "description": "`wake_status` (src/service/dispatch.rs:252) takes each row's own host (join on `seats.host_id`, not a column), looks it up through `all_for_reads`, and classifies through `idle_wake_on`. The protocol `WakeStatus` row gains an optional host id with `#[serde(default)]`. Herdr behaviour unchanged.\n\nowns: `WakeStatus` row host id field; per-row host lookup in `wake_status`\nconsumes: `all_for_reads` (F4); `idle_wake_on` (F5)\n\nAcceptance:\n- [ ] A two-host test (two fakes) shows each wake row classified against its own host.\n- [ ] An old-shape `WakeStatus` reply (no host id) decodes (skew test).\n- [ ] Herdr wake overdue/`wake=` renderings are byte-identical to before (existing golden tests pass).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: WakeCapability and idle_wake_on (wake_status changes); locator_hint, readonly, no_wake_reports (Wake rows gain host_id)",
+      "files": [
+        "src/service/dispatch.rs",
+        "src/protocol/results.rs",
+        "src/store/queries.rs",
+        "tests/service/"
+      ],
+      "deps": [
+        "F4",
+        "F5"
+      ],
+      "dep_reasons": {
+        "F4": "`all_for_reads`",
+        "F5": "`idle_wake_on`"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F6",
+      "title": "HostTopologies (+capability), SeatDirectory.name, K4 label keying, CLI label NativeCli sites removed",
+      "description": "Fix K4: `Command::HostTopologies` gated on local capability `topology.host_topologies_v1` (src/protocol/capabilities.rs, advertised from F); `#[serde(default)] pub name: Option<String>` on `SeatDirectory` (unset in F); `SeatSummary.directory`/`ParticipantLocation.remote` filled for local seats from `read_labels` keyed `(host_id, target)`; CLI selectors pool `HostTopologies`. Remove the label-read `NativeCli::new` sites (src/cli/mod.rs:706, :986, :995, src/cli/follow.rs:230); callers src/cli/human.rs, peer_locations.rs, seat_resolution.rs. Not a seam leaf; N.5 and H1 labels block on it.\n\nowns: `Command::HostTopologies` + `topology.host_topologies_v1`; `SeatDirectory.name` field; `(host_id, target)` label keying\nconsumes: `all_for_reads` (F4)\n\nAcceptance:\n- [ ] Two fake hosts that both own target `t1` (`FakeHostWorld`) show distinct labels in `seat list`, `thread participants` and delivery headers.\n- [ ] A source-scan test in tests/combined.rs allows `NativeCli::new` in src/cli only at the kept sites of the spec table (pane observation and launch/handoff) and fails on any other.\n- [ ] A new CLI against a daemon without `topology.host_topologies_v1` (skew test) prints `seat list`, participants and delivery headers with `-` labels and exits 0.\n- [ ] An old daemon's `SeatDirectory` reply decodes with `name: None`.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Display and selectors (SA14) F part; Local protocol skew (HostTopologies); Phase F scope (Labels and topology; 13 NativeCli sites)",
+      "files": [
+        "src/protocol/commands.rs",
+        "src/protocol/results.rs",
+        "src/protocol/capabilities.rs",
+        "src/service/seat_publisher.rs",
+        "src/cli/mod.rs",
+        "src/cli/follow.rs",
+        "src/cli/human.rs",
+        "src/cli/peer_locations.rs",
+        "src/cli/seat_resolution.rs",
+        "tests/combined.rs",
+        "tests/cli/"
+      ],
+      "deps": [
+        "F4"
+      ],
+      "dep_reasons": {
+        "F4": "`all_for_reads` for `read_labels`/`HostTopologies`"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F7",
+      "title": "caller_location.rs: CallerEnv/Located/CallerSite (Pane), env-read scan, recovery hints, hook gates",
+      "description": "Create src/cli/caller_location.rs, the CLI's only reader of caller-location env: `CallerEnv::{from_process, from_lookup}`, `locate(EnvMode::{Cli,Hook})`, `Located::{One, Ambiguous}`, `CallerLocator::Pane` plus recognition-only reading of `HC_TERMINAL_ID`/`HC_TERMINAL_SOCKET` for the guard, empty-value filtering, and `CallerSite`'s closed-match answers (`moved_target`, `relative_pane`, `person_origin_allowed`, `enrolls_on_first_use`, `attempts_continuity`, `host_scoped_lookup`, `cache_key`, `env_assignments`). Move reads at src/cli/mod.rs:311 and hook.rs:257-260 here; gates at hook.rs:1463, :1790, :3485, :4019, :4393 go through `locate(Hook)`; instance discovery takes `HERDR_ENV` from `CallerEnv`; watch.rs consumes `CallerSite` only for its target. `env_assignments` builds the three handoff recovery hints. TRUST-POLICY F vocabulary rows (host boot/incarnation per host; \"target\" = a host target) in the same commit.\n\nowns: CallerEnv / Located / CallerSite; `host::native::ENV_VARS` usage as the Pane family names\nconsumes: host scrub-only `ENV_VARS` consts (F1-scrub)\n\nAcceptance:\n- [ ] The env-read source scan in tests/combined.rs passes: no literal `HERDR_PANE_ID`, `HERDR_ENV`, `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, `HERDR_THREADS_SEAT_NAME`, `HERDR_THREADS_SEAT_READONLY`, `TMUX` or `TMUX_PANE` in src/cli outside caller_location.rs (and src/host/** `ENV_VARS` consts), and it fails on a planted literal (test of the test).\n- [ ] A precedence unit matrix (pane × `HERDR_ENV` × `HC_TERMINAL_ID` × empty values × missing socket) yields the expected `Located` for each cell; empty values are filtered as hook.rs did.\n- [ ] The three handoff recovery hints for a Pane site are byte-identical to pre-F output (golden test).\n- [ ] Hook outputs for every builtin harness are byte-identical to the pre-F golden surfaces (`tests/golden_surfaces.rs`).\n- [ ] With no family and no name, today's error text is unchanged (golden).\n- [ ] The type's responsibility comment states what it owns, what it does not, where new behaviour goes, and the pattern or role it plays (Key abstractions entry below).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Caller location (CallerEnv/CallerLocator/CallerSite; Precedence); TRUST-POLICY and AGENTS.md amendments (F vocabulary); Key abstractions (CallerEnv → Located → CallerSite)\n\nKey abstractions entry (CallerEnv → Located → CallerSite):\n**CallerEnv → Located → CallerSite** (src/cli/caller_location.rs): a new module with closed enums. It is the CLI's only reader of caller-location env.\n- Owns: reading and empty-filtering the env (names come from each host module's `ENV_VARS`), the precedence (valid name, then one family, then `Ambiguous`, then refusal), M14/M16/M17, the tmux hint (N2), and the per-site answers (`moved_target`, `relative_pane`, `person_origin_allowed`, `enrolls_on_first_use`, `attempts_continuity`, `host_scoped_lookup`, `cache_key`, `env_assignments`).\n- Hides: which env family located the caller, from mod.rs, hook.rs, watch.rs, handoff hints and instance discovery.\n- Must not: verify anything (that is `LocateCaller` in the daemon, per A2), or rank one family above another. No other src/cli file reads these variables (enforced by a source scan).\n- Relationships: depends on the host modules' `ENV_VARS` consts only, not on the hosts. Consumers match on `CallerSite`'s methods, not on `CallerLocator`.\n- Lifecycle: built once per CLI or hook invocation; immutable value.\n- Errors: `LocatorError` keeps \"invalid name\", \"terminal without socket\" and \"both families, unverified\" (M1, or M4 from H1 on) distinct. No family and no name keeps today's error text.\nDigest: CallerEnv / Located / CallerSite: own reading caller-location env and its precedence in the CLI. A new site kind is a `CallerLocator` variant plus arms in its closed match. No other src/cli file reads those variables.",
+      "files": [
+        "src/cli/caller_location.rs",
+        "src/cli/mod.rs",
+        "src/cli/hook.rs",
+        "src/cli/watch.rs",
+        "src/cli/instance.rs",
+        "src/cli/handoff.rs",
+        "src/cli/handoff_delivery.rs",
+        "src/host/native.rs",
+        "TRUST-POLICY.md",
+        "tests/combined.rs",
+        "tests/golden_surfaces.rs"
+      ],
+      "deps": [
+        "F1-scrub"
+      ],
+      "dep_reasons": {
+        "F1-scrub": "host `ENV_VARS` consts (native, named and hc scrub-only lists)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F8",
+      "title": "LocateCaller (Herdr candidate), transport peer pid, TUI leak guard M1/M3",
+      "description": "Add `Command::LocateCaller{candidates, subject}` → `LocateReply::{Verified{index, root}, Unverified{per_candidate}}` in src/service/locate.rs (new): walk from the subject (claim liveness pid, else connection peer pid) up `ProcessInfo` parents, first pid equal to a candidate's `target_root_process` wins; cache keyed `(candidates, subject, boot/epoch)`. Expose the peer pid in src/daemon/transport.rs:430 (`UCred::pid()`). Sent only for `Ambiguous`. In F only the Herdr candidate can verify: if it does the pane wins, else the CLI prints M1 and nothing binds; hooks exit 0 with M1 on stderr and inject M3 on lifecycle check-ins and compact re-entry only, or on the first delivering hook per binding for a `guidance_every_turn` adapter with no lifecycle event (daemon memory keyed by binding id). TRUST-POLICY A1 addendum, F part, in the same commit.\n\nowns: LocateCaller; transport peer pid; M1/M3 guard and the per-binding M3 memory\nconsumes: CallerEnv / Located / CallerSite (F7); HostPort capability answers (F2); `all_for_reads` (F4)\n\nAcceptance:\n- [ ] With both `HERDR_PANE_ID` and `HC_TERMINAL_ID` set, the seat binds only when the Herdr candidate verifies (fake process tree + fake_herdr); else M1 is printed and nothing binds.\n- [ ] Golden tests pin M1 (62 + tN bytes) and M3 (88 + fields bytes) exactly.\n- [ ] M3 appears on a lifecycle check-in and on compact re-entry and on no per-turn hook; a stand-in adapter with `guidance_every_turn` and no lifecycle event (Hermes shape) gets M3 exactly once per binding across several delivering hooks, and once more after a daemon restart.\n- [ ] `LocateCaller` is never sent for a `One` caller (counting client test); an unreachable host counts as unverified.\n- [ ] The peer pid is available on the transport connection (unit test).\n- [ ] The type's responsibility comment states what it owns, what it does not, where new behaviour goes, and the pattern or role it plays (Key abstractions entry below).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: LocateCaller; TUI leak guard (F); Model-visible strings (M1, M3); TRUST-POLICY F row (A1 addendum); Key abstractions (LocateCaller)\n\nKey abstractions entry (LocateCaller):\n**LocateCaller** (src/service/locate.rs): a new daemon service. It verifies an `Ambiguous` caller by nearest ancestor and checks for an inherited name.\n- Owns: the walk from the subject (liveness pid, else transport peer pid) up `ProcessInfo` parents against each candidate's `target_root_process`, its cache keyed on (candidates, subject, boot/epoch), and the server-environ read for the inherited-name refusal (M6). The environ reader is a plain function with a Linux `/proc` body and a macOS `KERN_PROCARGS2` body chosen by cfg, not a trait.\n- Hides: how a pid maps to a host target, and how a server's environ is read on each OS.\n- Must not: run for `One` callers (that would be adversarial verification, which TRUST-POLICY forbids), fall back to a candidate when none verifies, or fail closed when the environ is unreadable (`server_process() == None` skips the check).\n- Relationships: delegates to `HostPort::target_root_process`/`server_process` through `HostSessions::all_for_reads`. It knows no host kind.\n- Lifecycle: one per daemon. The cache is its only mutable state, shared behind the dispatch lock or a mutex.\n- Errors: `Verified{index, root}` vs `Unverified{per_candidate}`; an unreachable host counts as unverified. M6 is its own refusal code.\nDigest: LocateCaller: owns daemon-side nearest-ancestor verification of two-family callers and the inherited-name environ check. A new host candidate verifies through its `target_root_process`/`server_process` answers. Callers never verify `One` sites and never fall back when nothing verifies.",
+      "files": [
+        "src/service/locate.rs",
+        "src/service/mod.rs",
+        "src/protocol/commands.rs",
+        "src/daemon/transport.rs",
+        "src/cli/hook.rs",
+        "src/cli/caller_location.rs",
+        "TRUST-POLICY.md",
+        "tests/cli/hook.rs"
+      ],
+      "deps": [
+        "F7",
+        "F2",
+        "F4"
+      ],
+      "dep_reasons": {
+        "F7": "`Located::Ambiguous` and `locate(Hook)`",
+        "F2": "`target_root_process` answer",
+        "F4": "`all_for_reads`"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F9",
+      "title": "SeatsQuery.host and ResolveThreadQuery caller host (unsent); CLI site-capability check mechanism",
+      "description": "Add `SeatsQuery.host: Option<HostLocator>` and the caller host on `ResolveThreadQuery` (both `deny_unknown_fields`), sent only when `host_scoped_lookup()` (never in F, so pane bytes are unchanged). Add the CLI-side mechanism that checks a daemon local capability before sending a non-Pane site and prints the upgrade line when absent (no caps advertised yet; N adds `seat.host_sites_v1`, H1 `seat.terminal_sites_v1`).\n\nowns: `SeatsQuery.host` and `ResolveThreadQuery` caller-host fields; CLI site-capability gate mechanism\n\nAcceptance:\n- [ ] Pane-site request bytes for `seat list`/thread resolution are byte-identical to before (golden or serialization test).\n- [ ] The daemon answers `SeatsQuery.host` and the `ResolveThreadQuery` caller host host-scoped when set (daemon test with two fakes).\n- [ ] The site-capability check refuses with the configured line against a daemon lacking a test capability, and passes when present (unit test).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Local protocol skew; Phase F scope (SeatsQuery.host, CLI site-capability check)",
+      "files": [
+        "src/protocol/commands.rs",
+        "src/protocol/capabilities.rs",
+        "src/service/dispatch.rs",
+        "src/cli/site_capability.rs",
+        "tests/daemon/skew.rs"
+      ],
+      "deps": [
+        "F1"
+      ],
+      "dep_reasons": {
+        "F1": "main merged into run branch (base)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "F-gate",
+      "title": "F behavioural gate: herdr-release-smoke and wake-e2e self-test evidence",
+      "description": "Before N and H1 build on F, run `nice scripts/herdr-release-smoke` (hook-running stand-in Codex in an isolated Herdr server) against the newest release in `tests/herdr-releases.tsv` and `python3 scripts/wake-e2e.py --self-test` on the tree with every F leaf merged, and record the output in the run report. Quota-free and local; no real agents, never the shared Herdr server. Fix or file any regression it shows.\n\nAcceptance:\n- [ ] `scripts/herdr-release-smoke` passes against the newest listed Herdr release on the merged F tree (needs: F7) (needs: F8).\n- [ ] `python3 scripts/wake-e2e.py --self-test` passes.\n- [ ] The evidence (commands, SHA, results) is recorded in the run report under the run directory.\n- [ ] `scripts/check-no-leaked-processes --run-id \"$HT_LEAK_RUN_ID\"` is clean after the runs.\n- [ ] `scripts/check-no-leaked-processes` clean; no code change, or any fix carries its own per-change checks.\n\nSpec: Testing and evidence (F's behavioural gate); Phase F exit gate",
+      "files": [
+        "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/"
+      ],
+      "deps": [
+        "F1-scrub",
+        "F3",
+        "F4-audit",
+        "F5w",
+        "F6",
+        "F7",
+        "F8",
+        "F9"
+      ],
+      "dep_reasons": {
+        "F1-scrub": "all leaves (F phase gate)",
+        "F3": "all leaves (F phase gate)",
+        "F4-audit": "all leaves (F phase gate)",
+        "F5w": "all leaves (F phase gate)",
+        "F6": "all leaves (F phase gate)",
+        "F7": "all leaves (F phase gate)",
+        "F8": "all leaves (F phase gate)",
+        "F9": "all leaves (F phase gate)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "Split-seats",
+      "title": "Split file: src/store/seats.rs",
+      "description": "Move-only, behaviour-preserving split of src/store/seats.rs (6.5k lines) into a `src/store/seats/` module along its existing concerns so the N store leaves and H1c can run abreast: `publication.rs` (queue_publication, ensure_published, materialize_seat_created/retired), `observation.rs` (host observation, snapshot stage, reconciliation transitions, publication-absence closure, baseline holds), `resolution.rs` (resolve_*, bootstrap resolution, ordinary allocation), `operator.rs` (mutate_operator, rebind_unresolved_seat, operator_retire), `continuity.rs` (continuity candidates/decide_continuity), `cooperative.rs` (cooperative mapping/enroll, register_available, hook reconnect, mod views), `threshold.rs` (nudge threshold/wake-on). Re-exports keep every caller compiling; no logic changes.\n\nowns: file split of src/store/seats.rs into src/store/seats/*\n\nAcceptance:\n- [ ] It compiles; `crate::store::seats::*` paths used elsewhere are unchanged via re-exports.\n- [ ] The full suite is green (`nice cargo nextest run --locked --all-targets --all-features`) and behaviour is unchanged.\n- [ ] The diff is move-only (reviewer check: no logic edits; `git diff --stat` plus a moved-lines check).\n- [ ] Repo search for `store/seats.rs` (tests/store/mod_seat_view.rs and any docs/manifests) is updated to the new paths.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Decomposition hot-file split (seats.rs is declared by N3-*, N4, N7, H1c); Store seats (Key abstractions)",
+      "files": [
+        "src/store/seats.rs",
+        "src/store/seats/",
+        "tests/store/mod_seat_view.rs"
+      ],
+      "deps": [
+        "F1"
+      ],
+      "dep_reasons": {
+        "F1": "main merged into run branch (split after main's seats.rs changes land)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N1-host",
+      "title": "NamedHost, NamedSeatSource, SeatName, HostKind::Named, attach_builtin at daemon start",
+      "description": "Add `SeatName` (src/protocol/ids.rs: 1-64 bytes of `[A-Za-z0-9._-]`, no leading `-`/`.`, not seat-id-shaped) with the corpus test against the 0012 CHECK. Add `HostKind::Named` and `named` to the implemented set. Create src/host/named.rs: `NamedHost` (fixed boot/incarnation `named-host:node=<uuid>`, `observe_current_target(name)` present/generation 1/terminal `named:<name>`, enumeration through `NamedSeatSource::live_named` keyed on host id, `NonClosing`, `NoEvidence`, `seat_labels` pane label = name, wake `None`, non-Unsupported `Err` for unreachable methods, `native_launch_capability` Unsupported, handoff-into refusal M11 from the port answer), `ENV_VARS` (moved from the F scrub-only list). Reserved locator `/.herdr-threads/named-host`. The daemon calls `attach_builtin` at start. Reconcile (src/identity/reconcile.rs:325-335) skips absence closure for `NonClosing` hosts; snapshot rows carry `cooperative_named_seat`, never `CoherentVerified`. TRUST-POLICY A3 `cooperative_named_seat` vocabulary in the same commit.\n\nowns: NamedHost; NamedSeatSource; `SeatName`; `HostKind::Named` + implemented-set entry; `host::named::ENV_VARS`; reserved named-host locator\nconsumes: HostPort capability answers (F2); `attach_builtin` (F4); NodeDelta 0012 schema (F3)\n\nAcceptance:\n- [ ] The `SeatName` / CHECK corpus test passes: every name `SeatName::parse` accepts passes the 0012 CHECK, and every name the CHECK rejects `SeatName` rejects.\n- [ ] A named seat missing from an enumeration stays resolved: reconcile over a `NonClosing` host yields no `BeginRetirement` or `MarkUnresolved` (reconcile test).\n- [ ] The daemon starts with the named host in the built-in slot and not in `attached()`; `HostLocator::parse` of the reserved path never stats (test).\n- [ ] `NamedHost` answers: kind Named, wake `None`, closure `NonClosing`, archival `NoEvidence`, `server_process` None, labels pane = name (unit tests).\n- [ ] Golden test pins M11 (53 + name bytes).\n- [ ] The type's responsibility comment states what it owns, what it does not, where new behaviour goes, and the pattern or role it plays (Key abstractions entry below).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Named host (Observation and enumeration; Locator); Display and selectors (M11); Key abstractions (NamedHost)\n\nKey abstractions entry (NamedHost):\n**NamedHost** (src/host/named.rs): a new `HostPort` impl. The built-in host is never dialled; its enumeration is a store read.\n- Owns: the fixed per-node boot and incarnation, `observe_current_target(name)` (always present, generation 1), enumeration through `NamedSeatSource::live_named` keyed on host id, `NonClosing`, `NoEvidence`, `seat_labels` (pane label = name), `ENV_VARS`. In N2 it also owns the tmux wake path: per-binding hint verification (server pid plus nearest ancestor), `capture-pane` read, `send-keys` typing and the per-target wake answer.\n- Hides: that \"presence\" is cooperative and comes from the store. tmux is a wake path of this host, not a host of its own (SA18).\n- Must not: close by absence (reconcile skips that step for `NonClosing`), arm `baseline_hold_unclaimed` or recovery holds, satisfy `wait:host`, move or rebind a seat when a tmux check fails (that only disables wake for the binding), or report wake `Composer` for a target without a verified hint.\n- Relationships: composes `NamedSeatSource`, a narrow store read the daemon injects. Dependency points host → store-read trait, never store → host. The tmux client runs through the existing `ProcessCommand`, and the composer read goes through the harness's existing `ComposerPolicy`.\n- Lifecycle: the daemon creates it at start and installs it in `HostSessions`' built-in slot through `attach_builtin`. It lives for the whole process. The tmux hints live in daemon memory per binding and are lost on restart (accepted limit).\n- Errors: tmux command failure or deadline (2 s) → wake `None` for that binding only. A seat name that fails to parse → it is never observed.\nDigest: NamedHost: owns the built-in, never-dialled named host: store-read enumeration, `NonClosing`, fixed boot, and the N2 tmux wake path per verified binding. New named-seat host behaviour goes in src/host/named.rs. Callers never close, hold or rebind named seats by absence or by a failed tmux check.",
+      "files": [
+        "src/protocol/ids.rs",
+        "src/ports.rs",
+        "src/host/named.rs",
+        "src/host/mod.rs",
+        "src/store/named_seats.rs",
+        "src/identity/reconcile.rs",
+        "src/app.rs",
+        "src/daemon/mod.rs",
+        "TRUST-POLICY.md",
+        "tests/identity/reconcile.rs",
+        "tests/combined.rs"
+      ],
+      "deps": [
+        "F4",
+        "F3"
+      ],
+      "dep_reasons": {
+        "F4": "`attach_builtin` and the built-in slot",
+        "F3": "`herdr_hosts.kind`, `herdr_hosts_one_named`, `seats.name` CHECK"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N1-site",
+      "title": "Named caller site: CallerLocator::Named site answers, named resolve command shape, seat.host_sites_v1 gate (M13)",
+      "description": "Add `CallerLocator::Named` to caller_location.rs (precedence rule 1: a valid name replaces only the target). Hooks, `check_in` and `report_binding_event` take the Named site without `HERDR_ENV`; the named resolve command carries the name as target at the reserved locator; `host_scoped_lookup` sends `SeatsQuery.host`; `env_assignments` emits `HERDR_THREADS_SEAT_NAME=<n>` for recovery hints. Advertise `seat.host_sites_v1` and gate Named sites on it (M13). Append M2 to M1/M3. The refusals (M14/M15/M16), watch S3, Hermes bridge, skill K1 and the AGENTS.md line are in N1-site-rest.\n\nowns: `CallerLocator::Named` site answers; `seat.host_sites_v1` capability and its CLI gate; named resolve command shape (name as target at the reserved locator)\nconsumes: CallerEnv / Located / CallerSite (F7); NamedHost / `SeatName` (N1-host); LocateCaller M1/M3 (F8); `SeatsQuery.host` + site-capability mechanism (F9)\n\nAcceptance:\n- [ ] Golden tests pin M2 (29 B suffix) and M13 (63 B).\n- [ ] A new CLI with a Named site against a daemon without `seat.host_sites_v1` prints M13 and sends no Named site (skew test).\n- [ ] The recovery hint built for a named caller through `env_assignments` contains `HERDR_THREADS_SEAT_NAME=<n>` (unit golden).\n- [ ] A hook and a CLI resolve with `HERDR_THREADS_SEAT_NAME` set and no `HERDR_ENV` send the Named site with the name as target at the reserved locator (unit test of the command shape).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Caller location (Precedence); Local protocol skew (seat.host_sites_v1, M13); Model-visible strings (M2, M13)",
+      "files": [
+        "src/cli/caller_location.rs",
+        "src/cli/hook.rs",
+        "src/cli/mod.rs",
+        "src/cli/site_capability.rs",
+        "src/protocol/capabilities.rs",
+        "tests/cli/"
+      ],
+      "deps": [
+        "N1-host",
+        "F7",
+        "F8",
+        "F9"
+      ],
+      "dep_reasons": {
+        "N1-host": "`SeatName` and `host::named::ENV_VARS`",
+        "F7": "CallerEnv / Located / CallerSite",
+        "F8": "M1/M3 code (M2 appended)",
+        "F9": "`SeatsQuery.host` and the site-capability gate mechanism"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N1-site-rest",
+      "title": "Named site remainder: M14/M15/M16 refusals, watch S3, Hermes bridge, skill K1, AGENTS.md line",
+      "description": "Refusals on the Named site: invalid name → M16; explicit cooperative flags + name → M14; `me init` under a name → M15. watch.rs uses the Named site (spike S3: mod `watch` inherits the session env and never stops on `no_pane`; node test of register.js spawn env). Hermes bridge (was N.9): `PANE_ENV` in integrations/hermes/__init__.py:37 carries `HERDR_THREADS_SEAT_NAME`/`HERDR_THREADS_SEAT_READONLY`; the gateway branch (:345-350) accepts a client env holding a name. Skill K1 and AGENTS.md \"What we do today\" named-seat line in the same commit.\n\nowns: M14/M15/M16 refusals; watch on the Named site; Hermes bridge name handling (`PANE_ENV`); skill K1; AGENTS.md named-seat line\nconsumes: `CallerLocator::Named` site answers and named resolve command shape (N1-site); CallerEnv / Located / CallerSite (F7)\n\nAcceptance:\n- [ ] Golden tests pin M14 (63 + flag), M15 (82 B), M16 (92 B).\n- [ ] An invalid name is refused with M16; `me init` under a name with M15; an explicit cooperative flag with a name with M14.\n- [ ] S3: a `watch` integration test with a Named site never stops on `no_pane`; the node test of integrations/claude/mod/hooks/register.js shows the spawned watch inherits the session env.\n- [ ] Hermes `test_bridge.py` covers a client env with a name and no `HERDR_PANE_ID`.\n- [ ] K1 (106 B) is in SKILL.md once; skill tests pass.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Display and selectors (SA14); Role semantics (M15); Phase N scope (Hermes bridge, Skill K1); Model-visible strings (M14-M16, K1)",
+      "files": [
+        "src/cli/caller_location.rs",
+        "src/cli/watch.rs",
+        "src/cli/me.rs",
+        "integrations/hermes/__init__.py",
+        "integrations/hermes/test_bridge.py",
+        "integrations/claude/mod/hooks/register.js",
+        "integrations/skill/SKILL.md",
+        "AGENTS.md",
+        "tests/cli/"
+      ],
+      "deps": [
+        "N1-site"
+      ],
+      "dep_reasons": {
+        "N1-site": "`CallerLocator::Named` site answers and named resolve command shape"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N1-disc",
+      "title": "Instance discovery for named sites (SA1), default state dir, lazy Herdr endpoint, doctor two stores",
+      "description": "Implement SA1's discovery order for non-Pane sites in src/cli/instance.rs (`--state-dir`, `HERDR_PLUGIN_STATE_DIR`, hook-baked `--state-dir`, today's discovery when `HERDR_ENV`/`HERDR_SESSION`/`HERDR_CONFIG_PATH` is present including the `herdr plugin list` query, else the default dir). Extend `default_state_dir_to_create` (:192): for Named (and later Terminal) sites it returns the default dir, created 0700, only when no Herdr is configured and no `herdr` on PATH; otherwise one `herdr plugin list` query or a refusal asking for `--state-dir`. The Herdr host endpoint resolves lazily for non-Pane sites. `doctor` flags two live stores for one user.\n\nowns: named-site instance discovery and default state dir creation; lazy Herdr endpoint for non-Pane sites\nconsumes: CallerEnv / Located / CallerSite incl. Named (N1-site)\n\nAcceptance:\n- [ ] `default_state_dir_to_create` with a PATH holding no `herdr` and no `HERDR_CONFIG_PATH` creates the dir (0700); with a stub `herdr` on PATH it does not.\n- [ ] Beside Herdr (an isolated, non-default Herdr session): a named caller with Herdr env uses the Herdr command group's store; the default dir is not created when Herdr is configured or on PATH.\n- [ ] `doctor` flags two live stores for one user (test with two scratch state dirs).\n- [ ] A Pane-site discovery path is unchanged (existing instance tests pass).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Instance discovery with a name (SA1, D2); Standalone install and daemon start (state dir); Phase N scope (Discovery, lazy Herdr host)",
+      "files": [
+        "src/cli/instance.rs",
+        "src/cli/doctor.rs",
+        "src/cli/caller_location.rs",
+        "tests/cli/"
+      ],
+      "deps": [
+        "N1-site"
+      ],
+      "dep_reasons": {
+        "N1-site": "`CallerSite` Named variant (site kind for discovery)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N-install",
+      "title": "Standalone (Herdr-less) install: install.sh setup, install.json marker, baked --state-dir, leftover check",
+      "description": "scripts/install.sh runs `setup` whenever it can (today it skips unless the plugin is linked, :909-911) and keeps `herdr plugin link` only when `herdr` is present. Installer and `setup` write `<state>/node/install.json {\"mode\":\"standalone\"}`; src/harness/setup.rs bakes `--state-dir` when no `herdr` is on PATH; the leftover check (src/cli/instance.rs:271-290) honours the marker. With `herdr` present, install.sh and `setup` are byte-identical to today. Skill/setup text says to set the name per command.\n\nowns: `<state>/node/install.json` standalone marker; Herdr-less `setup` baking `--state-dir`\n\nAcceptance:\n- [ ] With no `herdr` on PATH, `scripts/install.sh` into a scratch HOME/CLAUDE_CONFIG_DIR/CODEX_HOME runs `setup`, installs hooks with a baked `--state-dir`, writes `install.json`, and `instance`/`doctor` report no leftover.\n- [ ] With a stub `herdr` on PATH, install.sh output and the installed hooks are byte-identical to today's (golden).\n- [ ] Never writes the real user config (tests use scratch HOME).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Standalone install and daemon start (Phase split: N owns it); Phase N scope (Standalone install)",
+      "files": [
+        "scripts/install.sh",
+        "src/harness/setup.rs",
+        "src/cli/setup.rs",
+        "src/cli/instance.rs",
+        "tests/installer_integrations.rs",
+        "tests/setup_cli.rs"
+      ],
+      "deps": [
+        "F1"
+      ],
+      "dep_reasons": {
+        "F1": "main merged into run branch (base)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N3-alloc",
+      "title": "Store: named allocation on the named host with the M8 creation flag; reads create nothing",
+      "description": "In src/store/seats/ (after the split): allocate a named seat with `seats.name` on the named host and return a creation flag the CLI renders as M8; reads create nothing is enforced by the resolve path (seat-acting calls only). TRUST-POLICY typo-seat accepted limit in the same commit. Named continuity (C1), cross-kind rebind refusal, the `Closed` guard, `wait:host` exclusion and S1 are in N3-c1.\n\nowns: named seat allocation and M8 creation flag\nconsumes: NamedHost (N1-host); NodeDelta 0012 schema (F3); HostKind implemented set (F2); named resolve command shape (N1-site)\n\nAcceptance:\n- [ ] A first seat-acting resolve under a new name allocates one seat and the CLI prints M8 once (golden, 31 + fields B); a second resolve of the same name binds the same seat.\n- [ ] A read (`inbox`, `seat list`, `thread show`) under an unknown name creates no seat (daemon test).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: seats.name and the literal 'named'; Display and selectors (auto-creation); TRUST-POLICY N row (typo-seat limit)",
+      "files": [
+        "src/store/seats/resolution.rs",
+        "src/service/dispatch.rs",
+        "src/cli/mod.rs",
+        "TRUST-POLICY.md",
+        "tests/store/"
+      ],
+      "deps": [
+        "N1-host",
+        "Split-seats",
+        "F3",
+        "N1-site"
+      ],
+      "dep_reasons": {
+        "N1-host": "NamedHost and `SeatName`",
+        "Split-seats": "file split",
+        "F3": "`seats.name` and `seats_live_name`",
+        "N1-site": "named resolve command shape (name as target at the reserved locator)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N3-c1",
+      "title": "Store: named continuity (C1), cross-kind rebind refusal, Closed guard, wait:host, S1",
+      "description": "Add the fourth C1 path \"named continuity\" (an ordinary resolve whose name equals an unresolved named seat's name, with no live seat of that name, reattaches it, recorded `cooperative_named_seat`; retire ends continuity, a retired name mints a new seat). Cross-kind rebind refusal in `rebind_unresolved_seat` (named never onto pane/terminal and the converse; rebind also skips kinds outside the implemented set). Store guard refuses `RetireReason::Closed` for a named seat (SA3). The named host never satisfies `wait:host`. TRUST-POLICY N rows: named rule (not host evidence, never closes by absence, cross-kind refusal) and the C1 \"named continuity\" row, in the same commit.\n\nowns: named continuity C1 path; cross-kind rebind refusal; `Closed` guard on named seats; `wait:host` exclusion of the named host\nconsumes: named seat allocation (N3-alloc); NamedHost (N1-host); HostKind implemented set (F2)\n\nAcceptance:\n- [ ] Named continuity: an unresolved named seat is reattached by the next resolve of its name, recorded `cooperative_named_seat`.\n- [ ] Cross-kind rebind: a store test shows a named seat never rebinds onto a pane or terminal target, and an unresolved pane seat never rebinds onto the named host.\n- [ ] `RetireReason::Closed` on a named seat is refused by the store.\n- [ ] The named host never satisfies `wait:host` (store test).\n- [ ] S1: named allocation/enumeration race under the lifecycle fence and restart `CarryForward` answered by a `FakeHostWorld` store/reconcile test.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Named host (Continuity: the C1 row; Observation); TRUST-POLICY N row; Spikes S1",
+      "files": [
+        "src/store/seats/continuity.rs",
+        "src/store/seats/operator.rs",
+        "src/store/seats/observation.rs",
+        "src/store/seats/resolution.rs",
+        "TRUST-POLICY.md",
+        "tests/store/",
+        "tests/identity/"
+      ],
+      "deps": [
+        "N3-alloc",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "N3-alloc": "named seat allocation (seats to reattach, rebind and guard)",
+        "Split-seats": "file split"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N3-restore",
+      "title": "Store: restore rules for named and unnamed seats (SA4, D12)",
+      "description": "Change the local-origin restore in `materialize_seat_created`: a row with `display_name` goes onto the named host, unresolved, at target = name; with a live seat of that name it stays unresolved for operator repair (no merge, no pick); an unnamed row is placed automatically only when every dialled host attached or remembered on the node has one kind, else held for the operator; rows of kinds outside the implemented set are skipped. TRUST-POLICY restore rule in the same commit.\n\nowns: restore placement rules\nconsumes: named allocation (N3-alloc); HostKind implemented set (F2)\n\nAcceptance:\n- [ ] Restore: a seat with `display_name` comes back unresolved on the named host; with a live seat of that name it stays for the operator (store test; S5 named half).\n- [ ] An unnamed restored row on a single-kind node is placed as today; on a node with two dialled kinds (two fakes with distinct kinds) it is held.\n- [ ] The named host (stamped at every start) never wins the `last_attached_at` placement.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Named host (Restore SA4, D12); Spikes S5 (named half)",
+      "files": [
+        "src/store/seats/publication.rs",
+        "TRUST-POLICY.md",
+        "tests/store/"
+      ],
+      "deps": [
+        "N3-alloc",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "N3-alloc": "named seat placement on the named host (unresolved at target = name)",
+        "Split-seats": "file split"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N3-holder",
+      "title": "Store: live-holder guard (SA16, D19) and M7",
+      "description": "In the enroll transaction, when a named seat would gain or reconnect a top-level binding, check the seat's other connected top-level bindings with `LivenessFingerprint::is_alive`; refuse with `seat_name_in_use` (M7) when a holder is alive, differs from the caller and neither is in the other's parent chain. Allowed: same process, ancestors/descendants, subagents (`agent_id`), read-only bindings, Codex forks and Hermes under existing rules. Plumb `&dyn ProcessInfo` into the transaction. TRUST-POLICY live-holder row and the same-user accepted limit in the same commit.\n\nowns: live-holder guard and `seat_name_in_use`\nconsumes: named allocation (N3-alloc)\n\nAcceptance:\n- [ ] A second, unrelated, live process with the same name is refused with M7 (golden, 59 + fields B); after the holder exits (or its pid is reused) the name binds at once.\n- [ ] A descendant of the holder, a subagent and a `readonly` binding are admitted beside a live holder.\n- [ ] SA7 concurrency test: two concurrent unrelated enrolls of one name yield exactly one binding.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Live-holder guard (SA16, D19); Model-visible strings (M7)",
+      "files": [
+        "src/store/seats/cooperative.rs",
+        "src/service/dispatch.rs",
+        "TRUST-POLICY.md",
+        "tests/store/"
+      ],
+      "deps": [
+        "N3-alloc",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "N3-alloc": "named seat allocation (seat to hold)",
+        "Split-seats": "file split"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N3-readonly",
+      "title": "Read-only bindings (D3): HERDR_THREADS_SEAT_READONLY",
+      "description": "`readonly=1` is recorded on the binding when the caller env has `HERDR_THREADS_SEAT_READONLY=1` (read in caller_location.rs, carried in the resolve command). A readonly binding's display never ACKs receipt-bearing rows and its turn hooks skip them; it reads and sends normally. TRUST-POLICY role ACK semantics and read-only bindings (SA7) and the AGENTS.md `HERDR_THREADS_SEAT_READONLY` line in the same commit.\n\nowns: `occupant_bindings.readonly` semantics\nconsumes: NodeDelta 0012 `readonly` column (F3); CallerEnv / Located / CallerSite (N1-site)\n\nAcceptance:\n- [ ] Two concurrent bindings of one named seat, one a headless `claude -p`-style stand-in with `HERDR_THREADS_SEAT_READONLY=1`: the readonly binding's display never ACKs receipt-bearing rows and its turn hooks skip them, while it reads and sends normally; the other binding's display ACKs.\n- [ ] Pane-site behaviour without the variable is unchanged (existing receipt tests pass).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: locator_hint, readonly, no_wake_reports (readonly); Role semantics (SA7, SA8, D3)",
+      "files": [
+        "src/cli/caller_location.rs",
+        "src/protocol/commands.rs",
+        "src/store/seats/cooperative.rs",
+        "src/store/bindings.rs",
+        "src/store/receipts.rs",
+        "src/store/read_cursors.rs",
+        "src/cli/hook.rs",
+        "TRUST-POLICY.md",
+        "AGENTS.md",
+        "tests/store/"
+      ],
+      "deps": [
+        "N1-site",
+        "N3-alloc"
+      ],
+      "dep_reasons": {
+        "N1-site": "Named site resolve command (carries the readonly flag)",
+        "N3-alloc": "named allocation (bindings of a named seat)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N3-presence",
+      "title": "Named presence (SA17): no baseline/recovery holds, structural boot carry, recipient_unavailable",
+      "description": "Named presence follows the pane precedent: a named seat goes offline only when its bindings end and then shows \"inactive, unavailable since T\" in seat list/participants/inspect, `offline` to peers, and one `recipient_unavailable` per episode for ACK and p0 sends. Fixes: (b) the named host never arms `baseline_hold_unclaimed` or recovery holds; (c) the named reconcile stamps its fixed structural boot/incarnation so the C4 carry keeps live named bindings available across a daemon restart. TRUST-POLICY named presence row in the same commit.\n\nowns: named presence semantics\nconsumes: NamedHost fixed boot (N1-host); named allocation (N3-alloc)\n\nAcceptance:\n- [ ] One unresolved named row does not silence liveness of the live named bindings on the same host (no `baseline_hold_unclaimed`, no recovery hold; store test).\n- [ ] S2: the first empty named publication clears holds without `baseline_hold_unclaimed` (store test).\n- [ ] A named seat whose bindings ended shows \"inactive, unavailable since T\"; after a daemon restart its live bindings stay available.\n- [ ] One `recipient_unavailable` per offline episode for ACK and p0 sends to a named seat.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Presence (SA17)",
+      "files": [
+        "src/store/seats/observation.rs",
+        "src/store/local_seat_status.rs",
+        "src/identity/reconcile.rs",
+        "TRUST-POLICY.md",
+        "tests/store/"
+      ],
+      "deps": [
+        "N3-alloc",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "N3-alloc": "named allocation (named seats with bindings)",
+        "Split-seats": "file split"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N3-retire",
+      "title": "Self-retire: retire_seat, Command::SelfRetire, seat retire --self (SA6, D5)",
+      "description": "Factor `retire_seat(tx, seat, wire, label)` out of `operator_retire`. Add `Command::SelfRetire{claim, operation}` listed in `Command::accountable_claim`, routed through `cooperative_mutation` (subagents refused); wire `RetireReason::Operator`, local `allocation_decisions(kind='operator_retire', operator_label='cooperative_self_retire:<binding>')`; refused for pane/terminal seats (M20) and while another connected top-level binding exists unless `--force` (M18); idempotency scope `self-retire:<seat>:<operation>` checked before the live-seat precheck (S4). CLI `seat retire --self` prints one compact row per abandoned item plus `retired <seat>`. TRUST-POLICY A3 `cooperative_self_retire` and the replicates-as-Operator limit in the same commit.\n\nowns: `retire_seat`; `Command::SelfRetire`; `seat retire --self`\nconsumes: named allocation (N3-alloc); CallerEnv / Located / CallerSite Named (N1-site)\n\nAcceptance:\n- [ ] `seat retire --self` retires, lists abandoned items, replicates as Operator, shows `cooperative_self_retire` in `seat inspect`, and reusing the name mints a new seat.\n- [ ] Refused for pane seats (M20, 57 B golden) and subagents; refused while another connected top-level binding exists unless `--force` (M18, 65 + fields golden).\n- [ ] S4: a replay returns the stored result (daemon test of the idempotency scope order).\n- [ ] `human seat retire SEAT --operator` retires a named seat, and the next use of the name mints a new seat.\n- [ ] An old daemon answers `SelfRetire` with the existing upgrade error.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Self-retire (SA6, D5); Model-visible strings (M18, M20, retire rows)",
+      "files": [
+        "src/store/seats/operator.rs",
+        "src/protocol/commands.rs",
+        "src/service/dispatch.rs",
+        "src/cli/human.rs",
+        "src/cli/mod.rs",
+        "TRUST-POLICY.md",
+        "tests/daemon/",
+        "tests/cli/"
+      ],
+      "deps": [
+        "N3-alloc",
+        "N1-site",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "N3-alloc": "named allocation (named seat to retire, name reuse)",
+        "N1-site": "Named site (`seat retire --self` caller)",
+        "Split-seats": "file split"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N4-inherit",
+      "title": "Inherited-name refusal (SA2, D1): server environ reader, resolve-command locator_hint, M6",
+      "description": "When a host candidate sits beside the name, the resolve command carries it as `locator_hint`; the daemon reads the environ of the host's `server_process()` (Linux `/proc/<pid>/environ`, macOS `KERN_PROCARGS2` behind cfg, same user only; a plain cfg-selected function in src/service/locate.rs) and refuses with M6 if it carries the same name, never falling back. NativeCli `server_process` = the socket peer pid the incarnation witness records. TRUST-POLICY inherited-name refusal row and accepted limits (non-host parent only observable; unreadable env skips the check) in the same commit.\n\nowns: server environ reader; `locator_hint` field on the named resolve command; M6\nconsumes: LocateCaller (F8); HostPort `server_process` answer (F2); named resolve command shape (N1-site); named allocation (N3-alloc)\n\nAcceptance:\n- [ ] E1 (Linux reader): the `/proc` environ reader is tested against a child spawned through `test_support::spawn` with a known env; the macOS `KERN_PROCARGS2` parser is unit-tested on a synthetic buffer behind `cfg(target_os=\"macos\")` and returns `None` on any failure.\n- [ ] A name carried by the (isolated) Herdr server's environ is refused with M6 (`<host>` = `Herdr`, golden 119 + fields) and never bound; a name set per command inside that server's pane is honoured. If the isolated Herdr helper cannot start, the live half is recorded as remaining evidence and the fake-peer test stands.\n- [ ] `server_process() == None` skips the check (unit test).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Inherited-name refusal (SA2, D1); Spikes E1; Model-visible strings (M6)",
+      "files": [
+        "src/service/locate.rs",
+        "src/host/native.rs",
+        "src/protocol/commands.rs",
+        "src/cli/caller_location.rs",
+        "TRUST-POLICY.md",
+        "tests/daemon/"
+      ],
+      "deps": [
+        "F8",
+        "N1-site",
+        "N3-alloc"
+      ],
+      "dep_reasons": {
+        "F8": "LocateCaller service module (src/service/locate.rs)",
+        "N1-site": "Named site resolve command (carries `locator_hint`)",
+        "N3-alloc": "named binding enroll path"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N4-hint",
+      "title": "Persisted locator_hint, M9 second-locator notice, seat inspect by locator",
+      "description": "Each named binding records `occupant_bindings.locator_hint`; a binding with a hint no earlier row of the seat carries, while another distinct hint exists, returns M9 (persisted rows, so once per (seat, locator) across restarts). `seat inspect` lists bindings by locator.\n\nowns: `occupant_bindings.locator_hint` recording; M9; `seat inspect` by-locator listing\nconsumes: `locator_hint` on the resolve command (N4-inherit); named allocation (N3-alloc)\n\nAcceptance:\n- [ ] M9 (41 + fields) fires on the first binding from a second locator and not on a repeat from either locator, also after a daemon restart; `seat inspect` lists the bindings by locator.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: locator_hint; Model-visible strings (M9)",
+      "files": [
+        "src/store/seats/cooperative.rs",
+        "src/store/seats/resolution.rs",
+        "src/cli/human.rs",
+        "tests/store/",
+        "tests/daemon/"
+      ],
+      "deps": [
+        "N4-inherit",
+        "N3-alloc",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "N4-inherit": "`locator_hint` field on the named resolve command",
+        "N3-alloc": "named binding enroll path",
+        "Split-seats": "file split"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N4-paneform",
+      "title": "Pane-form allocation refusal M10 (SA9)",
+      "description": "Pane-form allocation of a pane whose current named binding hinted it is refused with M10 (SA9).\n\nowns: M10 pane-form allocation refusal\nconsumes: persisted `locator_hint` (N4-hint); named allocation (N3-alloc)\n\nAcceptance:\n- [ ] Pane-form allocation of a named agent's pane is refused with M10 (57 + fields golden).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Display and selectors (M10, SA9); Model-visible strings (M10)",
+      "files": [
+        "src/store/seats/resolution.rs",
+        "src/cli/caller_location.rs",
+        "tests/store/"
+      ],
+      "deps": [
+        "N4-hint",
+        "N3-alloc",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "N4-hint": "persisted `occupant_bindings.locator_hint`",
+        "N3-alloc": "named allocation",
+        "Split-seats": "file split"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N5",
+      "title": "Named display and selectors (SA14, D4), handoff out of a named seat",
+      "description": "Fill `SeatDirectory.name`; `thread show`, delivery `from` headers, `seat list`, participants and `seat inspect` render the name through the pane label with workspace and tab `-` and the name once (SA17 fix (d)). A bare selector token reads as a name only when no pane-path reading matches; exact seat ids always work. Handoff out of a named seat into a Herdr pane works when a Herdr host is reachable (lazy endpoint).\n\nowns: named label rendering and name selector reading\nconsumes: `HostTopologies`/`SeatDirectory.name` (F6); NamedHost `seat_labels` (N1-host); named allocation (N3-alloc)\n\nAcceptance:\n- [ ] A golden test pins the label rendering: workspace and tab `-`, the name shown once, in `thread show`, delivery `from` headers and `seat inspect`.\n- [ ] A bare selector token that matches a pane path reads as the pane, not as a seat of that name; an exact seat id always resolves.\n- [ ] Handoff from a named seat into a pane of an isolated Herdr session works, with the Herdr endpoint resolved lazily (needs: N1-disc).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Display and selectors (SA14, D4); Presence fix (d)",
+      "files": [
+        "src/service/seat_publisher.rs",
+        "src/protocol/results.rs",
+        "src/cli/seat_resolution.rs",
+        "src/cli/human.rs",
+        "src/cli/handoff.rs",
+        "tests/cli/seat_selector.rs",
+        "tests/cli/golden/"
+      ],
+      "deps": [
+        "F6",
+        "N3-alloc",
+        "N1-disc"
+      ],
+      "dep_reasons": {
+        "F6": "`HostTopologies` and `SeatDirectory.name`",
+        "N3-alloc": "named seats with `seats.name`",
+        "N1-disc": "lazy Herdr endpoint for non-Pane sites"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N6",
+      "title": "No-wake reports: persisted no_wake_reports, WakeBlock::NoWake, wake=no_wake rendering",
+      "description": "`wake_status` maps an effective capability `None` to `WakeBlock::NoWake`, persisted once per (sender, seat) per no-wake episode in `no_wake_reports` (row written only while `None`, deleted on retire of either seat and when a read finds `Composer`); the in-memory `first` set stays for Composer hosts. Overdue text reads `wake=no_wake`. AGENTS.md \"What we do today\" line for persisted no-wake reports in the same commit. The inert threshold (M12), the ` offline` suffix (M19) with poke/reminder suppression, S6, the host-side tripwire and the degradation docs are in N6-rest.\n\nowns: `no_wake_reports` semantics and `WakeBlock::NoWake`; `wake=no_wake` rendering\nconsumes: `idle_wake_on`/`wake_status` (F5, F5w); NamedHost (N1-host); named allocation (N3-alloc)\n\nAcceptance:\n- [ ] One `wake=no_wake` per (sender, seat) across a daemon restart and a mod channel flap; a hooks-only Claude named seat classifies `None`; a live-mod Claude named seat reports no block.\n- [ ] Golden overdue-line test: a named seat's overdue line carries `wake=no_wake`; a pane seat's overdue bytes are unchanged.\n- [ ] A `no_wake_reports` row is deleted on retire of either seat and when a read finds `Composer`.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: locator_hint, readonly, no_wake_reports; WakeCapability and idle_wake_on; AGENTS.md N (persisted no-wake reports)",
+      "files": [
+        "src/service/dispatch.rs",
+        "src/store/no_wake_reports.rs",
+        "src/cli/wake_warning.rs",
+        "AGENTS.md",
+        "tests/service/",
+        "tests/cli/"
+      ],
+      "deps": [
+        "F5w",
+        "F3",
+        "N1-host",
+        "N3-alloc"
+      ],
+      "dep_reasons": {
+        "F5w": "per-row-host `wake_status`",
+        "F3": "`no_wake_reports` table",
+        "N1-host": "NamedHost wake `None` and test-only constructor",
+        "N3-alloc": "named seats for the overdue/threshold tests"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N6-rest",
+      "title": "No-wake remainder: inert threshold M12, M19 offline with poke/reminder suppression, S6 doctor, host-side tripwire, K2/K3, rules 5/6 docs",
+      "description": "` offline` suffix (M19) on `wake=no_wake` for named/hc seats whose bindings ended. Pokes and recipient-side deadline reminders are not sent to such a seat. `seat threshold` records and prints M12 (threshold inert on a no-wake seat). Host-side tripwire (every implemented kind, test-only constructor, target without a verified wake path → SKILL.md must explain `wake=no_wake`); rewrite `idle_wake_classification_of_the_builtins` doc/failure text to point at it. Skill K2, K3; TRUST-POLICY A4 (no composer wake, rules 5/6 degraded, threshold inert); AGENTS.md rules 5/6 exception and \"What we do today\" inert-threshold line — same commit. Spike S6 (doctor on never-settled wake_work).\n\nowns: host-side no-wake tripwire; M12, M19, K2, K3; poke/reminder suppression for offline no-wake seats; rules 5/6 degradation docs (TRUST-POLICY A4, AGENTS.md rules 5/6)\nconsumes: `no_wake_reports` / `WakeBlock::NoWake` / `wake=no_wake` rendering (N6); named allocation (N3-alloc); NamedHost test-only constructor (N1-host)\n\nAcceptance:\n- [ ] Golden overdue-line test: a named seat's overdue line ends `wake=no_wake offline` (M19) once its bindings ended.\n- [ ] A deadline on an item to a no-wake named seat produces only the sender's overdue line: no poke and no recipient-side reminder.\n- [ ] `seat threshold` on a named seat records the value and prints M12 (57 + seat golden).\n- [ ] The host-side tripwire passes with K2 in SKILL.md and fails (test of the test, on a copy) without it; the rewritten harness tripwire passes.\n- [ ] K2 (77 B) and K3 (+6 B) are in SKILL.md; skill tests pass.\n- [ ] S6: `doctor` on never-settled `wake_work` of named seats is answered by a daemon test.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Rules 5/6 degradation (SA11); Presence (M19); TRUST-POLICY N row (A4); AGENTS.md N (rules 5/6, inert threshold); Model-visible strings (M12, M19, K2, K3); Spikes S6",
+      "files": [
+        "src/cli/wake_warning.rs",
+        "src/store/poke.rs",
+        "src/cli/nudge_threshold.rs",
+        "src/harness/registry.rs",
+        "src/cli/doctor.rs",
+        "integrations/skill/SKILL.md",
+        "TRUST-POLICY.md",
+        "AGENTS.md",
+        "tests/service/",
+        "tests/cli/"
+      ],
+      "deps": [
+        "N6",
+        "N1-host",
+        "N3-alloc"
+      ],
+      "dep_reasons": {
+        "N6": "`no_wake_reports`, `WakeBlock::NoWake` and the `wake=no_wake` rendering",
+        "N1-host": "NamedHost test-only constructor for the tripwire",
+        "N3-alloc": "named seats for the overdue/threshold tests"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N7",
+      "title": "Sync: display_name publish and remote materialize; name@node",
+      "description": "`ensure_published` sets `seat.created.display_name` from `seats.name`; on receive it is validated with `SeatName` and an invalid value is stored as NULL. Remote `seat_labels` publish pane = name in the existing `SeatStatusEntry.pane`; `remote_seat_status` accepts entries only for materialized seats. Display and selector `name@node`. No wire change (display_name is baselined); `SeatStatusEntry.name` is not added.\n\nconsumes: `SeatName` (N1-host); named allocation (N3-alloc); name selector (N5)\n\nAcceptance:\n- [ ] `reviewer@B` addresses and displays over `test_support::multinode`.\n- [ ] An old-node fixture decodes `display_name`; an invalid received name is stored as NULL, never rejected.\n- [ ] `scripts/check-wire-compat` shows no baseline change.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Peer wire (display_name only)",
+      "files": [
+        "src/store/seats/publication.rs",
+        "src/store/remote_seat_status.rs",
+        "src/sync/facts/seat.rs",
+        "src/cli/seat_resolution.rs",
+        "tests/multinode/"
+      ],
+      "deps": [
+        "N3-alloc",
+        "N5",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "N3-alloc": "`seats.name` on local named seats",
+        "N5": "name selector reading",
+        "Split-seats": "file split"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N-e2e",
+      "title": "Named seats end to end through one daemon",
+      "description": "Integration suite (own `[[test]]` target with `required-features = [\"test-support\"]`, in-process or spawned daemon) proving use case 1 and mixed messaging: named↔named and named↔pane in an isolated Herdr session through one daemon, first `inbox` with no `herdr` on PATH, recovery-hint round trip, idle exit with only the named host.\n\nconsumes: Named site (N1-site); named allocation (N3-alloc); discovery (N1-disc); display (N5); no-wake reports (N6)\n\nAcceptance:\n- [ ] With no `herdr` on PATH and an isolated state dir, a first `inbox` under `HERDR_THREADS_SEAT_NAME=reviewer` prints M8 once; a second process with the same name, a descendant of the first or started after it exits, binds the same seat (needs: N1-disc) (needs: N3-alloc).\n- [ ] Send, inbox, ACK and hook delivery work between two named seats, and between a named seat and a pane seat in an isolated Herdr session, all through one daemon.\n- [ ] Running the named caller's handoff recovery hint resolves back to the same seat (needs: N1-site).\n- [ ] Idle exit with only the named host exits (needs: F4-audit).\n- [ ] Every daemon, Herdr test session and child started is stopped; `scripts/check-no-leaked-processes --run-id` is clean.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Phase N acceptance (end-to-end items); Testing and evidence (test placement)",
+      "files": [
+        "tests/named_seats.rs",
+        "Cargo.toml",
+        ".config/nextest.toml"
+      ],
+      "deps": [
+        "N1-disc",
+        "N3-alloc",
+        "N1-site",
+        "N5",
+        "N6",
+        "F4-audit"
+      ],
+      "dep_reasons": {
+        "N1-disc": "named-site discovery/default dir",
+        "N3-alloc": "named allocation",
+        "N1-site": "Named caller site",
+        "N5": "named display",
+        "N6": "no-wake rendering",
+        "F4-audit": "idle-exit filter"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N2-target",
+      "title": "HostPort::target_wake_capability and per-target no-wake reports",
+      "description": "Add defaulted `HostPort::target_wake_capability(&HostTargetId) -> WakeCapability` (default `self.wake_capability()`). `wake_status` and `no_wake_reports` read the per-target answer; a report row is written only while it is `None` and deleted when a read finds `Composer`. Re-key the host-side tripwire on the per-target answer.\n\nowns: `HostPort::target_wake_capability`\nconsumes: HostPort capability answers (F2); no-wake reports (N6); host-side tripwire (N6-rest)\n\nAcceptance:\n- [ ] A seat whose per-target answer goes None → Composer → None (test fake host) reports `wake=no_wake` once in each None episode.\n- [ ] Existing impls compile unchanged; the host-side tripwire uses `target_wake_capability` for a target with no verified wake path.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: tmux wake for named seats (Capability; Hint flips); Rules 5/6 degradation (tripwire keyed per target)",
+      "files": [
+        "src/ports.rs",
+        "src/service/dispatch.rs",
+        "src/store/no_wake_reports.rs",
+        "tests/service/"
+      ],
+      "deps": [
+        "N6",
+        "N6-rest"
+      ],
+      "dep_reasons": {
+        "N6": "`no_wake_reports` writes and `WakeBlock::NoWake`",
+        "N6-rest": "host-side tripwire to re-key per target (re-pointed from N6 after the split)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N2-turn",
+      "title": "turn_state_edge adapter method, Claude report-only Stop, daemon per-binding turn state",
+      "description": "Add neutral defaulted `HarnessAdapter::turn_state_edge(event) -> Option<TurnEdge>` (default `None` = no tmux wake for that harness). Codex and agy map their existing `UserPromptSubmit`/`Stop`; Claude gains a report-only `Stop` registration (event contract marks it report-only: empty stdout, exit 0 on every path, never a continuation). The daemon records hook turn state per binding (busy from `UserPromptSubmit` to `Stop`, idle after `Stop`); missing evidence is `Unknown`, never idle. Spike T2 hook part.\n\nowns: `HarnessAdapter::turn_state_edge` and `TurnEdge`; per-binding hook turn state in the daemon\nconsumes: hook.rs caller-location and hook-gate refactor (F7, F8, N1-site)\n\nAcceptance:\n- [ ] Claude's `Stop` hook prints nothing on stdout and exits 0 for every input (golden test over its event contract).\n- [ ] `setup` output and `tests/golden_surfaces.rs` change only by the new Claude `Stop` registration.\n- [ ] Turn-state tests: `UserPromptSubmit` → busy, `Stop` → idle, a missed `Stop` stays busy/unknown (T2 hook-driven part).\n- [ ] A harness with the default `None` never records a turn edge.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: tmux wake for named seats (Busy or idle D21; Claude Stop report-only); Agent status source rule (D21); Spikes T2",
+      "files": [
+        "src/harness/adapter.rs",
+        "src/harness/claude.rs",
+        "src/harness/claude/",
+        "src/harness/codex.rs",
+        "src/harness/agy/",
+        "src/cli/hook.rs",
+        "src/service/",
+        "tests/golden_surfaces.rs",
+        "tests/setup_cli.rs"
+      ],
+      "deps": [
+        "F1",
+        "F7",
+        "F8",
+        "N1-site"
+      ],
+      "dep_reasons": {
+        "F1": "main merged into run branch (base)",
+        "F7": "hook.rs caller-location refactor (CallerEnv / Located / CallerSite) must land first",
+        "F8": "hook.rs hook-gate refactor (LocateCaller) must land first",
+        "N1-site": "hook.rs Named-site caller location must land first"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N2-blocked",
+      "title": "ComposerPolicy::screen_blocked default and harness recognizers",
+      "description": "Add defaulted `ComposerPolicy::screen_blocked(&str) -> Option<bool>` (default `None` = no wake), implemented by harnesses whose captured fixtures support recognizing approval and question screens. Spike T2 screen part.\n\nowns: `ComposerPolicy::screen_blocked`\n\nAcceptance:\n- [ ] `screen_blocked` fixture tests per implementing harness: approval/question screens → `Some(true)`, idle composer → `Some(false)`; a harness without support returns `None`.\n- [ ] No harness id appears in core (check-harness-neutral).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: tmux wake for named seats (Blocked); Spikes T2",
+      "files": [
+        "src/harness/adapter.rs",
+        "src/harness/composer.rs",
+        "src/harness/claude/",
+        "src/harness/codex/",
+        "src/harness/agy/",
+        "tests/fixtures/"
+      ],
+      "deps": [
+        "F1"
+      ],
+      "dep_reasons": {
+        "F1": "main merged into run branch (base)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N2-hint",
+      "title": "tmux hint: TMUX/TMUX_PANE read, resolve-command hint, verification, per-target answer, tmux test helper",
+      "description": "caller_location.rs reads `TMUX` (socket, server pid) and `TMUX_PANE` into `tmux:<socket>:<server_pid>:<pane>`, carried in the resolve command (not `CallerClaim`) and held in daemon memory per binding. The NamedHost tmux client verifies via `tmux -S <sock> display -p -t <pane> '#{pane_pid} #{pid}'` (`#{pid}` == server pid plus a nearest-ancestor walk from the binding's fingerprint pid to `pane_pid`) under `ProcessCommand` with a 2 s deadline; failure only disables wake for that binding. `NamedHost::target_wake_capability` returns `Composer` only for a verified current top-level binding. Add a private-tmux test helper (`tmux -L ht-test-<uuid>`, `kill-server` on teardown) and teach `scripts/check-no-leaked-processes` to recognize `tmux -L ht-test-*`. Spike T4.\n\nowns: tmux hint format and per-binding verification; private tmux test helper\nconsumes: CallerEnv / Located / CallerSite (N1-site); NamedHost (N1-host); `target_wake_capability` (N2-target)\n\nAcceptance:\n- [ ] A stale `TMUX_PANE` (wrong server pid, or a pane that is not an ancestor, nested in an isolated Herdr session) disables wake and never moves or rebinds the seat (T4; if the isolated Herdr helper cannot start, the wrong-server-pid half in a private tmux stands and the nested half goes to remaining evidence).\n- [ ] A verified binding answers `Composer` per target; an unverified one `None` (private tmux test).\n- [ ] The tmux servers a test starts are stopped (`kill-server` on the private socket), and the leak check is clean and flags a planted `tmux -L ht-test-*` server.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: tmux wake for named seats (Hint; Verification; Capability); Spikes T4",
+      "files": [
+        "src/cli/caller_location.rs",
+        "src/protocol/commands.rs",
+        "src/host/named.rs",
+        "src/host/named/tmux.rs",
+        "src/test_support/tmux.rs",
+        "scripts/check-no-leaked-processes",
+        "tests/host/"
+      ],
+      "deps": [
+        "N1-site",
+        "N1-host",
+        "N2-target"
+      ],
+      "dep_reasons": {
+        "N1-site": "Named site resolve command",
+        "N1-host": "NamedHost",
+        "N2-target": "`target_wake_capability` method"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "N2-wake",
+      "title": "tmux composer wake: built-in wake lane, capture-pane read, send-keys typing, wake condition",
+      "description": "`NamedHost::wake_capability()` becomes `Composer(ComposerTraits::TMUX{submit_budget: 2 s})`, so the lane starts; the built-in session gets its own wake lane at `attach_builtin`, registered with its own pacer (`Lane::Wakes`), reachability (`attach_wake_pacer`) and Health. Composer read: `capture-pane -p -t <pane>` at `#{pane_width}` fed to the harness `ComposerPolicy`; focus = `pane_active && window_active && session_attached` under the focused-composer hold. Typing: `send-keys -l <wake text>` then Enter with read-back and `clear_own_wake_text`. Wake needs turn state idle, `screen_blocked == Some(false)` and an empty composer read. Idle exit still counts only dialled hosts. TRUST-POLICY N2 row (A4 tmux wake + accepted limits), AGENTS.md rule 6 wording and tmux \"What we do today\" line, and the delivery-contract table in the commit message. Spikes T1, T3, T5.\n\nowns: `ComposerTraits::TMUX`; built-in session wake lane registration\nconsumes: NamedHost (N1-host); `turn_state_edge` (N2-turn); `screen_blocked` (N2-blocked); `target_wake_capability` (N2-target); `HostSession.wake: Option` (F4)\n\nAcceptance:\n- [ ] In a private `tmux -L ht-test-<uuid>` server with a stand-in harness, an idle named seat with an empty composer and turn state idle wakes on a p0 item within the existing ladder; a p1 item at T = 0 does not wake it.\n- [ ] A draft in the composer, a busy turn, a blocked screen, a missing `Stop`, or an unknown status gives no typing; the sender gets the existing `wake=` overdue rendering.\n- [ ] The built-in wake lane is registered with a pacer, reachability and Health (test); idle exit with only the named host exits while tmux-hinted named bindings exist and no dialled host holds a resolved seat.\n- [ ] Herdr TUI wake is unchanged: the `idle_wake_on` table test passes, and a Herdr-pane Claude stand-in wakes as before.\n- [ ] T1 (captured screens replayed into a private tmux pane compared with `ComposerRead`s), T3 (draft present → no typing; read-back mismatch → clear, no submit) and T5 (OSC 7501 passthrough recorded) are answered and recorded in the run report.\n- [ ] The delivery-contract table is in the commit message and AGENTS.md's \"What we do today\" gains the tmux line.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: tmux wake for named seats (all); Delivery-contract check table; TRUST-POLICY N2 row; AGENTS.md N2; Spikes T1, T3, T5",
+      "files": [
+        "src/host/named.rs",
+        "src/host/named/tmux.rs",
+        "src/ports.rs",
+        "src/service/host_sessions.rs",
+        "src/app.rs",
+        "src/service/host_reachability.rs",
+        "src/daemon/health.rs",
+        "TRUST-POLICY.md",
+        "AGENTS.md",
+        "tests/host/",
+        "tests/fixtures/"
+      ],
+      "deps": [
+        "N2-hint",
+        "N2-turn",
+        "N2-blocked",
+        "N2-target"
+      ],
+      "dep_reasons": {
+        "N2-hint": "verified tmux hint and tmux client",
+        "N2-turn": "per-binding turn state",
+        "N2-blocked": "`screen_blocked`",
+        "N2-target": "per-target wake answer"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1a",
+      "title": "hc JSON-RPC client and wire types, fake_hc (in-thread + fake-hc bin), vendored schema and contract test",
+      "description": "Create src/host/hc/rpc.rs (JSON-RPC 2.0 line client, one connection per call: `hello`, `terminal.get`, `events.subscribe` one-shot snapshot, `doc.get`; never `caller`, `terminal.list`, `doc.set`) and src/host/hc/wire.rs (tolerant `HelloReply`, `HcTerminal`, `HcStatus`, `AppDoc`; no `deny_unknown_fields`); peer witness via `LocalEndpointWitness`. Create src/test_support/fake_hc.rs (in-process thread on a `scratch::temp_path` socket serving `hello`, `server.status`, `terminal.get`, `events.subscribe` with seq/missed/heartbeat, `doc.get`; records every call; knobs: per-terminal state/status incl. null/turn/pid/foreground/labels, finish reasons, core id rotation, seq reset, witness change, unknown fields/events) and a `fake-hc` `[[bin]]` (`required-features = [\"test-support\"]`). Add the isolated-core helper `scripts/lib/isolated-core.sh` (mirrors scripts/lib/isolated-herdr.sh: a private core under `env -i` with `HC_SESSION=ht-test-<uuid>` and scratch XDG dirs, started only through `hc run --bg`, stopped with `server.stop`; never `hc server status`; skips cleanly when no `hc` is installed). Teach `scripts/check-no-leaked-processes` to recognize `herdr-core serve`/`hold`; AGENTS.md test-isolation line for the isolated-core helper (never `hc server status`) and the leak recognition, in the same commit. Vendor `tests/fixtures/hc/hc-0.1.15.openrpc.json` from /var/home/alepar/AleCode/herdr-core `schema/hc.openrpc.json` at dc276b7 (read-only copy).\n\nowns: hc JSON-RPC client and wire types; fake_hc (in-thread and `fake-hc` bin); vendored hc 0.1.15 schema fixture; isolated-core helper (scripts/lib/isolated-core.sh); leak-check recognition of `herdr-core serve`/`hold`\n\nAcceptance:\n- [ ] The client round-trips each method against fake_hc and tolerates unknown fields and unknown event types.\n- [ ] A test asserts the client never sends `terminal.list`, `doc.set` or `caller` (fake_hc call record).\n- [ ] The contract test asserts every method and param the client and fake_hc send exists in the vendored 0.1.15 schema (not a version gate: extra fields pass).\n- [ ] `scripts/check-no-leaked-processes` flags a planted process whose command line is `herdr-core serve` or `herdr-core hold` (a renamed stand-in, no real core needed) and ignores the real user core.\n- [ ] `scripts/lib/isolated-core.sh` is shellcheck-clean, contains no `hc server status` call (asserted by a grep test), and is a no-op skip when `hc` is absent.\n- [ ] AGENTS.md carries the test-isolation line for the isolated-core helper and the `herdr-core serve`/`hold` leak recognition.\n- [ ] The `fake-hc` bin serves the same code on a given socket and is spawned only via `test_support::spawn` in tests; check-default-features passes.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: hc host (H1): JSON-RPC client and wire types; fake_hc; Phase H1 scope (isolated-core helper, leak recognition); AGENTS.md H1 (isolated-core helper, leak checks)",
+      "files": [
+        "src/host/hc/mod.rs",
+        "src/host/hc/rpc.rs",
+        "src/host/hc/wire.rs",
+        "src/test_support/fake_hc.rs",
+        "src/test_support/mod.rs",
+        "src/bin/fake-hc.rs",
+        "Cargo.toml",
+        "tests/fixtures/hc/hc-0.1.15.openrpc.json",
+        "tests/host/hc_contract.rs",
+        "tests/combined.rs",
+        "scripts/lib/isolated-core.sh",
+        "scripts/check-no-leaked-processes",
+        "AGENTS.md"
+      ],
+      "deps": [
+        "F1"
+      ],
+      "dep_reasons": {
+        "F1": "main merged into run branch (base)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1c",
+      "title": "HcHost observation, HcBoot, HostKind::Hc, enumerate_targets, target_root_process, ENV_VARS",
+      "description": "Create `HcHost` in src/host/hc/mod.rs: `HostKind::Hc` plus implemented-set entry; boot = incarnation = `hc-core:<core.id>` (`HcBoot::from_hello`, ASCII ≤128 B); `enumerate_targets` = `hello` + `events.subscribe{}` snapshot on one connection keeping local `state==\"live\"` addresses and dropping finished ones and `machine/tN` mirrors; own `observation_sequence` counter; wake `None`, `Closing`, archival `NoEvidence`; `target_root_process` via `terminal.get.pid`; `ENV_VARS` moved from the F scrub-only list. TRUST-POLICY H1 vocabulary hc row and C1 structural row in the same commit. Finish-reason closure, C2 holds on core-id rotation and `status: null` handling are in H1c-closure.\n\nowns: HcHost / HcBoot / HcDiscovery; `HostKind::Hc` + implemented-set entry; `enumerate_targets`; `target_root_process`; `host::hc::ENV_VARS`\nconsumes: hc rpc client and fake_hc (H1a); HostPort capability answers (F2)\n\nAcceptance:\n- [ ] `HcBoot::from_hello` yields `hc-core:<core.id>` (ASCII, ≤128 B); `HostKind::Hc` is in the implemented set.\n- [ ] A snapshot that carries `machine/t1` mirrors and finished terminals retires nothing live.\n- [ ] `target_root_process` returns `terminal.get.pid` against fake_hc.\n- [ ] The type's responsibility comment states what it owns, what it does not, where new behaviour goes, and the pattern or role it plays (Key abstractions entry below).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: hc host (H1): Core id boot; TRUST-POLICY H1 row (vocabulary, C1 structural); Key abstractions (HcHost / HcBoot / HcDiscovery)\n\nKey abstractions entry (HcHost / HcBoot / HcDiscovery):\n**HcHost / HcBoot / HcDiscovery** (src/host/hc/{mod,rpc,wire}.rs): a new `HostPort` impl, an Adapter over herdr-core's JSON-RPC.\n- Owns: the one-connection-per-call line client, tolerant wire types, boot = `hc-core:<core.id>`, mapping finish reasons to closure (D10 table), `status:null` → `Unknown`, labels taken from `herdr.space`/`herdr.tab` plus the `herdr-app` doc, `server_process` taken from the `LocalEndpointWitness` peer pid, and discovery from `core.json` plus `hello`.\n- Hides: the hc protocol, the socket path rules, and which of hc's methods it must never call (`terminal.list`, `doc.set`, `caller`).\n- Must not: spawn `hc`, treat agent exit as closure, keep `machine/tN` mirrors, or attach on a diagnostic scan.\n- Lifecycle: built by `HostFactory.build(Hc, locator)` on a dialled attach. It lives as long as its `HostSession`. It holds no long-lived connection. The observation counter and the doc-name cache are per-instance mutable state.\n- Errors: a failed `hello` gives `CompleteUnverified` (closes nothing). A core id mismatch is a new boot (C2 holds). An RPC error before a launch record exists is `NotSubmitted`; `spawn_failed`, a timeout or a disconnect is `OutcomeUnknown` (H3).\nDigest: HcHost / HcBoot / HcDiscovery: own the herdr-core adapter (JSON-RPC, core-id boot, finish-reason closure, labels, discovery without spawning `hc`). New hc protocol use goes in src/host/hc/. Callers never call hc directly or read hc state files.",
+      "files": [
+        "src/host/hc/mod.rs",
+        "src/host/mod.rs",
+        "src/ports.rs",
+        "TRUST-POLICY.md",
+        "tests/host/"
+      ],
+      "deps": [
+        "H1a",
+        "F2",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "H1a": "hc rpc client, wire types and fake_hc",
+        "F2": "HostPort capability answers and implemented set",
+        "Split-seats": "file split"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1c-closure",
+      "title": "HcHost finish-reason closure, C2 holds on core-id rotation, status null → Unknown",
+      "description": "Finish-reason closure (D10) through the store publication-absence path over a coherent capture of the same core id: `killed`/`removed` retire, exit/signal/`server_stop`/`host_shutdown` unresolve, `lost`/`restarted` nothing; failed `hello` → `CompleteUnverified`. Core id change → new boot, C2 holds. `status: null` → `HostUiState::Unknown`; status source shown only in diagnostics/`doctor`. TRUST-POLICY H1 closure table and the wiped/cloned core limit in the same commit.\n\nowns: finish-reason closure mapping; C2 holds on core-id rotation; `status: null` → `Unknown` and the doctor status source\nconsumes: HcHost / HcBoot / `enumerate_targets` (H1c); fake_hc knobs (H1a)\n\nAcceptance:\n- [ ] A core id rotation puts the seats under C2 holds; a restart (seq reset, same id) is `CarryForward` with zero transitions.\n- [ ] Finish reasons: `killed` and `removed` retire; exit, signal, `server_stop` and `host_shutdown` unresolve, and resume reattaches; `lost` and `restarted` change nothing; a failed `hello` closes nothing.\n- [ ] fake_hc `status: null` reads `HostUiState::Unknown`, never Idle, and `doctor` shows the status source; no model-visible output changes.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: hc host (H1): Finish-reason closure (D10); Core id boot (C2); Agent status source rule; TRUST-POLICY H1 row (closure table, wiped/cloned core limit)",
+      "files": [
+        "src/host/hc/mod.rs",
+        "src/store/seats/observation.rs",
+        "src/cli/doctor.rs",
+        "TRUST-POLICY.md",
+        "tests/host/",
+        "tests/identity/"
+      ],
+      "deps": [
+        "H1c",
+        "Split-seats"
+      ],
+      "dep_reasons": {
+        "H1c": "HcHost, HcBoot and `enumerate_targets`",
+        "Split-seats": "file split (src/store/seats/observation.rs)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1c-labels",
+      "title": "hc labels <session>:tN, herdr-app doc names, ambiguous bare tN refusal",
+      "description": "`HcHost::seat_labels`/`live_topology` take workspace from `herdr.space`, tab from `herdr.tab`, target `tN`; names from doc `herdr-app` parsed tolerantly and cached by doc version; an unnamed tab shows its 1-based position; pane label is hc `name`, else none, never `title`. Displays and selectors use `<HC_SESSION>:tN`, or bare `tN` only when exactly one core is attached; an ambiguous bare `t1` is refused with the candidate list. Keyed `(host_id, target)` (F6).\n\nconsumes: HcHost (H1c); `HostTopologies` (F6)\n\nAcceptance:\n- [ ] Two fake cores, both with `t1`, show `<session>:t1` labels that never cross; a bare `t1` is refused with both candidates.\n- [ ] Doc-name cache tests: unknown doc fields tolerated; cache invalidated by doc version; `title` never used.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Labels <session>:tN (D11)",
+      "files": [
+        "src/host/hc/mod.rs",
+        "src/host/hc/labels.rs",
+        "src/cli/seat_resolution.rs",
+        "tests/host/"
+      ],
+      "deps": [
+        "H1c",
+        "F6"
+      ],
+      "dep_reasons": {
+        "H1c": "HcHost",
+        "F6": "`HostTopologies` and `(host_id, target)` label keying"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1b",
+      "title": "HostFactory {exists, probe, build(kind, locator)}; probe before attach_host",
+      "description": "`HostFactory` (host_sessions.rs:61-77, closures in src/main.rs:67-80) becomes `{exists, probe, build}`. `probe(locator, budget)` sends one `hello` line with a short deadline: a reply with `core.id` means `Hc`, anything else falls back to the Herdr `ping`. Order `exists` → `probe` → `store.attach_host` under `attach_lock`; the attach writes `kind` and `kind_probed_at`; `attach_builtin` calls none. A stored kind that disagrees with the probe refuses the attach and `doctor` reports it. Spike D1.\n\nowns: `HostFactory::probe` and `build(kind, locator)`\nconsumes: HcHost (H1c); hc rpc client (H1a); NodeDelta 0012 kind columns (F3)\n\nAcceptance:\n- [ ] The probe classifies fake_hc as `Hc` and a `fake_herdr` socket as `Herdr` before any `herdr_hosts` row is written, and a peer that never replies fails within the probe deadline (D1 gate half).\n- [ ] A stored-kind mismatch refuses the attach and `doctor` names it.\n- [ ] D1 live: if an isolated Herdr test session starts, its reply to `hello` is captured as a `tests/fixtures/` case; otherwise recorded as remaining evidence.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Probe before attach; Spikes D1; Key abstractions (HostFactory extended)",
+      "files": [
+        "src/service/host_sessions.rs",
+        "src/main.rs",
+        "src/host/hc/mod.rs",
+        "src/cli/doctor.rs",
+        "tests/daemon/multi_host.rs",
+        "tests/fixtures/"
+      ],
+      "deps": [
+        "H1a",
+        "H1c",
+        "F3"
+      ],
+      "dep_reasons": {
+        "H1a": "hc `hello` client",
+        "H1c": "`HcHost` and `HostKind::Hc` to build",
+        "F3": "`kind`/`kind_probed_at` columns"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1d",
+      "title": "HcDiscovery: core.json scan, socket derivation, hello id match",
+      "description": "`HcDiscovery` in src/host/hc/ reads core state and never runs `hc`: list `$XDG_STATE_HOME|~/.local/state/herdr-core/*/core.json`; derive each socket by the core's rules (`HC_SOCKET` or config, else `$XDG_RUNTIME_DIR/herdr-core/<session>.sock`, else `<state>/<session>.sock`); `hello` and require `core.id` to match; dedupe by id. Used only when no caller site names a core; diagnostic scans never attach.\n\nconsumes: HcHost (H1c); implements the discovery part of the HcHost abstraction in src/host/hc/discovery.rs and updates its responsibility comment; hc rpc client (H1a)\n\nAcceptance:\n- [ ] `HcDiscovery` finds a fake core from a scratch `core.json`, ignores a stale dir whose socket is gone, and never spawns `hc` (asserted through a PATH shim that fails the test if called).\n- [ ] An id mismatch between `core.json` and `hello` drops the core; duplicates dedupe by id.\n- [ ] The HcHost / HcBoot / HcDiscovery responsibility comment (owned by H1c) is updated to describe the discovery part.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Discovery (hc host H1)",
+      "files": [
+        "src/host/hc/discovery.rs",
+        "src/host/hc/mod.rs",
+        "tests/host/"
+      ],
+      "deps": [
+        "H1a",
+        "H1c"
+      ],
+      "dep_reasons": {
+        "H1a": "hc `hello` client and fake_hc",
+        "H1c": "HcHost / HcBoot / HcDiscovery type and its responsibility comment (single Digest owner)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1e",
+      "title": "CallerLocator::Terminal, full LocateCaller, M4 and M17; remove M1/M2/M3",
+      "description": "Add `CallerLocator::Terminal{socket,id}` (`Terminal` without `HC_TERMINAL_SOCKET` → M17). Two families go to `LocateCaller`, which now verifies the hc candidate via `HcHost::target_root_process`; neither verifying prints M4 from the CLI and from hooks (hooks exit 0 and inject nothing). Remove M1, M2, M3 and the per-binding M3 memory with their code. Spike H-C1 by fallback: LocateCaller tests over fake process trees (daemon-mode Codex modelled as a reparented process). TRUST-POLICY A1 addendum in full plus limits (double-forked and Codex daemon mode unverifiable with two families; single-family stale env accepted) in the same commit.\n\nowns: `CallerLocator::Terminal` site answers; M4, M17\nconsumes: CallerEnv / Located / CallerSite (F7, N1-site); LocateCaller (F8); HcHost (H1c); HostFactory probe (H1b)\n\nAcceptance:\n- [ ] With both `HERDR_PANE_ID` (fake or isolated Herdr) and `HC_TERMINAL_ID` (fake_hc) set, `LocateCaller` picks the nearest-ancestor root; neither verifying prints M4 (106 + fields golden) from the CLI and from hooks, nothing binds, and M1 and M3 no longer appear from a Terminal site.\n- [ ] `HC_TERMINAL_ID` without `HC_TERMINAL_SOCKET` is refused with M17 (91 B golden).\n- [ ] H-C1 fallback: a reparented (daemon-mode Codex) process with two families refuses; with one family it is accepted unverified. The live real-core run is listed as remaining evidence.\n- [ ] The env-read scan still passes; the precedence matrix gains the Terminal cells.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Caller location (Precedence; TUI leak guard removal); LocateCaller; TRUST-POLICY H1 row (A1); Spikes H-C1; Model-visible strings (M4, M17)",
+      "files": [
+        "src/cli/caller_location.rs",
+        "src/cli/hook.rs",
+        "src/service/locate.rs",
+        "src/host/hc/mod.rs",
+        "TRUST-POLICY.md",
+        "tests/cli/hook.rs",
+        "tests/daemon/"
+      ],
+      "deps": [
+        "H1c",
+        "H1b",
+        "F8",
+        "N1-site"
+      ],
+      "dep_reasons": {
+        "H1c": "`HcHost::target_root_process`",
+        "H1b": "daemon attach of an hc host via the probe",
+        "F8": "LocateCaller",
+        "N1-site": "M2 code and the Named precedence arm"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1f",
+      "title": "HcHost::server_process and the hc inherited-name check (E1 hc path)",
+      "description": "`HcHost::server_process` = the core socket's peer pid from the `LocalEndpointWitness` the client records. A `<core>:<tN>` locator hint is checked with N4-inherit's environ reader; `<host>` in M6 is `herdr-core`.\n\nconsumes: server environ reader (N4-inherit); HcHost (H1c); fake-hc bin (H1a); Terminal site (H1e)\n\nAcceptance:\n- [ ] A `HERDR_THREADS_SEAT_NAME` carried by the `fake-hc` child's environ (started through `test_support::spawn`) is refused with M6 (`<host>` = `herdr-core`) and never bound; a name set per command in the terminal is honoured.\n- [ ] `server_process` returns the fake-hc child's pid (test).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Inherited-name refusal (HcHost::server_process); Spikes E1 (hc path)",
+      "files": [
+        "src/host/hc/mod.rs",
+        "src/service/locate.rs",
+        "tests/hc_inherited_name.rs",
+        "Cargo.toml"
+      ],
+      "deps": [
+        "H1c",
+        "H1a",
+        "H1e",
+        "N4-inherit"
+      ],
+      "dep_reasons": {
+        "H1c": "HcHost",
+        "H1a": "`fake-hc` bin",
+        "H1e": "Terminal locator hint beside a name",
+        "N4-inherit": "server environ reader and inherited-name check (re-pointed from N4)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1g",
+      "title": "seat.terminal_sites_v1 and hc messaging end to end with wake=no_wake; skill K4",
+      "description": "Advertise `seat.terminal_sites_v1` and gate Terminal sites on it in the CLI (M13 against an N-only daemon). End-to-end against fake_hc: an agent stand-in in terminal `t2` gets a seat, sends, receives, ACKs and gets hook delivery; the sender gets `wake=no_wake` once. Skill K4; TRUST-POLICY A4 hc (no composer wake until upstream); AGENTS.md \"What we do today\" hc line — same commit.\n\nowns: `seat.terminal_sites_v1` capability\nconsumes: Terminal site (H1e); HostFactory probe (H1b); no-wake reports (N6); self-retire (N3-retire)\n\nAcceptance:\n- [ ] Against fake_hc, an agent stand-in in terminal `t2` (`HC_TERMINAL_ID=t2`, `HC_TERMINAL_SOCKET=<fake>`) gets a seat, sends and receives, ACKs, and gets hook delivery; the sender gets `wake=no_wake` once (needs: N6).\n- [ ] A live-mod Claude stand-in on an hc seat reports no `wake=no_wake`; a hooks-only one reports it once.\n- [ ] `seat retire --self` from a Terminal site is refused with M20 (needs: N3-retire).\n- [ ] A new CLI with a Terminal site against a daemon advertising only `seat.host_sites_v1` prints M13 and sends no Terminal site.\n- [ ] K4 (140 B) is in SKILL.md once; skill tests pass.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Local protocol skew (seat.terminal_sites_v1); Phase H1 acceptance; Model-visible strings (K4); TRUST-POLICY H1 row (A4); AGENTS.md H1",
+      "files": [
+        "src/protocol/capabilities.rs",
+        "src/cli/site_capability.rs",
+        "src/cli/caller_location.rs",
+        "integrations/skill/SKILL.md",
+        "TRUST-POLICY.md",
+        "AGENTS.md",
+        "tests/hc_messaging.rs",
+        "Cargo.toml"
+      ],
+      "deps": [
+        "H1e",
+        "H1b",
+        "N6",
+        "N3-retire",
+        "N1-site"
+      ],
+      "dep_reasons": {
+        "H1e": "Terminal caller site",
+        "H1b": "hc attach via probe",
+        "N6": "no-wake reports",
+        "N3-retire": "`seat retire --self` (M20 refusal)",
+        "N1-site": "site-capability gate pattern (`seat.host_sites_v1`)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1h",
+      "title": "hc-only setup (no TUI --host-endpoint) and Hermes PANE_ENV terminal vars",
+      "description": "On an hc-only machine (a core state dir present, no `herdr` on PATH) `setup` bakes `--state-dir` and no TUI `--host-endpoint` (src/harness/setup.rs). Terminal-site discovery takes the default dir per N1-disc's rule. Hermes `PANE_ENV` gains `HC_TERMINAL_ID`/`HC_TERMINAL_SOCKET`.\n\nconsumes: Hermes bridge `PANE_ENV` (N1-site-rest); standalone install (N-install); HcDiscovery state paths (H1d); named-site discovery (N1-disc)\n\nAcceptance:\n- [ ] On an hc-only machine (scratch core state dir, no `herdr` on PATH), `setup` output has `--state-dir` and no `--host-endpoint`.\n- [ ] With `herdr` on PATH, `setup` output is unchanged (golden).\n- [ ] Hermes `test_bridge.py` covers a client env with `HC_TERMINAL_ID`/`HC_TERMINAL_SOCKET`.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Standalone install and daemon start (H1 part); Phase H1 scope (Hermes PANE_ENV)",
+      "files": [
+        "src/harness/setup.rs",
+        "src/cli/instance.rs",
+        "integrations/hermes/__init__.py",
+        "integrations/hermes/test_bridge.py",
+        "tests/setup_cli.rs"
+      ],
+      "deps": [
+        "N-install",
+        "H1d",
+        "N1-disc",
+        "N1-site-rest"
+      ],
+      "dep_reasons": {
+        "N-install": "Herdr-less `setup` baking `--state-dir`",
+        "H1d": "core state dir rule",
+        "N1-disc": "default state dir rule for non-Pane sites",
+        "N1-site-rest": "Hermes `PANE_ENV` name handling (re-pointed from N1-site after the split)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1-twohost",
+      "title": "Two-host dialled-only consumer tests (TUI fake + fake hc), two-kind restore, seatless core idle exit",
+      "description": "Each dialled-only consumer gets a two-host test where hc holds the lowest host id: `startup_primary`, `first_host_pacer`, `place()`, the discovery gate, archival (`archival_evidence() == Supported`) and the production `BootstrapRuntime` gate (07 §4.6). Fix any consumer that mis-picks. S5 two-kind half.\n\nconsumes: HostFactory probe (H1b); HcHost (H1c); consumer filters (F4-audit); restore rules (N3-restore)\n\nAcceptance:\n- [ ] `startup_primary`, `first_host_pacer`, `place()`, the discovery gate, archival and the production `BootstrapRuntime` gate each pass a two-host test (TUI fake + fake hc) where hc holds the lowest host id.\n- [ ] S5 two-kind half and D12: on a node with a TUI fake host and fake_hc, an unnamed restored row is held unresolved and never placed on either host (needs: N3-restore).\n- [ ] Idle exit with only a seatless fake core attached exits.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: attached() / all_for_reads audit (G1) two-host tests; Restore (SA4, D12); Spikes S5 (two-kind half)",
+      "files": [
+        "tests/daemon/multi_host.rs",
+        "src/app.rs",
+        "src/service/host_sessions.rs",
+        "src/service/archival.rs",
+        "src/service/peer_launcher.rs",
+        "src/daemon/idle_exit.rs"
+      ],
+      "deps": [
+        "H1b",
+        "H1c",
+        "F4-audit",
+        "N3-restore"
+      ],
+      "dep_reasons": {
+        "H1b": "hc attach via factory probe",
+        "H1c": "HcHost",
+        "F4-audit": "07 §5.3 consumer filters",
+        "N3-restore": "restore placement rules"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1i",
+      "title": "hc schema-conformance test (always shipped)",
+      "description": "`tests/host/hc_schema_conformance.rs` in tests/combined.rs validates every fake_hc reply against the result schema of its method in the vendored `hc-0.1.15.openrpc.json` (required fields present, types match, extra fields tolerated) and the event notification shapes against herdr-core `schema/README.md` (read-only). It is also the fallback when the real-core smoke cannot ship.\n\nconsumes: fake_hc and vendored schema (H1a)\n\nAcceptance:\n- [ ] The conformance test passes for every method fake_hc serves and every event shape it emits.\n- [ ] A deliberately malformed reply (missing required field) fails it (test of the test).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Real-core smoke (leaf a)",
+      "files": [
+        "tests/host/hc_schema_conformance.rs",
+        "tests/combined.rs"
+      ],
+      "deps": [
+        "H1a"
+      ],
+      "dep_reasons": {
+        "H1a": "fake_hc and the vendored schema"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H1-smoke",
+      "title": "scripts/hc-smoke real-core smoke (opt-in, only with a verified pin)",
+      "description": "Ship `scripts/hc-smoke` plus `tests/herdr-core-releases.tsv` only if the implementer can fetch and verify the herdr-core 0.1.15 manifest from `https://releases.herdr.dev/core/<ver>/manifest.json` (sha256 pinned; cache `~/.cache/herdr-threads/herdr-core-releases/<ver>/`). Runs under `env -i` with private `HC_SESSION=ht-smoke-<uuid>` and scratch XDG dirs; never `hc server status`; core only through `hc run --bg`; drives HcHost attach, probe, observation, labels, the finish-reason table and the K5 scrub; stops the core with `server.stop` and verifies no `herdr-core serve`/`hold` remains. Uses the isolated-core helper and the leak recognition from H1a. Read-only fallback: if the download or verification is refused/offline, close as follow-on with no TSV row (never a placeholder checksum) and record it in the run report; H1i stands. Off the critical chain; never in the default suite.\n\nconsumes: HcHost (H1c); finish-reason closure (H1c-closure); HostFactory probe (H1b); hc labels (H1c-labels); isolated-core helper and `herdr-core serve`/`hold` leak recognition (H1a)\n\nAcceptance:\n- [ ] Either the smoke ships with a verified pin and passes locally against the private core, or the leaf closes as follow-on with the reason recorded in the run report and no TSV row committed.\n- [ ] When shipped: no `herdr-core serve`/`hold` process of the session remains (`scripts/check-no-leaked-processes` clean).\n- [ ] When shipped: L2/L3 live checks are recorded if H3 has merged by then; otherwise their fallbacks stand.\n- [ ] Per-change checks pass where code changed (`nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral`, `scripts/check-wire-compat`); the script is shellcheck-clean.\n\nSpec: Real-core smoke (leaf b)",
+      "files": [
+        "scripts/hc-smoke",
+        "tests/herdr-core-releases.tsv"
+      ],
+      "deps": [
+        "H1b",
+        "H1c-labels",
+        "F1-scrub",
+        "H1a",
+        "H1c-closure"
+      ],
+      "dep_reasons": {
+        "H1b": "hc attach via probe",
+        "H1c-labels": "hc labels",
+        "F1-scrub": "K5 scrub list",
+        "H1a": "isolated-core helper (scripts/lib/isolated-core.sh) and `herdr-core serve`/`hold` leak recognition",
+        "H1c-closure": "finish-reason closure table the smoke drives"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H3a",
+      "title": "Seam contract: CreateTargetPort, Placement, HostWitness, CreatedTarget, NativeCli delegate, V3 journal records",
+      "description": "Add `CreateTargetPort` beside `CreateTabPort` (src/ports.rs:5536) with `CreateTargetRequest`, `Placement{NewTab{space}, NewTerminal{parent}}`, `HostWitness{HerdrSocket, HcCore{core_id, peer}}`, `CreatedTarget` with `validate()` dispatching on the witness. `NativeCli` implements it by delegating to `create_tab`. `BootstrapPlan`/`BootstrapProgress`/`BootstrapAttachment` gain V3 records carrying `CreatedTarget` in src/protocol/handoff.rs; V1 and V2 bytes stay frozen. Seam-contract shaped: types, the delegate and records; callers move in H3d1/H3d2/H3e.\n\nowns: CreateTargetPort; `Placement`, `HostWitness`, `CreatedTarget`; V3 bootstrap journal records\n\nAcceptance:\n- [ ] V1 and V2 journal fixtures decode byte-identically; V3 round-trips.\n- [ ] NativeCli's `CreateTargetPort` delegate creates a tab via `create_tab` against fake_herdr (counting fake).\n- [ ] `CreatedTarget::validate()` accepts a matching witness and refuses a mismatched one per witness kind.\n- [ ] The type's responsibility comment states what it owns, what it does not, where new behaviour goes, and the pattern or role it plays (Key abstractions entry below).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: hc launch (H3): CreateTargetPort and journal records; Key abstractions (CreateTargetPort)\n\nKey abstractions entry (CreateTargetPort):\n**CreateTargetPort** (H3): new, beside `CreateTabPort`. Its second implementation exists in the spec (NativeCli by delegation to `create_tab`, HcHost via `terminal.run`). It carries `Placement`, plus `HostWitness`/`CreatedTarget`, whose `validate()` dispatches on the witness. Launch and handoff code becomes generic over it. V1/V2 journal bytes stay frozen and V3 carries `CreatedTarget`.\nDigest: CreateTargetPort: owns creating a host target for launch and handoff (new tab, new terminal) and validating its witness. A new host's creation is one impl of the port. Launch and handoff code never branches on the host type.",
+      "files": [
+        "src/ports.rs",
+        "src/host/native.rs",
+        "src/protocol/handoff.rs",
+        "tests/protocol/",
+        "tests/fixtures/"
+      ],
+      "deps": [
+        "F1"
+      ],
+      "dep_reasons": {
+        "F1": "main merged into run branch (base)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H3b",
+      "title": "Launch-gate shim: internal launch-gate, env blanking, child_scrub_vars, host_launch_argv, Codex --no-daemon",
+      "description": "src/cli/launch_gate.rs (new): `herdr-threads internal launch-gate --bootstrap <compound>:<attempt> -- <argv>` reads `HC_TERMINAL_ID`/`HC_TERMINAL_SOCKET` through `CallerEnv`, removes `child_env_scrub_list()`, remaining `HERDR_*`, each adapter's `CallerEnvShape` session/pid vars and the new neutral adapter method `child_scrub_vars()` (default empty) from its own env, sets the caller's config roots, waits bounded for the daemon's `ResolveBootstrapSeat` of `(core, tN)`, then `exec`s (pid kept, L2). New adapter method `host_launch_argv(HostKind) -> Vec<String>` (default empty); Codex adds `--no-daemon` for `Hc` (L4). TRUST-POLICY H3 `managed_launch` extended to host-guarded launch (gate shim, root-pid fingerprint) in the same commit.\n\nowns: `internal launch-gate` shim; `HarnessAdapter::child_scrub_vars` and `host_launch_argv`\nconsumes: Env scrub list (F1-scrub); CallerEnv (F7); `HostKind::Hc` (H1c)\n\nAcceptance:\n- [ ] The shim's exec'd env has no `HERDR_*`, no `HERDR_THREADS_SEAT_NAME` and no adapter session vars, and a leaked `CLAUDE_CONFIG_DIR` cannot win (test with a stand-in argv).\n- [ ] The shim waits for the daemon's `(core, tN)` authorization before `exec`, and times out bounded otherwise (fake daemon).\n- [ ] `exec` keeps the pid (L2 fallback: test of the shim's pid before/after exec, plus a read-only reading of herdr-core `crates/herdr-core/src/api/run.rs` recorded in the run report).\n- [ ] `host_launch_argv(HostKind::Hc)` for Codex contains `--no-daemon`, and `host_launch_argv(HostKind::Herdr)` is empty for every harness (L4).\n- [ ] check-harness-neutral passes (adapter methods neutral, Codex behaviour in src/harness/codex*).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Gate shim and env blanking; TRUST-POLICY H3 row; Spikes L2, L4",
+      "files": [
+        "src/cli/launch_gate.rs",
+        "src/cli/internal.rs",
+        "src/harness/adapter.rs",
+        "src/harness/codex.rs",
+        "src/host/mod.rs",
+        "TRUST-POLICY.md",
+        "tests/cli/"
+      ],
+      "deps": [
+        "F1-scrub",
+        "F7",
+        "H1c"
+      ],
+      "dep_reasons": {
+        "F1-scrub": "`child_env_scrub_list()`",
+        "F7": "`CallerEnv`",
+        "H1c": "`HostKind::Hc`"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H3c",
+      "title": "HcHost CreateTargetPort via terminal.run; fake_hc terminal.run",
+      "description": "Add `terminal.run` to the hc client and fake_hc. `HcHost` implements `CreateTargetPort`: `terminal.run` starts the gate shim argv with `no_notify: true`, `outlive_parent: true`, `no_parent: true`, `keep: false`, no `caller`, no hc `name`, no `first_message`; labels `{herdr.space, herdr.tab, ht.bootstrap, ht.label}` for `NewTab{space}` (fresh `herdr.tab`), none for `NewTerminal` (parent = caller). Outcomes: JSON-RPC error before the record exists → `NotSubmitted`; `spawn_failed`, timeout or disconnect → `OutcomeUnknown`. Witness `HcCore{core_id, peer}`. TRUST-POLICY: `ht.bootstrap` label is hint-only, in the same commit. L1 and L3 by fallback.\n\nconsumes: CreateTargetPort (H3a); HcHost (H1c); fake_hc (H1a)\n\nAcceptance:\n- [ ] The `terminal.run` request carries `no_notify: true`, `outlive_parent: true`, `no_parent: true` and no `caller`, with no `first_message`; the contract test asserts each param exists in the vendored schema.\n- [ ] `--space`-shaped placement sends `{herdr.space=<id>, herdr.tab=<fresh>, ht.bootstrap, ht.label}`; `NewTerminal` sends no app labels and parent = caller.\n- [ ] Outcome mapping tests: pre-record JSON-RPC error → `NotSubmitted`; `spawn_failed`/timeout/disconnect → `OutcomeUnknown`; a recorded unknown outcome is never reclassified by the `ht.bootstrap` label.\n- [ ] L1/L3: the live checks are listed as remaining evidence; the read-only readings of herdr-core `crates/herdr-core/src/notes.rs` and `api/run.rs` are recorded in the run report.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: no_parent / no_notify (D7, D8); Spikes L1, L3; TRUST-POLICY H3 row",
+      "files": [
+        "src/host/hc/mod.rs",
+        "src/host/hc/rpc.rs",
+        "src/host/hc/wire.rs",
+        "src/test_support/fake_hc.rs",
+        "TRUST-POLICY.md",
+        "tests/host/"
+      ],
+      "deps": [
+        "H3a",
+        "H1c",
+        "H1a"
+      ],
+      "dep_reasons": {
+        "H3a": "`CreateTargetPort`, `Placement`, `HostWitness`, `CreatedTarget`",
+        "H1c": "HcHost",
+        "H1a": "hc rpc client and fake_hc"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H3d1",
+      "title": "Herdr launch and handoff through CreateTargetPort (generic refactor)",
+      "description": "Make topology_handoff*, topology_runtime, handoff and launch code generic over `CreateTargetPort`; F's launch/handoff `NativeCli::new` sites (src/cli/handoff.rs:2264, src/cli/mod.rs:3990 `run_launch`, src/cli/topology_runtime.rs:388, :954, :1047) go through the port; src/cli/host_client.rs (new) holds the CLI-side launch handle. Herdr behaviour byte-identical; the V3 records are written for new attempts.\n\nowns: `src/cli/host_client.rs` launch handle\nconsumes: CreateTargetPort (H3a)\n\nAcceptance:\n- [ ] The existing Herdr handoff and launch tests and journal fixtures pass unchanged, and a Herdr new-tab handoff runs through the NativeCli `CreateTargetPort` delegate (asserted by a counting fake).\n- [ ] The F `NativeCli::new` source scan's kept-site list shrinks to the pane-observation sites plus peer_launch.rs (owned by H3e).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: CLI and placement; CreateTargetPort and journal records (generic over the port)",
+      "files": [
+        "src/cli/host_client.rs",
+        "src/cli/handoff.rs",
+        "src/cli/mod.rs",
+        "src/cli/launch.rs",
+        "src/cli/topology_runtime.rs",
+        "src/cli/topology_handoff.rs",
+        "src/cli/topology_handoff/",
+        "tests/handoff_topology_cli.rs",
+        "tests/cli/handoff.rs",
+        "tests/combined.rs"
+      ],
+      "deps": [
+        "H3a"
+      ],
+      "dep_reasons": {
+        "H3a": "`CreateTargetPort` and the NativeCli delegate"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H3d2",
+      "title": "hc handoff/launch CLI: --space/--new-tab/--new-terminal, in-place refusal, gate-shim handoff end to end",
+      "description": "`handoff`/`launch --space <app space>`, `--new-tab`, `--new-terminal` (no app labels, parent = caller) select a hc core from the caller's Terminal site or `HcDiscovery` (plain-shell handoff). In-place `--pane tN` is refused through `native_launch_capability() == Unsupported`. TRUST-POLICY C4 staging covers the hc launch, in the same commit.\n\nconsumes: CreateTargetPort (H3a via H3d1); gate shim (H3b); HcHost terminal.run (H3c); HcDiscovery (H1d); Terminal site (H1e)\n\nAcceptance:\n- [ ] A handoff into fake_hc creates a terminal running the gate shim; the shim's env has no `HERDR_*`, no `HERDR_THREADS_SEAT_NAME` and no adapter session vars; it waits for the daemon's `(core, tN)` authorization before `exec`, and the bootstrap Send is staged before the harness runs (needs: H3b) (needs: H3c).\n- [ ] `--space <id>` sends the label set `{herdr.space=<id>, herdr.tab=<fresh>, ht.bootstrap, ht.label}` to fake_hc; `--new-terminal` sends no app labels and parent = caller.\n- [ ] In-place launch into `tN` is refused through the port answer.\n- [ ] A plain-shell handoff with no core named uses `HcDiscovery` and never spawns `hc` (needs: H1d).\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: CLI and placement; Gate shim; TRUST-POLICY H3 row (C4 staging)",
+      "files": [
+        "src/cli/handoff.rs",
+        "src/cli/launch.rs",
+        "src/cli/host_client.rs",
+        "src/cli/topology_runtime.rs",
+        "TRUST-POLICY.md",
+        "tests/hc_handoff.rs",
+        "Cargo.toml"
+      ],
+      "deps": [
+        "H3d1",
+        "H3b",
+        "H3c",
+        "H1d",
+        "H1e"
+      ],
+      "dep_reasons": {
+        "H3d1": "launch/handoff generic over `CreateTargetPort`",
+        "H3b": "gate shim",
+        "H3c": "HcHost `CreateTargetPort` impl",
+        "H1d": "`HcDiscovery`",
+        "H1e": "Terminal caller site (parent = caller)"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "H3e",
+      "title": "Peer launch: NewTab onto hc spaces, cap-gated LaunchTarget::NewTerminal, peer-target-create alias",
+      "description": "Make peer_launch and peer_launcher generic over `CreateTargetPort` (src/cli/peer_launch.rs:48 site). Peer `LaunchTarget::NewTab{space,label}` maps onto hc app spaces with no wire change. New variant `LaunchTarget::NewTerminal{label}` in src/sync/frame.rs with `// cap: PEER_LAUNCH_TERMINAL_CAP` and `pub const PEER_LAUNCH_TERMINAL_CAP`, sent only to peers advertising it. `internal peer-target-create` with `peer-tab-create` kept as an alias for one release.\n\nowns: `LaunchTarget::NewTerminal` + `PEER_LAUNCH_TERMINAL_CAP`; `internal peer-target-create`\nconsumes: CreateTargetPort (H3a); HcHost terminal.run (H3c)\n\nAcceptance:\n- [ ] A peer without `PEER_LAUNCH_TERMINAL_CAP` is never sent `NewTerminal`; a capable peer's `NewTerminal` creates a terminal on fake_hc (multinode test).\n- [ ] `internal peer-tab-create` behaves as `internal peer-target-create` (same output and effect).\n- [ ] `scripts/check-wire-compat` passes with only the new type added to the baseline.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (baseline grows only by the new `LaunchTarget::NewTerminal` type), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Cap-gated LaunchTarget; CLI and placement (peer-target-create alias)",
+      "files": [
+        "src/sync/frame.rs",
+        "src/cli/peer_launch.rs",
+        "src/cli/internal.rs",
+        "src/service/peer_launcher.rs",
+        "scripts/wire-compat-baseline.txt",
+        "tests/multinode/"
+      ],
+      "deps": [
+        "H3a",
+        "H3c"
+      ],
+      "dep_reasons": {
+        "H3a": "`CreateTargetPort`/`Placement`",
+        "H3c": "HcHost `CreateTargetPort` impl"
+      },
+      "kind": "leaf"
+    },
+    {
+      "key": "Config-smoke",
+      "title": "Configuration smoke: Herdr pane, named, named+tmux and hc terminal sites x claude/codex/hermes/agy hook stand-ins",
+      "description": "One integration target that exercises each enumerated configuration once: for each caller site (Herdr pane in an isolated Herdr session; `HERDR_THREADS_SEAT_NAME` plain process; named inside a private `tmux -L ht-test-<uuid>` server; hc terminal against fake_hc) and each builtin harness stand-in (claude, codex, hermes, agy), run one turn-hook invocation (`herdr-threads hook <harness event>` via the stand-in's installed hook command) and one send/inbox round trip, and assert the expected `idle_wake_on` classification per cell. Entry point: `nice cargo test --locked --all-features --test config_smoke`. Not the terminal readiness gate (the run-final wake e2e is). The run-final real-agent wake e2e is run by the top-level session in phase 6 and tracked in run.md, not by this leaf.\n\nconsumes: Named site (N1-site); hc messaging (H1g); tmux wake (N2-wake)\n\nAcceptance:\n- [ ] Each of the 4 sites x 4 harness stand-ins runs one hook turn and one send/inbox round trip and passes (16 cells), with the cell list printed in the test output (needs: N1-site) (needs: H1g) (needs: N2-wake).\n- [ ] Per cell, the sender's wake classification matches the spec table (Pane → Composer/Channel; named → None or Channel with live mod; named+tmux verified → Composer for harnesses with `turn_state_edge`; hc → None or Channel).\n- [ ] Every daemon, Herdr test session, tmux server and fake core is stopped; the leak check is clean.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Testing and evidence; WakeCapability and idle_wake_on table; Goal (three environments)",
+      "files": [
+        "tests/config_smoke.rs",
+        "Cargo.toml",
+        ".config/nextest.toml"
+      ],
+      "deps": [
+        "N1-site",
+        "H1g",
+        "N2-wake",
+        "N-e2e"
+      ],
+      "dep_reasons": {
+        "N1-site": "Named caller site",
+        "H1g": "Terminal-site messaging end to end",
+        "N2-wake": "tmux wake path",
+        "N-e2e": "named end-to-end harness pieces (isolated Herdr + named daemon fixture)"
+      },
+      "kind": "leaf"
+    }
+  ]
+}
