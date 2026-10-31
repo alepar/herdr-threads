@@ -85,7 +85,7 @@ Codex 0.165) in isolated cores; where a spike and the research disagree, the spi
 | Host identity | server process (peer-pid witness, src/host/native.rs:104-130) | core id in `core.json`, read by `hello`; stable across restart and stop+start (04:92); not in env; a wiped or cloned core restarts at `t1` under a new id (01:28) |
 | App pane | n/a | one app pane = one core terminal; the layout (pane `p…` ↔ `tN`) lives in core doc `herdr-app`; pane ids exist in no env or label (04:47-48, 04:102) |
 | Topology | workspaces/tabs/panes | none in core ("a runtime, not a multiplexer"); app spaces/tabs are labels `herdr.space`/`herdr.tab` plus the doc (01:29, 01:72) |
-| Status | screen detection + hook reports | self-reported OSC 7501 only (04:22) |
+| Status | screen detection only for Claude, Codex, Hermes, agy (OSC title, OSC 9;4 progress, screen regexes, PTY activity; exit reads Idle); their hooks report session identity only; no OSC 7501 support (TUI ee5bfb50) | self-reported OSC 7501 only (04:21); can report `blocked kind=auth`, null at the folder-trust dialog, `idle` with a draft (04:29, 04:84) |
 | Input | raw type, keys, `agent.prompt` | `terminal.send` = paste + Enter always; `if: idle\|working`; 3 s human-quiet wait; no raw type (01:74; 04:20) |
 | Multiple instances | one server per session | several cores per user at once; no RPC enumerates them; discover via `~/.local/state/herdr-core/*/core.json` + `hello` (04:88-89) |
 
@@ -145,6 +145,9 @@ upstream) are out of scope here; F's env scrub covers R8b only. The rest are fol
 | SA13 | **Peer wire.** `SeatStatusEntry.name` is dropped (O1). `cooperative_named_seat` names the named-host observation; binding provenance stays the caller's. | N-A3 |
 | SA14 | **Selectors.** A bare token is a name only when no pane-path reading matches. Auto-creation happens only on seat-acting calls. `HostTopologies` is listed as a local protocol change. | N-A6 |
 | SA15 | **Locator.** The fixed reserved path `/.herdr-threads/named-host` (O2). | 07 O2 |
+| SA16 | **Live-holder guard** (narrows the Identity decision; D19). When a named seat would gain or reconnect a top-level binding, the daemon checks the seat's other connected top-level bindings with `LivenessFingerprint::is_alive` (pid + start time). It refuses `seat_name_in_use` (`herdr-threads: seat <n> is held by live pid <p>; use another name`, about 60 B) when a holder is alive, differs from the caller and neither is in the other's parent chain. Allowed: the same process, its ancestors/descendants, subagents (agent_id, as in a pane), D3 read-only bindings, Codex forks and Hermes under their existing rules. A dead or reused pid frees the name at once. Needs a ProcessInfo port in the enroll transaction (new plumbing). Complements SA2 (sequential folds through the host) rather than replacing it; makes SA6's self-retire check and SA7's concurrency test mostly moot. Today's panes have no such guard: enrollment never ends or refuses another binding (TRUST-POLICY.md:456-457). | follow-up review |
+| SA17 | **Named presence follows the pane precedent** (pane open, no agent). A named seat goes offline only when its bindings disconnect (`liveness_end_event`, ProcessExit, Superseded) and then shows exactly what a pane seat shows: "inactive, unavailable since T" in seat list, participants and inspect; `offline` to peers; one `recipient_unavailable` per episode for ACK and p0 sends; overdue lines per SA10. No new model-visible text. Fixes needed for that to hold: (b) the named host never arms `baseline_hold_unclaimed` or recovery holds (today one unresolved row on a host silences liveness for the whole host, seats.rs:1037-1047, 2195-2208); (c) the named host's reconcile pass stamps its fixed structural boot/incarnation so the C4 carry keeps live named bindings available across a daemon restart; (d) synthetic workspace/tab labels render `-`, the name once. Optional for all seats: `presence: offline` in overdue payloads (`wake=no_wake offline`, 8 B). | follow-up review |
+| SA18 | **N2: tmux wake for named seats** (D20). Phase after N, independent of H1-H3. Caller location records `TMUX`/`TMUX_PANE` as hint `tmux:<socket>:<server_pid>:<pane>`; the daemon verifies it (`tmux -S <sock> display -p -t <pane> '#{pane_pid} #{pid}'` + nearest-ancestor walk) at bind and at every wake; a failed check only disables wake, never moves a seat. NamedHost reports `Composer` for bindings with a verified hint. Composer: `capture-pane -p` at `#{pane_width}` into the existing ComposerPolicy; focus = pane_active && window_active && session_attached. Typing: `send-keys -l` + Enter with the existing read-back/clear. Idle/busy (tmux drops OSC 7501, inferred): hook turn state UserPromptSubmit→Stop (Codex has Stop; Claude needs one) plus a harness-owned screen recognizer for blocked (new ComposerPolicy method, neutral `None` = no wake). tmux as a fourth host is rejected: pane ids are reused, no incarnation witness, competes with named identity. Spikes T1-T5 (Part 6). | follow-up review |
 
 ## Part 2. Vision: herdr-core / herdr-app (05, revised)
 
@@ -192,6 +195,9 @@ upstream) are out of scope here; F's env scrub covers R8b only. The rest are fol
 ## Part 3. Unified code design (07, condensed)
 
 ### Environment model
+
+A **host** is one attached environment server, not a daemon: a Herdr TUI server, one herdr-core core, or the built-in named host. One daemon per node (machine, OS user, state dir) attaches all of them (up to 16 dialled hosts plus the built-in one), so seats in every environment share one store and message each other directly. Seat identity cannot collide across hosts: seat IDs are node-minted, and a target is scoped by its host row (pane `w3:p1`, terminal `t1` and name `t1` are different seats). Only a typed selector can be ambiguous across environments, and it is refused as today.
+
 
 | | Herdr TUI | Named | herdr-core |
 |---|---|---|---|
@@ -334,7 +340,7 @@ Named seats and hc terminals have no `[[startup]]` hook and no `HERDR_PLUGIN_STA
 
 ### Where core still knows its environment
 
-"Core is unaware of its environment" holds for policy, not absolutely. These are the remaining sites in core
+The goal: herdr-threads' general logic (message routing, delivery, receipts, seat bindings, liveness, peer sync) is unaware of the environment the recipient or caller runs in. That holds: none of the sites below is in routing, delivery, receipts or binding logic. Environment knowledge lives in host backends, the one caller-location module, and these bounded spots. These are the remaining sites in core
 (AGENTS.md's core includes `src/cli`, `src/store`, `src/daemon`), each with why it stays:
 
 | Site | What it knows | Why it stays / what bounds it |
@@ -518,6 +524,10 @@ Partially adopted:
 
     **Recommend: accept as listed.**
 
+19. **D19 Live-holder guard (SA16).** Narrows your earlier "concurrent sessions are bindings of one seat" to the live holder's own process tree: a second unrelated live session with the same name is refused; a crashed or exited one frees the name at once. **Recommend: adopt, alongside D1.**
+20. **D20 tmux wake for named seats (SA18).** Phase N2 after N, gated on T1-T5. **Recommend: adopt as N2.**
+21. **D21 Agent status.** Host-neutral rule now: each host reports `agent_status` with its source; null/missing is Unknown, never idle; every wake still needs a composer read (both Herdr's screen status and OSC 7501 say idle with a draft). Upstream ask to Herdr TUI: parse OSC 7501 and answer `7501;?`, prefer reported status over screen detection with fallback, expose `status_source` and `turn` in pane.get/events. Our Herdr path consumes it only once Herdr exposes it (we never see pane bytes). **Recommend: file the ask; adopt the rule.**
+
 ## Part 6. Remaining spikes
 
 | Spike | Question | Gate |
@@ -537,6 +547,7 @@ Partially adopted:
 | W4 | `getpgid` across sessions; aisw-wrapped leader vs fingerprint pid | H2 |
 | W5 | Typing in a focused app pane while a wake is due | H2 |
 | L1–L4 | New-tab labels; shim `exec` keeps `terminal.pid`; `outlive_parent`+`no_notify` stop notes; Codex `--no-daemon` and the Linux socket path | H3 |
+| T1-T5 | tmux: capture-pane vs Herdr detection read per ComposerPolicy; idle/working/blocked recognition incl. missed Stop; draft safety with no server-side guard; stale TMUX_PANE in nested Herdr/tmux refused; tmux discards OSC 7501 | N2 |
 | Upstream | herdr-core: atomic draft-safe `send` (`if_input_empty` / `quiet:"refuse"`) and `if:[idle,done]`, advertised in `hello.features` | H2 |
 
 ## Appendix: run files
