@@ -43,3 +43,5 @@ C2-16 · r2 · GAP · Hermes tmux idle wake · rejected — spec scopes turn_sta
 C2-17 · r2 · NEEDS-SPEC · ht-kqrt (N2) Hermes tmux wake · rejected — spec settles it: default turn_state_edge None, no tmux wake for Hermes
 C2-18 · r2 · NEEDS-SPEC · ht-kqrt (root) goal lacks H3 outcome · rejected — duplicate of C2-4; H3 is in scope per spec
 C2-19 · r2 · GAP · cross-node hc case in the .59 smoke · rejected — owned and tested by ht-kqrt.60 (named cross-node by .33); a second end-to-end copy fills no gap
+C3-1 · amend-design-1 · unstated · 16 stale edges to superseded beads · applied — removed (reason lines already re-pointed to replacements)
+C3-2 · amend-design-1 · citation · ht-kqrt.59/.50 cited superseded ht-kqrt.39/.22 · applied — re-pointed to ht-kqrt.69/.71

@@ -504,14 +504,6 @@
       },
       {
         "issue_id": "ht-kqrt.66",
-        "depends_on_id": "ht-kqrt.22",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:47:37Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.66",
         "depends_on_id": "ht-kqrt.13",
         "type": "blocks",
         "created_at": "2026-10-31T21:47:15Z",
@@ -648,14 +640,6 @@
       },
       {
         "issue_id": "ht-kqrt.66",
-        "depends_on_id": "ht-kqrt.36",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:48:19Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.66",
         "depends_on_id": "ht-kqrt.24",
         "type": "blocks",
         "created_at": "2026-10-31T21:47:42Z",
@@ -731,14 +715,6 @@
         "depends_on_id": "ht-kqrt.8",
         "type": "blocks",
         "created_at": "2026-10-31T21:47:02Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.66",
-        "depends_on_id": "ht-kqrt.42",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:48:33Z",
         "created_by": "Alexey Parfenov",
         "metadata": "{}"
       },
@@ -864,14 +840,6 @@
       },
       {
         "issue_id": "ht-kqrt.66",
-        "depends_on_id": "ht-kqrt.27",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:47:58Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.66",
         "depends_on_id": "ht-kqrt.54",
         "type": "blocks",
         "created_at": "2026-10-31T21:49:02Z",
@@ -947,14 +915,6 @@
         "depends_on_id": "ht-kqrt.69",
         "type": "blocks",
         "created_at": "2026-10-31T22:26:24Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.66",
-        "depends_on_id": "ht-kqrt.39",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:48:27Z",
         "created_by": "Alexey Parfenov",
         "metadata": "{}"
       },
@@ -1055,7 +1015,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 73,
+    "dependency_count": 68,
     "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -1239,14 +1199,6 @@
       },
       {
         "issue_id": "ht-kqrt.63",
-        "depends_on_id": "ht-kqrt.42",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:25:02Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.63",
         "depends_on_id": "ht-kqrt.51",
         "type": "blocks",
         "created_at": "2026-10-31T21:25:28Z",
@@ -1302,7 +1254,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 11,
+    "dependency_count": 10,
     "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -1348,14 +1300,6 @@
       },
       {
         "issue_id": "ht-kqrt.62",
-        "depends_on_id": "ht-kqrt.39",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:24:52Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.62",
         "depends_on_id": "ht-kqrt.69",
         "type": "blocks",
         "created_at": "2026-10-31T22:27:38Z",
@@ -1363,7 +1307,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 4,
+    "dependency_count": 3,
     "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -1385,25 +1329,9 @@
     "dependencies": [
       {
         "issue_id": "ht-kqrt.61",
-        "depends_on_id": "ht-kqrt.36",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:24:46Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.61",
         "depends_on_id": "ht-kqrt.69",
         "type": "blocks",
         "created_at": "2026-10-31T22:27:45Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.61",
-        "depends_on_id": "ht-kqrt.39",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:24:42Z",
         "created_by": "Alexey Parfenov",
         "metadata": "{}"
       },
@@ -1424,7 +1352,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 4,
+    "dependency_count": 2,
     "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -1485,14 +1413,14 @@
   {
     "id": "ht-kqrt.59",
     "title": "Configuration smoke: Herdr pane, named, named+tmux and hc terminal sites x claude/codex/hermes/agy hook stand-ins",
-    "description": "One integration target that exercises each enumerated configuration once: for each caller site (Herdr pane in an isolated Herdr session; `HERDR_THREADS_SEAT_NAME` plain process; named inside a private `tmux -L ht-test-\u003cuuid\u003e` server; hc terminal against fake_hc) and each builtin harness stand-in (claude, codex, hermes, agy), run one turn-hook invocation (`herdr-threads hook \u003charness event\u003e` via the stand-in's installed hook command) and one send/inbox round trip, and assert the expected `idle_wake_on` classification per cell. Entry point: `nice cargo test --locked --all-features --test config_smoke`. Not the terminal readiness gate (the run-final wake e2e is). The run-final real-agent wake e2e is run by the top-level session in phase 6 and tracked in run.md, not by this leaf.\n\nconsumes: Named site (N1-site); hc messaging (H1g); tmux wake (N2-wake)\n\nAcceptance:\n- [ ] Each of the 4 sites x 4 harness stand-ins runs one hook turn and one send/inbox round trip and passes (16 cells), with the cell list printed in the test output (needs: ht-kqrt.16) (needs: ht-kqrt.48) (needs: ht-kqrt.39).\n- [ ] Per cell, the sender's wake classification matches the spec table (Pane → Composer/Channel; named → None or Channel with live mod; named+tmux verified → Composer for harnesses with `turn_state_edge`; hc → None or Channel).\n- [ ] Every daemon, Herdr test session, tmux server and fake core is stopped; the leak check is clean.\n- [ ] In one daemon, send, inbox, ACK and hook delivery work hc-\u003enamed, named-\u003ehc, hc-\u003epane and pane-\u003ehc, with the sender's header label correct for each.\n- [ ] A fake_hc herdr-app terminal fixture (herdr-app doc name, `herdr.space`/`herdr.tab` labels) gets full messaging: seat, send, inbox, ACK, hook delivery, and is displayed with its `\u003csession\u003e:tN` label.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Testing and evidence; WakeCapability and idle_wake_on table; Goal (three environments); Goal (cross-environment messaging); Labels \u003csession\u003e:tN (D11, herdr-app doc names)\n\nKey: Config-smoke\nFiles: tests/config_smoke.rs, Cargo.toml, .config/nextest.toml\nblocked-by ht-kqrt.16: consumes Named caller site\nblocked-by ht-kqrt.48: consumes Terminal-site messaging end to end\nblocked-by ht-kqrt.69: consumes tmux wake path\nblocked-by ht-kqrt.34: consumes named end-to-end harness pieces (isolated Herdr + named daemon fixture)\nblocked-by ht-kqrt.43: consumes hc labels `\u003csession\u003e:tN` and herdr-app doc-name parsing\nblocked-by ht-kqrt.69: consumes replacement of superseded ht-kqrt.39\n",
+    "description": "One integration target that exercises each enumerated configuration once: for each caller site (Herdr pane in an isolated Herdr session; `HERDR_THREADS_SEAT_NAME` plain process; named inside a private `tmux -L ht-test-\u003cuuid\u003e` server; hc terminal against fake_hc) and each builtin harness stand-in (claude, codex, hermes, agy), run one turn-hook invocation (`herdr-threads hook \u003charness event\u003e` via the stand-in's installed hook command) and one send/inbox round trip, and assert the expected `idle_wake_on` classification per cell. Entry point: `nice cargo test --locked --all-features --test config_smoke`. Not the terminal readiness gate (the run-final wake e2e is). The run-final real-agent wake e2e is run by the top-level session in phase 6 and tracked in run.md, not by this leaf.\n\nconsumes: Named site (N1-site); hc messaging (H1g); tmux wake (N2-wake)\n\nAcceptance:\n- [ ] Each of the 4 sites x 4 harness stand-ins runs one hook turn and one send/inbox round trip and passes (16 cells), with the cell list printed in the test output (needs: ht-kqrt.16) (needs: ht-kqrt.48) (needs: ht-kqrt.69).\n- [ ] Per cell, the sender's wake classification matches the spec table (Pane → Composer/Channel; named → None or Channel with live mod; named+tmux verified → Composer for harnesses with `turn_state_edge`; hc → None or Channel).\n- [ ] Every daemon, Herdr test session, tmux server and fake core is stopped; the leak check is clean.\n- [ ] In one daemon, send, inbox, ACK and hook delivery work hc-\u003enamed, named-\u003ehc, hc-\u003epane and pane-\u003ehc, with the sender's header label correct for each.\n- [ ] A fake_hc herdr-app terminal fixture (herdr-app doc name, `herdr.space`/`herdr.tab` labels) gets full messaging: seat, send, inbox, ACK, hook delivery, and is displayed with its `\u003csession\u003e:tN` label.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: Testing and evidence; WakeCapability and idle_wake_on table; Goal (three environments); Goal (cross-environment messaging); Labels \u003csession\u003e:tN (D11, herdr-app doc names)\n\nKey: Config-smoke\nFiles: tests/config_smoke.rs, Cargo.toml, .config/nextest.toml\nblocked-by ht-kqrt.16: consumes Named caller site\nblocked-by ht-kqrt.48: consumes Terminal-site messaging end to end\nblocked-by ht-kqrt.69: consumes tmux wake path\nblocked-by ht-kqrt.34: consumes named end-to-end harness pieces (isolated Herdr + named daemon fixture)\nblocked-by ht-kqrt.43: consumes hc labels `\u003csession\u003e:tN` and herdr-app doc-name parsing\nblocked-by ht-kqrt.69: consumes replacement of superseded ht-kqrt.69\n\n",
     "status": "open",
     "priority": 1,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-31T20:58:44Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-31T22:27:57Z",
+    "updated_at": "2026-10-31T22:34:42Z",
     "labels": [
       "sp:ht-kqrt"
     ],
@@ -1544,17 +1472,9 @@
         "created_at": "2026-10-31T20:58:44Z",
         "created_by": "Alexey Parfenov",
         "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.59",
-        "depends_on_id": "ht-kqrt.39",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:09:46Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
       }
     ],
-    "dependency_count": 6,
+    "dependency_count": 5,
     "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -1902,14 +1822,6 @@
       },
       {
         "issue_id": "ht-kqrt.52",
-        "depends_on_id": "ht-kqrt.42",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:08:15Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.52",
         "depends_on_id": "ht-kqrt.2",
         "type": "blocks",
         "created_at": "2026-10-31T21:08:07Z",
@@ -1933,7 +1845,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 6,
+    "dependency_count": 5,
     "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -1978,14 +1890,14 @@
   {
     "id": "ht-kqrt.50",
     "title": "Two-host dialled-only consumer tests (TUI fake + fake hc), two-kind restore, seatless core idle exit",
-    "description": "Each dialled-only consumer gets a two-host test where hc holds the lowest host id: `startup_primary`, `first_host_pacer`, `place()`, the discovery gate, archival (`archival_evidence() == Supported`) and the production `BootstrapRuntime` gate (07 §4.6). Fix any consumer that mis-picks. S5 two-kind half.\n\nconsumes: HostFactory probe (H1b); HcHost (H1c); consumer filters (F4-audit); restore rules (N3-restore)\n\nAcceptance:\n- [ ] `startup_primary`, `first_host_pacer`, `place()`, the discovery gate, archival and the production `BootstrapRuntime` gate each pass a two-host test (TUI fake + fake hc) where hc holds the lowest host id.\n- [ ] S5 two-kind half and D12: on a node with a TUI fake host and fake_hc, an unnamed restored row is held unresolved and never placed on either host (needs: ht-kqrt.22).\n- [ ] Idle exit with only a seatless fake core attached exits.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: attached() / all_for_reads audit (G1) two-host tests; Restore (SA4, D12); Spikes S5 (two-kind half)\n\nKey: H1-twohost\nFiles: tests/daemon/multi_host.rs, src/app.rs, src/service/host_sessions.rs, src/service/archival.rs, src/service/peer_launcher.rs, src/daemon/idle_exit.rs\nblocked-by ht-kqrt.44: consumes hc attach via factory probe\nblocked-by ht-kqrt.41: consumes HcHost\nblocked-by ht-kqrt.6: consumes 07 §5.3 consumer filters\nblocked-by ht-kqrt.71: consumes restore placement rules\nblocked-by ht-kqrt.71: consumes replacement of superseded ht-kqrt.22\n",
+    "description": "Each dialled-only consumer gets a two-host test where hc holds the lowest host id: `startup_primary`, `first_host_pacer`, `place()`, the discovery gate, archival (`archival_evidence() == Supported`) and the production `BootstrapRuntime` gate (07 §4.6). Fix any consumer that mis-picks. S5 two-kind half.\n\nconsumes: HostFactory probe (H1b); HcHost (H1c); consumer filters (F4-audit); restore rules (N3-restore)\n\nAcceptance:\n- [ ] `startup_primary`, `first_host_pacer`, `place()`, the discovery gate, archival and the production `BootstrapRuntime` gate each pass a two-host test (TUI fake + fake hc) where hc holds the lowest host id.\n- [ ] S5 two-kind half and D12: on a node with a TUI fake host and fake_hc, an unnamed restored row is held unresolved and never placed on either host (needs: ht-kqrt.71).\n- [ ] Idle exit with only a seatless fake core attached exits.\n- [ ] Per-change checks pass: `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (no new allowlist entry), `scripts/check-wire-compat` (no new baseline line), `cargo fmt`; the focused tests for this change pass with `--all-features`; `nice scripts/check-default-features` passes before merge.\n\nSpec: attached() / all_for_reads audit (G1) two-host tests; Restore (SA4, D12); Spikes S5 (two-kind half)\n\nKey: H1-twohost\nFiles: tests/daemon/multi_host.rs, src/app.rs, src/service/host_sessions.rs, src/service/archival.rs, src/service/peer_launcher.rs, src/daemon/idle_exit.rs\nblocked-by ht-kqrt.44: consumes hc attach via factory probe\nblocked-by ht-kqrt.41: consumes HcHost\nblocked-by ht-kqrt.6: consumes 07 §5.3 consumer filters\nblocked-by ht-kqrt.71: consumes restore placement rules\nblocked-by ht-kqrt.71: consumes replacement of superseded ht-kqrt.71\n\n",
     "status": "open",
     "priority": 1,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-31T20:58:20Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-31T22:28:39Z",
+    "updated_at": "2026-10-31T22:34:47Z",
     "labels": [
       "sp:ht-kqrt"
     ],
@@ -2024,14 +1936,6 @@
       },
       {
         "issue_id": "ht-kqrt.50",
-        "depends_on_id": "ht-kqrt.22",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:07:47Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.50",
         "depends_on_id": "ht-kqrt.6",
         "type": "blocks",
         "created_at": "2026-10-31T21:07:44Z",
@@ -2039,7 +1943,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 5,
+    "dependency_count": 4,
     "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -2207,14 +2111,6 @@
     "dependencies": [
       {
         "issue_id": "ht-kqrt.47",
-        "depends_on_id": "ht-kqrt.27",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:06:57Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.47",
         "depends_on_id": "ht-kqrt.46",
         "type": "blocks",
         "created_at": "2026-10-31T21:06:53Z",
@@ -2254,7 +2150,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 5,
+    "dependency_count": 4,
     "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -2521,7 +2417,7 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 3,
+    "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-kqrt"
   },
@@ -2689,7 +2585,7 @@
       }
     ],
     "dependency_count": 4,
-    "dependent_count": 4,
+    "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-kqrt"
   },
@@ -2857,7 +2753,7 @@
       }
     ],
     "dependency_count": 4,
-    "dependent_count": 3,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-kqrt"
   },
@@ -3051,14 +2947,6 @@
       },
       {
         "issue_id": "ht-kqrt.34",
-        "depends_on_id": "ht-kqrt.22",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:27:13Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.34",
         "depends_on_id": "ht-kqrt.65",
         "type": "blocks",
         "created_at": "2026-10-31T21:43:03Z",
@@ -3091,14 +2979,6 @@
       },
       {
         "issue_id": "ht-kqrt.34",
-        "depends_on_id": "ht-kqrt.27",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:27:27Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.34",
         "depends_on_id": "ht-kqrt.6",
         "type": "blocks",
         "created_at": "2026-10-31T21:04:18Z",
@@ -3114,7 +2994,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 23,
+    "dependency_count": 21,
     "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -3446,17 +3326,9 @@
         "created_at": "2026-10-31T21:02:53Z",
         "created_by": "Alexey Parfenov",
         "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-kqrt.28",
-        "depends_on_id": "ht-kqrt.27",
-        "type": "blocks",
-        "created_at": "2026-10-31T21:02:48Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
       }
     ],
-    "dependency_count": 4,
+    "dependency_count": 3,
     "dependent_count": 4,
     "comment_count": 0,
     "parent": "ht-kqrt"
@@ -3519,7 +3391,7 @@
       }
     ],
     "dependency_count": 3,
-    "dependent_count": 4,
+    "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-kqrt"
   },
@@ -3761,7 +3633,7 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 3,
+    "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-kqrt"
   },
