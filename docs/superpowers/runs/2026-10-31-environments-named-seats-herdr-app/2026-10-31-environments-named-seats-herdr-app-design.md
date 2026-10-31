@@ -1372,6 +1372,98 @@ Exit gate: the per-phase gates, plus L1-L4 as answered.
 - Remaining evidence to record in the run report: E1 on macOS, H-C1 live, L1 live, Codex `--no-daemon` live, and the
   Claude half of the wake e2e if no Linux credential is present.
 
+## Key abstractions
+
+**HostPort capability answers** (`HostKind`, `WakeCapability`/`ComposerTraits`, `ClosureAuthority`, `ArchivalEvidence`): new closed enums in src/ports.rs. Each `HostPort` reports through them what it can do.
+- Owns: one defaulted answer per policy question: kind, wake (host-level and, from N2, per target via `target_wake_capability`), closure authority, archival evidence, target root pid and server pid. Every default reproduces today's Herdr behaviour.
+- Hides: which environment a host is. Delivery, closure, wake, archival, placement and binding policy branch on the answer, never on the kind.
+- Must not: be read by `kind()` outside the four listed readers (`any_reachable`, the G4 implemented-kinds check and probe comparison, adapter `host_launch_argv`, doctor/diagnostics). A default must never return `ErrorCode::Unsupported`; methods a built-in host cannot serve return a non-Unsupported `Err` that a capability answer refuses before it is reached.
+- Relationships: these are defaulted methods on the existing trait, so the 40 impls compile unchanged. Policy code (host_sessions, dispatch, archival, peer_launcher, idle_exit, reconcile) depends on the answers. Hosts depend on nothing new.
+- Errors: only `target_root_process` is fallible (`ApiError`, i.e. host unreachable). The others are plain values, so a forgotten case cannot pass a test vacuously.
+
+**HostKind implemented set (G4)**: a new static set beside `HostKind`. It grows one variant per phase.
+- Owns: the answer to whether this build can construct a persisted kind. `Unknown` is fail-closed.
+- Hides: phase skew between binaries and stored rows.
+- Must not: be bypassed by reattach, restore or rebind. A row whose kind is outside the set is skipped and named by `doctor`, never dialled as Herdr.
+
+**NamedHost** (src/host/named.rs): a new `HostPort` impl. The built-in host is never dialled; its enumeration is a store read.
+- Owns: the fixed per-node boot and incarnation, `observe_current_target(name)` (always present, generation 1), enumeration through `NamedSeatSource::live_named` keyed on host id, `NonClosing`, `NoEvidence`, `seat_labels` (pane label = name), `ENV_VARS`. In N2 it also owns the tmux wake path: per-binding hint verification (server pid plus nearest ancestor), `capture-pane` read, `send-keys` typing and the per-target wake answer.
+- Hides: that "presence" is cooperative and comes from the store. tmux is a wake path of this host, not a host of its own (SA18).
+- Must not: close by absence (reconcile skips that step for `NonClosing`), arm `baseline_hold_unclaimed` or recovery holds, satisfy `wait:host`, move or rebind a seat when a tmux check fails (that only disables wake for the binding), or report wake `Composer` for a target without a verified hint.
+- Relationships: composes `NamedSeatSource`, a narrow store read the daemon injects. Dependency points host → store-read trait, never store → host. The tmux client runs through the existing `ProcessCommand`, and the composer read goes through the harness's existing `ComposerPolicy`.
+- Lifecycle: the daemon creates it at start and installs it in `HostSessions`' built-in slot through `attach_builtin`. It lives for the whole process. The tmux hints live in daemon memory per binding and are lost on restart (accepted limit).
+- Errors: tmux command failure or deadline (2 s) → wake `None` for that binding only. A seat name that fails to parse → it is never observed.
+
+**HcHost / HcBoot / HcDiscovery** (src/host/hc/{mod,rpc,wire}.rs): a new `HostPort` impl, an Adapter over herdr-core's JSON-RPC.
+- Owns: the one-connection-per-call line client, tolerant wire types, boot = `hc-core:<core.id>`, mapping finish reasons to closure (D10 table), `status:null` → `Unknown`, labels taken from `herdr.space`/`herdr.tab` plus the `herdr-app` doc, `server_process` taken from the `LocalEndpointWitness` peer pid, and discovery from `core.json` plus `hello`.
+- Hides: the hc protocol, the socket path rules, and which of hc's methods it must never call (`terminal.list`, `doc.set`, `caller`).
+- Must not: spawn `hc`, treat agent exit as closure, keep `machine/tN` mirrors, or attach on a diagnostic scan.
+- Lifecycle: built by `HostFactory.build(Hc, locator)` on a dialled attach. It lives as long as its `HostSession`. It holds no long-lived connection. The observation counter and the doc-name cache are per-instance mutable state.
+- Errors: a failed `hello` gives `CompleteUnverified` (closes nothing). A core id mismatch is a new boot (C2 holds). An RPC error before a launch record exists is `NotSubmitted`; `spawn_failed`, a timeout or a disconnect is `OutcomeUnknown` (H3).
+
+**CallerEnv → Located → CallerSite** (src/cli/caller_location.rs): a new module with closed enums. It is the CLI's only reader of caller-location env.
+- Owns: reading and empty-filtering the env (names come from each host module's `ENV_VARS`), the precedence (valid name, then one family, then `Ambiguous`, then refusal), M14/M16/M17, the tmux hint (N2), and the per-site answers (`moved_target`, `relative_pane`, `person_origin_allowed`, `enrolls_on_first_use`, `attempts_continuity`, `host_scoped_lookup`, `cache_key`, `env_assignments`).
+- Hides: which env family located the caller, from mod.rs, hook.rs, watch.rs, handoff hints and instance discovery.
+- Must not: verify anything (that is `LocateCaller` in the daemon, per A2), or rank one family above another. No other src/cli file reads these variables (enforced by a source scan).
+- Relationships: depends on the host modules' `ENV_VARS` consts only, not on the hosts. Consumers match on `CallerSite`'s methods, not on `CallerLocator`.
+- Lifecycle: built once per CLI or hook invocation; immutable value.
+- Errors: `LocatorError` keeps "invalid name", "terminal without socket" and "both families, unverified" (M1, or M4 from H1 on) distinct. No family and no name keeps today's error text.
+
+**LocateCaller** (src/service/locate.rs): a new daemon service. It verifies an `Ambiguous` caller by nearest ancestor and checks for an inherited name.
+- Owns: the walk from the subject (liveness pid, else transport peer pid) up `ProcessInfo` parents against each candidate's `target_root_process`, its cache keyed on (candidates, subject, boot/epoch), and the server-environ read for the inherited-name refusal (M6). The environ reader is a plain function with a Linux `/proc` body and a macOS `KERN_PROCARGS2` body chosen by cfg, not a trait.
+- Hides: how a pid maps to a host target, and how a server's environ is read on each OS.
+- Must not: run for `One` callers (that would be adversarial verification, which TRUST-POLICY forbids), fall back to a candidate when none verifies, or fail closed when the environ is unreadable (`server_process() == None` skips the check).
+- Relationships: delegates to `HostPort::target_root_process`/`server_process` through `HostSessions::all_for_reads`. It knows no host kind.
+- Lifecycle: one per daemon. The cache is its only mutable state, shared behind the dispatch lock or a mutex.
+- Errors: `Verified{index, root}` vs `Unverified{per_candidate}`; an unreachable host counts as unverified. M6 is its own refusal code.
+
+**HostSessions** (extended): adds a `builtin` `OnceLock` slot and `attach_builtin`, which skips `exists`, the canonical check and the cap. Adds `all_for_reads` (dialled plus built-in). `attached()` stays dialled-only. `HostSession.wake` becomes `Option<LaneHandle>` and starts only when the wake capability is not `None`; in N2 the built-in session registers its own lane with its own pacer, reachability and Health. Applies the 07 §5.3 filters at each consumer, by capability answer. Each consumer's choice of `attached()` or `all_for_reads` is decided per call site, not by a flag.
+
+**HostFactory** (extended): becomes `{exists, probe, build(kind, locator)}`. It stays closures and stays the one place a dialled `HostPort` is constructed for a kind. The probe runs under `attach_lock` before `store.attach_host` writes `kind`/`kind_probed_at`. A stored kind that disagrees with the probe refuses the attach.
+
+**HarnessRegistry** (extended): adds `idle_wake_on(harness, WakeCapability, channel_live)`, the single classifier that combines harness, host capability and channel. `has_idle_wake` stays as the test oracle. `wake_status` uses it per row with the row's own host.
+
+**HarnessAdapter / ComposerPolicy** (extended): new neutral defaulted methods: `turn_state_edge` (N2; default `None` = no tmux wake), `ComposerPolicy::screen_blocked` (N2; default `None` = no wake), and `child_scrub_vars` and `host_launch_argv(HostKind)` (H3; default empty). Per-harness behaviour stays in adapters.
+
+**Store seats** (extended, src/store/seats.rs): `retire_seat` factored out of `operator_retire`, used by `SelfRetire`. A live-holder guard in the enroll transaction (`&dyn ProcessInfo` passed in). Named continuity as a fourth C1 path. The cross-kind rebind refusal. Restore placement by name or by a single dialled kind. The `Closed` guard on named seats. The literal `'named'` appears only in the unique index and in the restore/rebind rules.
+
+**CreateTargetPort** (H3): new, beside `CreateTabPort`. Its second implementation exists in the spec (NativeCli by delegation to `create_tab`, HcHost via `terminal.run`). It carries `Placement`, plus `HostWitness`/`CreatedTarget`, whose `validate()` dispatches on the witness. Launch and handoff code becomes generic over it. V1/V2 journal bytes stay frozen and V3 carries `CreatedTarget`.
+
+**Env scrub list** (extended): `host::child_env_scrub_list()` is the single union, built from each host module's `ENV_VARS`. `spawn_detached`, the gate shim and every handoff spawn take it. `lifecycle` holds no host literal.
+
+Variation:
+- New host environments → a `HostPort` impl per kind. The dialled kind is chosen in one place, `HostFactory.build(kind, …)`, fed by the probe; the built-in kind is installed only by `attach_builtin`. Policy reads capability answers, so a new kind adds answers, not branches.
+- The CLI-side site kinds are fixed per phase, so `CallerLocator`/`CallerSite` is a closed enum with `match` (spec §Caller location rejects `dyn CallerSite`).
+- Wake mechanism per target (Herdr composer, tmux, none, later hc) → `WakeCapability`/`target_wake_capability` per host, combined with the harness in `idle_wake_on` only.
+- Per-harness turn edges and blocked screens → adapter defaults.
+- OS-specific environ reading → a cfg-selected function.
+
+Walk-through:
+- Main use case: an agent runs `inbox` with `HERDR_THREADS_SEAT_NAME=reviewer` and no Herdr.
+  1. `CallerEnv::from_process` → `locate(Cli)` → `One(Named)` → `CallerSite`. `host_scoped_lookup` makes the CLI send `SeatsQuery.host`. Instance discovery takes the default dir.
+  2. The daemon resolves via `HostSessions::by_locator`, which answers from the built-in slot, to `NamedHost`.
+  3. A seat-acting call enrolls: seats.rs allocates by name (M8) and runs the live-holder guard against `ProcessInfo`. If a host candidate is present, `LocateCaller` reads that host's `server_process` environ for M6.
+  4. Delivery runs unchanged. A sender's `wake_status` looks up the row's host through `all_for_reads`. `target_wake_capability = None` → `idle_wake_on` → `NoWake`, persisted once in `no_wake_reports`.
+  5. Reconcile sees `NonClosing` and never retires by absence.
+- Likely future change, H2 hc composer wake: `HcHost` answers `wake_capability`/`target_wake_capability = Composer(..)` and gains its composer read and send. `HostSessions` then starts the lane by the capability gate, and `idle_wake_on`, `wake_status` and the no-wake rows flip with no caller edits. It touches one type (`HcHost`) and no registration.
+- A fourth dialled environment touches one new `HostPort` type, one `HostKind` variant with its implemented-set entry, the factory/probe arm (the registration), one `CallerLocator` variant and its `ENV_VARS`. The `CallerLocator` edit is accepted by spec decision: closed match over a trait object.
+
+Deliberate exceptions the spec forces:
+- Per spec §"HostPort capability answers": `kind()` is read by exactly four callers (discovery gate, G4, `host_launch_argv`, doctor). These are intended per-kind branches, each checked in review.
+- Per spec §"seats.name and the literal 'named'": the store branches on `'named'` in the unique index and the restore/rebind rules. Intended.
+- Per spec §"Built-in vs dialled hosts": each node-wide consumer chooses `attached()` or `all_for_reads()` explicitly by call site (07 §5.3 table). This is a deliberate per-caller choice, not an abstraction.
+- Per spec §"TUI leak guard": the M3 "first delivering hook per binding" memory is keyed on `OutputPolicy` plus lifecycle registration and lives only from F until H1. It is temporary daemon memory, not a new abstraction.
+- Per spec §"HostPort capability answers": the B design's split of `HostPort` into capability traits is rejected in favour of defaulted methods on one trait.
+
+Digest:
+- HostPort capability answers: own each host's answer to every policy question (kind, wake, closure, archival, root/server pid). New per-environment behaviour is a different answer in that host's impl. Policy callers never branch on `kind()` outside the four listed readers.
+- HostKind implemented set: owns "can this build construct this persisted kind". A new kind is added beside its `HostKind` variant in the phase that builds it. Reattach, restore and rebind never dial a kind outside it.
+- NamedHost: owns the built-in, never-dialled named host: store-read enumeration, `NonClosing`, fixed boot, and the N2 tmux wake path per verified binding. New named-seat host behaviour goes in src/host/named.rs. Callers never close, hold or rebind named seats by absence or by a failed tmux check.
+- HcHost / HcBoot / HcDiscovery: own the herdr-core adapter (JSON-RPC, core-id boot, finish-reason closure, labels, discovery without spawning `hc`). New hc protocol use goes in src/host/hc/. Callers never call hc directly or read hc state files.
+- CallerEnv / Located / CallerSite: own reading caller-location env and its precedence in the CLI. A new site kind is a `CallerLocator` variant plus arms in its closed match. No other src/cli file reads those variables.
+- LocateCaller: owns daemon-side nearest-ancestor verification of two-family callers and the inherited-name environ check. A new host candidate verifies through its `target_root_process`/`server_process` answers. Callers never verify `One` sites and never fall back when nothing verifies.
+- CreateTargetPort: owns creating a host target for launch and handoff (new tab, new terminal) and validating its witness. A new host's creation is one impl of the port. Launch and handoff code never branches on the host type.
+
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
