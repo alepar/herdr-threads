@@ -1030,6 +1030,45 @@ fn explicit_pane_preserves_both_harness_configs() {
     }
 }
 
+// An automatic new-tab handoff with --summary freezes it, launches the summary prompt, and
+// the daemon's byte-for-byte retained-report check accepts that launch.
+#[test]
+fn automatic_new_tab_summary_reaches_the_prompt_and_passes_retained_validation() {
+    let f = Fixture::new();
+    f.setup("codex");
+    let binary = f.iso.path("codex");
+    let out = successful(f.run(
+        &[
+            "handoff",
+            "--new-tab",
+            "Peer",
+            "--kind",
+            "codex",
+            "--summary",
+            "Fix the wake test",
+            "--harness-binary",
+            binary.to_str().unwrap(),
+            "--",
+            BODY,
+        ],
+        "",
+    ));
+    assert_eq!(out["bootstrap"]["outcome"], "started");
+    assert_eq!(
+        f.count("SELECT count(*) FROM automatic_bootstrap_parents WHERE state='completed'"),
+        1
+    );
+    let argv: Vec<String> =
+        serde_json::from_value(f.host.requests("agent.start")[0]["params"]["args"].clone())
+            .unwrap();
+    let prompt = argv.last().unwrap();
+    assert!(
+        prompt.starts_with("Handoff: Fix the wake test \u{2014} full task in thread "),
+        "{prompt}"
+    );
+    assert!(!prompt.contains(BODY));
+}
+
 // A transient shell-readiness refusal must complete the original automatic
 // handoff, not leave a possible-start journal fence or stage the work twice.
 #[test]

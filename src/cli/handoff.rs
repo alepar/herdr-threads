@@ -686,7 +686,7 @@ pub(crate) fn prepare_automatic_startup(
 #[allow(clippy::too_many_arguments)]
 fn start_automatic<C: LocalClient + ?Sized, W: Write>(
     journal: &Journal,
-    request: HandoffRequest,
+    mut request: HandoffRequest,
     claim: CallerClaim,
     client: &C,
     launcher: &mut dyn HandoffLauncher,
@@ -711,6 +711,13 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
     }
     super::handoff_delivery::require_automatic_capability(client, clock)?;
     super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
+    // An older daemon refuses the plan's `summary` field: the launch then names only the thread.
+    if !client.supports_capability(
+        crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
+        &super::cooperative_budget(clock),
+    ) {
+        request.summary = None;
+    }
     let namespace = HandoffNamespace {
         instance: claim.instance.clone(),
         state_dir: output
@@ -1610,7 +1617,7 @@ pub(crate) mod bootstrap_v1 {
         out.push('"');
     }
 
-    fn needs_escape(ch: char) -> bool {
+    pub(super) fn needs_escape(ch: char) -> bool {
         let cp = ch as u32;
         ch.is_control()
             || matches!(ch, '\u{2028}' | '\u{2029}')
@@ -1765,14 +1772,18 @@ pub(crate) mod summary_prompt {
     pub(crate) fn validate(summary: &str) -> Result<(), &'static str> {
         if summary.trim().is_empty()
             || summary.len() > MAX_BYTES
-            || summary.chars().any(char::is_control)
+            || summary.chars().any(super::bootstrap_v1::needs_escape)
         {
-            return Err("--summary must be one line of 1..200 UTF-8 bytes");
+            return Err(
+                "--summary must be one line of 1..200 UTF-8 bytes without control, line \
+                 separator or format characters",
+            );
         }
         Ok(())
     }
 
-    /// The sender's summary for a launch: `--summary`, else a `--goal` that fits one.
+    /// The sender's summary for a launch: `--summary`, else a `--goal` that passes
+    /// [`validate`] (one line of at most 200 bytes); a longer goal gives no summary.
     pub(crate) fn select(summary: Option<&str>, goal: Option<&str>) -> Option<String> {
         summary
             .or(goal.filter(|goal| validate(goal).is_ok()))
@@ -1800,7 +1811,8 @@ pub(crate) mod summary_prompt {
     }
 }
 
-/// Stderr hint for a launching handoff sent with neither `--summary` nor `--goal` (91 bytes).
+/// Stderr hint for a launching handoff without a usable summary: no `--summary` and no `--goal`
+/// that fits one line of 200 bytes (91 bytes).
 pub(crate) const SUMMARY_HINT: &str =
     "hint: add --summary 'one-line purpose' so the launched agent's first prompt states the task";
 

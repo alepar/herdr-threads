@@ -2028,7 +2028,8 @@ struct HandoffArgs {
     #[arg(long, requires = "new_thread")]
     goal: Option<String>,
     /// One-line purpose the launched agent's first prompt shows (at most 200 bytes; default:
-    /// --goal). It appears in native argv; the body never does and arrives as the thread message.
+    /// --goal when it fits). It appears in native argv; the body never does and arrives as the
+    /// thread message. Local launches only.
     #[arg(long, conflicts_with = "existing")]
     summary: Option<String>,
     #[arg(
