@@ -2,6 +2,21 @@
 
 ## Current release status
 
+[v2.8.1 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.1) from source `4eab5c0b0`, a patch release. No schema change (node schema stays 11) and no peer wire change: `scripts/freeze-peer-wire 2.4.0 --at v2.8.1 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It carries two merged branches, each with a fixer roast and an independent review:
+- ht-imm7, at the user's request: a launched handoff's first prompt is a one-line summary (`handoff --summary`, else a fitting `--goal`) instead of the herdr-threads how-to and routing text (about 1.1 KB down to about 240 B). The body still never enters argv or reports. The review's four fixes (stale hook routing line, a notice when an older daemon drops `--summary`, the demo script, refusing backticks) are folded in.
+- ht-tod8: the daemon spawn scrubs pane-scoped Herdr variables, the manifest drops the unread `id` keys, and the process-hint refusal and Hermes README carry no version fact.
+
+**Qualification** on `4eab5c0b0` (claude-1 token, codex-2 credential), evidence in `~/.cache/herdr-threads-release/2.8.1`:
+- Static checks, builds, the Herdr matrix 0.9.1-0.9.5, package gate (655 s), installer suites and every leak check pass.
+- The full suite passed 8127/8130; the 3 failures are the zsh round-trip tests (zsh is not installed on blacky).
+- The wake e2e passed 120/120. The merge commit `cb70a2339` also had an unfiltered suite run (same 3 zsh failures, leak check clean).
+
+**CI** passed on `a9baeb9cf`, `a617faf90`, `cb70a2339` and the prep commit `4eab5c0b0`, and the [release run 41245443843](https://github.com/alepar/herdr-threads/actions/runs/41245443843) passed. The archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 2.8.1, the right TARGET, modes and licenses; `scripts/install.sh` equals the tag's; the credential scan is clean.
+
+**Installed on blacky with `herdr-threads update`.** The first attempt rolled back to 2.8.0 cleanly: the Herdr host API had been timing out since 21:18Z (load 15), and the new daemon attached 12 s after start, past the 5 s readiness limit (filed as ht-lob0; a restart-time `snapshot_generations` UNIQUE conflict seen in the log is ht-x6j5). The retry minutes later succeeded ("updated 2.8.0 -> 2.8.1 (sha256 verified twice; backup pre-v2.8.1-20261031T220657Z)"). The daemon's `/proc` exe hash `065f9ca3…` equals the archive binary, the daemon is healthy, and the Herdr plugin link is unchanged.
+
 [v2.8.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.0) from source `ebdd821f2`, a minor release. It carries a one-way store upgrade to node schema 11: migration 0011 adds `sync_forgotten_nodes` and `sync_link_events`. The peer wire is unchanged: `scripts/freeze-peer-wire 2.4.0 --at v2.8.0 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 It adds the three peer items the user asked for through the office coordinator:
