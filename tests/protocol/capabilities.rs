@@ -1138,7 +1138,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.wake_status_v1",
             "peer.prune_v1",
             "peer.events_v1",
-            "invitation.confirmation_v1"
+            "invitation.confirmation_v1",
+            "handoff.summary_prompt_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);
@@ -1895,7 +1896,7 @@ fn v2_capability_is_negotiated_only_with_recorder() {
             .iter()
             .filter(|name| **name != HARNESS_HEALTH_V2)
             .copied()
-            .chain(std::iter::once(INVITATION_CONFIRMATION_V1))
+            .chain([INVITATION_CONFIRMATION_V1, HANDOFF_SUMMARY_PROMPT_V1])
             .collect::<Vec<_>>()
     );
     let d = crate::harness::claude::ClaudeAdapter.contracts()[0];

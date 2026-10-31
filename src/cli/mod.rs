@@ -475,6 +475,9 @@ fn run_parsed_in_pane<W: Write>(
         writer.flush()?;
         return Ok(());
     }
+    if handoff::launch_lacks_summary(&parsed.action) {
+        eprintln!("{}", handoff::SUMMARY_HINT);
+    }
     if let Some(document) =
         commands::adapter_discovery_output(&parsed, crate::harness::registry::builtins())?
     {

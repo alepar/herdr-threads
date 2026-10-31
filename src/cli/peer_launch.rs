@@ -659,6 +659,7 @@ mod tests {
                 thread_name: None,
                 topic: None,
                 goal: None,
+                summary: None,
                 body: task.into(),
                 kind: None,
                 binary: None,

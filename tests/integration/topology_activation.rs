@@ -2364,6 +2364,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
         focus: false,
         env: Default::default(),
         launch: BootstrapLaunch {
+            summary_prompt: None,
             harness: ClaimHarness::Codex,
             binary: Some("/usr/bin/true".into()),
             name: None,

@@ -332,9 +332,10 @@ where
                                         .is_some_and(|p| p.has_observations()))
                         })
                         .copied()
-                        .chain(std::iter::once(
+                        .chain([
                             crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
-                        ))
+                            crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
+                        ])
                         .chain(self.bootstrap_guarded.then_some(
                             crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
                         ))

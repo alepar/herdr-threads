@@ -791,7 +791,9 @@ impl Fixture {
         assert_eq!(&argv[..frozen.len()], frozen);
         assert_eq!(argv.len(), frozen.len() + 1);
         let bootstrap = argv.last().unwrap();
-        assert!(bootstrap.contains(&self.instance.to_string()));
+        // A new client against a new daemon launches with the summary prompt, never V1 text.
+        assert!(bootstrap.starts_with("Handoff: "), "{bootstrap}");
+        assert!(!bootstrap.contains("Expected handoff command routing"));
         assert!(bootstrap.contains(self.context.state_dir.to_str().unwrap()));
         assert!(
             bootstrap.contains(
@@ -1026,6 +1028,45 @@ fn explicit_pane_preserves_both_harness_configs() {
         assert!(String::from_utf8_lossy(&replay.stderr).contains("intent reference not found"));
         assert_eq!(f.effect_counts(), (0, 1, 1, 1));
     }
+}
+
+// An automatic new-tab handoff with --summary freezes it, launches the summary prompt, and
+// the daemon's byte-for-byte retained-report check accepts that launch.
+#[test]
+fn automatic_new_tab_summary_reaches_the_prompt_and_passes_retained_validation() {
+    let f = Fixture::new();
+    f.setup("codex");
+    let binary = f.iso.path("codex");
+    let out = successful(f.run(
+        &[
+            "handoff",
+            "--new-tab",
+            "Peer",
+            "--kind",
+            "codex",
+            "--summary",
+            "Fix the wake test",
+            "--harness-binary",
+            binary.to_str().unwrap(),
+            "--",
+            BODY,
+        ],
+        "",
+    ));
+    assert_eq!(out["bootstrap"]["outcome"], "started");
+    assert_eq!(
+        f.count("SELECT count(*) FROM automatic_bootstrap_parents WHERE state='completed'"),
+        1
+    );
+    let argv: Vec<String> =
+        serde_json::from_value(f.host.requests("agent.start")[0]["params"]["args"].clone())
+            .unwrap();
+    let prompt = argv.last().unwrap();
+    assert!(
+        prompt.starts_with("Handoff: Fix the wake test \u{2014} full task in thread "),
+        "{prompt}"
+    );
+    assert!(!prompt.contains(BODY));
 }
 
 // A transient shell-readiness refusal must complete the original automatic
@@ -2191,25 +2232,23 @@ fn final_sdd_public_staging_loss_reports_actual_create_phase_and_retries_only_sa
 }
 
 #[test]
-fn final_sdd_generated_pinned_prompt_limit_refuses_before_publication_or_effects() {
+fn final_sdd_longest_pinned_namespace_summary_prompt_fits_retained_report_cap() {
+    // The quoted pinned fallback of this namespace pushed the V1 prompt past the 4096-byte
+    // retained report cap; the one-line summary prompt stays within it and launches.
     let f = Fixture::with_layout(None, true);
-    // No installed-hook claim: actual preparation rejects this argument geometry
-    // before it could inspect configuration or publish a bootstrap.
     let args = final_sdd_args(&f, "claude", &[]);
     let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
     assert!(
-        !out.status.success(),
-        "expanded pinned prompt must exceed retained report cap"
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("retained report limit"),
+        out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(out.stdout.is_empty());
-    assert_eq!(f.effect_counts(), (0, 0, 0, 0));
-    assert_eq!(f.count("SELECT count(*) FROM bootstrap_handoffs"), 0);
-    assert!(f.original_bytes().is_empty());
+    let argv: Vec<String> =
+        serde_json::from_value(f.host.requests("agent.start")[0]["params"]["args"].clone())
+            .unwrap();
+    let prompt = argv.last().unwrap();
+    assert!(prompt.starts_with("Handoff: "), "{prompt}");
+    assert!(prompt.len() <= 4096, "{}", prompt.len());
 }
 
 // The actual ordinary CLI publishes the original, then a witnessed host read

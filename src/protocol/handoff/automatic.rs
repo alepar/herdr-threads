@@ -157,6 +157,10 @@ pub struct AutomaticHandoffPlan {
     pub context: crate::protocol::output::ContinuationContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_input: Option<crate::harness::adapter::StartupInputTemplate>,
+    /// The sender's one-line purpose for the launch prompt (`--summary`; automatic plans have
+    /// no `--goal`). None: the prompt names only the thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 impl AutomaticHandoffPlan {
     pub fn validate(&self) -> Result<(), &'static str> {

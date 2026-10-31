@@ -34,6 +34,9 @@ pub struct HandoffRequest {
     pub thread_name: Option<String>,
     pub topic: Option<String>,
     pub goal: Option<String>,
+    /// The sender's one-line purpose for the launch prompt (`--summary`, else `--goal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub body: String,
     pub launch: LaunchRequest,
 }
@@ -45,6 +48,9 @@ pub struct HandoffPlan {
     /// `startup_input` (the pane path's envelope with today's text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap_input: Option<crate::harness::adapter::StartupInputTemplate>,
+    /// Template-free (frozen) path only: the bootstrap's frozen summary prompt; absent, V1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_prompt: Option<crate::protocol::handoff::SummaryPrompt>,
     pub request: HandoffRequest,
     pub context: crate::protocol::output::ContinuationContext,
     pub recipient: SeatId,
@@ -54,6 +60,9 @@ pub struct HandoffPlan {
 }
 impl HandoffRequest {
     fn validate(&self) -> io::Result<()> {
+        if let Some(summary) = &self.summary {
+            summary_prompt::validate(summary).map_err(io::Error::other)?;
+        }
         if let Some(policy) = &self.policy {
             policy.validate().map_err(io::Error::other)?;
         }
@@ -565,7 +574,7 @@ struct StartupEnvelope {
 fn startup_envelope(
     request: &LaunchRequest,
     context: &crate::protocol::output::ContinuationContext,
-    instance: &str,
+    summary: Option<&str>,
     thread: Option<&ThreadId>,
     template: &crate::harness::adapter::StartupInputTemplate,
 ) -> Result<StartupEnvelope, RunError> {
@@ -575,18 +584,20 @@ fn startup_envelope(
         .state_dir
         .iter()
         .chain(context.host.iter())
-        .try_fold(instance.len(), |sum, value| sum.checked_add(value.len()));
+        .try_fold(summary.map_or(0, str::len), |sum, value| {
+            sum.checked_add(value.len())
+        });
     if raw.is_none_or(|bytes| bytes > crate::ports::NativeLaunchRequest::MAX_ARG_BYTES) {
         return Err(super::invalid_request(
             "handoff routing input exceeds bounded encoding",
         ));
     }
-    let text = bounded_bootstrap_text(
-        thread.map_or("", ThreadId::as_str),
-        context,
-        instance,
-        template.max_arg_bytes,
-    )?;
+    let text = pane_prompt(summary, thread.map_or("", ThreadId::as_str), context);
+    if text.len() > template.max_arg_bytes {
+        return Err(super::invalid_request(
+            "handoff startup input exceeds bounded native input",
+        ));
+    }
     let reserve = if thread.is_some() { 0 } else { 128 };
     let (argv, slot) = template.apply(&request.argv, &text)?;
     if argv[slot]
@@ -626,14 +637,13 @@ fn validate_whole_input(envelope: &StartupEnvelope, argv: &[String]) -> Result<(
 fn prepare_saved_startup(
     launcher: &mut dyn HandoffLauncher,
     plan: &HandoffPlan,
-    claim: &CallerClaim,
     thread: Option<&ThreadId>,
     template: &crate::harness::adapter::StartupInputTemplate,
 ) -> Result<StartupEnvelope, RunError> {
     let envelope = startup_envelope(
         &plan.request.launch,
         &plan.context,
-        &claim.instance,
+        plan.request.summary.as_deref(),
         thread,
         template,
     )?;
@@ -649,7 +659,6 @@ fn prepare_saved_startup(
 pub(crate) fn prepare_automatic_startup(
     launcher: &mut dyn HandoffLauncher,
     plan: &crate::protocol::handoff::AutomaticHandoffPlan,
-    claim: &CallerClaim,
     thread: &ThreadId,
 ) -> Result<LaunchRequest, RunError> {
     let template = plan
@@ -659,7 +668,7 @@ pub(crate) fn prepare_automatic_startup(
     let envelope = startup_envelope(
         &plan.launch,
         &plan.context,
-        &claim.instance,
+        plan.summary.as_deref(),
         Some(thread),
         template,
     )?;
@@ -677,7 +686,7 @@ pub(crate) fn prepare_automatic_startup(
 #[allow(clippy::too_many_arguments)]
 fn start_automatic<C: LocalClient + ?Sized, W: Write>(
     journal: &Journal,
-    request: HandoffRequest,
+    mut request: HandoffRequest,
     claim: CallerClaim,
     client: &C,
     launcher: &mut dyn HandoffLauncher,
@@ -702,6 +711,16 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
     }
     super::handoff_delivery::require_automatic_capability(client, clock)?;
     super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
+    // An older daemon refuses the plan's `summary` field: the launch then names only the thread.
+    if request.summary.is_some()
+        && !client.supports_capability(
+            crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
+            &super::cooperative_budget(clock),
+        )
+    {
+        eprintln!("{SUMMARY_DROPPED}");
+        request.summary = None;
+    }
     let namespace = HandoffNamespace {
         instance: claim.instance.clone(),
         state_dir: output
@@ -722,7 +741,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
     let envelope = startup_envelope(
         &request.launch,
         &output.context,
-        &claim.instance,
+        request.summary.as_deref(),
         None,
         &template,
     )?;
@@ -742,6 +761,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
         launch: request.launch.clone(),
         context: output.context.clone(),
         startup_input: Some(template.clone()),
+        summary: request.summary.clone(),
     }));
     super::handoff_delivery::validate_automatic_local_admission(
         journal,
@@ -757,6 +777,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
         launch: request.launch,
         context: output.context.clone(),
         startup_input: Some(template),
+        summary: request.summary,
     }));
     let preparation = super::handoff_delivery::automatic_envelope(&claim, original.clone())?;
     match client.call(
@@ -822,7 +843,7 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     let envelope = startup_envelope(
         &request.launch,
         &output.context,
-        &claim.instance,
+        request.summary.as_deref(),
         request.thread.as_ref(),
         &template,
     )?;
@@ -835,6 +856,7 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     let plan = HandoffPlan {
         startup_input: Some(template),
         bootstrap_input: None,
+        summary_prompt: None,
         request,
         context: output.context.clone(),
         recipient,
@@ -963,7 +985,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
                 let projection = startup_envelope(
                     &plan.request.launch,
                     &plan.context,
-                    &claim.instance,
+                    plan.request.summary.as_deref(),
                     Some(thread),
                     template,
                 )
@@ -1007,7 +1029,6 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
     prepare_saved_startup(
         launcher,
         &plan,
-        &claim,
         progress.thread.as_ref().or(plan.request.thread.as_ref()),
         &template,
     )?;
@@ -1085,7 +1106,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
                 let envelope = startup_envelope(
                     &plan.request.launch,
                     &plan.context,
-                    &claim.instance,
+                    plan.request.summary.as_deref(),
                     Some(thread),
                     &template,
                 )?;
@@ -1194,13 +1215,7 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
                             "incompatible retained staging result",
                         ));
                     }
-                    prepare_saved_startup(
-                        launcher,
-                        plan,
-                        claim,
-                        progress.thread.as_ref(),
-                        template,
-                    )?;
+                    prepare_saved_startup(launcher, plan, progress.thread.as_ref(), template)?;
                 }
                 Ok(())
             },
@@ -1213,13 +1228,18 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
             return Ok(());
         }
         let request = if let Some(template) = startup_input {
-            prepare_saved_startup(launcher, plan, claim, Some(&thread), template)?.request
+            prepare_saved_startup(launcher, plan, Some(&thread), template)?.request
         } else {
             // Frozen V1 Root input. Its retained report is later validated
             // against frozen V1 composition, so refuse before any start when
             // today's composer would launch different native arguments.
             let mut request = plan.request.launch.clone();
-            let prompt = bootstrap_v1::prompt(thread.as_str(), &plan.context, &claim.instance);
+            let prompt = launch_prompt(
+                plan.summary_prompt.as_ref(),
+                thread.as_str(),
+                &plan.context,
+                &claim.instance,
+            );
             match &plan.bootstrap_input {
                 Some(template) => request.argv = template.apply(&request.argv, &prompt)?.0,
                 None => request.argv.push(prompt),
@@ -1490,68 +1510,20 @@ fn cleanup_completed<W: Write>(
     journal.complete(reference)?;
     Ok(())
 }
-pub(crate) fn bootstrap(
-    thread: &ThreadId,
-    context: &crate::protocol::output::ContinuationContext,
-    instance: &str,
-) -> String {
-    bootstrap_text(thread.as_str(), context, instance)
-}
-struct BoundedBootstrap {
-    bytes: Vec<u8>,
-    limit: usize,
-}
-impl Write for BoundedBootstrap {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self
-            .bytes
-            .len()
-            .checked_add(bytes.len())
-            .is_none_or(|len| len > self.limit)
-        {
-            return Err(io::Error::other(
-                "handoff encoded bootstrap exceeds bounded native input",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-fn render_bootstrap<W: Write>(
+/// Today's pane-path prompt. Pane launches are not validated against frozen prompt bytes, so
+/// a retained pane plan renders with today's text.
+fn pane_prompt(
+    summary: Option<&str>,
     thread: &str,
     context: &crate::protocol::output::ContinuationContext,
-    instance: &str,
-    writer: &mut W,
-) -> io::Result<()> {
-    writer.write_all("Expected handoff command routing (JSON data): ".as_bytes())?;
-    serde_json::to_writer(
-        &mut *writer,
-        &super::hook::CommandRouting::from_context(instance, context),
-    )
-    .map_err(io::Error::other)?;
-    writer.write_all(" Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Use complete task messages injected by that matching group. If no matching hook is trusted, or delivery reports incomplete or unavailable, use the exact fallback: `".as_bytes())?;
-    let mut inbox = super::hook::cli_prefix(context);
-    inbox.push("inbox".into());
-    for (index, token) in inbox.into_iter().enumerate() {
-        if index > 0 {
-            writer.write_all(b" ")?;
-        }
-        let encoded = crate::protocol::output::format_command_argv(&[token]);
-        writer.write_all(encoded.as_bytes())?;
-    }
-    write!(
-        writer,
-        "`. The task for thread {} is stored in inbox. Complete delivery, including an empty inbox, needs no inbox call. Follow printed next: commands for incomplete delivery. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically.",
-        thread
-    )?;
+) -> String {
+    #[allow(unused_mut)]
+    let mut text = summary_prompt::render(summary, thread, context);
     #[cfg(any(test, feature = "test-support"))]
     if let Some(suffix) = crate::harness::launch::current_drift::prompt_suffix() {
-        writer.write_all(suffix.as_bytes())?;
+        text.push_str(suffix);
     }
-    Ok(())
+    text
 }
 
 /// Frozen version-1 Root bootstrap prompt: the single generated native
@@ -1648,7 +1620,7 @@ pub(crate) mod bootstrap_v1 {
         out.push('"');
     }
 
-    fn needs_escape(ch: char) -> bool {
+    pub(super) fn needs_escape(ch: char) -> bool {
         let cp = ch as u32;
         ch.is_control()
             || matches!(ch, '\u{2028}' | '\u{2029}')
@@ -1696,6 +1668,25 @@ pub(crate) mod bootstrap_v1 {
         }
     }
 
+    /// The frozen pinned fallback command `herdr-threads [--state-dir S] [--host-endpoint H]
+    /// inbox`, shell-quoted as V1 quoted it. Shared by the summary prompt.
+    pub(super) fn fallback_inbox(context: &ContinuationContext, out: &mut String) {
+        let mut fallback = vec![ARGV0];
+        if let Some(state) = &context.state_dir {
+            fallback.extend(["--state-dir", state.as_str()]);
+        }
+        if let Some(host) = &context.host {
+            fallback.extend(["--host-endpoint", host.as_str()]);
+        }
+        fallback.push("inbox");
+        for (index, token) in fallback.into_iter().enumerate() {
+            if index > 0 {
+                out.push(' ');
+            }
+            shell_token(token, out);
+        }
+    }
+
     fn render(thread: &str, routing: Option<&Routing>, context: &ContinuationContext) -> String {
         let mut out = String::from(PREFIX);
         match routing {
@@ -1711,20 +1702,7 @@ pub(crate) mod bootstrap_v1 {
             }
         }
         out.push_str(INSTRUCTION);
-        let mut fallback = vec![ARGV0];
-        if let Some(state) = &context.state_dir {
-            fallback.extend(["--state-dir", state.as_str()]);
-        }
-        if let Some(host) = &context.host {
-            fallback.extend(["--host-endpoint", host.as_str()]);
-        }
-        fallback.push("inbox");
-        for (index, token) in fallback.into_iter().enumerate() {
-            if index > 0 {
-                out.push(' ');
-            }
-            shell_token(token, &mut out);
-        }
+        fallback_inbox(context, &mut out);
         out.push_str(THREAD);
         out.push_str(thread);
         out.push_str(SUFFIX);
@@ -1753,17 +1731,19 @@ pub(crate) mod bootstrap_v1 {
     }
 
     /// Whether a retained successful report's `argv` is the exact frozen V1
-    /// composition of `caller` plus one V1 prompt. The frozen grammar still
+    /// composition of `caller` plus one retained prompt (V1 text, or the summary
+    /// prompt when the plan froze a summary). The frozen grammar still
     /// refuses caller arguments V1 never admitted.
     pub(crate) fn retained_argv_matches(
         harness: crate::protocol::authority::Harness,
         caller: &[String],
+        prompt: Option<&crate::protocol::handoff::SummaryPrompt>,
         thread: &str,
         context: &ContinuationContext,
         instance: &str,
         retained: Option<&serde_json::Value>,
     ) -> Result<bool, crate::protocol::results::ApiError> {
-        for prompt in retained_prompts(thread, context, instance) {
+        for prompt in super::retained_prompts(prompt, thread, context, instance) {
             let mut argv = caller.to_vec();
             argv.push(prompt);
             let expected = crate::harness::launch::compose_bootstrap_v1_argv(harness, argv)?;
@@ -1774,6 +1754,140 @@ pub(crate) mod bootstrap_v1 {
         Ok(false)
     }
 }
+/// Launch prompt of the summary-prompt version: a plan that froze a
+/// [`crate::protocol::handoff::SummaryPrompt`] launches with this one line instead of the V1
+/// how-to text; the full body arrives as the thread message. The summary is sender-written
+/// text (`--summary`, else `--goal`) and appears in native argv and launch reports; the body
+/// never does. Retained successful launch reports are validated against these exact bytes:
+/// once released, never edit them; a different prompt needs a new frozen version.
+pub(crate) mod summary_prompt {
+    use crate::protocol::output::ContinuationContext;
+
+    /// Largest summary, in UTF-8 bytes.
+    pub(crate) const MAX_BYTES: usize = 200;
+    const LEAD: &str = "Handoff: ";
+    const THREAD: &str = " \u{2014} full task in thread ";
+    const NO_SUMMARY: &str = "see thread ";
+    const FALLBACK: &str = " (arrives as a herdr-threads message; if not shown, run `";
+    const END: &str = "`).";
+
+    /// A sender-written summary: one line of 1..=200 bytes without control characters.
+    pub(crate) fn validate(summary: &str) -> Result<(), &'static str> {
+        if summary.trim().is_empty()
+            || summary.len() > MAX_BYTES
+            || summary
+                .chars()
+                .any(|ch| ch == '`' || super::bootstrap_v1::needs_escape(ch))
+        {
+            return Err(
+                "--summary must be one line of 1..200 UTF-8 bytes without backticks, control, \
+                 line separator or format characters",
+            );
+        }
+        Ok(())
+    }
+
+    /// The sender's summary for a launch: `--summary`, else a `--goal` that passes
+    /// [`validate`] (one line of at most 200 bytes); a longer goal gives no summary.
+    pub(crate) fn select(summary: Option<&str>, goal: Option<&str>) -> Option<String> {
+        summary
+            .or(goal.filter(|goal| validate(goal).is_ok()))
+            .map(str::to_owned)
+    }
+
+    pub(crate) fn render(
+        summary: Option<&str>,
+        thread: &str,
+        context: &ContinuationContext,
+    ) -> String {
+        let mut out = String::from(LEAD);
+        match summary {
+            Some(summary) => {
+                out.push_str(summary);
+                out.push_str(THREAD);
+            }
+            None => out.push_str(NO_SUMMARY),
+        }
+        out.push_str(thread);
+        out.push_str(FALLBACK);
+        super::bootstrap_v1::fallback_inbox(context, &mut out);
+        out.push_str(END);
+        out
+    }
+}
+
+/// Stderr hint for a launching handoff without a usable summary: no `--summary` and no `--goal`
+/// that fits one line of 200 bytes (91 bytes).
+pub(crate) const SUMMARY_HINT: &str =
+    "hint: add --summary 'one-line purpose' so the launched agent's first prompt states the task";
+
+/// Whether this action launches an agent whose first prompt will name only the thread.
+pub(crate) fn launch_lacks_summary(action: &super::commands::CliAction) -> bool {
+    match action {
+        super::commands::CliAction::Handoff(request) => request.summary.is_none(),
+        super::commands::CliAction::TopologyHandoff(request) => {
+            !request.existing && request.summary.is_none()
+        }
+        _ => false,
+    }
+}
+
+/// Stderr line when the daemon predates the summary prompt and a given summary is dropped
+/// (91 bytes).
+pub(crate) const SUMMARY_DROPPED: &str =
+    "herdr-threads: daemon predates handoff summaries; --summary dropped (restart it to use one)";
+
+/// The frozen prompt a new topology plan records: the summary prompt, or None (the frozen V1
+/// prompt) only when the daemon predates it and would refuse the field.
+pub(crate) fn frozen_prompt<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    summary: Option<&str>,
+) -> Option<crate::protocol::handoff::SummaryPrompt> {
+    let supported = client.supports_capability(
+        crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
+        &super::cooperative_budget(clock),
+    );
+    if !supported && summary.is_some() {
+        eprintln!("{SUMMARY_DROPPED}");
+    }
+    supported.then(|| crate::protocol::handoff::SummaryPrompt {
+        summary: summary.map(str::to_owned),
+    })
+}
+
+/// The prompt a launch of a frozen plan carries: the summary prompt when it froze one, else
+/// the frozen V1 text (pre-upgrade records and plans made against an older daemon).
+pub(crate) fn launch_prompt(
+    prompt: Option<&crate::protocol::handoff::SummaryPrompt>,
+    thread: &str,
+    context: &crate::protocol::output::ContinuationContext,
+    instance: &str,
+) -> String {
+    match prompt {
+        Some(prompt) => summary_prompt::render(prompt.summary.as_deref(), thread, context),
+        None => bootstrap_v1::prompt(thread, context, instance),
+    }
+}
+
+/// Every prompt a launch of this frozen plan could have retained: the one summary prompt,
+/// or the V1 outcomes for a plan without one.
+pub(crate) fn retained_prompts(
+    prompt: Option<&crate::protocol::handoff::SummaryPrompt>,
+    thread: &str,
+    context: &crate::protocol::output::ContinuationContext,
+    instance: &str,
+) -> Vec<String> {
+    match prompt {
+        Some(prompt) => vec![summary_prompt::render(
+            prompt.summary.as_deref(),
+            thread,
+            context,
+        )],
+        None => bootstrap_v1::retained_prompts(thread, context, instance),
+    }
+}
+
 /// Bootstrap plan V2 retained-launch validation: the adapter's own composition, frozen into the
 /// plan. The caller arguments must still compose to the frozen `composed` argv (else the
 /// adapter drifted and the plan is refused), and the retained successful report's `argv` must
@@ -1785,6 +1899,7 @@ pub(crate) fn retained_argv_matches_v2(
     caller: &[String],
     composed: &[String],
     template: &crate::harness::adapter::StartupInputTemplate,
+    prompt: Option<&crate::protocol::handoff::SummaryPrompt>,
     thread: &str,
     context: &crate::protocol::output::ContinuationContext,
     instance: &str,
@@ -1799,8 +1914,8 @@ pub(crate) fn retained_argv_matches_v2(
             ),
         ));
     }
-    for prompt in bootstrap_v1::retained_prompts(thread, context, instance) {
-        let Ok((argv, _)) = template.apply(caller, &prompt) else {
+    for text in retained_prompts(prompt, thread, context, instance) {
+        let Ok((argv, _)) = template.apply(caller, &text) else {
             continue;
         };
         let expected = crate::harness::launch::compose_bootstrap_v2_argv(harness, argv)?;
@@ -1831,6 +1946,7 @@ pub(crate) fn retained_launch_argv_matches(
                     "bootstrap plan V2 carries no frozen startup input",
                 )
             })?,
+            launch.summary_prompt.as_ref(),
             thread,
             context,
             instance,
@@ -1839,6 +1955,7 @@ pub(crate) fn retained_launch_argv_matches(
         None => bootstrap_v1::retained_argv_matches(
             launch.harness,
             &launch.argv,
+            launch.summary_prompt.as_ref(),
             thread,
             context,
             instance,
@@ -1846,30 +1963,6 @@ pub(crate) fn retained_launch_argv_matches(
         ),
     }
 }
-fn bootstrap_text(
-    thread: &str,
-    context: &crate::protocol::output::ContinuationContext,
-    instance: &str,
-) -> String {
-    let mut bytes = Vec::new();
-    render_bootstrap(thread, context, instance, &mut bytes).expect("in-memory historical output");
-    String::from_utf8(bytes).expect("UTF-8 bootstrap")
-}
-fn bounded_bootstrap_text(
-    thread: &str,
-    context: &crate::protocol::output::ContinuationContext,
-    instance: &str,
-    limit: usize,
-) -> Result<String, RunError> {
-    let mut writer = BoundedBootstrap {
-        bytes: Vec::new(),
-        limit,
-    };
-    render_bootstrap(thread, context, instance, &mut writer)
-        .map_err(|error| super::invalid_request(&error.to_string()))?;
-    Ok(String::from_utf8(writer.bytes).expect("UTF-8 bootstrap"))
-}
-
 pub(crate) fn report(
     reference: &IntentRef,
     plan: &HandoffPlan,
@@ -1967,7 +2060,11 @@ fn report_core(
     manual.push("--".into());
     if let Some(thread) = &progress.thread {
         if let Some(template) = &plan.startup_input {
-            let text = bootstrap(thread, &plan.context, &claim.instance);
+            let text = pane_prompt(
+                plan.request.summary.as_deref(),
+                thread.as_str(),
+                &plan.context,
+            );
             if let Ok((argv, _)) = template.apply(&plan.request.launch.argv, &text) {
                 manual.extend(argv);
             } else {
@@ -1977,7 +2074,12 @@ fn report_core(
         } else {
             // Historical caller arrays are display only; do not reselect a
             // transport. Template-free plans carry the frozen V1 input.
-            let prompt = bootstrap_v1::prompt(thread.as_str(), &plan.context, &claim.instance);
+            let prompt = launch_prompt(
+                plan.summary_prompt.as_ref(),
+                thread.as_str(),
+                &plan.context,
+                &claim.instance,
+            );
             match plan
                 .bootstrap_input
                 .as_ref()
