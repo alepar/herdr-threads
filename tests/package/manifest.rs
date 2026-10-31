@@ -40,6 +40,21 @@ fn manifest_matches_pinned_091_documented_argv_shape() {
         doc["startup"][0]["command"],
         serde_json::json!(["./scripts/view.sh", "ensure"])
     );
+    // Herdr reads only `platforms` and `command` from build and startup entries
+    // (every listed release); any other key would be silently ignored.
+    for entry in doc["build"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(doc["startup"].as_array().unwrap())
+    {
+        for key in entry.as_object().unwrap().keys() {
+            assert!(
+                ["platforms", "command"].contains(&key.as_str()),
+                "Herdr ignores `{key}` in {entry}"
+            );
+        }
+    }
     assert_eq!(doc["panes"][0]["placement"], "overlay");
     assert_eq!(
         doc["panes"][0]["command"],
