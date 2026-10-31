@@ -4056,7 +4056,7 @@ fn handoff_summary_is_flag_else_goal_and_launch_only() {
         let none = parse_argv(with(&[])).unwrap();
         assert!(launch_lacks_summary(&none.action));
         let long: &'static str = Box::leak("x".repeat(201).into_boxed_str());
-        for bad in ["", "two\nlines", "line\u{2028}sep", "rtl\u{202e}x", long] {
+        for bad in ["", "two\nlines", "line\u{2028}sep", "rtl\u{202e}x", "odd `tick", long] {
             assert!(parse_argv(with(&["--summary", bad])).is_err(), "{bad:?}");
         }
     }
