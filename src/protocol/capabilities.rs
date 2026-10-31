@@ -51,6 +51,8 @@ pub const AUTOMATIC_HANDOFF_V1: &str = "handoff.automatic_v1";
 /// Frozen profile/cwd projection and exact canonical bootstrap child retention.
 /// Requires both guarded explicit-thread and automatic bootstrap implementations.
 pub const HANDOFF_LAUNCH_DIRECTORIES_V1: &str = "handoff.launch_directories_v1";
+/// Handoff plans may freeze a `summary`; their launch prompt is the one-line summary prompt.
+pub const HANDOFF_SUMMARY_PROMPT_V1: &str = "handoff.summary_prompt_v1";
 
 pub const THREAD_JOIN: &str = "thread.join_v1";
 

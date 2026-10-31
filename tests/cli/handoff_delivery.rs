@@ -3065,6 +3065,7 @@ fn handoff_policy_missing_readiness_guarded_launch_stages_unregistered_body_and_
         super::super::launch::tests::task10_hermes_native_fixture(false, |launcher, launch| {
             let env = launcher.parts.env.snapshot();
             let request = handoff::HandoffRequest {
+                summary: None,
                 automatic: false,
                 policy: Some(crate::protocol::handoff::HandoffPolicy {
                     deadline_millis: Some(7000),

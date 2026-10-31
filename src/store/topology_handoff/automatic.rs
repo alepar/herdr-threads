@@ -401,7 +401,8 @@ fn validate_report(
     let p = &id.plan.payload;
     let argv = report.report.get("argv");
     let valid = if let Some(template) = &p.startup_input {
-        crate::cli::handoff::bootstrap_v1::retained_prompts(
+        crate::cli::handoff::retained_prompts(
+            p.launch.summary_prompt.as_ref(),
             report.thread.as_str(),
             &child.context,
             &id.claim.instance,
@@ -416,6 +417,7 @@ fn validate_report(
         crate::cli::handoff::bootstrap_v1::retained_argv_matches(
             p.launch.harness,
             &p.launch.argv,
+            p.launch.summary_prompt.as_ref(),
             report.thread.as_str(),
             &child.context,
             &id.claim.instance,

@@ -52,6 +52,7 @@ impl LocalClient for ReadOnly {
 }
 fn request() -> Request {
     Request {
+        summary: None,
         policy: None,
         automatic: false,
         new_tab: Some("same label".into()),
@@ -10983,6 +10984,28 @@ fn v2_startup_input_drift_is_refused_at_preparation() {
         format!("{refusal:?}").contains("current startup input differs from bootstrap plan V2"),
         "{refusal:?}"
     );
+}
+/// Both prompt versions keep the 4096-byte retained report cap: a namespace whose quoted
+/// pinned fallback alone exceeds it is refused before publication.
+#[test]
+fn generated_prompt_over_retained_report_cap_is_refused_for_v1_and_summary_prompt() {
+    let temp = Temp::new();
+    let mut identity = prepared(&request(), temp.path()).unwrap();
+    identity.payload.handoff.namespace.state_dir =
+        std::path::PathBuf::from(format!("/{}", "\u{1}".repeat(1100)));
+    for prompt in [
+        None,
+        Some(crate::protocol::handoff::SummaryPrompt {
+            summary: Some("Fix it".into()),
+        }),
+    ] {
+        identity.payload.launch.summary_prompt = prompt.clone();
+        let refusal = preflight_launch_argv(&identity).unwrap_err();
+        assert!(
+            format!("{refusal:?}").contains("retained report limit"),
+            "{prompt:?}: {refusal:?}"
+        );
+    }
 }
 /// Fresh preparation keeps today's native admission: a present-day composer
 /// refusal stops it before publication even though frozen V1 would accept.

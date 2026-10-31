@@ -288,6 +288,19 @@ pub struct BootstrapLaunch {
     /// Absent (and not serialized) for a V1 plan, so V1 plans stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_input: Option<crate::harness::adapter::StartupInputTemplate>,
+    /// Present: the launch prompt is the summary prompt (`cli::handoff::summary_prompt`);
+    /// absent (and not serialized, so older plans stay byte-identical): the frozen V1 text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_prompt: Option<SummaryPrompt>,
+}
+
+/// A frozen summary-prompt launch: the sender-written one-line purpose (`--summary`, else
+/// `--goal`), or none (the prompt then names only the thread).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SummaryPrompt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1053,6 +1066,7 @@ pub(crate) mod topology_contract_tests {
                 binary: Some("/bin/codex".into()),
                 name: Some("peer".into()),
                 argv: vec!["--model".into(), "fixed".into()],
+                summary_prompt: None,
                 composed_argv: None,
                 startup_input: None,
             },
@@ -2118,6 +2132,7 @@ mod automatic_contract_tests {
                 name: Some("peer".into()),
                 pane_label: None,
             },
+            summary: None,
             context: crate::protocol::output::ContinuationContext {
                 state_dir: Some("/state".into()),
                 host: Some("/host.sock".into()),

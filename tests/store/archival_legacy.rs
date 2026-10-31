@@ -178,7 +178,9 @@ fn legacy_compound_with_body(
     let plan = HandoffPlan {
         startup_input: None,
         bootstrap_input: None,
+        summary_prompt: None,
         request: HandoffRequest {
+            summary: None,
             policy: None,
             automatic: false,
             thread: (!new_thread).then(|| ThreadId::new("t")),
