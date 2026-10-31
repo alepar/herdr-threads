@@ -24,3 +24,22 @@ C1-23 · r1 · GAP · hc idle wake as far as host allows · rejected — H2 hc c
 C1-24 · r1 · GAP · user-facing README/install docs · rejected — not asked by goal or spec; doc surfaces are skill, AGENTS.md, TRUST-POLICY
 C1-25 · r1 · ORPHAN · ht-kqrt.52 hc-smoke · rejected — backs R41 (hc-smoke status recorded), spec defines the follow-on fallback
 C1-26 · r1 · NEEDS-SPEC · ht-kqrt.40/.48 hc wake decision · rejected — spec answers it: hc composer wake is H2, out of scope
+C2-1 · r2 · GAP · R28 TRUST-POLICY/AGENTS.md N rows · applied — same-commit TRUST-POLICY owns lines + acceptance on .21 (C1 named continuity, cooperative_named_seat, cross-kind refusal), .26 (cooperative_self_retire, Operator replication), .23 (D19, M7), .24 (readonly no-ACK), .27 (D1), .22 (D12), .28 (M9)
+C2-2 · r2 · GAP · Claude mod channel on a Named site · applied — ht-kqrt.17 owns register.js spawn env forwarding of seat name/readonly and no stop on no_pane under a name; node test with no HERDR_PANE_ID
+C2-3 · r2 · GAP · environment-agnostic core enforced mechanically · applied — new leaf ht-kqrt.65 (host-neutrality source scan, pattern-based with allowlist; deps .3, .10); dep of gates .34, .62, .63, .64; full scripts/check-host-neutral (G6) stays follow-on per spec
+C2-4 · r2 · ORPHAN · H3 leaves ht-kqrt.53-.58, .64 · kept — the spec puts H3 in scope (constraint 3, Phase H3 and its acceptance); the coverage tool reads the goal from the spec's ## Goal, which is not edited
+C2-5 · r2 · UNOWNED-SEAM · daemon launch-gate authorization handler (.53 -> .54/.57) · applied — ht-kqrt.57 owns the daemon LaunchGate handler (match (core,tN) vs CreatedTarget/HostWitness and terminal.get, stage bootstrap Send before reply, bounded-timeout refusal) with a fake_hc test
+C2-6 · r2 · GAP · Terminal-site instance discovery beside Herdr · applied — ht-kqrt.46 acceptance (Herdr command group's store, no TUI --host-endpoint for hc, doctor flags two stores); dep on ht-kqrt.18
+C2-7 · r2 · GAP · Herdr desktop-app pane gets full messaging · applied — ht-kqrt.59 acceptance with a fake_hc herdr-app fixture (seat, send, inbox, ACK, hook delivery, <session>:tN); dep on ht-kqrt.43
+C2-8 · r2 · GAP · R39 M20 self-retire refusal from a Terminal site · applied — ht-kqrt.48 owns and tests the M20 refusal
+C2-9 · r2 · GAP · R10 F behavioural gate ht-kqrt.13 blocks nothing · applied — ht-kqrt.13 is now a dep of .15, .40, .34, .63
+C2-10 · r2 · GAP · whole-tree gate with every phase merged · applied — ht-kqrt.64 is the final gate (retitled; runs on the fully merged run branch); deps on .62, .63, .59 (and .65)
+C2-11 · r2 · GAP · .59 configuration smoke behind no gate · applied — covered by C2-10: ht-kqrt.59 is a dep of ht-kqrt.64
+C2-12 · r2 · GAP · R18 unresolved named row vs liveness of other named bindings · applied — ht-kqrt.25 owns it with a store/reconcile test
+C2-13 · r2 · UNOWNED-SEAM · consumer filters F4-audit (.6 -> .50, .34) · applied — ht-kqrt.6 owns dialled-only consumer filters per 07 §5.3
+C2-14 · r2 · UNOWNED-SEAM · hc labels H1c-labels (.43 -> .60, .52) · applied — ht-kqrt.43 owns seat_labels/live_topology output, herdr-app doc-name parsing/cache, ambiguous bare tN refusal
+C2-15 · r2 · UNOWNED-SEAM · HcHost::server_process (.47 <-> .27) · applied — ht-kqrt.47 owns HcHost::server_process and LocalEndpointWitness peer-pid recording
+C2-16 · r2 · GAP · Hermes tmux idle wake · rejected — spec scopes turn_state_edge to Codex/agy plus Claude report-only Stop; default None means no tmux wake for Hermes by design
+C2-17 · r2 · NEEDS-SPEC · ht-kqrt (N2) Hermes tmux wake · rejected — spec settles it: default turn_state_edge None, no tmux wake for Hermes
+C2-18 · r2 · NEEDS-SPEC · ht-kqrt (root) goal lacks H3 outcome · rejected — duplicate of C2-4; H3 is in scope per spec
+C2-19 · r2 · GAP · cross-node hc case in the .59 smoke · rejected — owned and tested by ht-kqrt.60 (named cross-node by .33); a second end-to-end copy fills no gap
