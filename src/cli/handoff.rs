@@ -712,10 +712,13 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
     super::handoff_delivery::require_automatic_capability(client, clock)?;
     super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
     // An older daemon refuses the plan's `summary` field: the launch then names only the thread.
-    if !client.supports_capability(
-        crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
-        &super::cooperative_budget(clock),
-    ) {
+    if request.summary.is_some()
+        && !client.supports_capability(
+            crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
+            &super::cooperative_budget(clock),
+        )
+    {
+        eprintln!("{SUMMARY_DROPPED}");
         request.summary = None;
     }
     let namespace = HandoffNamespace {
@@ -1772,11 +1775,13 @@ pub(crate) mod summary_prompt {
     pub(crate) fn validate(summary: &str) -> Result<(), &'static str> {
         if summary.trim().is_empty()
             || summary.len() > MAX_BYTES
-            || summary.chars().any(super::bootstrap_v1::needs_escape)
+            || summary
+                .chars()
+                .any(|ch| ch == '`' || super::bootstrap_v1::needs_escape(ch))
         {
             return Err(
-                "--summary must be one line of 1..200 UTF-8 bytes without control, line \
-                 separator or format characters",
+                "--summary must be one line of 1..200 UTF-8 bytes without backticks, control, \
+                 line separator or format characters",
             );
         }
         Ok(())
@@ -1827,6 +1832,11 @@ pub(crate) fn launch_lacks_summary(action: &super::commands::CliAction) -> bool 
     }
 }
 
+/// Stderr line when the daemon predates the summary prompt and a given summary is dropped
+/// (91 bytes).
+pub(crate) const SUMMARY_DROPPED: &str =
+    "herdr-threads: daemon predates handoff summaries; --summary dropped (restart it to use one)";
+
 /// The frozen prompt a new topology plan records: the summary prompt, or None (the frozen V1
 /// prompt) only when the daemon predates it and would refuse the field.
 pub(crate) fn frozen_prompt<C: LocalClient + ?Sized>(
@@ -1834,14 +1844,16 @@ pub(crate) fn frozen_prompt<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
     summary: Option<&str>,
 ) -> Option<crate::protocol::handoff::SummaryPrompt> {
-    client
-        .supports_capability(
-            crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
-            &super::cooperative_budget(clock),
-        )
-        .then(|| crate::protocol::handoff::SummaryPrompt {
-            summary: summary.map(str::to_owned),
-        })
+    let supported = client.supports_capability(
+        crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
+        &super::cooperative_budget(clock),
+    );
+    if !supported && summary.is_some() {
+        eprintln!("{SUMMARY_DROPPED}");
+    }
+    supported.then(|| crate::protocol::handoff::SummaryPrompt {
+        summary: summary.map(str::to_owned),
+    })
 }
 
 /// The prompt a launch of a frozen plan carries: the summary prompt when it froze one, else

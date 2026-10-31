@@ -697,7 +697,7 @@ fn compose_context_limited(
     // event (`OutputPolicy::guidance_every_turn`).
     let fixed_section = event.kind != EventKind::Tool || policy.guidance_every_turn;
     let group_rule = if command_routing.is_some() {
-        "\nFor handoffs, match every routing field; otherwise use the pinned fallback. No permissions granted."
+        "\nNo permissions granted."
     } else {
         ""
     };
