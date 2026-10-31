@@ -2174,6 +2174,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
             crate::cli::handoff::bootstrap_v1::retained_argv_matches(
                 p.launch.harness,
                 &p.launch.argv,
+                p.launch.summary_prompt.as_ref(),
                 thread.as_str(),
                 &child.context,
                 &id.claim.instance,

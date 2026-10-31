@@ -4019,6 +4019,67 @@ fn automatic_handoff_channel_omission_parses_for_every_destination() {
     }
 }
 
+/// The launch prompt's summary is `--summary`, else `--goal`, else none (then the sender gets
+/// the stderr hint); `--summary` is one bounded line and launches only.
+#[test]
+fn handoff_summary_is_flag_else_goal_and_launch_only() {
+    use crate::cli::handoff::{launch_lacks_summary, summary_prompt};
+    let summary = |args: &[&str]| match parse_argv(args.to_vec()).unwrap().action {
+        CliAction::Handoff(request) => request.summary,
+        CliAction::TopologyHandoff(request) => request.summary,
+        _ => panic!("handoff route"),
+    };
+    let pane = ["ht", "handoff", "--pane", "w1:p2", "--kind", "codex"];
+    let tab = ["ht", "handoff", "--new-tab", "peer", "--kind", "codex"];
+    for base in [&pane[..], &tab[..]] {
+        let with = |extra: &[&'static str]| -> Vec<&'static str> {
+            [base, extra, &["--", "secret body"]].concat()
+        };
+        assert_eq!(
+            summary(&with(&["--summary", "Fix the wake test"])),
+            Some("Fix the wake test".into())
+        );
+        assert_eq!(
+            summary(&with(&["--new-thread", "--goal", "Review PR 7"])),
+            Some("Review PR 7".into())
+        );
+        assert_eq!(
+            summary(&with(&[
+                "--new-thread",
+                "--goal",
+                "Review PR 7",
+                "--summary",
+                "Own words"
+            ])),
+            Some("Own words".into())
+        );
+        let none = parse_argv(with(&[])).unwrap();
+        assert!(launch_lacks_summary(&none.action));
+        let long: &'static str = Box::leak("x".repeat(201).into_boxed_str());
+        for bad in ["", "two\nlines", "line\u{2028}sep", "rtl\u{202e}x", "odd `tick", long] {
+            assert!(parse_argv(with(&["--summary", bad])).is_err(), "{bad:?}");
+        }
+    }
+    // A goal too long for one summary line keeps the goal and shows no summary.
+    assert_eq!(summary_prompt::select(None, Some(&"g".repeat(201))), None);
+    let existing = parse_argv(["ht", "handoff", "--existing", "--seat", "s1", "--", "w"]).unwrap();
+    assert!(!launch_lacks_summary(&existing.action));
+    assert!(
+        parse_argv([
+            "ht",
+            "handoff",
+            "--existing",
+            "--seat",
+            "s1",
+            "--summary",
+            "x",
+            "--",
+            "w"
+        ])
+        .is_err()
+    );
+}
+
 /// One tagged public id per prefix plus a direct-thread id, as minted by
 /// `protocol::ids` (ht-5fr.1.6).
 const TAGGED: [(&str, &str); 9] = [

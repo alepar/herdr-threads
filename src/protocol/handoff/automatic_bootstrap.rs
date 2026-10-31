@@ -210,6 +210,8 @@ impl AutomaticBootstrapIdentity {
                     host: ns.host_endpoint.to_str().map(str::to_owned),
                 },
                 startup_input: p.startup_input.clone(),
+                // The topology launch prompt follows the frozen `p.launch.summary_prompt`.
+                summary: None,
             })),
         )
     }
@@ -655,7 +657,8 @@ impl AutomaticBootstrapIdentity {
             .ok_or("modern automatic origin lacks startup template")?;
         // Both canonical-routing and historical null-routing prompt outcomes are supported.
         let mut summaries = Vec::new();
-        for prompt in crate::cli::handoff::bootstrap_v1::retained_prompts(
+        for prompt in crate::cli::handoff::retained_prompts(
+            p.launch.summary_prompt.as_ref(),
             thread.as_str(),
             &context,
             &self.claim.instance,

@@ -2027,6 +2027,11 @@ struct HandoffArgs {
     topic: Option<String>,
     #[arg(long, requires = "new_thread")]
     goal: Option<String>,
+    /// One-line purpose the launched agent's first prompt shows (at most 200 bytes; default:
+    /// --goal when it fits). It appears in native argv; the body never does and arrives as the
+    /// thread message. Local launches only.
+    #[arg(long, conflicts_with = "existing")]
+    summary: Option<String>,
     #[arg(
         long,
         required_unless_present = "existing",
@@ -3627,6 +3632,9 @@ fn parse_cli_in_registry(
             if let Some(name) = &args.thread_name {
                 validate_thread_name(name).map_err(validation_error)?;
             }
+            if let Some(summary) = &args.summary {
+                super::handoff::summary_prompt::validate(summary).map_err(invalid)?;
+            }
             let policy = crate::protocol::handoff::HandoffPolicy {
                 deadline_millis: deadline(args.deadline)?,
                 invitation_confirmation: InvitationConfirmation::RequireAck,
@@ -3634,6 +3642,10 @@ fn parse_cli_in_registry(
             };
             policy.validate().map_err(invalid)?;
             let body = super::input::read_body(args.body, args.file, args.stdin)?;
+            let summary = super::handoff::summary_prompt::select(
+                args.summary.as_deref(),
+                args.goal.as_deref(),
+            );
             if !args.existing {
                 args.agent_args = model_argv(
                     args.kind.as_deref().expect("kind required"),
@@ -3651,10 +3663,11 @@ fn parse_cli_in_registry(
                 if args.harness_binary.is_some()
                     || args.name.is_some()
                     || args.profile_dir.is_some()
+                    || args.summary.is_some()
                 {
                     return Err(invalid(
-                        "--harness-binary, --name and --profile-dir are not supported for a \
-                         handoff to another machine",
+                        "--harness-binary, --name, --profile-dir and --summary are not supported \
+                         for a handoff to another machine",
                     ));
                 }
                 let kind = args.kind.clone().expect("kind required");
@@ -3693,6 +3706,7 @@ fn parse_cli_in_registry(
                     thread_name: args.thread_name,
                     topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
                     goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
+                    summary: None,
                     body,
                     kind: None,
                     binary: None,
@@ -3736,6 +3750,7 @@ fn parse_cli_in_registry(
                     thread_name: args.thread_name,
                     topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
                     goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
+                    summary,
                     body,
                     kind: args.kind,
                     binary: args.harness_binary,
@@ -3750,6 +3765,7 @@ fn parse_cli_in_registry(
                     thread_name: args.thread_name,
                     topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
                     goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
+                    summary,
                     body,
                     launch: super::launch::LaunchRequest {
                         directory_context: None,

@@ -1047,8 +1047,17 @@ fn claim() -> CallerClaim {
         liveness: None,
     }
 }
+/// Today's pane-path prompt for `request()`.
+fn bootstrap(
+    thread: &ThreadId,
+    context: &crate::protocol::output::ContinuationContext,
+    _instance: &str,
+) -> String {
+    super::pane_prompt(request().summary.as_deref(), thread.as_str(), context)
+}
 fn request() -> HandoffRequest {
     HandoffRequest {
+        summary: None,
         policy: None,
         automatic: false,
         thread: None,
@@ -1722,39 +1731,24 @@ fn handoff_bootstrap_prefers_recipient_hook_commands_and_replays_exact_fallback(
         &mut Vec::new(),
     )
     .unwrap();
+    // The pointer line names the exact pinned prefix of the frozen namespace; no routing
+    // record, no body text.
     let prompt = launcher.submitted_argv.last().unwrap();
-    assert!(
-        prompt.starts_with("Expected handoff command routing (JSON data): "),
-        "{prompt}"
+    assert_eq!(
+        prompt,
+        "Handoff: see thread t1 (arrives as a herdr-threads message; if not shown, run \
+         `herdr-threads --state-dir '/tmp/handoff state' --host-endpoint /tmp/handoff.sock inbox`)."
     );
-    assert!(
-        prompt
-            .split_once(" Prefer a startup hook")
-            .unwrap()
-            .0
-            .ends_with("null"),
-        "unknown paths require exact fallback"
-    );
-    let fallback = prompt.split_once("use the exact fallback:").unwrap().1;
-    assert!(
-        fallback.contains(
-            "herdr-threads --state-dir '/tmp/handoff state' --host-endpoint /tmp/handoff.sock inbox"
-        ),
-        "{fallback}"
-    );
-    assert!(!fallback.contains(" read t1"), "{fallback}");
-    assert!(prompt.contains("task for thread t1 is stored in inbox"));
-    assert!(!prompt.contains("secret durable task"));
     assert!(
         matches!(before.semantic, SemanticMutation::Frozen { mutation, .. }
         if matches!(mutation.as_ref(), SemanticMutation::Handoff(plan) if plan.context == pinned.context))
     );
 }
 
-// A handoff's expected routing is derived from its frozen claim and durable
-// pair, never from whichever startup hook happens to emit ordinary commands.
+// The sender's summary leads the one-line prompt; the pinned fallback follows the frozen
+// namespace, never whichever startup hook happens to emit ordinary commands.
 #[test]
-fn handoff_bootstrap_binds_hook_preference_to_frozen_expected_instance_and_pair() {
+fn handoff_prompt_leads_with_sender_summary_and_pins_frozen_namespace() {
     let (_temp, journal) = journal();
     let state = journal.root().parent().unwrap().join("state");
     fs::create_dir(&state).unwrap();
@@ -1769,10 +1763,12 @@ fn handoff_bootstrap_binds_hook_preference_to_frozen_expected_instance_and_pair(
         context: context.clone(),
         ..OutputSpec::default()
     };
+    let mut request = request();
+    request.summary = Some("Fix the flaky wake test".into());
     assert!(
         start(
             &journal,
-            request(),
+            request,
             claim(),
             "bob",
             &client,
@@ -1795,19 +1791,17 @@ fn handoff_bootstrap_binds_hook_preference_to_frozen_expected_instance_and_pair(
     )
     .unwrap();
     let prompt = launcher.submitted_argv.last().unwrap();
-    let record = prompt
-        .strip_prefix("Expected handoff command routing (JSON data): ")
-        .and_then(|record| {
-            record
-                .split_once(" Prefer a startup hook")
-                .map(|(routing, _)| routing)
-        })
-        .expect("bootstrap must identify its expected hook group");
-    let expected: serde_json::Value = serde_json::from_str(record).unwrap();
     assert_eq!(
-        expected,
-        serde_json::json!({"instance":"000000000000000000000000000000b1", "state_dir":state.display().to_string(), "host_endpoint":host.display().to_string()})
+        prompt,
+        &format!(
+            "Handoff: Fix the flaky wake test \u{2014} full task in thread t1 (arrives as a \
+             herdr-threads message; if not shown, run `herdr-threads --state-dir {} \
+             --host-endpoint {} inbox`).",
+            state.display(),
+            host.display()
+        )
     );
+    assert!(!prompt.contains("secret durable task"));
 }
 struct FencedClient {
     inner: Client,
@@ -1899,6 +1893,7 @@ fn frozen_in(
                 SemanticMutation::Handoff(Box::new(HandoffPlan {
                     startup_input: None,
                     bootstrap_input: None,
+                    summary_prompt: None,
                     request: request(),
                     context,
                     recipient: SeatId::new("recipient"),
@@ -2227,8 +2222,11 @@ fn handoff_bootstrap_is_one_native_shell_argument() {
         !prompt.contains(['\n', '\r']),
         "Herdr rejects native launch arguments containing a line break: {prompt:?}"
     );
-    assert!(prompt.contains("inbox") && prompt.contains("task for thread tReview01"));
-    assert!(prompt.contains("Launch does not accept invitations or ACK messages"));
+    assert!(
+        prompt.starts_with("Handoff: see thread tReview01 ("),
+        "{prompt}"
+    );
+    assert!(prompt.ends_with("`herdr-threads inbox`)."), "{prompt}");
 }
 
 // Template-free plans retain frozen V1 bytes; newer plans capture today's
@@ -2237,7 +2235,12 @@ fn expected_plan_bootstrap(plan: &HandoffPlan) -> String {
     if plan.startup_input.is_some() {
         bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance)
     } else {
-        bootstrap_v1::prompt("t1", &plan.context, &claim().instance)
+        launch_prompt(
+            plan.summary_prompt.as_ref(),
+            "t1",
+            &plan.context,
+            &claim().instance,
+        )
     }
 }
 
@@ -2370,21 +2373,14 @@ fn check_registered_report(
     assert_eq!(&suffix[..suffix.len() - 1], plan.request.launch.argv);
     let prompt = suffix.last().unwrap();
     assert_eq!(prompt, &expected_plan_bootstrap(plan));
-    let routing = prompt
-        .strip_prefix("Expected handoff command routing (JSON data): ")
-        .unwrap()
-        .split_once(" Prefer a startup hook")
-        .unwrap()
-        .0;
-    let routing: serde_json::Value = serde_json::from_str(routing).unwrap();
-    assert_eq!(routing["instance"], claim().instance);
-    assert_eq!(
-        routing["state_dir"],
-        plan.context.state_dir.as_deref().unwrap()
-    );
-    assert_eq!(
-        routing["host_endpoint"],
-        plan.context.host.as_deref().unwrap()
+    // Both prompt contracts (template-free V1 and today's) pin the frozen namespace.
+    assert!(
+        prompt.contains(&format!(
+            "--state-dir {} --host-endpoint {} inbox`",
+            plan.context.state_dir.as_deref().unwrap(),
+            plan.context.host.as_deref().unwrap()
+        )),
+        "{prompt}"
     );
     let prefix = super::super::hook::cli_prefix(&plan.context);
     assert!(
@@ -2915,6 +2911,7 @@ fn registered_plan_fixture(
     HandoffPlan {
         startup_input: None,
         bootstrap_input: None,
+        summary_prompt: None,
         request: req,
         context,
         recipient: SeatId::new("recipient"),
@@ -3189,6 +3186,7 @@ fn handoff_manual_recovery_preserves_frozen_options_without_reentry() {
         let plan = HandoffPlan {
             startup_input: None,
             bootstrap_input: None,
+            summary_prompt: None,
             request,
             context: Default::default(),
             recipient: SeatId::new("recipient"),
@@ -3329,6 +3327,7 @@ fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
     let plan = HandoffPlan {
         startup_input: None,
         bootstrap_input: None,
+        summary_prompt: None,
         request,
         context: Default::default(),
         recipient: SeatId::new("recipient"),
@@ -3684,8 +3683,7 @@ fn task48_hermes_actual_native_launcher_composes_before_durable_work() {
         .iter()
         .position(|arg| arg == "--query")
         .unwrap();
-    assert!(native[0].argv[query + 1].starts_with("Expected handoff command routing"));
-    assert!(native[0].argv[query + 1].contains("The task for thread t1 is stored in inbox"));
+    assert!(native[0].argv[query + 1].starts_with("Handoff: see thread t1 ("));
     assert_eq!(records.len(), 1);
 }
 
@@ -4167,14 +4165,14 @@ fn task48_envelope_true_reserved_bounds_and_opaque_slot_are_exact() {
     let mut template = StartupInputTemplate::positional(req.argv.len());
     template.prefix = "--initial=".into();
     template.suffix = "suffix".into();
-    let envelope = startup_envelope(&req, &context, &claim().instance, None, &template).unwrap();
+    let envelope = startup_envelope(&req, &context, None, None, &template).unwrap();
     assert!(!envelope.slot_token.contains("task for thread t"));
     let measured = envelope.slot_token.len() + 128;
     template.max_arg_bytes = measured;
-    let exact = startup_envelope(&req, &context, &claim().instance, None, &template).unwrap();
+    let exact = startup_envelope(&req, &context, None, None, &template).unwrap();
     validate_whole_input(&exact, &exact.request.argv).unwrap();
     template.max_arg_bytes = measured - 1;
-    assert!(startup_envelope(&req, &context, &claim().instance, None, &template).is_err());
+    assert!(startup_envelope(&req, &context, None, None, &template).is_err());
     let mut duplicated = exact.request.argv.clone();
     duplicated.push(exact.slot_token.clone());
     assert!(validate_whole_input(&exact, &duplicated).is_err());
@@ -4183,17 +4181,16 @@ fn task48_envelope_true_reserved_bounds_and_opaque_slot_are_exact() {
     assert!(validate_whole_input(&exact, &transformed).is_err());
     let thread = ThreadId::new("x".repeat(128));
     template.max_arg_bytes = measured;
-    let known =
-        startup_envelope(&req, &context, &claim().instance, Some(&thread), &template).unwrap();
+    let known = startup_envelope(&req, &context, None, Some(&thread), &template).unwrap();
     assert_eq!(known.slot_token.len(), exact.slot_token.len() + 128);
     assert_eq!(known.reserve, 0);
-    assert!(startup_envelope(&req, &context, &"x".repeat(16385), None, &template).is_err());
+    assert!(startup_envelope(&req, &context, Some(&"x".repeat(16385)), None, &template).is_err());
     let escaped = crate::protocol::output::ContinuationContext {
         state_dir: Some("/tmp/'quoted\nstate".into()),
         host: Some("/tmp/'quoted\nhost".into()),
     };
     template.max_arg_bytes = 16384;
-    let envelope = startup_envelope(&req, &escaped, &claim().instance, None, &template).unwrap();
+    let envelope = startup_envelope(&req, &escaped, None, None, &template).unwrap();
     assert!(!envelope.slot_token.contains(['\n', '\r']));
     assert!(envelope.slot_token.contains("\\n"));
 }
@@ -4227,12 +4224,12 @@ fn task48_claude_instruction_is_positional(argv: &[String]) -> bool {
     }
     prompts
         .iter()
-        .filter(|token| token.starts_with("Expected handoff command routing"))
+        .filter(|token| token.starts_with("Handoff: "))
         .count()
         == 1
         && !list_values
             .iter()
-            .any(|token| token.starts_with("Expected handoff command routing"))
+            .any(|token| token.starts_with("Handoff: "))
 }
 struct Task48SelectionSpy<'a, 'b> {
     inner: &'a mut NativeLauncher<'b>,
@@ -4377,6 +4374,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
                             let plan = HandoffPlan {
                                 startup_input: None,
                                 bootstrap_input: None,
+                                summary_prompt: None,
                                 request: HandoffRequest {
                                     automatic: false,
                                     launch,
@@ -4423,7 +4421,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
             );
             let prompt = actual
                 .iter()
-                .position(|token| token.starts_with("Expected handoff command routing"))
+                .position(|token| token.starts_with("Handoff: "))
                 .unwrap();
             let mut recovered = actual.clone();
             let instruction = recovered.remove(prompt);
@@ -4444,7 +4442,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
         }
     }
     assert!(task48_claude_instruction_is_positional(&[
-        "Expected handoff command routing fixture".into(),
+        "Handoff: fixture".into(),
         "--model".into(),
         "sonnet".into(),
         "-p".into()
@@ -4575,7 +4573,7 @@ fn task48_claude_lossless_manual_shell_parser_options_and_actual_native_chain() 
         assert!(task48_claude_instruction_is_positional(&actual));
         let original = actual
             .iter()
-            .filter(|token| !token.starts_with("Expected handoff command routing"))
+            .filter(|token| !token.starts_with("Handoff: "))
             .map(String::as_str)
             .collect::<Vec<_>>();
         assert_eq!(original, argv);
@@ -4615,7 +4613,7 @@ fn task48_nonpositional_optional_provider_reaches_actual_guarded_native() {
         ["--fourth-owned", "literal", "", "$HOME $(id)"]
     );
     let input = native[0].argv.last().unwrap();
-    assert!(input.starts_with("--initial=Expected handoff command routing"));
+    assert!(input.starts_with("--initial=Handoff: "));
     let (registry, _) = crate::cli::launch::tests::fourth_adapter::registry(true, false);
     let policy = registry
         .by_id(registry.agent("fourth").unwrap())
@@ -4682,18 +4680,10 @@ fn frozen_v1_prompt_literals_bind_routing_quoting_and_thread() {
         ]
     );
     assert!(prompts.iter().all(|p| !p.contains("secret durable task")));
-    // Today's renderer repeats the filesystem lookup: for the same retained
-    // namespace it now yields null, so recomposition could not have accepted a
-    // genuine object-routing report once these paths disappeared.
+    // Today's renderer carries no routing record and shares V1's frozen fallback quoting.
     let current = bootstrap(&ThreadId::new("t9"), &context, instance);
-    assert!(current.starts_with("Expected handoff command routing (JSON data): null"));
+    assert!(current.starts_with("Handoff: see thread t9 ("), "{current}");
     assert!(current.contains(fallback));
-    assert!(
-        current.contains(
-            "If no matching hook is trusted, or delivery reports incomplete or unavailable"
-        )
-    );
-    assert!(current.contains("including an empty inbox, needs no inbox call"));
     assert_ne!(
         current, prompts[1],
         "current guidance evolves independently of frozen V1"
@@ -4732,6 +4722,7 @@ fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
     let plan = HandoffPlan {
         startup_input: None,
         bootstrap_input: None,
+        summary_prompt: None,
         request: request(),
         context: v1_context("/state", "/host.sock"),
         recipient: SeatId::new("recipient"),
@@ -5113,6 +5104,7 @@ fn legacy_handoff_origin_overflow_refuses_before_publication_or_effects() {
     let semantic = SemanticMutation::freeze(
         SemanticMutation::Handoff(Box::new(HandoffPlan {
             bootstrap_input: None,
+            summary_prompt: None,
             startup_input: Some(crate::harness::adapter::StartupInputTemplate::positional(
                 request.launch.argv.len(),
             )),
@@ -5412,4 +5404,107 @@ fn handoff_lock_waits_out_a_transient_descriptor_copy_and_refuses_a_lasting_one(
     );
     drop(lasting);
     lock(&journal, &reference).unwrap();
+}
+
+/// A plan that froze a summary prompt validates only that prompt's exact bytes; a V1 plan
+/// only the V1 outcomes. Neither admits the other's text, and a V1 launch serializes no new
+/// field (old plans stay byte-identical).
+#[test]
+fn summary_prompt_plans_validate_only_their_own_frozen_prompt() {
+    use crate::protocol::handoff::{BootstrapLaunch, SummaryPrompt};
+    let context = v1_context("/state", "/host.sock");
+    let instance = claim().instance;
+    let launch = |prompt: Option<SummaryPrompt>| BootstrapLaunch {
+        harness: crate::protocol::authority::Harness::Claude,
+        binary: None,
+        name: None,
+        argv: vec!["--model".into(), "m".into()],
+        composed_argv: None,
+        startup_input: None,
+        summary_prompt: prompt,
+    };
+    let retained = |prompt: &str| {
+        Some(serde_json::json!(
+            crate::harness::launch::compose_bootstrap_v1_argv(
+                crate::protocol::authority::Harness::Claude,
+                vec!["--model".into(), "m".into(), prompt.to_owned()],
+            )
+            .unwrap()
+        ))
+    };
+    let summary = Some(SummaryPrompt {
+        summary: Some("Fix the wake test".into()),
+    });
+    let new = summary_prompt::render(Some("Fix the wake test"), "t1", &context);
+    assert_eq!(
+        new,
+        "Handoff: Fix the wake test \u{2014} full task in thread t1 (arrives as a herdr-threads \
+         message; if not shown, run `herdr-threads --state-dir /state --host-endpoint \
+         /host.sock inbox`)."
+    );
+    let v1 = bootstrap_v1::prompt("t1", &context, &instance);
+    let other = summary_prompt::render(Some("Something else"), "t1", &context);
+    let bare = summary_prompt::render(None, "t1", &context);
+    let matches = |plan: &BootstrapLaunch, text: &str| {
+        retained_launch_argv_matches(plan, "t1", &context, &instance, retained(text).as_ref())
+            .unwrap()
+    };
+    let with_summary = launch(summary);
+    assert!(matches(&with_summary, &new));
+    assert!(!matches(&with_summary, &v1));
+    assert!(!matches(&with_summary, &other));
+    assert!(!matches(&with_summary, &bare));
+    let without = launch(Some(SummaryPrompt { summary: None }));
+    assert!(matches(&without, &bare));
+    assert!(!matches(&without, &new));
+    let legacy = launch(None);
+    assert!(matches(&legacy, &v1));
+    assert!(!matches(&legacy, &new));
+    assert!(
+        !serde_json::to_string(&legacy)
+            .unwrap()
+            .contains("summary_prompt")
+    );
+}
+
+/// A new topology plan always freezes a summary prompt against a daemon that serves it, and
+/// falls back to V1 only against one that predates it.
+#[test]
+fn frozen_prompt_follows_the_daemon_capability() {
+    struct Caps(bool);
+    impl LocalClient for Caps {
+        fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
+            self.0 && name == crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1
+        }
+        fn call(
+            &self,
+            _: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            unreachable!("no call")
+        }
+        fn call_with_output(
+            &self,
+            _: Command,
+            _: &OutputSpec,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            unreachable!("no call")
+        }
+    }
+    use crate::protocol::handoff::SummaryPrompt;
+    assert_eq!(
+        frozen_prompt(&Caps(true), &TestClock, Some("Fix it")),
+        Some(SummaryPrompt {
+            summary: Some("Fix it".into())
+        })
+    );
+    assert_eq!(
+        frozen_prompt(&Caps(true), &TestClock, None),
+        Some(SummaryPrompt { summary: None })
+    );
+    assert_eq!(
+        frozen_prompt(&Caps(false), &TestClock, Some("Fix it")),
+        None
+    );
 }

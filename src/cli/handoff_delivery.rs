@@ -2023,7 +2023,7 @@ fn retry_automatic_inner<C: LocalClient + ?Sized, W: Write>(
                 let launcher = launcher.ok_or_else(|| {
                     super::invalid_request("automatic launch needs original launcher")
                 })?;
-                let request = handoff::prepare_automatic_startup(launcher, plan, &claim, &thread)?;
+                let request = handoff::prepare_automatic_startup(launcher, plan, &thread)?;
                 let launched =
                     launcher.launch(&request, &plan.delivery.recipient, &mut |possible| {
                         if possible {
