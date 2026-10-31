@@ -55,8 +55,10 @@ pub struct InstanceInputs {
     pub xdg_state_home: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
     /// `HERDR_SESSION` / `HERDR_CONFIG_PATH` select a non-default Herdr
-    /// server, whose socket is not the default path and which owns its own
-    /// plugin registry: skip both fast defaults (socket and state directory).
+    /// server, whose socket is not the default path: skip every fast default
+    /// (socket, state directory, registry). Herdr keys the plugin registry and
+    /// plugin state on the XDG home alone, so the state directory would match,
+    /// but the `herdr` query decides it rather than a guess.
     pub non_default_server: bool,
     /// The `herdr` executable on PATH, for the slow fallback only.
     pub herdr: Option<PathBuf>,
@@ -167,8 +169,9 @@ pub(crate) fn state_candidates(
 
 /// The fast state-directory default: `Ok(None)` when no candidate exists (fall back),
 /// `Err` when both Herdr state roots hold a store (ambiguous). A named Herdr session
-/// (`non_default_server`) gets no fast default: its server, not the default one, owns the
-/// plugin, so the slower `herdr` query decides.
+/// (`non_default_server`) gets no fast default: the slower `herdr` query decides, so a
+/// caller that set only `HERDR_SESSION` never lands in the default directory when that
+/// query fails. (Herdr's plugin state is per XDG home, not per session.)
 pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, String)>, String> {
     if inputs.non_default_server {
         return Ok(None);
@@ -245,8 +248,9 @@ pub enum PluginRegistry {
 
 /// Herdr's plugin registry, `$XDG_CONFIG_HOME/herdr/plugins.json` (else
 /// `~/.config/herdr/plugins.json`): a JSON array of plugins with `plugin_id` and `enabled`
-/// (Herdr 0.9.1). A named Herdr session or `HERDR_CONFIG_PATH` may keep its own, so the
-/// default registry is not read for them. File reads only, no subprocess.
+/// (Herdr 0.9.1). Herdr keeps one registry per XDG config home, shared by every session;
+/// it is still not read for a named session or `HERDR_CONFIG_PATH`, whose state directory
+/// came from the `herdr` query rather than this home. File reads only, no subprocess.
 pub fn plugin_registry(inputs: &InstanceInputs) -> PluginRegistry {
     if inputs.non_default_server {
         return PluginRegistry::Unknown;
