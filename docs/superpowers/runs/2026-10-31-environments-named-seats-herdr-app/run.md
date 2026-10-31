@@ -12,3 +12,4 @@ base: main
 
 approvals:
 - reserved-decisions · none reserved by the user; the proposal's Part 5 decisions D1-D21 are taken at their stated recommendations (autonomous run), each recorded as an assumption and surfaced in the report
+- phase-7-merge · user (relayed by herdr-threads-dev coordinator snSGTpBk7xGd, message mnSGzr7MbLbk, 2026-10-31): "merge once ready" · at hand-back report to the coordinator with --nudge (branch, tip SHA, unfiltered full-suite + leak-check evidence, roast results); the coordinator reviews and merges to main; this run neither merges nor pushes
