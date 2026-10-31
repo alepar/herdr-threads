@@ -16,8 +16,9 @@
 //!    directory is a legacy location, chosen only when it holds a store (an
 //!    `node/herdr-threads.db`, or a legacy `instances/<id>/` with the database) and the XDG directory does not; the
 //!    source then says so. A named Herdr session (`HERDR_SESSION` /
-//!    `HERDR_CONFIG_PATH`) gets neither fast default: its server, not the
-//!    default one, decides, so both fields go through step 4;
+//!    `HERDR_CONFIG_PATH`) gets no fast socket default (its server listens
+//!    elsewhere), but keeps the state-directory default: Herdr keys plugin
+//!    state and its registry on the XDG home alone, not on the session;
 //! 4. only when the default is missing, the slower `herdr` queries
 //!    (`plugin list --json` / `status server --json`).
 //!
@@ -55,10 +56,10 @@ pub struct InstanceInputs {
     pub xdg_state_home: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
     /// `HERDR_SESSION` / `HERDR_CONFIG_PATH` select a non-default Herdr
-    /// server, whose socket is not the default path: skip every fast default
-    /// (socket, state directory, registry). Herdr keys the plugin registry and
-    /// plugin state on the XDG home alone, so the state directory would match,
-    /// but the `herdr` query decides it rather than a guess.
+    /// server, whose socket is not the default path: skip the fast socket
+    /// default. The state directory and registry defaults still apply: Herdr
+    /// (0.9.1-0.9.5) keys plugin state and `plugins.json` on the XDG home
+    /// alone; a session moves only its socket and session files.
     pub non_default_server: bool,
     /// The `herdr` executable on PATH, for the slow fallback only.
     pub herdr: Option<PathBuf>,
@@ -168,14 +169,9 @@ pub(crate) fn state_candidates(
 }
 
 /// The fast state-directory default: `Ok(None)` when no candidate exists (fall back),
-/// `Err` when both Herdr state roots hold a store (ambiguous). A named Herdr session
-/// (`non_default_server`) gets no fast default: the slower `herdr` query decides, so a
-/// caller that set only `HERDR_SESSION` never lands in the default directory when that
-/// query fails. (Herdr's plugin state is per XDG home, not per session.)
+/// `Err` when both Herdr state roots hold a store (ambiguous). It applies to a named Herdr
+/// session too: Herdr's plugin state is per XDG home, not per session.
 pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, String)>, String> {
-    if inputs.non_default_server {
-        return Ok(None);
-    }
     let (xdg, home) = state_candidates(absolute(&inputs.home), absolute(&inputs.xdg_state_home));
     Ok(choose_state_dir(xdg, home)?.and_then(|(dir, how, exists)| {
         exists.then(|| {
@@ -189,13 +185,10 @@ pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, Str
     }))
 }
 
-/// Where the default state dir would be, whether or not it exists yet. `None` for a named
-/// Herdr session or no usable HOME/XDG root; `Err` when both roots already hold a store
-/// (ambiguous, as for [`default_state_dir`]).
+/// Where the default state dir would be, whether or not it exists yet. `None` with no usable
+/// HOME/XDG root; `Err` when both roots already hold a store (ambiguous, as for
+/// [`default_state_dir`]).
 fn default_state_dir_to_create(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
-    if inputs.non_default_server {
-        return Ok(None);
-    }
     let (xdg, home) = state_candidates(absolute(&inputs.home), absolute(&inputs.xdg_state_home));
     Ok(choose_state_dir(xdg, home)?.map(|(dir, _, _)| dir))
 }
@@ -248,13 +241,9 @@ pub enum PluginRegistry {
 
 /// Herdr's plugin registry, `$XDG_CONFIG_HOME/herdr/plugins.json` (else
 /// `~/.config/herdr/plugins.json`): a JSON array of plugins with `plugin_id` and `enabled`
-/// (Herdr 0.9.1). Herdr keeps one registry per XDG config home, shared by every session;
-/// it is still not read for a named session or `HERDR_CONFIG_PATH`, whose state directory
-/// came from the `herdr` query rather than this home. File reads only, no subprocess.
+/// (Herdr 0.9.1). Herdr keeps one registry per XDG config home, shared by every session
+/// (`HERDR_CONFIG_PATH` moves only the config file). File reads only, no subprocess.
 pub fn plugin_registry(inputs: &InstanceInputs) -> PluginRegistry {
-    if inputs.non_default_server {
-        return PluginRegistry::Unknown;
-    }
     let path = match absolute(&inputs.xdg_config_home) {
         Some(dir) => dir.join("herdr/plugins.json"),
         None => match absolute(&inputs.home) {
@@ -752,34 +741,39 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Kills: a named Herdr session pairing the default plugin state root (and the default
-    /// socket) with its own server: neither fast default may apply, so resolution falls through
-    /// to the flags, Herdr's environment or the `herdr` query (the latter run in that session).
+    /// Kills: a named Herdr session given the default socket (its server listens elsewhere), or
+    /// sent to the `herdr plugin list` query for a state directory Herdr keys on the XDG home
+    /// alone (0.9.1-0.9.5: `HERDR_SESSION` moves only the socket and session files). The state
+    /// directory takes the fast default with no subprocess; only the host asks the session.
     #[test]
-    fn herdr_session_disables_both_fast_defaults() {
+    fn herdr_session_keeps_the_state_default_and_queries_the_host() {
         let dir = scratch();
         let mut inputs = inputs(&dir);
         let state = dir.join("home/.local/state/herdr/plugins/herdr-threads");
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(dir.join("home/.config/herdr")).unwrap();
         let _listener = UnixListener::bind(dir.join("home/.config/herdr/herdr.sock")).unwrap();
-        assert!(default_state_dir(&inputs).unwrap().is_some());
+        let plain = default_state_dir(&inputs).unwrap();
+        assert!(plain.is_some());
         assert!(default_host_endpoint(&inputs).is_some());
         inputs.non_default_server = true;
-        assert_eq!(default_state_dir(&inputs), Ok(None));
+        assert_eq!(default_state_dir(&inputs).unwrap(), plain);
+        assert_eq!(
+            default_state_dir_to_create(&inputs).unwrap(),
+            Some(state.clone())
+        );
         assert_eq!(default_host_endpoint(&inputs), None);
-        // Resolution asks Herdr instead, for both fields.
-        let (_, how) = resolve_state_dir(&inputs).unwrap();
-        assert!(how.starts_with("herdr plugin list"), "{how}");
+        assert_eq!(
+            resolve_state_dir(&inputs).unwrap(),
+            (state, "default (~/.local/state)".into())
+        );
+        assert_eq!(calls(&dir), "", "the state directory needs no subprocess");
         let (host, how) = resolve_host_endpoint(&inputs).unwrap();
         assert_eq!(
             (host, how.as_str()),
             ("/slow/herdr.sock".into(), "herdr status server")
         );
-        assert_eq!(calls(&dir), "plugin list --json\nstatus server --json\n");
-        // Flags still win without any query.
-        inputs.state_flag = Some(PathBuf::from("/flag/state"));
-        assert_eq!(resolve_state_dir(&inputs).unwrap().1, "--state-dir");
+        assert_eq!(calls(&dir), "status server --json\n");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -858,10 +852,10 @@ mod tests {
         assert_eq!(leftover(&inputs, fast), None);
         assert!(resolve_context(&inputs).unwrap().1["state_dir_leftover"].is_null());
 
-        // A named session keeps its own registry, which is not read.
+        // A named session shares the XDG home's registry, so it is read the same way.
         fs::write(&registry, "[]").unwrap();
         inputs.non_default_server = true;
-        assert_eq!(plugin_registry(&inputs), PluginRegistry::Unknown);
+        assert_eq!(plugin_registry(&inputs), PluginRegistry::NotInstalled);
         fs::remove_dir_all(&dir).unwrap();
     }
 }
