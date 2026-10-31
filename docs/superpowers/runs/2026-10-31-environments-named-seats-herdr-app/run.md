@@ -5,6 +5,9 @@ phase: roast-design
 roastDesignRound: 1
 roast-design: 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md
 findingsLedgerDesign: findings-ledger-design.md
+redesignCycles-design: 1
+stepBackDesign-round-1: redesign — applied: D10 finish-reason closure (invented reason vocabulary, finished records dropped, no keep split) → closure keyed on herdr-core Registry::finish finality (keep, reason) over a coherent capture (dissolves 3)
+redesign-design-1: round 1 · triggers shared-cause, defect-type · amended none · lastGood 1bde32346 · designRoast - · state started
 codeMechanism: Workflow
 runTag: environments-named-seats-herdr-app-20261031T201115
 context: Context: claude · planner=200K/167K · implementer=200K/167K · reviewer=200K/167K · finalReview=200K/167K · assembler=200K/167K · warn: planner, finalReview on a 200K model → set ANTHROPIC_DEFAULT_OPUS_MODEL=<model>[1m] or config.models.<role> to a 1M model · warn: implementer, reviewer, assembler on a 200K model → set ANTHROPIC_DEFAULT_SONNET_MODEL=<model>[1m] or config.models.<role> to a 1M model
