@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.8.1
+
+No schema or peer wire change (node schema stays 11). Restart the daemon after upgrading (`herdr-threads daemon stop && herdr-threads daemon ensure`) so handoffs can use the summary prompt; an older daemon keeps the previous launch prompt.
+
+### Changed
+
+- **A launched handoff starts with a one-line summary prompt.** A new tab or pane started by `handoff` gets `Handoff: SUMMARY — full task in thread ID ...` as its first prompt, so the session shows its purpose in the TUI; the full task arrives as the thread message through normal delivery. The previous herdr-threads how-to and routing text are gone (about 1.1 KB down to about 240 B).
+  - `handoff --summary TEXT` sets the summary: one line, up to 200 bytes, no backticks or control characters. Without it, a `--goal` that fits is used, else the prompt names only the thread and the sender gets a one-line hint.
+  - The handoff body itself still never appears in the launch command line or reports.
+  - `--summary` is refused with `--existing` and for another machine.
+- Lifecycle check-ins no longer print the handoff routing-match rule (76 bytes fewer per check-in).
+
+### Fixed
+
+- The daemon no longer inherits the spawning pane's pane-scoped Herdr variables.
+- The plugin manifest drops the `[[build]]`/`[[startup]]` `id` keys Herdr never reads.
+- The guarded process-hint refusal and the Hermes README no longer claim which Herdr releases support the hint.
+
 ## v2.8.0
 
 One-way store upgrade to node schema 11 (migration 0011: the `sync_forgotten_nodes` and `sync_link_events` tables). Binaries before 2.8.0 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. There is no peer wire change, and no setup re-run is needed. After upgrading, restart the daemon (`herdr-threads daemon stop && herdr-threads daemon ensure`) to use the new peer commands. This is the first release that 2.7.0 installs can take with `herdr-threads update`.
