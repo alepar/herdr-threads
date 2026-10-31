@@ -353,6 +353,14 @@ fn pipe_reader(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, Re
     (tail, done)
 }
 
+/// Spawn `command` without each of `names`, whatever the caller's environment
+/// holds.
+fn scrub_env(command: &mut ProcessCommand, names: &[&str]) {
+    for name in names {
+        command.env_remove(name);
+    }
+}
+
 fn spawn_detached(
     executable: &Path,
     context: &RuntimeContext,
@@ -387,6 +395,7 @@ fn spawn_detached(
     } else {
         command.env_remove("HERDR_BIN_PATH");
     }
+    scrub_env(&mut command, crate::host::PANE_SCOPED_ENV_VARS);
     // Its own session, process group and no controlling terminal: a daemon
     // ensured from inside a Herdr pane must outlive that pane's teardown (a
     // Herdr restart hangs up or kills the pane's session, ht-mp72).

@@ -580,7 +580,8 @@ fn guarded_start_inner(
                         {
                             return Err(error(
                                 ErrorCode::Unsupported,
-                                "host does not advertise agent_start_process_hint_v1",
+                                "host does not advertise agent_start_process_hint_v1; start the agent in the \
+                                 pane itself",
                             ));
                         }
                         let witness = witness.ok_or_else(|| {

@@ -1160,6 +1160,96 @@ fn detached_child_uses_resolved_herdr_binary_environment() {
     assert!(status.success());
 }
 
+/// A daemon outlives the pane or plugin command that started it, so it never
+/// keeps that caller's pane-scoped Herdr variables: Herdr hands a plugin
+/// action the focused pane as `HERDR_PANE_ID`, and the `herdr` CLI the daemon
+/// runs takes its caller pane from that variable. Instance routing variables
+/// stay.
+#[test]
+#[ignore = "subprocess fixture invoked explicitly by the pane-env scrub test"]
+fn subprocess_pane_env_scrub_fixture() {
+    let (root, _, _) = fixture();
+    let output = root.join("env.txt");
+    let script = root.join("env.sh");
+    let mut body = String::from("#!/bin/sh\n");
+    for name in crate::host::PANE_SCOPED_ENV_VARS
+        .iter()
+        .chain(&["HERDR_SOCKET_PATH", "HERDR_SESSION"])
+    {
+        body.push_str(&format!(
+            "printf '%s=%s\\n' {name} \"${{{name}-<unset>}}\" >> '{}.tmp'\n",
+            output.display()
+        ));
+    }
+    body.push_str(&format!(
+        "mv '{}.tmp' '{}'\n",
+        output.display(),
+        output.display()
+    ));
+    std::fs::write(&script, body).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    paths.prepare_node_dir().unwrap();
+    spawn_detached(&script, &context, &paths, &StartAttempt::new()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let observed = loop {
+        if let Ok(value) = std::fs::read_to_string(&output) {
+            break value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached child wrote no environment probe"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    for name in crate::host::PANE_SCOPED_ENV_VARS {
+        assert!(
+            observed.contains(&format!("{name}=<unset>\n")),
+            "{name} leaked into the daemon: {observed}"
+        );
+    }
+    assert!(
+        observed.contains("HERDR_SOCKET_PATH=/kept/host.sock\n"),
+        "{observed}"
+    );
+    assert!(
+        observed.contains("HERDR_SESSION=kept-session\n"),
+        "{observed}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn detached_child_drops_pane_scoped_herdr_environment() {
+    for required in [
+        "HERDR_PANE_ID",
+        "HERDR_TAB_ID",
+        "HERDR_WORKSPACE_ID",
+        "HERDR_PLUGIN_ACTION_ID",
+        "HERDR_PLUGIN_CONTEXT_JSON",
+    ] {
+        assert!(
+            crate::host::PANE_SCOPED_ENV_VARS.contains(&required),
+            "{required} is not scrubbed"
+        );
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    crate::test_support::isolation::scrub_env(&mut command);
+    for name in crate::host::PANE_SCOPED_ENV_VARS {
+        command.env(name, "w1:p1");
+    }
+    let status = command
+        .env("HERDR_SOCKET_PATH", "/kept/host.sock")
+        .env("HERDR_SESSION", "kept-session")
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("daemon::lifecycle::tests::subprocess_pane_env_scrub_fixture")
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
 #[tokio::test]
 async fn racing_ensure_callers_converge_and_crash_releases_owner() {
     let (root, context, paths) = fixture();

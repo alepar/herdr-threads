@@ -209,6 +209,11 @@ pub fn normalize_snapshot(raw: &str) -> Result<NativeSnapshot, ApiError> {
     })
 }
 
+/// One pane record for `expected_target`. Herdr answers an earlier id of a pane
+/// moved to another workspace with the pane's current record; that answer is
+/// refused here as stale, because the observation would be of another target.
+/// The seat follows its terminal through reconciliation (TRUST-POLICY, Moved
+/// panes), and the next observation uses the new target.
 pub fn normalize_pane(raw: &str, expected_target: &str) -> Result<NativePane, ApiError> {
     let result = envelope(raw, "pane_info")?;
     let pane = parse_pane(result.get("pane").ok_or_else(|| invalid("missing pane"))?)?;
