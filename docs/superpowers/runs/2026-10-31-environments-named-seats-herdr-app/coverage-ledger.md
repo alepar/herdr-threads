@@ -63,3 +63,7 @@ C3-17 · amend-design-1 · UNOWNED-SEAM · ScreenIdle emission .69/.70 · applie
 C3-18 · amend-design-1 · UNOWNED-SEAM · spawn_detached .2/.73 · applied — ht-kqrt.73 owns the R9 assertion on the reparented daemon's environ, consuming F1-scrub from .2
 C3-19 · amend-design-1 · NEEDS-SPEC · N2 keep-alive vs R27/R32 · rejected — spec settles it; handled as C3-3
 C3-20 · amend-design-1 · NEEDS-SPEC · R38 vs .68 and R22 vs .71 · rejected — spec settles both; handled as C3-8 and C3-9
+G-1 · graph · GRAPH-EDGE · ht-kqrt.15 <- ht-kqrt.13 · applied — F gate is evidence-only; ordering kept via .34/.63/.66
+G-2 · graph · GRAPH-EDGE · ht-kqrt.40 <- ht-kqrt.13 · applied — same; .63 <- .13 kept
+G-3 · graph · GRAPH-EDGE · 20 critical edges · kept — carry real artifacts
+G-4 · graph · GRAPH-EDGE · seam-contract .35/.38 and .32/.35 · parked — proposals are never applied unattended
