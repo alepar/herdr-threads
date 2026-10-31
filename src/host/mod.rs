@@ -21,6 +21,36 @@ pub const PANE_SCOPED_ENV_VARS: &[&str] = &[
     "HERDR_PLUGIN_LINK_HANDLER_ID",
 ];
 
+/// Named-seat caller env (moves to `host::named::ENV_VARS` in N). Scrub-only in F.
+pub(crate) const NAMED_SCRUB_ENV_VARS: &[&str] =
+    &["HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY"];
+
+/// herdr-core terminal env (moves to `host::hc::ENV_VARS` in H1). Scrub-only in F.
+pub(crate) const HC_SCRUB_ENV_VARS: &[&str] = &[
+    "HC_TERMINAL_ID",
+    "HC_TERMINAL_SOCKET",
+    "HC_SCOPE",
+    "HC_SESSION",
+];
+
+/// The single env scrub list for every child the daemon side spawns (K5): the
+/// union of each host family's names. `spawn_detached` and handoff spawns
+/// remove all of it; the H3 gate shim removes it minus `host::hc::ENV_VARS`
+/// (ht-kqrt.54). Never copy these names elsewhere.
+pub fn child_env_scrub_list() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = Vec::new();
+    for name in PANE_SCOPED_ENV_VARS
+        .iter()
+        .chain(NAMED_SCRUB_ENV_VARS)
+        .chain(HC_SCRUB_ENV_VARS)
+    {
+        if !names.contains(name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 pub mod compatibility;
 pub mod native;
 pub mod observation;

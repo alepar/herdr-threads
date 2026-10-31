@@ -1250,6 +1250,111 @@ fn detached_child_drops_pane_scoped_herdr_environment() {
     assert!(status.success());
 }
 
+/// The K5 scrub list: every name the daemon side must not pass to a child.
+const SCRUB_NAMES_PROBE: &[&str] = &[
+    "HC_SCOPE",
+    "HC_TERMINAL_ID",
+    "HC_TERMINAL_SOCKET",
+    "HC_SESSION",
+    "HERDR_THREADS_SEAT_NAME",
+    "HERDR_THREADS_SEAT_READONLY",
+];
+
+#[test]
+#[ignore = "subprocess fixture invoked explicitly by the environ scrub test"]
+#[cfg(target_os = "linux")]
+fn subprocess_environ_scrub_fixture() {
+    let (root, _, _) = fixture();
+    let script = root.join("sleep.sh");
+    std::fs::write(&script, "#!/bin/sh\nexec sleep 600\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    paths.prepare_node_dir().unwrap();
+    let mut launched = spawn_detached(&script, &context, &paths, &StartAttempt::new()).unwrap();
+    // The script execs `sleep`; wait for that so /proc holds the final environment.
+    let environ = format!("/proc/{}/environ", launched.child.id());
+    let comm = format!("/proc/{}/comm", launched.child.id());
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::fs::read_to_string(&comm).unwrap_or_default().trim() != "sleep" {
+        assert!(std::time::Instant::now() < deadline, "child never exec'd");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let bytes = std::fs::read(&environ).unwrap();
+    let names: Vec<String> = bytes
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let entry = String::from_utf8_lossy(entry);
+            entry.split_once('=').map(|(name, _)| name.to_string())
+        })
+        .collect();
+    let _ = launched.child.kill();
+    let _ = launched.child.wait();
+    std::fs::remove_dir_all(root).unwrap();
+    for name in crate::host::child_env_scrub_list() {
+        assert!(!names.iter().any(|n| n == name), "{name} leaked: {names:?}");
+    }
+    assert!(names.iter().any(|n| n == "HERDR_SESSION"), "{names:?}");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn detached_daemon_environ_drops_child_env_scrub_list() {
+    use crate::test_support::spawn::{SpawnOwned, command};
+    let mut child = command(std::env::current_exe().unwrap());
+    for name in SCRUB_NAMES_PROBE
+        .iter()
+        .chain(crate::host::PANE_SCOPED_ENV_VARS)
+    {
+        child.env(name, "x");
+    }
+    let output = child
+        .env("HERDR_SESSION", "kept-session")
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("daemon::lifecycle::tests::subprocess_environ_scrub_fixture")
+        .spawn_owned()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn lifecycle_holds_no_host_env_literal() {
+    let source = include_str!("../../src/daemon/lifecycle.rs");
+    let production = source.split("#[cfg(test)]").next().unwrap();
+    for literal in SCRUB_NAMES_PROBE
+        .iter()
+        .chain(&["HERDR_PANE_ID", "HERDR_ENV"])
+    {
+        assert!(
+            !production.contains(&format!("\"{literal}\"")),
+            "{literal} literal in lifecycle.rs"
+        );
+    }
+}
+
+#[test]
+fn child_env_scrub_list_is_the_union() {
+    let list = crate::host::child_env_scrub_list();
+    for name in crate::host::PANE_SCOPED_ENV_VARS
+        .iter()
+        .chain(crate::host::NAMED_SCRUB_ENV_VARS)
+        .chain(crate::host::HC_SCRUB_ENV_VARS)
+    {
+        assert!(list.contains(name), "{name} missing");
+    }
+    let mut sorted = list.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), list.len(), "duplicates in {list:?}");
+}
+
 #[tokio::test]
 async fn racing_ensure_callers_converge_and_crash_releases_owner() {
     let (root, context, paths) = fixture();
