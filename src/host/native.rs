@@ -277,8 +277,9 @@ impl ports::CreateTabPort for NativeCli {
 impl NativeCli {
     /// Herdr's guarded start (`agent.start`): Herdr itself checks that the
     /// pane is at its interactive shell prompt before it starts the agent, and
-    /// answers only after it detects the expected agent ready in the same
-    /// terminal. `preflight` is this adapter's fresh witnessed read.
+    /// answers as soon as the command is submitted (`launch_pending`); this
+    /// adapter then observes readiness with bounded `agent.get` polls.
+    /// `preflight` is this adapter's fresh witnessed read.
     #[cfg(test)]
     fn guarded_start_cli(
         &self,
