@@ -16,8 +16,8 @@
 //!    directory is a legacy location, chosen only when it holds a store (an
 //!    `node/herdr-threads.db`, or a legacy `instances/<id>/` with the database) and the XDG directory does not; the
 //!    source then says so. A named Herdr session (`HERDR_SESSION` /
-//!    `HERDR_CONFIG_PATH`) gets no fast socket default (its server listens
-//!    elsewhere), but keeps the state-directory default: Herdr keys plugin
+//!    `HERDR_CONFIG_PATH`, skipped conservatively) gets no fast socket default
+//!    (a session's server listens elsewhere), but keeps the state-directory default: Herdr keys plugin
 //!    state and its registry on the XDG home alone, not on the session;
 //! 4. only when the default is missing, the slower `herdr` queries
 //!    (`plugin list --json` / `status server --json`).
@@ -55,8 +55,9 @@ pub struct InstanceInputs {
     pub home: Option<PathBuf>,
     pub xdg_state_home: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
-    /// `HERDR_SESSION` / `HERDR_CONFIG_PATH` select a non-default Herdr
-    /// server, whose socket is not the default path: skip the fast socket
+    /// `HERDR_SESSION` (whose server listens on `sessions/<name>/herdr.sock`)
+    /// or `HERDR_CONFIG_PATH` (skipped conservatively: in Herdr 0.9.1-0.9.5 it
+    /// moves only the config file, not the socket): skip the fast socket
     /// default. The state directory and registry defaults still apply: Herdr
     /// (0.9.1-0.9.5) keys plugin state and `plugins.json` on the XDG home
     /// alone; a session moves only its socket and session files.
@@ -856,6 +857,12 @@ mod tests {
         fs::write(&registry, "[]").unwrap();
         inputs.non_default_server = true;
         assert_eq!(plugin_registry(&inputs), PluginRegistry::NotInstalled);
+        assert!(leftover(&inputs, fast).is_some());
+        assert!(
+            resolve_context(&inputs).unwrap().1["state_dir_leftover"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("plugin not installed"))
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }
