@@ -280,7 +280,7 @@ host:
 |---|---|
 | CLI | `seat retire --self`. New lines, all sized under rule (f): creation (45 B + name), named launch refusal (45 B), inherited-name refusal (110 B), second-locator notice (60 B), pane-form refusal (50 B), inert threshold (60 B), old-daemon gate (60 B). The hook guard line (110 B) rides lifecycle check-ins only, and Hermes gets it on its first delivering hook. Handoff recovery hints are built through `env_assignments`. |
 | Local protocol | `SeatsQuery.host`, sent only for named and terminal sites. `Command::HostTopologies`, `SeatDirectory.name`, `SelfRetire` and `LocateCaller`. Capability `seat.host_sites_v1`. `WakeBlock::{NoStatus, StatusDone}` (H2). `CallerClaim` is unchanged. |
-| Daemon | `attach_builtin`, the capability-gated wake lane, the probe before the host row is written, persisted no-wake reports, and an env scrub of every host's `ENV_VARS` plus `HC_SESSION`. |
+| Daemon | Env scrub builds on `lifecycle::scrub_env(command, names)` + `host::PANE_SCOPED_ENV_VARS` from fix/tui-defects 5e19e9bce (ht-tod8, R8b); F adds `host::hc::ENV_VARS` and the seat name. `attach_builtin`, the capability-gated wake lane, the probe before the host row is written, persisted no-wake reports, and an env scrub of every host's `ENV_VARS` plus `HC_SESSION`. |
 
 ### Schema and wire
 
