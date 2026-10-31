@@ -234,15 +234,27 @@ for `Ambiguous`.
   `ProcessInfo` parents. The first pid that equals a candidate's `target_root_process` wins, nearest ancestor
   first.
 - src/daemon/transport.rs:430 exposes the peer pid (tokio `UCred::pid()`) next to the uid.
-- The cache is keyed `(candidates, subject, boot/epoch)`.
+- The cache is keyed `(candidates, subject pid, subject start stamp, boot/epoch)`. The start stamp is the
+  `ProcessRecord.start` the walk reads for the subject; a subject whose record is unreadable (no start stamp) is
+  never cached, and its walk runs every time (it is cheap). A reused pid has a different start stamp, so it never
+  hits another process's verdict. Entries are dropped when the boot/epoch changes.
 - In F only the Herdr candidate can verify, because `NativeCli::target_root_process` = `pane.process_info.shell_pid`.
   H1 adds the hc candidate.
+- **Terminal-root wall.** The walk treats a process whose `argv[0]` basename is in
+  `host::foreign_terminal_process_names()` (F: a scrub-style const list in src/host/mod.rs holding `herdr-core`
+  and `hc`; it moves into `host::hc` in H1) as a wall: a candidate root found above a wall does not verify. On
+  herdr-core's non-systemd spawn path the core and its holder stay descendants of the `hc` client, and so of the
+  pane shell that ran it, while that client lives (herdr-core platform/unix.rs `spawn_detached` only `setsid`s).
+  Without the wall the Herdr candidate would verify for an agent inside an hc terminal. In H1 the hc candidate's
+  root sits below the wall and is found first, so the wall changes no H1 outcome. A process whose argv is
+  unreadable is not a wall (accepted limit, F/N only, recorded in TRUST-POLICY F row).
 
 Considered: tty comparison. It was rejected because hc exposes no tty and hooks have no controlling terminal (06 V3).
 Also considered: verifying every caller. It was rejected as adversarial, which TRUST-POLICY forbids (roast H-T4).
 
 **TUI leak guard (F).** Recommended: when both families are present before `HcHost` exists, F verifies only the Herdr
-candidate. If it verifies, the pane wins. Otherwise the CLI prints M1 and nothing binds. N appends M2, so F never
+candidate. If it verifies, with no terminal-root wall crossed on the way (see "`LocateCaller`"), the pane wins.
+Otherwise the CLI prints M1 and nothing binds. N appends M2, so F never
 advertises a variable its build ignores. Hooks exit 0 with M1 (+M2 from N) as their one stderr diagnostic, and
 inject the hook guard line M3 (+M2 from N) into context on these paths only:
 
@@ -265,6 +277,10 @@ carries that candidate as a `locator_hint`. The daemon then reads the environ of
 `/proc/<pid>/environ` on Linux, `KERN_PROCARGS2` on macOS, same user only. If the environ carries the same name,
 the daemon refuses with M6 and never falls back to the host candidate. If the server env is unreadable,
 `server_process()` is `None`, the check is skipped, and only observability remains (D1 limit, 07 §14 risk 11).
+The check compares the name only, so it cannot tell a per-command name from an inherited one when both are the
+same string: a caller that sets the server's own name per command is refused too. That is intended (the name is
+the server's role) and is an accepted limit; M6's remedy says "use another name", and only a different name or a
+server restarted without the variable binds.
 
 - NativeCli's `server_process` is the socket peer pid that the incarnation witness already records
   (src/host/native.rs:104-130). `<host>` in M6 is `Herdr`.
@@ -298,7 +314,7 @@ kept. Considered: the approved spec's "concurrent sessions are bindings of one s
 because two unrelated live sessions sharing one role's ACK obligations is how mail gets absorbed silently.
 
 **Env scrub (K5, SA2 scrub).** Recommended: `spawn_detached` (src/daemon/lifecycle.rs:356-390) removes the union of
-the following, through `lifecycle::scrub_env(command, names)` from ht-tod8:
+the following, through `lifecycle::scrub_env(command, names)` from ht-tod8, and reparents the daemon:
 
 - `host::PANE_SCOPED_ENV_VARS`;
 - `host::named::ENV_VARS` (`HERDR_THREADS_SEAT_NAME`, plus `HERDR_THREADS_SEAT_READONLY`);
@@ -309,8 +325,20 @@ hc consts exist as scrub-only lists in `src/host/mod.rs`, and they move into the
 is returned by `host::child_env_scrub_list()` (F); `scrub_env` becomes `pub(crate)` (run constraint 6). The H3 gate
 shim, which removes the names from its own environment before `exec` rather than through `ProcessCommand`, and every
 handoff spawn take the same list, so `HERDR_THREADS_SEAT_NAME` is dropped everywhere from one definition. The skill and `setup` text say to set the name
-per command. Considered: hygiene-only scrubbing of `HERDR_BIN_PATH`, as today. It was rejected because hc sweeps
-every process carrying the terminal's `HC_SCOPE` (06 K5), so this is a correctness fix.
+per command.
+
+**Reparenting.** herdr-core's sweep (crates/herdr-core/src/sweep.rs `members`) kills the processes whose environ
+holds the terminal's `HC_SCOPE` plus every live descendant of them by `ppid`. A scrubbed env alone does not take
+the daemon out of that set while the process that autostarted it lives (the mod's long-lived `watch`, src/cli/watch.rs
+`ensure_daemon`), because `setsid` changes the session, not the parent. So `spawn_detached` double-forks: it spawns
+an intermediate `herdr-threads internal daemon-detach` with the scrubbed env, which `setsid`s, spawns the daemon
+with the same args and stdio, prints the daemon pid on its stdout pipe and exits at once. The launcher reaps the
+intermediate and keeps the reported pid wherever it keeps the child pid today (`Launched`). The daemon is then a
+child of init (or the nearest subreaper) before it serves its first request. Wherever the design relies on the parent chain it treats a `setsid`-only spawn as still a
+descendant: this rule and the terminal-root wall in `LocateCaller` are its two instances.
+
+Considered: hygiene-only scrubbing of `HERDR_BIN_PATH`, as today. It was rejected because hc sweeps every process
+carrying the terminal's `HC_SCOPE` and their descendants (06 K5), so scrub plus reparent is a correctness fix.
 
 ### Store and schema
 
@@ -396,8 +424,17 @@ was rejected because it splits a role's threads and obligations.
 (starts at src/store/seats.rs:242):
 
 - A row with `display_name` goes onto the named host, unresolved, at target = name.
-- If a live seat with that name exists, the restored row stays unresolved for operator repair, with no merge and
-  no automatic pick.
+- If a non-retired local seat with that name already exists on the named host (resolved or unresolved, the rows
+  `seats_live_name` covers), the restored row is inserted unresolved on the named host with `name` NULL, so it is
+  outside the index and the insert cannot violate it. A named-host seat with `name` NULL is the held marker (every
+  other named-host seat has a name), and its held name is the `display_name` of its own `seat.created` fact, so
+  nothing new is stored and no `allocation_decisions` kind is added (its `kind` CHECK stays). There is no merge and
+  no automatic pick: resolves of the name keep reaching the existing seat, and the held row is never reattached by
+  named continuity (it has no name). `seat inspect` and `doctor` show the held name.
+- Operator repair: `human seat retire SEAT --operator` of either seat. When the existing seat of that name retires,
+  the same retire transaction gives the name back to the oldest held row whose `seat.created.display_name` equals
+  it (it sets `seats.name`, which the index now allows); named continuity then reattaches that seat on the next
+  resolve of the name. Retiring the held row just retires it. No name moves while two candidates are live.
 - A row without a name is placed automatically only when every dialled host attached or remembered on the node has
   one kind. Otherwise it is held for the operator.
 - The always-attached named host never satisfies `wait:host`.
@@ -517,7 +554,10 @@ of `NamedHost`.
 
 - **Hint.** `caller_location.rs` reads `TMUX` (socket, server pid) and `TMUX_PANE`. A seat-acting call carries the
   hint `tmux:<socket>:<server_pid>:<pane>` in the resolve command, not in `CallerClaim`. The daemon keeps it in
-  memory per binding. That avoids a second migration, and the hint is refreshed by every hook call.
+  memory per binding. That avoids a second migration, and the hint is refreshed by every hook call. The hint and
+  the binding's turn state must outlive the routine events of an unattended seat, so a daemon that holds a
+  wake-armed binding does not idle-exit (see "Lane registration"); only a crash, an upgrade or an explicit stop
+  loses them.
 - **Verification.** The daemon runs `tmux -S <sock> display -p -t <pane> '#{pane_pid} #{pid}'`. It requires
   `#{pid}` == server pid, and a nearest-ancestor walk from the binding's fingerprint pid to `pane_pid`. This runs at
   bind and at every wake, under a fresh `ProcessCommand` with a 2 s deadline. A failed check only disables wake for
@@ -531,21 +571,40 @@ of `NamedHost`.
   focused-composer hold.
 - **Typing.** `send-keys -t <pane> -l <wake text>` then `send-keys Enter`, with the existing read-back and
   `clear_own_wake_text`.
-- **Busy or idle (D21).** The daemon records hook turn state per binding: `UserPromptSubmit` → busy, `Stop` → idle.
-  It comes through a new neutral adapter method `turn_state_edge(event) -> Option<TurnEdge>` (default `None` means
-  no tmux wake for that harness). Codex and agy already register `Stop` (src/harness/codex.rs:114). Claude gains a
-  report-only `Stop` registration in its adapter.
+- **Busy or idle (D21).** The daemon records hook turn state per binding through a new neutral adapter method
+  `turn_state_edge(event) -> Option<TurnEdge>` (default `None` means no tmux wake for that harness). Every
+  turn-ending path is an idle edge, because an unattended seat's next hook may never come:
+  - `UserPromptSubmit` (or the harness's turn-start event) → busy;
+  - `Stop` → idle, and for Claude also `StopFailure` (API errors fire it instead of `Stop`) → idle. Codex and agy
+    already register `Stop` (src/harness/codex.rs:114). Claude gains report-only `Stop` and `StopFailure`
+    registrations in its adapter;
+  - a user interrupt fires no hook in Claude, so a stale busy is cleared by the screen: a new defaulted
+    `ComposerPolicy::screen_turn_running(&str) -> Option<bool>` (default `None`) recognizes the harness's running-turn
+    status line. When the recorded state is busy for at least 60 s and two composer reads at least 5 s apart both
+    give `screen_turn_running == Some(false)`, the daemon records idle (`TurnEdge::ScreenIdle`, diagnostics only).
+    A harness whose recognizer answers `None` keeps a stale busy until its next hook (accepted limit, stated per
+    harness in TRUST-POLICY N2).
+  A daemon restart (crash, upgrade) starts every binding at `Unknown`, which never reads as idle; the next hook of
+  that binding sets it.
 - **Blocked.** A new defaulted `ComposerPolicy::screen_blocked(&str) -> Option<bool>` (default `None` means no wake)
   recognizes approval and question screens.
-- **Wake condition.** A wake needs turn state idle, `screen_blocked == Some(false)`, and an empty composer read.
-  Missing evidence never reads as idle.
+- **Wake condition.** A wake needs turn state idle, `screen_blocked == Some(false)`, an empty composer read, and a
+  pane that delivers keys to the program: the verification `display -p` format also reads
+  `#{pane_in_mode} #{pane_input_off} #{synchronize-panes}`, and any non-zero value (copy-mode or another mode,
+  input disabled, synchronized panes) gives no typing for that attempt: it is treated as busy, retried on the
+  ladder, and never reported as `no_wake`. Missing evidence never reads as idle.
 - **Lane registration.** With `wake_capability() == Composer(TMUX)` the built-in session gets its own wake lane at
   `attach_builtin`, registered with its own pacer (`Lane::Wakes`), with reachability (`attach_wake_pacer`) and with
-  Health, exactly as a dialled session's lane is. It is not `first_host_pacer`'s lane. Idle exit still counts only
-  dialled hosts holding a resolved local seat: a tmux-hinted named binding never keeps the daemon up.
-- **Claude `Stop` (report-only).** The Claude adapter registers `Stop` only to feed `turn_state_edge`. Its event
-  contract marks it report-only (no delivery, no continuation): stdout is empty and the exit code is 0 on every
-  path, so it can never force a continuation. `setup` output and `tests/golden_surfaces.rs` change only by the new
+  Health, exactly as a dialled session's lane is. It is not `first_host_pacer`'s lane.
+- **Idle exit.** `ActivityProbe::active` (src/daemon/idle_exit.rs) gains one term: the count of wake-armed named
+  bindings, meaning connected top-level named bindings that hold a tmux hint which verified at bind, whose
+  `LivenessFingerprint::is_alive` holds. The built-in session answers the count from the same daemon memory that
+  holds the hints, and prunes a binding whose fingerprint is dead. So the daemon stays up exactly while a tmux seat
+  it could wake is alive, and idle-exits as before once none is (or with only unhinted named bindings). This keeps
+  the hint in memory (no migration) and makes its loss a crash or upgrade event, not the routine 10 min idle exit.
+- **Claude `Stop`/`StopFailure` (report-only).** The Claude adapter registers `Stop` and `StopFailure` only to feed
+  `turn_state_edge`. Their event contract marks them report-only (no delivery, no continuation): stdout is empty
+  and the exit code is 0 on every path, so they can never force a continuation. `setup` output and `tests/golden_surfaces.rs` change only by the new
   registration, in the same leaf.
 - **Hint flips.** The per-target answer can flip between `Composer` and `None` as a hint verifies or fails. A
   no-wake report row is written only while the answer is `None` and is deleted when a `wake_status` read finds
@@ -558,7 +617,7 @@ Delivery-contract check (AGENTS.md rules 1-6) for a tmux-verified named seat:
 | 1 | Unchanged: default p1, T = 0 |
 | 2 | The existing `wake_frontier` over `THRESHOLD_ADMITS_SQL`; the tmux path adds no other wake trigger |
 | 3 | Unchanged: turn hooks and the mod channel deliver every pending item |
-| 4 | Hook turn state: busy from `UserPromptSubmit` to `Stop`, and no typing while busy, blocked, unknown or with a draft |
+| 4 | Hook turn state: busy from `UserPromptSubmit` to `Stop`/`StopFailure` or a screen-idle clear, and no typing while busy, blocked, unknown, in a tmux mode or with a draft |
 | 5 | Holds while the hint verifies (p0 wakes at every T); degraded to next-turn delivery when it does not (`wake=no_wake`) |
 | 6 | `Native`, with tmux as the typist; `Channel` unchanged for Claude with a live mod |
 
@@ -591,8 +650,10 @@ as idle. It is deferred to H2 (W2).
   `deny_unknown_fields`.
 - Calls never pass `caller` (that mutates hc's parent bookkeeping). The client never uses `terminal.list` (it
   prunes, fans out to machines and is unsequenced) and never `doc.set`.
-- `enumerate_targets` = `hello` + `events.subscribe{}` snapshot on one connection. It keeps local `state=="live"`
-  addresses, and drops finished ones and `machine/tN` mirrors.
+- `enumerate_targets` = `hello` + `events.subscribe{}` snapshot on one connection. It keeps every local address,
+  live and finished, and drops only `machine/tN` mirrors. A finished record carries its `reason` and the terminal's
+  `keep` flag into the capture, so the closure decision (D10) reads them; only `state=="live"` records are
+  reported as present targets.
 - `observation_sequence` is the adapter's own counter (K2).
 
 Considered: the long-lived events lane. It was deferred, because 5 s polling is enough (06 K6).
@@ -620,18 +681,42 @@ same boot with a newer epoch, so `CarryForward`. Considered: `HC_SCOPE` or the c
 considered: "a known core id at a new path is the same host". Not implemented; it is treated as a new host
 (P: Part 4, partially adopted H-T2).
 
-**Finish-reason closure (D10).** Recommended: closure uses only the publication-absence path
-(src/store/seats.rs:2950-2963) over a coherent capture of the same core id, with events treated as dirty hints only.
+**Finish-reason closure (D10).** Recommended: closure follows herdr-core's own finality rule
+(crates/herdr-core/src/terminals.rs `Registry::finish` at `dc276b7`) over a coherent capture of the same core id.
+Events (`finished`, `removed`) are dirty hints that trigger a capture, never closure on their own. herdr-core's
+rule: a finish leaves the terminal `state=="live"` (pending restart) only when `keep` is true and the reason is
+one of `holder_lost`, `stopped_by_restart`, `server_stop`, `host_shutdown`, `signaled`; every other finish is
+final, the record turns `finished`, and the core never revives it. Ids are monotonic (`Registry::create`), so a
+finished `tN` never names another terminal, and finished records are pruned past `MAX_FINISHED` (500), which emits
+`removed`.
 
-| Finish | Effect on the seat |
-|---|---|
-| `killed`, or `removed` of a still-resolved seat | retired through the pane-close fence |
-| program exit, signal, `server_stop`, `host_shutdown` | unresolved; bindings end `seat_unresolved`; C1 resume reattaches it |
-| `lost`, `restarted` | nothing |
+| Capture shows for the seat's `tN` | `keep` | Reason | Effect on the seat |
+|---|---|---|---|
+| `state=="finished"` | false (every H3 launch) | any | retired through the pane-close fence (`BeginRetirement{Closed}`) |
+| `state=="finished"` | true | `exited`, `killed` | retired through the pane-close fence |
+| `state=="live"`, no holder (pending restart) | true | `holder_lost`, `stopped_by_restart`, `server_stop`, `host_shutdown`, `signaled` | unresolved; bindings end `seat_unresolved`; C1 resume reattaches it when the core restarts the terminal |
+| absent from the capture (pruned, `removed`) | either | any | retired through the pane-close fence, whatever the seat's state (resolved or unresolved) |
+| `state=="live"` with a holder | either | none | nothing (present) |
 
-A failed `hello` gives `CompleteUnverified`, which closes nothing. Only shell-rooted terminals give continuity
-across sessions. Considered: 06 V1's "finished = closure". It was rejected because it retires on agent exit and
-leaves pane close unretired (roast H-T1).
+- Retiring on a final finish or on absence is evidence-based, not heuristic: herdr-core's own record says the
+  terminal can never run again, and the id can never be reused. TRUST-POLICY's "never end a binding on heuristic
+  evidence" holds.
+- An agent that exits inside a live terminal (a shell-rooted `hc run`, the shell still running) is not a terminal
+  finish. It ends only that binding (`ProcessExit`); the seat stays resolved on the live terminal.
+- An agent that is the terminal's root (the H3 gate shim `exec`s the harness) finishes the terminal when it exits.
+  With `keep: false` that finish is final and retires the seat. This is the terminal's closure, not the agent's.
+- A failed `hello`, or a core id that differs from the seat's boot, gives `CompleteUnverified` (or C2 holds), which
+  closes nothing.
+- The reason vocabulary is herdr-core's: `exited`, `killed`, `signaled`, `server_stop`, `host_shutdown`,
+  `holder_lost`, `stopped_by_restart`. An unknown reason on a `finished` record is final (the core already decided
+  it); on a `live` record it changes nothing. This follows the version rule: no reason list gates anything, the
+  record's `state` decides.
+
+Considered: 06 V1's "finished = closure" for every terminal regardless of how the agent left it. It was rejected
+because it retires on agent exit inside a live shell terminal (roast H-T1); the rule above retires only when the
+core's own record is final. Also considered: a reason table keyed on invented names over a live-only capture
+(this spec's first draft). It was rejected because the reason never reached the decision, the names were not
+herdr-core's, and agent-rooted keep:false seats were left unresolved forever (roast design r1).
 
 **Labels `<session>:tN` (D11).** Recommended:
 
@@ -688,7 +773,10 @@ scratch socket from `test_support::scratch::temp_path`. It serves `hello` (`core
 `doc.set` or `caller`. Knobs:
 
 - per-terminal state, status (including `null`), turn, pid, foreground and labels;
-- finish reasons;
+- per-terminal `keep`, and finishes that apply herdr-core's `Registry::finish` rule (a kept terminal with a
+  pending reason stays `live` with no holder; any other finish turns `finished`) with herdr-core's reason strings
+  (`exited`, `killed`, `signaled`, `server_stop`, `host_shutdown`, `holder_lost`, `stopped_by_restart`), record
+  pruning that emits the `removed` event, and an unknown reason string;
 - core id rotation (a wipe) and seq reset (a restart);
 - witness change;
 - unknown fields and unknown event types.
@@ -744,7 +832,9 @@ src/harness/codex.rs (04 step 6). Considered: `terminal.run` with the harness ar
 **`no_parent` / `no_notify` (D7, D8).** Recommended: `terminal.run` passes `no_notify: true`,
 `outlive_parent: true` and `no_parent: true` (all three, and `keep`, are params of `terminal.run` in the vendored
 0.1.15 schema), omits `caller`, sets `keep: false`, and
-uses no hc `name`. Labels are `{herdr.space, herdr.tab, ht.bootstrap, ht.label}`. The prompt goes through
+uses no hc `name`. Because `keep` is false, any finish of a launched terminal is final, so its seat retires
+through the D10 rule when the worker exits (the harness is the terminal's root after the shim's `exec`); no
+launched seat is left unresolved. Labels are `{herdr.space, herdr.tab, ht.bootstrap, ht.label}`. The prompt goes through
 herdr-threads, never `first_message`. The `ht.bootstrap` label is a recovery hint only and never reclassifies a
 recorded unknown (TRUST-POLICY "Bootstrap creation attempts"). Outcomes:
 
@@ -820,10 +910,10 @@ stays follow-on.
 
 | Phase | Amendment |
 |---|---|
-| F | Vocabulary (TRUST-POLICY.md:112-148, Herdr boot at :121-123): "host boot / incarnation" defined per host. "Target" becomes "a host target: pane, name or terminal". A1 addendum, F part: two-family nearest-ancestor guard, Herdr candidate only; refusal when none verifies. |
-| N | A3: `cooperative_named_seat` (named-host observation) and `cooperative_self_retire` (local `operator_label`). Named rule: a named observation is not host evidence, never closes by absence, and has the cross-kind refusal. New C1 row "named continuity". Restore rule (SA4). Role ACK semantics and read-only bindings (SA7). Inherited-name refusal as cooperative consistency (D1). Live-holder guard (SA16). Named presence (SA17). Accepted limits: a name inherited through a non-host parent (only observable); same-user use of the variable; typo seats; self-retire replicates as Operator; server env unreadable means the check is skipped. A4: named seats have no composer wake, rules 5/6 are degraded, the threshold is inert. |
-| N2 | A4: tmux composer wake for a named seat only with a verified hint (server pid + nearest ancestor), re-verified at every wake; turn state from hooks; a missing status is never idle. Accepted limits: no server-side draft guard (read-back/clear only); a missed `Stop` means no wake until the next hook; the hint lives in daemon memory, so there is no wake after a daemon restart until the next contact. |
-| H1 | Vocabulary hc row (core id boot, new id = new boot = C2 holds). Closure (D10 finish-reason table; C1 structural row covers kept `tN` across core stop/start). A1 addendum in full, plus limits: double-forked processes and Codex daemon mode are unverifiable with two families; single-family stale env is accepted. A4: hc has no composer wake until upstream. Accepted limit: a wiped or cloned core means C2 holds. |
+| F | Vocabulary (TRUST-POLICY.md:112-148, Herdr boot at :121-123): "host boot / incarnation" defined per host. "Target" becomes "a host target: pane, name or terminal". A1 addendum, F part: two-family nearest-ancestor guard, Herdr candidate only; refusal when none verifies; a herdr-core process on the walk is a wall the Herdr candidate cannot verify across. Accepted limit (F/N): a process with unreadable argv is not a wall. K5: the autostarted daemon is reparented, so no terminal sweep reaches it. |
+| N | A3: `cooperative_named_seat` (named-host observation) and `cooperative_self_retire` (local `operator_label`). Named rule: a named observation is not host evidence, never closes by absence, and has the cross-kind refusal. New C1 row "named continuity". Restore rule (SA4): a restored name that collides is held nameless (its `seat.created.display_name` is the held name) and gets the name only when the existing seat retires; no merge, no pick. Role ACK semantics and read-only bindings (SA7). Inherited-name refusal as cooperative consistency (D1). Live-holder guard (SA16). Named presence (SA17). Accepted limits: a name inherited through a non-host parent (only observable); same-user use of the variable; typo seats; a per-command name equal to the host server's own name is refused like an inherited one; self-retire replicates as Operator; server env unreadable means the check is skipped. A4: named seats have no composer wake, rules 5/6 are degraded, the threshold is inert. |
+| N2 | A4: tmux composer wake for a named seat only with a verified hint (server pid + nearest ancestor), re-verified at every wake; turn state from hooks; a missing status is never idle. Every turn-ending path clears busy: `Stop`, `StopFailure`, or a stale busy (60 s) cleared by two screen reads that show no running turn. A daemon holding a wake-armed tmux binding does not idle-exit. A pane in a tmux mode, with input off or synchronized is never typed into. Accepted limits: no server-side draft guard (read-back/clear only); a harness with no running-turn recognizer stays unwoken after a user interrupt until its next hook; the hint and turn state live in daemon memory, so after a crash, upgrade or explicit stop there is no wake until that binding's next hook. |
+| H1 | Vocabulary hc row (core id boot, new id = new boot = C2 holds). Closure (D10): herdr-core's `(keep, reason)` finality over a coherent capture; a final finish (any reason with `keep: false`; `exited`/`killed` with `keep: true`) or record removal retires through the pane-close fence as evidence, never heuristics; a kept terminal pending restart unresolves, and the C1 structural row reattaches it when the core restarts the same `tN`; agent exit inside a live terminal ends only the binding. A1 addendum in full, plus limits: double-forked processes and Codex daemon mode are unverifiable with two families; single-family stale env is accepted. A4: hc has no composer wake until upstream. Accepted limit: a wiped or cloned core means C2 holds. |
 | H3 | `managed_launch` extended to host-guarded launch (gate shim, root-pid fingerprint). C4 staging covers the hc launch. The `ht.bootstrap` label is hint-only. |
 
 No adversarial verification is added. Every decision is made in the daemon against the canonical view (A2).
@@ -853,7 +943,7 @@ re-entry. Acceptance criteria cite these rows by id, and a golden test per row p
 | M2 | suffix `; set HERDR_THREADS_SEAT_NAME` on M1 and M3 | 29 | as M1, M3 | N (removed in H1) |
 | M3 | `[herdr-threads] guard: runs in herdr-core terminal <tN>, not Herdr pane <pane>; no seat bound here` | 88 + fields | check-in (per "TUI leak guard") | F (removed in H1) |
 | M4 | `herdr-threads: env names pane <pane> and terminal <session>:<tN>; neither is an ancestor of this process; unset the stale one` | 106 + fields | CLI, hook stderr | H1 |
-| M6 | `herdr-threads: HERDR_THREADS_SEAT_NAME=<name> inherited from the <host> server; set it per command or restart the server without it` | 119 + fields | CLI error | N (`Herdr`), H1 (`herdr-core`) |
+| M6 | `herdr-threads: HERDR_THREADS_SEAT_NAME=<name> inherited from the <host> server; use another name per command or restart the server without it` | 129 + fields | CLI error | N (`Herdr`), H1 (`herdr-core`) |
 | M7 | `herdr-threads: seat <name> is held by live pid <pid>; use another name` (code `seat_name_in_use`) | 59 + fields | CLI error, hook stderr | N |
 | M8 | `herdr-threads: created seat <seat> (<name>)` | 31 + fields | CLI | N |
 | M9 | `herdr-threads: seat <name> now bound from <loc1> and <loc2>` | 41 + fields | CLI | N |
@@ -925,7 +1015,7 @@ O9).
 | D1 | Herdr TUI socket reply to a JSON-RPC `hello` (must not hang) | Gate: a probe test against `test_support::fake_herdr`, plus a bounded-deadline test where the peer never replies, which proves "no hang" whatever the reply. Live: the isolated Herdr capture becomes a `tests/fixtures/` case when the helper starts; otherwise it goes to remaining evidence | H1 |
 | H-C1 | Codex hooks in hc with and without `--no-daemon`: does the ancestor guard see them? | Fallback: `LocateCaller` tests over fake process trees (daemon-mode Codex modelled as a reparented process: two families refuse, one family accepted unverified). The live real-core run goes to remaining evidence. Off the critical chain | H1 (fallback only) |
 | T1 | `capture-pane` text vs Herdr detection text under each `ComposerPolicy` | Live: replay captured screens from `tests/fixtures/` into a pane of a `tmux -L ht-test-<uuid>` server and compare `ComposerRead`s | N2 |
-| T2 | idle/working/blocked recognition, including a missed `Stop` | Hook-driven turn-state tests plus `screen_blocked` fixture tests; the missed-`Stop` case asserts no wake | N2 |
+| T2 | idle/working/blocked recognition, including `StopFailure` and an interrupt with no `Stop` | Hook-driven turn-state tests plus `screen_blocked` and `screen_turn_running` fixture tests; `StopFailure` clears busy; an interrupt clears busy only through the screen rule, and with a `None` recognizer asserts no wake | N2 |
 | T3 | Draft safety with no server-side guard | Live tmux: a draft present means no typing; read-back mismatch means clear and no submit | N2 |
 | T4 | Stale `TMUX_PANE` in nested Herdr/tmux is refused | Live: nested isolated Herdr session + private tmux; verification fails, so wake is disabled and the seat is not moved | N2 |
 | T5 | tmux discards OSC 7501 | Live: `printf` OSC 7501 in a private tmux pane; record the passthrough result | N2 |
@@ -948,8 +1038,9 @@ row; a placeholder or unverified checksum is never committed. `scripts/hc-smoke`
   `XDG_RUNTIME_DIR` and `XDG_CONFIG_HOME`. It passes `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR` and `PATH`.
 - **Scope.** It never runs `hc server status`. It starts the core only through `hc run --bg` under the private
   session.
-- **Checks.** It drives HcHost against it: attach, probe, observation, labels, the finish-reason table, the K5
-  scrub, and L2/L3.
+- **Checks.** It drives HcHost against it: attach, probe, observation, labels, the D10 rule (a `keep: false`
+  `exited` retires; a `keep: true` `stopped_by_restart` across `server.stop` + restart unresolves and reattaches),
+  the K5 scrub including the reparented daemon, and L2/L3.
 - **Cleanup.** It stops the core with `server.stop` over the private socket, and verifies that no
   `herdr-core serve`/`hold` process of that session remains.
 
@@ -1026,7 +1117,8 @@ Scope:
 - `SeatsQuery.host` and `ResolveThreadQuery` caller-host fields (unsent in F). The CLI site-capability check
   mechanism (no caps advertised yet).
 - K5 scrub: `spawn_detached` removes `child_env_scrub_list()`: the `ENV_VARS` lists, `HC_SESSION` and
-  `HERDR_THREADS_SEAT_NAME`.
+  `HERDR_THREADS_SEAT_NAME`, and reparents the daemon through `internal daemon-detach` (see "Env scrub").
+- The `LocateCaller` terminal-root wall (`host::foreign_terminal_process_names()`) and the start-stamped cache key.
 - TRUST-POLICY F rows.
 
 Acceptance:
@@ -1046,6 +1138,12 @@ Acceptance:
 - [ ] A precedence matrix test (pane × `HERDR_ENV` × `HC_TERMINAL_ID` × empty values × missing socket) passes. With
   both `HERDR_PANE_ID` and `HC_TERMINAL_ID` set, the seat binds only when the Herdr candidate verifies, else M1 is
   printed and nothing binds.
+- [ ] Nested tree (fake `ProcessInfo`): pane shell → living `hc` client → `herdr-core serve` → `herdr-core hold` →
+  agent, with both families set. The walk crosses the wall, the Herdr candidate does not verify, M1 is printed and
+  nothing binds. The same tree with the `hc` client gone (core reparented to init) also refuses. A plain pane tree
+  (pane shell → agent) still binds the pane.
+- [ ] `LocateCaller` cache: a subject pid reused with a different start stamp and the same candidates gets a fresh
+  walk, not the cached verdict; a subject with no readable start stamp is never cached.
 - [ ] The hook guard line M3 appears on a lifecycle check-in and on compact re-entry, and on no per-turn hook. A
   harness stand-in whose `OutputPolicy` is `guidance_every_turn` with no lifecycle event (the Hermes shape) gets M3
   exactly once per binding across several delivering hooks, and once more after a daemon restart (the accepted
@@ -1054,6 +1152,11 @@ Acceptance:
 - [ ] A daemon spawned with `HC_SCOPE`, `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, `HC_SESSION`,
   `HERDR_THREADS_SEAT_NAME` and every `PANE_SCOPED_ENV_VARS` name in its parent env has none of them in
   `/proc/<pid>/environ`.
+- [ ] Reparenting: a daemon autostarted by a still-living parent whose env carries `HC_SCOPE=<token>` (a
+  `test_support::spawn` child that stays alive) has a `ppid` that is neither that parent nor any of its
+  descendants, and a test copy of herdr-core's `members()` rule (env carriers plus their `ppid` descendants, over
+  `/proc`) run for `<token>` while the parent lives excludes the daemon pid. The intermediate has exited and was
+  reaped.
 - [ ] The migration applies on a populated fixture store. Existing Herdr rows read `kind='herdr'` and are re-probed
   (`kind_probed_at IS NULL`) on reattach. A row with an unknown kind is never attached and is named by `doctor`.
 - [ ] A session whose port returns `WakeCapability::None` starts no wake lane (test fake), and every `wake()`
@@ -1131,7 +1234,8 @@ Acceptance:
 - [ ] A named seat missing from an enumeration stays resolved. `RetireReason::Closed` on a named seat is refused by
   the store.
 - [ ] A name carried by the (isolated) Herdr server's environ is refused with M6 (`<host>` = `Herdr`) and never
-  bound. A name set per command inside that server's pane is honoured.
+  bound. A different name set per command inside that server's pane is honoured. The same name set per command is
+  refused with M6 too (the accepted limit), and binds once the server runs without the variable.
 - [ ] The second-locator notice M9 fires on the first binding from a second locator and not on a repeat from either
   locator, also after a daemon restart. `seat inspect` lists the seat's bindings by locator.
 - [ ] Cross-kind rebind: a store test shows a named seat never rebinds onto a pane or terminal target, and an
@@ -1156,8 +1260,11 @@ Acceptance:
   another connected top-level binding exists unless `--force` (M18). A replay returns the stored result. Reusing the
   name mints a new seat.
 - [ ] `human seat retire SEAT --operator` retires a named seat, and the next use of the name mints a new seat.
-- [ ] Restore: a seat with `display_name` comes back unresolved on the named host. With a live seat of that name it
-  stays for the operator.
+- [ ] Restore: a seat with `display_name` comes back unresolved on the named host. With a non-retired seat of that
+  name (resolved, and in a second case unresolved) it is inserted with `name` NULL, the insert never hits
+  `seats_live_name`, the name keeps resolving to the existing seat, and `seat inspect`/`doctor` show the held name.
+  After `human seat retire --operator` of the existing seat, the held row carries the name and the next resolve
+  reattaches it; retiring the held row instead leaves the existing seat untouched.
 - [ ] `reviewer@B` addresses and displays over `test_support::multinode`. An old-node fixture decodes
   `display_name`.
 - [ ] `thread show`, delivery `from` headers and `seat inspect` render the name. A golden test pins the label
@@ -1186,15 +1293,16 @@ no-wake reports. From F: the capability-gated wake lane and `ComposerTraits`.
 Scope:
 
 - `caller_location.rs` reads `TMUX`/`TMUX_PANE` into the hint `tmux:<socket>:<server_pid>:<pane>`, carried in the
-  resolve command and held in daemon memory per binding.
+  resolve command and held in daemon memory per binding. Wake-armed named bindings count in idle-exit `active()`.
 - `HostPort::target_wake_capability` (defaulted). `NamedHost::wake_capability = Composer(TMUX)`. The per-target
   answer depends on verification.
 - The built-in session's wake lane, registered with its own pacer, reachability and Health (see "tmux wake for named
   seats").
 - src/host/named.rs tmux client (`display -p`, `capture-pane -p`, `send-keys -l`, Enter), through
   `ProcessCommand` with a 2 s deadline, verifying the server pid plus the nearest ancestor at bind and at every wake.
-- Turn state: the neutral `turn_state_edge` adapter method. Claude registers a report-only `Stop`. Codex and agy map
-  their existing events. `ComposerPolicy::screen_blocked`, defaulted `None`, implemented by harnesses whose fixtures
+- Turn state: the neutral `turn_state_edge` adapter method. Claude registers report-only `Stop` and `StopFailure`.
+  Codex and agy map their existing events. `ComposerPolicy::screen_turn_running` (defaulted `None`) clears a stale
+  busy. The wake condition reads `#{pane_in_mode} #{pane_input_off} #{synchronize-panes}`. `ComposerPolicy::screen_blocked`, defaulted `None`, implemented by harnesses whose fixtures
   support it.
 - No-wake report flips (row deleted on `Composer`).
 - TRUST-POLICY N2 row. AGENTS.md rule 6 wording, and a "What we do today" line for tmux wake.
@@ -1203,15 +1311,23 @@ Acceptance:
 
 - [ ] In a private `tmux -L ht-test-<uuid>` server with a stand-in harness, an idle named seat with an empty
   composer and turn state idle wakes on a p0 item within the existing ladder. A p1 item at T = 0 does not wake it.
-- [ ] A draft in the composer, a busy turn (after `UserPromptSubmit`, before `Stop`), a blocked screen, a missing
-  `Stop`, or an unknown status gives no typing. The sender gets the existing `wake=` overdue rendering.
+- [ ] A draft in the composer, a busy turn (after `UserPromptSubmit`, before `Stop`), a blocked screen, an unknown
+  status, or a pane in copy-mode, with input off or with synchronized panes gives no typing, and the copy-mode
+  pane's scroll position is unchanged. The sender gets the existing `wake=` overdue rendering.
+- [ ] Turn-ending paths: after `StopFailure` (API error) the seat wakes on the next p0. After a user interrupt (no
+  `Stop`), a harness with a `screen_turn_running` recognizer wakes once the screen shows no running turn on two
+  reads (after 60 s of busy); a harness without one stays unwoken until its next hook (the accepted limit).
 - [ ] A stale `TMUX_PANE` (wrong server pid, or a pane that is not an ancestor, nested in an isolated Herdr
   session) disables wake and never moves or rebinds the seat.
 - [ ] A named seat outside tmux still reports `wake=no_wake` once. A seat that goes None → Composer → None
   (hint verified, then failed) reports `wake=no_wake` once in each None episode.
-- [ ] The built-in wake lane is registered with a pacer, reachability and Health (test). Idle exit with only the
-  named host exits while tmux-hinted named bindings exist and no dialled host holds a resolved seat.
-- [ ] Claude's `Stop` hook prints nothing on stdout and exits 0 for every input (golden test over its event
+- [ ] The built-in wake lane is registered with a pacer, reachability and Health (test). With no dialled host and
+  no peer, the daemon does not idle-exit while a wake-armed (verified, live) tmux named binding exists, and a p0
+  send to that idle seat more than 10 min after its last hook still wakes it. Once that binding's process exits,
+  the daemon idle-exits as before; with only unhinted named bindings it idle-exits as before.
+- [ ] After a daemon restart (stop + start), a tmux seat's binding reads `Unknown` (no typing) until its next hook,
+  then wakes normally.
+- [ ] Claude's `Stop` and `StopFailure` hooks print nothing on stdout and exit 0 for every input (golden test over its event
   contract, which marks it report-only). `setup` output and `tests/golden_surfaces.rs` change only by the
   registration.
 - [ ] Herdr TUI wake is unchanged: the `idle_wake_on` table test, and a Herdr-pane Claude stand-in wakes as before
@@ -1255,7 +1371,7 @@ Scope:
 - `CallerLocator::Terminal`. Full `LocateCaller` (hc candidate via `terminal.get.pid`). `seat.terminal_sites_v1`.
   M4 replaces M1/M2/M3, whose code is removed.
 - Labels `<session>:tN` and doc `herdr-app` names. Selector refusal of an ambiguous bare `tN`.
-- Finish-reason closure through the publication-absence path. The C2 hold on a core id change. `status: null` maps
+- Finish-reason closure keyed on herdr-core's `(keep, reason)` finality (D10). The C2 hold on a core id change. `status: null` maps
   to `HostUiState::Unknown`, and the status source shows in diagnostics/`doctor` only.
 - hc-only install: `setup` bakes no TUI `--host-endpoint` on an hc-only machine. The rest of standalone install is
   in N.
@@ -1272,14 +1388,23 @@ Acceptance:
 - [ ] Against fake_hc, an agent stand-in in terminal `t2` (`HC_TERMINAL_ID=t2`, `HC_TERMINAL_SOCKET=<fake>`) gets a
   seat, sends and receives, ACKs, and gets hook delivery (H1g). The sender gets `wake=no_wake` once.
 - [ ] A `HERDR_THREADS_SEAT_NAME` carried by the `fake-hc` child's environ is refused with M6 (`<host>` =
-  `herdr-core`) and never bound; a name set per command in the terminal is honoured.
+  `herdr-core`) and never bound; a different name set per command in the terminal is honoured.
 - [ ] The probe classifies fake_hc as `Hc` and a `fake_herdr` socket as `Herdr`, before any `herdr_hosts` row is
   written, and a peer that never replies fails within the probe deadline. A stored-kind mismatch refuses the attach.
 - [ ] A core id rotation puts the seats under C2 holds. A restart (seq reset, same id) is `CarryForward` with zero
   transitions.
-- [ ] Finish reasons: `killed` and `removed` retire; exit, signal, `server_stop` and `host_shutdown` unresolve, and
-  resume reattaches; `lost` and `restarted` change nothing. A failed `hello` closes nothing.
-- [ ] A snapshot that carries `machine/t1` mirrors and finished terminals retires nothing live.
+- [ ] Finish reasons, one row per D10 table row, against fake_hc applying `Registry::finish`: with `keep: false`,
+  every reason (`exited`, `killed`, `signaled`, `server_stop`, `host_shutdown`, `holder_lost`,
+  `stopped_by_restart`) retires the seat; with `keep: true`, `exited` and `killed` retire, and `holder_lost`,
+  `stopped_by_restart`, `server_stop`, `host_shutdown` and `signaled` unresolve the seat (bindings end
+  `seat_unresolved`) and the core's restart of the same `tN` reattaches it through C1; a pruned record (`removed`)
+  retires a resolved and an unresolved seat alike; an unknown reason on a `finished` record retires. The outcome
+  does not depend on poll timing (the same final state reached through one capture or several gives one outcome).
+  A failed `hello` closes nothing.
+- [ ] An agent stand-in that exits inside a live shell-rooted terminal ends only its binding; the seat stays
+  resolved.
+- [ ] A snapshot that carries `machine/t1` mirrors and finished terminals retires nothing live, and the finished
+  records reach the closure decision with their `reason` and `keep`.
 - [ ] fake_hc `status: null` reads `HostUiState::Unknown`, never Idle, and `doctor` shows the status source; no
   model-visible output changes.
 - [ ] Two fake cores, both with `t1`, show `<session>:t1` labels that never cross. A bare `t1` is refused with both
@@ -1343,11 +1468,40 @@ Acceptance:
 - [ ] V1 and V2 journal fixtures decode byte-identically. V3 round-trips. A recorded unknown outcome is never
   reclassified by the `ht.bootstrap` label.
 - [ ] In-place launch into `tN` is refused through the port answer.
+- [ ] A launched worker (gate shim `exec`s the stand-in, `keep: false`) that exits retires its seat through the
+  D10 rule; no launched seat is left unresolved.
 - [ ] A peer without `PEER_LAUNCH_TERMINAL_CAP` is never sent `NewTerminal`. `scripts/check-wire-compat` passes with
   only the new type added.
 - [ ] L1-L4 are answered per the spike table. The live parts are listed as remaining evidence.
 
 Exit gate: the per-phase gates, plus L1-L4 as answered.
+
+## Unchanged behavior
+
+Behaviour the design-roast r1 amendment (D10 rewrite, tmux wake evidence, process ancestry, restore collision,
+M6 wording, `LocateCaller` cache key) must not change:
+
+- Herdr TUI (`NativeCli`) observation, closure, wake, launch and handoff, and every pane-seat output byte
+  (golden surfaces, overdue lines, recovery hints) stay as they are.
+- A named host never closes by absence and never retires on `RetireReason::Closed`; named continuity, the
+  cross-kind rebind refusal and the live-holder guard (SA16) keep their rules.
+- Without tmux, named seats keep no composer wake (`wake=no_wake` once per episode), and the daemon idle-exits as
+  today when nothing else keeps it up (Phase N's "Idle exit with only the named host exits" stands).
+- The tmux hint stays out of `CallerClaim` and `occupant_bindings.locator_hint`, never triggers M9, never moves or
+  rebinds a seat, and needs no migration; there is still exactly one NodeDelta (`0012`).
+- The delivery contract's rules 1-4 hold for every host: a busy, blocked, unknown or drafted session is never typed
+  into, and no new wake trigger exists beyond `wake_frontier`.
+- hc boot stays `hc-core:<core.id>`; a core id change still gives C2 holds; a failed `hello` still closes
+  nothing; `status: null` still reads `Unknown`; the hc client still never sends `terminal.list`, `doc.set` or
+  `caller`, and machine mirrors are still dropped.
+- An agent exiting inside a live terminal still ends only its binding (the H-T1 rejection stands).
+- The inherited-name refusal still compares the name only and never falls back to the host candidate; an
+  unreadable server env still skips the check.
+- `LocateCaller` is still sent only for `Ambiguous` callers, verifies nearest ancestor first, and adds no
+  adversarial verification; H1's M4 outcomes are unchanged.
+- The K5 scrub list stays one definition (`host::child_env_scrub_list()`), shared by `spawn_detached`, the gate
+  shim and every handoff spawn.
+- The peer wire is unchanged in F/N/N2/H1 and gains only `LaunchTarget::NewTerminal` in H3.
 
 ## Out of scope / follow-on
 
@@ -1391,11 +1545,11 @@ Exit gate: the per-phase gates, plus L1-L4 as answered.
 - Hides: that "presence" is cooperative and comes from the store. tmux is a wake path of this host, not a host of its own (SA18).
 - Must not: close by absence (reconcile skips that step for `NonClosing`), arm `baseline_hold_unclaimed` or recovery holds, satisfy `wait:host`, move or rebind a seat when a tmux check fails (that only disables wake for the binding), or report wake `Composer` for a target without a verified hint.
 - Relationships: composes `NamedSeatSource`, a narrow store read the daemon injects. Dependency points host → store-read trait, never store → host. The tmux client runs through the existing `ProcessCommand`, and the composer read goes through the harness's existing `ComposerPolicy`.
-- Lifecycle: the daemon creates it at start and installs it in `HostSessions`' built-in slot through `attach_builtin`. It lives for the whole process. The tmux hints live in daemon memory per binding and are lost on restart (accepted limit).
+- Lifecycle: the daemon creates it at start and installs it in `HostSessions`' built-in slot through `attach_builtin`. It lives for the whole process. The tmux hints and turn state live in daemon memory per binding; wake-armed bindings keep the daemon from idle-exiting, so only a crash, upgrade or stop loses them (accepted limit).
 - Errors: tmux command failure or deadline (2 s) → wake `None` for that binding only. A seat name that fails to parse → it is never observed.
 
 **HcHost / HcBoot / HcDiscovery** (src/host/hc/{mod,rpc,wire}.rs): a new `HostPort` impl, an Adapter over herdr-core's JSON-RPC.
-- Owns: the one-connection-per-call line client, tolerant wire types, boot = `hc-core:<core.id>`, mapping finish reasons to closure (D10 table), `status:null` → `Unknown`, labels taken from `herdr.space`/`herdr.tab` plus the `herdr-app` doc, `server_process` taken from the `LocalEndpointWitness` peer pid, and discovery from `core.json` plus `hello`.
+- Owns: the one-connection-per-call line client, tolerant wire types, boot = `hc-core:<core.id>`, mapping herdr-core's `(keep, reason)` finality to closure (D10), with finished records kept in the capture, `status:null` → `Unknown`, labels taken from `herdr.space`/`herdr.tab` plus the `herdr-app` doc, `server_process` taken from the `LocalEndpointWitness` peer pid, and discovery from `core.json` plus `hello`.
 - Hides: the hc protocol, the socket path rules, and which of hc's methods it must never call (`terminal.list`, `doc.set`, `caller`).
 - Must not: spawn `hc`, treat agent exit as closure, keep `machine/tN` mirrors, or attach on a diagnostic scan.
 - Lifecycle: built by `HostFactory.build(Hc, locator)` on a dialled attach. It lives as long as its `HostSession`. It holds no long-lived connection. The observation counter and the doc-name cache are per-instance mutable state.
@@ -1410,7 +1564,7 @@ Exit gate: the per-phase gates, plus L1-L4 as answered.
 - Errors: `LocatorError` keeps "invalid name", "terminal without socket" and "both families, unverified" (M1, or M4 from H1 on) distinct. No family and no name keeps today's error text.
 
 **LocateCaller** (src/service/locate.rs): a new daemon service. It verifies an `Ambiguous` caller by nearest ancestor and checks for an inherited name.
-- Owns: the walk from the subject (liveness pid, else transport peer pid) up `ProcessInfo` parents against each candidate's `target_root_process`, its cache keyed on (candidates, subject, boot/epoch), and the server-environ read for the inherited-name refusal (M6). The environ reader is a plain function with a Linux `/proc` body and a macOS `KERN_PROCARGS2` body chosen by cfg, not a trait.
+- Owns: the walk from the subject (liveness pid, else transport peer pid) up `ProcessInfo` parents against each candidate's `target_root_process`, the herdr-core terminal-root wall, its cache keyed on (candidates, subject pid, subject start stamp, boot/epoch) with unstamped subjects uncached, and the server-environ read for the inherited-name refusal (M6). The environ reader is a plain function with a Linux `/proc` body and a macOS `KERN_PROCARGS2` body chosen by cfg, not a trait.
 - Hides: how a pid maps to a host target, and how a server's environ is read on each OS.
 - Must not: run for `One` callers (that would be adversarial verification, which TRUST-POLICY forbids), fall back to a candidate when none verifies, or fail closed when the environ is unreadable (`server_process() == None` skips the check).
 - Relationships: delegates to `HostPort::target_root_process`/`server_process` through `HostSessions::all_for_reads`. It knows no host kind.
