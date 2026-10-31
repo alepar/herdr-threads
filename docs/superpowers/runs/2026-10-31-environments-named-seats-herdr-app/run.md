@@ -3,7 +3,7 @@
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 phase: roast-design
 roastDesignRound: 2
-roast-design: 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md
+roast-design: 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md, 2026-10-31-environments-named-seats-herdr-app-roast-design-2.md
 findingsLedgerDesign: findings-ledger-design.md
 redesignCycles-design: 1
 stepBackDesign-round-1: redesign — applied: D10 finish-reason closure (invented reason vocabulary, finished records dropped, no keep split) → closure keyed on herdr-core Registry::finish finality (keep, reason) over a coherent capture (dissolves 3)
@@ -30,3 +30,4 @@ parked:
 - 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md · escalation · "Codex daemon mode may run hooks with the daemon's env, dropping HERDR_THREADS_SEAT_NAME or folding several named Codex sessions into one seat (cheapest check: two Codex sessions with different names, log env from a hook stand-in)"
 - 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md · degraded-verdict · "design roast r1 verdict carries [low coverage] [review readiness incomplete]: readiness companion qualifier only (no review-readiness evidence was supplied); no stage lost"
 - coverage-amend-design-1 · C3-1, C3-2 precheck fixes applied auto; C3-3..C3-18 applied auto (owns carried onto replacements .67-.74, R22/R27/R32/R38/R43 rewritten, R48 appended, deps .68->.57, .69->.6, .46->.74, .50->.69); C3-19, C3-20 rejected auto
+- design-roast-exit · converged at round 2 (Should-fix (5 confirmed) [converged]; 11 prior resolved, 0 carried, 0 regressed); punch list: the 5 Should-fix findings filed into their owner beads (super-design converged exit: filed as ordinary work, not re-roasted); round-1 escalations remain parked
