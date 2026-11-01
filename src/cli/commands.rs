@@ -476,6 +476,10 @@ pub enum CliAction {
         label: String,
         cwd: std::path::PathBuf,
     },
+    InternalDaemonDetach {
+        program: std::path::PathBuf,
+        args: Vec<String>,
+    },
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
     Follow(FollowRequest),
@@ -650,6 +654,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Update(_)
         | CliAction::InternalStoreCheck
         | CliAction::InternalPeerTabCreate { .. }
+        | CliAction::InternalDaemonDetach { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
         | CliAction::Summary(_)
@@ -1392,6 +1397,13 @@ enum InternalSub {
         label: String,
         #[arg(long, value_name = "DIR")]
         cwd: std::path::PathBuf,
+    },
+    /// Start PROGRAM ARGS... as a daemon in its own session, print its pid and exit at
+    /// once (run only by the daemon launcher: the daemon is reparented off the launcher).
+    DaemonDetach {
+        program: std::path::PathBuf,
+        #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -3963,6 +3975,9 @@ fn parse_cli_in_registry(
             label,
             cwd,
         },
+        Top::Internal {
+            command: InternalSub::DaemonDetach { program, args },
+        } => CliAction::InternalDaemonDetach { program, args },
         Top::Retry { recovery_ref } => CliAction::Retry(id(recovery_ref, LocalRecoveryRef::parse)?),
         Top::View(args) => CliAction::View {
             once: args.once,

@@ -560,6 +560,9 @@ fn run_parsed_in_pane<W: Write>(
         io::Read::read_to_end(&mut io::stdin().lock(), &mut input)?;
         return internal::json_field_bytes(&input, path, *keys, writer);
     }
+    if let CliAction::InternalDaemonDetach { program, args } = &parsed.action {
+        return internal::daemon_detach(program, args, writer);
+    }
     if let CliAction::InternalPeerTabCreate {
         workspace,
         label,
@@ -1214,7 +1217,8 @@ fn run_parsed_in_pane<W: Write>(
         | CliAction::InternalPreUpgradeBackup { .. }
         | CliAction::Update(_)
         | CliAction::InternalStoreCheck
-        | CliAction::InternalPeerTabCreate { .. } => {
+        | CliAction::InternalPeerTabCreate { .. }
+        | CliAction::InternalDaemonDetach { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
         CliAction::Launch(_)

@@ -128,6 +128,10 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
   seats get C2 holds and are never matched by `tN` alone (a wiped or cloned core is the accepted limit). The CLI reads caller-location environment in one place
   (`src/cli/caller_location.rs`); that reading is a hint, never authority.
 - **Daemon boot**: one herdr-threads daemon process. A daemon restart does not change the Herdr incarnation.
+  K5: an autostarted daemon is scrubbed of the pane- and terminal-scoped variables
+  (`host::child_env_scrub_list()`) and reparented through `herdr-threads internal daemon-detach` (setsid, spawn,
+  report the pid, exit), so no terminal sweep keyed on `HC_SCOPE` or on descent from a scoped process reaches
+  it. The launcher then sees only the daemon's liveness (pid and start stamp), never its exit status.
 - **Operator**: a request made with `--operator`, accepted when the kernel peer UID matches the daemon owner.
   This is the local account, not proof of a person.
 - **Node**: one daemon and store per (machine, OS user, state dir). Nodes sync through signed facts (root spec

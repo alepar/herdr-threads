@@ -1049,6 +1049,30 @@ fn subprocess_owner_fixture() {
     }
 }
 
+/// Shell prelude that makes a script fixture stand in for the herdr-threads
+/// binary's `internal daemon-detach` hop: the production
+/// `cli::internal::daemon_detach` runs through this test binary and its reported
+/// pid is printed. Any other invocation (the daemon itself) falls through.
+fn detach_prelude(root: &std::path::Path) -> String {
+    format!(
+        "if [ \"$1\" = internal ]; then\nshift 2\nf='{root}/detach-'$$'.pid'\nHT_DETACH_ARGS=\"$(printf '%s\\n' \"$@\")\" HT_DETACH_PID_FILE=\"$f\" '{exe}' --ignored --exact daemon::lifecycle::tests::subprocess_detach_fixture >/dev/null || exit 1\ncat \"$f\"\nrm -f \"$f\"\nexit 0\nfi\n",
+        root = root.display(),
+        exe = std::env::current_exe().unwrap().display()
+    )
+}
+
+#[test]
+#[ignore = "subprocess fixture invoked explicitly by detach_prelude scripts"]
+fn subprocess_detach_fixture() {
+    let args = std::env::var("HT_DETACH_ARGS").unwrap();
+    let mut args = args.split('\n').map(str::to_string);
+    let program = PathBuf::from(args.next().unwrap());
+    let args: Vec<String> = args.collect();
+    let mut out = Vec::new();
+    crate::cli::internal::daemon_detach(&program, &args, &mut out).unwrap();
+    std::fs::write(std::env::var_os("HT_DETACH_PID_FILE").unwrap(), out).unwrap();
+}
+
 fn launcher(root: &std::path::Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = root.join("launch.sh");
@@ -1057,7 +1081,8 @@ fn launcher(root: &std::path::Path) -> PathBuf {
     // tag test children: the launcher names this test process as its owner.
     let owner = std::process::id();
     let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{}/args-$$.tmp\"\nmv \"{}/args-$$.tmp\" \"{}/args-$$\"\nHERDR_LIFECYCLE_ROOT='{}' {}={owner} {}={owner} exec '{}' --ignored --exact daemon::lifecycle::tests::subprocess_owner_fixture\n",
+        "#!/bin/sh\n{}printf '%s\\n' \"$@\" > \"{}/args-$$.tmp\"\nmv \"{}/args-$$.tmp\" \"{}/args-$$\"\nHERDR_LIFECYCLE_ROOT='{}' {}={owner} {}={owner} exec '{}' --ignored --exact daemon::lifecycle::tests::subprocess_owner_fixture\n",
+        detach_prelude(root),
         root.display(),
         root.display(),
         root.display(),
@@ -1087,7 +1112,8 @@ async fn ensure_relaunches_after_a_lost_election_leaves_no_owner() {
     std::fs::write(
         &lost,
         format!(
-            "#!/bin/sh\nif [ ! -e '{}' ]; then : > '{}'; exit 0; fi\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = internal ]; then exec '{}' \"$@\"; fi\nif [ ! -e '{}' ]; then : > '{}'; exit 0; fi\nexec '{}' \"$@\"\n",
+            real.display(),
             first.display(),
             first.display(),
             real.display()
@@ -1111,7 +1137,7 @@ fn subprocess_resolved_environment_fixture() {
     for (name, selected) in [("none", None), ("some", Some(selected_binary.clone()))] {
         let output = root.join(format!("{name}.txt"));
         let script = root.join(format!("{name}.sh"));
-        std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"${{HERDR_BIN_PATH-<unset>}}\" > '{}.tmp'\nprintf '%s\\n' \"$@\" >> '{}.tmp'\nmv '{}.tmp' '{}'\n", output.display(), output.display(), output.display(), output.display())).unwrap();
+        std::fs::write(&script, format!("#!/bin/sh\n{}printf '%s\\n' \"${{HERDR_BIN_PATH-<unset>}}\" > '{}.tmp'\nprintf '%s\\n' \"$@\" >> '{}.tmp'\nmv '{}.tmp' '{}'\n", detach_prelude(&root), output.display(), output.display(), output.display(), output.display())).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let context =
             RuntimeContext::explicit(root.clone(), root.join("host.sock"), selected).unwrap();
@@ -1171,7 +1197,7 @@ fn subprocess_pane_env_scrub_fixture() {
     let (root, _, _) = fixture();
     let output = root.join("env.txt");
     let script = root.join("env.sh");
-    let mut body = String::from("#!/bin/sh\n");
+    let mut body = format!("#!/bin/sh\n{}", detach_prelude(&root));
     for name in crate::host::PANE_SCOPED_ENV_VARS
         .iter()
         .chain(&["HERDR_SOCKET_PATH", "HERDR_SESSION"])
@@ -1266,15 +1292,22 @@ const SCRUB_NAMES_PROBE: &[&str] = &[
 fn subprocess_environ_scrub_fixture() {
     let (root, _, _) = fixture();
     let script = root.join("sleep.sh");
-    std::fs::write(&script, "#!/bin/sh\nexec sleep 600\n").unwrap();
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\n{}exec sleep 600\n", detach_prelude(&root)),
+    )
+    .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
     let paths = NodePaths::resolve(&context.state_dir).unwrap();
     paths.prepare_node_dir().unwrap();
-    let mut launched = spawn_detached(&script, &context, &paths, &StartAttempt::new()).unwrap();
+    let launched = spawn_detached(&script, &context, &paths, &StartAttempt::new()).unwrap();
+    let Daemon::Running(daemon) = launched.daemon else {
+        panic!("the detach hop reported no live daemon");
+    };
     // The script execs `sleep`; wait for that so /proc holds the final environment.
-    let environ = format!("/proc/{}/environ", launched.child.id());
-    let comm = format!("/proc/{}/comm", launched.child.id());
+    let environ = format!("/proc/{}/environ", daemon.pid);
+    let comm = format!("/proc/{}/comm", daemon.pid);
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while std::fs::read_to_string(&comm).unwrap_or_default().trim() != "sleep" {
         assert!(std::time::Instant::now() < deadline, "child never exec'd");
@@ -1288,8 +1321,8 @@ fn subprocess_environ_scrub_fixture() {
             entry.split_once('=').map(|(name, _)| name.to_string())
         })
         .collect();
-    let _ = launched.child.kill();
-    let _ = launched.child.wait();
+    // SAFETY: kill(2) on the sleep this test started.
+    unsafe { libc::kill(daemon.pid as i32, libc::SIGKILL) };
     std::fs::remove_dir_all(root).unwrap();
     for name in crate::host::child_env_scrub_list() {
         assert!(!names.iter().any(|n| n == name), "{name} leaked: {names:?}");
@@ -1416,7 +1449,8 @@ fn spawn_detached_passes_the_host_only_when_the_client_resolved_one() {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}.tmp'\nmv '{}.tmp' '{}'\n",
+                "#!/bin/sh\n{}printf '%s\\n' \"$@\" > '{}.tmp'\nmv '{}.tmp' '{}'\n",
+                detach_prelude(&root),
                 output.display(),
                 output.display(),
                 output.display()
@@ -1560,7 +1594,11 @@ async fn dead_boot_with_substituted_socket_inode_is_refused_without_launch() {
     let launcher = root.join("mark.sh");
     std::fs::write(
         &launcher,
-        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        format!(
+            "#!/bin/sh\n{}touch '{}'\n",
+            detach_prelude(&root),
+            marker.display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1582,5 +1620,382 @@ async fn dead_boot_with_substituted_socket_inode_is_refused_without_launch() {
     assert!(!marker.exists(), "a daemon was launched");
     assert_eq!(std::fs::read(&paths.descriptor_path).unwrap(), bytes);
     assert!(stale.endpoint.exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Every /proc entry's `(pid, ppid, environ holds name=value)`.
+#[cfg(target_os = "linux")]
+fn proc_table(needle: &str) -> Vec<(u32, u32, bool)> {
+    let mut rows = Vec::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // `pid (comm) state ppid ...`: comm may hold spaces and parens.
+        let Some(after) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
+            continue;
+        };
+        let Some(ppid) = after.split_whitespace().nth(1).and_then(|p| p.parse().ok()) else {
+            continue;
+        };
+        let environ = std::fs::read(entry.path().join("environ")).unwrap_or_default();
+        let holds = environ
+            .split(|byte| *byte == 0)
+            .any(|entry| entry == needle.as_bytes());
+        rows.push((pid, ppid, holds));
+    }
+    rows
+}
+
+/// A test copy of herdr-core's sweep `members` rule: the processes whose
+/// environ holds the terminal's `HC_SCOPE`, plus every live descendant of them
+/// by ppid.
+#[cfg(target_os = "linux")]
+fn hc_members(scope: &str) -> std::collections::HashSet<u32> {
+    let rows = proc_table(&format!("HC_SCOPE={scope}"));
+    let mut members: std::collections::HashSet<u32> = rows
+        .iter()
+        .filter(|(_, _, holds)| *holds)
+        .map(|(pid, _, _)| *pid)
+        .collect();
+    loop {
+        let before = members.len();
+        for (pid, ppid, _) in &rows {
+            if members.contains(ppid) {
+                members.insert(*pid);
+            }
+        }
+        if members.len() == before {
+            return members;
+        }
+    }
+}
+
+/// The R9 launch: a script daemon that sleeps, launched by this process.
+#[cfg(target_os = "linux")]
+fn sleeping_daemon(root: &std::path::Path) -> (PathBuf, RuntimeContext, NodePaths) {
+    let script = root.join("sleep.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\n{}exec sleep 600\n", detach_prelude(root)),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let context =
+        RuntimeContext::explicit(root.to_path_buf(), root.join("host.sock"), None).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    paths.prepare_node_dir().unwrap();
+    (script, context, paths)
+}
+
+#[test]
+#[ignore = "subprocess fixture invoked explicitly by the reparenting tests"]
+#[cfg(target_os = "linux")]
+fn subprocess_reparent_fixture() {
+    let root = PathBuf::from(std::env::var_os("HERDR_LIFECYCLE_ROOT").unwrap());
+    let (script, context, paths) = sleeping_daemon(&root);
+    let launched = spawn_detached(&script, &context, &paths, &StartAttempt::new()).unwrap();
+    let Daemon::Running(daemon) = launched.daemon else {
+        panic!("the detach hop reported no live daemon");
+    };
+    let reaped = proc_table("")
+        .iter()
+        .all(|(_, ppid, _)| *ppid != std::process::id());
+    std::fs::write(
+        root.join("reported"),
+        format!("{} {} {reaped}", daemon.pid, std::process::id()),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + LIVENESS;
+    while !root.join("release").exists() {
+        assert!(std::time::Instant::now() < deadline, "never released");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // SAFETY: kill(2) on the sleep this fixture started.
+    unsafe { libc::kill(daemon.pid as i32, libc::SIGKILL) };
+}
+
+/// With a living `HC_SCOPE` parent, the daemon is outside the sweep's member
+/// set: its ppid is not a descendant of the parent (a `setsid`-only spawn would
+/// still be one), the scrubbed environ no longer names the scope, and the
+/// intermediate is reaped by its launcher.
+#[test]
+#[cfg(target_os = "linux")]
+fn daemon_ppid_outside_hc_scope_parent_descendants() {
+    use crate::test_support::spawn::{SpawnOwned, command};
+    let (root, _, _) = fixture();
+    let scope = uuid::Uuid::new_v4().to_string();
+    let parent = command(std::env::current_exe().unwrap())
+        .env("HC_SCOPE", &scope)
+        .env("HERDR_LIFECYCLE_ROOT", &root)
+        .args([
+            "--ignored",
+            "--exact",
+            "daemon::lifecycle::tests::subprocess_reparent_fixture",
+        ])
+        .spawn_owned()
+        .unwrap();
+    let reported = root.join("reported");
+    let deadline = std::time::Instant::now() + LIVENESS;
+    while !reported.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fixture never reported"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let text = std::fs::read_to_string(&reported).unwrap();
+    let mut fields = text.split(' ');
+    let daemon: u32 = fields.next().unwrap().parse().unwrap();
+    let launcher_pid: u32 = fields.next().unwrap().parse().unwrap();
+    let reaped = fields.next().unwrap() == "true";
+    let members = hc_members(&scope);
+    let rows = proc_table("");
+    let ppid = rows.iter().find(|row| row.0 == daemon).unwrap().1;
+    std::fs::write(root.join("release"), b"").unwrap();
+    let outcome = parent.wait_with_output().unwrap();
+    assert!(
+        outcome.status.success(),
+        "{}",
+        String::from_utf8_lossy(&outcome.stdout)
+    );
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        members.contains(&launcher_pid),
+        "the rule must hold the scope bearer: {members:?}"
+    );
+    assert_ne!(
+        ppid, launcher_pid,
+        "the daemon is still the launcher's child"
+    );
+    assert!(!members.contains(&ppid), "ppid {ppid} is in the sweep set");
+    assert!(!members.contains(&daemon), "daemon {daemon} is swept");
+    assert!(
+        reaped,
+        "the launcher still has a child (unreaped intermediate)"
+    );
+}
+
+/// Writes startup output and exits non-zero after the detach hop.
+fn failing_daemon_script(root: &std::path::Path) -> PathBuf {
+    let script = root.join("fail.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n{}echo 'boom: cannot bind the endpoint' >&2\nexit 3\n",
+            detach_prelude(root)
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    script
+}
+
+async fn assert_startup_exit_with_tail(
+    root: PathBuf,
+    context: RuntimeContext,
+    expect_fallback: bool,
+) {
+    let script = failing_daemon_script(&root);
+    let started = std::time::Instant::now();
+    let error = ensure_running_with_timeout(&context, &script, Arc::new(TestClock), LIVENESS)
+        .await
+        .unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "waited out the deadline"
+    );
+    assert!(
+        error.detail.starts_with("daemon exited during startup"),
+        "{}",
+        error.detail
+    );
+    assert!(
+        error.detail.contains("boom: cannot bind the endpoint"),
+        "{}",
+        error.detail
+    );
+    assert!(
+        !error.detail.contains("did not become ready"),
+        "{}",
+        error.detail
+    );
+    assert_eq!(
+        error.detail.contains("startup log unavailable"),
+        expect_fallback,
+        "{}",
+        error.detail
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Kills: reading a daemon that fails after the detach hop as the generic
+/// startup timeout, or as a lost election (the intermediate exits 0).
+#[tokio::test]
+async fn startup_exit_after_detach_reports_log_tail() {
+    let (root, context, _paths) = fixture();
+    assert_startup_exit_with_tail(root, context, false).await;
+}
+
+#[tokio::test]
+async fn startup_exit_after_detach_reports_piped_tail_when_logs_are_unusable() {
+    let (root, context, paths) = fixture();
+    // A regular file where the startup log directory belongs.
+    let logs = startup_logs_dir(&paths);
+    let _ = std::fs::remove_dir_all(&logs);
+    std::fs::write(&logs, b"").unwrap();
+    assert_startup_exit_with_tail(root, context, true).await;
+}
+
+/// Two concurrent ensures through the detach hop converge on one owner.
+#[tokio::test]
+async fn concurrent_ensure_running_one_owner() {
+    let (root, context, paths) = fixture();
+    let launcher = launcher(&root);
+    let results = tokio::join!(
+        ensure_running_with_timeout(&context, &launcher, Arc::new(TestClock), LIVENESS),
+        ensure_running_with_timeout(&context, &launcher, Arc::new(TestClock), LIVENESS),
+    );
+    let (first, second) = (results.0.unwrap(), results.1.unwrap());
+    assert_eq!((first.pid, first.boot_id), (second.pid, second.boot_id));
+    assert!(
+        OwnerLock::acquire_with_test_hint(&paths).is_err(),
+        "no live daemon holds the owner lock"
+    );
+    std::fs::write(root.join("stop"), b"stop").unwrap();
+    tokio::time::timeout(LIVENESS, async {
+        while first.endpoint.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// An electing daemon: tries the owner lock in a tight loop for a while and
+/// records `probed` when any attempt finds it held (only a probe by the
+/// launcher can hold it), then exits without ever electing.
+#[test]
+#[ignore = "subprocess fixture invoked explicitly by the probe witness test"]
+fn subprocess_probe_witness_fixture() {
+    let root = PathBuf::from(std::env::var_os("HERDR_LIFECYCLE_ROOT").unwrap());
+    let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
+    let paths = crate::test_support::resolve_seeded(&context.state_dir);
+    let until = std::time::Instant::now() + Duration::from_millis(1500);
+    while std::time::Instant::now() < until {
+        match OwnerLock::acquire(&paths) {
+            Ok(lock) => drop(lock),
+            Err(_) => std::fs::write(root.join("probed"), b"").unwrap(),
+        }
+        std::thread::sleep(Duration::from_micros(300));
+    }
+}
+
+/// No probe of the owner lock runs while a reported daemon is still alive
+/// and electing; once it is gone without an owner and without output, the
+/// launch is repeated.
+#[tokio::test]
+async fn no_owner_lock_probe_while_reported_daemon_is_alive() {
+    let (root, context, _paths) = fixture();
+    let real = launcher(&root);
+    let script = root.join("witness-once.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = internal ]; then exec '{real}' \"$@\"; fi\nif [ ! -e '{root}/witnessed' ]; then : > '{root}/witnessed'; HERDR_LIFECYCLE_ROOT='{root}' exec '{exe}' --ignored --exact daemon::lifecycle::tests::subprocess_probe_witness_fixture; fi\nexec '{real}' \"$@\"\n",
+            real = real.display(),
+            root = root.display(),
+            exe = std::env::current_exe().unwrap().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let descriptor = ensure_running_with_timeout(&context, &script, Arc::new(TestClock), LIVENESS)
+        .await
+        .unwrap();
+    assert!(root.join("witnessed").exists());
+    assert!(
+        !root.join("probed").exists(),
+        "the owner lock was probed while the reported daemon lived"
+    );
+    assert!(descriptor.pid > 0);
+    std::fs::write(root.join("stop"), b"").unwrap();
+}
+
+/// A reported daemon that exits (here non-zero, after the hop) while a winner
+/// holds the instance is a lost election: the launcher attaches to the winner.
+/// Kills: reading the intermediate's exit status, or the daemon's, as the
+/// verdict.
+#[tokio::test(flavor = "multi_thread")]
+async fn lost_election_keyed_on_reported_pid_liveness() {
+    let (root, context, paths) = fixture();
+    let launches = root.join("launches");
+    let script = root.join("lose.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n{}echo x >> '{}'\nsleep 0.3\nexit 3\n",
+            detach_prelude(&root),
+            launches.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let shutdown = Cancellation::default();
+    let boot = Arc::new(Mutex::new(String::new()));
+    let instance = Arc::new(Mutex::new(String::new()));
+    let service = Arc::new(HealthService {
+        version: env!("CARGO_PKG_VERSION").into(),
+        instance: instance.clone(),
+        boot: boot.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let winner_boot = boot.clone();
+    let (stop, winner_paths, seen_launch) = (shutdown.clone(), paths.clone(), launches.clone());
+    let winner = tokio::spawn(async move {
+        // The winner elects once the loser has been launched.
+        while !seen_launch.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // The winner holds the election but is not ready until well after the
+        // loser is gone, so the loser's exit is seen while no handshake succeeds.
+        run_owner_with_factory(
+            &winner_paths,
+            Arc::new(TestClock),
+            stop,
+            crate::daemon::diagnostics::WriterSink(Vec::<u8>::new()),
+            BufferLimits::new(1024, 256).unwrap(),
+            move |_, _, _| {
+                std::thread::sleep(Duration::from_millis(1500));
+                Ok(service as Arc<dyn LocalService>)
+            },
+            move |descriptor| {
+                *instance.lock().unwrap() = descriptor.node_uuid.to_string();
+                *boot.lock().unwrap() = descriptor.boot_id.to_string();
+                Ok(())
+            },
+            || async { Ok(()) },
+        )
+        .await
+    });
+    let descriptor = ensure_running_with_timeout(&context, &script, Arc::new(TestClock), LIVENESS)
+        .await
+        .unwrap();
+    assert_eq!(descriptor.boot_id.to_string(), *winner_boot.lock().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(&launches).unwrap().lines().count(),
+        1,
+        "the loser was launched again"
+    );
+    shutdown.cancel();
+    assert!(winner.await.unwrap().unwrap());
     std::fs::remove_dir_all(root).unwrap();
 }
