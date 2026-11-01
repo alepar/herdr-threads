@@ -283,6 +283,8 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                     current.map_or_else(|| "-".to_owned(), |d| label(&d.workspace)),
                     current.map_or_else(|| "-".to_owned(), |d| label(&d.tab)),
                     match (target, current) {
+                        // A named seat's target is its name: shown once (SA14).
+                        (Some(_), Some(d)) if d.name.is_some() => label(&d.pane_or_name().cloned()),
                         (Some(target), Some(d)) => format!(
                             "{} ({})",
                             escape_for_terminal(target.as_str(), Context::SingleLine),

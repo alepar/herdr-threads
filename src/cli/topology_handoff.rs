@@ -2326,7 +2326,8 @@ pub(crate) fn write_pending_observed<W: std::io::Write>(
     };
     let prefix = super::hook::cli_prefix(&context);
     let mut retry = vec!["env".to_owned()];
-    retry.extend(super::caller_location::recovery_env(
+    retry.extend(super::caller_location::claim_recovery_env(
+        &identity.claim.host,
         identity.claim.target.as_str(),
     ));
     retry.extend(prefix.clone());

@@ -1120,3 +1120,46 @@ fn machines_match_by_uuid_prefix_tag_or_host() {
     let twice = vec![rows[0].clone(), rows[0].clone()];
     assert_eq!(match_machine("nSG", &twice).len(), 1);
 }
+
+// SA14, D4: a bare token reads as a seat name only when no pane-path reading matches.
+
+// Kills: a name reading taken before the pane readings (a pane labelled `carol` would resolve
+// to a named seat `carol`).
+#[test]
+fn bare_token_matching_pane_path_reads_pane() {
+    let t = base();
+    for token in ["carol", "eve", "tryout", "solo"] {
+        let outcome = resolve(token, &t, None, &none());
+        assert!(
+            matches!(outcome, Outcome::Resolved(_) | Outcome::Ambiguous(_)),
+            "{token}: {outcome:?}"
+        );
+        assert_eq!(name_reading(token, &outcome), None, "{token}");
+    }
+}
+
+// Kills: a public seat ID read as a name (`SeatName` refuses it; the exact-ID step answers
+// first in the stage).
+#[test]
+fn exact_seat_id_always_resolves() {
+    let seat = "snSGbl096JZZ";
+    assert!(SeatId::parse(seat).is_ok());
+    assert_eq!(name_reading(seat, &Outcome::NoMatch), None);
+}
+
+// Kills: no name reading at all, a name reading of a path or of a refused name, and a reading
+// that survives an invalid or ambiguous path.
+#[test]
+fn bare_token_reads_name_when_no_pane_matches() {
+    let t = base();
+    let outcome = resolve("reviewer", &t, None, &none());
+    assert_eq!(outcome, Outcome::NoMatch);
+    assert_eq!(
+        name_reading("reviewer", &outcome).map(|n| n.as_str().to_owned()),
+        Some("reviewer".to_owned())
+    );
+    for refused in ["a/b", "has space", "-lead", "w1:p9", ""] {
+        assert_eq!(name_reading(refused, &Outcome::NoMatch), None, "{refused}");
+    }
+    assert_eq!(name_reading("reviewer", &Outcome::InvalidPath), None);
+}

@@ -37,9 +37,9 @@ use crate::{
     host::observation::HostTopology,
     ports::LocalClient,
     protocol::{
-        capabilities::{HOST_TOPOLOGIES_V1, INVITATION_CONFIRMATION_V1},
+        capabilities::{HOST_SITES_V1, HOST_TOPOLOGIES_V1, INVITATION_CONFIRMATION_V1},
         commands::{Command, SeatInspectQuery},
-        ids::{HostLocator, HostTargetId, SeatId},
+        ids::{HostLocator, HostTargetId, NAMED_HOST_LOCATOR, SeatId},
         pagination::PageRequest,
         results::{
             ApiError, CommandResult, ContinuityStatus, ErrorCode, HostPaneLabels, SeatInspection,
@@ -695,15 +695,24 @@ where
             })?;
             return self.map_pane(parsed, slot, pane);
         }
-        // 4. Name path against the live topology.
+        // 4. Name path against the live topology. A bare token that no pane path matches (or
+        // when no Herdr topology is reachable) may still name a seat of the named host (SA14).
         let narrowing = self.narrowing().map_err(run_error)?.cloned();
         let narrowing = narrowing.unwrap_or_default();
-        let topology = self.topology().map_err(run_error)?;
-        let caller = self.caller().map_err(run_error)?;
-        let candidate = self.candidate(
-            selector.resolve_with(topology, caller, &narrowing, slot.tiering()),
-            raw,
-        )?;
+        let outcome = match self.topology() {
+            Ok(topology) => {
+                let caller = self.caller().map_err(run_error)?;
+                selector.resolve_with(topology, caller, &narrowing, slot.tiering())
+            }
+            Err(error) => match self.named_seat(parsed, raw, &seat_selector::Outcome::NoMatch)? {
+                Some(seat) => return Ok(Resolved::Seat(seat)),
+                None => return Err(run_error(error)),
+            },
+        };
+        if let Some(seat) = self.named_seat(parsed, raw, &outcome)? {
+            return Ok(Resolved::Seat(seat));
+        }
+        let candidate = self.candidate(outcome, raw)?;
         let path = candidate.path.clone();
         let tier = candidate.tier.as_str().to_owned();
         match self.map_pane(parsed, slot, candidate.pane.clone())? {
@@ -716,6 +725,38 @@ where
                 line: Some((path, tier)),
             }),
         }
+    }
+
+    /// The existing seat of the named host that `raw` names, when `raw` reads as a name (no
+    /// pane path matched: `outcome`). Nothing is created: an unknown name reads as no match.
+    fn named_seat(
+        &self,
+        parsed: &ParsedCli,
+        raw: &str,
+        outcome: &seat_selector::Outcome,
+    ) -> Result<Option<SeatId>, RunError> {
+        // `--space`/`--tab` narrow to Herdr locations, which a name has none of.
+        if self.raw_narrowing.is_some() {
+            return Ok(None);
+        }
+        let Some(name) = seat_selector::name_reading(raw, outcome) else {
+            return Ok(None);
+        };
+        let (_, client) = self.connection.get()?;
+        if !client.supports_capability(
+            HOST_SITES_V1,
+            &super::cooperative_budget(self.clock.as_ref()),
+        ) {
+            return Ok(None);
+        }
+        let locator = HostLocator::parse(NAMED_HOST_LOCATOR).map_err(run_error)?;
+        super::pane_seat_on(
+            client,
+            &parsed.output,
+            &HostTargetId::new(name.as_str()),
+            Some(locator),
+            self.clock.as_ref(),
+        )
     }
 
     /// The herdr-core terminal `raw` names and its host's locator. The daemon is asked for
@@ -1487,5 +1528,193 @@ mod hc_selector_tests {
         assert_eq!(hc_selector("t1", &[]).unwrap(), None);
         assert_eq!(hc_selector("gamma:t1", &one).unwrap(), None);
         assert_eq!(hc_selector("w1:p1", &one).unwrap(), None);
+    }
+}
+
+/// The `named_seat` stage through `resolve_cli_seats` (SA14, D4): a bare token reads as a name
+/// only when no pane path matched, and only against the named host.
+#[cfg(test)]
+mod named_stage_tests {
+    use super::*;
+    use crate::host::observation::{TopologyPane, TopologySpace, TopologyTab};
+    use crate::protocol::{
+        pagination::{Consistency, Page, StopReason},
+        results::SeatSummary,
+        time::UtcMillis,
+    };
+    use std::sync::Mutex;
+
+    /// Serves one named-host seat for `reviewer`; records every command it is sent.
+    struct Named {
+        host_sites: bool,
+        sent: Mutex<Vec<Command>>,
+    }
+
+    impl LocalClient for Named {
+        fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
+            self.host_sites && name == HOST_SITES_V1
+        }
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.sent.lock().unwrap().push(command.clone());
+            let query = match command {
+                Command::Seats(query) => query,
+                // The token is no exact seat ID.
+                Command::SeatInspect(_) => {
+                    return Err(ApiError::new(ErrorCode::NotFound, "no such seat"));
+                }
+                _ => return Err(ApiError::new(ErrorCode::Unsupported, "only seat lookups")),
+            };
+            let on_named = query.host.as_ref().is_some_and(HostLocator::is_named_host)
+                && query.target.as_ref().map(HostTargetId::as_str) == Some("reviewer");
+            let items = if on_named {
+                vec![SeatSummary {
+                    seat: SeatId::new("snSGnamed0001"),
+                    continuity: ContinuityStatus::Resolved,
+                    target: Some(HostTargetId::new("reviewer")),
+                    generation: 1,
+                    created_at: UtcMillis(0),
+                    retired_at: None,
+                    active: true,
+                    bindings: Vec::new(),
+                    availability: None,
+                    directory: None,
+                }]
+            } else {
+                Vec::new()
+            };
+            Ok(CommandResult::Seats(Page {
+                items,
+                next_cursor: None,
+                next_argv: None,
+                high_water_ordinal: 0,
+                scope_revision: None,
+                has_more: false,
+                stop_reason: StopReason::Complete,
+                consistency: Consistency::BoundedLive,
+            }))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+
+    struct Zero;
+    impl Clock for Zero {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
+            crate::protocol::time::MonoInstant(0)
+        }
+    }
+
+    fn topology(pane_label: Option<&str>) -> HostTopology {
+        HostTopology {
+            spaces: vec![TopologySpace {
+                id: "w1".into(),
+                label: Some("project".into()),
+            }],
+            tabs: vec![TopologyTab {
+                id: "w1:t1".into(),
+                space: "w1".into(),
+                label: Some("main".into()),
+            }],
+            panes: pane_label
+                .map(|label| TopologyPane {
+                    target: HostTargetId::new("w1:p1"),
+                    space: "w1".into(),
+                    tab: "w1:t1".into(),
+                    label: Some(label.into()),
+                    agent_names: Vec::new(),
+                })
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// Runs `inbox --seat reviewer` through pass 1 and returns the parsed seat and the commands
+    /// the daemon was sent.
+    fn resolve(
+        host_sites: bool,
+        topology: Result<HostTopology, ApiError>,
+    ) -> (Result<String, String>, Vec<Command>) {
+        let mut parsed =
+            crate::cli::commands::parse_argv(["herdr-threads", "inbox", "--seat", "reviewer"])
+                .unwrap();
+        let connection = LazyConnection::new(|| {
+            Ok((
+                crate::node::NodeUuid::new_v4(),
+                Named {
+                    host_sites,
+                    sent: Mutex::new(Vec::new()),
+                },
+            ))
+        });
+        let clock: Arc<dyn Clock> = Arc::new(Zero);
+        let mut stderr = Vec::new();
+        let outcome = resolve_cli_seats(
+            &mut parsed,
+            &connection,
+            &clock,
+            || topology,
+            || Ok(None),
+            &mut stderr,
+        );
+        let sent = connection.get().unwrap().1.sent.lock().unwrap().clone();
+        let seat = outcome.map_err(|error| error.to_string()).map(|_| {
+            let CliAction::Wire(Command::Inbox(query)) = &parsed.action else {
+                panic!("not an inbox read: {:?}", parsed.action);
+            };
+            query.seat.as_ref().map(|s| s.as_str().to_owned()).unwrap()
+        });
+        (seat, sent)
+    }
+
+    #[test]
+    fn bare_token_with_no_pane_match_reads_as_a_named_seat() {
+        let (seat, sent) = resolve(true, Ok(topology(None)));
+        assert_eq!(seat.unwrap(), "snSGnamed0001");
+        assert!(
+            sent.iter().any(|c| matches!(c, Command::Seats(q)
+                if q.host.as_ref().is_some_and(HostLocator::is_named_host))),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn bare_token_reads_as_a_name_when_no_herdr_topology_is_reachable() {
+        let (seat, _) = resolve(true, Err(ApiError::invalid_request("no herdr")));
+        assert_eq!(seat.unwrap(), "snSGnamed0001");
+    }
+
+    #[test]
+    fn a_matching_pane_path_wins_and_the_named_host_is_never_asked() {
+        let (seat, sent) = resolve(true, Ok(topology(Some("reviewer"))));
+        // The pane reading wins: the lookup is for pane `w1:p1`, never for the name.
+        assert!(seat.is_err(), "{seat:?}");
+        assert!(
+            !sent.iter().any(|c| matches!(c, Command::Seats(q)
+                if q.host.as_ref().is_some_and(HostLocator::is_named_host))),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn without_the_host_sites_capability_a_name_resolves_nothing() {
+        let (seat, sent) = resolve(false, Ok(topology(None)));
+        assert!(seat.is_err(), "{seat:?}");
+        assert!(
+            !sent.iter().any(|c| matches!(c, Command::Seats(_))),
+            "{sent:?}"
+        );
     }
 }

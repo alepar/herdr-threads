@@ -1193,11 +1193,9 @@ fn seat_inspect(
     type SeatRow = (String, Option<String>, i64, i64, Option<i64>);
     let row:SeatRow=db.query_row("SELECT state,target_id,generation,created_at,retired_at FROM seats WHERE id=?1 AND instance_id=?2",params![q.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"seat not found"))?;
     // A remote seat's entry (ht-xg88); a local seat's state is the summary's.
-    let directory = if row.0 == "remote" {
-        super::seat_directory::directory(db, q.seat.as_str(), now)?
-    } else {
-        None
-    };
+    // A named seat's entry carries its name (SA14); other local seats have none.
+    let directory = super::seat_directory::directory(db, q.seat.as_str(), now)?
+        .filter(|d| row.0 == "remote" || d.name.is_some());
     let summary = seat_summary(
         q.seat.as_str(),
         &row.0,

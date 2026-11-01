@@ -11,7 +11,7 @@ use crate::{
     protocol::{
         authority::CallerClaim,
         commands::Command,
-        ids::{OperationId, SeatId, ThreadId},
+        ids::{HostTargetId, OperationId, SeatId, ThreadId},
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
         time::Clock,
@@ -2021,7 +2021,10 @@ fn report_core(
 ) -> serde_json::Value {
     let prefix = super::hook::cli_prefix(&plan.context);
     let mut retry = vec!["env".to_owned()];
-    retry.extend(super::caller_location::recovery_env(claim.target.as_str()));
+    retry.extend(super::caller_location::claim_recovery_env(
+        &claim.host,
+        claim.target.as_str(),
+    ));
     retry.extend(prefix.clone());
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let mut inspect = prefix.clone();
@@ -2295,6 +2298,46 @@ fn retry_automatic_live<C: LocalClient + ?Sized, W: Write>(
     Ok(true)
 }
 /// Called only after the shared caller mapping/context checks in run_selected.
+/// The Herdr server a handoff creates its target on. A pane caller has it already; a caller
+/// outside Herdr (a named seat) has none until now, so it is looked up here, lazily (SA1, SA14).
+/// The reserved named-host path is a claim host, never a Herdr server.
+fn herdr_endpoint(
+    resolved: Option<&std::path::Path>,
+    lazy: impl FnOnce() -> io::Result<std::path::PathBuf>,
+) -> io::Result<std::path::PathBuf> {
+    match resolved {
+        Some(host) if host != std::path::Path::new(crate::protocol::ids::NAMED_HOST_LOCATOR) => {
+            Ok(host.to_path_buf())
+        }
+        _ => lazy(),
+    }
+}
+
+/// M11: a handoff whose launch target names a live named seat is refused before anything is
+/// created. The host's own answer decides (`named::NATIVE_LAUNCH`); a target that is no seat name
+/// or names no named seat is left to the Herdr launch as before.
+fn refuse_named_target<C: LocalClient + ?Sized>(
+    client: &C,
+    output: &crate::protocol::output::OutputSpec,
+    target: &HostTargetId,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    use crate::{host::named, ports::NativeLaunchCapability, protocol::ids::SeatName};
+    let Ok(name) = SeatName::parse(target.as_str()) else {
+        return Ok(());
+    };
+    if named::NATIVE_LAUNCH != NativeLaunchCapability::Unsupported {
+        return Ok(());
+    }
+    let locator =
+        crate::protocol::ids::HostLocator::parse(crate::protocol::ids::NAMED_HOST_LOCATOR)
+            .expect("the reserved locator parses");
+    if super::pane_seat_on(client, output, target, Some(locator), clock)?.is_some() {
+        return Err(super::invalid_request(&named::handoff_into_refusal(&name)));
+    }
+    Ok(())
+}
+
 pub(crate) fn run<W: Write>(
     parsed: super::commands::ParsedCli,
     claim: CallerClaim,
@@ -2351,7 +2394,9 @@ pub(crate) fn run<W: Write>(
                 .map(std::path::PathBuf::from),
         ))?;
     env.state_dir = Some(runtime.state_dir.clone());
-    let claim_host = runtime.require_host()?.to_path_buf();
+    let claim_host = herdr_endpoint(runtime.require_host().ok(), || {
+        super::instance::InstanceInputs::from_process(None, None).lazy_host_endpoint()
+    })?;
     env.host_endpoint = Some(claim_host.clone());
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(runtime.state_dir.display().to_string());
@@ -2385,6 +2430,12 @@ pub(crate) fn run<W: Write>(
     };
     match parsed.action {
         super::commands::CliAction::Handoff(mut request) => {
+            refuse_named_target(
+                &client,
+                &parsed.output,
+                &request.launch.target,
+                clock.as_ref(),
+            )?;
             let labels = host
                 .seat_labels(&super::cooperative_budget(clock.as_ref()))
                 .unwrap_or_default();
@@ -2454,6 +2505,10 @@ pub(crate) fn run<W: Write>(
 #[cfg(test)]
 #[path = "../../tests/cli/handoff.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/cli/named_handoff.rs"]
+mod named_tests;
 
 /// Hash the exact generated JSON without retaining a second diagnostic buffer.
 pub(crate) fn automatic_summary(report: &serde_json::Value) -> io::Result<serde_json::Value> {

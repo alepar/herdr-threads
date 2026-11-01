@@ -203,6 +203,11 @@ pub fn handoff_into_refusal(name: &SeatName) -> String {
     )
 }
 
+/// The named host's answer to "can a target be created here": no, a named seat has no pane.
+/// [`HostPort::native_launch_capability`] returns it and the handoff refusal reads it, so the CLI
+/// asks no named-host instance.
+pub const NATIVE_LAUNCH: NativeLaunchCapability = NativeLaunchCapability::Unsupported;
+
 fn unreachable_method(what: &str) -> ApiError {
     ApiError::new(
         ErrorCode::HostUnavailable,
@@ -236,7 +241,7 @@ impl HostPort for NamedHost {
         ClosureAuthority::NonClosing
     }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
-        NativeLaunchCapability::Unsupported
+        NATIVE_LAUNCH
     }
     fn resume_after_epoch(&self, persisted: u64) {
         self.epoch
@@ -259,9 +264,10 @@ impl HostPort for NamedHost {
                 terminal: format!("named:{}", name.as_str()),
                 incarnation: Some(self.boot_id.clone()),
                 target: HostTargetId::new(name.as_str()),
-                workspace_id: "named".to_owned(),
+                // The synthetic workspace and tab render `-` (SA17 fix (d)).
+                workspace_id: "-".to_owned(),
                 workspace_label: None,
-                tab_id: "named".to_owned(),
+                tab_id: "-".to_owned(),
                 tab_label: None,
                 pane_label: Some(name.as_str().to_owned()),
                 session: None,
