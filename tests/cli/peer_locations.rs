@@ -19,6 +19,9 @@ struct Client {
     /// The daemon's workspace, tab and pane labels for the resolved seat;
     /// `None` is a daemon that cannot read the host (or predates the read).
     labels: Option<(String, String, String)>,
+    /// Seat `s1` is resolved too, and the daemon sends it no labels (its
+    /// target was reused by another terminal) while `s0` keeps its own.
+    second_resolved: bool,
 }
 fn entry(labels: &(String, String, String)) -> SeatDirectory {
     SeatDirectory {
@@ -71,6 +74,7 @@ impl LocalClient for Client {
                             seat,
                             target: Some(HostTargetId::new(format!("w1:p{i}"))),
                             continuity: match i {
+                                1 if self.second_resolved => ContinuityStatus::Resolved,
                                 1 => ContinuityStatus::Unresolved,
                                 2 => ContinuityStatus::Retired,
                                 _ => ContinuityStatus::Resolved,
@@ -130,6 +134,7 @@ fn client(supported: bool, labels: Option<(String, String, String)>) -> Client {
         calls: std::sync::atomic::AtomicUsize::new(0),
         supported,
         labels,
+        second_resolved: false,
     }
 }
 #[test]
@@ -155,6 +160,18 @@ fn participant_locations_without_daemon_labels_show_dash() {
     let client = client(true, None);
     let ready = prepare(&result(), Some(ThreadId::new("t1")), &client, &budget());
     assert_eq!(ready.rows[0].1, "- / - / w1:p0 (-) [advisory]");
+}
+// Kills (ht-kqrt.179): a resolved seat for which the daemon withheld the
+// labels of a reused target shown with a neighbour's labels, the seat's
+// target alone, or no `-` placeholders. The daemon half (the `fits` rule) is
+// pinned in tests/store/remote_seats.rs.
+#[test]
+fn participant_locations_prints_no_label_for_a_reused_target() {
+    let mut client = client(true, same_labels());
+    client.second_resolved = true;
+    let ready = prepare(&result(), Some(ThreadId::new("t1")), &client, &budget());
+    assert!(ready.rows[0].1.contains("same"), "{}", ready.rows[0].1);
+    assert_eq!(ready.rows[1].1, "- / - / w1:p1 (-) [advisory]");
 }
 #[test]
 fn participant_locations_older_daemon_skips_host_and_keeps_bounded_canonical_text() {

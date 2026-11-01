@@ -394,6 +394,8 @@ struct Gate {
     staged_from: usize,
     polls: AtomicUsize,
     attempt_current: bool,
+    /// The view reports the bootstrap cancelled.
+    cancelled: bool,
     known: bool,
 }
 
@@ -418,6 +420,7 @@ impl Gate {
             staged_from,
             polls: AtomicUsize::new(0),
             attempt_current: true,
+            cancelled: false,
             known: true,
         }
     }
@@ -434,7 +437,7 @@ impl Gate {
         Ok(Some(LaunchGateView {
             created: Some(self.created.clone()),
             current_attempt: self.attempt_current,
-            cancelled: false,
+            cancelled: self.cancelled,
             send_staged: staged,
         }))
     }
@@ -758,6 +761,54 @@ fn deadline_is_rechecked_between_observers() {
         reason(gate.decide(&gate.request(&terminal, None, 100))),
         LaunchGateRefusal::TimedOut
     );
+}
+
+// Kills (ht-kqrt.179): the `view.cancelled` refusal removed. The attempt is
+// current, the creation matches the shim's terminal and core, and the Send
+// is staged and the terminal confirmed, so only the cancelled flag differs
+// from the authorized case.
+#[test]
+fn cancelled_bootstrap_refuses_with_a_matching_attempt_and_staged_send() {
+    let mut gate = Gate::new(0);
+    let terminal = gate.created.terminal.as_str().to_owned();
+    assert_eq!(
+        gate.decide(&gate.request(&terminal, None, 1_000)),
+        LaunchGateReply::Authorized
+    );
+    gate.cancelled = true;
+    assert_eq!(
+        gate.decide(&gate.request(&terminal, None, 1_000)),
+        LaunchGateReply::Refused {
+            reason: LaunchGateRefusal::StaleAttempt
+        }
+    );
+}
+
+// Kills (ht-kqrt.179): `witness_matches` checking only the terminal, or only
+// the core. Each mismatch alone, with the Send staged and not yet staged:
+// the refusal is the mismatch at once, never a wait that times out or an
+// authorization.
+#[test]
+fn witness_mismatch_alone_refuses_staged_or_not() {
+    for staged_from in [0, usize::MAX] {
+        let gate = Gate::new(staged_from);
+        let terminal = gate.created.terminal.as_str().to_owned();
+        let mismatch = LaunchGateReply::Refused {
+            reason: LaunchGateRefusal::WitnessMismatch,
+        };
+        // The terminal alone differs.
+        assert_eq!(
+            gate.decide(&gate.request("t9", None, 1_000)),
+            mismatch,
+            "staged_from={staged_from}"
+        );
+        // The core alone differs.
+        assert_eq!(
+            gate.decide(&gate.request(&terminal, Some("other-core"), 1_000)),
+            mismatch,
+            "staged_from={staged_from}"
+        );
+    }
 }
 
 #[test]
