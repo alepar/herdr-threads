@@ -50,6 +50,10 @@ Amended 2026-10-27 for seat recovery after a Herdr restart (ht-dtx0): a push-cha
 its own session's `same_session` C1 claim, and the daemon keeps a C1 claim refused only for host evidence that is not
 ready and decides it after the epoch's reconciliation (C1); no new provenance or wire value.
 
+Amended 2026-10-31 for herdr-core closure (H1c-closure, ht-kqrt.67): an hc host's seats close on herdr-core's own
+finality, keyed on `(keep, reason)` (D10, "hc host closure" under C2); a kept terminal waiting for a restart unresolves
+its seat as recoverable and the core's restart of the same `tN` reattaches it (C1); no new provenance or wire value.
+
 Amended 2026-10-27 for restored-pane retirement (ht-wpq4): a seat a new Herdr incarnation left unresolved retires
 when the pane watched at its target closes within that incarnation and no claim names it for an observed grace
 (C2); the retirement records `closure_evidence = restored_pane_closed`, two accepted limits; no new wire value.
@@ -161,7 +165,7 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 
 | Path | Trigger | Recorded as |
 |---|---|---|
-| Structural reconfirm | Same terminal, same Herdr boot and incarnation; for an hc host the same `tN` under the same core id boot (ids are monotonic and never reused, so a finished `tN` never names another terminal) | automatic, no new provenance |
+| Structural reconfirm | Same terminal, same Herdr boot and incarnation; for an hc host the same `tN` under the same core id boot (ids are monotonic and never reused, so a finished `tN` never names another terminal), including the `tN` of a seat unresolved while its kept terminal waited for a restart that the core has now done | automatic, no new provenance |
 | Cooperative continuity | A top-level lifecycle or turn event, or a push-channel harness's in-process watch for its own session (ht-dtx0), carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 
@@ -269,6 +273,32 @@ Memberships retire, receipts settle recipient-retired and invitations close, all
 every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown incarnation never retires: it
 yields unresolved seats under the C2 restore holds above, and each binding ends with reason `seat_unresolved`
 so the same session can reopen it after a rebind.
+
+**hc host closure (D10, H1c-closure).** A herdr-core host closes a seat on the core's own finality, read from one
+coherent capture (`hello` and `events.subscribe{}` on one connection) of the same core id. The capture keeps every
+local record, live and finished, with its `reason` and `keep`, and drops `machine/tN` mirrors; only `state=="live"`
+records are present targets. Events (`finished`, `removed`) are hints to capture, never closure. The rule follows
+`Registry::finish`: a finish leaves the terminal `live` (pending restart) only when `keep` is true and the reason is
+one of `holder_lost`, `stopped_by_restart`, `server_stop`, `host_shutdown`, `signaled`; every other finish is final and
+the core never revives it or reuses its id.
+
+| Capture shows for the seat's `tN` | `keep` | Reason | Effect on the seat |
+|---|---|---|---|
+| `finished` | false | any | retired through the pane-close fence |
+| `finished` | true | `exited`, `killed`, or a reason this build does not know | retired through the pane-close fence |
+| `live`, no holder | true | `holder_lost`, `stopped_by_restart`, `server_stop`, `host_shutdown`, `signaled` | unresolved (`host_invalidation`, recoverable); bindings end `seat_unresolved`; the core's restart of the same `tN` reattaches it (C1 structural) |
+| absent (pruned, `removed`) | either | any | retired through the pane-close fence, whether the seat is resolved or unresolved |
+| `live` with a holder | either | none, or an unknown reason | nothing |
+
+An unknown reason on a `finished` record is final (the core already decided it); on a `live` record it changes
+nothing. A record `state` other than `live` or `finished`, a failed `hello` and a failed snapshot give an unverified
+capture that closes nothing. An agent that exits inside a live shell-rooted terminal is not a terminal finish: it ends
+only that binding and the seat stays resolved. One capture or several that reach the same final state give one
+outcome. A different core id at a known locator is a new boot: its seats get the C2 restore holds above and are never
+matched by `tN` alone, while a restart, stop+start or update of the same core id (the event sequence begins again) is
+the same boot. Accepted limit: the core id is the only boot evidence, so a core whose state was wiped and recreated
+with the same id, or a clone of a core's state directory, is indistinguishable from a restart and can show another
+terminal under a saved `tN`.
 
 **Restored-pane retirement (ht-wpq4).** A seat that a new incarnation left unresolved (reason `other`) keeps a
 saved target from the old one, which proves nothing (C2), so its absence never retires the seat. What retires it

@@ -163,23 +163,48 @@ impl HcClient {
     /// Subscribes with an empty filter, reads the snapshot and closes.
     pub async fn events_subscribe_snapshot(&self) -> Result<HcReply<Snapshot>, HcError> {
         let (result, prelude, witness) = self.call("events.subscribe", json!({})).await?;
+        Ok(HcReply {
+            value: Self::snapshot_of(&result, &prelude)?,
+            witness,
+        })
+    }
+
+    /// `hello` and the `events.subscribe{}` snapshot on one connection, so both
+    /// replies come from the same peer (one witness) and the core id read by
+    /// `hello` names the core whose records the snapshot lists.
+    pub async fn hello_and_snapshot(&self) -> Result<HcReply<(HelloReply, Snapshot)>, HcError> {
+        let (mut replies, witness) = tokio::time::timeout(
+            self.deadline,
+            self.exchange(&[("hello", json!({})), ("events.subscribe", json!({}))]),
+        )
+        .await
+        .map_err(|_| HcError::Timeout)??;
+        let (snapshot, prelude) = replies.pop().ok_or_else(missing_reply)?;
+        let (hello, _) = replies.pop().ok_or_else(missing_reply)?;
+        Ok(HcReply {
+            value: (
+                HelloReply::deserialize(&hello).map_err(|e| HcError::Decode(e.to_string()))?,
+                Self::snapshot_of(&snapshot, &prelude)?,
+            ),
+            witness,
+        })
+    }
+
+    fn snapshot_of(result: &Value, prelude: &[Value]) -> Result<Snapshot, HcError> {
         let body =
-            SnapshotResult::deserialize(&result).map_err(|e| HcError::Decode(e.to_string()))?;
+            SnapshotResult::deserialize(result).map_err(|e| HcError::Decode(e.to_string()))?;
         let mut snapshot = Snapshot {
             seq: body.seq,
             terminals: body.terminals,
             ..Snapshot::default()
         };
-        for message in &prelude {
+        for message in prelude {
             match HcEvent::from_notification(message) {
                 Some(event) if !event.is_unknown() => snapshot.events.push(event),
                 _ => snapshot.skipped += 1,
             }
         }
-        Ok(HcReply {
-            value: snapshot,
-            witness,
-        })
+        Ok(snapshot)
     }
 
     pub async fn doc_get(&self, name: &str) -> Result<HcReply<AppDoc>, HcError> {
@@ -224,32 +249,49 @@ impl HcClient {
         method: &str,
         params: Value,
     ) -> Result<(Value, Vec<Value>, LocalEndpointWitness), HcError> {
-        tokio::time::timeout(self.deadline, self.exchange(method, params))
-            .await
-            .map_err(|_| HcError::Timeout)?
+        let (mut replies, witness) =
+            tokio::time::timeout(self.deadline, self.exchange(&[(method, params)]))
+                .await
+                .map_err(|_| HcError::Timeout)??;
+        let (result, prelude) = replies.pop().ok_or_else(missing_reply)?;
+        Ok((result, prelude, witness))
     }
 
+    /// Sends each request in turn on one connection (ids 1, 2, ...), reading
+    /// up to the response carrying that id. Each reply is its result and the
+    /// notification lines read before it.
     async fn exchange(
         &self,
-        method: &str,
-        params: Value,
-    ) -> Result<(Value, Vec<Value>, LocalEndpointWitness), HcError> {
-        let mut stream = UnixStream::connect(&self.socket).await?;
+        requests: &[(&str, Value)],
+    ) -> Result<(Vec<(Value, Vec<Value>)>, LocalEndpointWitness), HcError> {
+        let stream = UnixStream::connect(&self.socket).await?;
         let witness = capture_peer_witness(&stream, &self.socket).map_err(HcError::Witness)?;
         if self.expected.as_ref().is_some_and(|w| w != &witness) {
             return Err(HcError::WitnessChanged);
         }
-        let mut line = serde_json::to_vec(&json!({
-            "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
-        }))
-        .map_err(|e| HcError::Decode(e.to_string()))?;
-        line.push(b'\n');
-        stream.write_all(&line).await?;
         let mut reader = BufReader::new(stream);
+        let mut replies = Vec::with_capacity(requests.len());
+        for (index, (method, params)) in requests.iter().enumerate() {
+            let id = index as u64 + 1;
+            let mut line = serde_json::to_vec(&json!({
+                "jsonrpc": "2.0", "id": id, "method": method, "params": params,
+            }))
+            .map_err(|e| HcError::Decode(e.to_string()))?;
+            line.push(b'\n');
+            reader.get_mut().write_all(&line).await?;
+            replies.push(Self::read_response(&mut reader, id).await?);
+        }
+        Ok((replies, witness))
+    }
+
+    async fn read_response(
+        reader: &mut BufReader<UnixStream>,
+        id: u64,
+    ) -> Result<(Value, Vec<Value>), HcError> {
         let mut prelude = Vec::new();
         loop {
             let mut text = String::new();
-            let read = (&mut reader)
+            let read = (&mut *reader)
                 .take(MAX_LINE_BYTES)
                 .read_line(&mut text)
                 .await?;
@@ -267,6 +309,9 @@ impl HcClient {
                 prelude.push(message);
                 continue;
             }
+            if message["id"].as_u64() != Some(id) {
+                return Err(HcError::Decode("response for another request".into()));
+            }
             if let Some(error) = message.get("error").filter(|e| !e.is_null()) {
                 return Err(HcError::Rpc {
                     code: error["code"].as_i64().unwrap_or_default(),
@@ -278,7 +323,11 @@ impl HcClient {
                 .get("result")
                 .cloned()
                 .ok_or_else(|| HcError::Decode("response without result".into()))?;
-            return Ok((result, prelude, witness));
+            return Ok((result, prelude));
         }
     }
+}
+
+fn missing_reply() -> HcError {
+    HcError::Decode("no reply".into())
 }

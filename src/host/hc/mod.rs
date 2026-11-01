@@ -7,13 +7,16 @@
 //!   (D10, with finished records kept in the capture), `status: null` as
 //!   `Unknown`, labels from `herdr.space`/`herdr.tab` plus the `herdr-app`
 //!   doc ([`labels`]), `server_process` from the `LocalEndpointWitness` peer
-//!   pid, and discovery from `core.json` plus `hello`. Closure and labels
-//!   land in later beads; today [`HcHost`] holds the boot, the capability
-//!   answers, the observation counter, `target_root_process` and target
-//!   creation (`CreateTargetPort` via `terminal.run`: `no_notify`,
-//!   `outlive_parent`, `no_parent`, `keep: false`, no `caller`, no hc `name`,
-//!   no `first_message`; the `ht.bootstrap` label is written as a hint and
-//!   never read to classify an outcome).
+//!   pid, and discovery from `core.json` plus `hello`. Labels land in a later
+//!   bead; today [`HcHost`] holds the boot, the capability answers, the
+//!   observation counter, `target_root_process`, the capture (`hello` +
+//!   `events.subscribe{}` on one connection, finished records kept with their
+//!   `reason` and `keep`, `machine/tN` mirrors dropped), the D10 closure
+//!   decision over it ([`HcClosure`]) and target creation (`CreateTargetPort`
+//!   via `terminal.run`: `no_notify`, `outlive_parent`, `no_parent`,
+//!   `keep: false`, no `caller`, no hc `name`, no `first_message`; the
+//!   `ht.bootstrap` label is written as a hint and never read to classify an
+//!   outcome).
 //! - Discovery ([`HcDiscovery`], `discovery.rs`): lists
 //!   `$XDG_STATE_HOME|~/.local/state/herdr-core/*/core.json`, derives each
 //!   socket by the core's rules (`HC_SOCKET` or config, else
@@ -47,19 +50,26 @@ pub use wire::{
     AppDoc, CoreInfo, HcEvent, HcEventKind, HcForeground, HcStatus, HcTerminal, HelloReply,
 };
 
+use crate::host::continuity::LocalEndpointWitness;
 use crate::ports::{
     self, AgentComposerState, ArchivalEvidence, ClosureAuthority, ComposerObservation,
-    EnumerationEvidence, HostCallContext, HostKind, HostObservation, HostPort, HostSnapshot,
-    IncarnationEvidence, NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest,
-    PromptOutcome, SafeWakeTarget, WakeCapability,
+    EnumerationEvidence, EvidenceKind, ExecutionEvidence, HostCallContext, HostKind,
+    HostObservation, HostPort, HostSnapshot, HostUiState, IncarnationEvidence,
+    NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest, ObservationProvenance,
+    PromptOutcome, SafeWakeTarget, StructuralOccupancy, WakeCapability,
 };
 use crate::protocol::{
-    ids::{HostBootId, HostTargetId, SeatId},
+    ids::{HostBootId, HostCallId, HostTargetId, SeatId, TerminalId},
     results::{ApiError, ErrorCode},
-    time::CallBudget,
+    time::{CallBudget, Clock},
 };
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
+
+static CALL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Environment herdr-core sets for a terminal: its id and socket (read for
 /// caller recognition) and its scope and session. Every child the daemon side
@@ -104,10 +114,136 @@ impl HcBoot {
     }
 }
 
+/// Finish reasons for which herdr-core keeps a `keep: true` terminal `live`
+/// with no holder, waiting to restart it (`Registry::finish`, dc276b7). Any
+/// other finish is final. The list only reads a `live` record; a `finished`
+/// record is final whatever its reason.
+const PENDING_RESTART_REASONS: &[&str] = &[
+    "holder_lost",
+    "stopped_by_restart",
+    "server_stop",
+    "host_shutdown",
+    "signaled",
+];
+
+/// What one local record of a capture means for its seat (D10). It follows
+/// herdr-core's own finality: the record's `state`, `keep`, `reason` and
+/// whether a holder runs it. Events are only hints to capture again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HcClosure {
+    /// `live` with a holder: nothing changes, the target is present. An agent
+    /// that exits inside a live shell terminal is this, not a finish.
+    Present,
+    /// `live`, `keep: true`, no holder, a pending reason: the seat is
+    /// unresolved and the core's restart of the same `tN` reattaches it (C1).
+    PendingRestart,
+    /// `finished`: the core never revives it and never reuses the id. The
+    /// target is absent from the snapshot, so the seat retires through the
+    /// pane-close fence, resolved or unresolved. Pruning (`removed`) is the
+    /// same absence.
+    Final,
+    /// A `state` that is neither `live` nor `finished`: no decision is read.
+    Unreadable,
+}
+
+impl HcClosure {
+    /// The decision for one record.
+    pub fn of(terminal: &HcTerminal) -> Self {
+        match terminal.state.as_str() {
+            "finished" => Self::Final,
+            "live" => {
+                let pending = terminal.keep
+                    && terminal.pid.is_none()
+                    && terminal
+                        .reason
+                        .as_deref()
+                        .is_some_and(|reason| PENDING_RESTART_REASONS.contains(&reason));
+                if pending {
+                    Self::PendingRestart
+                } else {
+                    Self::Present
+                }
+            }
+            _ => Self::Unreadable,
+        }
+    }
+}
+
+/// Where an agent status came from, shown only by `doctor` (D21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusSource {
+    /// The terminal self-reported OSC 7501.
+    Osc7501,
+    /// No status was ever reported (`status: null`).
+    None,
+}
+
+impl StatusSource {
+    pub fn of(terminal: &HcTerminal) -> Self {
+        if terminal.status.is_some() {
+            Self::Osc7501
+        } else {
+            Self::None
+        }
+    }
+
+    /// The word `doctor` prints.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Osc7501 => "osc7501",
+            Self::None => "none",
+        }
+    }
+}
+
+/// The UI state a record's status gives. `status: null` is `Unknown`, never
+/// `Idle`; a reported status stays `Unknown` until H2 reads the composer (a
+/// reported `idle` still can mean a typed draft).
+pub fn ui_state(_terminal: &HcTerminal) -> HostUiState {
+    HostUiState::Unknown
+}
+
+/// One coherent capture: `hello` and the `events.subscribe{}` snapshot read on
+/// one connection. `records` keeps every local address, live and finished,
+/// with its `reason` and `keep`; `machine/tN` mirrors are dropped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HcCapture {
+    pub boot: HcBoot,
+    /// The event sequence the snapshot was taken at (restarts reset it).
+    pub seq: u64,
+    pub witness: LocalEndpointWitness,
+    pub records: Vec<HcTerminal>,
+}
+
+impl HcCapture {
+    /// The `report.hosts.agent_status` rows `doctor` prints: each record's
+    /// target and where its status came from (D21).
+    pub fn status_rows(&self) -> Vec<serde_json::Value> {
+        self.records
+            .iter()
+            .map(|record| {
+                serde_json::json!({
+                    "target": record.address,
+                    "source": StatusSource::of(record).label(),
+                })
+            })
+            .collect()
+    }
+
+    /// Whether every record carries a decision this build can read.
+    pub fn is_readable(&self) -> bool {
+        self.records
+            .iter()
+            .all(|record| HcClosure::of(record) != HcClosure::Unreadable)
+    }
+}
+
 /// The herdr-core `HostPort`. Capability answers: no wake path, closing,
 /// no archival evidence.
 pub struct HcHost {
     client: HcClient,
+    clock: Arc<dyn Clock>,
+    epoch: AtomicU64,
     observation_sequence: AtomicU64,
     doc_names: labels::DocNames,
     /// The full argv `terminal.run` starts (the launch-gate shim, composed by
@@ -118,8 +254,14 @@ pub struct HcHost {
 
 impl HcHost {
     pub fn new(client: HcClient) -> Self {
+        Self::with_clock(client, Arc::new(crate::app::SystemClock::new()))
+    }
+
+    pub fn with_clock(client: HcClient, clock: Arc<dyn Clock>) -> Self {
         Self {
             client,
+            clock,
+            epoch: AtomicU64::new(1),
             observation_sequence: AtomicU64::new(0),
             doc_names: labels::DocNames::default(),
             gate_argv: Vec::new(),
@@ -137,6 +279,84 @@ impl HcHost {
     pub fn with_run_deadline(mut self, deadline: Duration) -> Self {
         self.run_deadline = deadline;
         self
+    }
+
+    /// A daemon restart opens an epoch above every epoch it persisted for this
+    /// host, so ordering against durable publications stays monotonic within
+    /// one boot. Never lowers the epoch.
+    pub fn resume_after_epoch(&self, persisted: u64) {
+        self.epoch
+            .fetch_max(persisted.saturating_add(1), Ordering::AcqRel);
+    }
+
+    /// `hello` + `events.subscribe{}` on one connection. The boot is the core
+    /// id `hello` names; a different id than a seat's is a new boot (C2).
+    /// `None` when `hello` or the snapshot failed or named no usable core id.
+    pub fn capture(&self) -> Option<HcCapture> {
+        let reply = Self::run(self.client.hello_and_snapshot()).ok()?;
+        let (hello, snapshot) = reply.value;
+        let boot = HcBoot::from_hello(&hello)?;
+        let records = snapshot
+            .terminals
+            .into_iter()
+            .filter(|terminal| !terminal.address.contains('/'))
+            .collect();
+        Some(HcCapture {
+            boot,
+            seq: snapshot.seq,
+            witness: reply.witness,
+            records,
+        })
+    }
+
+    fn unverified(boot: HostBootId, epoch: u64) -> HostSnapshot {
+        HostSnapshot {
+            boot,
+            epoch,
+            observation_sequence: 0,
+            complete: false,
+            enumeration: EnumerationEvidence::CompleteUnverified,
+            incarnation: IncarnationEvidence::Unknown,
+            targets: Vec::new(),
+        }
+    }
+
+    /// A present target. `terminal` is `None` for a record waiting for the
+    /// core to restart it: the target is shown with no runnable terminal.
+    fn target(
+        &self,
+        record: &HcTerminal,
+        boot: &HostBootId,
+        epoch: u64,
+        sequence: u64,
+        started: crate::protocol::time::MonoInstant,
+        terminal: Option<TerminalId>,
+    ) -> HostObservation {
+        let completed = self.clock.monotonic_now();
+        HostObservation {
+            target: HostTargetId::new(record.address.clone()),
+            host_boot: boot.clone(),
+            epoch,
+            generation: 1,
+            observed_at_utc: self.clock.utc_now(),
+            observed_at_mono: completed,
+            provenance: ObservationProvenance::CoherentEnumeration,
+            occupant: None,
+            ui: ui_state(record),
+            focused: false,
+            terminal,
+            occupancy: StructuralOccupancy::Unknown,
+            incarnation: IncarnationEvidence::Verified {
+                identity: boot.as_str().to_owned(),
+                evidence_kind: EvidenceKind::CoherentEnumeration,
+            },
+            execution: ExecutionEvidence::Unknown,
+            call_id: HostCallId::new(format!("hc-{}", CALL_ID.fetch_add(1, Ordering::Relaxed))),
+            connection_epoch: epoch,
+            observation_sequence: sequence,
+            started_at_mono: started,
+            completed_at_mono: completed,
+        }
     }
 
     /// The next value of this host's own observation counter (starts at 1).
@@ -482,23 +702,49 @@ impl HostPort for HcHost {
         Ok(topology)
     }
 
-    /// Only the failed-`hello` outcome: nothing is enumerated and nothing is
-    /// closed (`CompleteUnverified`, not `CoherentVerified`). The snapshot and
-    /// its capture rule are ht-kqrt.67's.
-    fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
-        let boot = Self::run(self.client.hello())
-            .ok()
-            .and_then(|reply| HcBoot::from_hello(&reply.value))
-            .map(|boot| boot.0)
-            .unwrap_or_else(Self::unknown_boot);
+    /// The capture read as a coherent enumeration (D10). `live` records are
+    /// the present targets; a kept terminal waiting for a restart is shown
+    /// with no terminal (its seat becomes unresolved); a `finished` record is
+    /// absent (its seat retires through the pane-close fence). A failed
+    /// `hello` or snapshot, or a record state this build cannot read, is
+    /// `CompleteUnverified` and closes nothing.
+    fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        if context.budget.cancellation.is_cancelled() {
+            return Err(ApiError::cancelled("hc enumerate_targets"));
+        }
+        let epoch = self.epoch.load(Ordering::Acquire);
+        let started = self.clock.monotonic_now();
+        let Some(capture) = self.capture() else {
+            return Ok(Self::unverified(Self::unknown_boot(), epoch));
+        };
+        let boot = capture.boot.0.clone();
+        if !capture.is_readable() {
+            return Ok(Self::unverified(boot, epoch));
+        }
+        let sequence = self.next_observation_sequence();
+        let targets = capture
+            .records
+            .iter()
+            .filter_map(|record| {
+                let terminal = match HcClosure::of(record) {
+                    HcClosure::Present => Some(TerminalId::new(record.address.clone())),
+                    HcClosure::PendingRestart => None,
+                    HcClosure::Final | HcClosure::Unreadable => return None,
+                };
+                Some(self.target(record, &boot, epoch, sequence, started, terminal))
+            })
+            .collect();
         Ok(HostSnapshot {
+            incarnation: IncarnationEvidence::Verified {
+                identity: boot.as_str().to_owned(),
+                evidence_kind: EvidenceKind::CoherentEnumeration,
+            },
             boot,
-            epoch: 0,
-            observation_sequence: 0,
-            complete: false,
-            enumeration: EnumerationEvidence::CompleteUnverified,
-            incarnation: IncarnationEvidence::Unknown,
-            targets: Vec::new(),
+            epoch,
+            observation_sequence: sequence,
+            complete: true,
+            enumeration: EnumerationEvidence::CoherentVerified,
+            targets,
         })
     }
 
@@ -547,3 +793,7 @@ mod label_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "../../../tests/host/hc_terminal_run.rs"]
 mod terminal_run_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../../tests/host/hc_closure.rs"]
+mod closure_tests;

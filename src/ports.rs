@@ -1285,6 +1285,12 @@ pub enum ReconciliationAction {
         terminal: TerminalId,
     },
     MarkUnresolved,
+    /// The host shows the seat's target but no runnable terminal behind it
+    /// (an hc terminal kept for a restart, D10): the seat is unresolved as
+    /// recoverable (`host_invalidation`), its bindings end `seat_unresolved`,
+    /// and the same terminal showing again in the same boot and incarnation
+    /// reconfirms it (C1) while the target's absence retires it.
+    UnresolveAwaitingTerminal,
     BeginRetirement {
         absent_target: HostTargetId,
     },
