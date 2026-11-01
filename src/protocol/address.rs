@@ -12,7 +12,7 @@
 
 use crate::host::observation::{HostTopology, TopologyPane, TopologySpace, TopologyTab};
 use crate::protocol::{
-    ids::{HostTargetId, SeatId},
+    ids::{HostTargetId, SeatId, SeatName},
     results::ApiError,
 };
 use crate::view::escape::{Context, escape_for_terminal, is_format_char};
@@ -840,6 +840,16 @@ pub fn match_machine<'a>(
         }
     }
     out
+}
+
+/// The named-seat reading of a bare token (SA14, D4): `raw` as a seat name, only when it is a
+/// valid name and no pane-path reading matched (`outcome` is `NoMatch`). An exact seat ID is
+/// never a name (`SeatName::parse` refuses it) and is resolved before this is asked.
+pub fn name_reading(raw: &str, outcome: &Outcome) -> Option<SeatName> {
+    match outcome {
+        Outcome::NoMatch => SeatName::parse(raw).ok(),
+        _ => None,
+    }
 }
 
 /// Tab IDs have an unambiguous separator/prefix, unlike workspace labels such as `work`.

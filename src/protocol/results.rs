@@ -1192,7 +1192,7 @@ pub struct SeatDirectory {
     pub tab: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
-    /// The seat's name, for a named seat; unset until named seats land. An
+    /// The seat's name, for a named seat (`seats.name`); display only. An
     /// older daemon's reply decodes with `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -1205,9 +1205,14 @@ impl SeatDirectory {
         !matches!(self.state.as_str(), "busy" | "idle" | "offline")
     }
 
-    /// Whether any label is present.
+    /// Whether any label is present. A named seat always has one: its name.
     pub fn has_labels(&self) -> bool {
-        self.workspace.is_some() || self.tab.is_some() || self.pane.is_some()
+        self.workspace.is_some() || self.tab.is_some() || self.pane.is_some() || self.name.is_some()
+    }
+
+    /// The pane part: the host's pane label, else a named seat's name (SA14).
+    pub fn pane_or_name(&self) -> Option<&String> {
+        self.pane.as_ref().or(self.name.as_ref())
     }
 
     /// `WS / TAB / PANE` with each part passed through `escape` (peer text)
@@ -1221,7 +1226,7 @@ impl SeatDirectory {
             "{} / {} / {}",
             part(&self.workspace),
             part(&self.tab),
-            part(&self.pane)
+            part(&self.pane_or_name().cloned())
         ))
     }
 }

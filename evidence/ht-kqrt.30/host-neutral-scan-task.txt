@@ -1,0 +1,24 @@
+test src_names_no_host_kind_or_host_env_outside_the_allowlist ... FAILED
+src/app.rs: let host_id = host_sessions.reserve_host_id(&locator, crate::ports::HostKind::Named)?;
+src/host/named.rs: pub const ENV_SEAT_NAME: &str = "HERDR_THREADS_SEAT_NAME";
+src/host/named.rs: pub const ENV_SEAT_READONLY: &str = "HERDR_THREADS_SEAT_READONLY";
+src/host/named.rs: HostKind::Named
+src/host/probe.rs: return Ok(HostKind::Hc);
+src/host/probe.rs: Ok(reply) if reply["result"]["type"] == "pong" => Ok(HostKind::Herdr),
+src/host/target_creator.rs: HostKind::Hc => {
+src/host/target_creator.rs: kind: HostKind::Hc,
+src/main.rs: herdr_threads::ports::HostKind::Hc => {
+src/service/host_sessions.rs: port.kind(),
+src/service/host_sessions.rs: .unwrap_or(Some(HostKind::Herdr))
+src/service/host_sessions.rs: .insert("/hc/core.sock".into(), Some(HostKind::Hc));
+src/service/host_sessions.rs: assert_eq!(*rig.world.built_kinds.lock().unwrap(), vec![HostKind::Hc]);
+src/service/host_sessions.rs: .insert("/herdr/a.sock".into(), Some(HostKind::Hc));
+src/store/hosts.rs: self.host_kind().is_implemented() && self.host_kind() != HostKind::Named
+src/store/hosts.rs: let (id, epoch) = attach_host(&mut db, &a, 100, HostKind::Herdr).unwrap();
+src/store/hosts.rs: let (again, epoch) = attach_host(&mut db, &a, 250, HostKind::Herdr).unwrap();
+src/store/hosts.rs: let (a, _) = attach_host(&mut db, &loc("/run/a.sock"), 10, HostKind::Herdr).unwrap();
+src/store/hosts.rs: let (b, _) = attach_host(&mut db, &loc("/run/b.sock"), 20, HostKind::Herdr).unwrap();
+src/store/hosts.rs: let (c, _) = attach_host(&mut db, &loc("/run/c.sock"), 30, HostKind::Herdr).unwrap();
+src/store/hosts.rs: attach_host(&mut db, &loc("/run/a.sock"), 40, HostKind::Herdr).unwrap();
+src/test_support/fake_hosts.rs: probe: Arc::new(|_, _| Ok(crate::ports::HostKind::Herdr)),
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.48s

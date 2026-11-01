@@ -419,3 +419,13 @@ pub fn resolve_tmux_hint(host: &HostLocator) -> Option<String> {
 pub fn recovery_env(pane: &str) -> Vec<String> {
     CallerLocator::pane(pane).site().env_assignments()
 }
+
+/// [`recovery_env`] for a frozen claim at `host`: a named seat's claim sits at the reserved
+/// named host with its name as target, and its recovery command re-establishes
+/// `HERDR_THREADS_SEAT_NAME=<n>` (SA14); every other claim keeps the pane assignment.
+pub fn claim_recovery_env(host: &HostLocator, target: &str) -> Vec<String> {
+    match SeatName::parse(target) {
+        Ok(name) if host.is_named_host() => CallerLocator::Named(name).site().env_assignments(),
+        _ => recovery_env(target),
+    }
+}

@@ -36,15 +36,15 @@ pub fn directory(
     seat: &str,
     now: UtcMillis,
 ) -> Result<Option<Box<SeatDirectory>>, ApiError> {
-    let row: Option<(String, bool)> = db
+    let row: Option<(String, bool, Option<String>)> = db
         .query_row(
-            "SELECT home_node, is_local FROM seats WHERE id=?1",
+            "SELECT home_node, is_local, name FROM seats WHERE id=?1",
             [seat],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(store_error)?;
-    let Some((home, is_local)) = row else {
+    let Some((home, is_local, name)) = row else {
         return Ok(None);
     };
     let home_uuid: Option<NodeUuid> = home.parse().ok();
@@ -72,7 +72,8 @@ pub fn directory(
             workspace: None,
             tab: None,
             pane: None,
-            name: None,
+            // A named seat's name; the label rendering shows it once (SA14).
+            name,
         })));
     }
     let now_ms = u64::try_from(now.0).unwrap_or(0);

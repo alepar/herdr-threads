@@ -109,6 +109,19 @@ impl InstanceInputs {
         self.herdr_env || self.non_default_server
     }
 
+    /// The Herdr host endpoint of a non-Pane caller, resolved at the one point that needs it (a
+    /// handoff into a Herdr pane): the fast sources first, then the `herdr status server` query
+    /// that discovery skips for a named site.
+    pub(crate) fn lazy_host_endpoint(&self) -> io::Result<PathBuf> {
+        let inputs = Self {
+            named_site: false,
+            ..self.clone()
+        };
+        resolve_host_endpoint(&inputs)
+            .map(|(host, _)| host)
+            .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error))
+    }
+
     fn detect(&self) -> DetectInputs {
         DetectInputs {
             herdr: self.herdr.clone(),

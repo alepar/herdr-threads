@@ -115,7 +115,7 @@ pub(crate) fn prepare<C: LocalClient + ?Sized>(
         unavailable: false,
     }
 }
-fn format_location(location: &ParticipantLocation) -> String {
+pub(crate) fn format_location(location: &ParticipantLocation) -> String {
     let target = location.target.as_ref();
     let target_text = target.map_or_else(
         || "target unavailable".into(),
@@ -158,6 +158,13 @@ fn format_location(location: &ParticipantLocation) -> String {
         )
     };
     match location.remote.as_ref().filter(|d| d.has_labels()) {
+        // A named seat: its target is its name, shown once (SA14, SA17 fix (d)).
+        Some(d) if d.name.is_some() => format!(
+            "{} / {} / {} [advisory]",
+            shown(&d.workspace),
+            shown(&d.tab),
+            shown(&d.pane_or_name().cloned()),
+        ),
         Some(d) => format!(
             "{} / {} / {target_text} ({}/{}/{}) [advisory]",
             shown(&d.workspace),

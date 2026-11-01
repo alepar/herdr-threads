@@ -254,3 +254,21 @@ fn m8_golden_prints_once_on_creation() {
         "a second resolve of the name prints no M8: {second}"
     );
 }
+
+// Kills: a directory entry without the seat's name (displays would show the raw target), a name
+// leaking onto a pane seat, and a missing entry for an unbound named seat.
+#[test]
+fn the_directory_entry_carries_the_seat_name() {
+    let (context, mut conn, host) = fixture();
+    let (seat, _) = resolve(&context, &mut conn, host, "reviewer", "op-1").unwrap();
+    let entry = crate::store::seat_directory::directory(&conn, seat.as_str(), UtcMillis(100))
+        .unwrap()
+        .expect("a local seat has an entry");
+    assert_eq!(entry.name.as_deref(), Some("reviewer"));
+    conn.execute("UPDATE seats SET name=NULL WHERE id=?1", [seat.as_str()])
+        .unwrap();
+    let pane = crate::store::seat_directory::directory(&conn, seat.as_str(), UtcMillis(100))
+        .unwrap()
+        .unwrap();
+    assert_eq!(pane.name, None, "a seat with no name shows none");
+}

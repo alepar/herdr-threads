@@ -832,6 +832,7 @@ pub fn execute<C: LocalClient + ?Sized>(
 struct DeliveryObservation {
     plan: DeliveryPlan,
     caller_target: crate::protocol::ids::HostTargetId,
+    caller_host: crate::protocol::ids::HostLocator,
     phase: &'static str,
     staged: handoff::StagedWork,
     /// None: no canonical status was observed by this invocation (unknown).
@@ -921,6 +922,7 @@ fn execute_locked<C: LocalClient + ?Sized>(
     *observed = Some(DeliveryObservation {
         plan: (*plan).clone(),
         caller_target: claim.target.clone(),
+        caller_host: claim.host.clone(),
         phase: "begin",
         staged: Default::default(),
         last_observed: None,
@@ -1397,7 +1399,8 @@ fn write_pending<W: Write>(
     };
     let prefix = super::hook::cli_prefix(&context);
     let mut retry = vec!["env".to_owned()];
-    retry.extend(super::caller_location::recovery_env(
+    retry.extend(super::caller_location::claim_recovery_env(
+        &observed.caller_host,
         observed.caller_target.as_str(),
     ));
     retry.extend(prefix.clone());
@@ -1816,8 +1819,10 @@ fn write_automatic_pending<W: Write>(
         host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
     };
     let mut retry = vec!["env".to_owned()];
-    retry.extend(super::caller_location::recovery_env(
-        pending.semantic.frozen_claim().unwrap().target.as_str(),
+    let claim = pending.semantic.frozen_claim().unwrap();
+    retry.extend(super::caller_location::claim_recovery_env(
+        &claim.host,
+        claim.target.as_str(),
     ));
     retry.extend(super::hook::cli_prefix(&context));
     retry.extend(["retry".into(), reference.recovery_ref()]);

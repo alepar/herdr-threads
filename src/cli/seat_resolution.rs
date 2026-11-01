@@ -37,9 +37,9 @@ use crate::{
     host::observation::HostTopology,
     ports::LocalClient,
     protocol::{
-        capabilities::{HOST_TOPOLOGIES_V1, INVITATION_CONFIRMATION_V1},
+        capabilities::{HOST_SITES_V1, HOST_TOPOLOGIES_V1, INVITATION_CONFIRMATION_V1},
         commands::{Command, SeatInspectQuery},
-        ids::{HostLocator, HostTargetId, SeatId},
+        ids::{HostLocator, HostTargetId, NAMED_HOST_LOCATOR, SeatId},
         pagination::PageRequest,
         results::{
             ApiError, CommandResult, ContinuityStatus, ErrorCode, HostPaneLabels, SeatInspection,
@@ -695,15 +695,24 @@ where
             })?;
             return self.map_pane(parsed, slot, pane);
         }
-        // 4. Name path against the live topology.
+        // 4. Name path against the live topology. A bare token that no pane path matches (or
+        // when no Herdr topology is reachable) may still name a seat of the named host (SA14).
         let narrowing = self.narrowing().map_err(run_error)?.cloned();
         let narrowing = narrowing.unwrap_or_default();
-        let topology = self.topology().map_err(run_error)?;
-        let caller = self.caller().map_err(run_error)?;
-        let candidate = self.candidate(
-            selector.resolve_with(topology, caller, &narrowing, slot.tiering()),
-            raw,
-        )?;
+        let outcome = match self.topology() {
+            Ok(topology) => {
+                let caller = self.caller().map_err(run_error)?;
+                selector.resolve_with(topology, caller, &narrowing, slot.tiering())
+            }
+            Err(error) => match self.named_seat(parsed, raw, &seat_selector::Outcome::NoMatch)? {
+                Some(seat) => return Ok(Resolved::Seat(seat)),
+                None => return Err(run_error(error)),
+            },
+        };
+        if let Some(seat) = self.named_seat(parsed, raw, &outcome)? {
+            return Ok(Resolved::Seat(seat));
+        }
+        let candidate = self.candidate(outcome, raw)?;
         let path = candidate.path.clone();
         let tier = candidate.tier.as_str().to_owned();
         match self.map_pane(parsed, slot, candidate.pane.clone())? {
@@ -716,6 +725,38 @@ where
                 line: Some((path, tier)),
             }),
         }
+    }
+
+    /// The existing seat of the named host that `raw` names, when `raw` reads as a name (no
+    /// pane path matched: `outcome`). Nothing is created: an unknown name reads as no match.
+    fn named_seat(
+        &self,
+        parsed: &ParsedCli,
+        raw: &str,
+        outcome: &seat_selector::Outcome,
+    ) -> Result<Option<SeatId>, RunError> {
+        // `--space`/`--tab` narrow to Herdr locations, which a name has none of.
+        if self.raw_narrowing.is_some() {
+            return Ok(None);
+        }
+        let Some(name) = seat_selector::name_reading(raw, outcome) else {
+            return Ok(None);
+        };
+        let (_, client) = self.connection.get()?;
+        if !client.supports_capability(
+            HOST_SITES_V1,
+            &super::cooperative_budget(self.clock.as_ref()),
+        ) {
+            return Ok(None);
+        }
+        let locator = HostLocator::parse(NAMED_HOST_LOCATOR).map_err(run_error)?;
+        super::pane_seat_on(
+            client,
+            &parsed.output,
+            &HostTargetId::new(name.as_str()),
+            Some(locator),
+            self.clock.as_ref(),
+        )
     }
 
     /// The herdr-core terminal `raw` names and its host's locator. The daemon is asked for
