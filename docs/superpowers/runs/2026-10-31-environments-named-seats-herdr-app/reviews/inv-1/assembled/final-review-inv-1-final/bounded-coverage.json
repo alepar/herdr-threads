@@ -1,0 +1,359 @@
+{
+ "inspected": [
+  {
+   "path": ".github/workflows/ci.yml",
+   "hunks": [
+    "@@ -392,6 +392,7 @@ jobs:"
+   ]
+  },
+  {
+   "path": "AGENTS.md",
+   "hunks": [
+    "@@ -6,11 +6,13 @@"
+   ]
+  },
+  {
+   "path": "Cargo.toml",
+   "hunks": [
+    "@@ -1,6 +1,6 @@",
+    "@@ -18,6 +18,12 @@ test-support = []"
+   ]
+  },
+  {
+   "path": "TRUST-POLICY.md",
+   "hunks": [
+    "@@ -112,7 +112,7 @@ explicitly, so that a weakness is a documented decision rather than a surprise.",
+    "@@ -120,8 +120,11 @@ explicitly, so that a weakness is a documented decision rather than a surprise."
+   ]
+  },
+  {
+   "path": "herdr-plugin.toml",
+   "hunks": [
+    "@@ -1,16 +1,14 @@"
+   ]
+  },
+  {
+   "path": "integrations/hermes/README.md",
+   "hunks": [
+    "@@ -46,7 +46,8 @@ enabled (`hermes --profile NAME plugins enable herdr-threads`): its session star"
+   ]
+  },
+  {
+   "path": "integrations/skill/SKILL.md",
+   "hunks": [
+    "@@ -14,7 +14,7 @@ Use `thread list --all --search TEXT` to discover existing threads, then explici",
+    "@@ -60,7 +60,8 @@ Ready commands (run exactly as written, in this pane):",
+    "@@ -208,7 +209,7 @@ Human author/recipient nicks are relative to the live caller: alice (same tab),"
+   ]
+  },
+  {
+   "path": "migrations/node/0012_host_environments.sql",
+   "hunks": [
+    "@@ -0,0 +1,35 @@"
+   ]
+  },
+  {
+   "path": "scripts/check-no-leaked-processes",
+   "hunks": [
+    "@@ -11,10 +11,14 @@ anything in --exclude never match):",
+    "@@ -29,10 +33,11 @@ from dataclasses import dataclass",
+    "@@ -74,6 +79,17 @@ def _is_server_or_daemon(proc: Proc) -> bool:",
+    "@@ -106,6 +122,8 @@ def classify(procs, *, root, run_id, alive, exclude, temp_prefixes):"
+   ]
+  },
+  {
+   "path": "scripts/demo-tea-party.sh",
+   "hunks": [
+    "@@ -188,11 +188,11 @@ You are the host of a MAD tea party in Herdr (as in Alice in Wonderland). Claude"
+   ]
+  },
+  {
+   "path": "scripts/lib/isolated-core.sh",
+   "hunks": [
+    "@@ -0,0 +1,77 @@"
+   ]
+  },
+  {
+   "path": "scripts/tests/test_check_no_leaked_processes.py",
+   "hunks": [
+    "@@ -2,8 +2,12 @@",
+    "@@ -147,5 +151,77 @@ class ClassifyTests(unittest.TestCase):"
+   ]
+  },
+  {
+   "path": "scripts/tests/test_isolated_core.py",
+   "hunks": [
+    "@@ -0,0 +1,38 @@"
+   ]
+  },
+  {
+   "path": "src/app.rs",
+   "hunks": [
+    "@@ -1027,7 +1027,7 @@ impl LaneProbe {",
+    "@@ -1036,7 +1036,7 @@ impl LaneProbe {",
+    "@@ -2527,10 +2527,13 @@ where"
+   ]
+  },
+  {
+   "path": "src/bin/fake-hc.rs",
+   "hunks": [
+    "@@ -0,0 +1,52 @@"
+   ]
+  },
+  {
+   "path": "src/cli/caller_location.rs",
+   "hunks": [
+    "@@ -0,0 +1,220 @@"
+   ]
+  },
+  {
+   "path": "src/cli/commands.rs",
+   "hunks": [
+    "@@ -2027,6 +2027,11 @@ struct HandoffArgs {",
+    "@@ -3404,6 +3409,8 @@ fn parse_cli_in_registry(",
+    "@@ -3627,6 +3634,9 @@ fn parse_cli_in_registry(",
+    "@@ -3634,6 +3644,10 @@ fn parse_cli_in_registry(",
+    "@@ -3651,10 +3665,11 @@ fn parse_cli_in_registry(",
+    "@@ -3693,6 +3708,7 @@ fn parse_cli_in_registry(",
+    "@@ -3736,6 +3752,7 @@ fn parse_cli_in_registry(",
+    "@@ -3750,6 +3767,7 @@ fn parse_cli_in_registry("
+   ]
+  },
+  {
+   "path": "src/cli/doctor.rs",
+   "hunks": [
+    "@@ -219,6 +219,25 @@ pub(crate) fn probe_daemon(",
+    "@@ -978,6 +997,7 @@ fn report_captured(",
+    "@@ -988,6 +1008,7 @@ fn report_captured(",
+    "@@ -1095,6 +1116,13 @@ fn report_captured("
+   ]
+  },
+  {
+   "path": "src/cli/follow.rs",
+   "hunks": [
+    "@@ -509,6 +509,8 @@ impl NickCache {"
+   ]
+  },
+  {
+   "path": "src/cli/handoff.rs",
+   "hunks": [
+    "@@ -1927,10 +2020,8 @@ fn report_core("
+   ]
+  },
+  {
+   "path": "src/cli/handoff_delivery.rs",
+   "hunks": [
+    "@@ -524,6 +524,8 @@ pub fn prepare<C: LocalClient + ?Sized>(",
+    "@@ -1394,10 +1396,10 @@ fn write_pending<W: Write>(",
+    "@@ -1813,13 +1815,10 @@ fn write_automatic_pending<W: Write>("
+   ]
+  },
+  {
+   "path": "src/cli/hook.rs",
+   "hunks": [
+    "@@ -253,11 +253,11 @@ pub struct HookEnv {"
+   ]
+  },
+  {
+   "path": "src/cli/mod.rs",
+   "hunks": [
+    "@@ -2,6 +2,7 @@",
+    "@@ -35,6 +36,7 @@ mod picker;",
+    "@@ -308,7 +310,7 @@ where",
+    "@@ -843,6 +848,8 @@ fn run_parsed_in_pane<W: Write>(",
+    "@@ -1612,6 +1619,15 @@ fn run_wire_result<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -3696,6 +3712,8 @@ pub(crate) fn collect_pane_seats("
+   ]
+  },
+  {
+   "path": "src/cli/site_capability.rs",
+   "hunks": [
+    "@@ -0,0 +1,78 @@"
+   ]
+  },
+  {
+   "path": "src/cli/topology_handoff.rs",
+   "hunks": [
+    "@@ -463,6 +472,8 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(",
+    "@@ -1253,7 +1276,7 @@ fn resolve_and_attach(",
+    "@@ -2302,10 +2325,10 @@ pub(crate) fn write_pending_observed<W: std::io::Write>("
+   ]
+  },
+  {
+   "path": "src/cli/wake_warning.rs",
+   "hunks": [
+    "@@ -67,6 +67,7 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/daemon/lifecycle.rs",
+   "hunks": [
+    "@@ -387,6 +395,7 @@ fn spawn_detached("
+   ]
+  },
+  {
+   "path": "src/harness/adapter.rs",
+   "hunks": [
+    "@@ -1400,6 +1400,12 @@ pub trait ComposerPolicy: Send + Sync {"
+   ]
+  },
+  {
+   "path": "src/harness/agy/composer.rs",
+   "hunks": [
+    "@@ -130,8 +130,34 @@ impl ComposerPolicy for AgyComposer {"
+   ]
+  },
+  {
+   "path": "src/harness/claude/composer.rs",
+   "hunks": [
+    "@@ -199,8 +199,34 @@ impl ComposerPolicy for NativeComposer {",
+    "@@ -317,4 +343,32 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/harness/codex/composer.rs",
+   "hunks": [
+    "@@ -77,8 +77,12 @@ impl ComposerPolicy for NativeComposer {",
+    "@@ -111,4 +115,13 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/harness/registry.rs",
+   "hunks": [
+    "@@ -1,9 +1,22 @@",
+    "@@ -1457,6 +1470,35 @@ impl Registry {",
+    "@@ -1617,6 +1659,63 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/host/hc/mod.rs",
+   "hunks": [
+    "@@ -0,0 +1,19 @@"
+   ]
+  },
+  {
+   "path": "src/host/hc/rpc.rs",
+   "hunks": [
+    "@@ -0,0 +1,244 @@"
+   ]
+  },
+  {
+   "path": "src/host/native.rs",
+   "hunks": [
+    "@@ -30,6 +30,13 @@ use std::{",
+    "@@ -1261,6 +1315,28 @@ impl HostPort for NativeCli {"
+   ]
+  },
+  {
+   "path": "src/notification/dispatch.rs",
+   "hunks": [
+    "@@ -14,7 +14,8 @@ use crate::{",
+    "@@ -36,7 +37,6 @@ pub enum DispatchError {",
+    "@@ -94,6 +94,17 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche",
+    "@@ -107,11 +118,12 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche",
+    "@@ -505,11 +517,12 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_"
+   ]
+  },
+  {
+   "path": "src/ports.rs",
+   "hunks": [
+    "@@ -9,6 +9,7 @@",
+    "@@ -3904,7 +3905,141 @@ pub struct RegisteredComposerEvidence {",
+    "@@ -5595,6 +5730,125 @@ pub enum CreateTabOutcome {"
+   ]
+  },
+  {
+   "path": "src/protocol/capabilities.rs",
+   "hunks": [
+    "@@ -101,6 +103,11 @@ pub const INBOX_THREAD_SCOPE: &str = \"inbox.thread_scope_v1\";"
+   ]
+  },
+  {
+   "path": "src/protocol/commands.rs",
+   "hunks": [
+    "@@ -157,6 +157,8 @@ pub enum Command {",
+    "@@ -426,6 +428,10 @@ pub struct SeatsQuery {",
+    "@@ -1204,6 +1210,10 @@ pub struct ResolveThreadQuery {",
+    "@@ -1897,4 +1907,54 @@ mod host_locator_tests {"
+   ]
+  },
+  {
+   "path": "src/protocol/handoff.rs",
+   "hunks": [
+    "@@ -364,6 +377,86 @@ pub enum BootstrapState {"
+   ]
+  },
+  {
+   "path": "src/protocol/results.rs",
+   "hunks": [
+    "@@ -123,6 +123,7 @@ pub enum CommandResult {",
+    "@@ -1765,6 +1766,11 @@ pub struct SeatWakeStatus {"
+   ]
+  },
+  {
+   "path": "src/service/dispatch.rs",
+   "hunks": [
+    "@@ -245,9 +245,10 @@ impl DomainService {",
+    "@@ -268,20 +269,11 @@ impl DomainService {",
+    "@@ -1829,6 +1821,11 @@ impl LocalService for DomainService {",
+    "@@ -2295,6 +2292,50 @@ mod topology_contract_dispatch_tests {"
+   ]
+  },
+  {
+   "path": "src/service/host_sessions.rs",
+   "hunks": [
+    "@@ -9,7 +9,7 @@ use crate::daemon::logs::LaneErrorLog;",
+    "@@ -31,7 +31,7 @@ use std::{",
+    "@@ -242,7 +242,9 @@ pub struct HostSession {",
+    "@@ -278,8 +280,9 @@ impl HostSession {",
+    "@@ -299,8 +302,8 @@ impl HostSession {",
+    "@@ -354,7 +357,7 @@ impl HostSession {",
+    "@@ -377,7 +380,10 @@ impl BootstrapObserver for RefusedBootstrapObserver {",
+    "@@ -396,6 +402,8 @@ impl BootstrapObserver for RefusedBootstrapObserver {",
+    "@@ -432,6 +440,7 @@ impl HostSessions {",
+    "@@ -475,7 +484,11 @@ impl HostSessions {",
+    "@@ -484,7 +497,7 @@ impl HostSessions {",
+    "@@ -492,6 +505,14 @@ impl HostSessions {",
+    "@@ -628,6 +649,44 @@ impl HostSessions {",
+    "@@ -667,11 +726,13 @@ impl HostSessions {",
+    "@@ -707,8 +768,10 @@ impl HostSessions {",
+    "@@ -728,30 +791,34 @@ impl HostSessions {",
+    "@@ -776,11 +843,11 @@ impl HostSessions {",
+    "@@ -869,6 +936,9 @@ impl HostSessions {",
+    "@@ -917,7 +987,7 @@ impl HostSessions {",
+    "@@ -951,7 +1021,7 @@ impl HostSessions {",
+    "@@ -999,13 +1069,22 @@ mod tests {",
+    "@@ -1132,7 +1211,7 @@ mod tests {",
+    "@@ -1475,6 +1554,59 @@ mod tests {",
+    "@@ -1503,6 +1635,160 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/store/hosts.rs",
+   "hunks": [
+    "@@ -16,7 +16,7 @@ use std::{collections::BTreeMap, sync::RwLock};",
+    "@@ -30,11 +30,32 @@ pub struct HostRow {",
+    "@@ -43,11 +64,31 @@ pub fn attach_host(",
+    "@@ -57,7 +98,8 @@ pub fn attach_host(",
+    "@@ -65,12 +107,15 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<HostRow>> {",
+    "@@ -110,6 +155,41 @@ pub fn remembered(conn: &Connection, limit: usize) -> Result<Vec<HostRow>, ApiEr"
+   ]
+  },
+  {
+   "path": "src/store/queries.rs",
+   "hunks": [
+    "@@ -1502,19 +1502,25 @@ fn seats(",
+    "@@ -1611,6 +1617,13 @@ fn seats(",
+    "@@ -2715,6 +2728,20 @@ fn literal_contains_bounded(",
+    "@@ -2743,9 +2770,22 @@ fn resolve_thread(",
+    "@@ -6554,22 +6594,24 @@ fn wake_status_seats("
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -133,6 +133,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &["
+   ]
+  }
+ ]
+}
