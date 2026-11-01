@@ -137,6 +137,8 @@ pub enum Command {
     /// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation); advertised as
     /// `seat.nudge_threshold_v1`.
     SetNudgeThreshold(SetNudgeThreshold),
+    /// A named seat retires itself (`seat retire --self`, TRUST-POLICY A3 `cooperative_self_retire`).
+    SelfRetire(SelfRetire),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -990,6 +992,17 @@ pub struct WakeOnQuery {
     pub seat: SeatId,
 }
 
+/// The caller's named seat retires itself (TRUST-POLICY A3 `cooperative_self_retire`). `force`
+/// retires although another top-level binding of the seat is connected (M18).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelfRetire {
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+    #[serde(default)]
+    pub force: bool,
+}
+
 /// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1306,6 +1319,7 @@ impl Command {
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
             Self::SetWakeOn(v) => Some(&v.claim),
             Self::SetNudgeThreshold(v) => Some(&v.claim),
+            Self::SelfRetire(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
             Self::SetThreadName(v) => Some(&v.claim),
@@ -1762,6 +1776,8 @@ pub enum PermitMutation {
     SetWakeOn(SetWakeOn),
     /// Nudge threshold of the caller's own seat; wake eligibility only.
     SetNudgeThreshold(SetNudgeThreshold),
+    /// A named seat retires itself.
+    SelfRetire(SelfRetire),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -1800,6 +1816,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
             Command::SetWakeOn(v) => Ok(Self::SetWakeOn(v)),
             Command::SetNudgeThreshold(v) => Ok(Self::SetNudgeThreshold(v)),
+            Command::SelfRetire(v) => Ok(Self::SelfRetire(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
             Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),

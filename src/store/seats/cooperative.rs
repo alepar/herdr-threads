@@ -549,9 +549,12 @@ pub(crate) fn issue_cooperative_permit(
     let host = cooperative_claim(db, context, instance, &request.claim)?;
     let stored: Option<Vec<u8>> = db
         .query_row(
-            "SELECT digest FROM operations WHERE actor_scope=?1 AND operation_key=?2",
+            "SELECT digest FROM operations WHERE actor_scope IN (?1,?2) AND operation_key=?3",
             params![
                 format!("seat:{}", request.claim.seat.as_str()),
+                // A self-retired seat's replay is stored under its own scope (S4): the live-seat
+                // mapping below would refuse it, so the stored record is looked up first.
+                format!("self-retire:{}", request.claim.seat.as_str()),
                 request.operation.as_str()
             ],
             |r| r.get(0),
