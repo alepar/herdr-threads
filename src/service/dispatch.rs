@@ -769,9 +769,11 @@ impl DomainService {
                     .collect()
             })
             .unwrap_or_default();
-        if let Some(socket) = &request.socket {
-            sessions.sort_by_key(|session| session.locator().as_str() != socket);
-        }
+        creation_core_first(
+            &mut sessions,
+            request.socket.as_deref(),
+            |session, socket| session.locator().as_str() == socket,
+        );
         let observers: Vec<Arc<dyn BootstrapObserver>> = sessions
             .iter()
             .map(|session| Arc::clone(session.observer()))
@@ -2217,6 +2219,38 @@ fn bootstrap_namespace(command: &Command) -> Option<&HandoffNamespace> {
 
 pub(super) fn error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
+}
+
+/// Orders `items` so the one whose locator is `socket` comes first (stable otherwise): the
+/// launch gate asks the shim's own core before any other, so a hung unrelated host cannot
+/// delay the creation core's answer.
+fn creation_core_first<T>(
+    items: &mut [T],
+    socket: Option<&str>,
+    is_core: impl Fn(&T, &str) -> bool,
+) {
+    if let Some(socket) = socket {
+        items.sort_by_key(|item| !is_core(item, socket));
+    }
+}
+
+#[cfg(test)]
+mod creation_core_order_tests {
+    use super::creation_core_first;
+
+    #[test]
+    fn the_socket_named_core_is_asked_first() {
+        let mut hosts = ["hung", "other", "creation"];
+        creation_core_first(&mut hosts, Some("creation"), |host, socket| *host == socket);
+        assert_eq!(hosts, ["creation", "hung", "other"]);
+    }
+
+    #[test]
+    fn no_socket_keeps_the_attached_order() {
+        let mut hosts = ["hung", "creation"];
+        creation_core_first(&mut hosts, None, |host, socket| *host == socket);
+        assert_eq!(hosts, ["hung", "creation"]);
+    }
 }
 
 #[cfg(test)]
