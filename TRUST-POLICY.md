@@ -329,6 +329,12 @@ top-level lifecycle/turn event with a usable native session attempts C1 when tha
 resolved mapping; this is same-session recovery, not permission for a tool event to allocate.
 Pending recovery, ambiguous matches and unusable recovery evidence stop enrollment. A confirmed no-match may proceed
 only through ordinary guards; a resume without a usable native session cannot allocate a seat.
+Recovery is pending for a claim only while the host's reconciliation marker lags and the pass could still change
+its answer: the target has a resolved owner the pass may unresolve, or some nonretired local seat has a top-level
+binding of the claim's harness and native session (the C1 candidate predicate, any seat state). A pass only
+unresolves, moves, carries or retires seats and adds no binding, so a session no seat's binding names is a confirmed
+no-match even while the marker lags (ht-kaw9): one seat whose transition the store keeps refusing must not keep every
+new pane on the host unseated. Restore holds still apply to its ordinary enrollment.
 Resolution and check-in retain their separate durable operation journals: concurrent/replayed startup
 and response loss cannot split a pane's role; an uncertain resolution remains explicitly retryable.
 A historical resolution result is revalidated against the current pane mapping before check-in.

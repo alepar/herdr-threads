@@ -1302,8 +1302,31 @@ pub enum ReconciliationAction {
 pub enum ReconciliationOutcome {
     Applied,
     Unchanged,
-    Stale,
+    /// The guarded decision changed nothing; the reason names the check that
+    /// refused it (diagnostics only, never a decision input).
+    Stale(StaleReason),
     RetirementStarted(RetirementJob),
+}
+
+/// Why the store refused a reconciliation transition: a stable snake_case
+/// slug naming the refusing check, for logs and Health (ht-kaw9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StaleReason(&'static str);
+
+impl StaleReason {
+    pub const fn new(slug: &'static str) -> Self {
+        Self(slug)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl std::fmt::Display for StaleReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
 }
 
 /// The service's recovery baseline classifies a target independently of caller claims.

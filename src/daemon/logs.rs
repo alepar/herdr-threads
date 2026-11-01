@@ -40,6 +40,15 @@ pub trait LaneErrorLog: Send + Sync {
     /// A wake refused before anything was sent, with the refusing check's
     /// detail. The default records nothing.
     fn record_wake_refusal(&self, _seat: &crate::protocol::ids::SeatId, _detail: &str) {}
+
+    /// A reconciliation transition the store refused for `seat`, with the
+    /// refusing check (ht-kaw9). The default records nothing.
+    fn record_reconciliation_refusal(
+        &self,
+        _seat: &crate::protocol::ids::SeatId,
+        _reason: crate::ports::StaleReason,
+    ) {
+    }
 }
 
 /// The default lane error log: records nothing.
@@ -256,6 +265,32 @@ impl LaneErrorLog for RateLimitedLaneLog {
             "lane wakes".to_owned(),
             format!("refused {} ({})", seat.as_str(), one_line(&check)),
             detail,
+            0,
+        );
+    }
+
+    fn record_reconciliation_refusal(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        reason: crate::ports::StaleReason,
+    ) {
+        self.note_reconciliation_refusal(seat, reason);
+    }
+}
+
+impl RateLimitedLaneLog {
+    /// One line per seat and reason, then one summary per window while the
+    /// store keeps refusing it:
+    /// `lane observation: refused SEAT (REASON): ...`.
+    pub fn note_reconciliation_refusal(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        reason: crate::ports::StaleReason,
+    ) {
+        self.note(
+            "lane observation".to_owned(),
+            format!("refused {} ({reason})", seat.as_str()),
+            "reconciliation transition refused; the seat was skipped and the pass is not recorded",
             0,
         );
     }

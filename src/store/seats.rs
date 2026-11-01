@@ -10,7 +10,8 @@ use crate::{
         PriorPublishedTarget, PublishedSnapshot, ReconciliationAction, ReconciliationOutcome,
         ResolvedTargetCheck, RestoredPane, SeatState, SnapshotCleanupProgress,
         SnapshotGenerationId, SnapshotHeader, SnapshotSavedSeat, SnapshotSeatPage, SnapshotStage,
-        SnapshotStageProgress, SnapshotTargetMatch, StructuralOccupancy, UnresolvedReason,
+        SnapshotStageProgress, SnapshotTargetMatch, StaleReason, StructuralOccupancy,
+        UnresolvedReason,
     },
     protocol::{
         authority::{
@@ -1459,7 +1460,7 @@ fn saved_seat_scalar(
     }
     let structural_proof = seat_structural_proof(conn, &SeatId::new(id.clone()))?;
     let binding: Option<(Option<String>, Option<String>, String, String)> = conn.query_row(
-        "SELECT terminal_id,incarnation,execution_id,host_boot FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
+        &format!("SELECT terminal_id,incarnation,execution_id,host_boot FROM occupant_bindings WHERE seat_id=?1 ORDER BY {LATEST_BINDING_ORDER} LIMIT 1"),
         [&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
     ).optional().map_err(store_error)?;
     let active_binding_execution: Option<String> = conn
@@ -2134,12 +2135,14 @@ fn saved_seat_cas(
         return Ok(false);
     }
     let binding_query = if invalidated {
-        "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1"
+        format!(
+            "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY {LATEST_BINDING_ORDER} LIMIT 1"
+        )
     } else {
-        "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1"
+        "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1".to_owned()
     };
     let mut terminal: Option<String> = tx
-        .query_row(binding_query, [seat.as_str()], |r| r.get(0))
+        .query_row(&binding_query, [seat.as_str()], |r| r.get(0))
         .optional()
         .map_err(store_error)?
         .flatten();
@@ -2327,7 +2330,9 @@ fn mark_seat_unresolved(
         )
         .map_err(store_error)?;
     if changed != 1 {
-        return Ok(ReconciliationOutcome::Stale);
+        return Ok(ReconciliationOutcome::Stale(StaleReason::new(
+            "unresolve_seat_changed",
+        )));
     }
     // The binding end is honest (disconnect reason `seat_unresolved`), which is what lets the
     // same session reopen its binding after a rebind (ht-54r.3).
@@ -2414,7 +2419,7 @@ pub fn mark_unresolved_from_invalidation(
         },
         |tx, at, valid| {
             if !valid {
-                return Ok(ReconciliationOutcome::Stale);
+                return Ok(ReconciliationOutcome::Stale(StaleReason::new("invalidation_fence_changed")));
             }
             mark_seat_unresolved(
                 tx,
@@ -2523,6 +2528,12 @@ struct OpenPlacement {
 }
 
 /// The seat's open bindings' placements, most recent first. A seat holds many (ht-54r.3).
+/// The order in which a seat's latest binding is its first row: open rows
+/// first, then the most recently ended. Ordinal alone is not recency: a binding
+/// reopened after a rebind (`bindings::resolve`) keeps its original ordinal, so
+/// rows that ended before the reopen can sort above it (ht-kaw9).
+const LATEST_BINDING_ORDER: &str = "ended_at IS NOT NULL, ended_at DESC, ordinal DESC";
+
 fn open_binding_placements(
     tx: &Transaction<'_>,
     seat: &SeatId,
@@ -2583,11 +2594,11 @@ pub fn apply_reconciliation_transition(
         |tx| {
             let publication = match active_publication(tx, &transition.publication.id) {
                 Ok(publication) => publication,
-                Err(error) if error.code == ErrorCode::CursorStale => return Ok(None),
+                Err(error) if error.code == ErrorCode::CursorStale => return Ok(Err(StaleReason::new("publication_superseded"))),
                 Err(error) => return Err(error),
             };
             if publication != transition.publication {
-                return Ok(None);
+                return Ok(Err(StaleReason::new("publication_changed")));
             }
             let host = publication.host_id;
             // The plan keeps an already-unresolved seat unresolved when this
@@ -2613,9 +2624,9 @@ pub fn apply_reconciliation_transition(
                 if !current
                     || matches!(&transition.action, ReconciliationAction::RetireRestoredPane { absent_target } if transition.expected_target.as_ref() != Some(absent_target))
                 {
-                    return Ok(None);
+                    return Ok(Err(StaleReason::new("restored_pane_seat_changed")));
                 }
-                return Ok(Some((0, None, false, host)));
+                return Ok(Ok((0, None, false, host)));
             }
             if matches!(transition.action, ReconciliationAction::MarkUnresolved) {
                 let already_unresolved: bool = tx.query_row(
@@ -2624,7 +2635,7 @@ pub fn apply_reconciliation_transition(
                     |r| r.get(0),
                 ).map_err(store_error)?;
                 if already_unresolved {
-                    return Ok(Some((0, None, true, host)));
+                    return Ok(Ok((0, None, true, host)));
                 }
             }
             if !saved_seat_cas(
@@ -2638,7 +2649,7 @@ pub fn apply_reconciliation_transition(
                     matches!(transition.action, ReconciliationAction::ReconfirmStructure { .. } | ReconciliationAction::BeginRetirement { .. }),
                 )?
             {
-                return Ok(None);
+                return Ok(Err(StaleReason::new("seat_cas_failed")));
             }
             let generation = match &transition.action {
                 ReconciliationAction::MarkUnresolved => 0,
@@ -2654,17 +2665,17 @@ pub fn apply_reconciliation_transition(
                             "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND state='resolved')",
                             [transition.seat.as_str()], |r| r.get(0),
                         ).map_err(store_error)?;
-                        if !resolved { return Ok(None); }
+                        if !resolved { return Ok(Err(StaleReason::new("carry_seat_not_resolved"))); }
                     }
                     // Same terminal, same verified boot and incarnation as the
                     // evidence on the seat's latest binding; occupancy and
                     // execution are not consulted (the production adapter
                     // reports both Unknown).
                     if transition.expected_terminal.as_ref() != Some(terminal) {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("structure_terminal_changed")));
                     }
                     let Some(observed) = snapshot_match(tx, &publication.id, Some(target.as_str()), Some(terminal.as_str()))? else {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("structure_target_absent")));
                     };
                     if observed.target != *target
                         || observed.terminal.as_ref() != Some(terminal)
@@ -2673,10 +2684,10 @@ pub fn apply_reconciliation_transition(
                         || observed.observation_sequence > publication.observation_sequence
                         || publication_structural_proof(&publication, &observed)?.is_none()
                     {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("structure_snapshot_mismatch")));
                     }
                     let bound: Option<(Option<String>, String, Option<String>)> = tx.query_row(
-                        "SELECT terminal_id,host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
+                        &format!("SELECT terminal_id,host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 ORDER BY {LATEST_BINDING_ORDER} LIMIT 1"),
                         [transition.seat.as_str()],
                         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
                     ).optional().map_err(store_error)?;
@@ -2699,14 +2710,14 @@ pub fn apply_reconciliation_transition(
                         )? == Some(true),
                     };
                     if !evidence_matches {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("structure_binding_evidence_mismatch")));
                     }
                     let owned: bool = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved' AND id!=?3)",
                         params![host.get(),target.as_str(),transition.seat.as_str()],
                         |r| r.get(0),
                     ).map_err(store_error)?;
-                    if owned { return Ok(None); }
+                    if owned { return Ok(Err(StaleReason::new("structure_target_owned"))); }
                     checked_host_number(observed.structural_generation)?
                 }
                 ReconciliationAction::Move { target, terminal } => {
@@ -2717,7 +2728,7 @@ pub fn apply_reconciliation_transition(
                         Some(terminal.as_str()),
                     )?;
                     let Some(observed) = observed else {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("move_target_absent")));
                     };
                     if observed.target != *target
                         || observed.terminal.as_ref() != Some(terminal)
@@ -2725,10 +2736,10 @@ pub fn apply_reconciliation_transition(
                         || observed.observation_sequence == 0
                         || observed.observation_sequence > publication.observation_sequence
                     {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("move_snapshot_mismatch")));
                     }
                     if publication_structural_proof(&publication, &observed)?.is_none() {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("move_structural_proof_missing")));
                     }
                     let owned: bool = tx
                         .query_row(
@@ -2738,7 +2749,7 @@ pub fn apply_reconciliation_transition(
                         )
                         .map_err(store_error)?;
                     if owned {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("move_target_owned")));
                     }
                     // A seat holds many open bindings (ht-54r.3), all in one pane: the evidence
                     // is the most recent one's, and a verified execution may be any of theirs.
@@ -2755,7 +2766,7 @@ pub fn apply_reconciliation_transition(
                             boot == publication.boot.as_str()
                                 && incarnation.as_deref() == Some(&publication.incarnation)
                         })
-                    { return Ok(None); }
+                    { return Ok(Err(StaleReason::new("move_continuity_mismatch"))); }
                     if bound.is_some() {
                         match observed.verified_execution.as_ref() {
                             // A verified execution must be the bound one: a
@@ -2765,7 +2776,7 @@ pub fn apply_reconciliation_transition(
                                     || !observed.top_level_occupant
                                     || !open_placements.iter().any(|p| p.execution == execution.as_str())
                                 {
-                                    return Ok(None);
+                                    return Ok(Err(StaleReason::new("move_execution_mismatch")));
                                 }
                             }
                             // Unknown execution never unseats a binding (D2):
@@ -2779,7 +2790,7 @@ pub fn apply_reconciliation_transition(
                                 let same_terminal = structural_matches == Some(true)
                                     || open_placements.iter().any(|p| p.terminal.as_deref() == Some(terminal.as_str()));
                                 if !same_terminal || registered && observed.shows_occupant_absent() {
-                                    return Ok(None);
+                                    return Ok(Err(StaleReason::new("move_occupant_absent")));
                                 }
                             }
                         }
@@ -2797,13 +2808,13 @@ pub fn apply_reconciliation_transition(
                             || observed.occupancy != StructuralOccupancy::Occupied
                             || !observed.top_level_occupant
                             || observed.verified_execution.as_ref().map(ExecutionId::as_str) != historical.as_deref()
-                        { return Ok(None); }
+                        { return Ok(Err(StaleReason::new("move_historical_execution_mismatch"))); }
                     }
                     checked_host_number(observed.structural_generation)?
                 }
                 ReconciliationAction::BeginRetirement { absent_target } => {
                     if transition.expected_target.as_ref() != Some(absent_target) {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("retire_target_changed")));
                     }
                     let state: String = tx.query_row("SELECT state FROM seats WHERE id=?1", [transition.seat.as_str()], |r| r.get(0)).map_err(store_error)?;
                     let bound = if state == "resolved" {
@@ -2812,7 +2823,7 @@ pub fn apply_reconciliation_transition(
                             transition.expected_target.as_ref(), transition.expected_terminal.as_ref(),
                         )? {
                             Some(true) => Some((publication.boot.as_str().to_owned(), Some(publication.incarnation.clone()))),
-                            Some(false) => return Ok(None),
+                            Some(false) => return Ok(Err(StaleReason::new("retire_continuity_mismatch"))),
                             None => open_binding_placements(tx, &transition.seat)?
                                 .first()
                                 .map(|p| (p.host_boot.clone(), p.incarnation.clone())),
@@ -2821,7 +2832,7 @@ pub fn apply_reconciliation_transition(
                         // Unresolved recovery remains restricted by saved_seat_cas
                         // to host invalidation and its retained published provenance.
                         let historical: Option<(String, Option<String>)> = tx.query_row(
-                            "SELECT host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
+                            &format!("SELECT host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 ORDER BY {LATEST_BINDING_ORDER} LIMIT 1"),
                             [transition.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?)),
                         ).optional().map_err(store_error)?;
                         match historical {
@@ -2833,7 +2844,7 @@ pub fn apply_reconciliation_transition(
                             ).optional().map_err(store_error)?,
                         }
                     };
-                    let Some((bound_boot, bound_incarnation)) = bound else { return Ok(None); };
+                    let Some((bound_boot, bound_incarnation)) = bound else { return Ok(Err(StaleReason::new("retire_binding_evidence_missing"))); };
                     let terminal_present = match transition.expected_terminal.as_ref() {
                         Some(terminal) => snapshot_match(
                             tx,
@@ -2849,7 +2860,7 @@ pub fn apply_reconciliation_transition(
                         || snapshot_match(tx, &publication.id, Some(absent_target.as_str()), None)?.is_some()
                         || terminal_present
                     {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("retire_pane_still_present")));
                     }
                     let target_generation: i64 = tx
                         .query_row(
@@ -2859,7 +2870,7 @@ pub fn apply_reconciliation_transition(
                         )
                         .map_err(store_error)?;
                     if target_generation <= 0 || transition.expected_binding_generation == i64::MAX as u64 {
-                        return Ok(None);
+                        return Ok(Err(StaleReason::new("retire_target_generation_invalid")));
                     }
                     target_generation
                 }
@@ -2874,11 +2885,12 @@ pub fn apply_reconciliation_transition(
                 }
                 _ => None,
             };
-            Ok(Some((generation, proof, false, host)))
+            Ok(Ok((generation, proof, false, host)))
         },
         |tx, at, prepared| {
-            let Some((target_generation, proof, already_unresolved, host)) = prepared else {
-                return Ok(ReconciliationOutcome::Stale);
+            let (target_generation, proof, already_unresolved, host) = match prepared {
+                Ok(prepared) => prepared,
+                Err(reason) => return Ok(ReconciliationOutcome::Stale(reason)),
             };
             if already_unresolved {
                 return Ok(ReconciliationOutcome::Unchanged);
@@ -2900,7 +2912,7 @@ pub fn apply_reconciliation_transition(
                         "UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND host_id=?6 AND is_local=1 AND generation=?5 AND state='unresolved' AND unresolved_reason='host_invalidation'",
                         params![target.as_str(),target_generation,seat.as_str(),instance,checked_host_number(transition.expected_binding_generation)?,host.get()],
                     ).map_err(store_error)?;
-                    if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
+                    if changed != 1 { return Ok(ReconciliationOutcome::Stale(StaleReason::new("reconfirm_seat_changed"))); }
                     // Nothing to carry: the invalidation that unresolved the
                     // seat ended its bindings and bumped its generation, and no
                     // check-in registers while it is unresolved (ht-0b8).
@@ -2916,7 +2928,7 @@ pub fn apply_reconciliation_transition(
                         "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND generation=?2 AND state='resolved')",
                         params![seat.as_str(),generation], |r| r.get(0),
                     ).map_err(store_error)?;
-                    if !resolved { return Ok(ReconciliationOutcome::Stale); }
+                    if !resolved { return Ok(ReconciliationOutcome::Stale(StaleReason::new("carry_seat_changed"))); }
                     // C4: a carry that moves no binding changes nothing.
                     if !carry_binding_forward(tx, instance, at.utc, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)? {
                         return Ok(ReconciliationOutcome::Unchanged);
@@ -2936,7 +2948,7 @@ pub fn apply_reconciliation_transition(
                         params![target.as_str(),target_generation,seat.as_str(),checked_host_number(transition.expected_binding_generation)?],
                     ).map_err(store_error)?;
                     if changed != 1 {
-                        return Ok(ReconciliationOutcome::Stale);
+                        return Ok(ReconciliationOutcome::Stale(StaleReason::new("move_seat_changed")));
                     }
                     tx.execute(
                         "UPDATE occupant_bindings SET target_id=?1,terminal_id=?2,target_generation=?3 WHERE seat_id=?4 AND ended_at IS NULL",
@@ -2966,7 +2978,7 @@ pub fn apply_reconciliation_transition(
                 ReconciliationAction::WatchRestoredPane => {
                     let facts = restored_pane_evidence(tx, seat, &transition.publication, at.utc.0)?;
                     let (RestoredPane::Observe, Some(terminal)) = (facts.evidence, facts.terminal) else {
-                        return Ok(ReconciliationOutcome::Stale);
+                        return Ok(ReconciliationOutcome::Stale(StaleReason::new("watch_evidence_missing")));
                     };
                     tx.execute(
                         "INSERT INTO restored_pane_watch(seat_id,host_id,host_boot,incarnation,target_id,terminal_id,target_generation,seat_generation,recorded_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) \
@@ -2978,7 +2990,7 @@ pub fn apply_reconciliation_transition(
                 ReconciliationAction::NoteRestoredPaneAbsent => {
                     let facts = restored_pane_evidence(tx, seat, &transition.publication, at.utc.0)?;
                     if !matches!(facts.evidence, RestoredPane::Absent | RestoredPane::Closed) {
-                        return Ok(ReconciliationOutcome::Stale);
+                        return Ok(ReconciliationOutcome::Stale(StaleReason::new("absent_evidence_missing")));
                     }
                     tx.execute(
                         "UPDATE restored_pane_watch SET absent_seen_at=?1,absent_observed_ms=?2 WHERE seat_id=?3",
@@ -2989,7 +3001,7 @@ pub fn apply_reconciliation_transition(
                 ReconciliationAction::RetireRestoredPane { absent_target } => {
                     let facts = restored_pane_evidence(tx, seat, &transition.publication, at.utc.0)?;
                     if facts.evidence != RestoredPane::Closed {
-                        return Ok(ReconciliationOutcome::Stale);
+                        return Ok(ReconciliationOutcome::Stale(StaleReason::new("retire_restored_evidence_missing")));
                     }
                     let job = control::begin_retirement_authored(
                         tx,
@@ -4272,6 +4284,26 @@ fn reconciliation_lags(tx: &Transaction<'_>, host: HostId) -> Result<bool, ApiEr
 /// evidence that the session had left that seat (ht-54r.91). Returns at most
 /// two, in seat-id order (the caller only needs to tell zero, one and
 /// several apart).
+/// Whether a reconciliation pass could still make some seat a C1 candidate
+/// for this session: a nonretired local seat has a top-level binding the
+/// candidate predicate of [`continuity_candidates`] would match, once that seat
+/// is unresolved.
+fn session_may_become_candidate(
+    tx: &Transaction<'_>,
+    instance: &str,
+    harness: &str,
+    native_session: &str,
+) -> Result<bool, ApiError> {
+    tx.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.{LOCAL_SEAT} AND s.state<>'retired' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:')",
+        ),
+        params![instance, harness, native_session],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
 pub(crate) fn continuity_candidates(
     tx: &Transaction<'_>,
     instance: &str,
@@ -4676,8 +4708,13 @@ pub fn decide_continuity(
                     // Until the first reconciliation pass of the current
                     // recovery epoch has run, "no unresolved seat" only says the
                     // daemon has not yet rebuilt the seats a Herdr restart
-                    // unresolved: pending, not final.
-                    if reconciliation_lags(tx, host)? {
+                    // unresolved: pending, not final. A pass only unresolves
+                    // seats, never adds bindings, so a session no seat's
+                    // binding names can never become a candidate: its answer
+                    // is final now, whatever the lag (ht-kaw9).
+                    if reconciliation_lags(tx, host)?
+                        && session_may_become_candidate(tx, &instance, harness, session)?
+                    {
                         api_error(
                             ErrorCode::ServiceBusy,
                             "recovery reconciliation of the current host epoch has not finished; retry",

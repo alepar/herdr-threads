@@ -2375,6 +2375,69 @@ fn an_older_connected_binding_is_carried_past_a_newer_session_of_the_new_epoch()
     assert_eq!(scenario.published(&message), (true, vec![]));
 }
 
+// Kills (ht-kaw9): a carry whose binding evidence is the seat's highest
+// binding ordinal. A binding reopened after a rebind keeps its old ordinal, so
+// rows that ended earlier (a subagent of an older Herdr incarnation) can sort
+// above it. Judging the carry by such a row refused it as Stale on every pass,
+// so the epoch's reconciliation marker was never recorded.
+#[test]
+fn a_reopened_binding_below_ended_rows_is_still_carried() {
+    let scenario = SendScenario::new();
+    let second = publish_snapshot_at(&scenario.context, 2, 7, &["p", "q"], true);
+    checked(
+        &scenario.service,
+        lifecycle(scenario.sender.clone(), "sender-again"),
+    );
+    // An ended subagent row of an older incarnation, at a higher ordinal than
+    // the recipient's open (reopened) main binding.
+    let columns: Vec<String> = scenario
+        .db
+        .prepare("SELECT name FROM pragma_table_info('occupant_bindings') WHERE name NOT IN ('ordinal','binding_id','terminal_id','host_boot','incarnation','ended_at','role','agent_id','parent_binding','liveness','disconnect_reason')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let columns = columns.join(",");
+    scenario
+        .db
+        .execute(
+            &format!(
+                "INSERT INTO occupant_bindings({columns},binding_id,terminal_id,host_boot,incarnation,ended_at,role,agent_id,parent_binding,liveness,disconnect_reason) \
+                 SELECT {columns},'old-subagent','term-old','old-boot','old-inc',1,'subagent','old-agent',binding_id,'disconnected','liveness_end_event' \
+                 FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND native_session='recipient-main'"
+            ),
+            [],
+        )
+        .unwrap();
+    let mut outcomes = Vec::new();
+    let page = scenario
+        .store
+        .saved_seats_page(&second.id, 0, None, 16, &budget())
+        .unwrap();
+    for transition in crate::identity::reconcile::plan_page(&page).unwrap() {
+        let seat = transition.seat.as_str().to_owned();
+        let action = format!("{:?}", transition.action);
+        let outcome = scenario
+            .store
+            .apply_reconciliation_transition(transition, &budget())
+            .unwrap();
+        outcomes.push((seat, action, outcome));
+    }
+    assert!(
+        outcomes
+            .iter()
+            .any(|(seat, action, outcome)| seat == "recipient"
+                && action.contains("CarryForward")
+                && *outcome == crate::ports::ReconciliationOutcome::Applied),
+        "the recipient's open binding is carried: {outcomes:?}"
+    );
+    assert_eq!(
+        recipient_bindings(&scenario),
+        vec![("recipient-main".to_owned(), 2, "connected".to_owned())]
+    );
+}
+
 // Kills (C4, availability follows liveness): a carry that anchors availability
 // (starting receipt timers) and closes the unavailability episode although no
 // carried row is connected, and a `carry_pending` that suppresses the warning

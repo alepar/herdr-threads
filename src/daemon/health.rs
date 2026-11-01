@@ -133,6 +133,8 @@ pub struct HealthInputs {
     /// Guarded seat transitions the store refused during reconciliation since
     /// boot (skipped, never fatal).
     pub transitions_refused: u64,
+    /// The seats behind `transitions_refused`, with the store's reason.
+    pub refused_seats: Vec<crate::service::host_evidence::RefusedSeat>,
     /// Actual contract failure lines: at most one per harness in the 24-hour
     /// Health window. Metadata/version/manifest advice alone adds no limitation.
     /// When the evidence store could not be read this is the single
@@ -548,6 +550,7 @@ impl HealthInputs {
             log_path: None,
             degraded_lanes: Vec::new(),
             transitions_refused: 0,
+            refused_seats: Vec::new(),
             harness_version_lines: Vec::new(),
             since_start_ms: None,
             hosts: Vec::new(),
@@ -748,11 +751,28 @@ impl HealthInputs {
                 .push(binding_evidence_health_line(report));
         }
         if self.transitions_refused > 0 {
+            let seats: Vec<String> = self
+                .refused_seats
+                .iter()
+                .map(|refused| {
+                    format!(
+                        "{} {} x{}",
+                        refused.seat.as_str(),
+                        refused.reason,
+                        refused.count
+                    )
+                })
+                .collect();
+            let seats = if seats.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", seats.join(", "))
+            };
             push(
                 &mut health.notes,
                 format!(
-                    "reconciliation: the store refused {} seat transition(s) since boot; those \
-                     seats were skipped, the others reconciled",
+                    "reconciliation: the store refused {} seat transition(s) since boot{seats}; \
+                     those seats were skipped, the others reconciled",
                     self.transitions_refused
                 ),
             );
