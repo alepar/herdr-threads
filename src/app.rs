@@ -1027,7 +1027,7 @@ impl LaneProbe {
         let session = self.session_of(locator)?;
         match lane {
             Lane::Observation => Some(Arc::clone(session.observation().pacer())),
-            Lane::Wakes => Some(Arc::clone(session.wake().pacer())),
+            Lane::Wakes => session.wake().map(|wake| Arc::clone(wake.pacer())),
             _ => None,
         }
     }
@@ -1036,7 +1036,7 @@ impl LaneProbe {
         let session = self.host_sessions()?.attached().into_iter().next()?;
         match lane {
             Lane::Observation => Some(Arc::clone(session.observation().pacer())),
-            Lane::Wakes => Some(Arc::clone(session.wake().pacer())),
+            Lane::Wakes => session.wake().map(|wake| Arc::clone(wake.pacer())),
             _ => None,
         }
     }
@@ -2527,10 +2527,13 @@ where
             // host lanes report the startup session's (per-host Health: ht-5fr.2.10).
             let lane_statuses = vec![
                 factory_status.clone(),
-                primary.as_ref().map_or_else(
-                    || factory_wake_status.clone(),
-                    |session| Arc::clone(session.wake().status()),
-                ),
+                primary
+                    .as_ref()
+                    .and_then(|session| session.wake())
+                    .map_or_else(
+                        || factory_wake_status.clone(),
+                        |wake| Arc::clone(wake.status()),
+                    ),
                 primary.as_ref().map_or_else(
                     || factory_observation_status.clone(),
                     |session| Arc::clone(session.observation().status()),
