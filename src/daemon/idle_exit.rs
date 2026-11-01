@@ -31,12 +31,19 @@ pub struct ActivityProbe {
     pub gauge: ConnectionGauge,
 }
 
+/// Whether a dialled host keeps the daemon up (07 §5.3). A dialled session
+/// exists only for a remembered host holding seats; the built-in host is never
+/// dialled and never counts, so a daemon with only it exits when idle.
+pub(crate) fn dialled_hosts_active(hosts: &HostSessions) -> bool {
+    hosts.attached_count() != 0
+}
+
 impl ActivityProbe {
     /// True while any host is attached, any peer link is established or
     /// handshaking (inbound or dialed), any dial target is enabled, or any
     /// local client connection is open.
     pub fn active(&self) -> bool {
-        self.hosts.attached_count() != 0
+        dialled_hosts_active(&self.hosts)
             || self.sync.link_count() != 0
             || self.sync.enabled_target_count() != 0
             || self.gauge.count() != 0

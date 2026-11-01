@@ -137,7 +137,8 @@ impl RemoteResolver {
         {
             return outcome;
         }
-        let sessions = self.sessions.attached();
+        // Reads consult every host, the built-in one included (07 §5.3).
+        let sessions = self.sessions.all_for_reads();
         let budget = self.budget();
         let mut matches = Vec::new();
         let mut failed = sessions.is_empty();

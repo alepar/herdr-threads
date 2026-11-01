@@ -302,6 +302,7 @@ impl DomainService {
         let hosts = self
             .hosts
             .as_ref()
+            // Reads consult every host, the built-in one included (07 §5.3).
             .map_or_else(Vec::new, |hosts| hosts.all_for_reads());
         let now = self.clock.utc_now();
         classify_wake_rows(&mut rows, &hosts, &|seat| {
@@ -414,9 +415,8 @@ impl DomainService {
             Some(locator) => self.attached_host(locator, budget),
             None => self
                 .hosts
-                .as_ref()
-                .and_then(|hosts| hosts.attached().into_iter().next())
-                .ok_or_else(|| ApiError::host_unavailable("no Herdr server attached")),
+                .as_deref()
+                .map_or_else(|| Err(no_host_attached()), operator_fallback_host),
         }
     }
 
@@ -1357,6 +1357,22 @@ impl DomainService {
 }
 
 /// The locator a prebuilt host answers to before a namespace names its own.
+/// The operator-action failure when no host is attached (G5).
+pub(crate) fn no_host_attached() -> ApiError {
+    ApiError::host_unavailable("no host attached")
+}
+
+/// The host an operator action that names none runs on: the lowest-id dialled
+/// one, else the built-in one (07 §5.3); it only supplies the store and writer.
+pub(crate) fn operator_fallback_host(hosts: &HostSessions) -> Result<Arc<HostSession>, ApiError> {
+    hosts
+        .attached()
+        .into_iter()
+        .next()
+        .or_else(|| hosts.all_for_reads().into_iter().next())
+        .ok_or_else(no_host_attached)
+}
+
 fn prebuilt_locator() -> HostLocator {
     HostLocator::parse("/herdr-threads/prebuilt-host.sock").expect("a canonical fixture locator")
 }

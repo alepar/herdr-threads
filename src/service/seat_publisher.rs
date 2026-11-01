@@ -198,7 +198,8 @@ pub(crate) fn read_labels(
     held: &LabelMap,
 ) -> LabelMap {
     let mut out = HashMap::new();
-    for session in sessions.attached() {
+    // Reads consult every host, the built-in one included (07 §5.3).
+    for session in sessions.all_for_reads() {
         let Ok(found) = session.port().seat_labels(budget) else {
             let host = session.host_id();
             out.extend(
