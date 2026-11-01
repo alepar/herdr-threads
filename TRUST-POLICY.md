@@ -1901,6 +1901,12 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
   (A2); the name is a cooperative same-user claim, not evidence. An unused typo seat is retired by the
   operator.
 
+- Remote seat names (N7). A named seat's name travels as `seat.created.display_name`; a receiver keeps it
+  as `seats.name` of the remote row only when it parses as a `SeatName`, else NULL (never a rejection). It
+  is display and the `name@node` selector, a cooperative claim of the seat's home node: two seats of one
+  name on a node make `name@node` a refused conflict, never a pick, and no name feeds routing, wake or
+  attribution. Names never change after publication.
+
 - Read-only bindings (D3, SA7). A caller whose environment carries `HERDR_THREADS_SEAT_READONLY=1` has its
   binding recorded `occupant_bindings.readonly = 1` by its check-in (the flag only rises; the CLI sends it,
   the daemon decides). A read-only binding reads, advances its own cursors and sends like any other, but a
