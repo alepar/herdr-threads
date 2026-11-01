@@ -30,18 +30,20 @@ use super::{
     panes::{looks_like_pane_id, resolve_parents},
     seat_selector::{self, Narrowing},
 };
-use crate::host::hc::labels::{AddressRefusal, HcAddress, HcCore};
+use crate::host::hc::labels::{AddressRefusal, HcAddress, HcCore, TerminalId};
 use crate::sync::frame::{AddrOutcome, AddrTarget};
 use crate::{
     daemon::paths::{NodePaths, RuntimeContext},
     host::observation::HostTopology,
     ports::LocalClient,
     protocol::{
-        capabilities::INVITATION_CONFIRMATION_V1,
+        capabilities::{HOST_TOPOLOGIES_V1, INVITATION_CONFIRMATION_V1},
         commands::{Command, SeatInspectQuery},
-        ids::{HostTargetId, SeatId},
+        ids::{HostLocator, HostTargetId, SeatId},
         pagination::PageRequest,
-        results::{ApiError, CommandResult, ContinuityStatus, ErrorCode, SeatInspection},
+        results::{
+            ApiError, CommandResult, ContinuityStatus, ErrorCode, HostPaneLabels, SeatInspection,
+        },
         sync_admin::{AddressReply, RemoteAddress, SyncCommand, SyncReply},
         time::Clock,
     },
@@ -82,15 +84,43 @@ pub(crate) fn skip_first_freeze_for_test() -> impl Drop {
 /// The herdr-core reading of `raw` against `cores`: the terminal it names, `None` when `raw` is
 /// no such address (another reading may apply), or a refusal listing the `<session>:tN`
 /// candidates when a bare `tN` is ambiguous (one line of about 40 bytes plus 10 per candidate).
-fn hc_selector(raw: &str, cores: &[HcCore]) -> Result<Option<HostTargetId>, ApiError> {
+fn hc_selector(raw: &str, cores: &[HcCore]) -> Result<Option<(String, HostTargetId)>, ApiError> {
     let Some(address) = HcAddress::parse(raw) else {
         return Ok(None);
     };
     match address.resolve(cores) {
-        Ok((_, terminal)) => Ok(Some(HostTargetId::new(terminal.as_str()))),
+        Ok((session, terminal)) => Ok(Some((session, HostTargetId::new(terminal.as_str())))),
         Err(AddressRefusal::NoSuchTarget) => Ok(None),
         Err(refusal) => Err(ApiError::invalid_request(refusal.to_string())),
     }
+}
+
+/// The attached herdr-core cores from `HostTopologies` rows: one per reported session, with
+/// the terminals it owns, and the locator of the host that reported each session.
+fn hc_cores_from(rows: &[HostPaneLabels]) -> (Vec<HcCore>, HashMap<String, HostLocator>) {
+    let mut cores: Vec<HcCore> = Vec::new();
+    let mut locators = HashMap::new();
+    for row in rows {
+        let Some(session) = &row.session else {
+            continue;
+        };
+        let Some(terminal) = TerminalId::parse(row.target.as_str()) else {
+            continue;
+        };
+        if let Some(locator) = &row.locator {
+            locators
+                .entry(session.clone())
+                .or_insert_with(|| locator.clone());
+        }
+        match cores.iter_mut().find(|core| &core.session == session) {
+            Some(core) => core.terminals.push(terminal),
+            None => cores.push(HcCore {
+                session: session.clone(),
+                terminals: vec![terminal],
+            }),
+        }
+    }
+    (cores, locators)
 }
 
 /// A host read run at most once, its outcome (success or failure) shared by every slot.
@@ -160,6 +190,8 @@ where
     caller: Once<Option<HostTargetId>, L>,
     raw_narrowing: Option<SeatNarrowing>,
     narrowing: OnceCell<Narrowing>,
+    /// The herdr-core cores and their host locators, read from the daemon on first use.
+    hc: OnceCell<(Vec<HcCore>, HashMap<String, HostLocator>)>,
 }
 
 /// One slot's pass-1 outcome: a frozen seat, or a pane whose seat is allocated in pass 2.
@@ -246,6 +278,7 @@ where
         caller: Once::new(live_caller),
         raw_narrowing: parsed.seat_narrowing.take(),
         narrowing: OnceCell::new(),
+        hc: OnceCell::new(),
     };
     let mut memo: HashMap<(String, SeatMapping), Resolved> = HashMap::new();
     let mut resolutions: Vec<(SeatSlot, Resolved)> = Vec::new();
@@ -652,8 +685,8 @@ where
             return Ok(Resolved::Seat(seat));
         }
         // 2b. A herdr-core terminal `<session>:tN`, or a bare `tN` with one core attached.
-        if let Some(target) = hc_selector(raw, &self.hc_cores()).map_err(run_error)? {
-            return self.map_pane(parsed, slot, target);
+        if let Some((target, host)) = self.hc_target(raw).map_err(run_error)? {
+            return self.map_hc_pane(parsed, slot, target, host);
         }
         // 3. A direct pane ID needs no topology unless narrowing applies.
         if looks_like_pane_id(raw) && self.raw_narrowing.is_none() {
@@ -685,11 +718,45 @@ where
         }
     }
 
-    /// The attached herdr-core cores and their terminals. Empty until attached hosts
-    /// feed it (ht-kqrt.99: discovery/attach plus the session name on the wire), so the
-    /// step above resolves nothing yet.
-    fn hc_cores(&self) -> Vec<HcCore> {
-        Vec::new()
+    /// The herdr-core terminal `raw` names and its host's locator. The daemon is asked for
+    /// cores only when `raw` has the `tN` / `<session>:tN` shape.
+    fn hc_target(
+        &self,
+        raw: &str,
+    ) -> Result<Option<(HostTargetId, Option<HostLocator>)>, ApiError> {
+        if HcAddress::parse(raw).is_none() {
+            return Ok(None);
+        }
+        let (cores, locators) = self.hc_cores();
+        Ok(hc_selector(raw, cores)?
+            .map(|(session, target)| (target, locators.get(&session).cloned())))
+    }
+
+    /// The attached herdr-core cores and their host locators, from the daemon's
+    /// `HostTopologies` rows (once per invocation). Empty when the daemon predates the
+    /// command or the read fails: the step resolves nothing then.
+    fn hc_cores(&self) -> &(Vec<HcCore>, HashMap<String, HostLocator>) {
+        self.hc.get_or_init(|| {
+            let Ok((_, client)) = self.connection.get() else {
+                return Default::default();
+            };
+            let budget = crate::protocol::time::CallBudget {
+                deadline: crate::protocol::time::MonoInstant(
+                    self.clock
+                        .monotonic_now()
+                        .0
+                        .saturating_add(REMOTE_ADDRESS_BUDGET_MS),
+                ),
+                cancellation: crate::protocol::time::Cancellation::default(),
+            };
+            if !client.supports_capability(HOST_TOPOLOGIES_V1, &budget) {
+                return Default::default();
+            }
+            match client.call(Command::HostTopologies, &budget) {
+                Ok(CommandResult::HostTopologies(rows)) => hc_cores_from(&rows),
+                _ => Default::default(),
+            }
+        })
     }
 
     /// Whether `raw` names a live local pane (its whole-string reading): a read failure is no hit.
@@ -988,6 +1055,26 @@ where
             .map_err(run_error)
     }
 
+    /// [`Self::map_pane`] for a herdr-core terminal: a lookup is scoped to the core's host,
+    /// so `alpha:t1` never picks the seat on `beta`'s `t1`.
+    fn map_hc_pane(
+        &mut self,
+        parsed: &ParsedCli,
+        slot: SeatSlot,
+        pane: HostTargetId,
+        host: Option<HostLocator>,
+    ) -> Result<Resolved, RunError> {
+        match slot.mapping() {
+            SeatMapping::Lookup => {
+                let (_, client) = self.connection.get()?;
+                super::pane_seat_on(client, &parsed.output, &pane, host, self.clock.as_ref())?
+                    .map(Resolved::Seat)
+                    .ok_or_else(|| super::no_seat_for_pane(&pane))
+            }
+            SeatMapping::Allocate => Ok(Resolved::Pane { pane, line: None }),
+        }
+    }
+
     /// Steps 3 and 4: the pane's seat by the slot's D4 class. A lookup resolves now; an
     /// allocation is deferred to pass 2 (no journal write here).
     fn map_pane(
@@ -1240,15 +1327,162 @@ mod hc_selector_tests {
             error.detail
         );
         assert_eq!(
-            hc_selector("beta:t1", &cores).unwrap().unwrap().as_str(),
-            "t1"
+            hc_selector("beta:t1", &cores).unwrap().unwrap(),
+            ("beta".to_owned(), HostTargetId::new("t1"))
         );
+    }
+
+    fn row(session: Option<&str>, target: &str, locator: Option<&str>) -> HostPaneLabels {
+        HostPaneLabels {
+            host: "1".into(),
+            target: HostTargetId::new(target),
+            terminal: target.into(),
+            incarnation: None,
+            workspace_id: "-".into(),
+            workspace_label: None,
+            tab_id: "-".into(),
+            tab_label: None,
+            pane_label: None,
+            session: session.map(str::to_owned),
+            locator: locator.map(|l| HostLocator::parse(l).unwrap()),
+        }
+    }
+
+    fn two_core_rows() -> Vec<HostPaneLabels> {
+        vec![
+            row(Some("alpha"), "t1", Some("/a")),
+            row(Some("alpha"), "t2", Some("/a")),
+            row(Some("beta"), "t1", Some("/b")),
+            row(None, "w1:p1", None),
+        ]
+    }
+
+    #[test]
+    fn cores_from_rows_group_by_session() {
+        let (cores, locators) = hc_cores_from(&two_core_rows());
+        assert_eq!(cores.len(), 2);
+        assert_eq!(cores[0].session, "alpha");
+        let ids: Vec<&str> = cores[0].terminals.iter().map(TerminalId::as_str).collect();
+        assert_eq!(ids, ["t1", "t2"]);
+        assert_eq!(cores[1].session, "beta");
+        assert_eq!(locators["alpha"].as_str(), "/a");
+        assert_eq!(locators["beta"].as_str(), "/b");
+    }
+
+    #[test]
+    fn rows_without_session_make_no_core() {
+        let (cores, locators) = hc_cores_from(&[row(None, "w1:p1", None), row(None, "t1", None)]);
+        assert!(cores.is_empty() && locators.is_empty());
+    }
+
+    #[test]
+    fn bare_t1_refused_with_both_candidates_from_rows() {
+        let (cores, _) = hc_cores_from(&two_core_rows());
+        let error = hc_selector("t1", &cores).unwrap_err();
+        assert_eq!(
+            error.detail,
+            "ambiguous terminal, use one of: alpha:t1 beta:t1"
+        );
+        // t2 is only on alpha: a bare t2 is unambiguous in the candidate list but several
+        // cores are attached, so it is refused too, naming just its owner.
+        assert!(
+            hc_selector("t2", &cores)
+                .unwrap_err()
+                .detail
+                .ends_with("alpha:t2")
+        );
+    }
+
+    #[test]
+    fn qualified_t1_maps_to_its_hosts_locator() {
+        let (cores, locators) = hc_cores_from(&two_core_rows());
+        let (session, target) = hc_selector("beta:t1", &cores).unwrap().unwrap();
+        assert_eq!((session.as_str(), target.as_str()), ("beta", "t1"));
+        assert_eq!(locators[&session].as_str(), "/b");
+    }
+
+    /// A client that counts `HostTopologies` calls and serves two-core rows.
+    struct Counting(std::sync::atomic::AtomicUsize);
+    impl LocalClient for Counting {
+        fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
+            name == HOST_TOPOLOGIES_V1
+        }
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            assert!(matches!(command, Command::HostTopologies));
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(CommandResult::HostTopologies(two_core_rows()))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+
+    struct TestClock;
+    impl Clock for TestClock {
+        fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+            crate::protocol::time::UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
+            crate::protocol::time::MonoInstant(0)
+        }
+    }
+
+    #[test]
+    fn non_tn_selector_reads_no_cores() {
+        let connection = LazyConnection::new(|| {
+            Ok((
+                crate::node::NodeUuid::new_v4(),
+                Counting(std::sync::atomic::AtomicUsize::new(0)),
+            ))
+        });
+        let clock: Arc<dyn Clock> = Arc::new(TestClock);
+        let mut stderr = Vec::new();
+        let stage = Stage {
+            connection: &connection,
+            clock: &clock,
+            stderr: &mut stderr,
+            topology: Once::new(|| Err(ApiError::invalid_request("unused"))),
+            caller: Once::new(|| Ok(None)),
+            raw_narrowing: None,
+            narrowing: OnceCell::new(),
+            hc: OnceCell::new(),
+        };
+        let calls = || {
+            connection
+                .get()
+                .unwrap()
+                .1
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+        };
+        for raw in ["w1:p1", "snSGbl096JZZ", "project/alice", "alpha:x1"] {
+            assert_eq!(stage.hc_target(raw).unwrap(), None, "{raw}");
+        }
+        assert_eq!(calls(), 0, "a non-tN selector read the cores");
+        let (target, host) = stage.hc_target("beta:t1").unwrap().unwrap();
+        assert_eq!(target.as_str(), "t1");
+        assert_eq!(host.unwrap().as_str(), "/b");
+        // A second tN selector reuses the one read.
+        assert!(stage.hc_target("alpha:t2").unwrap().is_some());
+        assert_eq!(calls(), 1);
     }
 
     #[test]
     fn other_readings_fall_through() {
         let one = [core("alpha")];
-        assert_eq!(hc_selector("t1", &one).unwrap().unwrap().as_str(), "t1");
+        assert_eq!(
+            hc_selector("t1", &one).unwrap().unwrap(),
+            ("alpha".to_owned(), HostTargetId::new("t1"))
+        );
         // No cores, an unknown session, or a non-address: not an hc selector.
         assert_eq!(hc_selector("t1", &[]).unwrap(), None);
         assert_eq!(hc_selector("gamma:t1", &one).unwrap(), None);

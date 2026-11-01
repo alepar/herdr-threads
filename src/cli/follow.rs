@@ -213,6 +213,7 @@ impl DaemonPanes {
                     tab_id: row.tab_id,
                     tab_label: row.tab_label,
                     pane_label: row.pane_label,
+                    session: row.session,
                 })
                 .collect()),
             _ => Ok(Vec::new()),

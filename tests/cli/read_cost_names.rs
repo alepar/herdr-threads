@@ -390,6 +390,7 @@ fn scoped_labels(index: usize, workspace: &str, tab: &str) -> SeatHostLabels {
         tab_id: tab.into(),
         tab_label: Some("tryout".into()),
         pane_label: Some("alice".into()),
+        session: None,
     }
 }
 

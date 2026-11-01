@@ -217,9 +217,18 @@ pub(crate) fn read_labels(
                     incarnation: label.incarnation,
                     workspace: label.workspace_label.unwrap_or(label.workspace_id),
                     tab: label.tab_label.unwrap_or(label.tab_id),
-                    pane: label
-                        .pane_label
-                        .unwrap_or_else(|| label.target.as_str().to_owned()),
+                    pane: label.pane_label.unwrap_or_else(|| {
+                        // An unnamed hc terminal reads `<session>:tN`: `tN` alone repeats
+                        // across cores.
+                        label
+                            .session
+                            .as_deref()
+                            .and_then(|session| {
+                                crate::host::hc::labels::TerminalId::parse(label.target.as_str())
+                                    .map(|t| crate::host::hc::labels::HcAddress::new(session, t))
+                            })
+                            .map_or_else(|| label.target.as_str().to_owned(), |a| a.to_string())
+                    }),
                 },
             );
         }
@@ -239,6 +248,7 @@ pub(crate) fn host_topologies(
             continue;
         };
         let host = session.host_id().get().to_string();
+        let locator = session.locator().clone();
         out.extend(
             found
                 .into_iter()
@@ -252,6 +262,8 @@ pub(crate) fn host_topologies(
                     tab_id: label.tab_id,
                     tab_label: label.tab_label,
                     pane_label: label.pane_label,
+                    locator: label.session.is_some().then(|| locator.clone()),
+                    session: label.session,
                 }),
         );
     }
@@ -334,3 +346,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../tests/service/hc_display.rs"]
+mod hc_display_tests;
