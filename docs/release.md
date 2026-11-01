@@ -2,6 +2,25 @@
 
 ## Current release status
 
+[v2.8.2 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.2) from source `b86202243`, a patch release. It carries a one-way store upgrade to node schema 12: migration 0012 rebuilds `allocation_decisions` for the new rebind kind. The peer wire is unchanged: `scripts/freeze-peer-wire 2.4.0 --at v2.8.2 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It carries two merged branches, each with a fixer roast and an independent review:
+- ht-hsyg, at the user's request through the tui-defects tab: seats survive a Herdr live handoff by kernel-observed process continuity (new provenance `structural_process_continuity`, TRUST-POLICY C1/C2 amended). The user chose the design: no Herdr change, session ids alone rejected because the daemon cannot observe them, application after the reconciliation pass. The independent review's six findings were fixed before merge: an uncapped rival check, in-pane rivals only, paging, episode-keyed bindings, incarnation-restricted scope, and expiring declines.
+- ht-mf0w: named Herdr sessions resolve the state dir and registry from the XDG home without a `herdr` call (verified against Herdr 0.9.1-0.9.5 source).
+
+**Qualification** on `b86202243` (claude-1 token, codex-2 credential), evidence in `~/.cache/herdr-threads-release/2.8.2`:
+- Static checks, builds, the Herdr matrix 0.9.1-0.9.5 (including the new live-handoff case on all five), package gate (700 s), installer suites and every leak check pass.
+- The full suite passed 8143/8146; the 3 failures are the zsh round-trip tests.
+- The wake e2e passed 120/120.
+
+**CI.** The prep commit's CI failed twice (runs 41268997150 and 41270681423, the second triggered by the tag), both on flakes rather than defects; the commits from main up to `fca7a10ab` were green:
+- `peer_stdio::idle_pump_stdout_never_blocks_a_nonblocking_reader` failed at 5.1 s against a 5 s bound; it passed at 4.6 s in the previous green run and at about 1 s locally. The only change between those commits is the version bump.
+- Shard 6/6 ran 321 s against its 300 s budget, with all of its tests passing.
+
+Both are filed as flakes. The tag was pushed before the first result had been read, a process slip; the flakes do not block a release, so the release stands. The [release run 41270681464](https://github.com/alepar/herdr-threads/actions/runs/41270681464) passed, and the archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 2.8.2, the right TARGET, modes and licenses; the credential scan is clean.
+
+**Installed on blacky with `herdr-threads update`** on the first try: "updated 2.8.1 -> 2.8.2 (sha256 verified twice; backup pre-v2.8.2-20261101T041044Z)". The daemon's `/proc` exe hash `51e4ffdf…` equals the archive binary, the store is at user_version 12, the daemon is healthy, and the Herdr plugin link is unchanged.
+
 [v2.8.1 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.1) from source `4eab5c0b0`, a patch release. No schema change (node schema stays 11) and no peer wire change: `scripts/freeze-peer-wire 2.4.0 --at v2.8.1 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 It carries two merged branches, each with a fixer roast and an independent review:
