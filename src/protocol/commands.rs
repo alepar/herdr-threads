@@ -439,7 +439,7 @@ pub struct SeatsQuery {
     #[serde(default, skip_serializing_if = "SeatFilter::is_empty")]
     pub filter: SeatFilter,
     /// Host scope (F9): only seats on this host. Sent only by a caller whose site is host-scoped
-    /// (`host_scoped_lookup()`), never from a Pane site, so a Pane request's bytes are unchanged.
+    /// (`sent_scope()`), never from a Pane site, so a Pane request's bytes are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<HostLocator>,
 }
@@ -1262,7 +1262,7 @@ pub struct ResolveThreadQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<SeatId>,
     /// The caller's host (F9): `caller_target` and `caller` resolve only on this host. Sent only
-    /// when the site is host-scoped (`host_scoped_lookup()`), never from a Pane site.
+    /// when the site is host-scoped (`sent_scope()`), never from a Pane site.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_host: Option<HostLocator>,
 }

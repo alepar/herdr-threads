@@ -190,8 +190,8 @@ of caller-location env. It exposes the following (07 §4.4):
   recognition-only reading of `HC_TERMINAL_ID`/`HC_TERMINAL_SOCKET` for the phase guard. N adds `Named`, H1 adds
   `Terminal`.
 
-`CallerSite` answers `moved_target`, `relative_pane`, `person_origin_allowed`, `enrolls_on_first_use`,
-`attempts_continuity`, `host_scoped_lookup`, `cache_key` and `env_assignments` as one closed match. Variable names
+`CallerSite` answers `moved_target`, `relative_pane`, `sent_scope`, `required_capability`,
+`locate_candidate`, `terminal_address`, `claim_host_locator` and `env_assignments` as one closed match. Variable names
 come from each host module's `ENV_VARS` const (G3): `host::native::ENV_VARS`, `host::named::ENV_VARS`,
 `host::hc::ENV_VARS`. Empty values are filtered: src/cli/mod.rs:311 does not filter them today, unlike
 hook.rs:258-260. `CallerClaim` (src/protocol/authority.rs:8-29) is unchanged.
@@ -873,7 +873,7 @@ needed a baseline exception.
 
 - `SeatsQuery.host: Option<HostLocator>` (a `deny_unknown_fields` struct, src/protocol/commands.rs:412-414) and
   the caller host on `ResolveThreadQuery` (also `deny_unknown_fields`, :1199-1201) are sent only when
-  `host_scoped_lookup()`, so pane bytes are unchanged and an old daemon never sees them from a pane. Thread
+  `sent_scope()` answers, so pane bytes are unchanged and an old daemon never sees them from a pane. Thread
   resolution from a named or terminal site is host-scoped by that field (07 §6.2).
 - `Command::HostTopologies` is gated on a new local capability `topology.host_topologies_v1` (in
   src/protocol/capabilities.rs, advertised from F). Without it the CLI renders local labels as `-` and proceeds, so
@@ -1557,7 +1557,7 @@ M6 wording, `LocateCaller` cache key) must not change:
 - Errors: a failed `hello` gives `CompleteUnverified` (closes nothing). A core id mismatch is a new boot (C2 holds). An RPC error before a launch record exists is `NotSubmitted`; `spawn_failed`, a timeout or a disconnect is `OutcomeUnknown` (H3).
 
 **CallerEnv → Located → CallerSite** (src/cli/caller_location.rs): a new module with closed enums. It is the CLI's only reader of caller-location env.
-- Owns: reading and empty-filtering the env (names come from each host module's `ENV_VARS`), the precedence (valid name, then one family, then `Ambiguous`, then refusal), M14/M16/M17, the tmux hint (N2), and the per-site answers (`moved_target`, `relative_pane`, `person_origin_allowed`, `enrolls_on_first_use`, `attempts_continuity`, `host_scoped_lookup`, `cache_key`, `env_assignments`).
+- Owns: reading and empty-filtering the env (names come from each host module's `ENV_VARS`), the precedence (valid name, then one family, then `Ambiguous`, then refusal), M14/M16/M17, the tmux hint (N2), and the per-site answers (`moved_target`, `relative_pane`, `sent_scope`, `required_capability`, `locate_candidate`, `terminal_address`, `claim_host_locator`, `env_assignments`).
 - Hides: which env family located the caller, from mod.rs, hook.rs, watch.rs, handoff hints and instance discovery.
 - Must not: verify anything (that is `LocateCaller` in the daemon, per A2), or rank one family above another. No other src/cli file reads these variables (enforced by a source scan).
 - Relationships: depends on the host modules' `ENV_VARS` consts only, not on the hosts. Consumers match on `CallerSite`'s methods, not on `CallerLocator`.
@@ -1595,7 +1595,7 @@ Variation:
 
 Walk-through:
 - Main use case: an agent runs `inbox` with `HERDR_THREADS_SEAT_NAME=reviewer` and no Herdr.
-  1. `CallerEnv::from_process` → `locate(Cli)` → `One(Named)` → `CallerSite`. `host_scoped_lookup` makes the CLI send `SeatsQuery.host`. Instance discovery takes the default dir.
+  1. `CallerEnv::from_process` → `locate(Cli)` → `One(Named)` → `CallerSite`. `sent_scope` makes the CLI send `SeatsQuery.host`. Instance discovery takes the default dir.
   2. The daemon resolves via `HostSessions::by_locator`, which answers from the built-in slot, to `NamedHost`.
   3. A seat-acting call enrolls: seats.rs allocates by name (M8) and runs the live-holder guard against `ProcessInfo`. If a host candidate is present, `LocateCaller` reads that host's `server_process` environ for M6.
   4. Delivery runs unchanged. A sender's `wake_status` looks up the row's host through `all_for_reads`. `target_wake_capability = None` → `idle_wake_on` → `NoWake`, persisted once in `no_wake_reports`.
