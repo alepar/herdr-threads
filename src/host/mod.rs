@@ -25,17 +25,7 @@ pub const PANE_SCOPED_ENV_VARS: &[&str] = &[
 pub(crate) const NAMED_SCRUB_ENV_VARS: &[&str] =
     &["HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY"];
 
-/// herdr-core terminal id and socket (recognition-only reads in F).
-pub(crate) const HC_TERMINAL_ID_ENV: &str = "HC_TERMINAL_ID";
-pub(crate) const HC_TERMINAL_SOCKET_ENV: &str = "HC_TERMINAL_SOCKET";
-
-/// herdr-core terminal env (moves to `host::hc::ENV_VARS` in H1). Scrub-only in F.
-pub(crate) const HC_SCRUB_ENV_VARS: &[&str] = &[
-    HC_TERMINAL_ID_ENV,
-    HC_TERMINAL_SOCKET_ENV,
-    "HC_SCOPE",
-    "HC_SESSION",
-];
+pub(crate) use hc::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV};
 
 /// The single env scrub list for every child the daemon side spawns (K5): the
 /// union of each host family's names. `spawn_detached` and handoff spawns
@@ -46,7 +36,7 @@ pub fn child_env_scrub_list() -> Vec<&'static str> {
     for name in PANE_SCOPED_ENV_VARS
         .iter()
         .chain(NAMED_SCRUB_ENV_VARS)
-        .chain(HC_SCRUB_ENV_VARS)
+        .chain(hc::ENV_VARS)
     {
         if !names.contains(name) {
             names.push(name);

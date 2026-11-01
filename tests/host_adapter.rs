@@ -1663,8 +1663,9 @@ fn native_cli_target_root_process_is_pane_shell_pid() {
 }
 
 #[test]
-fn implemented_kinds_is_exactly_herdr() {
-    assert_eq!(HostKind::IMPLEMENTED, &[HostKind::Herdr]);
+fn implemented_kinds_is_exactly_herdr_and_hc() {
+    assert_eq!(HostKind::IMPLEMENTED, &[HostKind::Herdr, HostKind::Hc]);
+    assert!(HostKind::Hc.is_implemented());
     assert!(!HostKind::IMPLEMENTED.contains(&HostKind::Unknown));
     assert!(HostKind::Herdr.is_implemented());
     assert!(!HostKind::Unknown.is_implemented());
