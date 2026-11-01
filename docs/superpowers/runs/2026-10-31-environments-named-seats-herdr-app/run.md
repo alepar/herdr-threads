@@ -159,3 +159,26 @@ item at T=0. Not in the default matrix, no version gate. Cleanup kills every pri
   `python3 scripts/wake-e2e.py --cases tmux-named/send-p0,tmux-named/send-p1 --codex-auth-home ~/.aisw/profiles/codex/codex-2`
   (Claude needs `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` on Linux). No credential was used in this leaf, so the
   agent half is unexercised; the running-turn recognizer (`esc to interrupt`) and composer glyph match are unverified live.
+
+## hc handoff CLI and launch gate (ht-kqrt.57, H3d2)
+
+Spec deviation, recorded as the bead asks: `launch` gains no creation flags. `LaunchArgs` is a pane selector and a launch
+has no bootstrap for the gate to authorize, so the spec's `handoff`/`launch --space` line is narrowed to `handoff`;
+in-place refusal (`launch --pane tN` into a herdr-core terminal, answered by `native_launch_capability() ==
+Unsupported`) is `launch`'s whole hc surface. `handoff --space SPACE --new-tab LABEL` and `handoff --new-terminal`
+select the herdr-core host in `cli::hc_target::select`: a `Terminal` caller site names its own core; a plain shell with no
+Herdr context uses `HcDiscovery` (exactly one core, else a refusal naming what was found; `hc` is never run). A Herdr pane
+caller or any Herdr context keeps the Herdr path, and `--new-terminal` there is refused. `--thread` and `--new-thread`
+into a hc target are refused before any creation (no `terminal.run`). The daemon's `AuthorizeLaunchGate` handler is
+`service::launch_gate::authorize`, advertised as `launch.gate_v1`. `topology_runtime::run`'s V3 arms (first run and
+retry) are `run_target`; a retried V3 record rebuilds its host from the frozen namespace endpoint.
+
+- L1 (unknown `herdr.tab` makes a new app tab): answered against fake_hc only. `space_label_set` shows `--space w1` sends
+  exactly `{herdr.space=w1, herdr.tab=<fresh id>, ht.bootstrap, ht.label}`; whether a real herdr-app creates a tab from
+  an unknown `herdr.tab` is macOS-only and stays remaining evidence.
+- L2 / L3: unchanged from the entries above and the hc-smoke entry (read-only reading of `run.rs`/`holder.rs`; live
+  smoke for pid-after-exec and for `outlive_parent` + `no_notify` stopping every `<hc>` note).
+- L4: the socket path comes from herdr-core `src/paths.rs` (`Paths::from_env`): `HC_SOCKET`, else `socket` in
+  `config.toml`, else `<runtime dir>/<prefix><session>.sock`; `HcDiscovery` derives the same path. Codex `--no-daemon`
+  for `HostKind::Hc` is `host_launch_argv` (ht-kqrt.54); the live Codex run stays remaining evidence.
+

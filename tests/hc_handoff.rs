@@ -1,0 +1,674 @@
+//! H3d2 (ht-kqrt.57): the hc handoff surface against `fake_hc`: target selection from the caller
+//! (`--space`, `--new-tab`, `--new-terminal`, discovery), the refusals, and the launch gate from
+//! the shim's request through the daemon's decision.
+//!
+//! The gate tests compose the real pieces without a daemon process: the shim's `authorize`
+//! (`cli::launch_gate`) calls a client that hands the request to the daemon's decision
+//! (`service::launch_gate::authorize`) over a scripted canonical view and the real `HcHost`
+//! observer on the fake core.
+
+use herdr_threads::{
+    app::SystemClock,
+    cli::{
+        caller_location::CallerLocator,
+        commands::{CliAction, parse_argv},
+        hc_target,
+        host_client::LaunchHandle,
+        launch_gate,
+        topology_handoff::{Request, TargetSelection},
+    },
+    host::hc::{HcBootstrapObserver, HcClient, HcHost},
+    ports::{
+        BootstrapObserver, CreateTargetOutcome, CreateTargetRequest, CreatedTarget,
+        HostCallContext, HostPort, LaunchGateView, LocalClient, NativeLaunchCapability, Placement,
+    },
+    protocol::{
+        commands::Command,
+        handoff::{AuthorizeLaunchGate, BootstrapAttempt, LaunchGateRefusal, LaunchGateReply},
+        ids::{HostCallId, HostTargetId, OperationId},
+        output::OutputSpec,
+        results::{ApiError, CommandResult, ErrorCode},
+        time::{CallBudget, Cancellation, Clock, MonoInstant},
+    },
+    service::launch_gate::{GateWorld, authorize},
+    test_support::{
+        fake_hc::{FakeHc, FakeTerminal},
+        scratch::temp_path,
+    },
+};
+use std::{
+    ffi::OsString,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
+fn clock() -> Arc<dyn Clock> {
+    Arc::new(SystemClock::new())
+}
+
+fn budget(clock: &dyn Clock, ms: u64) -> CallBudget {
+    CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + ms),
+        cancellation: Cancellation::default(),
+    }
+}
+
+fn context(clock: &dyn Clock) -> HostCallContext {
+    HostCallContext {
+        budget: budget(clock, 10_000),
+        expected_boot: None,
+        expected_epoch: None,
+    }
+}
+
+fn request(
+    selection: &TargetSelection,
+    witness: herdr_threads::ports::HostWitness,
+) -> CreateTargetRequest {
+    CreateTargetRequest {
+        correlation: HostCallId::new("corr-1"),
+        placement: selection.placement.clone(),
+        cwd: "/tmp".into(),
+        label: "worker".into(),
+        focus: false,
+        env: Default::default(),
+        directory_context: None,
+        expected_witness: witness,
+        gate_argv: [
+            "herdr-threads",
+            "internal",
+            "launch-gate",
+            "--bootstrap",
+            "op-1:1",
+            "--",
+            "sh",
+        ]
+        .map(String::from)
+        .to_vec(),
+    }
+}
+
+fn handoff_request(args: &[&str]) -> Request {
+    let mut argv = vec!["ht", "handoff"];
+    argv.extend_from_slice(args);
+    argv.extend(["--kind", "codex", "--", "literal work"]);
+    match parse_argv(argv).expect("parses").action {
+        CliAction::TopologyHandoff(request) => request,
+        other => panic!("a topology handoff, got {other:?}"),
+    }
+}
+
+fn terminal_site(fake: &FakeHc, id: &str) -> CallerLocator {
+    CallerLocator::Terminal {
+        socket: fake.socket().to_string_lossy().into_owned(),
+        id: id.into(),
+    }
+}
+
+fn no_env(_: &str) -> Option<OsString> {
+    None
+}
+
+/// Create the target a selection names on the fake core and return it.
+fn create(fake: &FakeHc, selection: &TargetSelection) -> CreatedTarget {
+    let clock = clock();
+    let handle = LaunchHandle::hc(
+        fake.socket(),
+        clock.clone(),
+        &budget(clock.as_ref(), 10_000),
+    )
+    .expect("probe the fake core");
+    let request = request(selection, handle.witness().expect("a witness").clone());
+    match handle
+        .create_port()
+        .create_target(&request, &context(clock.as_ref()))
+    {
+        CreateTargetOutcome::Created(created) => *created,
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
+fn run_params(fake: &FakeHc) -> serde_json::Value {
+    let calls = fake.calls_to("terminal.run");
+    assert_eq!(calls.len(), 1, "exactly one terminal.run: {calls:?}");
+    calls[0].params.clone()
+}
+
+// ---- parsing and selection ----
+
+#[test]
+fn new_terminal_parses_and_conflicts_with_new_tab() {
+    let request = handoff_request(&["--new-terminal"]);
+    assert!(request.new_terminal && request.new_tab.is_none());
+    let both = parse_argv([
+        "ht",
+        "handoff",
+        "--new-terminal",
+        "--new-tab",
+        "x",
+        "--kind",
+        "codex",
+        "--",
+        "b",
+    ]);
+    assert!(both.is_err(), "--new-terminal and --new-tab are exclusive");
+}
+
+#[test]
+fn space_label_set() {
+    let fake = FakeHc::start();
+    fake.add_terminal(FakeTerminal::live("t1"));
+    let request = handoff_request(&["--new-tab", "peer", "--space", "w1"]);
+    let selection = hc_target::select(&request, Some(&terminal_site(&fake, "t1")), false, &no_env)
+        .unwrap()
+        .expect("a terminal-site caller creates on its own core");
+    assert_eq!(selection.endpoint, fake.socket());
+    assert_eq!(
+        selection.placement,
+        Placement::NewTab {
+            space: HostTargetId::new("w1")
+        }
+    );
+    create(&fake, &selection);
+    let labels = run_params(&fake)["labels"].clone();
+    let labels = labels.as_object().expect("labels");
+    let keys: std::collections::BTreeSet<&str> = labels.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        ["herdr.space", "herdr.tab", "ht.bootstrap", "ht.label"].into()
+    );
+    assert_eq!(labels["herdr.space"], "w1");
+    assert!(
+        !labels["herdr.tab"].as_str().unwrap().is_empty(),
+        "a fresh tab id"
+    );
+}
+
+#[test]
+fn new_terminal_no_app_labels_parent_caller() {
+    let fake = FakeHc::start();
+    fake.add_terminal(FakeTerminal::live("t1"));
+    let request = handoff_request(&["--new-terminal"]);
+    let selection = hc_target::select(&request, Some(&terminal_site(&fake, "t1")), false, &no_env)
+        .unwrap()
+        .expect("selected");
+    assert_eq!(
+        selection.placement,
+        Placement::NewTerminal {
+            parent: HostTargetId::new("t1")
+        }
+    );
+    create(&fake, &selection);
+    let params = run_params(&fake);
+    let labels = params["labels"].as_object().expect("labels");
+    assert!(!labels.contains_key("herdr.space") && !labels.contains_key("herdr.tab"));
+    assert_eq!(params["parent"], "t1", "parent is the caller");
+}
+
+#[test]
+fn herdr_callers_are_never_redirected_and_new_terminal_needs_a_terminal() {
+    // A Herdr pane caller or a Herdr context keeps today's new-tab path.
+    let tab = handoff_request(&["--new-tab", "peer", "--space", "w1"]);
+    let pane = CallerLocator::pane("w1:p1");
+    assert!(
+        hc_target::select(&tab, Some(&pane), false, &no_env)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        hc_target::select(&tab, None, true, &no_env)
+            .unwrap()
+            .is_none()
+    );
+    // --new-terminal has no meaning there.
+    let terminal = handoff_request(&["--new-terminal"]);
+    assert!(hc_target::select(&terminal, Some(&pane), false, &no_env).is_err());
+    assert!(hc_target::select(&terminal, None, true, &no_env).is_err());
+}
+
+#[test]
+fn thread_flags_into_a_hc_target_are_refused_before_any_creation() {
+    let fake = FakeHc::start();
+    fake.add_terminal(FakeTerminal::live("t1"));
+    for flags in [
+        &["--new-tab", "peer", "--space", "w1", "--new-thread"][..],
+        &["--new-tab", "peer", "--space", "w1", "--thread", "thread-1"][..],
+    ] {
+        let request = handoff_request(flags);
+        assert!(!request.automatic, "{flags:?} takes the V1 path");
+        let error = hc_target::select(&request, Some(&terminal_site(&fake, "t1")), false, &no_env)
+            .expect_err("refused");
+        assert!(error.to_string().contains("--thread"), "{error}");
+    }
+    assert!(
+        fake.calls_to("terminal.run").is_empty(),
+        "nothing was created"
+    );
+}
+
+#[test]
+fn a_hc_new_tab_needs_a_space() {
+    let fake = FakeHc::start();
+    let request = handoff_request(&["--new-tab", "peer"]);
+    let error = hc_target::select(&request, Some(&terminal_site(&fake, "t1")), false, &no_env)
+        .expect_err("refused");
+    assert!(error.to_string().contains("--space"), "{error}");
+}
+
+#[test]
+fn in_place_pane_tn_refused_by_port_answer() {
+    let fake = FakeHc::start();
+    fake.add_terminal(FakeTerminal::live("t1"));
+    let host = HcHost::new(HcClient::new(fake.socket()));
+    // The port answer is the whole refusal: a launch into `tN` never reaches the host.
+    assert_eq!(
+        host.native_launch_capability(),
+        NativeLaunchCapability::Unsupported
+    );
+    struct NoSeats;
+    impl herdr_threads::harness::launch::LaunchSeatResolver for NoSeats {
+        fn resolve_for_launch(
+            &self,
+            _: &HostTargetId,
+            _: &herdr_threads::ports::HostObservation,
+            _: &CallBudget,
+        ) -> Result<herdr_threads::protocol::ids::SeatId, ApiError> {
+            panic!("a refused launch resolves no seat");
+        }
+    }
+    let clock = clock();
+    let error = herdr_threads::harness::launch::launch_seat_guards(
+        herdr_threads::harness::registry::builtins(),
+        &host,
+        &NoSeats,
+        clock.as_ref(),
+        &HostTargetId::new("t1"),
+        &budget(clock.as_ref(), 5_000),
+    )
+    .expect_err("in-place launch is refused");
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert!(fake.calls_to("terminal.run").is_empty());
+}
+
+/// A scratch XDG layout holding cores for discovery, and a PATH holding an `hc` that records
+/// being run.
+struct Discovery {
+    root: PathBuf,
+    marker: PathBuf,
+}
+impl Discovery {
+    fn new() -> Self {
+        let root = temp_path(format!("ht-hch-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(root.join("run/herdr-core")).unwrap();
+        std::fs::create_dir_all(root.join("state/herdr-core")).unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let marker = root.join("hc-was-run");
+        let shim = root.join("bin/hc");
+        std::fs::write(&shim, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        Self { root, marker }
+    }
+    fn core(&self, session: &str, fake: &FakeHc) {
+        let id = HcHost::new(HcClient::new(fake.socket()))
+            .core_witness()
+            .map(|w| match w {
+                herdr_threads::ports::HostWitness::HcCore { core_id, .. } => core_id,
+                _ => unreachable!(),
+            })
+            .unwrap();
+        let dir = self.root.join("state/herdr-core").join(session);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("core.json"),
+            format!(r#"{{"id":"{id}","name":"x","machine_id":"m"}}"#),
+        )
+        .unwrap();
+        std::fs::hard_link(
+            fake.socket(),
+            self.root
+                .join("run/herdr-core")
+                .join(format!("{session}.sock")),
+        )
+        .unwrap();
+    }
+    fn env(&self) -> impl Fn(&str) -> Option<OsString> + use<> {
+        let root = self.root.clone();
+        move |name| match name {
+            "XDG_STATE_HOME" => Some(root.join("state").into()),
+            "XDG_RUNTIME_DIR" => Some(root.join("run").into()),
+            "XDG_CONFIG_HOME" => Some(root.join("config").into()),
+            "HOME" => Some(root.join("home").into()),
+            "PATH" => Some(root.join("bin").into()),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn plain_shell_handoff_uses_hc_discovery_never_spawns_hc() {
+    let world = Discovery::new();
+    let fake = FakeHc::start();
+    world.core("alpha", &fake);
+    let request = handoff_request(&["--new-tab", "peer", "--space", "w1"]);
+    let selection = hc_target::select(&request, None, false, &world.env())
+        .unwrap()
+        .expect("a plain shell uses discovery");
+    assert_eq!(
+        selection.endpoint,
+        world.root.join("run/herdr-core/alpha.sock")
+    );
+    assert!(!world.marker.exists(), "hc was never spawned");
+    assert!(
+        fake.calls().iter().all(|c| c.method == "hello"),
+        "a scan only says hello"
+    );
+
+    // No core, and two cores, are refusals that name what was found.
+    let none = Discovery::new();
+    let error = hc_target::select(&request, None, false, &none.env()).expect_err("no core");
+    assert!(error.to_string().contains("no herdr-core"), "{error}");
+    let second = FakeHc::start();
+    second.state().rotate_core_id("core-second");
+    world.core("beta", &second);
+    let error = hc_target::select(&request, None, false, &world.env()).expect_err("ambiguous");
+    assert!(error.to_string().contains("alpha") && error.to_string().contains("beta"));
+    assert!(!world.marker.exists() && !none.marker.exists());
+}
+
+// ---- the launch gate ----
+
+/// One bootstrap on the fake core: its creation and the scripted canonical view.
+struct Gate {
+    fake: FakeHc,
+    created: CreatedTarget,
+    observers: Vec<Arc<dyn BootstrapObserver>>,
+    log: Arc<Mutex<Vec<String>>>,
+    /// The view reports the Send staged from this poll on (`usize::MAX`: never).
+    staged_from: usize,
+    polls: AtomicUsize,
+    attempt_current: bool,
+    known: bool,
+}
+
+impl Gate {
+    fn new(staged_from: usize) -> Self {
+        let fake = FakeHc::start();
+        fake.add_terminal(FakeTerminal::live("t1"));
+        let request = handoff_request(&["--new-tab", "peer", "--space", "w1"]);
+        let selection =
+            hc_target::select(&request, Some(&terminal_site(&fake, "t1")), false, &no_env)
+                .unwrap()
+                .unwrap();
+        let created = create(&fake, &selection);
+        let observers: Vec<Arc<dyn BootstrapObserver>> = vec![Arc::new(HcBootstrapObserver::new(
+            Arc::new(HcHost::new(HcClient::new(fake.socket()))),
+        ))];
+        Self {
+            fake,
+            created,
+            observers,
+            log: Arc::default(),
+            staged_from,
+            polls: AtomicUsize::new(0),
+            attempt_current: true,
+            known: true,
+        }
+    }
+
+    fn view(&self, _: &CallBudget) -> Result<Option<LaunchGateView>, ApiError> {
+        if !self.known {
+            return Ok(None);
+        }
+        let poll = self.polls.fetch_add(1, Ordering::SeqCst);
+        let staged = poll >= self.staged_from;
+        if poll == self.staged_from {
+            self.log.lock().unwrap().push("staged".into());
+        }
+        Ok(Some(LaunchGateView {
+            created: Some(self.created.clone()),
+            current_attempt: self.attempt_current,
+            cancelled: false,
+            send_staged: staged,
+        }))
+    }
+
+    fn request(&self, terminal: &str, core: Option<&str>, timeout_ms: u32) -> AuthorizeLaunchGate {
+        let herdr_threads::ports::HostWitness::HcCore { core_id, .. } = &self.created.witness
+        else {
+            panic!("an hc creation")
+        };
+        AuthorizeLaunchGate {
+            compound: OperationId::new("op-1"),
+            attempt: BootstrapAttempt::new(1).unwrap(),
+            core_id: core.unwrap_or(core_id).to_owned(),
+            terminal: terminal.to_owned(),
+            timeout_ms,
+        }
+    }
+
+    fn decide(&self, request: &AuthorizeLaunchGate) -> LaunchGateReply {
+        let clock = clock();
+        let view = |b: &CallBudget| self.view(b);
+        authorize(
+            request,
+            &GateWorld {
+                view: &view,
+                observers: &self.observers,
+            },
+            clock.as_ref(),
+            &budget(clock.as_ref(), 20_000),
+        )
+        .expect("a decision")
+    }
+}
+
+/// The shim's client: the daemon's decision, logging the moment of the reply.
+struct InProcessDaemon<'a>(&'a Gate);
+impl LocalClient for InProcessDaemon<'_> {
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        let Command::AuthorizeLaunchGate(request) = command else {
+            panic!("the shim sends only AuthorizeLaunchGate")
+        };
+        let reply = self.0.decide(&request);
+        self.0.log.lock().unwrap().push("reply".into());
+        Ok(CommandResult::LaunchGate(reply))
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+}
+
+#[test]
+fn handoff_into_fake_hc_runs_gate_shim() {
+    let gate = Gate::new(3);
+    // The terminal fake_hc created runs the gate shim.
+    let argv: Vec<String> = serde_json::from_value(run_params(&gate.fake)["argv"].clone()).unwrap();
+    let CliAction::InternalLaunchGate {
+        bootstrap,
+        config_roots,
+        argv: harness,
+    } = parse_argv(argv.iter().map(String::as_str)).unwrap().action
+    else {
+        panic!("the recorded argv is the gate shim: {argv:?}")
+    };
+    assert_eq!(bootstrap, "op-1:1");
+    assert_eq!(harness, vec!["sh".to_owned()]);
+
+    // The shim's env: no HERDR_*, no seat name, no adapter session variable; the terminal's
+    // own variables stay (the worker finds its seat through them).
+    let leaked = [
+        "HERDR_PANE_ID",
+        "HERDR_SOCKET_PATH",
+        "HERDR_THREADS_SEAT_NAME",
+        "HC_TERMINAL_ID",
+        "HC_TERMINAL_SOCKET",
+    ];
+    let command =
+        launch_gate::prepare(&harness, &config_roots, leaked.map(OsString::from)).unwrap();
+    let removed: std::collections::BTreeSet<String> = command
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    for name in [
+        "HERDR_PANE_ID",
+        "HERDR_SOCKET_PATH",
+        "HERDR_THREADS_SEAT_NAME",
+    ] {
+        assert!(removed.contains(name), "{name} is removed");
+    }
+    assert!(!removed.contains("HC_TERMINAL_ID") && !removed.contains("HC_TERMINAL_SOCKET"));
+    for registration in herdr_threads::harness::registry::builtins().registrations() {
+        if let Some(shape) = registration.caller_env() {
+            assert!(
+                removed.contains(shape.session_var),
+                "{} is removed",
+                shape.session_var
+            );
+        }
+    }
+
+    // Authorization precedes exec, and the Send is staged before the daemon replies.
+    let shim = launch_gate::Gate {
+        compound: OperationId::new("op-1"),
+        attempt: BootstrapAttempt::new(1).unwrap(),
+        socket: gate.fake.socket().to_string_lossy().into_owned(),
+        terminal: gate.created.terminal.as_str().to_owned(),
+    };
+    let core = match &gate.created.witness {
+        herdr_threads::ports::HostWitness::HcCore { core_id, .. } => core_id.clone(),
+        _ => unreachable!(),
+    };
+    let clock = clock();
+    launch_gate::authorize(
+        &InProcessDaemon(&gate),
+        &shim,
+        &core,
+        10_000,
+        clock.as_ref(),
+    )
+    .expect("authorized");
+    gate.log.lock().unwrap().push("exec".into());
+    assert_eq!(*gate.log.lock().unwrap(), ["staged", "reply", "exec"]);
+    assert!(
+        gate.polls.load(Ordering::SeqCst) > 3,
+        "the gate waited for the Send"
+    );
+    // The daemon confirmed the terminal with a fresh terminal.get.
+    assert!(!gate.fake.calls_to("terminal.get").is_empty());
+}
+
+#[test]
+fn launch_gate_handler_matches_witness_and_terminal_get() {
+    let gate = Gate::new(2);
+    let terminal = gate.created.terminal.as_str().to_owned();
+    let gets_before = gate.fake.calls_to("terminal.get").len();
+    assert_eq!(
+        gate.decide(&gate.request(&terminal, None, 10_000)),
+        LaunchGateReply::Authorized
+    );
+    assert!(
+        gate.fake.calls_to("terminal.get").len() > gets_before,
+        "terminal.get confirmed it"
+    );
+    // Not before the Send is staged: a view that never stages is not authorized.
+    let waiting = Gate::new(usize::MAX);
+    let terminal = waiting.created.terminal.as_str().to_owned();
+    assert_ne!(
+        waiting.decide(&waiting.request(&terminal, None, 100)),
+        LaunchGateReply::Authorized
+    );
+}
+
+#[test]
+fn launch_gate_mismatch_refused() {
+    let refused = |reply: LaunchGateReply, reason| {
+        assert_eq!(reply, LaunchGateReply::Refused { reason });
+    };
+    let gate = Gate::new(0);
+    // Another terminal on the right core; another core.
+    refused(
+        gate.decide(&gate.request("t9", None, 1_000)),
+        LaunchGateRefusal::WitnessMismatch,
+    );
+    let terminal = gate.created.terminal.as_str().to_owned();
+    refused(
+        gate.decide(&gate.request(&terminal, Some("other-core"), 1_000)),
+        LaunchGateRefusal::WitnessMismatch,
+    );
+    // The creation matches but the core no longer shows the terminal.
+    gate.fake.prune(&terminal);
+    refused(
+        gate.decide(&gate.request(&terminal, None, 1_000)),
+        LaunchGateRefusal::WitnessMismatch,
+    );
+    // A stale attempt and an unknown bootstrap.
+    let mut stale = Gate::new(0);
+    stale.attempt_current = false;
+    let terminal = stale.created.terminal.as_str().to_owned();
+    refused(
+        stale.decide(&stale.request(&terminal, None, 1_000)),
+        LaunchGateRefusal::StaleAttempt,
+    );
+    let mut unknown = Gate::new(0);
+    unknown.known = false;
+    refused(
+        unknown.decide(&unknown.request("t2", None, 1_000)),
+        LaunchGateRefusal::UnknownBootstrap,
+    );
+}
+
+#[test]
+fn launch_gate_timeout_refuses_shim_exits() {
+    let gate = Gate::new(usize::MAX);
+    let terminal = gate.created.terminal.as_str().to_owned();
+    let started = Instant::now();
+    assert_eq!(
+        gate.decide(&gate.request(&terminal, None, 150)),
+        LaunchGateReply::Refused {
+            reason: LaunchGateRefusal::TimedOut
+        }
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the wait is bounded"
+    );
+
+    // The shim turns the refusal into an error and never execs the harness.
+    let marker = temp_path(format!("ht-gate-exec-{}", uuid::Uuid::new_v4().simple()));
+    let clock = clock();
+    let env = launch_gate::terminal_env(|name| match name {
+        "HC_TERMINAL_ID" => Some(terminal.clone().into()),
+        "HC_TERMINAL_SOCKET" => Some(gate.fake.socket().into()),
+        _ => None,
+    });
+    let core = match &gate.created.witness {
+        herdr_threads::ports::HostWitness::HcCore { core_id, .. } => core_id.clone(),
+        _ => unreachable!(),
+    };
+    let error = launch_gate::run_with(
+        &InProcessDaemon(&gate),
+        clock.as_ref(),
+        &env,
+        "op-1:1",
+        &[],
+        &["touch".to_owned(), marker.to_string_lossy().into_owned()],
+        Vec::new(),
+        150,
+        |_| Ok(core.clone()),
+    );
+    assert!(error.to_string().contains("timed out"), "{error}");
+    assert!(!marker.exists(), "the harness never ran");
+}

@@ -244,6 +244,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "unit test polling until eight remote address requests are held, 10 s cap; not daemon code",
     ),
     (
+        "src/service/launch_gate.rs",
+        "std::thread::sleep(POLL)",
+        "one launch-gate request polling the canonical view, on its own handler thread, for the bootstrap Send to be staged; bounded by the request's timeout_ms and the call's deadline; not a periodic daemon loop",
+    ),
+    (
         "src/service/sync_admin.rs",
         "std::thread::sleep(std::time::Duration::from_millis(POLL_MS))",
         "one `resolve address` request polling, on its own blocking handler thread, for the answered seat to replicate, bounded by REPLICA_WAIT_MS and the request's deadline; not a periodic daemon loop",

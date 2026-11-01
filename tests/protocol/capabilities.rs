@@ -299,6 +299,7 @@ fn capability_constants_are_stable() {
     assert_eq!(TURN_STATE_EDGE, "turn_state.edge_v1");
     assert_eq!(TERMINAL_SITES_V1, "seat.terminal_sites_v1");
     assert_eq!(AUTOMATIC_TARGET_V1, "handoff.automatic_target_v1");
+    assert_eq!(LAUNCH_GATE_V1, "launch.gate_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -351,7 +352,8 @@ fn capability_constants_are_stable() {
             "seat.host_sites_v1",
             "turn_state.edge_v1",
             "seat.terminal_sites_v1",
-            "handoff.automatic_target_v1"
+            "handoff.automatic_target_v1",
+            "launch.gate_v1"
         ]
     );
 }
@@ -547,6 +549,32 @@ fn every_advertised_capability_has_a_handler() {
             }
             TERMINAL_SITES_V1 => probe_terminal_sites(),
             AUTOMATIC_TARGET_V1 => probe_automatic_target(),
+            LAUNCH_GATE_V1 => {
+                let command = Command::AuthorizeLaunchGate(Box::new(
+                    crate::protocol::handoff::AuthorizeLaunchGate {
+                        compound: crate::protocol::ids::OperationId::new("capability-probe"),
+                        attempt: crate::protocol::handoff::BootstrapAttempt::new(1).unwrap(),
+                        core_id: "core".into(),
+                        terminal: "t1".into(),
+                        timeout_ms: 1,
+                    },
+                ));
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                // The control service's domain stub answers like the other probes; the decision
+                // itself is driven by `tests/hc_handoff.rs` through `service::launch_gate`.
+                assert_eq!(
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             PEER_PRUNE_V1 => probe_sync_commands(&[
                 crate::protocol::sync_admin::SyncCommand::PeerPrune {
                     host: None,
@@ -1211,6 +1239,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "turn_state.edge_v1",
             "seat.terminal_sites_v1",
             "handoff.automatic_target_v1",
+            "launch.gate_v1",
             "invitation.confirmation_v1",
             "handoff.summary_prompt_v1"
         ]

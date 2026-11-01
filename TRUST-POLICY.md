@@ -2878,6 +2878,20 @@ transport-proven `NotSubmitted`; `spawn_failed`, a timeout, a disconnect or an u
 `OutcomeUnknown`. The created target's witness is the `(core id, peer)` the pre-run `hello` showed, and the run is
 pinned to that peer.
 
+The launch gate's decision (H3d2, `LAUNCH_GATE_V1`, `Command::AuthorizeLaunchGate`) is the daemon's alone (A2). The shim
+sends `<compound>:<attempt>`, the core id and its `tN`; the daemon reads the canonical view of that bootstrap (never
+a label, never a path the client names) and authorizes only when the attempt is the current one, the recorded
+creation's witness is that core and `tN`, a fresh same-response `terminal.get` through an attached host session
+shows that terminal on that core and serving process, and the bootstrap Send is already published. The Send is staged
+before the reply, so a harness never runs before its first message exists (C4: the recipient's receipt keeps its
+honest availability and deadline). The wait polls the view with one short read per poll, holding no store turn and no
+writer lane, and is bounded by the request's `timeout_ms` (at most 30 s) and the call budget; a mismatch, a stale or
+unknown bootstrap, a cancelled bootstrap or the deadline is a refusal and the shim exits without `exec`. A refusal
+authorizes nothing and records nothing. `handoff --new-tab --space`, `--new-terminal` and a plain-shell handoff
+(core found by `HcDiscovery`, which only says `hello`; `hc` is never run) take the automatic V3 path only: `--thread`
+and `--new-thread` into a herdr-core target are refused before any creation, and an in-place launch into `tN` is
+refused by the host's `native_launch_capability() == Unsupported`.
+
 ## Bounded invitation presentation (2026-10-11)
 
 Invitation presentation is cooperative FULL OFFER evidence after complete stdout

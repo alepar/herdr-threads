@@ -391,6 +391,174 @@ pub(crate) fn try_run_automatic_new_with_ports(
     Ok(true)
 }
 
+/// The herdr-core endpoint of a V3 handoff: the first run's selected target, or the namespace
+/// endpoint a retried V3 record froze. `None` for every Herdr route.
+pub(crate) fn target_endpoint(
+    parsed: &ParsedCli,
+    journal: &Journal,
+) -> Result<Option<std::path::PathBuf>, RunError> {
+    match &parsed.action {
+        CliAction::TopologyHandoff(request) if request.automatic && !request.existing => {
+            Ok(request
+                .target
+                .as_ref()
+                .map(|target| target.endpoint.clone()))
+        }
+        CliAction::Retry(recovery) => {
+            let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+            if !matches!(
+                original_kind(&original.semantic),
+                SemanticMutation::AutomaticBootstrap(_)
+            ) {
+                return Ok(None);
+            }
+            let identity = super::topology_handoff::automatic_bootstrap_identity(&original)?;
+            Ok(identity.plan.placement.is_some().then(|| {
+                identity
+                    .plan
+                    .payload
+                    .handoff
+                    .namespace
+                    .host_endpoint
+                    .clone()
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// A V3 handoff, first run or retry: the target is created on the herdr-core host at
+/// `endpoint`, started under the launch-gate shim. Nothing here touches a Herdr server.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_target(
+    parsed: &ParsedCli,
+    claim: &CallerClaim,
+    journal: &Journal,
+    state_dir: &std::path::Path,
+    selected_host: Option<&std::path::Path>,
+    instance: &str,
+    client: &dyn LocalClient,
+    clock: &Arc<dyn Clock>,
+    endpoint: std::path::PathBuf,
+    writer: &mut dyn Write,
+) -> Result<(), RunError> {
+    let mut writer = ForwardWriter(writer);
+    let ns = HandoffNamespace {
+        instance: instance.to_owned(),
+        state_dir: state_dir.to_path_buf(),
+        host_endpoint: endpoint.clone(),
+    };
+    let handle = super::host_client::LaunchHandle::hc(
+        &endpoint,
+        clock.clone(),
+        &super::cooperative_budget(clock.as_ref()),
+    )?;
+    let mut output = parsed.output.clone();
+    output.context.state_dir = Some(state_dir.to_string_lossy().into_owned());
+    output.context.host = Some(
+        selected_host
+            .unwrap_or(&endpoint)
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let witness = handle
+        .witness()
+        .cloned()
+        .ok_or_else(|| super::invalid_request("a target host reports its witness"))?;
+    let mut launcher = super::handoff::StartedByCreation;
+    match &parsed.action {
+        CliAction::TopologyHandoff(request) => {
+            let cwd = std::env::current_dir()?;
+            let registry = crate::harness::registry::builtins();
+            let harness = request
+                .kind
+                .as_deref()
+                .and_then(|kind| crate::harness::launch::bootstrap_target(registry, kind))
+                .ok_or_else(|| super::invalid_request("invalid bootstrap harness"))?;
+            let options =
+                super::launch::native_options_env(registry, harness)?.and_then(std::env::var_os);
+            let hc = crate::host::hc::HcHost::new(crate::host::hc::HcClient::new(&endpoint));
+            let handled = try_run_automatic_new_with_ports(
+                parsed,
+                claim,
+                journal,
+                &ns,
+                client,
+                handle.create_port(),
+                &mut launcher,
+                clock.as_ref(),
+                &cwd,
+                options,
+                &mut || {
+                    use crate::ports::HostPort;
+                    Ok(hc.live_topology(&super::cooperative_budget(clock.as_ref()))?)
+                },
+                &mut |_| Ok(witness.clone()),
+                &output,
+                &mut writer,
+            )?;
+            debug_assert!(handled);
+            Ok(())
+        }
+        CliAction::Retry(recovery) => {
+            let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+            if original.semantic.frozen_claim() != Some(claim) {
+                return Err(super::invalid_request(
+                    "live retry differs from original caller",
+                ));
+            }
+            require_automatic_capability(client, clock.as_ref())?;
+            super::topology_handoff::require_target_capability(client, clock.as_ref())?;
+            // A created target is witnessed by its own creation; an uncreated one by the
+            // host as probed now.
+            let current = match client.call(
+                Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+                    identity: super::topology_handoff::automatic_bootstrap_identity(&original)?,
+                    action: AutomaticBootstrapAction::Status,
+                })),
+                &super::cooperative_budget(clock.as_ref()),
+            ) {
+                Ok(CommandResult::AutomaticBootstrap(value)) => Some(*value),
+                Err(e) if e.code == ErrorCode::Conflict => None,
+                Err(e) => return Err(e.into()),
+                _ => {
+                    return Err(super::invalid_request(
+                        "unexpected automatic bootstrap status",
+                    ));
+                }
+            };
+            let witness = current
+                .as_ref()
+                .and_then(|v| v.creation.as_ref())
+                .and_then(|created| created.as_target())
+                .map_or(witness, |created| created.witness.clone());
+            let context = HostCallContext {
+                budget: super::cooperative_budget(clock.as_ref()),
+                expected_boot: None,
+                expected_epoch: None,
+            };
+            super::retry::run_automatic_bootstrap_retry_to_writer(
+                journal,
+                &original.header.reference,
+                parsed.actor,
+                &ns,
+                client,
+                handle.create_port(),
+                &mut launcher,
+                clock.as_ref(),
+                super::topology_handoff::BootstrapSubmissionInputs {
+                    witness: &witness,
+                    context: &context,
+                },
+                &output,
+                &mut writer,
+            )?;
+            Ok(())
+        }
+        _ => Err(super::invalid_request("not a target handoff")),
+    }
+}
+
 pub(crate) fn run(
     parsed: ParsedCli,
     claim: CallerClaim,
@@ -403,8 +571,22 @@ pub(crate) fn run(
     let clock: Arc<dyn Clock> = Arc::new(super::SystemClock::new());
     let selected = runtime(&parsed.output)?;
     let (instance, _, client) = super::connect(paths, &clock)?;
-    let ns = namespace(&selected, instance)?;
     agent_claim(&claim)?;
+    if let Some(endpoint) = target_endpoint(&parsed, journal)? {
+        return run_target(
+            &parsed,
+            &claim,
+            journal,
+            &selected.state_dir,
+            selected.host_endpoint.as_deref(),
+            &instance.to_string(),
+            &client,
+            &clock,
+            endpoint,
+            writer,
+        );
+    }
+    let ns = namespace(&selected, instance)?;
     if matches!(&parsed.action, CliAction::TopologyHandoff(request) if request.profile_dir.is_some())
     {
         super::topology_handoff::require_directory_capability(&client, clock.as_ref())?;

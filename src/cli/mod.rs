@@ -11,6 +11,7 @@ pub mod exit;
 pub mod follow;
 pub mod handoff;
 pub mod handoff_delivery;
+pub mod hc_target;
 pub mod help;
 pub mod hook;
 pub mod hook_evidence;
@@ -860,9 +861,23 @@ fn run_parsed_in_pane<W: Write>(
     if historical_retry && try_completed(&parsed, writer)? {
         return Ok(());
     }
+    // A herdr-core target (a Terminal-site caller, or a plain shell with a discovered core) is
+    // a V3 plan: it reads no Herdr topology and names its own host.
+    let mut hc_selected = false;
+    if let CliAction::TopologyHandoff(request) = &mut parsed.action
+        && let Some(target) =
+            hc_target::select(request, site, context.host_endpoint.is_some(), &|name| {
+                std::env::var_os(name)
+            })?
+    {
+        request.target = Some(target);
+        hc_selected = true;
+    }
     let automatic_new = matches!(&parsed.action, CliAction::TopologyHandoff(request)
         if request.automatic && request.new_tab.is_some() && !request.existing);
-    let resolved_targets = if automatic_new {
+    let resolved_targets = if hc_selected {
+        Ok(())
+    } else if automatic_new {
         let (_, _, client) = connect(&paths, &clock)?;
         resolve_automatic_new_selectors(
             &mut parsed,

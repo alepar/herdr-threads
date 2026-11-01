@@ -695,6 +695,7 @@ mod tests {
                 target: None,
                 automatic: true,
                 new_tab: None,
+                new_terminal: false,
                 existing: true,
                 selector: Default::default(),
                 seat: None,

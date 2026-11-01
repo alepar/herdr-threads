@@ -526,7 +526,8 @@ fn launch_gate_command_reply_round_trip() {
         bad.timeout_ms = timeout_ms;
         assert!(bad.validate().is_err());
     }
-    assert!(!ADVERTISED.contains(&LAUNCH_GATE_V1));
+    // The daemon serves it since ht-kqrt.57 (`service::launch_gate`).
+    assert!(ADVERTISED.contains(&LAUNCH_GATE_V1));
 }
 
 /// Kills: a `gate_argv` that is always serialized (every released request record would change

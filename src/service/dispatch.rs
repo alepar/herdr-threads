@@ -737,6 +737,49 @@ impl DomainService {
             .automatic_bootstrap_mutate(&runtime.canonical, request, permit, None, budget)
     }
 
+    /// The launch gate's decision for a shim in a herdr-core terminal. The store is read per
+    /// poll and the wait holds no store turn and no writer lane.
+    fn authorize_launch_gate(
+        &self,
+        request: &crate::protocol::handoff::AuthorizeLaunchGate,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let store = self
+            .bootstrap_store
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("launch gate needs the bootstrap store"))?;
+        let observers: Vec<Arc<dyn BootstrapObserver>> = self
+            .hosts
+            .as_ref()
+            .map(|hosts| {
+                hosts
+                    .attached()
+                    .iter()
+                    .filter(|session| session.target_bootstrap().is_some())
+                    .map(|session| Arc::clone(session.observer()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let view = |budget: &CallBudget| {
+            store.automatic_launch_gate_view(
+                &self.instance,
+                &request.compound,
+                request.attempt,
+                budget,
+            )
+        };
+        super::launch_gate::authorize(
+            request,
+            &super::launch_gate::GateWorld {
+                view: &view,
+                observers: &observers,
+            },
+            self.clock.as_ref(),
+            budget,
+        )
+        .map(CommandResult::LaunchGate)
+    }
+
     fn automatic_delivery_command(
         &self,
         request: &crate::protocol::handoff::AutomaticDeliveryMutation,
@@ -2090,11 +2133,7 @@ impl LocalService for DomainService {
                 ErrorCode::Unsupported,
                 "local intents are client-owned",
             )),
-            // Seam only (ht-kqrt.53): the handler lands with `capabilities::LAUNCH_GATE_V1`.
-            Command::AuthorizeLaunchGate(_) => Err(error(
-                ErrorCode::Unsupported,
-                "launch gate authorization is not served yet",
-            )),
+            Command::AuthorizeLaunchGate(request) => self.authorize_launch_gate(&request, budget),
             Command::Health
             | Command::Capabilities
             | Command::HookParseFailure(_)

@@ -126,12 +126,11 @@ pub const INBOX_THREAD_SCOPE: &str = "inbox.thread_scope_v1";
 /// offer). An explicit `inbox` read never sets it.
 pub const INBOX_PUSHED_HOLD: &str = "inbox.pushed_hold_v1";
 
-/// `Command::AuthorizeLaunchGate`: a launched terminal asks the daemon to authorize its `exec`
-/// (ht-kqrt H3). Defined by the ht-kqrt.53 seam; NOT in `ADVERTISED` until its handler exists
-/// (ht-kqrt.57), so a CLI refuses the command against every daemon today.
 /// `Command::LocateCaller`: nearest-ancestor verification of a two-family caller (ht-kqrt F8).
 pub const LOCATE_CALLER_V1: &str = "caller.locate_v1";
 
+/// `Command::AuthorizeLaunchGate`: a launched terminal asks the daemon to authorize its `exec`
+/// (ht-kqrt H3). Served by `service::launch_gate`.
 pub const LAUNCH_GATE_V1: &str = "launch.gate_v1";
 
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
@@ -225,6 +224,7 @@ pub const ADVERTISED: &[&str] = &[
     TURN_STATE_EDGE,
     TERMINAL_SITES_V1,
     AUTOMATIC_TARGET_V1,
+    LAUNCH_GATE_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set
