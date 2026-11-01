@@ -1459,10 +1459,14 @@ fn saved_seat_scalar(
         return Ok(None);
     }
     let structural_proof = seat_structural_proof(conn, &SeatId::new(id.clone()))?;
-    let binding: Option<(Option<String>, Option<String>, String, String)> = conn.query_row(
-        &format!("SELECT terminal_id,incarnation,execution_id,host_boot FROM occupant_bindings WHERE seat_id=?1 ORDER BY {LATEST_BINDING_ORDER} LIMIT 1"),
-        [&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
-    ).optional().map_err(store_error)?;
+    let binding: Option<(Option<String>, Option<String>, String, String)> = conn
+        .query_row(
+            &latest_binding_sql("terminal_id,incarnation,execution_id,host_boot"),
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
     let active_binding_execution: Option<String> = conn
         .query_row(
             "SELECT execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
@@ -2135,9 +2139,7 @@ fn saved_seat_cas(
         return Ok(false);
     }
     let binding_query = if invalidated {
-        format!(
-            "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY {LATEST_BINDING_ORDER} LIMIT 1"
-        )
+        latest_binding_sql("terminal_id")
     } else {
         "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1".to_owned()
     };
@@ -2527,13 +2529,22 @@ struct OpenPlacement {
     registered: bool,
 }
 
-/// The seat's open bindings' placements, most recent first. A seat holds many (ht-54r.3).
-/// The order in which a seat's latest binding is its first row: open rows
-/// first, then the most recently ended. Ordinal alone is not recency: a binding
+/// The seat's latest binding, as one row: the newest open row, else the most
+/// recently ended. Ordinal alone is not recency: a binding
 /// reopened after a rebind (`bindings::resolve`) keeps its original ordinal, so
 /// rows that ended before the reopen can sort above it (ht-kaw9).
-const LATEST_BINDING_ORDER: &str = "ended_at IS NOT NULL, ended_at DESC, ordinal DESC";
+///
+/// The open row is read through the `occupant_bindings_open` partial index and
+/// the compound stops there; only a seat with no open binding sorts its ended
+/// history. `columns` selects from `occupant_bindings`; `?1` is the seat id.
+fn latest_binding_sql(columns: &str) -> String {
+    format!(
+        "SELECT {columns} FROM (SELECT {columns} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1) \
+         UNION ALL SELECT * FROM (SELECT {columns} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NOT NULL ORDER BY ended_at DESC, ordinal DESC LIMIT 1) LIMIT 1"
+    )
+}
 
+/// The seat's open bindings' placements, most recent first. A seat holds many (ht-54r.3).
 fn open_binding_placements(
     tx: &Transaction<'_>,
     seat: &SeatId,
@@ -2687,7 +2698,7 @@ pub fn apply_reconciliation_transition(
                         return Ok(Err(StaleReason::new("structure_snapshot_mismatch")));
                     }
                     let bound: Option<(Option<String>, String, Option<String>)> = tx.query_row(
-                        &format!("SELECT terminal_id,host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 ORDER BY {LATEST_BINDING_ORDER} LIMIT 1"),
+                        &latest_binding_sql("terminal_id,host_boot,incarnation"),
                         [transition.seat.as_str()],
                         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
                     ).optional().map_err(store_error)?;
@@ -2832,7 +2843,7 @@ pub fn apply_reconciliation_transition(
                         // Unresolved recovery remains restricted by saved_seat_cas
                         // to host invalidation and its retained published provenance.
                         let historical: Option<(String, Option<String>)> = tx.query_row(
-                            &format!("SELECT host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 ORDER BY {LATEST_BINDING_ORDER} LIMIT 1"),
+                            &latest_binding_sql("host_boot,incarnation"),
                             [transition.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?)),
                         ).optional().map_err(store_error)?;
                         match historical {
@@ -4284,26 +4295,6 @@ fn reconciliation_lags(tx: &Transaction<'_>, host: HostId) -> Result<bool, ApiEr
 /// evidence that the session had left that seat (ht-54r.91). Returns at most
 /// two, in seat-id order (the caller only needs to tell zero, one and
 /// several apart).
-/// Whether a reconciliation pass could still make some seat a C1 candidate
-/// for this session: a nonretired local seat has a top-level binding the
-/// candidate predicate of [`continuity_candidates`] would match, once that seat
-/// is unresolved.
-fn session_may_become_candidate(
-    tx: &Transaction<'_>,
-    instance: &str,
-    harness: &str,
-    native_session: &str,
-) -> Result<bool, ApiError> {
-    tx.query_row(
-        &format!(
-            "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.{LOCAL_SEAT} AND s.state<>'retired' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:')",
-        ),
-        params![instance, harness, native_session],
-        |r| r.get(0),
-    )
-    .map_err(store_error)
-}
-
 pub(crate) fn continuity_candidates(
     tx: &Transaction<'_>,
     instance: &str,
@@ -4312,7 +4303,7 @@ pub(crate) fn continuity_candidates(
 ) -> Result<Vec<SeatId>, ApiError> {
     let mut statement = tx
         .prepare(&format!(
-            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.{LOCAL_SEAT} AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' GROUP BY s.id ORDER BY s.id",
+            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.{LOCAL_SEAT} AND s.state='unresolved' AND {C1_BINDING} GROUP BY s.id ORDER BY s.id",
         ))
         .map_err(store_error)?;
     let rows: Vec<(String, bool)> = statement
@@ -4329,6 +4320,31 @@ pub(crate) fn continuity_candidates(
         .map(|(seat, _)| SeatId::new(seat))
         .take(2)
         .collect())
+}
+
+/// The C1 candidate binding of seat `s` for harness `?2` and native session
+/// `?3`: [`continuity_candidates`] and [`session_may_become_candidate`] share
+/// it, so a lagging claim is final exactly when no seat could match it.
+const C1_BINDING: &str = "b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:'";
+
+/// Whether a reconciliation pass could still make some seat a C1 candidate
+/// for this session: a nonretired local seat has a [`C1_BINDING`] row, which
+/// [`continuity_candidates`] would match once that seat is unresolved. A pass
+/// adds no binding, so without one the no-match is final (ht-kaw9).
+fn session_may_become_candidate(
+    tx: &Transaction<'_>,
+    instance: &str,
+    harness: &str,
+    native_session: &str,
+) -> Result<bool, ApiError> {
+    tx.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.{LOCAL_SEAT} AND s.state<>'retired' AND {C1_BINDING})",
+        ),
+        params![instance, harness, native_session],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 /// Schema delta 12 (ht-hsyg): copy every seat-history decision into the table that admits the

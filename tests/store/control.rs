@@ -9989,6 +9989,74 @@ fn continuity_for_an_unknown_session_is_final_while_reconciliation_lags() {
     let _ = std::fs::remove_file(path);
 }
 
+// Kills (ht-kaw9): a lag gate that drifts from the C1 candidate predicate. A
+// binding no candidate query can match (retired seat, subagent, managed
+// launch, another harness) must not keep a claim pending; a
+// resolved seat's matching top-level binding must, since the lagging pass may
+// still unresolve that seat.
+#[test]
+fn lagging_continuity_is_pending_only_for_a_possible_candidate() {
+    use crate::protocol::results::ErrorCode;
+    let decide = |setup: &str, session: &str| {
+        let (context, mut conn, path) = c1_fixture();
+        conn.execute(
+            "UPDATE herdr_hosts SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch-1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+            [],
+        )
+        .unwrap();
+        c1_bind(&conn, "s2", 1, "claude", session);
+        if !setup.is_empty() {
+            conn.execute_batch(setup).unwrap();
+        }
+        c1_observe(&conn, "new-pane");
+        let code = c1_decide(
+            &context,
+            &mut conn,
+            &c1_command("new-pane", session, "c1-gate"),
+            "absent",
+        )
+        .unwrap_err()
+        .code;
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+        code
+    };
+    assert_eq!(
+        decide("", "sess-x"),
+        ErrorCode::ServiceBusy,
+        "a resolved seat's binding"
+    );
+    for (case, setup, session) in [
+        (
+            "retired seat",
+            "UPDATE seats SET state='retired',retired_at=1 WHERE id='s2'",
+            "sess-x",
+        ),
+        (
+            "subagent",
+            "UPDATE occupant_bindings SET role='subagent',agent_id='a1' WHERE seat_id='s2'",
+            "sess-x",
+        ),
+        (
+            "agent id",
+            "UPDATE occupant_bindings SET agent_id='a1' WHERE seat_id='s2'",
+            "sess-x",
+        ),
+        (
+            "managed launch",
+            "UPDATE occupant_bindings SET observation_provenance='managed_launch' WHERE seat_id='s2'",
+            "sess-x",
+        ),
+        (
+            "other harness",
+            "UPDATE occupant_bindings SET harness='codex' WHERE seat_id='s2'",
+            "sess-x",
+        ),
+    ] {
+        assert_eq!(decide(setup, session), ErrorCode::NotFound, "{case}");
+    }
+}
+
 #[test]
 fn continuity_on_unowned_target_reattaches() {
     let (context, mut conn, path, _) = fixture(100);

@@ -520,6 +520,9 @@ pub fn unresolved_seat_line(sample: &crate::ports::UnresolvedSeatSample) -> Stri
     )
 }
 
+/// How many refused (seat, reason) pairs the reconciliation note names.
+const REFUSED_SEATS_SHOWN: usize = 2;
+
 impl HealthInputs {
     pub fn unknown(instance: crate::node::NodeUuid, boot: Uuid) -> Self {
         Self {
@@ -751,9 +754,17 @@ impl HealthInputs {
                 .push(binding_evidence_health_line(report));
         }
         if self.transitions_refused > 0 {
-            let seats: Vec<String> = self
+            // Explanation first, then at most REFUSED_SEATS_SHOWN pairs: the
+            // note stays inside the 256-byte line bound with real ids.
+            let mut note = format!(
+                "reconciliation: the store refused {} seat transition(s) since boot; those \
+                 seats were skipped, the others reconciled",
+                self.transitions_refused
+            );
+            let shown: Vec<String> = self
                 .refused_seats
                 .iter()
+                .take(REFUSED_SEATS_SHOWN)
                 .map(|refused| {
                     format!(
                         "{} {} x{}",
@@ -763,19 +774,15 @@ impl HealthInputs {
                     )
                 })
                 .collect();
-            let seats = if seats.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", seats.join(", "))
-            };
-            push(
-                &mut health.notes,
-                format!(
-                    "reconciliation: the store refused {} seat transition(s) since boot{seats}; \
-                     those seats were skipped, the others reconciled",
-                    self.transitions_refused
-                ),
-            );
+            if !shown.is_empty() {
+                note.push_str("; refused: ");
+                note.push_str(&shown.join(", "));
+                let more = self.refused_seats.len() - shown.len();
+                if more > 0 {
+                    note.push_str(&format!(" +{more} more"));
+                }
+            }
+            push(&mut health.notes, note);
         }
         health.held_targets = self.unresolved.as_ref().map(|summary| summary.holds.count);
         health.unresolved_seats = self.unresolved.as_ref().map(|summary| summary.count);

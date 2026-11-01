@@ -1630,11 +1630,50 @@ fn transitions_refused_reaches_health() {
     let inputs = provider(&budget);
     assert_eq!(inputs.transitions_refused, 3);
     assert!(
-        inputs.assemble().notes.iter().any(|note| note.contains(
-            "refused 3 seat transition(s) since boot (s1 test_reason x2, s2 test_reason x1)"
+        inputs.assemble().notes.iter().any(|note| note.ends_with(
+            "refused 3 seat transition(s) since boot; those seats were skipped, the others \
+             reconciled; refused: s1 test_reason x2, s2 test_reason x1"
         )),
         "Health names each refused seat with its reason"
     );
+}
+
+/// Kills (ht-kaw9): a refusal note that lists every pair, so with real seat
+/// ids and reason slugs the 256-byte line bound truncates it mid-pair and
+/// hides how many pairs were left out.
+#[test]
+fn refusal_note_fits_its_line_bound_with_real_ids() {
+    let mut inputs = crate::daemon::health::HealthInputs::unknown(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    inputs.transitions_refused = 37_214;
+    inputs.refused_seats = [
+        "sQ0VU3wP88WZ",
+        "sQ0VnTDasAbY",
+        "sQ0Vj7cYH6Jh",
+        "sQ0VQIPuoUBS",
+    ]
+    .iter()
+    .map(|seat| crate::service::host_evidence::RefusedSeat {
+        seat: crate::protocol::ids::SeatId::new(*seat),
+        reason: crate::ports::StaleReason::new("structure_binding_evidence_mismatch"),
+        count: 37_214,
+    })
+    .collect();
+    let notes = inputs.assemble().notes;
+    let note = notes
+        .iter()
+        .find(|note| note.starts_with("reconciliation:"))
+        .unwrap();
+    assert!(
+        note.ends_with(
+            "; refused: sQ0VU3wP88WZ structure_binding_evidence_mismatch x37214, \
+             sQ0VnTDasAbY structure_binding_evidence_mismatch x37214 +2 more"
+        ),
+        "{note}"
+    );
+    assert!(note.len() <= 256, "{} bytes: {note}", note.len());
 }
 
 /// One refusal per seat, all with the same reason.
@@ -2172,9 +2211,10 @@ fn stale_refused_pass_skips_reconciliation_marker() {
         ),
     );
     let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    // The refused pass completed: its page was read and the loop moved on.
-    while port.pages_ok.load(Ordering::SeqCst) == 0 {
-        assert!(std::time::Instant::now() < until, "no page was reconciled");
+    // The refused pass completed: the worker reported its refusal (after the
+    // page was reconciled) and the loop moved on.
+    while refusals.0.lock().unwrap().is_empty() {
+        assert!(std::time::Instant::now() < until, "no refusal was reported");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     std::thread::sleep(std::time::Duration::from_millis(300));
