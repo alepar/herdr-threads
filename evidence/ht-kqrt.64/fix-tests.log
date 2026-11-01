@@ -1,0 +1,35 @@
+heavy: slot 1 acquired 09:36:37
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID eb97ea80-d10d-49b7-a9b8-552aab7024b8 with nextest profile: default
+    Starting 28 tests across 16 binaries (8689 tests skipped)
+        PASS [   0.005s] ( 1/28) herdr-threads::combined host_neutral_scan::matcher_permits_the_implemented_set_comments_and_io_errors
+        PASS [   0.005s] ( 2/28) herdr-threads::combined host_neutral_scan::mod_entry_exempts_only_its_module
+        PASS [   0.005s] ( 3/28) herdr-threads::combined host_neutral_scan::allowlist_rejects_entries_over_neutral_modules
+        PASS [   0.005s] ( 4/28) herdr-threads::combined host_neutral_scan::symbol_entry_exempts_only_its_item
+        PASS [   0.005s] ( 5/28) herdr-threads::combined host_neutral_scan::matcher_reports_host_kind_in_delivery
+        PASS [   0.006s] ( 6/28) herdr-threads::combined host_neutral_scan::matcher_reports_env_literal_in_receipts
+        PASS [   0.006s] ( 7/28) herdr-threads::combined host_neutral_scan::matcher_reports_kind_on_host_receivers
+        PASS [   0.011s] ( 8/28) herdr-threads::combined host_neutral_scan::allowlist_is_well_formed_and_every_entry_resolves
+        PASS [   0.016s] ( 9/28) herdr-threads service::loop_inventory::epic_rg_finds_no_10_or_20ms_sleeps
+        PASS [   0.101s] (10/28) herdr-threads service::loop_inventory::converted_lane_and_transport_loops_are_not_allowlisted
+        PASS [   0.101s] (11/28) herdr-threads service::loop_inventory::every_timed_wait_is_on_a_pacer_or_allowlisted_with_a_reason
+        PASS [   0.656s] (12/28) herdr-threads::combined host_neutral_scan::src_names_no_host_kind_or_host_env_outside_the_allowlist
+        PASS [   0.760s] (13/28) herdr-threads::integration config_smoke::herdr_never_started
+        PASS [   0.796s] (14/28) herdr-threads::combined lazy_config_smoke::lazy_config_default_text_settles
+        PASS [   0.927s] (15/28) herdr-threads::combined lazy_config_smoke::lazy_config_lost_completion_reply_frozen_retry
+        PASS [   0.946s] (16/28) herdr-threads::combined lazy_config_smoke::lazy_config_multichunk_restart_printed_continuations
+        PASS [   1.162s] (17/28) herdr-threads::combined lazy_config_smoke::lazy_config_inbox_v1_client_current_daemon_ordinary_shapes
+        PASS [   1.169s] (18/28) herdr-threads::combined priority_config_smoke::priority_config_smoke_threshold_minus_one
+        PASS [   1.282s] (19/28) herdr-threads::integration config_smoke::herdr_stale_socket_dead_server
+        PASS [   1.299s] (20/28) herdr-threads::combined lazy_config_smoke::lazy_config_json_machine_explicit_seat_are_readonly
+        PASS [   1.311s] (21/28) herdr-threads::integration config_smoke::herdr_up_linked
+        PASS [   1.343s] (22/28) herdr-threads::integration config_smoke::herdr_stopped_while_daemon_runs
+        PASS [   1.425s] (23/28) herdr-threads::combined priority_config_smoke::priority_config_smoke_threshold_three
+        PASS [   1.502s] (24/28) herdr-threads::integration config_smoke::herdr_restarted_under_running_daemon
+        PASS [   1.519s] (25/28) herdr-threads::integration config_smoke::p0_to_a_harness_without_idle_wake_warns_each_sender_once_and_doctor_lists_it
+        PASS [   1.580s] (26/28) herdr-threads::combined lazy_config_smoke::lazy_config_postjoin_human_unavailable_restart
+        PASS [   1.719s] (27/28) herdr-threads::combined priority_config_smoke::priority_config_smoke_threshold_zero
+        PASS [   1.890s] (28/28) herdr-threads::integration config_smoke::synthetic_four_adapter_hook_configuration_and_canonical_replay
+────────────
+     Summary [   2.028s] 28 tests run: 28 passed, 8689 skipped

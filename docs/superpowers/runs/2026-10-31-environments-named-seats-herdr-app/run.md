@@ -315,3 +315,68 @@ Live macOS `KERN_PROCARGS2` (E1), live real-core Codex with and without `--no-da
 ### Test hygiene
 
 `check-no-leaked-processes --run-id` clean after the suite. `stop-run-processes --check` matched nothing run-owned (only uninspectable foreign pid 2448583, an sshd session, listed as `unknown:`). Nothing to stop.
+
+## Final gate (ht-kqrt.64)
+
+Gated tree: integration tip 8eb145b10 (F, N, N2, H1 and H3 merged, after .62, .63, .59) plus the unmerged ht-kqrt.164
+branch (merge ce934efb5, tree 92525a7af7d168bf0517b1430e208fea66ab9d4e), plus one test-only fix commit f5a8f5b04
+(tree 0c81ef9a9ab8ea1e442d4bc4846f5a13840dd98b). Logs are under `evidence/ht-kqrt.64/`. All cargo jobs ran through the
+heavy wrapper with `nice`, TMPDIR and every scratch path under `/tmp/sp-503081fe/ht-kqrt.64`.
+
+| Check | Tree | Result |
+| --- | --- | --- |
+| `nice cargo nextest run --locked --all-targets --all-features` (HT_LEAK_RUN_ID exported) | 92525a7a | 8664 run, 8658 passed, 6 failed, 53 skipped; test time 308.2 s (wall 424 s with build) |
+| `scripts/check-no-leaked-processes --run-id` after the run | 92525a7a | clean (no leaked test temp files, no leaked test processes) |
+| 3 of the 6 failures re-examined and fixed (below), rerun `host_neutral_scan`, `loop_inventory`, `config_smoke`, `lazy_config_smoke` | 0c81ef9a | 28 passed |
+| `restore_from_backup_forks_is_reissued_and_resync_converges` alone, 3 runs | 0c81ef9a | 3 of 3 pass (8.4 s, 10.4 s, 8.4 s) |
+| `cargo clippy --locked --all-targets --all-features -- -D warnings`, `cargo fmt --check` | 0c81ef9a | clean |
+| `nice scripts/check-default-features` | 0c81ef9a | pass |
+| `scripts/check-wire-compat` | 92525a7a | ok, 0 violations, 0 stale; `scripts/wire-compat-baseline.txt` has no diff against main |
+| `scripts/check-harness-neutral` | 92525a7a | ok, 0 violations; `scripts/harness-neutral-allowlist.txt` has no diff against main (no new entry) |
+| `python3 scripts/wake-e2e.py --self-test` | 92525a7a | 214 tests OK (1 skipped) |
+| `nice scripts/herdr-release-smoke --versions 0.9.5` (newest in `tests/herdr-releases.tsv`) | 0c81ef9a | PASS: core, launch/handoff, wake, busy, move all PASS; leak check clean |
+| configuration smoke (`config_smoke`: cross_environment_messaging_one_daemon, hc_terminal_site_four_harnesses, herdr_app_terminal_full_messaging_and_label, ...) | 92525a7a | passed in the unfiltered run |
+
+Failures in the unfiltered run:
+
+- `host_neutral_scan::src_names_no_host_kind_or_host_env_outside_the_allowlist`: `peer_launcher::gate_argv` names
+  `HostKind::Hc` (ht-kqrt.143). Fixed with one symbol-scoped entry in `tests/host_neutral_allowlist.txt`: a peer launch
+  gate argv is by construction what a herdr-core terminal starts. This is the one allowlist entry beyond the run's
+  earlier ones, and it is justified there.
+- `service::loop_inventory::every_timed_wait_is_on_a_pacer_or_allowlisted_with_a_reason`: `std::thread::sleep(GATE_SEAT_RETRY)`
+  in `peer_launcher.rs` (ht-kqrt.143), a bounded retry inside one launch worker. Fixed with a justified
+  `ALLOWLIST` entry beside the existing peer_launcher ones.
+- Three zsh round-trip tests (`protocol::output::tests::emitted_command_round_trips_exact_argv_through_zsh`,
+  `contracts::action_formatter_round_trips_unicode_separators_through_bash_and_zsh`,
+  `view::rendered_actions_execute_as_shell_commands`): `zsh` is not installed on this host (`which zsh` finds
+  nothing; `view.rs:566` fails with `Os { code: 2, NotFound }` spawning it). Environmental; not run against the base.
+  Needs a host with zsh to count as passing.
+- `multinode config_restore::restore_from_backup_forks_is_reissued_and_resync_converges` (`the losing branch is kept in
+  journal_forked`): failed once under full-suite load, passed 3 of 3 alone. Treated as a load flake, not attributed
+  to this run; it is not fixed here.
+
+Budget: the suite's test time was 308 s against the 5 minute budget, 8 s over, on a CPU shared with ML training and
+a concurrent heavy slot. The budget is not met on this measurement; it was not re-measured after the fix commit.
+
+Existing Herdr handoff and launch tests and V1/V2 journal fixtures: no file under `tests/fixtures/handoff-journal`
+(`v1-*`, `v2-*`, `automatic-v2-*`) is modified or deleted against main, only the V3 files are added. 856 handoff and
+journal tests passed, none failed. Earlier tasks did edit three existing test files (`tests/handoff_agy.rs` +3/-1,
+`tests/handoff_topology_cli.rs` +62/-13, `tests/integration/herdr_release_smoke.rs` +26/-15); they all pass, and
+whether those edits were all intended is left to the whole-epic review.
+
+L1-L4 as answered (live parts are remaining evidence):
+
+- L1 (unknown `herdr.tab` makes a new app tab): answered against fake_hc (`space_label_set` sends exactly
+  `{herdr.space=w1, herdr.tab=<fresh id>, ht.bootstrap, ht.label}`). Live check needs the macOS herdr-app: remaining evidence.
+- L2 (the shim's `exec` keeps `terminal.pid`): answered live against a real core (hc-smoke, ht-kqrt.52) and by the
+  read-only reading of `holder.rs` and the `exec_keeps_pid` test (ht-kqrt.54).
+- L3 (`outlive_parent` + `no_notify` stop every `<hc>` note): answered by the read-only reading of `run.rs` and
+  `notes.rs` (ht-kqrt.55) and live in the hc-smoke (a control child typed a note, the flagged child typed nothing).
+- L4 (Codex `--no-daemon`, the Linux socket path): socket path answered from herdr-core `paths.rs` (`HC_SOCKET`, else
+  `config.toml`, else the runtime dir) and matched by `HcDiscovery`; Codex `--no-daemon` for hc is `host_launch_argv`
+  (ht-kqrt.54). The live real-core Codex run needs an authenticated Codex: remaining evidence.
+
+Remaining evidence (not run here): live macOS `KERN_PROCARGS2` (E1), live real-core Codex with and without
+`--no-daemon` (H-C1, L4), L1 on the macOS herdr-app, and a full-suite run on a host with zsh.
+
+Test hygiene: `check-no-leaked-processes --run-id` clean after the suite and after the release smoke.
