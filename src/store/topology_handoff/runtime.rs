@@ -5,7 +5,8 @@ use crate::{
     protocol::{
         authority::{MutationPermit, OperatorActor},
         commands::{Command, PermitMutation},
-        handoff::AutomaticBootstrapMutation,
+        handoff::{AutomaticBootstrapMutation, BootstrapAttempt},
+        ids::OperationId,
         results::CommandResult,
         time::CallBudget,
     },
@@ -162,6 +163,26 @@ impl BootstrapStorePort for SqliteStore {
             budget,
             |_| Ok(()),
             |tx, _, ()| super::automatic::query(tx, canonical, request),
+        )
+    }
+    fn automatic_launch_gate_view(
+        &self,
+        instance: &str,
+        compound: &OperationId,
+        attempt: BootstrapAttempt,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::LaunchGateView>, ApiError> {
+        if instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic bootstrap instance differs",
+            ));
+        }
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| super::automatic::launch_gate_view(tx, instance, compound, attempt),
         )
     }
     fn automatic_bootstrap_recovery_replay(

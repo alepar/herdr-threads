@@ -676,7 +676,13 @@ pub(crate) fn run(
                     expected_epoch: None,
                 };
                 let witness = match current.as_ref().and_then(|v| v.creation.as_ref()) {
-                    Some(created) => created.witness.clone(),
+                    Some(created) => created
+                        .as_tab()
+                        .ok_or_else(|| {
+                            super::invalid_request("a V3 creation reaches the Herdr bootstrap arm")
+                        })?
+                        .witness
+                        .clone(),
                     None => host
                         .observe_bootstrap_target(&claim.target, &context)?
                         .witness()

@@ -7771,7 +7771,7 @@ mod live {
             created.witness = peer.base.witness.clone();
             call(AutomaticBootstrapAction::RecordCreated {
                 attempt,
-                evidence: created.clone(),
+                evidence: created.clone().into(),
             })
             .unwrap();
             let CommandResult::SeatResolved(recipient) =
@@ -8814,13 +8814,13 @@ mod live {
             let retained = LinkedBootstrapReport {
                 thread: status.thread.unwrap(),
                 recipient: attachment.resolved_seat.clone(),
-                pane: attachment.created.root_pane.clone(),
+                pane: attachment.created.launch_target().clone(),
                 kind: "launch".into(),
                 launch: peer.identity.plan.payload.launch.clone(),
                 report,
                 report_digest: format!("{:x}", Sha256::digest(&bytes)),
-                terminal: attachment.created.terminal.clone(),
-                host_incarnation: attachment.created.host_incarnation.clone(),
+                terminal: attachment.created.terminal().clone(),
+                host_incarnation: attachment.created.host_incarnation().clone(),
             };
             let request = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
                 identity: peer.identity.clone(),
@@ -8903,7 +8903,7 @@ mod live {
                 let retained = LinkedBootstrapReport {
                     thread: status.thread.unwrap(),
                     recipient: attachment.resolved_seat.clone(),
-                    pane: attachment.created.root_pane.clone(),
+                    pane: attachment.created.launch_target().clone(),
                     kind: "launch".into(),
                     launch: peer.identity.plan.payload.launch.clone(),
                     report_digest: format!(
@@ -8911,8 +8911,8 @@ mod live {
                         Sha256::digest(serde_json::to_vec(&report).unwrap())
                     ),
                     report,
-                    terminal: attachment.created.terminal.clone(),
-                    host_incarnation: attachment.created.host_incarnation.clone(),
+                    terminal: attachment.created.terminal().clone(),
+                    host_incarnation: attachment.created.host_incarnation().clone(),
                 };
                 peer.call(
                     Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
@@ -10108,7 +10108,7 @@ mod live {
             // lifecycle check-in before exercising the ordinary Leave command.
             let mut recipient = peer.identity.claim.clone();
             recipient.seat = attachment.resolved_seat;
-            recipient.target = attachment.created.root_pane;
+            recipient.target = attachment.created.launch_target().clone();
             recipient.binding_generation = 1;
             // A real harness session (a `plugin_context:` placeholder is refused) and the
             // harness process a lifecycle check-in records.
@@ -11272,6 +11272,7 @@ fn seam_automatic_bootstrap_identity(
         legacy.scope,
         legacy.claim,
         AutomaticBootstrapPlan {
+            placement: None,
             version: 2,
             payload: AutomaticBootstrapPayload {
                 directory_context: None,

@@ -84,7 +84,19 @@ struct BootstrapRuntime {
 impl BootstrapRuntime {
     /// `None` when `session` cannot run guarded bootstrap.
     fn of(session: &HostSession, store: &Arc<dyn BootstrapStorePort>) -> Option<Self> {
-        session.bootstrap().map(|runtime| Self {
+        Self::from_runtime(session, session.bootstrap(), store)
+    }
+    /// The runtime of a host that creates its own targets (V3 automatic bootstrap); `None`
+    /// for any other session.
+    fn of_target(session: &HostSession, store: &Arc<dyn BootstrapStorePort>) -> Option<Self> {
+        Self::from_runtime(session, session.target_bootstrap(), store)
+    }
+    fn from_runtime(
+        session: &HostSession,
+        runtime: Option<&crate::service::host_sessions::BootstrapRuntime>,
+        store: &Arc<dyn BootstrapStorePort>,
+    ) -> Option<Self> {
+        runtime.map(|runtime| Self {
             canonical: runtime.canonical.clone(),
             observer: Arc::clone(&runtime.observer),
             store: Arc::clone(store),
@@ -92,6 +104,9 @@ impl BootstrapRuntime {
         })
     }
 }
+
+/// The session a namespace names and the node-wide bootstrap store.
+type NamespaceSession = (Arc<HostSession>, Arc<dyn BootstrapStorePort>);
 
 pub struct DomainService {
     pub(super) instance: String,
@@ -475,6 +490,29 @@ impl DomainService {
         namespace: &HandoffNamespace,
         budget: &CallBudget,
     ) -> Result<Option<BootstrapRuntime>, ApiError> {
+        Ok(self
+            .namespace_session(namespace, budget)?
+            .and_then(|(session, store)| BootstrapRuntime::of(&session, &store)))
+    }
+
+    /// [`Self::bootstrap_runtime`] for a V3 record: the runtime of a host that creates its own
+    /// targets, which a Herdr server never has.
+    fn target_runtime(
+        &self,
+        namespace: &HandoffNamespace,
+        budget: &CallBudget,
+    ) -> Result<Option<BootstrapRuntime>, ApiError> {
+        Ok(self
+            .namespace_session(namespace, budget)?
+            .and_then(|(session, store)| BootstrapRuntime::of_target(&session, &store)))
+    }
+
+    /// The session `namespace` names and the node-wide bootstrap store.
+    fn namespace_session(
+        &self,
+        namespace: &HandoffNamespace,
+        budget: &CallBudget,
+    ) -> Result<Option<NamespaceSession>, ApiError> {
         let Some(store) = &self.bootstrap_store else {
             return Ok(None);
         };
@@ -497,7 +535,7 @@ impl DomainService {
                 )
             })?;
         let session = self.attached_host(&locator, budget)?;
-        Ok(BootstrapRuntime::of(&session, store))
+        Ok(Some((session, Arc::clone(store))))
     }
 
     /// The session an operator action runs on: the server its command names,
@@ -538,9 +576,13 @@ impl DomainService {
     ) -> Result<CommandResult, ApiError> {
         use crate::protocol::handoff::AutomaticBootstrapAction;
         request.validate().map_err(ApiError::invalid_request)?;
-        let runtime = self
-            .bootstrap_runtime(&request.identity.plan.payload.handoff.namespace, budget)?
-            .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
+        let namespace = &request.identity.plan.payload.handoff.namespace;
+        let runtime = if request.identity.plan.placement.is_some() {
+            self.target_runtime(namespace, budget)?
+        } else {
+            self.bootstrap_runtime(namespace, budget)?
+        }
+        .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
         crate::store::topology_handoff::automatic::namespace(
             &runtime.canonical,
             &request.identity,
@@ -643,7 +685,7 @@ impl DomainService {
                 .creation
                 .ok_or_else(|| error(ErrorCode::Conflict, "automatic creation unavailable"))?;
             let resolving = crate::protocol::commands::ResolveSeat {
-                target: creation.root_pane,
+                target: creation.launch_target().clone(),
                 host: request.identity.claim.host.clone(),
                 operation: request.identity.plan.payload.keys.resolve.clone(),
                 locator_hint: None,
@@ -702,9 +744,13 @@ impl DomainService {
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
         request.validate().map_err(ApiError::invalid_request)?;
-        let runtime = self
-            .bootstrap_runtime(&request.plan().payload.namespace, budget)?
-            .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
+        let namespace = &request.plan().payload.namespace;
+        let runtime = if request.targets_own_host() {
+            self.target_runtime(namespace, budget)?
+        } else {
+            self.bootstrap_runtime(namespace, budget)?
+        }
+        .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
         crate::store::handoff::automatic::validate_namespace(&runtime.canonical, request)?;
         let (owner, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
             error(

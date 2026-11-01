@@ -176,3 +176,74 @@ fn address_format() {
         assert_eq!(HcAddress::parse(bad), None, "{bad}");
     }
 }
+
+// ---- bootstrap observation (ht-kqrt.133) ----
+
+fn observer(host: HcHost) -> HcBootstrapObserver {
+    HcBootstrapObserver::new(Arc::new(host))
+}
+
+#[test]
+fn bootstrap_observer_reads_one_terminal_on_the_hello_peer() {
+    use crate::ports::BootstrapObserver;
+    let (fake, host) = host_with_t1();
+    let hello = HcHost::run(host.client.hello()).unwrap();
+    let before = fake.calls_to("terminal.get").len();
+    let pane = observer(host)
+        .observe_bootstrap_target(&HostTargetId::new("t1"), &context())
+        .unwrap();
+    assert_eq!(fake.calls_to("terminal.get").len(), before + 1);
+    let observation = pane.observation();
+    assert_eq!(observation.target.as_str(), "t1");
+    assert_eq!(observation.host_boot.as_str(), "hc-core:core-0001");
+    assert_eq!(
+        observation.provenance,
+        ObservationProvenance::FreshCurrentTarget
+    );
+    assert_eq!(
+        observation.terminal,
+        Some(crate::protocol::ids::TerminalId::new("t1"))
+    );
+    assert!(observation.verified_structural_proof().is_some());
+    // The read was pinned to the peer `hello` named.
+    assert_eq!(pane.witness(), &hello.witness);
+}
+
+#[test]
+fn bootstrap_observer_refuses_absent_and_finished_terminals() {
+    use crate::ports::BootstrapObserver;
+    let (fake, host) = host_with_t1();
+    fake.add_terminal(FakeTerminal::live("t2"));
+    fake.finish("t2", "exited", Some(0), None);
+    let observer = observer(host);
+    for target in ["t9", "t2"] {
+        let error = observer
+            .observe_bootstrap_target(&HostTargetId::new(target), &context())
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound, "{target}");
+    }
+    assert!(
+        observer
+            .observe_bootstrap_target(&HostTargetId::new("t1"), &context())
+            .is_ok()
+    );
+}
+
+#[test]
+fn bootstrap_observer_refuses_a_changed_core() {
+    use crate::ports::BootstrapObserver;
+    let (fake, host) = host_with_t1();
+    let observer = observer(host);
+    let mut pinned = context();
+    pinned.expected_boot = Some(HostBootId::new("hc-core:core-0001"));
+    assert!(
+        observer
+            .observe_bootstrap_target(&HostTargetId::new("t1"), &pinned)
+            .is_ok()
+    );
+    fake.rotate_core_id("core-0002");
+    let error = observer
+        .observe_bootstrap_target(&HostTargetId::new("t1"), &pinned)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleHostObservation);
+}

@@ -70,9 +70,10 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
             build: Arc::new(move |kind, locator| match kind {
                 herdr_threads::ports::HostKind::Hc => {
                     let client = herdr_threads::host::hc::HcClient::new(locator.as_path());
+                    let host = Arc::new(herdr_threads::host::hc::HcHost::new(client));
                     (
-                        Arc::new(herdr_threads::host::hc::HcHost::new(client)),
-                        Arc::new(herdr_threads::host::hc::HcBootstrapObserver),
+                        host.clone(),
+                        Arc::new(herdr_threads::host::hc::HcBootstrapObserver::new(host)),
                     )
                 }
                 _ => {

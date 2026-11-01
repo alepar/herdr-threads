@@ -2782,6 +2782,20 @@ nested in bootstrap status; an inspection-aware client is required to present th
 new records. Guards are never stripped to fabricate older-client compatibility. No heuristic PID or topology
 snapshot proves quiescence, and recovery never kills an unowned process.
 
+A V3 automatic bootstrap (plan version 3, `handoff.automatic_target_v1`) freezes a
+placement and records its creation as a `CreatedTarget` instead of a Herdr tab. Its
+namespace endpoint is the target core's socket, so a caller in a Herdr pane or a named
+seat may hand off into a core and its claim host need not equal that endpoint; its
+child carries the version-3 marker an older daemon refuses at decode, so no partial row
+is written. The creation witness is the core id plus the serving process, and the
+deciding read takes the terminal on that same peer (`terminal.get` pinned to the
+`hello`'s witness); a changed core or peer is a stale observation, never a match. The
+launch argv of a V3 plan is frozen at creation and the retained report must equal it.
+Accepted limit: `--created-pane` is refused for a V3 plan, because it names a Herdr
+pane and a core terminal has no such recovery evidence, so an unknown V3 creation
+resolves only through `--not-created` or `--cancel`, and an `ht.bootstrap` label never
+reclassifies it.
+
 Herdr offers correlation rather than creation idempotency. The product therefore
 sacrifices automatic progress after an uncertain submission. An operator's
 mistaken inspected noncreation or quiescence assertion can permit duplicate

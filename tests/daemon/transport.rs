@@ -3567,6 +3567,7 @@ fn maximum_automatic_recovery_result(
         },
         claim,
         AutomaticBootstrapPlan {
+            placement: None,
             version: 2,
             payload: AutomaticBootstrapPayload {
                 directory_context: None,
@@ -3610,7 +3611,7 @@ fn maximum_automatic_recovery_result(
         attempt: BootstrapAttempt::first(),
         attempt_state: BootstrapAttemptState::Created,
         administrative_revision: 1,
-        creation: Some(created),
+        creation: Some(created.into()),
         thread: None,
         completed: None,
         recovery: Some(AutomaticBootstrapRecoveryResult {
@@ -3885,7 +3886,7 @@ fn historical_completed_transport_result(
         .apply(&result.identity.plan.payload.launch.argv, &prompt)
         .unwrap()
         .0;
-    let mut report = serde_json::json!({"outcome":"started", "pane":attachment.created.root_pane, "seat":attachment.resolved_seat, "harness":result.identity.plan.payload.launch.harness.as_str(), "argv":argv, "diagnostics":""});
+    let mut report = serde_json::json!({"outcome":"started", "pane":attachment.created.launch_target(), "seat":attachment.resolved_seat, "harness":result.identity.plan.payload.launch.harness.as_str(), "argv":argv, "diagnostics":""});
     let diagnostics = if diagnostics == usize::MAX {
         1_048_576 - 512 - serde_json::to_vec(&report).unwrap().len()
     } else {
@@ -3895,13 +3896,13 @@ fn historical_completed_transport_result(
     let retained = LinkedBootstrapReport {
         thread: thread.clone(),
         recipient: attachment.resolved_seat.clone(),
-        pane: attachment.created.root_pane.clone(),
+        pane: attachment.created.launch_target().clone(),
         kind: "launch".into(),
         launch: result.identity.plan.payload.launch.clone(),
         report_digest: format!("{:x}", Sha256::digest(serde_json::to_vec(&report).unwrap())),
         report,
-        terminal: attachment.created.terminal.clone(),
-        host_incarnation: attachment.created.host_incarnation.clone(),
+        terminal: attachment.created.terminal().clone(),
+        host_incarnation: attachment.created.host_incarnation().clone(),
     };
     AutomaticBootstrapMutation {
         identity: result.identity.clone(),

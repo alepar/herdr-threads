@@ -247,6 +247,10 @@ pub struct HostSession {
     reachability: Arc<HostReachability>,
     identity: Arc<OrdinaryIdentity>,
     bootstrap: Option<BootstrapRuntime>,
+    /// The bootstrap runtime of a host that creates its own targets (V3 automatic bootstrap).
+    /// Kept apart from `bootstrap` so the V1/V2 guarded path, Send preparation and the
+    /// advertised guarded capabilities, which read `bootstrap`, answer as before.
+    target_bootstrap: Option<BootstrapRuntime>,
     evidence: Arc<HostEvidenceStatus>,
     observation: LaneHandle,
     /// `None` when the port's `wake_capability()` is `WakeCapability::None`: no wake
@@ -280,6 +284,11 @@ impl HostSession {
     /// cannot start guarded.
     pub fn bootstrap(&self) -> Option<&BootstrapRuntime> {
         self.bootstrap.as_ref()
+    }
+    /// `None` unless the port creates its own targets and the node has a handoff state
+    /// directory.
+    pub fn target_bootstrap(&self) -> Option<&BootstrapRuntime> {
+        self.target_bootstrap.as_ref()
     }
     pub fn evidence(&self) -> &Arc<HostEvidenceStatus> {
         &self.evidence
@@ -345,6 +354,8 @@ impl HostSession {
     ) -> Arc<Self> {
         let stop = Cancellation::default();
         let link = stop.on_cancel(Arc::new(|| {}));
+        // A host that creates its own targets keeps the runtime in the V3 slot only.
+        let creates_targets = identity.host_port().creates_targets_itself();
         let observer = bootstrap.as_ref().map_or_else(
             || Arc::new(RefusedBootstrapObserver) as Arc<dyn BootstrapObserver>,
             |runtime| Arc::clone(&runtime.observer),
@@ -354,6 +365,11 @@ impl HostSession {
             status: Arc::new(WorkerStatus::default()),
             pacer: Arc::new(Pacer::new(lane.name(), Arc::clone(&clock), stop.clone())),
         };
+        let (bootstrap_slot, target_slot) = if creates_targets {
+            (None, bootstrap)
+        } else {
+            (bootstrap, None)
+        };
         Arc::new(Self {
             host_id: identity.host_id(),
             locator,
@@ -361,7 +377,8 @@ impl HostSession {
             observer,
             reachability: Arc::new(HostReachability::default()),
             identity,
-            bootstrap,
+            bootstrap: bootstrap_slot,
+            target_bootstrap: target_slot,
             evidence: Arc::new(HostEvidenceStatus::default()),
             observation: lane(Lane::Observation),
             wake: Some(lane(Lane::Wakes)),
@@ -849,6 +866,16 @@ impl HostSessions {
                 },
             )
         });
+        let target_bootstrap = deps.state_dir.as_ref().and_then(|state_dir| {
+            port.creates_targets_itself().then(|| BootstrapRuntime {
+                canonical: HandoffNamespace {
+                    instance: deps.node_uuid.clone(),
+                    state_dir: state_dir.clone(),
+                    host_endpoint: PathBuf::from(locator),
+                },
+                observer: Arc::clone(&observer),
+            })
+        });
         let observation_status = Arc::new(WorkerStatus::default());
         let wake_status = Arc::new(WorkerStatus::default());
         if let Some(log) = &deps.lane_log {
@@ -924,6 +951,7 @@ impl HostSessions {
             reachability,
             identity,
             bootstrap,
+            target_bootstrap,
             evidence,
             observation: LaneHandle {
                 lane: Lane::Observation,
