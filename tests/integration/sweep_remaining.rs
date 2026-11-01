@@ -63,17 +63,20 @@ impl Scene {
         &self.0.session
     }
 
-    /// The cost of a send on this store, separated from the host's scheduling: the fastest of
-    /// these recipients' sends, stopping at the first under the bound. Work that grows with the
-    /// settled history is in every sample; a stall from a host at load 54 is not (ht-dhhl).
+    /// A retry, on purpose and only here: a send to each of these recipients until one is under
+    /// the bound; returns the fastest. Work that grows with the settled history is in every
+    /// sample, a stall from a host at load 54 is not (ht-dhhl). A one-shot cost in the first send
+    /// passes, so discarded samples are printed, where a failing run's output shows them.
     fn settled_send_latency(&self, recipients: std::ops::Range<usize>, body: &str) -> Duration {
         let mut fastest = Duration::MAX;
         for recipient in recipients {
             let body = format!("{body} {recipient}");
-            fastest = fastest.min(self.send_to_wake_attempt(recipient, &body));
+            let latency = self.send_to_wake_attempt(recipient, &body);
+            fastest = fastest.min(latency);
             if fastest < Duration::from_millis(100) {
                 break;
             }
+            eprintln!("settled send discarded: {body}: {latency:?}");
         }
         fastest
     }
@@ -2538,8 +2541,9 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
 }
 
 /// The latency half of `retention_keeps_tables_bounded_while_discovery_stays_flat`:
-/// a send under 6,000 settled jobs, and another after retention drains them,
-/// are each attempted under 100 ms from commit. Split out so it can run alone
+/// a send under 6,000 settled jobs, and another after retention drains them, are
+/// each attempted under 100 ms from commit, on at most three tries a phase
+/// (`settled_send_latency`). Split out so it can run alone
 /// (`.config/nextest.toml`): beside the suite's process-heavy tests the first
 /// send measured 333 ms. Kills: a discovery path that follows settled history.
 #[test]
