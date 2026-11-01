@@ -102,8 +102,10 @@ impl Session {
                     },
                 ))
         });
+        // Fixture readiness, a hang guard: a starved host took the full former 10 s, and the
+        // panic was silent under the daemon's quiet hook, replaced just below.
         let descriptor = ready_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(Duration::from_secs(60))
             .expect("the elected daemon did not publish its endpoint");
         // The elected daemon installs a quiet panic hook; restore visible failures.
         std::panic::set_hook(Box::new(|info| eprintln!("{info}")));
@@ -117,7 +119,7 @@ impl Session {
             daemon: Some(daemon),
             _guard: guard,
         };
-        wait_until("the probe to attach", Duration::from_secs(5), || {
+        wait_until("the probe to attach", Duration::from_secs(30), || {
             session.probe.attached()
         });
         Some(session)

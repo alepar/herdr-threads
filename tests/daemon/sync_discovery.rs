@@ -299,7 +299,7 @@ impl NodeA {
                 ))
         });
         ready_rx
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(Duration::from_secs(60))
             .expect("the elected daemon did not publish its endpoint");
         std::panic::set_hook(Box::new(|info| eprintln!("{info}")));
         Self {
