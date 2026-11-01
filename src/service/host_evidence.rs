@@ -130,7 +130,8 @@ impl HostEvidenceStatus {
     /// store refused on it (skipped, never fatal; counted for Health);
     /// `completes_publication` marks the pass's last page. Success-only:
     /// `last_reconciliation_at` advances only when the whole pass completed
-    /// and the store refused no transition on any of its pages.
+    /// and the store refused no transition on any of its pages, so it can lag
+    /// a marker recorded past a persistent refusal (TRUST-POLICY C2).
     pub fn record_reconcile_page(
         &self,
         refusals: &[crate::identity::reconcile::RefusedTransition],

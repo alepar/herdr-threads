@@ -819,3 +819,24 @@ fn a_refused_mark_unresolved_holds_the_marker_however_long_it_lasts() {
     assert_eq!(pass.shell_reads(), 0);
     assert_eq!(pass.seat_state("culprit"), "resolved", "nothing moved it");
 }
+
+/// Kills: a pass that keeps only its last page's refusals, which would record
+/// the marker past a refused `MarkUnresolved` on an earlier page.
+#[test]
+fn a_refusal_on_an_earlier_page_survives_a_clean_last_page() {
+    let saved = crate::identity::reconcile::MAX_SAVED_SEATS_PER_PLAN;
+    let pass = RefusedPass::start("dead-incarnation", |db, instance| {
+        for n in 0..saved {
+            db.execute(
+                "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) \
+                 VALUES (?1,?2,'unresolved','other','native',?3,2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+                rusqlite::params![format!("clean-{n}"), instance, format!("gone-{n}")],
+            )
+            .unwrap();
+        }
+    });
+    for count in 2..=crate::identity::reconcile::PERSISTENT_REFUSAL_PASSES as u64 + 1 {
+        pass.run_to(count);
+    }
+    assert!(!pass.marked());
+}

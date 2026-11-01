@@ -376,11 +376,11 @@ pub struct RefusedTransition {
     pub excludable: bool,
 }
 
-/// Consecutive passes that must refuse the same seat, generation and reason
+/// Consecutive finished passes that must refuse the same seat, generation and reason
 /// before a pass completes past it: one pass is a race, a run of them is not.
 pub const PERSISTENT_REFUSAL_PASSES: u32 = 3;
 
-/// In how many consecutive passes of one recovery boot and epoch each refusal
+/// In how many consecutive finished passes of one recovery boot and epoch each refusal
 /// has repeated. Daemon memory, like the C1 process declines: a restart forgets
 /// it and the run is proven again. Holds only the latest pass's refusals.
 #[derive(Debug, Default)]
@@ -488,7 +488,7 @@ pub fn reconcile_published_page(
     for transition in plan_page(&page)? {
         let seat = transition.seat.clone();
         let generation = transition.expected_binding_generation;
-        let excludable = !matches!(transition.action, ReconciliationAction::MarkUnresolved);
+        let excludable = transition.action.may_complete_past_refusal();
         let result = store.apply_reconciliation_transition(transition, budget)?;
         match result {
             // A refused transition is that seat's alone (D2): its guarded

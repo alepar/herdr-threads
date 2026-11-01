@@ -290,7 +290,7 @@ impl RateLimitedLaneLog {
         self.note(
             "lane observation".to_owned(),
             format!("refused {} ({reason})", seat.as_str()),
-            "reconciliation transition refused; the seat was skipped and the pass is not recorded",
+            "reconciliation transition refused; the seat was skipped",
             0,
         );
     }
