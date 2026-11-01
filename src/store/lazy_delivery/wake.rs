@@ -92,7 +92,7 @@ fn seek(conn: &Connection, sql: &str, key: &str, priority: i64) -> Result<Option
 /// it holds no wake, except the seat's dormant binding (`dormant_top_level`). Publication order only
 /// grows, so a row staged early but published late still lies beyond a frontier reserved earlier;
 /// the staging ordinal would not. One view seek per connected binding and admitted priority, so a deep backlog of
-/// less urgent rows never hides an urgent one.
+/// less urgent rows never hides an urgent one; only a seat with a dormant binding also walks its pending rows.
 pub fn wake_frontier(
     conn: &Connection,
     seat: &str,

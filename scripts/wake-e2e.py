@@ -2255,9 +2255,12 @@ class Recipient:
                          "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "checks": checks,
                          "ref": {"messages": mids}, "result": "PASS" if passed else "FAIL", "utc": utc()})
 
+    def seat_inspect(self):
+        out = self.run.ht("seat", "inspect", self.seat, pane=self.run.coords["main"]["pane"], human=True)
+        return (json.loads(out).get("result") or {}).get("data") or {}
+
     def availability(self):
-        data = self.run.ht("seat", "inspect", self.seat, pane=self.run.coords["main"]["pane"], human=True)
-        return (((data.get("result") or {}).get("data") or {}).get("summary") or {}).get("availability", "")
+        return (self.seat_inspect().get("summary") or {}).get("availability", "")
 
     def resume_case(self, case):
         """resume-idle: a killed and resumed Codex, idle and unknown to the daemon, wakes on p0 and only on p0."""
@@ -2267,10 +2270,9 @@ class Recipient:
         if gap > 0:
             self.run.stopping.wait(gap)
         self.wait_idle()
-        agent = self.run.herdr("agent", "get", self.pane)["result"]["agent"]
-        session = (agent.get("agent_session") or {}).get("value")
-        if not session:
-            raise RuntimeError(f"{self.name}: Herdr reports no agent session")
+        bound = [i["data"] for i in self.seat_inspect()["history"]["items"]
+                 if i["kind"] == "binding" and i["data"]["ended_at"] is None]
+        session = max(bound, key=lambda b: b["ordinal"])["native_session"]
         info = self.run.herdr("pane", "process-info", "--pane", self.pane)["result"]["process_info"]
         pids = [p["pid"] for p in info["foreground_processes"] if any("codex" in a for a in (p.get("argv") or [])[:2])]
         if not pids:
@@ -2282,6 +2284,7 @@ class Recipient:
         while time.time() < end and not self.availability().startswith("unavailable"):
             time.sleep(0.5)
         checks["unavailable_after_exit"] = self.availability().startswith("unavailable")
+        self.run.resumes = getattr(self.run, "resumes", 0) + 1
         line = self.run.launch_line(self.harness) + " resume " + shlex.quote(session)
         self.run.herdr("pane", "run", self.pane, line)
         end = time.time() + 120
@@ -2313,7 +2316,8 @@ class Recipient:
             self.wait_idle()
         checks["delivered"] = all(self.on_screen(m) for m in (silent, urgent) if m)
         checks["available_after"] = self.availability() == "available"
-        passed = (checks["unavailable_after_exit"] and checks["wakes_on_p1"] == 0 and woke
+        passed = (checks["unavailable_after_exit"] and checks["unavailable_while_idle"]
+                  and checks["wakes_on_p1"] == 0 and woke
                   and checks["delivered"] and checks["available_after"])
         self.settled()
         self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
@@ -2720,6 +2724,8 @@ def codex_hook_guidance(run):
         counts["rollouts"] += 1
         counts["guidance_contexts"] += guidance
         counts["over_allowance"] += max(0, guidance - 1 - compactions)
+    # A resume is a session start in the same rollout.
+    counts["over_allowance"] = max(0, counts["over_allowance"] - getattr(run, "resumes", 0))
     counts["pass"] = counts["guidance_contexts"] > 0 and counts["over_allowance"] == 0
     return counts
 

@@ -424,16 +424,19 @@ fn wake_target_rows(
     ) in rows
     {
         let binding = BindingId::parse(binding).map_err(corrupt)?;
-        // A dormant binding holds no pending view for `has_unread` to read.
+        // A dormant binding holds no pending view for `has_unread` to read, and only what its
+        // threshold admits may wake it.
         let owed = seat_attention
-            || super::read_cursors::has_unread(db, &binding)?
-            || (dormant.is_some()
-                && super::lazy_delivery::wake_frontier(
+            || if dormant.is_some() {
+                super::lazy_delivery::wake_frontier(
                     db,
                     seat.as_str(),
                     super::seats::nudge_threshold(db, seat)?,
                 )?
-                .is_some());
+                .is_some()
+            } else {
+                super::read_cursors::has_unread(db, &binding)?
+            };
         if !owed {
             continue;
         }
@@ -1016,10 +1019,13 @@ pub fn validate_reservation(
             || candidate.actionable_warning_seq.is_some(),
     )?;
     // The target list is the frozen delivery plan: a binding reading its mail since the
-    // reservation does not void it (the scope, not the list, is the fence).
-    Ok(current
-        .as_ref()
-        .is_some_and(|current| current.same_scope(&reservation.authority)))
+    // reservation does not void it (the scope, not the list, is the fence). One exception: a
+    // session that connected since replaced a dormant target, and its own frontier decides.
+    let dormant = |authority: &ReservedWakeAuthority| authority.targets().iter().any(|t| t.dormant);
+    Ok(current.as_ref().is_some_and(|current| {
+        current.same_scope(&reservation.authority)
+            && dormant(current) == dormant(&reservation.authority)
+    }))
 }
 
 /// Settles one reservation. For `Refused` with a `refused_restore`, the same
@@ -1210,6 +1216,7 @@ pub fn reserve_poke(
         let boot=HostBootId::new(boot);
         // A due receipt is seat-level attention: every connected top-level binding can act on it.
         let Some(authority)=current_authority(tx,host,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,true)? else {return Ok(None)};
+        if authority.targets().iter().any(|t|t.dormant) {return Ok(None)}
         let witness=WakeAttentionWitness::from_complete(instance.into(),seat.clone(),nonnegative(decision_seq)?,false,true,None,nonnegative(episode)?,open!=0,LogicalAttentionFrontier::default());
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current,witness,receipts)))
     },|tx,at,prepared|{

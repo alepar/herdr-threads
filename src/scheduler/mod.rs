@@ -1060,7 +1060,12 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             )
             .map_err(dispatch_error)?;
         if current {
-            state.dispatch.record_outcome(&seat, outcome, completed_at);
+            let dormant = reservation.authority.targets().iter().any(|t| t.dormant);
+            if dormant && matches!(outcome, WakeOutcome::Refused(_)) {
+                state.dispatch.record_dormant_refusal(&seat, completed_at);
+            } else {
+                state.dispatch.record_outcome(&seat, outcome, completed_at);
+            }
             if matches!(
                 outcome,
                 WakeOutcome::Submitted | WakeOutcome::OutcomeUnknown

@@ -3025,23 +3025,26 @@ fn a_dormant_binding_is_a_cooperative_wake_target_on_its_own_terminal() {
             .execute(sql, [])
             .unwrap();
     };
-    // A new terminal and an empty shell stay unwoken.
-    for (change, restore) in [
-        (
-            "UPDATE observed_targets SET terminal_id='term-new'",
-            "UPDATE observed_targets SET terminal_id='term-pane'",
-        ),
-        (
-            "UPDATE observed_targets SET occupancy='empty_shell'",
-            "UPDATE observed_targets SET occupancy='unknown'",
-        ),
-    ] {
-        set(&store, change);
-        assert!(reserve(&store).is_none(), "{change}");
-        set(&store, restore);
-    }
+    // A session that connected since voids the reservation frozen on the dormant target.
+    set(
+        &store,
+        "UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL",
+    );
+    assert!(!StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap());
     drop(store);
     let _ = std::fs::remove_file(path);
+    // A new terminal and an empty shell stay unwoken: a fresh store for each, as the reservation
+    // above would refuse everything after it.
+    for change in [
+        "UPDATE observed_targets SET terminal_id='term-new'",
+        "UPDATE observed_targets SET occupancy='empty_shell'",
+    ] {
+        let (store, path) = open("liveness_process_exit");
+        set(&store, change);
+        assert!(reserve(&store).is_none(), "{change}");
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
     // An end event says the session is over: no wake (today's rule).
     let (store, path) = open("liveness_end_event");
     assert!(reserve(&store).is_none());
