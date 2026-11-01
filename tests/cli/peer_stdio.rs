@@ -365,7 +365,9 @@ fn idle_pump_stdout_never_blocks_a_nonblocking_reader() {
         let idle = stdout.read(&mut buf);
         let _ = tx.send((idle.map_err(|e| e.kind()), started.elapsed()));
     });
-    let (idle, took) = rx.recv_timeout(Duration::from_secs(5)).expect(
+    // The reader thread waits up to WAIT for the preamble (daemon start) before
+    // the idle read; `took` bounds the read itself, this only catches a hang.
+    let (idle, took) = rx.recv_timeout(WAIT + Duration::from_secs(5)).expect(
         "a non-blocking read of the idle pump's stdout blocked (splice holds the pipe lock)",
     );
     assert_eq!(
