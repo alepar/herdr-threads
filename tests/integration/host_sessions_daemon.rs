@@ -258,10 +258,43 @@ fn store_only_daemon_idle_exits_but_one_with_a_host_stays() {
     bare.shut_down();
     drop(bare);
 
-    // An attached host keeps it up well past the period.
-    let isolation = TestIsolation::new("hs-daemon-idle-host");
+    // An attached host holding no resolved seat does not keep it up (07 §5.3).
     let hint = loc("/herdr/hint.sock");
     world.add(&hint, refusing());
+    let isolation = TestIsolation::new("hs-daemon-idle-seatless");
+    let mut seatless = Daemon::start_with(
+        &isolation,
+        &world,
+        Some(hint.clone()),
+        Duration::from_secs(60),
+        idle.clone(),
+    );
+    assert_eq!(seatless.probe.host_sessions().unwrap().attached_count(), 1);
+    wait_until("the seatless-host daemon to idle-exit", || {
+        seatless.thread.as_ref().is_some_and(|t| t.is_finished())
+    });
+    seatless.shut_down();
+    drop(seatless);
+
+    // An attached host holding a resolved local seat keeps it up well past the period.
+    let isolation = TestIsolation::new("hs-daemon-idle-host");
+    // First run only remembers the host row; the seat is then added to the stopped store.
+    drop(Daemon::start(
+        &isolation,
+        &world,
+        Some(hint.clone()),
+        Duration::from_secs(60),
+    ));
+    let paths = herdr_threads::test_support::resolve_seeded(isolation.state_root());
+    rusqlite::Connection::open(paths.database_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) \
+             VALUES ('s',(SELECT id FROM local_node),'resolved','native',1,0,\
+             (SELECT id FROM local_node),1,(SELECT host_id FROM herdr_hosts WHERE endpoint='/herdr/hint.sock'))",
+            [],
+        )
+        .unwrap();
     let daemon = Daemon::start_with(
         &isolation,
         &world,
@@ -273,6 +306,6 @@ fn store_only_daemon_idle_exits_but_one_with_a_host_stays() {
     std::thread::sleep(Duration::from_secs(3));
     assert!(
         !daemon.thread.as_ref().unwrap().is_finished(),
-        "a daemon with an attached host exited"
+        "a daemon with a seated host exited"
     );
 }
