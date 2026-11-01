@@ -398,6 +398,26 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "sleep(Duration::from_millis(50))",
         "dialer unit test: polls a condition or lets reloads settle; not daemon code",
     ),
+    (
+        "src/daemon/lifecycle.rs",
+        "receiver.recv_timeout(DETACH_REPORT_WAIT)",
+        "the starter's one bounded wait (DETACH_REPORT_WAIT) for the detach intermediate's pid report; runs in the starting CLI process, never in the daemon, and kills the intermediate on expiry",
+    ),
+    (
+        "src/host/named/tmux.rs",
+        "std::thread::sleep(Duration::from_millis(5))",
+        "bounded poll of one `tmux display` child inside `tmux::verify` (COMMAND_DEADLINE, 2 s); ends with the call, not a lane. Caller check: verify is reached only through NamedHost::record_tmux_hint, called from HostPort::note_wake_hint by the Command::ResolveSeat named-host branch in src/service/dispatch.rs, after resolve_named has returned (no store transaction or writer-lane work is held). That branch runs on a tokio spawn_blocking worker (src/daemon/transport.rs), one per request, not the single-threaded writer lane; the 2 s worst case delays only that one ResolveSeat reply and occupies one blocking-pool thread",
+    ),
+    (
+        "src/test_support/fake_hc.rs",
+        "std::thread::sleep(Duration::from_millis(5))",
+        "test-support only: the in-process fake hc's accept loop backs off 5 ms between nonblocking polls (both the WouldBlock and error arms) and ends on `stop`; never in a release daemon",
+    ),
+    (
+        "src/test_support/tmux.rs",
+        "std::thread::sleep(Duration::from_millis(20))",
+        "test-support only: PrivateTmux::wait_gone's bounded wait (its `within` argument) for a private test tmux server to exit; never in a release daemon",
+    ),
 ];
 
 /// Files whose loops were converted onto a Pacer or to event-driven waits
