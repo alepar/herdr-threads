@@ -23,6 +23,8 @@ use crate::{
 struct CapHost {
     capability: WakeCapability,
     block: Option<WakeBlock>,
+    /// The answer for a target, when it differs from the host's (a named host's per-target answer).
+    target: Option<WakeCapability>,
 }
 
 impl HostPort for CapHost {
@@ -31,6 +33,9 @@ impl HostPort for CapHost {
     }
     fn wake_capability(&self) -> WakeCapability {
         self.capability
+    }
+    fn target_wake_capability(&self, _: &HostTargetId) -> WakeCapability {
+        self.target.unwrap_or(self.capability)
     }
     fn wake_block(&self, _: &SeatId) -> Option<WakeBlock> {
         self.block
@@ -134,16 +139,31 @@ fn two_hosts(
         cancellation: Cancellation::default(),
     };
     let mut attached = Vec::new();
-    for (name, capability, block) in [
+    for (name, capability, block, target) in [
         (
             "composer.sock",
             WakeCapability::Composer(ComposerTraits::HERDR_TUI),
             composer_block,
+            None,
         ),
-        ("bare.sock", WakeCapability::None, None),
+        ("bare.sock", WakeCapability::None, None, None),
+        // A host that starts a wake lane but whose targets the gate can never type.
+        (
+            "pertarget.sock",
+            WakeCapability::Composer(ComposerTraits::TMUX),
+            None,
+            Some(WakeCapability::None),
+        ),
     ] {
         let locator = HostLocator::parse(isolation.socket_path(name).to_string_lossy()).unwrap();
-        world.add(&locator, Arc::new(CapHost { capability, block }));
+        world.add(
+            &locator,
+            Arc::new(CapHost {
+                capability,
+                block,
+                target,
+            }),
+        );
         attached.push(sessions.resolve(&locator, &budget).unwrap());
     }
     (attached, sessions, isolation)
@@ -172,6 +192,35 @@ fn wake_rows_classified_against_their_own_host() {
     classify_wake_rows(&mut swapped, &hosts, &|_| false);
     assert_eq!(swapped[0].wake, Some(WakeBlock::NoWake));
     assert_eq!(swapped[1].wake, Some(WakeBlock::Focused));
+    sessions.stop_all();
+}
+
+// Kills: classifying a row by the host's wake answer when the host answers per target: a target
+// the gate can never type reads `no_wake` and opens a host no-wake episode, even though the host's own
+// answer is Composer.
+#[test]
+fn a_no_recognizer_named_seat_reports_no_wake() {
+    let (hosts, sessions, _isolation) = two_hosts("wsh-pertarget", None);
+    let mut seat = row("tmux-codex", "codex", Some(hosts[2].host_id()));
+    seat.target = Some(HostTargetId::new("tmux-codex"));
+    let mut rows = vec![seat];
+    let episodes = classify_wake_rows(&mut rows, &hosts, &|_| false);
+    assert_eq!(rows[0].wake, Some(WakeBlock::NoWake));
+    assert!(matches!(episodes[0], WakeEpisode::HostNoWake));
+    sessions.stop_all();
+}
+
+// Kills: dropping the block a wakeable host recorded for a refused wake: the row carries it, so the
+// sender's overdue line reads `wake=`.
+#[test]
+fn a_refused_wake_renders_through_wake_status() {
+    let (hosts, sessions, _isolation) = two_hosts("wsh-refused", Some(WakeBlock::Unknown));
+    let mut seat = row("refused", "claude", Some(hosts[0].host_id()));
+    seat.target = Some(HostTargetId::new("refused"));
+    let mut rows = vec![seat];
+    let episodes = classify_wake_rows(&mut rows, &hosts, &|_| false);
+    assert_eq!(rows[0].wake, Some(WakeBlock::Unknown));
+    assert!(matches!(episodes[0], WakeEpisode::Composer));
     sessions.stop_all();
 }
 

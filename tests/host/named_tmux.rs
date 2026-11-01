@@ -379,6 +379,190 @@ fn neither_verified_is_none() {
     }
 }
 
+/// A source with one live named seat and chosen top-level binding harnesses (or a failing read).
+struct HarnessSeats {
+    harnesses: Vec<&'static str>,
+    fail: bool,
+}
+impl NamedSeatSource for HarnessSeats {
+    fn live_named(&self, _: &HostId, _: &CallBudget) -> Result<Vec<(SeatId, SeatName)>, ApiError> {
+        Ok(vec![(
+            SeatId::new("seat-alice"),
+            SeatName::parse("alice").unwrap(),
+        )])
+    }
+    fn top_level_bindings(
+        &self,
+        _: &SeatId,
+        _: &CallBudget,
+    ) -> Result<Vec<crate::store::named_seats::TopLevelBinding>, ApiError> {
+        if self.fail {
+            return Err(ApiError::new(ErrorCode::HostUnavailable, "store read"));
+        }
+        Ok(self
+            .harnesses
+            .iter()
+            .enumerate()
+            .map(|(i, harness)| crate::store::named_seats::TopLevelBinding {
+                generation: 1,
+                harness: (*harness).to_owned(),
+                native_session: crate::protocol::ids::NativeSessionId::new(format!("s{i}")),
+            })
+            .collect())
+    }
+}
+
+// Kills: Composer for a seat whose harness has no blocked-screen recognizer (the gate refuses it
+// forever, so the sender would never see `wake=no_wake`), None for a mixed seat, and a store
+// transient flipping the answer.
+#[test]
+fn no_recognizer_harness_answers_none() {
+    let Some(tmux) = PrivateTmux::start("no_recognizer_harness_answers_none") else {
+        return;
+    };
+    let (pane, child) = shell_pane(&tmux);
+    let hint = tmux.hint(&pane);
+    let alice = target("alice");
+    for (harnesses, fail, expected) in [
+        (vec!["codex"], false, WakeCapability::None),
+        (vec!["claude"], false, composer()),
+        (vec!["codex", "claude"], false, composer()),
+        (vec!["codex"], true, composer()),
+        (vec![], false, composer()),
+    ] {
+        let host = NamedHost::new(
+            "0123456789abcdef0123456789abcdef",
+            HostId::from_row(9),
+            Arc::new(HarnessSeats {
+                harnesses: harnesses.clone(),
+                fail,
+            }),
+            Arc::new(FixedClock),
+        );
+        assert!(host.record_tmux_hint(&alice, child, &hint));
+        assert_eq!(
+            host.target_wake_capability(&alice),
+            expected,
+            "{harnesses:?} fail={fail}"
+        );
+    }
+}
+
+// Kills: a gate refusal that leaves no block (the sender's overdue line has no `wake=`), a block
+// that survives a clean wake, and one that never expires.
+#[test]
+fn every_gate_refusal_records_a_block() {
+    let blocked = |rig: &WakeRig, expected: WakeBlock, case: &str| {
+        assert_eq!(rig.host.wake_block(&rig.seat), Some(expected), "{case}");
+    };
+    // (case, harness, screen, marker, binding states, expected)
+    let draft = IDLE.replacen("\n❯\n", "\n❯ half-written draft\n", 1);
+    for (case, screen, marker, states, expected) in [
+        (
+            "rb_draft",
+            draft.as_str(),
+            "half-written draft",
+            vec![Some(TurnEdge::Idle)],
+            WakeBlock::Unknown,
+        ),
+        (
+            "rb_busy",
+            IDLE,
+            "manual mode on",
+            vec![Some(TurnEdge::Busy)],
+            WakeBlock::Unknown,
+        ),
+        (
+            "rb_unknown",
+            IDLE,
+            "manual mode on",
+            vec![None],
+            WakeBlock::Unknown,
+        ),
+        (
+            "rb_blocked",
+            CLAUDE_APPROVAL,
+            "",
+            vec![Some(TurnEdge::Idle)],
+            WakeBlock::Unknown,
+        ),
+        (
+            "rb_unrecognised",
+            "not a claude screen\n",
+            "not a claude",
+            vec![Some(TurnEdge::Idle)],
+            WakeBlock::Unreadable,
+        ),
+        (
+            "rb_no_binding",
+            IDLE,
+            "manual mode on",
+            vec![],
+            WakeBlock::Unknown,
+        ),
+    ] {
+        let Some(rig) = WakeRig::new(case, "claude", screen, marker) else {
+            return;
+        };
+        rig.bindings(&states);
+        assert_eq!(rig.host.wake_block(&rig.seat), None, "{case}: before");
+        refused(rig.attempt());
+        blocked(&rig, expected, case);
+        assert_eq!(rig.typed(), "", "{case}");
+    }
+    let Some(rig) = WakeRig::new("rb_modes", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let id = rig.pane.id.clone();
+    // Input off, then synchronized panes.
+    rig.tmux.run(&["select-pane", "-d", "-t", &id]);
+    refused(rig.attempt());
+    blocked(&rig, WakeBlock::Unknown, "input off");
+    rig.tmux.run(&["select-pane", "-e", "-t", &id]);
+    rig.tmux
+        .run(&["set-window-option", "-t", &id, "synchronize-panes", "on"]);
+    refused(rig.attempt());
+    blocked(&rig, WakeBlock::Unknown, "synchronized");
+    rig.tmux
+        .run(&["set-window-option", "-t", &id, "synchronize-panes", "off"]);
+    // pane_in_mode.
+    rig.tmux.run(&["copy-mode", "-t", &id]);
+    refused(rig.attempt());
+    blocked(&rig, WakeBlock::Unknown, "pane in mode");
+    rig.tmux.run(&["send-keys", "-t", &id, "-X", "cancel"]);
+    // A stale epoch.
+    let (safe, mut context) = rig.target_and_context();
+    context.expected_epoch = Some(safe.epoch + 1);
+    refused(
+        rig.host
+            .submit_prompt_if_owed(&safe, WAKE, &context, &|| Ok(true)),
+    );
+    blocked(&rig, WakeBlock::Unknown, "stale epoch");
+    // Two panes for one seat.
+    let second = rig.tmux.new_pane("sleep 600");
+    assert!(
+        rig.host
+            .record_tmux_hint(&target("seat-wake"), second.pid, &rig.tmux.hint(&second))
+    );
+    refused(rig.attempt());
+    blocked(&rig, WakeBlock::Unknown, "two panes");
+    // An expired block reads None.
+    rig.clock.set(10 * 60_000 + 1);
+    assert_eq!(rig.host.wake_block(&rig.seat), None, "expired");
+
+    // A clean wake clears the block.
+    let Some(rig) = WakeRig::new("rb_clear", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    let keys = rig.bindings(&[Some(TurnEdge::Busy)]);
+    refused(rig.attempt());
+    blocked(&rig, WakeBlock::Unknown, "busy");
+    rig.book.record(&keys[0], TurnEdge::Idle, 0);
+    assert_eq!(rig.attempt().unwrap(), Some(PromptOutcome::Submitted));
+    assert_eq!(rig.host.wake_block(&rig.seat), None, "cleared by a wake");
+}
+
 // Kills: a server a test starts outliving the fixture (the leak check's other half is the
 // Python test of scripts/check-no-leaked-processes).
 #[test]

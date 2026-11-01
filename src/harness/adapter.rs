@@ -1435,6 +1435,11 @@ pub trait ComposerPolicy: Send + Sync {
     fn screen_blocked(&self, _screen: &str) -> Option<bool> {
         None
     }
+    /// Whether `screen_blocked` ever answers `Some`: a harness without a recognizer can never
+    /// pass a gate that requires `Some(false)`. Default: no.
+    fn recognizes_blocked_screens(&self) -> bool {
+        false
+    }
     /// Whether a screen shows the harness's running-turn status line: `Some(true)` a turn is
     /// running, `Some(false)` a recognized screen with no running turn, `None` cannot tell. A
     /// stale busy turn state is cleared only by `Some(false)` reads; `None` (the default) keeps
