@@ -7,7 +7,7 @@ use crate::{
     },
     protocol::{
         authority::MutationPermit,
-        ids::{HostBootId, HostTargetId, SeatId, prefix},
+        ids::{HostBootId, HostTargetId, SeatId, SeatName, prefix},
         results::{ApiError, CommandResult, ErrorCode},
         time::CallBudget,
     },
@@ -689,6 +689,99 @@ pub(crate) fn ordinary_resolution_apply(
     insert_ordinary_allocation(tx, at, instance, host, proof).map(|result| (result, true))
 }
 
+/// The live seat named `name` on the named host `host`, allocated when none exists.
+///
+/// TRUST-POLICY N (typo-seat accepted limit): a first seat-acting use of a name allocates it, so a
+/// misspelled name is a new seat. Reads never reach this function. A live row of any state but
+/// `retired` is reused (an unresolved named seat is never split by the next resolve of its name;
+/// the unique index `seats_live_name` also covers it). Returns the seat and whether it was created.
+pub(crate) fn named_seat_apply(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    instance: &str,
+    host: HostId,
+    name: &SeatName,
+) -> Result<(SeatId, bool), ApiError> {
+    let kind: Option<String> = tx
+        .query_row(
+            "SELECT kind FROM herdr_hosts WHERE host_id=?1",
+            [host.get()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if kind.as_deref() != Some("named") {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "a named seat lives on the named host",
+        ));
+    }
+    let live: Option<String> = tx
+        .query_row(
+            &format!("SELECT id FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND name=?2 AND state<>'retired'"),
+            params![host.get(), name.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if let Some(seat) = live {
+        return Ok((SeatId::new(seat), false));
+    }
+    let seat = SeatId::new(crate::store::public_ids::fresh(
+        tx,
+        prefix::SEAT,
+        &[("seats", "id", prefix::SEAT)],
+    )?);
+    tx.execute(
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id,name) VALUES (?1,?2,'resolved','native',?3,1,1,?4,1,?2,1,?5,?3)",
+        params![seat.as_str(), instance, name.as_str(), at.utc.0, host.get()],
+    )
+    .map_err(store_error)?;
+    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+    schema::bump_host_lifecycle_revision(tx, host)?;
+    schema::bump_filter_revision(tx, instance, "directory", "all")?;
+    Ok((seat, true))
+}
+
+/// A seat-acting resolve under a name on the named host: [`named_seat_apply`] in one idempotent
+/// transaction keyed by the request's operation, so a retried call replays its original result.
+pub fn resolve_named_seat(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    host: HostId,
+    request: &crate::protocol::commands::ResolveSeat,
+    budget: &CallBudget,
+) -> Result<CommandResult, ApiError> {
+    snapshot_budget(context, budget)?;
+    let name = SeatName::parse(request.target.as_str())
+        .map_err(|detail| api_error(ErrorCode::InvalidRequest, detail))?;
+    if request.operation.as_str().is_empty() {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "resolution operation is required",
+        ));
+    }
+    let digest = schema::canonical_digest(&("resolve_named_seat", instance, &request.target))?;
+    schema::execute_idempotent_transaction(
+        context,
+        conn,
+        &format!("service-allocation:{instance}"),
+        request.operation.as_str(),
+        digest,
+        |_| snapshot_budget(context, budget),
+        |tx, at| {
+            snapshot_budget(context, budget)?;
+            let (seat, created) = named_seat_apply(tx, at, instance, host, &name)?;
+            Ok(CommandResult::NamedSeatResolved {
+                seat,
+                name: name.clone(),
+                created,
+            })
+        },
+    )
+}
+
 pub fn check_resolved_target(
     context: &StoreContext,
     conn: &mut Connection,
@@ -736,3 +829,7 @@ pub fn check_resolved_target(
         |_, _, ()| snapshot_budget(context, budget),
     )
 }
+
+#[cfg(test)]
+#[path = "../../../tests/store/named_allocation.rs"]
+mod named_allocation_tests;

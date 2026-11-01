@@ -1787,6 +1787,13 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
 
 ## Accepted limits
 
+- Typo seats (named seats). A seat-acting call under a name allocates the live seat of that name when none
+  exists (`seats.name` on the built-in named host, the CLI prints M8 `herdr-threads: created seat <seat>
+  (<name>)` once), so a misspelled name is a new seat, not an error. Reads (`inbox`, `seat list`,
+  `thread show`) never allocate: an unknown name yields nothing. The daemon decides by the canonical view
+  (A2); the name is a cooperative same-user claim, not evidence. An unused typo seat is retired by the
+  operator.
+
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
 mail is seat-level, not per binding (A8). A seat-pending row is settled for the
 seat by the first top-level binding that displays it; a sibling top-level binding gets no copy, and a subagent

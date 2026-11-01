@@ -97,6 +97,22 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
         CommandResult::SeatResolved(seat) => {
             out.push_str(&format!("You are seat {}.\n", seat.as_str()))
         }
+        CommandResult::NamedSeatResolved {
+            seat,
+            name,
+            created,
+        } => {
+            // M8 (31 bytes + fields): printed by the call that allocated the seat, once.
+            if *created {
+                out.push_str(&format!(
+                    "herdr-threads: created seat {} ({})\n",
+                    seat.as_str(),
+                    name.as_str()
+                ));
+            } else {
+                out.push_str(&format!("You are seat {}.\n", seat.as_str()));
+            }
+        }
         CommandResult::ThreadCreated(thread) => {
             out.push_str(&format!("Created thread {}.\n", thread.as_str()))
         }

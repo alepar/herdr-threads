@@ -282,6 +282,18 @@ impl OrdinaryIdentity {
         })
     }
 
+    /// Seat-acting resolve under a name on the built-in named host: the store allocates the live
+    /// seat of that name when none exists. No host observation: a named seat's presence is
+    /// cooperative (TRUST-POLICY A3), so there is no pane to read.
+    pub fn resolve_named(
+        &self,
+        request: ResolveSeat,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.resolve_named_seat(request, self.host_id, budget)
+    }
+
     /// Historical replay precedes host work and grants no current authority.
     pub fn operator(
         &self,

@@ -3287,6 +3287,17 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         attempt: OrdinaryResolutionAttempt,
         budget: &CallBudget,
     ) -> Result<OrdinaryResolutionOutcome, ApiError>;
+    /// Seat-acting resolve under a name on the built-in named host (`host`): the live seat of
+    /// that name, allocated when none exists, as `CommandResult::NamedSeatResolved` with the
+    /// creation flag. Replays by the request's operation key; reads never call it.
+    fn resolve_named_seat(
+        &self,
+        _request: ResolveSeat,
+        _host: HostId,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("named seat allocation"))
+    }
     /// Never replays, allocates or replaces the expected seat.
     fn check_resolved_target(
         &self,
