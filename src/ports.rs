@@ -3932,6 +3932,24 @@ impl HostKind {
     pub fn is_implemented(self) -> bool {
         Self::IMPLEMENTED.contains(&self)
     }
+
+    /// The text a host row stores for this kind (`herdr_hosts.kind`).
+    /// `Unknown` has none: it is only ever the reading of a foreign value.
+    pub fn stored_name(self) -> Option<&'static str> {
+        match self {
+            HostKind::Herdr => Some("herdr"),
+            HostKind::Unknown => None,
+        }
+    }
+
+    /// The kind a stored `herdr_hosts.kind` text names; any text this build
+    /// does not know is `Unknown`.
+    pub fn from_stored(text: &str) -> HostKind {
+        match text {
+            "herdr" => HostKind::Herdr,
+            _ => HostKind::Unknown,
+        }
+    }
 }
 
 /// What a host's composer needs from a wake submission.

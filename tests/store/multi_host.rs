@@ -689,3 +689,53 @@ fn remote_seat_refused_on_every_path() {
         .unwrap();
     assert_eq!((state.as_str(), bound), ("remote", 1));
 }
+
+/// A `herdr_hosts` row of a kind this build does not implement is never
+/// attached (not even by locator), is left untouched, and is listed by
+/// `unattachable`; a Herdr row is re-stamped with `kind_probed_at` on attach.
+#[test]
+fn reattach_skips_unknown_kind_row() {
+    let f = two_hosts();
+    let (future, herdr) = (
+        "/tmp/ht-multi-host-future.sock",
+        "/tmp/ht-multi-host-a.sock",
+    );
+    f.db.execute(
+        "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at,kind) \
+         VALUES ((SELECT id FROM local_node),?1,1,1,'future')",
+        [future],
+    )
+    .unwrap();
+    f.db.execute("UPDATE herdr_hosts SET kind_probed_at=NULL", [])
+        .unwrap();
+    let stamp = |endpoint: &str| -> (String, Option<i64>, Option<i64>) {
+        f.db.query_row(
+            "SELECT kind,kind_probed_at,last_attached_at FROM herdr_hosts WHERE endpoint=?1",
+            [endpoint],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    };
+    let refused = f
+        .store
+        .attach_host(&HostLocator::parse(future).unwrap(), 500, &budget())
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::HostUnavailable);
+    assert!(refused.detail.contains("future"), "{}", refused.detail);
+    assert_eq!(stamp(future), ("future".to_owned(), None, Some(1)));
+    assert_eq!(
+        herdr_threads::store::hosts::unattachable(&f.db)
+            .unwrap()
+            .iter()
+            .map(|h| (h.endpoint.as_str(), h.kind.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(future, "future")]
+    );
+    assert_eq!(stamp(herdr).1, None, "a migrated Herdr row starts unprobed");
+    let (id, _) = f
+        .store
+        .attach_host(&HostLocator::parse(herdr).unwrap(), 600, &budget())
+        .unwrap();
+    assert_eq!(id, f.h1);
+    assert_eq!(stamp(herdr), ("herdr".to_owned(), Some(600), Some(600)));
+}

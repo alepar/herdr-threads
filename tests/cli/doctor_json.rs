@@ -1707,3 +1707,78 @@ fn held_legacy_lock_shows_live() {
         json!([])
     );
 }
+
+/// Kills: a doctor that stays silent about a host row reattach skips (a kind
+/// this build does not implement), a Herdr row listed as unattachable, and a
+/// store file that is absent or predates the kind column failing the report.
+#[test]
+fn doctor_names_unattachable_kind_row() {
+    let case = PathCase::new("unattachable-kind");
+    let state = case.dir.join("state");
+    let node = crate::daemon::paths::node_dir(&state);
+    std::fs::create_dir_all(&node).unwrap();
+    {
+        let db =
+            rusqlite::Connection::open(node.join(crate::daemon::paths::DATABASE_FILE)).unwrap();
+        crate::store::schema::initialize(
+            &db,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed(),
+        )
+        .unwrap();
+        for (endpoint, kind) in [("/herdr/ok.sock", "herdr"), ("/herdr/far.sock", "future")] {
+            db.execute(
+                "INSERT INTO herdr_hosts(node_id,endpoint,created_at,kind) \
+                 VALUES ((SELECT id FROM local_node),?1,0,?2)",
+                [endpoint, kind],
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(
+        unattachable_hosts_report(&node),
+        vec![json!({"host_id": 2, "endpoint": "/herdr/far.sock", "kind": "future"})]
+    );
+    assert!(unattachable_hosts_report(&case.dir.join("nowhere")).is_empty());
+
+    let registry = crate::harness::registry::builtins();
+    let host = case.dir.join("herdr.sock");
+    let parsed = super::super::commands::parse_argv_in_registry(
+        [
+            std::ffi::OsString::from("herdr-threads"),
+            "doctor".into(),
+            "--json".into(),
+            "--harness".into(),
+            "claude".into(),
+            "--state-dir".into(),
+            state.clone().into_os_string(),
+            "--host-endpoint".into(),
+            host.clone().into_os_string(),
+        ],
+        registry,
+    )
+    .unwrap();
+    let environment = SetupEnvironment {
+        config_roots: [("claude".into(), case.dir.join("config"))]
+            .into_iter()
+            .collect(),
+        path: Some(case.dir.clone().into_os_string()),
+        state_dir: Some(state),
+        host_endpoint: Some(host),
+        executable: PathBuf::from("/isolated/herdr-threads"),
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    let _ = run_registered(&parsed, registry, Some(&environment), &mut out);
+    let doc: Value = serde_json::from_slice::<Value>(&out).unwrap()["doctor"].clone();
+    assert_eq!(
+        doc["hosts"]["unattachable"],
+        json!([{"host_id": 2, "endpoint": "/herdr/far.sock", "kind": "future"}])
+    );
+    let limitations = doc["limitations"].to_string();
+    assert!(
+        limitations.contains("/herdr/far.sock") && limitations.contains("future"),
+        "{limitations}"
+    );
+    assert!(!limitations.contains("/herdr/ok.sock"), "{limitations}");
+}
