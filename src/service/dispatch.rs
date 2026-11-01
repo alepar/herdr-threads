@@ -117,7 +117,7 @@ pub struct DomainService {
     pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
     /// The (observer, seat) pairs whose `no_wake` was reported: a send warns its sender once
     /// per seat while the seat stays `no_wake` (`Command::WakeStatus`). In memory, so a daemon
-    /// restart reports each again.
+    /// restart reports each again; seats on a host with no wake path use `no_wake_reports`.
     wake_reports: std::sync::Mutex<WakeReports>,
     /// `Command::LocateCaller`: nearest-ancestor verification of a two-family caller.
     locator: super::locate::LocateCallerService,
@@ -329,15 +329,39 @@ impl DomainService {
             // Reads consult every host, the built-in one included (07 §5.3).
             .map_or_else(Vec::new, |hosts| hosts.all_for_reads());
         let now = self.clock.utc_now();
-        classify_wake_rows(&mut rows, &hosts, &|seat| {
+        let episodes = classify_wake_rows(&mut rows, &hosts, &|seat| {
             self.mod_channels.wake_suppressed(seat) && !self.mod_channels.stalled(seat, now)
         });
         if let Some(observer) = &query.observer {
+            // A seat on a host with no wake path keeps its report across restarts and
+            // channel flaps in `no_wake_reports`; the in-memory set serves the rest.
+            let pick = |want: WakeEpisode| -> Vec<crate::protocol::ids::SeatId> {
+                rows.iter()
+                    .zip(&episodes)
+                    .filter(|(_, episode)| **episode == want)
+                    .map(|(row, _)| row.seat.clone())
+                    .collect()
+            };
+            let (persist, clear) = (pick(WakeEpisode::HostNoWake), pick(WakeEpisode::Composer));
+            let fresh = if persist.is_empty() && clear.is_empty() {
+                None
+            } else {
+                self.store
+                    .no_wake_reports_apply(observer, &persist, &clear, budget)
+                    .ok()
+                    .flatten()
+            };
             let mut reports = self
                 .wake_reports
                 .lock()
                 .map_err(|_| error(ErrorCode::StoreCorrupt, "wake report lock poisoned"))?;
-            for row in &mut rows {
+            for (row, episode) in rows.iter_mut().zip(&episodes) {
+                if *episode == WakeEpisode::HostNoWake
+                    && let Some(fresh) = &fresh
+                {
+                    row.first = fresh.contains(&row.seat);
+                    continue;
+                }
                 let key = (observer.clone(), row.seat.clone());
                 if row.wake != Some(WakeBlock::NoWake) {
                     reports.remove(&key);
@@ -2378,14 +2402,16 @@ fn classify_wake_rows(
     rows: &mut [crate::protocol::results::SeatWakeStatus],
     hosts: &[Arc<HostSession>],
     channel_live: &dyn Fn(&crate::protocol::ids::SeatId) -> bool,
-) {
+) -> Vec<WakeEpisode> {
     use crate::{
         harness::registry::IdleWakeOn,
         ports::{ComposerTraits, WakeCapability},
         protocol::results::WakeBlock,
     };
     let registry = crate::harness::registry::builtins();
+    let mut episodes = Vec::with_capacity(rows.len());
     for row in rows {
+        episodes.push(WakeEpisode::Other);
         let Some(harness) = row.harness.as_deref() else {
             continue;
         };
@@ -2396,7 +2422,17 @@ fn classify_wake_rows(
             WakeCapability::Composer(ComposerTraits::HERDR_TUI),
             |host| host.port().wake_capability(),
         );
-        row.wake = match registry.idle_wake_on(harness, capability, channel_live(&row.seat)) {
+        let idle = registry.idle_wake_on(harness, capability, channel_live(&row.seat));
+        if let Some(episode) = episodes.last_mut() {
+            *episode = match idle {
+                Some(IdleWakeOn::None) if capability == WakeCapability::None => {
+                    WakeEpisode::HostNoWake
+                }
+                Some(IdleWakeOn::Composer) => WakeEpisode::Composer,
+                _ => WakeEpisode::Other,
+            };
+        }
+        row.wake = match idle {
             Some(IdleWakeOn::None) => Some(WakeBlock::NoWake),
             Some(_) => match own {
                 Some(host) => host.port().wake_block(&row.seat),
@@ -2407,7 +2443,24 @@ fn classify_wake_rows(
             None => None,
         };
     }
+    episodes
 }
+
+/// What a `wake_status` row says about its no-wake episode (`no_wake_reports`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WakeEpisode {
+    /// No wake because the seat's host has no wake path and no live channel stands in:
+    /// the report is persisted once per (sender, seat).
+    HostNoWake,
+    /// A composer wake: ends the episode (the persisted row is deleted).
+    Composer,
+    /// Anything else (a live channel, a harness without a wake, no binding): the row stays.
+    Other,
+}
+
+#[cfg(test)]
+#[path = "../../tests/service/no_wake_reports.rs"]
+mod no_wake_reports_tests;
 
 #[cfg(test)]
 #[path = "../../tests/service/wake_status_hosts.rs"]

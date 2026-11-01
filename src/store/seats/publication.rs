@@ -283,6 +283,7 @@ pub fn materialize_seat_retired(
     if !changed {
         return Ok(());
     }
+    crate::store::no_wake_reports::delete_for_retired(tx, &payload.seat)?;
     schema::bump_filter_revision(tx, &instance, "directory", "all")?;
     crate::store::control::bump_member_directory(tx, &instance, &payload.seat)?;
     let job = crate::protocol::ids::RetirementJobId::new(crate::store::public_ids::fresh(
