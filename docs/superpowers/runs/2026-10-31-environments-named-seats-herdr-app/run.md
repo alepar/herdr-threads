@@ -393,3 +393,46 @@ The only failures are the three zsh round-trip tests; `zsh` is not installed on 
 package route), so they cannot be run here. They exercise only output formatting that this run does not touch
 (`protocol/output`, `view`); they need a host with zsh or explicit coordinator acceptance, which is requested in the
 task report.
+
+## Integration sweep (ht-kqrt.66)
+
+Run on the merged tree (run branch plus ht-kqrt.64). Quota-free, no real agents, isolated Herdr sessions, private tmux (`-L ht-test-*`), `fake_hc`.
+
+### Flow coverage
+
+| Flow | Covered by | Added here |
+|---|---|---|
+| Pane seat: seat, send, receive, ACK, hook delivery | `config_smoke::herdr_pane_site_four_harnesses`; idle wake of a pane per the delivery contract in the existing wake e2e / `multinode` suites | no |
+| Named seat, plain shell, `wake=no_wake` once | `config_smoke::named_site_four_harnesses`, `named_seats::named_to_named_send_inbox_ack_hook`, `first_inbox_prints_m8_once_then_same_seat` | no |
+| Named seat in private tmux: same flow | `config_smoke::named_tmux_site_four_harnesses` | no |
+| tmux composer wake, p0 yes / p1 no, through a real daemon | nothing (host level only: `host::named_tmux` WakeRig) | `integration_sweep::named_tmux_idle_recipient_wakes_for_p0_not_p1` |
+| hc terminal: seat, send, inbox, ACK, hook, `<session>:tN`, `wake=no_wake` once | `config_smoke::hc_terminal_site_four_harnesses`, `hc_messaging::t2_seat_send_receive_ack_hook_delivery` | no |
+| Cross-environment (pane/named/hc, each direction) | `config_smoke::cross_environment_messaging_one_daemon` | no |
+| Handoff into a Herdr pane | `integration::named_handoff::handoff_from_named_seat_into_isolated_herdr_pane`, `cli::topology_handoff` | no |
+| Handoff into an hc terminal (gate shim, `(core, tN)`, bootstrap Send) | `hc_handoff::handoff_into_fake_hc_runs_gate_shim`, `launch_gate_*`, `launched_worker_exit_retires_seat` | no |
+
+### Unwired-interface sweep
+
+`HostPort` answers (production reader): `kind` (service/host_sessions.rs), `wake_capability` (notification/dispatch.rs, service/host_sessions.rs), `target_wake_capability` (service/dispatch.rs), `target_root_process` (service/locate.rs, peer_launcher.rs), `server_process` (service/locate.rs), `archival_evidence` (service/archival.rs), `closure_authority` (identity/reconcile.rs, identity/repair.rs): all consulted.
+
+`CallerSite` answers: `moved_target` (cli/mod.rs), `relative_pane` (cli/caller_guard.rs), `sent_scope`, `required_capability`, `locate_candidate`, `terminal_address`, `claim_host_locator`, `env_assignments`: consulted. `person_origin_allowed`, `enrolls_on_first_use`, `attempts_continuity`, `host_scoped_lookup` and `cache_key`: UNUSED in production (only `tests/cli/caller_location.rs` calls them; production matches on `CallerLocator` variants, and `sent_scope()` replaced `host_scoped_lookup()`). Not wired inline: wiring `person_origin_allowed` changes the `human me init` behaviour for a Terminal site. Filed as blocker bead ht-tyil.
+
+NodeDelta 0012 columns: `herdr_hosts.kind` (store/apply.rs, store/control/retirement.rs, service/host_sessions.rs), `seats.name` (store/named_seats.rs, store/seat_directory.rs, store/queries.rs), `occupant_bindings.readonly` (service/delivery_pull.rs, store/receipts.rs, store/seats/cooperative.rs), `locator_hint` (store/queries.rs inspect), `no_wake_reports` (store/no_wake_reports.rs, service/dispatch.rs): all read by a production path.
+
+### Model-visible strings
+
+M4, M6-M18, M20 each have a production emitter (caller_guard, service/locate, store/seats/cooperative, cli/human, store/seats/resolution, host/named via cli/handoff, cli/nudge_threshold, cli/site_capability, cli/caller_location, store/seats/operator) and a golden under `tests/cli/golden/mN.txt`. M19 (` offline`) is emitted by `cli/wake_warning.rs` and pinned by `golden/overdue_offline.txt`. K1 and K4 are in `integrations/skill/SKILL.md` and asserted in `tests/cli/skill.rs`. No orphan string.
+
+### Config values and parameters
+
+`--space`, `--new-tab`, `--new-terminal` (hc_handoff tests), `seat retire --self` (daemon/self_retire), `HERDR_THREADS_SEAT_NAME`, `HERDR_THREADS_SEAT_READONLY`, `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, `TMUX`/`TMUX_PANE` (cli/caller_location, host/named/tmux), `seat.host_sites_v1`, `seat.terminal_sites_v1` (cli/site_capability), `PEER_LAUNCH_TERMINAL_CAP` (sync/coordinator/remote_launch): each has a production reader and a test; none is accepted and ignored.
+
+### Findings
+
+- Gap test added: daemon-level tmux composer wake (p0 types the wake marker into an idle composer, p1 at T = 0 does not, sender sees no `wake=no_wake`). Passed on first correct rig; the one rig error was the test's (an `exec`ed pane shell leaves the binding no distinct pane process; fixed by keeping the shell as the pane process, as `config_smoke` does).
+- Filed ht-tyil for the five unused `CallerSite` answers.
+
+### Gates
+
+- Unfiltered `nice cargo nextest run --locked --all-targets --all-features`: 8665 run, 8662 passed, 3 failed in 306 s. The three failures (`contracts::action_formatter_round_trips_unicode_separators_through_bash_and_zsh`, `protocol::output::tests::emitted_command_round_trips_exact_argv_through_zsh`, `view::rendered_actions_execute_as_shell_commands`) spawn `zsh`, which this host does not have (`Os { code: 2, kind: NotFound }` at tests/contracts.rs:1615); environmental, listed above under remaining evidence ("a host with zsh").
+- `scripts/check-no-leaked-processes --run-id` clean (no leaked processes, no leaked temp files); `nice scripts/check-default-features` exit 0; `scripts/check-harness-neutral` and `scripts/check-wire-compat` ok (no new allowlist or baseline entry); clippy `-D warnings` clean; the host-neutrality scan (`tests/host_neutral_scan.rs`) ran in the suite and passed.
