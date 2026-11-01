@@ -102,6 +102,11 @@ pub const IN_TURN_OFFER: &str = "inbox.in_turn_offer_v1";
 /// seat a continuation (an item that would wake it idle). Without it a turn end never continues.
 pub const TURN_END_DUE: &str = "turn_end.due_v1";
 
+/// Hook turn state: `Command::TurnState` reports a binding's turn start or end to the daemon, and
+/// `TurnEndDue` records whether a `Stop` was answered with a continuation. Without it the daemon
+/// keeps no turn state.
+pub const TURN_STATE_EDGE: &str = "turn_state.edge_v1";
+
 /// Thread-scoped lazy page: `InboxQuery.thread` on an `InboxBatchV2` first page selects only the
 /// reader's unread lazy rows of that thread (ht-br0: a text `accept` shows the joined thread's
 /// opening lazy mail in its own output).
@@ -208,6 +213,7 @@ pub const ADVERTISED: &[&str] = &[
     LOCATE_CALLER_V1,
     HOST_TOPOLOGIES_V1,
     HOST_SITES_V1,
+    TURN_STATE_EDGE,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

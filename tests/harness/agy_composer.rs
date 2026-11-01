@@ -144,3 +144,17 @@ fn screen_blocked_recognizes_the_permission_prompt_and_idle_composers() {
     assert_eq!(AgyComposer.screen_blocked(capture!("busy")), None);
     assert_eq!(AgyComposer.screen_blocked(capture!("draft")), Some(false));
 }
+
+// Catches a generating turn read as idle (a wake typed into it), an idle composer read as running
+// (a stale busy never cleared), and a permission prompt read as either.
+#[test]
+fn screen_turn_running_recognizes_the_cancel_footer() {
+    let running = include_str!("../fixtures/screen_turn_running/agy/running.txt");
+    let idle = include_str!("../fixtures/screen_turn_running/agy/idle.txt");
+    assert_eq!(AgyComposer.screen_turn_running(running), Some(true));
+    assert_eq!(AgyComposer.screen_turn_running(idle), Some(false));
+    assert_eq!(
+        AgyComposer.screen_turn_running(capture!("permission-prompt")),
+        None
+    );
+}

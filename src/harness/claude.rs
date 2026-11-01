@@ -80,6 +80,28 @@ pub const CONTRACT: HarnessContract = HarnessContract {
                 f("agent_type", Str, false),
             ],
         },
+        // Report-only turn ends (N2-turn): they feed `turn_state_edge` and print nothing.
+        // `StopFailure` fires instead of `Stop` when an API error ends the turn.
+        EventContract {
+            event: "Stop",
+            class: EventClass::Other,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("agent_id", Str, false),
+                f("agent_type", Str, false),
+            ],
+        },
+        EventContract {
+            event: "StopFailure",
+            class: EventClass::Other,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("agent_id", Str, false),
+                f("agent_type", Str, false),
+            ],
+        },
         EventContract {
             event: "SubagentStart",
             class: EventClass::Lifecycle,
@@ -425,6 +447,8 @@ fn parse_hooks_2_1_283(
         }
         // A turn start checks in like a tool boundary (Current mode).
         "UserPromptSubmit" => (name, EventKind::Tool),
+        // Report-only: decoded as an observer event, never a check-in.
+        "Stop" | "StopFailure" => (name, EventKind::Tool),
         "SubagentStart" | "SubagentStop" if agent_id.is_some() => (name, EventKind::Startup),
         "SessionStart" => {
             let source = field(&value, "source")?.ok_or(ContextError::Invalid)?;
@@ -823,6 +847,14 @@ pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
             json!({"hooks":[{"type":"command","command":event_command(command, "UserPromptSubmit"),"timeout":10}]}),
         ),
         (
+            "Stop",
+            json!({"hooks":[{"type":"command","command":event_command(command, "Stop"),"timeout":10}]}),
+        ),
+        (
+            "StopFailure",
+            json!({"hooks":[{"type":"command","command":event_command(command, "StopFailure"),"timeout":10}]}),
+        ),
+        (
             "SubagentStart",
             json!({"hooks":[{"type":"command","command":event_command(command, "SubagentStart"),"timeout":10}]}),
         ),
@@ -1141,6 +1173,16 @@ impl HarnessAdapter for ClaudeAdapter {
                     always_send: false,
                 },
                 super::evidence::EvidenceEvent {
+                    native_event: "Stop",
+                    milestone: None,
+                    always_send: false,
+                },
+                super::evidence::EvidenceEvent {
+                    native_event: "StopFailure",
+                    milestone: None,
+                    always_send: false,
+                },
+                super::evidence::EvidenceEvent {
                     native_event: "SubagentStop",
                     milestone: None,
                     always_send: false,
@@ -1214,11 +1256,18 @@ impl HarnessAdapter for ClaudeAdapter {
         parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
             .map(|event| {
                 let turn_start = event.source == "UserPromptSubmit";
+                let turn_end = matches!(event.source.as_str(), "Stop" | "StopFailure");
                 let mut decoded = DecodedEvent::from_native_payload(event, &input.bytes);
                 // A Current check-in decodes as a tool boundary; the output names the event
                 // that ran.
                 if turn_start {
                     decoded.metadata.native_event = "UserPromptSubmit".into();
+                }
+                // Report-only: no check-in, no delivery, no continuation, no output.
+                if turn_end {
+                    decoded.metadata.native_event = decoded.metadata.context_source.clone();
+                    decoded.intent = EventIntent::Observer;
+                    decoded.delivery = DeliveryEligibility::Ineligible;
                 }
                 decoded
             })
@@ -1230,7 +1279,17 @@ impl HarnessAdapter for ClaudeAdapter {
         event: &DecodedEvent,
         offer: &NeutralOffer,
     ) -> Result<EncodedOutput, EncodeFailure> {
+        if matches!(event.metadata.native_event.as_str(), "Stop" | "StopFailure") {
+            return Ok(EncodedOutput::ObserverOnly { bytes: Vec::new() });
+        }
         super::adapter::encode_context(event, offer)
+    }
+    fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge> {
+        match event.metadata.native_event.as_str() {
+            "UserPromptSubmit" => Some(TurnEdge::Busy),
+            "Stop" | "StopFailure" => Some(TurnEdge::Idle),
+            _ => None,
+        }
     }
     fn attribute_runtime(&self, input: &HookInput, _: &CallBudget) -> RuntimeAttribution {
         super::attribution::attribute_native_runtime("claude", input)

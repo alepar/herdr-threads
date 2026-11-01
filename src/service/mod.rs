@@ -18,6 +18,7 @@ pub mod peer_launcher;
 pub mod remote_resolver;
 pub mod seat_publisher;
 pub mod sync_admin;
+pub mod turn_state;
 pub mod workers;
 
 #[cfg(test)]

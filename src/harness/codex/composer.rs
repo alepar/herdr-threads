@@ -73,7 +73,32 @@ impl ComposerPolicy for NativeComposer {
     fn restore_text(&self, saved: &str) -> String {
         saved.into()
     }
+    /// A running turn shows `Working (Ns • esc to interrupt)` among the rows above the composer
+    /// (`tests/fixtures/screen_turn_running/codex/`). A readable composer without it is idle;
+    /// anything else cannot be told.
+    fn screen_turn_running(&self, screen: &str) -> Option<bool> {
+        let screen = screen.replace('\u{a0}', " ");
+        let running = screen
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .rev()
+            .take(WORKING_TAIL_ROWS)
+            .any(|line| {
+                line.trim_start_matches('•')
+                    .trim_start()
+                    .starts_with("Working (")
+                    && line.contains("esc to interrupt")
+            });
+        if running {
+            return Some(true);
+        }
+        (self.read(&screen, None) != ComposerRead::Unreadable).then_some(false)
+    }
 }
+
+/// How many trailing non-empty rows can hold the working status line and the composer.
+const WORKING_TAIL_ROWS: usize = 8;
 
 #[cfg(test)]
 mod tests {
@@ -113,6 +138,34 @@ mod tests {
         assert_eq!(
             read("› Viewing sub-agent — direct input is disabled\n\n  footer\n"),
             ComposerRead::Text("Viewing sub-agent — direct input is disabled".into())
+        );
+    }
+
+    macro_rules! running_fixture {
+        ($name:literal) => {
+            include_str!(concat!(
+                "../../../tests/fixtures/screen_turn_running/codex/",
+                $name,
+                ".txt"
+            ))
+        };
+    }
+
+    // Catches a working turn read as idle (a wake typed into it) or an idle composer read as
+    // running (a stale busy never cleared).
+    #[test]
+    fn screen_turn_running_recognizes_the_working_line() {
+        assert_eq!(
+            NativeComposer.screen_turn_running(running_fixture!("running")),
+            Some(true)
+        );
+        assert_eq!(
+            NativeComposer.screen_turn_running(running_fixture!("idle")),
+            Some(false)
+        );
+        assert_eq!(
+            NativeComposer.screen_turn_running("not a codex screen"),
+            None
         );
     }
 

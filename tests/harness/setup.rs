@@ -1588,6 +1588,8 @@ fn interrupted_drift_upgrade_resumes_or_removes_from_each_real_boundary() {
             for event in [
                 "PreToolUse",
                 "UserPromptSubmit",
+                "Stop",
+                "StopFailure",
                 "SubagentStart",
                 "SubagentStop",
             ] {
@@ -1603,23 +1605,23 @@ fn interrupted_drift_upgrade_resumes_or_removes_from_each_real_boundary() {
 }
 
 /// Marked hook group for an event the current declaration no longer owns (an earlier declaration
-/// that also installed a `Stop` hook), with the installation's own marked command.
+/// that also installed a `Notification` hook), with the installation's own marked command.
 fn dropped_stop_entry(manifest: &OwnershipManifest) -> OwnedEntry {
     let first = &manifest.owned[0];
     let base = first.group["hooks"][0]["command"]
         .as_str()
         .unwrap()
         .replace(&format!(" '--event' '{}'", first.event), "");
-    let command = event_command(&base, "Stop");
+    let command = event_command(&base, "Notification");
     let group = json!({"hooks":[{"type":"command","command":command,"timeout":10}]});
     OwnedEntry {
-        event: "Stop".into(),
+        event: "Notification".into(),
         fingerprint: group_fingerprint(&group),
         group,
     }
 }
 
-/// Models an installation made under an earlier declaration that also owned a `Stop` group: the
+/// Models an installation made under an earlier declaration that also owned a `Notification` group: the
 /// group is appended to settings and recorded, with a consistent installed fingerprint.
 fn add_dropped_stop(config: &std::path::Path, manifest_path: &std::path::Path) -> OwnedEntry {
     let mut manifest = read_manifest_file(manifest_path);
@@ -1627,7 +1629,7 @@ fn add_dropped_stop(config: &std::path::Path, manifest_path: &std::path::Path) -
     let mut settings: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
     let hooks = settings["hooks"].as_object_mut().unwrap();
     hooks
-        .entry("Stop")
+        .entry("Notification")
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .unwrap()
@@ -1647,10 +1649,10 @@ fn owned_command_present(config: &std::path::Path) -> bool {
 }
 
 const USER_STOP: &[u8] =
-    br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user"}]}]},"other":1}"#;
+    br#"{"hooks":{"Notification":[{"hooks":[{"type":"command","command":"user"}]}]},"other":1}"#;
 
 // Kills: (a) an upgrade that leaves the dropped event's exact recorded group installed; (b) N1,
-// publishing the strip's emptied `"Stop":[]` when the file is unchanged since the recorded base
+// publishing the strip's emptied `"Notification":[]` when the file is unchanged since the recorded base
 // (restoring `compose_json(base, owned)` is replaced by strip-then-compose), which makes the later
 // Installed removal fall back to a structural strip instead of the byte-exact original.
 #[test]
@@ -1691,7 +1693,7 @@ fn dropped_event_upgrade_removes_exact_group_and_restores_byte_exact() {
     }
 }
 
-// Kills: publishing the strip's emptied `"Stop":[]` when the file changed after the recorded base
+// Kills: publishing the strip's emptied `"Notification":[]` when the file changed after the recorded base
 // (the not-kept path): an event array created only for the dropped hook must not survive, while a
 // user's own `Stop` group, and a later unrelated edit, do.
 #[test]
@@ -1708,13 +1710,19 @@ fn dropped_event_upgrade_after_later_edit_keeps_user_state_and_no_empty_dropped_
         install_claude_user(&config, &manifest_path, &argv, original).unwrap();
         let now: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
         let user: Value = serde_json::from_slice(original).unwrap();
-        assert_eq!(now["hooks"].get("Stop"), user["hooks"].get("Stop"));
+        assert_eq!(
+            now["hooks"].get("Notification"),
+            user["hooks"].get("Notification")
+        );
         assert_eq!(now["later"], "keep");
         remove_claude_user(&config, &manifest_path).unwrap();
         let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
         assert_eq!(after["other"], 1);
         assert_eq!(after["later"], "keep");
-        assert_eq!(after["hooks"].get("Stop"), user["hooks"].get("Stop"));
+        assert_eq!(
+            after["hooks"].get("Notification"),
+            user["hooks"].get("Notification")
+        );
         assert!(!owned_command_present(&config));
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1722,7 +1730,7 @@ fn dropped_event_upgrade_after_later_edit_keeps_user_state_and_no_empty_dropped_
 
 // Kills MY (disabling the residual guard in `plan_resume` for a superseded event the target no
 // longer owns) and MU (skipping the `leftover` check before the no-publish early return): an
-// interrupted upgrade whose dropped `Stop` group is edited after the intent must conflict and stay
+// interrupted upgrade whose dropped `Notification` group is edited after the intent must conflict and stay
 // Prepared rather than finalize `Installed` over a stray owned-command hook. The unedited control
 // resumes and removes the dropped group.
 #[test]
@@ -1745,7 +1753,7 @@ fn interrupted_dropped_event_upgrade_refuses_edited_leftover_and_resumes_exact()
                     if edit {
                         let mut v: Value =
                             serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-                        v["hooks"]["Stop"][0]["hooks"][0]["timeout"] = json!(77);
+                        v["hooks"]["Notification"][0]["hooks"][0]["timeout"] = json!(77);
                         fs::write(&config, serde_json::to_vec(&v).unwrap()).unwrap();
                     }
                 }
@@ -1761,7 +1769,7 @@ fn interrupted_dropped_event_upgrade_refuses_edited_leftover_and_resumes_exact()
                 .iter()
                 .map(|e| e.event.as_str())
                 .collect::<Vec<_>>(),
-            ["Stop"]
+            ["Notification"]
         );
         if edit {
             let settings_before = fs::read(&config).unwrap();
@@ -1785,7 +1793,7 @@ fn interrupted_dropped_event_upgrade_refuses_edited_leftover_and_resumes_exact()
             let resumed = install_claude_user(&config, &manifest_path, &argv, original).unwrap();
             assert_eq!(resumed.phase, InstallPhase::Installed);
             let now: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-            assert!(now["hooks"].get("Stop").is_none());
+            assert!(now["hooks"].get("Notification").is_none());
             remove_claude_user(&config, &manifest_path).unwrap();
             assert_eq!(fs::read(&config).unwrap(), original);
         }
@@ -1870,8 +1878,10 @@ fn prepared_install_under_earlier_declaration_converges_on_resetup() {
                 "SessionStart":[expected[0].group.clone()],
                 "PreToolUse":[expected[1].group.clone()],
                 "UserPromptSubmit":[expected[2].group.clone()],
-                "SubagentStart":[expected[3].group.clone()],
-                "SubagentStop":[expected[4].group.clone()]
+                "Stop":[expected[3].group.clone()],
+                "StopFailure":[expected[4].group.clone()],
+                "SubagentStart":[expected[5].group.clone()],
+                "SubagentStop":[expected[6].group.clone()]
             }}),
             "{name}"
         );
@@ -2002,7 +2012,7 @@ fn installed_manifest_with_superseded_entries_is_not_owned() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// Changed-file upgrade from `original` with a dropped `Stop` group and a later unrelated edit,
+/// Changed-file upgrade from `original` with a dropped `Notification` group and a later unrelated edit,
 /// optionally modelling a legacy manifest (empty recorded base). Returns the published and the
 /// removed settings.
 fn dropped_stop_changed_file_upgrade(original: &[u8], legacy: bool) -> (Value, Value) {
@@ -2032,27 +2042,27 @@ fn dropped_stop_changed_file_upgrade(original: &[u8], legacy: bool) -> (Value, V
 }
 
 // Kills BH (`&& !base_held` -> `&& (true || !base_held)` in the emptied-event prune): an empty
-// `"Stop":[]` the user's recorded base already held is user state, so emptying it by stripping the
-// dropped `Stop` group must not delete the key from the published file or the restored file.
+// `"Notification":[]` the user's recorded base already held is user state, so emptying it by stripping the
+// dropped `Notification` group must not delete the key from the published file or the restored file.
 #[test]
 fn changed_file_upgrade_keeps_an_empty_event_array_the_recorded_base_held() {
     let (published, removed) =
-        dropped_stop_changed_file_upgrade(br#"{"hooks":{"Stop":[]},"other":1}"#, false);
-    assert_eq!(published["hooks"].get("Stop"), Some(&json!([])));
+        dropped_stop_changed_file_upgrade(br#"{"hooks":{"Notification":[]},"other":1}"#, false);
+    assert_eq!(published["hooks"].get("Notification"), Some(&json!([])));
     assert_eq!(published["later"], "keep");
-    assert_eq!(removed["hooks"].get("Stop"), Some(&json!([])));
+    assert_eq!(removed["hooks"].get("Notification"), Some(&json!([])));
     assert_eq!(removed["other"], 1);
     assert_eq!(removed["later"], "keep");
 }
 
 // Kills LG (`.is_none_or(..)` -> `.is_some_and(..)` for the recorded base in the emptied-event
 // prune): a legacy manifest with no recorded base cannot prove which event arrays the user held,
-// so nothing is pruned and the emptied `"Stop":[]` survives both publication and removal.
+// so nothing is pruned and the emptied `"Notification":[]` survives both publication and removal.
 #[test]
 fn legacy_empty_base_changed_file_upgrade_prunes_no_event_array() {
     let (published, removed) = dropped_stop_changed_file_upgrade(br#"{"other":1}"#, true);
-    assert_eq!(published["hooks"].get("Stop"), Some(&json!([])));
-    assert_eq!(removed["hooks"].get("Stop"), Some(&json!([])));
+    assert_eq!(published["hooks"].get("Notification"), Some(&json!([])));
+    assert_eq!(removed["hooks"].get("Notification"), Some(&json!([])));
     assert_eq!(removed["hooks"].get("PreToolUse"), Some(&json!([])));
     assert_eq!(removed["other"], 1);
     assert_eq!(removed["later"], "keep");
@@ -2119,6 +2129,8 @@ fn changed_file_drift_upgrade_keeps_empty_owned_event_arrays_the_recorded_base_h
             [
                 "PreToolUse",
                 "SessionStart",
+                "Stop",
+                "StopFailure",
                 "SubagentStart",
                 "SubagentStop",
                 "UserPromptSubmit"
@@ -2436,6 +2448,8 @@ fn claude_setup_registers_event_per_group() {
             "SessionStart",
             "PreToolUse",
             "UserPromptSubmit",
+            "Stop",
+            "StopFailure",
             "SubagentStart",
             "SubagentStop"
         ]

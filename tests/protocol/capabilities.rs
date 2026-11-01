@@ -296,6 +296,7 @@ fn capability_constants_are_stable() {
     assert_eq!(PEER_EVENTS_V1, "peer.events_v1");
     assert_eq!(HOST_TOPOLOGIES_V1, "topology.host_topologies_v1");
     assert_eq!(HOST_SITES_V1, "seat.host_sites_v1");
+    assert_eq!(TURN_STATE_EDGE, "turn_state.edge_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -345,7 +346,8 @@ fn capability_constants_are_stable() {
             "peer.events_v1",
             "caller.locate_v1",
             "topology.host_topologies_v1",
-            "seat.host_sites_v1"
+            "seat.host_sites_v1",
+            "turn_state.edge_v1"
         ]
     );
 }
@@ -527,6 +529,18 @@ fn every_advertised_capability_has_a_handler() {
             WAKE_STATUS_V1 => probe_wake_status(),
             HOST_TOPOLOGIES_V1 => probe_host_topologies(),
             HOST_SITES_V1 => probe_host_sites(),
+            TURN_STATE_EDGE => {
+                // The command decodes, validates and routes to the domain service; this daemon
+                // has no cooperative runtime, so it refuses the caller.
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"turn_state","args":{"edge":"busy","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(command.validate().is_ok());
+                assert!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .is_err()
+                );
+            }
             PEER_PRUNE_V1 => probe_sync_commands(&[
                 crate::protocol::sync_admin::SyncCommand::PeerPrune {
                     host: None,
@@ -1188,6 +1202,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "caller.locate_v1",
             "topology.host_topologies_v1",
             "seat.host_sites_v1",
+            "turn_state.edge_v1",
             "invitation.confirmation_v1",
             "handoff.summary_prompt_v1"
         ]

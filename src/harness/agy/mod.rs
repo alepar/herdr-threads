@@ -234,6 +234,13 @@ impl HarnessAdapter for AgyAdapter {
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         Some(&composer::AgyComposer)
     }
+    fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge> {
+        match event.metadata.native_event.as_str() {
+            "PreInvocation" => Some(TurnEdge::Busy),
+            "Stop" => Some(TurnEdge::Idle),
+            _ => None,
+        }
+    }
     fn hook_step(&self) -> Option<&dyn HookStep> {
         Some(&delivery::AgyHookStep)
     }

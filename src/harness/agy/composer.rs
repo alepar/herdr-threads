@@ -153,6 +153,24 @@ impl ComposerPolicy for AgyComposer {
         }
         (self.read(&screen, None) != ComposerRead::Unreadable).then_some(false)
     }
+    /// A generating turn replaces the `? for shortcuts` footer with `esc to cancel`, the last
+    /// non-empty row (`tests/fixtures/screen_turn_running/agy/`). A readable composer without it
+    /// is idle; anything else cannot be told.
+    fn screen_turn_running(&self, screen: &str) -> Option<bool> {
+        let screen = screen.replace('\u{a0}', " ");
+        let footer = screen
+            .lines()
+            .map(str::trim)
+            .rfind(|line| !line.is_empty())?;
+        // A permission prompt carries the same footer: it is blocked, not generating.
+        if self.screen_blocked(&screen) == Some(true) {
+            return None;
+        }
+        if footer.starts_with("esc to cancel") {
+            return Some(true);
+        }
+        (self.read(&screen, None) != ComposerRead::Unreadable).then_some(false)
+    }
 }
 
 /// How many trailing non-empty rows can hold a permission prompt's options and hint.

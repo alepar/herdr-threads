@@ -4039,8 +4039,120 @@ pub fn run_admitted_hook(
         ensure_executable,
     )
 }
+/// [`admitted_hook_outcome`], then the event's turn edge to the daemon (N2-turn). A `Stop` the hook
+/// answered with a continuation (non-empty stdout) did not end the turn, so it reports nothing and
+/// the binding stays busy; every other turn-ending event reports idle.
 #[allow(clippy::too_many_arguments)]
 fn run_admitted_hook_since(
+    args: &HookArgs,
+    registration: &'static Registration,
+    admitted: &AdmittedHandle,
+    decoded: &DecodedEvent,
+    input: Option<&HookInput>,
+    env: &HookEnv,
+    deadline: Instant,
+    started: Instant,
+    watchdog: Option<Arc<AtomicU64>>,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> HookOutcome {
+    let outcome = admitted_hook_outcome(
+        args,
+        registration,
+        admitted,
+        decoded,
+        input,
+        env,
+        deadline,
+        started,
+        watchdog,
+        Arc::clone(&clock),
+        ensure_executable,
+    );
+    if matches!(decoded.role, EventRole::TopLevel)
+        && let Some(edge) = registration.turn_state_edge(decoded)
+        && !(edge == crate::harness::adapter::TurnEdge::Idle && !outcome.stdout.is_empty())
+        && env.located()
+        && deadline > clock.instant_now()
+    {
+        // Best effort: an unreachable or older daemon keeps no turn state, and a missed edge only
+        // delays a wake until the binding's next hook.
+        let _ = report_turn_edge(args, decoded, edge, env, deadline, &clock);
+    }
+    outcome
+}
+
+/// Report a harness turn edge for the pane's seat, acting as the session the payload names.
+fn report_turn_edge(
+    args: &HookArgs,
+    decoded: &DecodedEvent,
+    edge: crate::harness::adapter::TurnEdge,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: &Arc<dyn Clock>,
+) -> Result<(), Failure> {
+    use crate::protocol::commands::TurnStateReport;
+    let Connected {
+        context: runtime,
+        instance,
+        mut target,
+        client,
+        ..
+    } = connect_pane(args, env, deadline, clock, None)?;
+    if !client.supports_capability(
+        crate::protocol::capabilities::TURN_STATE_EDGE,
+        &budget(deadline, clock.as_ref()),
+    ) {
+        return Ok(());
+    }
+    let pane = env
+        .target()
+        .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
+    let (seat, generation) = match locate_seat_for(
+        args.harness,
+        &client,
+        &runtime,
+        &mut target,
+        deadline,
+        clock,
+    )? {
+        PaneSeat::Resolved(seat, generation) => (seat, generation),
+        other => return Err(other.refusal(pane)),
+    };
+    let invalid = |what: &str| Failure::Quiet(format!("turn edge: invalid {what}"));
+    let session = decoded
+        .native_session
+        .as_deref()
+        .ok_or_else(|| invalid("session"))?;
+    let context = OccupantContext {
+        format_version: 1,
+        instance,
+        seat: seat.as_str().into(),
+        target: target.as_str().into(),
+        harness: args.harness,
+        binding_generation: generation,
+        execution: crate::harness::context::session_execution(
+            instance,
+            args.harness,
+            session,
+            None,
+        ),
+        session: SessionReference::Native(session.to_owned()),
+        role: Role::TopLevel,
+    };
+    let host = runtime.claim_host().map_err(|_| invalid("host"))?;
+    let claim = bridge::caller_claim(&context, host).map_err(|_| invalid("session"))?;
+    client
+        .call(
+            Command::TurnState(TurnStateReport { claim, edge }),
+            &budget(deadline, clock.as_ref()),
+        )
+        .map_err(|e| api_failure("turn edge", &e))?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admitted_hook_outcome(
     args: &HookArgs,
     registration: &'static Registration,
     admitted: &AdmittedHandle,

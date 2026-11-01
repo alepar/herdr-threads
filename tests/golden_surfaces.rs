@@ -812,13 +812,18 @@ fn hook_stdout_per_event() {
     s.harnesses();
     let _daemon = DaemonGuard::start(&s);
     for harness in ["claude", "codex", "hermes"] {
+        // Claude also registers the report-only `StopFailure` (an API error ends the turn).
+        let failure = (harness == "claude").then_some("StopFailure");
         for event in [
             "SessionStart",
             "PreToolUse",
             "PostToolUse",
             "UserPromptSubmit",
             "Stop",
-        ] {
+        ]
+        .into_iter()
+        .chain(failure)
+        {
             let input = s.root.join("hook-input.json");
             fs::write(&input, hook_payload(event)).unwrap();
             let mut command =
@@ -840,6 +845,37 @@ fn hook_stdout_per_event() {
                 .stderr(Stdio::piped());
             let out = command.spawn_owned().unwrap().wait_with_output().unwrap();
             record(&s.norm(), &format!("hook/{harness}.{event}.stdout"), &out);
+        }
+    }
+    // Claude's report-only turn ends print nothing and exit 0 for every input, a payload that is
+    // not even JSON included: they can never force a continuation.
+    for event in ["Stop", "StopFailure"] {
+        for bytes in [
+            &b"not json"[..],
+            b"{}",
+            b"",
+            br#"{"hook_event_name":"Stop"}"#,
+        ] {
+            let input = s.root.join("hook-input.json");
+            fs::write(&input, bytes).unwrap();
+            let mut command =
+                s.configure_command(herdr_threads::test_support::harness_shim::under_harness(
+                    "claude",
+                    Path::new(BIN),
+                    &[],
+                    &[],
+                ));
+            s.instance_args(&mut command, &["hook", "claude", "--event", event]);
+            command
+                .env("HERDR_ENV", "1")
+                .env("HERDR_PANE_ID", "p1")
+                .env("HERDR_SOCKET_PATH", s.host())
+                .stdin(Stdio::from(fs::File::open(&input).unwrap()))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let out = command.spawn_owned().unwrap().wait_with_output().unwrap();
+            assert_eq!(out.status.code(), Some(0), "{event} {bytes:?}");
+            assert!(out.stdout.is_empty(), "{event} {bytes:?}");
         }
     }
 }

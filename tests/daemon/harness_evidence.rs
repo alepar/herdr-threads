@@ -1345,7 +1345,7 @@ impl RichManifestSource for CachedExactDomain {
             && identity.source == "native_transcript"
             && domain == "native_payload"
             && origin == crate::harness::evidence::EvidenceOrigin::NativePayload
-            && contract_id == "fc1e3270060b4b87"
+            && contract_id == "de803558d66158f3"
     }
 }
 #[test]
