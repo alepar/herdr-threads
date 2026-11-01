@@ -467,3 +467,24 @@ fn terminal_site_line_k4_is_in_the_skill_once() {
     assert_eq!(k4.len(), 140);
     assert_eq!(crate::cli::skill::SKILL_MD.matches(k4).count(), 1);
 }
+
+/// The frontmatter description and the Trust model bullet name all three seat sources, and the
+/// pane-only requirement is gone.
+#[test]
+fn skill_names_the_three_seat_sources() {
+    let vars = ["HERDR_PANE_ID", "HERDR_THREADS_SEAT_NAME", "HC_TERMINAL_ID"];
+    let description = SKILL_MD
+        .lines()
+        .find(|line| line.starts_with("description: "))
+        .expect("description");
+    let bullet = SKILL_MD
+        .lines()
+        .find(|line| line.starts_with("- Commands locate your seat from"))
+        .expect("locate bullet");
+    for var in vars {
+        assert!(description.contains(var), "description lacks {var}");
+        assert!(bullet.contains(var), "bullet lacks {var}");
+    }
+    assert!(!SKILL_MD.contains("Requires running inside your own Herdr pane"));
+    assert!(!bullet.contains("this pane's"));
+}
