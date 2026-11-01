@@ -91,6 +91,7 @@ pub fn create_with<P: CreateTargetPort + ?Sized, W: Write>(
         env: Default::default(),
         directory_context: None,
         expected_witness: witness,
+        gate_argv: Vec::new(),
     };
     let context = HostCallContext {
         budget,
@@ -691,6 +692,7 @@ mod tests {
             },
             then: Some(Box::new(super::super::topology_handoff::Request {
                 policy: None,
+                target: None,
                 automatic: true,
                 new_tab: None,
                 existing: true,

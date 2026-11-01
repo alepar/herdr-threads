@@ -3773,6 +3773,7 @@ fn parse_cli_in_registry(
                 };
                 let then = super::topology_handoff::Request {
                     policy: Some(policy),
+                    target: None,
                     automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: None,
                     existing: true,
@@ -3811,6 +3812,7 @@ fn parse_cli_in_registry(
                 }
                 CliAction::TopologyHandoff(super::topology_handoff::Request {
                     policy: Some(policy),
+                    target: None,
                     automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: args.new_tab,
                     existing: args.existing,

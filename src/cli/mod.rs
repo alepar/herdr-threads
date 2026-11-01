@@ -4113,7 +4113,7 @@ fn run_launch<W: Write>(
     let (instance, _, client) = connect(paths, clock)?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let handle = host_client::LaunchHandle::herdr(claim_host, Arc::clone(clock));
-    let host = handle.host();
+    let host = handle.host()?;
     // Without `--name`, the agent is named after the pane's Herdr label. Best
     // effort: an unreadable snapshot leaves the short-seat-id fallback.
     if request.name.is_none() {

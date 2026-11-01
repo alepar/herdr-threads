@@ -589,7 +589,12 @@ impl ports::CreateTargetPort for HcHost {
         let Some(cwd) = request.cwd.to_str().filter(|_| request.cwd.is_absolute()) else {
             return NotSubmitted(api_error(ErrorCode::InvalidRequest, "invalid launch cwd"));
         };
-        if self.gate_argv.is_empty() || request.label.trim().is_empty() {
+        let gate_argv = if request.gate_argv.is_empty() {
+            &self.gate_argv
+        } else {
+            &request.gate_argv
+        };
+        if gate_argv.is_empty() || request.label.trim().is_empty() {
             return NotSubmitted(api_error(
                 ErrorCode::InvalidRequest,
                 "hc launch needs a gate argv and a label",
@@ -644,7 +649,7 @@ impl ports::CreateTargetPort for HcHost {
             }
         };
         let run = RunRequest {
-            argv: self.gate_argv.clone(),
+            argv: gate_argv.clone(),
             cwd: cwd.to_owned(),
             env: request.env.clone(),
             labels,

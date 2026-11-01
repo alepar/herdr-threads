@@ -417,6 +417,34 @@ pub trait HandoffLauncher {
         gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
     ) -> Result<super::launch::LaunchReport, RunError>;
 }
+/// The launcher of a plan whose target host started the harness itself: the terminal was
+/// created running the launch-gate shim, which waits for the staged bootstrap Send and then
+/// execs the harness. There is nothing to start, only the retained "started" report (and the
+/// `gate(true)` that records a possible start) the shared pipeline needs.
+pub(crate) struct StartedByCreation;
+impl HandoffLauncher for StartedByCreation {
+    fn preflight(&mut self, _: &LaunchRequest) -> Result<SeatId, RunError> {
+        Err(super::invalid_request("a created target has no preflight"))
+    }
+    fn launch(
+        &mut self,
+        request: &LaunchRequest,
+        recipient: &SeatId,
+        gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
+    ) -> Result<super::launch::LaunchReport, RunError> {
+        gate(true)?;
+        Ok(super::launch::LaunchReport {
+            report: serde_json::json!({
+                "outcome": "started",
+                "seat": recipient,
+                "pane": request.target,
+                "harness": request.harness.as_str(),
+                "argv": request.argv,
+            }),
+            exit: 0,
+        })
+    }
+}
 pub(crate) fn progress_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
     journal
         .root()
@@ -1814,6 +1842,29 @@ pub(crate) mod summary_prompt {
         out.push_str(END);
         out
     }
+
+    /// The startup prompt of a plan that creates its target before the thread exists (V3): it
+    /// names no thread, because the harness argv is frozen at creation and the handoff
+    /// arrives by ordinary delivery. 79 bytes plus the summary and the command with a
+    /// summary, 76 plus the command without one; never longer than [`render`].
+    pub(crate) fn render_thread_free(
+        summary: Option<&str>,
+        context: &ContinuationContext,
+    ) -> String {
+        let mut out = String::from(LEAD);
+        match summary {
+            Some(summary) => {
+                out.push_str(summary);
+                out.push_str(" (full task arrives as a herdr-threads message; if not shown, run `");
+            }
+            None => {
+                out.push_str("full task arrives as a herdr-threads message; if not shown, run `")
+            }
+        }
+        super::bootstrap_v1::fallback_inbox(context, &mut out);
+        out.push_str(if summary.is_some() { "`)." } else { "`." });
+        out
+    }
 }
 
 /// Stderr hint for a launching handoff without a usable summary: no `--summary` and no `--goal`
@@ -2407,7 +2458,7 @@ pub(crate) fn run<W: Write>(
         host_endpoint: claim_host.clone(),
     };
     let handle = super::host_client::LaunchHandle::herdr(claim_host, Arc::clone(&clock));
-    let host = handle.host();
+    let host = handle.host()?;
     let seats = super::launch::DaemonSeatResolver::new(
         &client,
         journal,

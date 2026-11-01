@@ -5989,6 +5989,7 @@ pub fn create_tab_through<P: CreateTargetPort + ?Sized>(
         env: request.env.clone(),
         directory_context: request.directory_context.clone(),
         expected_witness: HostWitness::HerdrSocket(request.expected_witness.clone()),
+        gate_argv: Vec::new(),
     };
     match port.create_target(&target_request, context) {
         CreateTargetOutcome::Created(target) => match target.as_created_tab() {
@@ -6043,6 +6044,10 @@ pub struct CreateTargetRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory_context: Option<crate::protocol::handoff::LaunchDirectoryContext>,
     pub expected_witness: HostWitness,
+    /// What a host that starts its target itself runs (the launch gate shim, per attempt).
+    /// Empty: the host's own constructor-time argv. A host that only creates a tab ignores it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_argv: Vec<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CreatedTarget {
