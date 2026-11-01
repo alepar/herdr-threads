@@ -15,7 +15,7 @@ It carries two merged branches, each with a fixer roast and an independent revie
 
 **CI** (run 41284748806) passed on the first attempt, as did the [release run 41290393619](https://github.com/alepar/herdr-threads/actions/runs/41290393619). The archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 2.8.4, the right TARGET, modes and licenses; `scripts/install.sh` equals the tag's; the credential scan is clean.
 
-**Installed on blacky with `herdr-threads update`** on the first try: "updated 2.8.3 -> 2.8.4 (sha256 verified twice; backup pre-v2.8.4-20261101T090023Z)". The daemon's `/proc` exe hash `a7d7a25b…` equals the archive binary, the daemon is healthy, and the Herdr plugin link is unchanged.
+**Installed on blacky with `herdr-threads update`** on the first try: "updated 2.8.3 -> 2.8.4 (sha256 verified twice; backup pre-v2.8.4-20261101T090023Z)". The daemon's `/proc` exe hash `a7d7a25b…` equals the archive binary, the daemon is healthy, and the Herdr plugin link is unchanged. The laptop (Q0V) took 2.8.4 with `herdr-threads update` on the first try (backup pre-v2.8.4-20261101T090109Z); its daemon is healthy and the nSG link reports v=2.8.4.
 
 [v2.8.3 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.3) from source `6a1b698c6`, a patch release. No schema change (node schema stays 12) and no peer wire change: `scripts/freeze-peer-wire 2.4.0 --at v2.8.3 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
