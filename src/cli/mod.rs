@@ -3730,6 +3730,16 @@ pub(crate) const PANE_SEAT_PAGE_LIMIT: u16 = 8;
 /// resolved seat away.
 pub(crate) fn collect_pane_seats(
     pane: &crate::protocol::ids::HostTargetId,
+    call: impl FnMut(Command) -> Result<CommandResult, ApiError>,
+) -> Result<PaneSeats, PaneSeatsError> {
+    collect_seats_on(pane, None, call)
+}
+
+/// [`collect_pane_seats`] scoped to `host` (`SeatsQuery.host`, F9): a Named site's lookup sends
+/// its reserved named-host locator; `None` is the unchanged Pane request.
+pub(crate) fn collect_seats_on(
+    pane: &crate::protocol::ids::HostTargetId,
+    host: Option<crate::protocol::ids::HostLocator>,
     mut call: impl FnMut(Command) -> Result<CommandResult, ApiError>,
 ) -> Result<PaneSeats, PaneSeatsError> {
     use crate::protocol::{
@@ -3748,8 +3758,7 @@ pub(crate) fn collect_pane_seats(
             target: Some(pane.clone()),
             include_retired: false,
             filter: Default::default(),
-
-            host: None,
+            host: host.clone(),
         }))
         .map_err(PaneSeatsError::Api)?;
         let CommandResult::Seats(page) = result else {

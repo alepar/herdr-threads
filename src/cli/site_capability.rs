@@ -10,7 +10,7 @@ use crate::ports::LocalClient;
 use crate::protocol::{
     capabilities::HOST_SITES_V1,
     commands::ResolveThreadQuery,
-    ids::{HostTargetId, SeatId},
+    ids::{HostLocator, HostTargetId, SeatId},
     results::{ApiError, ErrorCode},
     time::CallBudget,
 };
@@ -31,6 +31,21 @@ pub fn require_site_capability(
     } else {
         Err(ApiError::new(ErrorCode::Unsupported, refusal_line))
     }
+}
+
+/// The host a seat lookup for `site` carries (`SeatsQuery.host`): a Named site passes the
+/// `seat.host_sites_v1` gate (M13) and sends its reserved named-host locator; any other site
+/// sends none, so its bytes are unchanged.
+pub fn seats_host(
+    site: Option<CallerSite<'_>>,
+    client: &dyn LocalClient,
+    budget: &CallBudget,
+) -> Result<Option<HostLocator>, ApiError> {
+    let Some((host, _)) = site.and_then(CallerSite::sent_scope) else {
+        return Ok(None);
+    };
+    require_site_capability(client, HOST_SITES_V1, M13, budget)?;
+    Ok(Some(host))
 }
 
 /// The thread-resolution request for the caller's site. A site that sends a host scope (Named)
@@ -108,5 +123,24 @@ mod tests {
     #[test]
     fn passes_with_capability() {
         require_site_capability(&Fake(&[TEST_CAP]), TEST_CAP, LINE, &budget()).unwrap();
+    }
+
+    #[test]
+    fn named_seat_lookup_sends_the_named_host_behind_the_gate() {
+        use super::super::caller_location::CallerLocator;
+        use crate::protocol::ids::{NAMED_HOST_LOCATOR, SeatName};
+        let named = CallerLocator::Named(SeatName::parse("alice").unwrap());
+        let host = seats_host(Some(named.site()), &Fake(&[HOST_SITES_V1]), &budget())
+            .unwrap()
+            .unwrap();
+        assert_eq!(host.as_str(), NAMED_HOST_LOCATOR);
+        let error = seats_host(Some(named.site()), &Fake(&[]), &budget()).unwrap_err();
+        assert_eq!(error.detail, M13);
+        let pane = CallerLocator::Pane { id: "p_1".into() };
+        assert!(
+            seats_host(Some(pane.site()), &Fake(&[]), &budget())
+                .unwrap()
+                .is_none()
+        );
     }
 }

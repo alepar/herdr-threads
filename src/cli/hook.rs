@@ -1568,7 +1568,18 @@ fn find_seat_for(
     deadline: Instant,
     clock: &dyn Clock,
 ) -> Result<PaneSeat, Failure> {
-    let seats = super::collect_pane_seats(target, |command| {
+    // A named seat's lookup is host-scoped (F9), behind `seat.host_sites_v1` (M13).
+    let site = super::caller_location::CallerEnv::from_process()
+        .named()
+        .map(super::caller_location::CallerLocator::Named);
+    let host = super::site_capability::seats_host(
+        site.as_ref()
+            .map(super::caller_location::CallerLocator::site),
+        client,
+        &budget(deadline, clock),
+    )
+    .map_err(|e| api_failure("seat lookup", &e))?;
+    let seats = super::collect_seats_on(target, host, |command| {
         client.call(command, &budget(deadline, clock))
     })
     .map_err(|e| match e {
