@@ -7,9 +7,16 @@
 //!   (D10, with finished records kept in the capture), `status: null` as
 //!   `Unknown`, labels from `herdr.space`/`herdr.tab` plus the `herdr-app`
 //!   doc ([`labels`]), `server_process` from the `LocalEndpointWitness` peer
-//!   pid, and discovery from `core.json` plus `hello`. Closure, labels and
-//!   discovery land in later beads; today [`HcHost`] holds the boot, the
-//!   capability answers, the observation counter and `target_root_process`.
+//!   pid, and discovery from `core.json` plus `hello`. Closure and labels
+//!   land in later beads; today [`HcHost`] holds the boot, the capability
+//!   answers, the observation counter and `target_root_process`.
+//! - Discovery ([`HcDiscovery`], `discovery.rs`): lists
+//!   `$XDG_STATE_HOME|~/.local/state/herdr-core/*/core.json`, derives each
+//!   socket by the core's rules (`HC_SOCKET` or config, else
+//!   `$XDG_RUNTIME_DIR/herdr-core/<session>.sock`, else
+//!   `<state>/<session>.sock`), keeps a core only when its `hello` `core.id`
+//!   matches `core.json`, dedupes by id. Used when no caller site names a
+//!   core; a scan never runs `hc` and never attaches.
 //! - Hides: the hc protocol, the socket path rules, and which hc methods it
 //!   must never call (`terminal.list`, `doc.set`, `caller`).
 //! - Must not: spawn `hc`, treat agent exit as closure, keep `machine/tN`
@@ -25,10 +32,12 @@
 //!   disconnect is `OutcomeUnknown` (H3).
 //! - Role: Adapter (a `HostPort` impl over herdr-core's JSON-RPC).
 
+pub mod discovery;
 pub mod labels;
 pub mod rpc;
 pub mod wire;
 
+pub use discovery::{DiscoveredCore, HcDiscovery};
 pub use rpc::{HcClient, HcError, HcReply, Snapshot};
 pub use wire::{
     AppDoc, CoreInfo, HcEvent, HcEventKind, HcForeground, HcStatus, HcTerminal, HelloReply,
