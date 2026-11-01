@@ -218,13 +218,18 @@ fn descendant_subagent_readonly_admitted() {
 
     let tx_check = |claim: &CallerClaim| {
         let tx = f.conn.unchecked_transaction().unwrap();
-        guard_live_holder(&tx, f.table.as_ref(), claim, false)
+        guard_live_holder(&tx, f.table.as_ref(), claim, false, false)
     };
     // The probe discriminates: an unrelated top-level claim is refused.
     assert_eq!(
         tx_check(&process_claim(2, 40)).unwrap_err().code,
         ErrorCode::SeatNameInUse
     );
+    // A readonly caller of the same unrelated process is admitted.
+    {
+        let tx = f.conn.unchecked_transaction().unwrap();
+        guard_live_holder(&tx, f.table.as_ref(), &process_claim(2, 40), false, true).unwrap();
+    }
     // A subagent of an unrelated process is admitted.
     let mut subagent = process_claim(3, 40);
     subagent.role = CallerRole::Subagent;
@@ -232,7 +237,7 @@ fn descendant_subagent_readonly_admitted() {
     tx_check(&subagent).unwrap();
     // A Codex fork (independent session) is admitted.
     let tx = f.conn.unchecked_transaction().unwrap();
-    guard_live_holder(&tx, f.table.as_ref(), &process_claim(2, 40), true).unwrap();
+    guard_live_holder(&tx, f.table.as_ref(), &process_claim(2, 40), true, false).unwrap();
     drop(tx);
     // A readonly holder does not hold the name.
     f.conn
@@ -244,6 +249,42 @@ fn descendant_subagent_readonly_admitted() {
     human.harness = Harness::Human;
     human.liveness = None;
     tx_check(&human).unwrap();
+}
+
+// Kills: a guard with no caller-side readonly (spec line 1225), a marker that admits the caller
+// but leaves its row writable, and a readonly caller that then holds the name.
+#[test]
+fn readonly_caller_admitted_beside_a_live_holder() {
+    let f = fixture();
+    f.table.set(20, 1, 100);
+    f.table.set(40, 1, 100);
+    f.table.set(50, 1, 100);
+    enroll(&f, 1, 20).unwrap();
+    // The control: without the marker the same caller is refused.
+    assert_eq!(
+        enroll(&f, 2, 40).unwrap_err().code,
+        ErrorCode::SeatNameInUse
+    );
+    let mut readonly = lifecycle(process_claim(3, 40), "op-3-readonly");
+    readonly.readonly = true;
+    check_in(&f.store, readonly).unwrap();
+    assert_eq!(open_bindings(&f.conn), 2);
+    let marked: i64 = f
+        .conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE readonly=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(marked, 1);
+    // Pid 20 still holds the name against a writable caller, and pid 40 does not.
+    assert_eq!(
+        enroll(&f, 4, 50).unwrap_err().code,
+        ErrorCode::SeatNameInUse
+    );
+    f.table.exit(20);
+    enroll(&f, 5, 50).unwrap();
 }
 
 // Kills: a touch of the holder's own connected binding judged as a new holder (the sole holder
@@ -263,8 +304,8 @@ fn a_connected_binding_keeps_serving_its_own_calls() {
         .unwrap();
     // Each already-connected holder still resolves its own calls.
     let tx = f.conn.unchecked_transaction().unwrap();
-    guard_live_holder(&tx, f.table.as_ref(), &process_claim(1, 20), false).unwrap();
-    guard_live_holder(&tx, f.table.as_ref(), &process_claim(2, 40), false).unwrap();
+    guard_live_holder(&tx, f.table.as_ref(), &process_claim(1, 20), false, false).unwrap();
+    guard_live_holder(&tx, f.table.as_ref(), &process_claim(2, 40), false, false).unwrap();
 }
 
 // SA7: two concurrent unrelated enrolls of one name yield exactly one binding.

@@ -711,7 +711,7 @@ fn ancestor_pids(processes: &dyn crate::ports::ProcessInfo, pid: u32) -> Vec<u32
 /// reconnect a top-level binding, refuse with `seat_name_in_use` (M7) if another connected
 /// top-level binding of the seat is held by a live process that differs from the caller's with
 /// neither in the other's parent chain. Admitted beside a live holder: the same process, an
-/// ancestor or descendant, subagents, a `readonly` holder, a Codex fork, and any holder whose
+/// ancestor or descendant, subagents, a `readonly` holder or caller, a Codex fork, and any holder whose
 /// pid is gone or reused (its start stamp no longer matches). A claim without a fingerprint is
 /// left to the admission check that requires one. Cooperative same-user consistency, not
 /// verification.
@@ -720,11 +720,16 @@ fn guard_live_holder(
     processes: &dyn crate::ports::ProcessInfo,
     claim: &crate::protocol::authority::CallerClaim,
     fork: bool,
+    readonly: bool,
 ) -> Result<(), ApiError> {
     let Some(caller) = claim.liveness else {
         return Ok(());
     };
-    if fork || claim.is_subagent() || claim.harness == crate::protocol::authority::Harness::Human {
+    if fork
+        || readonly
+        || claim.is_subagent()
+        || claim.harness == crate::protocol::authority::Harness::Human
+    {
         return Ok(());
     }
     // An open, connected binding of the caller's own key is already a holder: a touch.
@@ -799,7 +804,7 @@ pub(crate) fn resolve_cooperative(
     mode: Option<crate::protocol::commands::CheckInMode>,
     mapping: &CooperativeMapping,
 ) -> Result<bindings::Resolution, ApiError> {
-    resolve_cooperative_with_lineage(tx, processes, at, claim, mode, mapping, None)
+    resolve_cooperative_with_lineage(tx, processes, at, claim, mode, mapping, None, false)
 }
 
 /// [`resolve_cooperative`] with a lineage predecessor hint (Hermes `parent_session_id`, spec §1
@@ -808,6 +813,8 @@ pub(crate) fn resolve_cooperative(
 /// seat, harness, top-level, same process fingerprint). A successor not yet enrolled seeds from the
 /// predecessor (`ResolveRequest.lineage`); one already enrolled (CLI-first, an accepted limit) links
 /// `lineage_from` once and moves no cursor (it keeps its own read position).
+// Allowed: a resolve's inputs plus the two facts only a check-in carries.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_cooperative_with_lineage(
     tx: &Transaction<'_>,
     processes: &dyn crate::ports::ProcessInfo,
@@ -816,6 +823,7 @@ pub(crate) fn resolve_cooperative_with_lineage(
     mode: Option<crate::protocol::commands::CheckInMode>,
     mapping: &CooperativeMapping,
     lineage_parent: Option<&crate::protocol::ids::NativeSessionId>,
+    readonly: bool,
 ) -> Result<bindings::Resolution, ApiError> {
     let lifecycle = matches!(
         mode,
@@ -832,6 +840,7 @@ pub(crate) fn resolve_cooperative_with_lineage(
             mode,
             Some(crate::protocol::commands::CheckInMode::Fork { .. })
         ),
+        readonly,
     )?;
     let placement = cooperative_placement(tx, at, claim, lifecycle, mapping)?;
     let predecessor = match lineage_parent {
@@ -1009,6 +1018,7 @@ pub fn register_available(
                 Some(command.mode),
                 &mapping,
                 command.lineage_parent.as_ref(),
+                command.readonly,
             )?;
             // Read-only is decided from the resolved binding's role (a Hermes registered child
             // resolves to its subagent row); the transaction rolls back on Err.
