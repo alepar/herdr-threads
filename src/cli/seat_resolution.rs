@@ -30,6 +30,7 @@ use super::{
     panes::{looks_like_pane_id, resolve_parents},
     seat_selector::{self, Narrowing},
 };
+use crate::host::hc::labels::{AddressRefusal, HcAddress, HcCore};
 use crate::sync::frame::{AddrOutcome, AddrTarget};
 use crate::{
     daemon::paths::{NodePaths, RuntimeContext},
@@ -76,6 +77,20 @@ pub(crate) fn skip_first_freeze_for_test() -> impl Drop {
     }
     SKIP_FIRST_FREEZE.with(|flag| flag.set(true));
     Reset
+}
+
+/// The herdr-core reading of `raw` against `cores`: the terminal it names, `None` when `raw` is
+/// no such address (another reading may apply), or a refusal listing the `<session>:tN`
+/// candidates when a bare `tN` is ambiguous (one line of about 40 bytes plus 10 per candidate).
+fn hc_selector(raw: &str, cores: &[HcCore]) -> Result<Option<HostTargetId>, ApiError> {
+    let Some(address) = HcAddress::parse(raw) else {
+        return Ok(None);
+    };
+    match address.resolve(cores) {
+        Ok((_, terminal)) => Ok(Some(HostTargetId::new(terminal.as_str()))),
+        Err(AddressRefusal::NoSuchTarget) => Ok(None),
+        Err(refusal) => Err(ApiError::invalid_request(refusal.to_string())),
+    }
 }
 
 /// A host read run at most once, its outcome (success or failure) shared by every slot.
@@ -636,6 +651,10 @@ where
             }
             return Ok(Resolved::Seat(seat));
         }
+        // 2b. A herdr-core terminal `<session>:tN`, or a bare `tN` with one core attached.
+        if let Some(target) = hc_selector(raw, &self.hc_cores()).map_err(run_error)? {
+            return self.map_pane(parsed, slot, target);
+        }
         // 3. A direct pane ID needs no topology unless narrowing applies.
         if looks_like_pane_id(raw) && self.raw_narrowing.is_none() {
             let pane = HostTargetId::parse(raw.to_owned()).map_err(|detail| {
@@ -664,6 +683,12 @@ where
                 line: Some((path, tier)),
             }),
         }
+    }
+
+    /// The attached herdr-core cores and their terminals. Empty until core discovery
+    /// feeds it (HcDiscovery), so the step above resolves nothing yet.
+    fn hc_cores(&self) -> Vec<HcCore> {
+        Vec::new()
     }
 
     /// Whether `raw` names a live local pane (its whole-string reading): a read failure is no hit.
@@ -1189,5 +1214,43 @@ pub(crate) fn post_freeze_checks(action: &mut CliAction) -> Result<(), ApiError>
             check_unique_recipients(require_ack)
         }
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod hc_selector_tests {
+    use super::*;
+    use crate::host::hc::labels::TerminalId;
+
+    fn core(session: &str) -> HcCore {
+        HcCore {
+            session: session.into(),
+            terminals: vec![TerminalId::parse("t1").unwrap()],
+        }
+    }
+
+    #[test]
+    fn bare_t1_with_two_cores_is_refused_with_both() {
+        let cores = [core("alpha"), core("beta")];
+        let error = hc_selector("t1", &cores).unwrap_err();
+        assert!(
+            error.detail.contains("alpha:t1") && error.detail.contains("beta:t1"),
+            "{}",
+            error.detail
+        );
+        assert_eq!(
+            hc_selector("beta:t1", &cores).unwrap().unwrap().as_str(),
+            "t1"
+        );
+    }
+
+    #[test]
+    fn other_readings_fall_through() {
+        let one = [core("alpha")];
+        assert_eq!(hc_selector("t1", &one).unwrap().unwrap().as_str(), "t1");
+        // No cores, an unknown session, or a non-address: not an hc selector.
+        assert_eq!(hc_selector("t1", &[]).unwrap(), None);
+        assert_eq!(hc_selector("gamma:t1", &one).unwrap(), None);
+        assert_eq!(hc_selector("w1:p1", &one).unwrap(), None);
     }
 }
