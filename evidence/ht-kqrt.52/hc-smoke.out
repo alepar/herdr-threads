@@ -1,0 +1,11 @@
+hc-smoke: herdr-core 0.1.15 (herdr-core-linux-x86_64, sha256 verified), herdr-threads /var/home/alepar/AleCode/herdr-thr
+probe          ok    hello version 0.1.15, core 967bf966, features framed,attach,events,status,shell
+observation    ok    snapshot seq 1, events ['created', 'finished'], finished seq 3
+labels         ok    t3 labels set at run and by terminal.label, listed
+l2             ok    t4 terminal.pid 2172276 unchanged across exec (comm sleep), still live
+l3             ok    control t6 typed an <hc> note into t5; t7 (outlive_parent, no_notify) typed nothing
+finish-seed    ok    t2 keep:false exited -> finished/exited (final); t3 keep:true live pid 2173083
+finish-after   ok    t3 keep:true -> live/stopped_by_restart/no pid (pending restart, same address); t2 stays final
+attach         ok    the daemon (pid 2173200) attached /tmp/ic.5KQtWN/rt/herdr-core/ht-smoke-9aeb4762-7f3d-4e51-b418-022
+k5             ok    daemon 2173200 has no HC_* variable, is no descendant of terminal t2 (pid 2173191), survived its ki
+hc-smoke: PASS (every core stopped with server.stop; no herdr-core serve/hold of a smoke session remains)
