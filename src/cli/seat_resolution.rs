@@ -685,8 +685,9 @@ where
         }
     }
 
-    /// The attached herdr-core cores and their terminals. Empty until core discovery
-    /// feeds it (HcDiscovery), so the step above resolves nothing yet.
+    /// The attached herdr-core cores and their terminals. Empty until attached hosts
+    /// feed it (ht-kqrt.99: discovery/attach plus the session name on the wire), so the
+    /// step above resolves nothing yet.
     fn hc_cores(&self) -> Vec<HcCore> {
         Vec::new()
     }
