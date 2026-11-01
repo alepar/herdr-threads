@@ -133,3 +133,14 @@ fn herdr_reports_the_agy_kind() {
     assert!(crate::harness::agy::METADATA.host_kinds.contains(&kind));
     assert_eq!(kind, "agy");
 }
+
+// Catches a permission prompt read as typeable, or an idle composer read as blocked.
+#[test]
+fn screen_blocked_recognizes_the_permission_prompt_and_idle_composers() {
+    let approval = include_str!("../fixtures/screen_blocked/agy/approval.txt");
+    let idle = include_str!("../fixtures/screen_blocked/agy/idle.txt");
+    assert_eq!(AgyComposer.screen_blocked(approval), Some(true));
+    assert_eq!(AgyComposer.screen_blocked(idle), Some(false));
+    assert_eq!(AgyComposer.screen_blocked(capture!("busy")), None);
+    assert_eq!(AgyComposer.screen_blocked(capture!("draft")), Some(false));
+}

@@ -77,8 +77,12 @@ impl ComposerPolicy for NativeComposer {
 
 #[cfg(test)]
 mod tests {
+    use super::NativeComposer;
     use crate::{
-        harness::composer::{ComposerRead, read_composer},
+        harness::{
+            adapter::ComposerPolicy,
+            composer::{ComposerRead, read_composer},
+        },
         protocol::authority::Harness,
     };
 
@@ -109,6 +113,15 @@ mod tests {
         assert_eq!(
             read("› Viewing sub-agent — direct input is disabled\n\n  footer\n"),
             ComposerRead::Text("Viewing sub-agent — direct input is disabled".into())
+        );
+    }
+
+    // Codex has no captured approval screen, so it keeps the `None` default (no wake).
+    #[test]
+    fn screen_blocked_is_unsupported() {
+        assert_eq!(
+            NativeComposer.screen_blocked("› Ask Codex to do anything\n"),
+            None
         );
     }
 }

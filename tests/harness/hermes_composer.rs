@@ -171,3 +171,9 @@ fn stashing_is_unsupported() {
         PokeCapabilities::NONE
     );
 }
+
+// Hermes has no captured approval screen, so it keeps the `None` default (no wake).
+#[test]
+fn screen_blocked_is_unsupported() {
+    assert_eq!(HermesComposer.screen_blocked("anything"), None);
+}

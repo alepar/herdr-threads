@@ -130,7 +130,33 @@ impl ComposerPolicy for AgyComposer {
     fn clears_unsubmitted_wake(&self) -> bool {
         true
     }
+    /// A permission prompt: the `↑/↓ Navigate` hint and a `> N.` option row among the last
+    /// non-empty rows (`tests/fixtures/screen_blocked/agy/`). Otherwise a readable idle
+    /// composer is not blocked; a busy turn or an overlay cannot be told.
+    fn screen_blocked(&self, screen: &str) -> Option<bool> {
+        let screen = screen.replace('\u{a0}', " ");
+        let tail: Vec<&str> = screen
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .rev()
+            .take(DIALOG_TAIL_ROWS)
+            .collect();
+        let hint = tail.iter().any(|line| line.starts_with("↑/↓ Navigate"));
+        let option = tail.iter().any(|line| {
+            line.strip_prefix("> ").is_some_and(|rest| {
+                rest.starts_with(|c: char| c.is_ascii_digit()) && rest.contains(". ")
+            })
+        });
+        if hint && option {
+            return Some(true);
+        }
+        (self.read(&screen, None) != ComposerRead::Unreadable).then_some(false)
+    }
 }
+
+/// How many trailing non-empty rows can hold a permission prompt's options and hint.
+const DIALOG_TAIL_ROWS: usize = 8;
 
 #[cfg(test)]
 #[path = "../../../tests/harness/agy_composer.rs"]

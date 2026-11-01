@@ -1400,6 +1400,12 @@ pub trait ComposerPolicy: Send + Sync {
     fn clears_unsubmitted_wake(&self) -> bool {
         false
     }
+    /// Whether a screen shows an approval or question prompt that a typed wake would answer:
+    /// `Some(true)` blocked, `Some(false)` a recognized idle or busy composer, `None` cannot tell.
+    /// `None` (the default) means no wake.
+    fn screen_blocked(&self, _screen: &str) -> Option<bool> {
+        None
+    }
 }
 /// Pure local metadata. Providers must not observe installations or invoke native code.
 pub trait CanaryStrategy: Send + Sync {
