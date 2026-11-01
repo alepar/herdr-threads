@@ -570,12 +570,7 @@ pub fn observe_and_publish(
     context: &HostCallContext,
     maintenance_budget: &CallBudget,
 ) -> Result<ObservationOutcome, ApiError> {
-    // A non-closing host (the named host) has no enumeration to publish: its
-    // presence is a store read, so no capture could carry absence authority
-    // and none may invalidate (and so unresolve) its seats.
-    if host.closure_authority() == crate::ports::ClosureAuthority::NonClosing {
-        return Ok(ObservationOutcome::Superseded);
-    }
+    let non_closing = host.closure_authority() == crate::ports::ClosureAuthority::NonClosing;
     let ticket = lane.begin_observation()?;
     let admission = match store.begin_host_observation(instance, host_id, &context.budget) {
         Ok(admission) => admission,
@@ -586,6 +581,17 @@ pub fn observe_and_publish(
         }
     };
     let capture = host.enumerate_targets(context);
+    // SA17 (c): a non-closing host (the named host) enumerates the store, not
+    // a server. Its complete capture takes the host's fixed structural
+    // boot/incarnation so the publication admits it; a failed capture still
+    // only freezes (unavailability writes nothing). The stamp grants no
+    // absence authority: the planner and applier gate closure on
+    // `NonClosing`, never on the evidence.
+    let capture = if non_closing {
+        capture.map(stamp_fixed_structure)
+    } else {
+        capture
+    };
     let reason = match &capture {
         Err(_) => Some(HostInvalidationReason::HostUnavailable),
         Ok(_) if context.budget.is_exhausted(store.clock()) => {
@@ -619,7 +625,15 @@ pub fn observe_and_publish(
         let cause = capture.err();
         lane.mark_unavailable();
         let _ = lane.discard(ticket);
-        return invalidate_or_skip(store, lane, &admission, reason, cause, maintenance_budget);
+        return invalidate_or_skip(
+            store,
+            lane,
+            &admission,
+            reason,
+            cause,
+            non_closing,
+            maintenance_budget,
+        );
     }
     let snapshot = capture.expect("reason classified host failure");
     let admission_for_failure = admission.clone();
@@ -635,10 +649,26 @@ pub fn observe_and_publish(
                 &admission_for_failure,
                 HostInvalidationReason::PublicationFailed,
                 Some(error),
+                non_closing,
                 maintenance_budget,
             )
         }
     }
+}
+
+/// SA17 (c): the structural identity of a non-closing host's complete capture
+/// is its fixed boot: the snapshot is coherent against that boot and its
+/// incarnation is the boot itself (`named-host:node=<uuid>`). A partial
+/// capture is left as it is.
+pub(crate) fn stamp_fixed_structure(mut snapshot: HostSnapshot) -> HostSnapshot {
+    if snapshot.complete {
+        snapshot.enumeration = crate::ports::EnumerationEvidence::CoherentVerified;
+        snapshot.incarnation = crate::ports::IncarnationEvidence::Verified {
+            identity: snapshot.boot.as_str().to_owned(),
+            evidence_kind: crate::ports::EvidenceKind::CoherentEnumeration,
+        };
+    }
+    snapshot
 }
 
 /// Writes the durable invalidation for a failed capture, unless the lane
@@ -651,10 +681,16 @@ fn invalidate_or_skip(
     admission: &HostObservationAdmission,
     reason: HostInvalidationReason,
     cause: Option<ApiError>,
+    non_closing: bool,
     maintenance_budget: &CallBudget,
 ) -> Result<ObservationOutcome, ApiError> {
     if reason.is_unavailability() {
         return Ok(ObservationOutcome::Frozen { reason, cause });
+    }
+    // A non-closing host has no absence authority to lose: an invalidation
+    // would unresolve its seats (and arm holds) on no host evidence.
+    if non_closing {
+        return Ok(ObservationOutcome::Superseded);
     }
     if lane.skips_repeated_invalidation(reason) {
         return Ok(ObservationOutcome::InvalidationRepeated { reason, cause });
