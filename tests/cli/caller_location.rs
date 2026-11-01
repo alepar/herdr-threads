@@ -204,11 +204,6 @@ fn pane_site_answers() {
     let site = locator.site();
     assert_eq!(site.moved_target(), Some("w4:p1"));
     assert_eq!(site.relative_pane(), Some("w4:p1"));
-    assert!(site.person_origin_allowed());
-    assert!(site.enrolls_on_first_use());
-    assert!(site.attempts_continuity());
-    assert!(site.host_scoped_lookup());
-    assert_eq!(site.cache_key(), "pane:w4:p1");
     // Byte-identical to the pre-F recovery hint word.
     assert_eq!(
         site.env_assignments(),
@@ -217,14 +212,10 @@ fn pane_site_answers() {
 }
 
 #[test]
-fn terminal_site_is_not_a_pane_but_enrolls_and_scopes_its_lookup() {
+fn terminal_site_is_not_a_pane_and_scopes_its_lookup() {
     let locator = terminal("/s", "t1");
     let site = locator.site();
     assert_eq!(site.relative_pane(), None);
-    assert!(!site.person_origin_allowed());
-    assert!(site.enrolls_on_first_use());
-    assert!(site.host_scoped_lookup());
-    assert!(!site.attempts_continuity());
     assert_eq!(site.required_capability(), Some("seat.terminal_sites_v1"));
     let (host, target) = site.sent_scope().unwrap();
     assert_eq!((host.as_str(), target.as_str()), ("/s", "t1"));
@@ -236,17 +227,12 @@ fn named_site_answers() {
     let site = locator.site();
     assert_eq!(site.moved_target(), Some("worker-1"));
     assert_eq!(site.relative_pane(), None);
-    assert!(!site.person_origin_allowed());
-    assert!(site.enrolls_on_first_use());
-    assert!(!site.attempts_continuity());
-    assert!(site.host_scoped_lookup());
     assert_eq!(site.locate_candidate(), None);
     assert_eq!(site.terminal_address(), None);
     assert_eq!(
         site.claim_host_locator(),
         Some("/.herdr-threads/named-host")
     );
-    assert_eq!(site.cache_key(), "named:worker-1");
 }
 
 #[test]
@@ -296,7 +282,6 @@ fn terminal_site_answers() {
     let site = locator.site();
     assert_eq!(site.moved_target(), Some("t3"));
     assert_eq!(site.relative_pane(), None);
-    assert!(!site.person_origin_allowed());
     assert_eq!(site.terminal_address().as_deref(), Some("work:t3"));
     // The core's own socket is the claim host; the installed Herdr endpoint never is.
     assert_eq!(site.claim_host_locator(), Some("/run/herdr-core/work.sock"));

@@ -6,9 +6,9 @@
 //! Owns: reading and empty-filtering the caller-location variables (the names
 //! come from each host module's env consts, never from a literal here), the
 //! precedence between families (one family, then `Ambiguous`, then refusal),
-//! and the per-site answers (`moved_target`, `relative_pane`,
-//! `person_origin_allowed`, `enrolls_on_first_use`, `attempts_continuity`,
-//! `host_scoped_lookup`, `claim_host_locator`, `cache_key`, `env_assignments`) as one closed match.
+//! and the per-site answers (`moved_target`, `relative_pane`, `sent_scope`,
+//! `required_capability`, `locate_candidate`, `terminal_address`,
+//! `claim_host_locator`, `env_assignments`) as one closed match.
 //!
 //! Hides: which env family located the caller, from `mod.rs`, `hook.rs`,
 //! the handoff recovery hints and instance discovery.
@@ -279,26 +279,6 @@ impl<'a> CallerSite<'a> {
         }
     }
 
-    /// A person can enroll from this site (`human me init`).
-    pub fn person_origin_allowed(self) -> bool {
-        matches!(self.0, CallerLocator::Pane { .. })
-    }
-
-    /// A target with no seat yet is registered by its first hook or call.
-    pub fn enrolls_on_first_use(self) -> bool {
-        true
-    }
-
-    /// The daemon may re-attach a seat after the host restarted.
-    pub fn attempts_continuity(self) -> bool {
-        matches!(self.0, CallerLocator::Pane { .. })
-    }
-
-    /// Seat lookup is scoped to this site's host.
-    pub fn host_scoped_lookup(self) -> bool {
-        true
-    }
-
     /// The host and target a request from this site carries, only for a site that sends them:
     /// a named seat is its name at the reserved named-host locator, a terminal its id at the
     /// core's socket. A Pane site sends neither (its request bytes are unchanged). A terminal
@@ -360,15 +340,6 @@ impl<'a> CallerSite<'a> {
             CallerLocator::Named(_) => Some(NAMED_HOST_LOCATOR),
             CallerLocator::Terminal { socket, .. } => Some(socket),
             CallerLocator::Pane { .. } => None,
-        }
-    }
-
-    /// A stable key for a per-site cache.
-    pub fn cache_key(self) -> String {
-        match self.0 {
-            CallerLocator::Pane { id } => format!("pane:{id}"),
-            CallerLocator::Terminal { socket, id } => format!("terminal:{socket}:{id}"),
-            CallerLocator::Named(name) => format!("named:{}", name.as_str()),
         }
     }
 
