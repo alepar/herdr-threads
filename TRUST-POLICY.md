@@ -413,7 +413,7 @@ the nearest ancestor root wins, whichever family owns it. A pane candidate asks 
 terminal candidate only the core its socket names, attached on a miss. If nothing verifies (not an ancestor, host unreachable, daemon too old
 to know the command), no seat binds and nothing falls back to a candidate: the CLI prints M4 (naming both
 candidates and asking to unset the stale one) and hooks exit 0 with M4 on stderr and inject nothing. A
-verified terminal binds nothing to the pane the environment also named. `HC_TERMINAL_ID` without
+verified terminal acts as that Terminal site; nothing binds to the pane the environment also named. `HC_TERMINAL_ID` without
 `HC_TERMINAL_SOCKET` and no pane is refused with M17. Single-family callers are never verified: that would be
 adversarial verification, which this policy does not add. The walk stops at a terminal-root wall: a process
 whose `argv[0]` basename is `herdr-core` or `hc` (`host::hc::foreign_terminal_process_names`), because on
@@ -825,8 +825,7 @@ model open work, and summary closure never changes receipt state or installs glo
   `HC_TERMINAL_ID`/`HC_TERMINAL_SOCKET` forwarded and never stopping on `no_pane`. A sender whose ACK request or
   p0 send names such a seat without a live channel gets `wake=no_wake` once per (sender, seat) episode
   (`no_wake_reports`, N6); a live mod channel reports none. `seat retire --self` from it is refused (M20: it
-  has no name). Accepted limit: a verified terminal in a two-family environment still binds nothing (`LocateCaller`
-  picks it, the CLI and hooks act as no seat); only a lone terminal environment is a seat.
+  has no name).
 - *tmux wake hint (named seats, N2-hint)*: a named caller inside a tmux pane sends `tmux:<socket>:<server_pid>:<pane>`
   (from `TMUX` and `TMUX_PANE`) in `ResolveSeat.tmux_hint` or `TurnStateReport.tmux_hint` (every hook that reports a turn
   edge), never in `CallerClaim` and never as `locator_hint`. The

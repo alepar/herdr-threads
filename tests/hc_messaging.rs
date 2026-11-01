@@ -192,6 +192,72 @@ impl Rig {
         )
     }
 
+    /// `args` as an agent of `session` whose environment names the core at `socket` and
+    /// terminal `terminal`, and also the Herdr pane `pane` when given (a two-family caller).
+    fn agent_in(
+        &self,
+        socket: &Path,
+        pane: Option<&str>,
+        terminal: &str,
+        session: &str,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+    ) -> Ran {
+        let mut command = self.isolation.command(BIN);
+        command.arg("--state-dir").arg(&self.state).args(args);
+        as_agent(&mut command, "claude", session);
+        command
+            .env("HC_TERMINAL_ID", terminal)
+            .env("HC_TERMINAL_SOCKET", socket);
+        if let Some(pane) = pane {
+            // A Herdr pane's environment also names its server; nothing listens there.
+            command
+                .env("HERDR_PANE_ID", pane)
+                .env("HERDR_ENV", "1")
+                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"))
+                // The CLI's two-family guard finds the daemon from the environment, not from
+                // `--state-dir`.
+                .env("HERDR_PLUGIN_STATE_DIR", &self.state);
+        }
+        if stdin.is_some() {
+            command.stdin(Stdio::piped());
+        }
+        run_with_stdin(command, stdin)
+    }
+
+    /// The SessionStart hook of `session` for a caller as in [`Self::agent_in`].
+    fn session_start_in(
+        &self,
+        socket: &Path,
+        pane: Option<&str>,
+        terminal: &str,
+        session: &str,
+    ) -> Ran {
+        let payload = format!(
+            r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"startup"}}"#
+        );
+        self.agent_in(
+            socket,
+            pane,
+            terminal,
+            session,
+            &["hook", "claude"],
+            Some(payload.as_bytes()),
+        )
+    }
+
+    /// The seat on `terminal` of the core at `socket`.
+    fn seat_on(&self, socket: &Path, terminal: &str) -> String {
+        self.db()
+            .query_row(
+                "SELECT s.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+                 WHERE s.target_id=?1 AND h.endpoint=?2 AND s.state<>'retired'",
+                [terminal, &socket.to_string_lossy()],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("a seat on {terminal} of {}: {e}", socket.display()))
+    }
+
     fn db(&self) -> rusqlite::Connection {
         let paths = resolve_seeded(&self.state);
         let db = rusqlite::Connection::open(paths.database_path).unwrap();
@@ -536,6 +602,173 @@ fn self_retire_from_terminal_m20() {
         .query_row("SELECT state FROM seats WHERE id=?1", [&t2], |r| r.get(0))
         .unwrap();
     assert_ne!(state, "retired");
+}
+
+// Kills: a verified two-family caller (pane and terminal in its environment, the terminal an
+// ancestor) that binds nothing, one that acts as the pane instead, and a hook that enrolls a
+// seat on the pane.
+#[test]
+fn two_family_terminal_acts_as_its_terminal_seat() {
+    let rig = Rig::start("hcm-two-family", &["t1", "t2"]);
+    // The CLI children are descendants of this test process: it is the terminal's root.
+    rig.fake.set_pid("t1", Some(std::process::id()));
+    let socket = rig.socket().to_owned();
+    let hook = rig.session_start_in(&socket, Some("w9:p9"), "t1", "s-t1");
+    assert_eq!(hook.code, Some(0), "{hook:?}");
+    assert!(
+        context_of(&hook).contains("Your seat in this pane"),
+        "{hook:?}"
+    );
+    let t1 = rig.seat_on(&socket, "t1");
+    let panes: i64 = rig
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM seats WHERE target_id='w9:p9'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(panes, 0, "no seat names the pane");
+
+    assert_eq!(rig.session_start("t2", "s-t2").code, Some(0));
+    let t2 = rig.seat_of("t2");
+    let sent = rig.agent_in(
+        &socket,
+        Some("w9:p9"),
+        "t1",
+        "s-t1",
+        &[
+            "send",
+            "--seat",
+            &t2,
+            "--body",
+            "from the verified terminal",
+        ],
+        None,
+    );
+    assert_eq!(sent.code, Some(0), "{sent:?}");
+    assert!(!sent.stderr.contains("neither is an ancestor"), "{sent:?}");
+    let turn = rig.prompt("t2", "s-t2");
+    assert!(
+        context_of(&turn).contains("from the verified terminal"),
+        "{turn:?}"
+    );
+    // The reply lands in the two-family caller's own seat, read back without naming it.
+    let back = rig.agent(
+        "t2",
+        "s-t2",
+        &["send", "--seat", &t1, "--body", "pong"],
+        None,
+    );
+    assert_eq!(back.code, Some(0), "{back:?}");
+    let inbox = rig.agent_in(&socket, Some("w9:p9"), "t1", "s-t1", &["inbox"], None);
+    assert_eq!(inbox.code, Some(0), "{inbox:?}");
+    assert!(inbox.stdout.contains("pong"), "{inbox:?}");
+}
+
+// Kills: a lone terminal's seat lookup that sends a bare `tN` (two cores that each seat `t1` fail
+// with "maps to more than one seat", or the lookup answers the other core's seat).
+#[test]
+fn two_cores_sharing_t1_resolve_each_callers_own_seat() {
+    let rig = Rig::start("hcm-two-cores", &["t1", "t2"]);
+    let other = FakeHc::start();
+    other.add_terminal(FakeTerminal::live("t1"));
+    other.add_terminal(FakeTerminal::live("t3"));
+    let (a, b) = (rig.socket().to_owned(), other.socket().to_owned());
+    assert_eq!(rig.session_start_in(&a, None, "t1", "s-a1").code, Some(0));
+    assert_eq!(rig.session_start_in(&b, None, "t1", "s-b1").code, Some(0));
+    assert_eq!(rig.session_start_in(&a, None, "t2", "s-a2").code, Some(0));
+    assert_eq!(rig.session_start_in(&b, None, "t3", "s-b3").code, Some(0));
+    let (a1, b1) = (rig.seat_on(&a, "t1"), rig.seat_on(&b, "t1"));
+    assert_ne!(a1, b1);
+    let (a2, b3) = (rig.seat_on(&a, "t2"), rig.seat_on(&b, "t3"));
+    for (socket, session, to, body) in [(&a, "s-a2", &a1, "for a1"), (&b, "s-b3", &b1, "for b1")] {
+        let terminal = if socket == &a { "t2" } else { "t3" };
+        let sent = rig.agent_in(
+            socket,
+            None,
+            terminal,
+            session,
+            &["send", "--seat", to, "--body", body],
+            None,
+        );
+        assert_eq!(sent.code, Some(0), "{sent:?}");
+    }
+    let _ = (a2, b3);
+    for (socket, session, want, not) in [
+        (&a, "s-a1", "for a1", "for b1"),
+        (&b, "s-b1", "for b1", "for a1"),
+    ] {
+        let inbox = rig.agent_in(socket, None, "t1", session, &["inbox"], None);
+        assert_eq!(inbox.code, Some(0), "{inbox:?}");
+        assert!(inbox.stdout.contains(want), "{inbox:?}");
+        assert!(!inbox.stdout.contains(not), "{inbox:?}");
+    }
+}
+
+// Kills: an allocate slot that drops the core, so `<session>:t2` allocates on the caller's own host
+// or, under a named caller, mints a named seat `t2`.
+#[test]
+fn allocate_slot_allocates_on_the_named_core() {
+    let rig = Rig::start("hcm-allocate", &["t2", "t3"]);
+    assert_eq!(rig.session_start("t3", "s-t3").code, Some(0));
+    rig.fake.set_core_name("alpha");
+    let session = "alpha";
+    // A named seat is verified by a real harness-shaped ancestor: one script enrolls it, creates
+    // a thread and invites the core's `t2` by its qualified address.
+    let script = rig.isolation.path("named-invite.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/bash
+payload=${HT_START//SESSION/$CLAUDE_CODE_SESSION_ID}
+for ((i=0;i<120;i++)); do
+  out=$(printf '%s' "$payload" | "$HT_BIN" --state-dir "$HT_STATE" hook claude 2>&1)
+  case "$out" in *"Your seat"*) break;; esac
+  /bin/sleep 0.5
+done
+"$HT_BIN" --state-dir "$HT_STATE" thread create --name ops --topic ops || exit 21
+"$HT_BIN" --state-dir "$HT_STATE" invite ops --seat "$HT_ADDRESS" || exit 22
+"#,
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let mut command =
+        herdr_threads::test_support::harness_shim::under_harness("claude", &script, &[], &[]);
+    herdr_threads::test_support::isolation::scrub_env(&mut command);
+    command
+        .env("HOME", rig.isolation.home())
+        .env("HT_BIN", BIN)
+        .env("HT_STATE", &rig.state)
+        .env(
+            "HT_START",
+            r#"{"session_id":"SESSION","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"startup"}"#,
+        )
+        .env("HT_ADDRESS", format!("{session}:t2"))
+        .env("HERDR_THREADS_SEAT_NAME", "bob")
+        .env("CLAUDE_CODE_SESSION_ID", "s-bob");
+    let invited = run_with_stdin(command, None);
+    assert_eq!(invited.code, Some(0), "{invited:?}");
+    let t2 = rig.seat_of("t2");
+    let on_core: i64 = rig
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+             WHERE s.id=?1 AND h.endpoint=?2",
+            [&t2, &rig.socket().to_string_lossy().into_owned()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(on_core, 1, "the seat is on the core's host");
+    let named: i64 = rig
+        .db()
+        .query_row("SELECT COUNT(*) FROM seats WHERE name='t2'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(named, 0, "no named seat t2");
 }
 
 /// A daemon that advertises only the Named-site capability and records what it is sent.

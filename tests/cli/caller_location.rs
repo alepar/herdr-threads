@@ -436,3 +436,45 @@ fn every_caller_location_variable_is_scrubbed() {
         );
     }
 }
+
+/// Kills: a verified terminal that still reads as two families (the pane survives), one that
+/// loses the Herdr environment instance discovery needs, and a Hook reading that differs.
+#[test]
+fn verified_terminal_reads_as_a_lone_terminal() {
+    let both = env(&[
+        ("HERDR_PANE_ID", "w1:p1"),
+        ("HERDR_ENV", "1"),
+        ("HC_TERMINAL_ID", "t3"),
+        ("HC_TERMINAL_SOCKET", "/s"),
+    ]);
+    assert!(matches!(
+        both.locate(EnvMode::Cli),
+        Ok(Some(Located::Ambiguous(_)))
+    ));
+    let verified = both.verified_terminal();
+    for mode in [EnvMode::Cli, EnvMode::Hook] {
+        assert_eq!(
+            verified.locate(mode),
+            Ok(Some(Located::One(terminal("/s", "t3"))))
+        );
+    }
+    assert!(verified.herdr_env());
+    assert_eq!(verified.pane(EnvMode::Cli), None);
+}
+
+/// Kills: a scope that stays set after it drops (every later read in the thread loses its pane),
+/// and a nested scope whose drop clears the outer one.
+#[test]
+fn verified_terminal_scope_restores_on_drop() {
+    use herdr_threads::cli::caller_location::{enter_verified_terminal, verified_terminal_active};
+    assert!(!verified_terminal_active());
+    let outer = enter_verified_terminal();
+    assert!(verified_terminal_active());
+    drop(enter_verified_terminal());
+    assert!(
+        verified_terminal_active(),
+        "the inner drop keeps the outer scope"
+    );
+    drop(outer);
+    assert!(!verified_terminal_active());
+}

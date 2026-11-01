@@ -26,9 +26,9 @@ use crate::{
 pub enum Guard {
     /// The Herdr pane is the nearest ancestor root: it wins.
     Pane(String),
-    /// The herdr-core terminal is the nearest ancestor root: it wins. It names no pane, so
-    /// nothing binds to the pane the environment also named.
-    Terminal,
+    /// The herdr-core terminal is the nearest ancestor root: it wins and the caller acts as
+    /// that Terminal site; nothing binds to the pane the environment also named.
+    Terminal(CallerLocator),
     /// Nothing verified: no seat binds.
     Refused(Refusal),
 }
@@ -73,7 +73,9 @@ pub fn verify(
         Ok(CommandResult::Located(LocateReply::Verified { index, .. })) => {
             match candidates.get(index) {
                 Some(CallerLocator::Pane { id }) => Guard::Pane(id.clone()),
-                Some(CallerLocator::Terminal { .. }) => Guard::Terminal,
+                Some(terminal @ CallerLocator::Terminal { .. }) => {
+                    Guard::Terminal(terminal.clone())
+                }
                 Some(CallerLocator::Named(_)) | None => refused(),
             }
         }
@@ -83,8 +85,8 @@ pub fn verify(
 
 /// The pane a CLI call acts from. One family (or none) is used as is and the daemon is
 /// never asked; an `Ambiguous` caller goes through `verify_with`. When nothing verifies
-/// `report` receives M4 and no pane is returned (nothing binds); a verified terminal names no
-/// pane either.
+/// `report` receives M4 and no pane is returned (nothing binds); a verified terminal returns no
+/// pane here: the caller reads as that lone Terminal site (`enter_verified_terminal`).
 pub fn cli_pane(
     env: &CallerEnv,
     verify_with: impl FnOnce(&[CallerLocator]) -> Guard,
@@ -95,7 +97,7 @@ pub fn cli_pane(
     };
     match verify_with(&candidates) {
         Guard::Pane(pane) => Some(pane),
-        Guard::Terminal => None,
+        Guard::Terminal(_) => None,
         Guard::Refused(refusal) => {
             report(&refusal.m4());
             None

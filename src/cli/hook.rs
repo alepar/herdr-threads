@@ -3993,9 +3993,10 @@ fn report_binding_event(
 }
 
 /// The two-family guard of one hook: the daemon verifies which family runs this process before
-/// the hook binds to anything. `None`: the Herdr pane verified, carry on. `Some`: no seat binds
-/// and nothing is injected; the hook exits 0, with M4 as its one stderr diagnostic when
-/// nothing verified. A verified terminal names no pane, so it binds nothing here either.
+/// the hook binds to anything. `Ok(None)`: the Herdr pane verified, carry on. `Ok(Some)`: the
+/// terminal verified: the scope makes every environment read this thread does the lone
+/// Terminal site's, and the string is its `tN`. `Err`: no seat binds and nothing is injected; the hook exits 0, with M4 as
+/// its one stderr diagnostic.
 #[allow(clippy::too_many_arguments)]
 fn two_family_guard(
     args: &HookArgs,
@@ -4005,7 +4006,7 @@ fn two_family_guard(
     deadline: Instant,
     clock: &Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
-) -> Option<HookOutcome> {
+) -> Result<Option<(super::caller_location::VerifiedTerminalScope, String)>, Box<HookOutcome>> {
     use super::caller_guard::{Guard, unasked, verify};
     let guard = match connect_pane(args, env, deadline, clock, ensure_executable) {
         Ok(connected) => verify(
@@ -4017,12 +4018,18 @@ fn two_family_guard(
     };
     let top_level = matches!(decoded.role, EventRole::TopLevel);
     match guard {
-        Guard::Pane(_) => None,
-        Guard::Terminal => Some(HookOutcome::default()),
-        Guard::Refused(refusal) => Some(HookOutcome {
+        Guard::Pane(_) => Ok(None),
+        Guard::Terminal(terminal) => Ok(Some((
+            super::caller_location::enter_verified_terminal(),
+            terminal
+                .site()
+                .moved_target()
+                .map_or_else(String::new, str::to_owned),
+        ))),
+        Guard::Refused(refusal) => Err(Box::new(HookOutcome {
             diagnostic: top_level.then(|| refusal.m4()),
             ..HookOutcome::default()
-        }),
+        })),
     }
 }
 
@@ -4220,18 +4227,35 @@ fn admitted_hook_outcome(
     if !env.located() {
         return quiet_outcome("not running inside a Herdr pane".into());
     }
-    if let Some(candidates) = &env.ambiguous
-        && let Some(outcome) = two_family_guard(
-            args,
-            decoded,
-            env,
-            candidates,
-            deadline,
-            &clock,
-            ensure_executable,
-        )
-    {
-        return outcome;
+    let verified_env;
+    let mut env = env;
+    let _verified_terminal = match &env.ambiguous {
+        Some(candidates) => {
+            match two_family_guard(
+                args,
+                decoded,
+                env,
+                candidates,
+                deadline,
+                &clock,
+                ensure_executable,
+            ) {
+                Ok(scope) => scope,
+                Err(outcome) => return *outcome,
+            }
+        }
+        None => None,
+    };
+    if let Some((_, terminal)) = &_verified_terminal {
+        // The terminal verified: it is the host target, and the claim host (read through the
+        // scope) is its core.
+        verified_env = HookEnv {
+            herdr_env: true,
+            pane: Some(terminal.clone()),
+            ambiguous: None,
+            named: env.named.clone(),
+        };
+        env = &verified_env;
     }
     if matches!(decoded.intent, EventIntent::DeclaredReset(_)) {
         record_observer_reset(args, decoded, env, deadline, clock.as_ref());
