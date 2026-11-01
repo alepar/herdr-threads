@@ -118,15 +118,11 @@ fn observation_sequence_is_its_own_counter() {
 }
 
 #[test]
-fn enumerate_targets_failed_hello_closes_nothing() {
+fn enumerate_targets_refused_socket_is_host_unavailable() {
     let dead = HcHost::new(HcClient::new("/nonexistent/hc.sock"));
-    let snapshot = dead.enumerate_targets(&context()).unwrap();
-    assert_eq!(
-        snapshot.enumeration,
-        EnumerationEvidence::CompleteUnverified
-    );
-    assert!(snapshot.targets.is_empty());
-    assert!(!snapshot.authorizes_absence_closure());
+    let error = dead.enumerate_targets(&context()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+    assert_eq!(dead.capture().unwrap_err().code, ErrorCode::HostUnavailable);
     // A live core with a terminal enumerates it (the capture rule is
     // tests/host/hc_closure.rs): one connection, no `terminal.get`.
     let (fake, host) = host_with_t1();
@@ -136,6 +132,33 @@ fn enumerate_targets_failed_hello_closes_nothing() {
     assert_eq!(snapshot.boot.as_str(), "hc-core:core-0001");
     assert!(fake.calls_to("terminal.get").is_empty());
     assert_eq!(fake.calls_to("events.subscribe").len(), 1);
+}
+
+#[test]
+fn snapshot_without_terminals_is_err_never_coherent() {
+    let (fake, host) = host_with_t1();
+    fake.set_omit_terminals(true);
+    let error = host.enumerate_targets(&context()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+    assert!(format!("{error:?}").contains("no terminals"), "{error:?}");
+    assert_eq!(host.capture().unwrap_err().code, ErrorCode::HostUnavailable);
+    fake.set_omit_terminals(false);
+    let snapshot = host.enumerate_targets(&context()).unwrap();
+    assert_eq!(snapshot.enumeration, EnumerationEvidence::CoherentVerified);
+}
+
+#[test]
+fn unusable_core_id_is_complete_unverified() {
+    let (fake, host) = host_with_t1();
+    fake.rotate_core_id("");
+    assert!(host.capture().unwrap().is_none());
+    let snapshot = host.enumerate_targets(&context()).unwrap();
+    assert_eq!(
+        snapshot.enumeration,
+        EnumerationEvidence::CompleteUnverified
+    );
+    assert!(snapshot.targets.is_empty());
+    assert!(!snapshot.authorizes_absence_closure());
 }
 
 #[test]

@@ -65,7 +65,7 @@ fn enumerate_targets_one_connection_hello_and_snapshot() {
 
     // The capture keeps the finished local record with its reason and keep,
     // and drops every machine mirror, live or finished.
-    let capture = host.capture().unwrap();
+    let capture = host.capture().unwrap().unwrap();
     let addresses: Vec<&str> = capture.records.iter().map(|r| r.address.as_str()).collect();
     assert_eq!(addresses, ["t1", "t2"]);
     let t2 = &capture.records[1];
@@ -101,11 +101,11 @@ fn closure_follows_herdr_core_finality() {
         t.keep = keep;
         fake.add_terminal(t);
         assert_eq!(
-            HcClosure::of(&host(&fake).capture().unwrap().records[0]),
+            HcClosure::of(&host(&fake).capture().unwrap().unwrap().records[0]),
             HcClosure::Present
         );
         fake.finish("t1", reason, None, None);
-        let capture = host(&fake).capture().unwrap();
+        let capture = host(&fake).capture().unwrap().unwrap();
         assert_eq!(
             HcClosure::of(&capture.records[0]),
             expected,
@@ -138,7 +138,7 @@ fn unknown_reason_on_a_live_record_is_present() {
     t.reason = Some("x_future_reason".into());
     t.pid = None;
     fake.add_terminal(t);
-    let capture = host(&fake).capture().unwrap();
+    let capture = host(&fake).capture().unwrap().unwrap();
     assert_eq!(HcClosure::of(&capture.records[0]), HcClosure::Present);
 }
 
@@ -187,7 +187,7 @@ fn status_null_unknown_doctor_only() {
         Some(serde_json::json!({"state": "idle", "app": "claude", "msg": "", "title": ""})),
     );
     let host = host(&fake);
-    let capture = host.capture().unwrap();
+    let capture = host.capture().unwrap().unwrap();
     assert_eq!(StatusSource::of(&capture.records[0]), StatusSource::None);
     assert_eq!(StatusSource::of(&capture.records[1]), StatusSource::Osc7501);
     assert!(capture.records[0].status.is_none());

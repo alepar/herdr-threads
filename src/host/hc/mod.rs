@@ -33,7 +33,9 @@
 //! - Lifecycle: built by `HostFactory.build(Hc, locator)` on a dialled
 //!   attach, lives as long as its `HostSession`, holds no long-lived
 //!   connection. The observation counter is per-instance mutable state.
-//! - Errors: a failed `hello` gives `CompleteUnverified` (closes nothing). A
+//! - Errors: a failed `hello` or snapshot is `Err` (the observation freezes); a reply
+//!   with no usable core id or an unreadable record is `CompleteUnverified`
+//!   (closes nothing). A
 //!   core id mismatch is a new boot (C2 holds). An RPC error before a launch
 //!   record exists is `NotSubmitted`; `spawn_failed`, a timeout or a
 //!   disconnect is `OutcomeUnknown` (H3).
@@ -324,22 +326,26 @@ impl HcHost {
 
     /// `hello` + `events.subscribe{}` on one connection. The boot is the core
     /// id `hello` names; a different id than a seat's is a new boot (C2).
-    /// `None` when `hello` or the snapshot failed or named no usable core id.
-    pub fn capture(&self) -> Option<HcCapture> {
-        let reply = Self::run(self.client.hello_and_snapshot()).ok()?;
+    /// A transport or decode failure (including a snapshot with no `terminals`) is
+    /// `Err(host_unavailable)`; `Ok(None)` is a decoded reply naming no usable core id.
+    pub fn capture(&self) -> Result<Option<HcCapture>, ApiError> {
+        let reply = Self::run(self.client.hello_and_snapshot())
+            .map_err(|e| ApiError::host_unavailable(e.to_string()))?;
         let (hello, snapshot) = reply.value;
-        let boot = HcBoot::from_hello(&hello)?;
+        let Some(boot) = HcBoot::from_hello(&hello) else {
+            return Ok(None);
+        };
         let records = snapshot
             .terminals
             .into_iter()
             .filter(|terminal| !terminal.address.contains('/'))
             .collect();
-        Some(HcCapture {
+        Ok(Some(HcCapture {
             boot,
             seq: snapshot.seq,
             witness: reply.witness,
             records,
-        })
+        }))
     }
 
     fn unverified(boot: HostBootId, epoch: u64) -> HostSnapshot {
@@ -760,7 +766,7 @@ impl HostPort for HcHost {
         let epoch = self.epoch.load(Ordering::Acquire);
         let started = self.clock.monotonic_now();
         let capture = self
-            .capture()
+            .capture()?
             .ok_or_else(|| ApiError::host_unavailable("hc host: the core is not readable"))?;
         let boot = capture.boot.0.clone();
         if !capture.is_readable() {
@@ -866,15 +872,15 @@ impl HostPort for HcHost {
     /// the present targets; a kept terminal waiting for a restart is shown
     /// with no terminal (its seat becomes unresolved); a `finished` record is
     /// absent (its seat retires through the pane-close fence). A failed
-    /// `hello` or snapshot, or a record state this build cannot read, is
-    /// `CompleteUnverified` and closes nothing.
+    /// `hello` or snapshot is `Err`; a reply with no usable core id or a record
+    /// state this build cannot read is `CompleteUnverified` and closes nothing.
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         if context.budget.cancellation.is_cancelled() {
             return Err(ApiError::cancelled("hc enumerate_targets"));
         }
         let epoch = self.epoch.load(Ordering::Acquire);
         let started = self.clock.monotonic_now();
-        let Some(capture) = self.capture() else {
+        let Some(capture) = self.capture()? else {
             return Ok(Self::unverified(Self::unknown_boot(), epoch));
         };
         let boot = capture.boot.0.clone();
