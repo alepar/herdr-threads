@@ -191,7 +191,7 @@ fn isolated_herdr_restart_keeps_seats_in_restore_hold() {
     // The restore hold (C2): the new incarnation left the instance with an unclaimed baseline
     // hold, and no seat of it is retired.
     let unclaimed: i64 = db
-        .query_row("SELECT baseline_hold_unclaimed FROM herdr_hosts", [], |r| {
+        .query_row("SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE kind='herdr'", [], |r| {
             r.get(0)
         })
         .unwrap();

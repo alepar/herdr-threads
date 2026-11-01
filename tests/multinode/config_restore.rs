@@ -55,14 +55,14 @@ fn starting_node_after_store_only_peer_attaches_its_host() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     assert_eq!(
-        cluster.scalar(0, "SELECT count(*) FROM herdr_hosts", &[]),
+        cluster.scalar(0, "SELECT count(*) FROM herdr_hosts WHERE kind='herdr'", &[]),
         Some("0".into()),
         "the election winner has no remembered host"
     );
 
     cluster.start_node(0);
     assert_eq!(
-        cluster.scalar(0, "SELECT count(*) FROM herdr_hosts", &[]),
+        cluster.scalar(0, "SELECT count(*) FROM herdr_hosts WHERE kind='herdr'", &[]),
         Some("1".into()),
         "start_node attaches its host to an already-running store-only daemon"
     );

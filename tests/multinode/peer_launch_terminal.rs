@@ -132,13 +132,12 @@ fn capable_peer_new_terminal_creates_on_fake_hc() {
         argv.iter().any(|a| a == "launch-gate") && argv.iter().any(|a| a == "--kind=claude"),
         "{params}"
     );
-    let a_tag = tag_of(&cluster, 1, 0);
-    assert_eq!(
-        params["labels"]["ht.label"],
-        format!("review [from {a_tag}]"),
+    // A new terminal carries no app labels at all (design, CLI and placement; the unit test
+    // `new_terminal_no_app_labels_parent_caller` pins the host side).
+    assert!(
+        params["labels"].as_object().is_some_and(|l| l.is_empty()),
         "{params}"
     );
-    assert!(params["labels"].get("herdr.space").is_none(), "{params}");
     assert_eq!(
         cluster
             .scalar(1, "SELECT pane FROM peer_requests", &[])
