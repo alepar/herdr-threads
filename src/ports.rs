@@ -5808,6 +5808,85 @@ pub trait CreateTargetPort: Send + Sync {
         context: &HostCallContext,
     ) -> CreateTargetOutcome;
 }
+/// A Herdr socket creates tabs, so every [`CreateTabPort`] (`NativeCli` and the test fakes of
+/// the frozen tab seam) is a [`CreateTargetPort`] by delegation: the request narrows to the
+/// frozen `create_tab` call and the correlated [`CreatedTab`] widens back to a
+/// [`CreatedTarget`]. Any other placement or witness is refused before submission.
+impl<T: CreateTabPort + ?Sized> CreateTargetPort for T {
+    fn create_target(
+        &self,
+        request: &CreateTargetRequest,
+        context: &HostCallContext,
+    ) -> CreateTargetOutcome {
+        let (Placement::NewTab { space }, HostWitness::HerdrSocket(witness)) =
+            (&request.placement, &request.expected_witness)
+        else {
+            return CreateTargetOutcome::NotSubmitted(ApiError::invalid_request(
+                "native host creates tabs against a Herdr socket witness only",
+            ));
+        };
+        let tab_request = CreateTabRequest {
+            correlation: request.correlation.clone(),
+            workspace: space.clone(),
+            cwd: request.cwd.clone(),
+            label: request.label.clone(),
+            focus: request.focus,
+            env: request.env.clone(),
+            directory_context: request.directory_context.clone(),
+            expected_witness: witness.clone(),
+        };
+        match self.create_tab(&tab_request, context) {
+            CreateTabOutcome::Created(tab) => {
+                let tab = *tab;
+                CreateTargetOutcome::Created(Box::new(CreatedTarget {
+                    correlation: tab.correlation,
+                    placement: request.placement.clone(),
+                    target: tab.tab,
+                    root_pane: Some(tab.root_pane),
+                    terminal: tab.terminal,
+                    host_incarnation: tab.host_incarnation,
+                    witness: HostWitness::HerdrSocket(tab.witness),
+                }))
+            }
+            CreateTabOutcome::NotSubmitted(e) => CreateTargetOutcome::NotSubmitted(e),
+            CreateTabOutcome::OutcomeUnknown(e) => CreateTargetOutcome::OutcomeUnknown(e),
+        }
+    }
+}
+
+/// Creates a Herdr tab through any [`CreateTargetPort`]: the frozen tab request becomes a
+/// `NewTab` target request and the correlated target narrows back to the frozen
+/// [`CreatedTab`] the V1/V2 journal records. A creation that is not a Herdr-socket tab cannot
+/// be recorded there and is `OutcomeUnknown`, never silently dropped.
+pub fn create_tab_through<P: CreateTargetPort + ?Sized>(
+    port: &P,
+    request: &CreateTabRequest,
+    context: &HostCallContext,
+) -> CreateTabOutcome {
+    let target_request = CreateTargetRequest {
+        correlation: request.correlation.clone(),
+        placement: Placement::NewTab {
+            space: request.workspace.clone(),
+        },
+        cwd: request.cwd.clone(),
+        label: request.label.clone(),
+        focus: request.focus,
+        env: request.env.clone(),
+        directory_context: request.directory_context.clone(),
+        expected_witness: HostWitness::HerdrSocket(request.expected_witness.clone()),
+    };
+    match port.create_target(&target_request, context) {
+        CreateTargetOutcome::Created(target) => match target.as_created_tab() {
+            Some(tab) => CreateTabOutcome::Created(Box::new(tab)),
+            None => CreateTabOutcome::OutcomeUnknown(ApiError::new(
+                crate::protocol::results::ErrorCode::StaleHostObservation,
+                "creation is not a Herdr tab the V1 journal can record",
+            )),
+        },
+        CreateTargetOutcome::NotSubmitted(e) => CreateTabOutcome::NotSubmitted(e),
+        CreateTargetOutcome::OutcomeUnknown(e) => CreateTabOutcome::OutcomeUnknown(e),
+    }
+}
 /// Where a new target goes: a new tab in a space, or a new terminal under a parent.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

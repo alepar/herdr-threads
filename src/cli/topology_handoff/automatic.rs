@@ -8,7 +8,7 @@ use crate::{
         handoff::HandoffLauncher,
         journal::{IntentRef, Journal},
     },
-    ports::{CreateTabOutcome, CreateTabPort, CreateTabRequest, LocalClient},
+    ports::{CreateTabOutcome, CreateTabRequest, CreateTargetPort, LocalClient},
     protocol::{
         commands::Command,
         handoff::*,
@@ -324,7 +324,7 @@ fn resolve_and_attach<C: LocalClient + ?Sized>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
+fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTargetPort + ?Sized>(
     journal: &Journal,
     reference: &IntentRef,
     namespace: &HandoffNamespace,
@@ -528,7 +528,7 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
         &id.plan.payload.cwd,
         id.plan.payload.directory_context.as_ref(),
     ) {
-        Ok(()) => native.create_tab(&request, submission.context),
+        Ok(()) => crate::ports::create_tab_through(native, &request, submission.context),
         Err(error) => CreateTabOutcome::NotSubmitted(ApiError::invalid_request(error.to_string())),
     };
     match outcome {
@@ -656,7 +656,7 @@ fn retained_report(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized, W: Write>(
+pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTargetPort + ?Sized, W: Write>(
     journal: &Journal,
     reference: &IntentRef,
     _actor: InvocationActor,
