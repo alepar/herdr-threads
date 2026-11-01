@@ -1459,14 +1459,12 @@ fn saved_seat_scalar(
         return Ok(None);
     }
     let structural_proof = seat_structural_proof(conn, &SeatId::new(id.clone()))?;
-    let binding: Option<(Option<String>, Option<String>, String, String)> = conn
-        .query_row(
-            &latest_binding_sql("terminal_id,incarnation,execution_id,host_boot"),
-            [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()
-        .map_err(store_error)?;
+    let binding: Option<(Option<String>, Option<String>, String, String)> = latest_binding(
+        conn,
+        &id,
+        "terminal_id,incarnation,execution_id,host_boot",
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
     let active_binding_execution: Option<String> = conn
         .query_row(
             "SELECT execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
@@ -2138,16 +2136,18 @@ fn saved_seat_cas(
     {
         return Ok(false);
     }
-    let binding_query = if invalidated {
-        latest_binding_sql("terminal_id")
+    let mut terminal: Option<String> = if invalidated {
+        latest_binding(tx, seat.as_str(), "terminal_id", |r| r.get(0))?
     } else {
-        "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1".to_owned()
-    };
-    let mut terminal: Option<String> = tx
-        .query_row(&binding_query, [seat.as_str()], |r| r.get(0))
+        tx.query_row(
+            "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(store_error)?
-        .flatten();
+    }
+    .flatten();
     if structural_terminal.is_some() {
         terminal = structural_terminal;
     }
@@ -2529,19 +2529,37 @@ struct OpenPlacement {
     registered: bool,
 }
 
-/// The seat's latest binding, as one row: the newest open row, else the most
-/// recently ended. Ordinal alone is not recency: a binding
-/// reopened after a rebind (`bindings::resolve`) keeps its original ordinal, so
-/// rows that ended before the reopen can sort above it (ht-kaw9).
-///
-/// The open row is read through the `occupant_bindings_open` partial index and
-/// the compound stops there; only a seat with no open binding sorts its ended
-/// history. `columns` selects from `occupant_bindings`; `?1` is the seat id.
-fn latest_binding_sql(columns: &str) -> String {
-    format!(
-        "SELECT {columns} FROM (SELECT {columns} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1) \
-         UNION ALL SELECT * FROM (SELECT {columns} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NOT NULL ORDER BY ended_at DESC, ordinal DESC LIMIT 1) LIMIT 1"
+/// The seat's latest binding row: the newest open row, else the most
+/// recently ended. Ordinal alone is not recency: a binding reopened after a
+/// rebind (`bindings::resolve`) keeps its original ordinal, so rows that ended
+/// before the reopen can sort above it (ht-kaw9). Two statements, so the
+/// precedence is explicit: the open row through the `occupant_bindings_open`
+/// index, and only for a seat with none, its ended history. `columns` selects
+/// from `occupant_bindings`.
+fn latest_binding<T>(
+    conn: &Connection,
+    seat: &str,
+    columns: &str,
+    map: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Option<T>, ApiError> {
+    let open = conn
+        .query_row(
+            &format!("SELECT {columns} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1"),
+            [seat],
+            &map,
+        )
+        .optional()
+        .map_err(store_error)?;
+    if open.is_some() {
+        return Ok(open);
+    }
+    conn.query_row(
+        &format!("SELECT {columns} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NOT NULL ORDER BY ended_at DESC, ordinal DESC LIMIT 1"),
+        [seat],
+        map,
     )
+    .optional()
+    .map_err(store_error)
 }
 
 /// The seat's open bindings' placements, most recent first. A seat holds many (ht-54r.3).
@@ -2605,11 +2623,11 @@ pub fn apply_reconciliation_transition(
         |tx| {
             let publication = match active_publication(tx, &transition.publication.id) {
                 Ok(publication) => publication,
-                Err(error) if error.code == ErrorCode::CursorStale => return Ok(Err(StaleReason::new("publication_superseded"))),
+                Err(error) if error.code == ErrorCode::CursorStale => return Ok(Err(StaleReason::PUBLICATION_SUPERSEDED)),
                 Err(error) => return Err(error),
             };
             if publication != transition.publication {
-                return Ok(Err(StaleReason::new("publication_changed")));
+                return Ok(Err(StaleReason::PUBLICATION_CHANGED));
             }
             let host = publication.host_id;
             // The plan keeps an already-unresolved seat unresolved when this
@@ -2697,11 +2715,10 @@ pub fn apply_reconciliation_transition(
                     {
                         return Ok(Err(StaleReason::new("structure_snapshot_mismatch")));
                     }
-                    let bound: Option<(Option<String>, String, Option<String>)> = tx.query_row(
-                        &latest_binding_sql("terminal_id,host_boot,incarnation"),
-                        [transition.seat.as_str()],
+                    let bound: Option<(Option<String>, String, Option<String>)> = latest_binding(
+                        tx, transition.seat.as_str(), "terminal_id,host_boot,incarnation",
                         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
-                    ).optional().map_err(store_error)?;
+                    )?;
                     let evidence_matches = match bound {
                         Some((bound_terminal, boot, incarnation)) => {
                             bound_terminal.as_deref() == Some(terminal.as_str())
@@ -2842,10 +2859,10 @@ pub fn apply_reconciliation_transition(
                     } else {
                         // Unresolved recovery remains restricted by saved_seat_cas
                         // to host invalidation and its retained published provenance.
-                        let historical: Option<(String, Option<String>)> = tx.query_row(
-                            &latest_binding_sql("host_boot,incarnation"),
-                            [transition.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?)),
-                        ).optional().map_err(store_error)?;
+                        let historical: Option<(String, Option<String>)> = latest_binding(
+                            tx, transition.seat.as_str(), "host_boot,incarnation",
+                            |r| Ok((r.get(0)?,r.get(1)?)),
+                        )?;
                         match historical {
                             Some(bound) => Some(bound),
                             None => tx.query_row(
@@ -5048,14 +5065,7 @@ fn operator_retire(
                 .map_err(store_error)?;
             let target = match target {
                 Some(target) => target,
-                None => tx
-                    .query_row(
-                        "SELECT target_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
-                        [seat.as_str()],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(store_error)?
+                None => latest_binding(tx, seat.as_str(), "target_id", |r| r.get(0))?
                     .unwrap_or_default(),
             };
             let boot = boot.unwrap_or_default();

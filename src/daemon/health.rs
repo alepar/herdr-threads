@@ -777,10 +777,16 @@ impl HealthInputs {
             if !shown.is_empty() {
                 note.push_str("; refused: ");
                 note.push_str(&shown.join(", "));
-                let more = self.refused_seats.len() - shown.len();
-                if more > 0 {
-                    note.push_str(&format!(" +{more} more"));
-                }
+            }
+            let named: u64 = self
+                .refused_seats
+                .iter()
+                .take(REFUSED_SEATS_SHOWN)
+                .map(|refused| refused.count)
+                .sum();
+            let other = self.transitions_refused.saturating_sub(named);
+            if !shown.is_empty() && other > 0 {
+                note.push_str(&format!("; {other} other"));
             }
             push(&mut health.notes, note);
         }

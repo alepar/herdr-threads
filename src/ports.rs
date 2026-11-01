@@ -1314,8 +1314,20 @@ pub enum ReconciliationOutcome {
 pub struct StaleReason(&'static str);
 
 impl StaleReason {
+    /// The transition's publication is no longer the active one: a newer
+    /// capture superseded the pass. Transient by design.
+    pub const PUBLICATION_SUPERSEDED: Self = Self("publication_superseded");
+    /// The active publication differs from the transition's. Transient.
+    pub const PUBLICATION_CHANGED: Self = Self("publication_changed");
+
     pub const fn new(slug: &'static str) -> Self {
         Self(slug)
+    }
+
+    /// Whether the next publication's pass clears this refusal by design, so
+    /// it names no seat worth an operator's attention.
+    pub fn is_transient(self) -> bool {
+        self == Self::PUBLICATION_SUPERSEDED || self == Self::PUBLICATION_CHANGED
     }
 
     pub const fn as_str(self) -> &'static str {

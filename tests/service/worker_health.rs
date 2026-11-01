@@ -1638,6 +1638,75 @@ fn transitions_refused_reaches_health() {
     );
 }
 
+/// Kills (ht-kaw9 review): a refusal ledger that keeps the first pairs seen
+/// forever. Early in a daemon's life a superseded pass refuses every seat on
+/// its page (transient by design) and one-off refusals fill the ledger; a seat
+/// refused on every later pass must still be the one Health names, and the
+/// note's remainder counts every refusal it does not name.
+#[test]
+fn an_every_pass_refuser_is_named_after_an_early_burst() {
+    use crate::ports::StaleReason;
+    use crate::protocol::ids::SeatId;
+    use crate::service::host_evidence::{HostEvidenceStatus, MAX_REFUSED_SEATS};
+    let evidence = HostEvidenceStatus::default();
+    let superseded: Vec<_> = (0..12)
+        .map(|n| {
+            (
+                SeatId::new(format!("early-{n}")),
+                StaleReason::PUBLICATION_SUPERSEDED,
+            )
+        })
+        .collect();
+    evidence.record_reconcile_page(&superseded, false, UtcMillis(1));
+    let one_off: Vec<_> = (0..MAX_REFUSED_SEATS)
+        .map(|n| {
+            (
+                SeatId::new(format!("once-{n}")),
+                StaleReason::new("seat_cas_failed"),
+            )
+        })
+        .collect();
+    evidence.record_reconcile_page(&one_off, false, UtcMillis(2));
+    let culprit = (
+        SeatId::new("sQ0VU3wP88WZ"),
+        StaleReason::new("structure_binding_evidence_mismatch"),
+    );
+    for pass in 0..3 {
+        evidence.record_reconcile_page(std::slice::from_ref(&culprit), true, UtcMillis(3 + pass));
+    }
+    let pairs = evidence.refused_seats();
+    assert!(pairs.len() <= MAX_REFUSED_SEATS);
+    assert!(
+        pairs.iter().all(|pair| !pair.reason.is_transient()),
+        "transient refusals name no seat: {pairs:?}"
+    );
+    assert_eq!(
+        (pairs[0].seat.as_str(), pairs[0].reason, pairs[0].count),
+        ("sQ0VU3wP88WZ", culprit.1, 3)
+    );
+    let mut inputs = crate::daemon::health::HealthInputs::unknown(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    inputs.transitions_refused = evidence.transitions_refused();
+    assert_eq!(
+        inputs.transitions_refused,
+        12 + MAX_REFUSED_SEATS as u64 + 3
+    );
+    inputs.refused_seats = pairs;
+    let notes = inputs.assemble().notes;
+    let note = notes
+        .iter()
+        .find(|note| note.starts_with("reconciliation:"))
+        .unwrap();
+    // 23 refusals: the culprit's 3 and one once-N's 1 are named, 19 are not.
+    assert!(
+        note.contains("; refused: sQ0VU3wP88WZ structure_binding_evidence_mismatch x3, once-")
+            && note.ends_with(" seat_cas_failed x1; 19 other"),
+        "{note}"
+    );
+}
+
 /// Kills (ht-kaw9): a refusal note that lists every pair, so with real seat
 /// ids and reason slugs the 256-byte line bound truncates it mid-pair and
 /// hides how many pairs were left out.
@@ -1647,7 +1716,7 @@ fn refusal_note_fits_its_line_bound_with_real_ids() {
         crate::node::NodeUuid::new_v4(),
         uuid::Uuid::new_v4(),
     );
-    inputs.transitions_refused = 37_214;
+    inputs.transitions_refused = 4 * 37_214 + 5;
     inputs.refused_seats = [
         "sQ0VU3wP88WZ",
         "sQ0VnTDasAbY",
@@ -1659,6 +1728,7 @@ fn refusal_note_fits_its_line_bound_with_real_ids() {
         seat: crate::protocol::ids::SeatId::new(*seat),
         reason: crate::ports::StaleReason::new("structure_binding_evidence_mismatch"),
         count: 37_214,
+        last_seen: 1,
     })
     .collect();
     let notes = inputs.assemble().notes;
@@ -1669,7 +1739,7 @@ fn refusal_note_fits_its_line_bound_with_real_ids() {
     assert!(
         note.ends_with(
             "; refused: sQ0VU3wP88WZ structure_binding_evidence_mismatch x37214, \
-             sQ0VnTDasAbY structure_binding_evidence_mismatch x37214 +2 more"
+             sQ0VnTDasAbY structure_binding_evidence_mismatch x37214; 74433 other"
         ),
         "{note}"
     );
