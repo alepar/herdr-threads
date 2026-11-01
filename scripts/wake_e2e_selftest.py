@@ -504,6 +504,12 @@ class TmuxNamedCases(TempDir):
         self.assertEqual(subprocess.run(["pgrep", "-f", "--", f"-L {name}"], capture_output=True).returncode, 1)
         self.assertTrue(r.tmux_server_gone(name))
 
+    def test_tmux_case_counts_wakes_per_case(self):
+        wake = "herdr-threads: wake up"
+        stale = f"prompt\n{wake}\nanswer\n"
+        self.assertEqual(W.wake_delta(stale, stale + "hello\nreply\n"), 0)
+        self.assertEqual(W.wake_delta(stale, stale + f"{wake}\nreply\n"), 1)
+
     def test_a_missing_tmux_row_fails_the_completeness_check(self):
         recipients = [self.recipient("claude"), self.recipient("codex")]
         rows = [{"recipient": r.name, "case": c, "result": "PASS", "threshold": 0, "harness": r.harness}
