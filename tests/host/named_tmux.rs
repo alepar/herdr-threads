@@ -838,20 +838,23 @@ fn draft_present_no_typing() {
 
 /// An agy-shaped pane that keeps its wake in the composer until it is sent `C-u`, then shows
 /// the empty composer.
-fn held_rig(case: &str, held: &str) -> Option<(WakeRig, String)> {
-    let held_screen = {
-        let row = format!("> {held}");
-        let footer = AGY_IDLE.lines().last().unwrap().to_owned();
-        let blanked = format!(
-            "{}{}",
-            " ".repeat("? for shortcuts".len()),
-            &footer["? for shortcuts".len()..]
-        );
-        AGY_IDLE
-            .replacen("\n>\n", &format!("\n{row}\n"), 1)
-            .replace(&footer, &blanked)
-    };
+fn agy_held_screen(held: &str) -> String {
+    let row = format!("> {held}");
+    let footer = AGY_IDLE.lines().last().unwrap().to_owned();
+    let blanked = format!(
+        "{}{}",
+        " ".repeat("? for shortcuts".len()),
+        &footer["? for shortcuts".len()..]
+    );
+    let held_screen = AGY_IDLE
+        .replacen("\n>\n", &format!("\n{row}\n"), 1)
+        .replace(&footer, &blanked);
     assert_ne!(held_screen, AGY_IDLE);
+    held_screen
+}
+
+fn held_rig(case: &str, held: &str) -> Option<(WakeRig, String)> {
+    let held_screen = agy_held_screen(held);
     let held_file = scratch_file(&format!("{case}-held"), &held_screen);
     let idle_file = scratch_file(&format!("{case}-idle"), AGY_IDLE);
     let tail = format!(
@@ -986,4 +989,332 @@ fn capture_pane_vs_herdr_detection_fixtures() {
             "{name} running"
         );
     }
+}
+
+// ---- the guards of the wake path, each decided alone ----
+
+impl WakeRig {
+    /// One wake attempt with the target and context changed by `mutate` first.
+    fn attempt_with(
+        &self,
+        mutate: impl FnOnce(&mut SafeWakeTarget, &mut HostCallContext),
+    ) -> Result<Option<PromptOutcome>, ApiError> {
+        let (mut safe, mut context) = self.target_and_context();
+        mutate(&mut safe, &mut context);
+        self.host
+            .submit_prompt_if_owed(&safe, WAKE, &context, &|| Ok(true))
+    }
+
+    /// Types a marker line after a refused attempt and returns everything the pane received.
+    /// The pane reads in order, so a wake the refused attempt wrongly typed shows before it.
+    fn typed_after_marker(&self) -> String {
+        for keys in [&["-l", "Z"][..], &["Enter"][..]] {
+            let mut args = vec!["send-keys", "-t", &self.pane.id];
+            args.extend_from_slice(keys);
+            assert!(self.tmux.run(&args).status.success(), "send-keys");
+        }
+        wait_for(|| self.typed().ends_with("Z\n").then_some(()));
+        self.typed()
+    }
+
+    /// The hex of every key a `keylog_rig` pane received, in order.
+    fn keys(&self) -> Vec<String> {
+        self.typed().split_whitespace().map(str::to_owned).collect()
+    }
+
+    /// Sends one `Z` key after a refused clear and returns the keys the pane received.
+    fn keys_after_marker(&self) -> Vec<String> {
+        assert!(
+            self.tmux
+                .run(&["send-keys", "-t", &self.pane.id, "-l", "Z"])
+                .status
+                .success()
+        );
+        wait_for(|| (self.keys().last().map(String::as_str) == Some("5a")).then_some(()));
+        self.keys()
+    }
+}
+
+/// A pane showing `screen` that logs the hex of every key it receives, one per line, and never
+/// changes what it shows: a clear that reaches it is visible as `15`, however often it is sent.
+fn keylog_rig(case: &str, harness: &'static str, screen: &str, marker: &str) -> Option<WakeRig> {
+    let typed = scratch_file(&format!("{case}-keys"), "");
+    let tail = format!(
+        "stty -echo -icanon min 1 time 0; while :; do k=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' '); [ -n \"$k\" ] && echo \"$k\" >> {}; done",
+        typed.display()
+    );
+    WakeRig::with_tail(case, harness, screen, marker, typed, &tail)
+}
+
+// Kills: `type_wake` typing after `still_owed` answers no (the send was settled while the wake
+// was being prepared): the text and Enter go out anyway.
+#[test]
+fn still_owed_false_types_nothing() {
+    let Some(rig) = WakeRig::new("still_owed_false", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let (safe, context) = rig.target_and_context();
+    assert_eq!(
+        rig.host
+            .submit_prompt_if_owed(&safe, WAKE, &context, &|| Ok(false))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        rig.typed_after_marker(),
+        "Z\n",
+        "nothing typed before the marker"
+    );
+    assert!(!rig.capture().contains(WAKE), "the composer is untouched");
+    // Control: the same attempt with the wake still owed goes out.
+    assert_eq!(rig.attempt().unwrap(), Some(PromptOutcome::Submitted));
+    wait_for(|| (rig.typed() == format!("Z\n{WAKE}\n")).then_some(()));
+}
+
+// Kills: the wake gate's `f.server_pid == hint.server_pid` filter removed. The held hint names
+// another server than the one the pane answers from; everything else about the binding holds.
+#[test]
+fn server_pid_recheck_at_wake_refuses() {
+    let Some(rig) = WakeRig::new("server_pid_recheck", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let rewrite = |delta: i64| {
+        let mut map = rig.host.tmux.lock().unwrap();
+        for held in map.get_mut("seat-wake").unwrap() {
+            held.hint.server_pid = u32::try_from(i64::from(held.hint.server_pid) + delta).unwrap();
+        }
+    };
+    rewrite(1);
+    let detail = refused(rig.attempt());
+    assert!(detail.contains("pane unreadable"), "{detail}");
+    assert_eq!(rig.typed_after_marker(), "Z\n", "nothing typed");
+    rewrite(-1);
+    assert_eq!(rig.attempt().unwrap(), Some(PromptOutcome::Submitted));
+    wait_for(|| (rig.typed() == format!("Z\n{WAKE}\n")).then_some(()));
+}
+
+// Kills: the wake gate's `basis != CooperativeAgent` refusal removed.
+#[test]
+fn wake_gate_refuses_a_non_cooperative_basis() {
+    let Some(rig) = WakeRig::new("gate_basis", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let detail = refused(rig.attempt_with(|safe, _| {
+        safe.basis = WakeTargetBasis::VerifiedOccupant {
+            session: crate::protocol::ids::NativeSessionId::new("s1"),
+            execution: crate::protocol::ids::ExecutionId::new("e1"),
+        };
+    }));
+    assert!(
+        detail.contains("native execution is unverified"),
+        "{detail}"
+    );
+    assert_eq!(rig.typed_after_marker(), "Z\n");
+}
+
+// Kills: the wake gate's `expected_boot` comparison removed; the epochs and basis all hold.
+#[test]
+fn wake_gate_refuses_a_stale_boot() {
+    let Some(rig) = WakeRig::new("gate_boot", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let detail = refused(rig.attempt_with(|_, context| {
+        context.expected_boot = Some(HostBootId::new("another-boot"));
+    }));
+    assert!(detail.contains("host context changed"), "{detail}");
+    assert_eq!(rig.typed_after_marker(), "Z\n");
+}
+
+// Kills: the wake gate's `expected_epoch != target.epoch` comparison removed; the boot and the
+// host's own epoch match the target.
+#[test]
+fn wake_gate_refuses_a_stale_context_epoch() {
+    let Some(rig) = WakeRig::new("gate_context_epoch", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let detail = refused(rig.attempt_with(|safe, context| {
+        context.expected_epoch = Some(safe.epoch + 1);
+    }));
+    assert!(detail.contains("host context changed"), "{detail}");
+    assert_eq!(rig.typed_after_marker(), "Z\n");
+}
+
+// Kills: the wake gate's comparison of the host's current epoch with the target's removed; the
+// context and the target agree with each other (an old observation), the host has moved on.
+#[test]
+fn wake_gate_refuses_a_stale_host_epoch() {
+    let Some(rig) = WakeRig::new("gate_host_epoch", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let detail = refused(rig.attempt_with(|safe, context| {
+        safe.epoch += 1;
+        context.expected_epoch = Some(safe.epoch);
+    }));
+    assert!(detail.contains("host context changed"), "{detail}");
+    assert_eq!(rig.typed_after_marker(), "Z\n");
+}
+
+// Kills: the wake gate's cancellation check removed (a cancelled call types, or is reported as
+// anything but `Cancelled`).
+#[test]
+fn wake_gate_refuses_a_cancelled_call() {
+    let Some(rig) = WakeRig::new("gate_cancelled", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let error = rig
+        .attempt_with(|_, context| context.budget.cancellation.cancel())
+        .expect_err("a cancelled call is refused");
+    assert_eq!(error.code, ErrorCode::Cancelled, "{error:?}");
+    assert_eq!(rig.typed_after_marker(), "Z\n");
+}
+
+// Kills: the wake gate's composer-policy lookup treating an unknown bound harness as wakeable.
+#[test]
+fn wake_gate_refuses_a_harness_without_a_composer_policy() {
+    let Some(rig) = WakeRig::new("gate_policy", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    for bound in [None, Some("no-such-harness".to_owned())] {
+        let detail = refused(rig.attempt_with(|safe, _| safe.bound_harness = bound.clone()));
+        assert!(detail.contains("no composer policy"), "{bound:?}: {detail}");
+    }
+    assert_eq!(rig.typed_after_marker(), "Z\n");
+}
+
+// Kills: the budget check before typing removed. The gate passes (the cancellation is not set);
+// only the deadline has passed.
+#[test]
+fn type_wake_with_an_exhausted_budget_types_nothing() {
+    let Some(rig) = WakeRig::new("budget_exhausted", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    // Control: with the clock before the deadline the wake goes out.
+    assert_eq!(
+        rig.attempt_with(|_, context| context.budget.deadline = MonoInstant(50))
+            .unwrap(),
+        Some(PromptOutcome::Submitted)
+    );
+    wait_for(|| (rig.typed() == format!("{WAKE}\n")).then_some(()));
+    rig.clock.set(100);
+    let error = rig
+        .attempt_with(|_, context| {
+            context.budget.deadline = MonoInstant(50);
+        })
+        .expect_err("an exhausted budget is refused");
+    assert_eq!(error.code, ErrorCode::DeadlineExceeded, "{error:?}");
+    assert_eq!(
+        rig.typed_after_marker(),
+        format!("{WAKE}\nZ\n"),
+        "only the first wake was typed"
+    );
+}
+
+/// `clear_own_wake_text` on an agy pane that holds exactly the wake, after `mutate` changed the
+/// target or context. Control first: the unchanged call presses `C-u` (twice, the screen never
+/// changes), so the key log works. Then the mutated call must press nothing and return `false`.
+fn assert_clear_refused(
+    case: &str,
+    mutate: impl FnOnce(&mut SafeWakeTarget, &mut HostCallContext),
+) {
+    let screen = agy_held_screen(WAKE);
+    let Some(rig) = keylog_rig(case, "agy", &screen, WAKE) else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let (safe, context) = rig.target_and_context();
+    assert!(!rig.host.clear_own_wake_text(&safe, WAKE, &context).unwrap());
+    wait_for(|| (rig.keys() == ["15", "15"]).then_some(()));
+    let (mut safe, mut context) = rig.target_and_context();
+    mutate(&mut safe, &mut context);
+    assert!(!rig.host.clear_own_wake_text(&safe, WAKE, &context).unwrap());
+    assert_eq!(
+        rig.keys_after_marker(),
+        ["15", "15", "5a"],
+        "{case}: no key reached the pane"
+    );
+}
+
+// Kills: `clear_own_wake_text` without its basis check; boot, epochs and the held text all hold.
+#[test]
+fn clear_own_wake_text_refuses_other_basis() {
+    assert_clear_refused("clear_basis", |safe, _| {
+        safe.basis = WakeTargetBasis::VerifiedOccupant {
+            session: crate::protocol::ids::NativeSessionId::new("s1"),
+            execution: crate::protocol::ids::ExecutionId::new("e1"),
+        };
+    });
+}
+
+// Kills: `clear_own_wake_text` without its `expected_boot` check.
+#[test]
+fn clear_own_wake_text_refuses_stale_boot() {
+    assert_clear_refused("clear_boot", |_, context| {
+        context.expected_boot = Some(HostBootId::new("another-boot"));
+    });
+}
+
+// Kills: `clear_own_wake_text` without its `expected_epoch` check.
+#[test]
+fn clear_own_wake_text_refuses_stale_epoch() {
+    assert_clear_refused("clear_epoch", |safe, context| {
+        context.expected_epoch = Some(safe.epoch + 1);
+    });
+}
+
+// Kills: `clear_own_wake_text` without its comparison of the host's current epoch.
+#[test]
+fn clear_own_wake_text_refuses_a_stale_host_epoch() {
+    assert_clear_refused("clear_host_epoch", |safe, context| {
+        safe.epoch += 1;
+        context.expected_epoch = Some(safe.epoch);
+    });
+}
+
+// Kills: `clear_own_wake_text` pressing for a target none of whose bindings is live.
+#[test]
+fn clear_own_wake_text_refuses_a_target_without_a_live_binding() {
+    assert_clear_refused("clear_unbound", |safe, _| {
+        safe.target = target("nobody");
+    });
+}
+
+// Kills: the opt-in check of `clear_own_wake_text` removed. Codex's composer holds exactly the
+// wake text (its policy reads it as `Text`, so a clear would press), boot, epoch and basis hold,
+// and the harness does not opt in: no key is pressed.
+#[test]
+fn clear_own_wake_text_leaves_a_harness_that_does_not_opt_in() {
+    const CODEX_IDLE: &str = include_str!("../fixtures/screen_turn_running/codex/idle.txt");
+    let screen = CODEX_IDLE.replacen("› Ask Codex to do anything", &format!("› {WAKE}"), 1);
+    assert_ne!(
+        screen, CODEX_IDLE,
+        "the fixture has an empty composer row to fill"
+    );
+    let registry = crate::harness::registry::builtins();
+    let policy = registry
+        .by_id(registry.agent("codex").unwrap())
+        .unwrap()
+        .composer_policy()
+        .unwrap();
+    let width = u16::try_from(screen_size(&screen).0).unwrap();
+    assert_eq!(
+        policy.read(&screen, Some(width)),
+        ComposerRead::Text(WAKE.into())
+    );
+    assert!(!policy.clears_unsubmitted_wake() && policy.clear_key() == "ctrl+u");
+    let Some(rig) = keylog_rig("clear_no_opt_in", "codex", &screen, WAKE) else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let (safe, context) = rig.target_and_context();
+    assert!(!rig.host.clear_own_wake_text(&safe, WAKE, &context).unwrap());
+    assert_eq!(rig.keys_after_marker(), ["5a"], "no key reached the pane");
 }
