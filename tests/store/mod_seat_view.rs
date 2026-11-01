@@ -1,5 +1,5 @@
 //! Mod watch store reads and the commit-hook notify (ht-j16.2). Included from
-//! `src/store/seats.rs` as `mod_seat_view_tests`.
+//! `src/store/seats/cooperative.rs` as `mod_seat_view_tests`.
 use super::*;
 use crate::{
     ports::{ModBindingRef, ModFingerprint, ModStoreReads},
