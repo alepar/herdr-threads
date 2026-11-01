@@ -406,7 +406,7 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     (
         "src/host/named/tmux.rs",
         "std::thread::sleep(Duration::from_millis(5))",
-        "bounded poll of one `tmux display` child inside `tmux::verify` (COMMAND_DEADLINE, 2 s); ends with the call, not a lane. Caller check: verify is reached only through NamedHost::record_tmux_hint, which has no non-test caller in src at this commit (ResolveSeat carries the hint but nothing on the daemon request or writer path consumes it yet); the change that wires it must run it off the request and writer path",
+        "bounded poll of one `tmux display` child inside `tmux::verify` (COMMAND_DEADLINE, 2 s); ends with the call, not a lane. Caller check: verify is reached only through NamedHost::record_tmux_hint, called from HostPort::note_wake_hint by the Command::ResolveSeat named-host branch in src/service/dispatch.rs, after resolve_named has returned (no store transaction or writer-lane work is held). That branch runs on a tokio spawn_blocking worker (src/daemon/transport.rs), one per request, not the single-threaded writer lane; the 2 s worst case delays only that one ResolveSeat reply and occupies one blocking-pool thread",
     ),
     (
         "src/test_support/fake_hc.rs",
