@@ -1,0 +1,17 @@
+# shellcheck run of scripts/lib/isolated-core.sh (ht-kqrt.190)
+source tree: 24f0013eea068cf2918cb3aafc5a198154618e9a
+$ uvx --from shellcheck-py shellcheck --version
+ShellCheck - shell script analysis tool
+version: 0.11.0
+license: GNU General Public License, version 3
+website: https://www.shellcheck.net
+exit=0
+$ uvx --from shellcheck-py shellcheck scripts/lib/isolated-core.sh
+exit=0
+$ CI=true PATH=$shellcheck-dir:/usr/bin python3 -m unittest discover -s scripts/tests -p test_isolated_core.py
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.053s
+
+OK
+exit=0
