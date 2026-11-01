@@ -158,6 +158,11 @@ impl DomainService {
     pub fn turn_state(&self) -> Arc<super::turn_state::TurnStateBook> {
         Arc::clone(&self.turn_state)
     }
+    /// Record into `turns` instead of a private book, so the named host's wake lane reads it.
+    pub fn with_turn_state(mut self, turns: Arc<super::turn_state::TurnStateBook>) -> Self {
+        self.turn_state = turns;
+        self
+    }
     /// The process table `LocateCaller` walks (fixtures supply a fake tree).
     pub fn with_processes(mut self, processes: Arc<dyn crate::ports::ProcessInfo>) -> Self {
         self.locator = super::locate::LocateCallerService::new(processes);

@@ -25,6 +25,34 @@ pub trait NamedSeatSource: Send + Sync {
         host: &HostId,
         budget: &CallBudget,
     ) -> Result<Vec<(SeatId, SeatName)>, ApiError>;
+
+    /// The binding generations of `seat`'s connected top-level non-human bindings: the keys of
+    /// their hook turn state, which the tmux wake gate combines per pane. Default: none known.
+    fn top_level_generations(
+        &self,
+        _seat: &SeatId,
+        _budget: &CallBudget,
+    ) -> Result<Vec<u64>, ApiError> {
+        Ok(Vec::new())
+    }
+}
+
+/// The rows behind [`NamedSeatSource::top_level_generations`].
+pub fn top_level_generations(conn: &Connection, seat: &SeatId) -> Result<Vec<u64>, ApiError> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT generation FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL \
+             AND liveness='connected' AND role='top_level' AND harness<>'human' ORDER BY ordinal",
+        )
+        .map_err(store_error)?;
+    let rows = stmt
+        .query_map([seat.as_str()], |row| row.get::<_, i64>(0))
+        .map_err(store_error)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.extend(u64::try_from(row.map_err(store_error)?).ok());
+    }
+    Ok(out)
 }
 
 /// The rows behind [`NamedSeatSource::live_named`].
@@ -59,5 +87,14 @@ impl NamedSeatSource for SqliteStore {
     ) -> Result<Vec<(SeatId, SeatName)>, ApiError> {
         let db = self.context().open_query(budget.clone())?;
         live_named(&db, host)
+    }
+
+    fn top_level_generations(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Vec<u64>, ApiError> {
+        let db = self.context().open_query(budget.clone())?;
+        top_level_generations(&db, seat)
     }
 }

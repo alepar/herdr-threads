@@ -79,21 +79,39 @@ impl TmuxHint {
     }
 }
 
-/// What the pane query answered.
+/// What the pane query answered: the verification facts plus the key-delivery flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PaneFacts {
-    pane_pid: u32,
-    server_pid: u32,
+pub struct PaneFacts {
+    pub pane_pid: u32,
+    pub server_pid: u32,
+    /// `#{pane_in_mode}`: copy-mode or another mode owns the pane's keys.
+    pub in_mode: bool,
+    /// `#{pane_input_off}`: input to the pane is disabled.
+    pub input_off: bool,
+    /// `#{synchronize-panes}`: a key typed here goes to every pane of the window.
+    pub synchronized: bool,
+    pub width: u16,
 }
 
-/// Run `tmux -S <socket> display -p -t <pane> '#{pane_pid} #{pid}'` with the 2 s deadline.
-/// `None` on a missing binary, a missing pane or server, a nonzero exit, a timeout or output of
-/// another shape.
-fn pane_facts(hint: &TmuxHint) -> Option<PaneFacts> {
+impl PaneFacts {
+    /// Whether a key typed now reaches the program in the pane and only it.
+    pub fn delivers_keys(&self) -> bool {
+        !(self.in_mode || self.input_off || self.synchronized)
+    }
+}
+
+/// The `display -p` format of every pane query: the verification pair, then the three key-delivery
+/// flags, then the pane width the composer read needs.
+const PANE_FORMAT: &str =
+    "#{pane_pid} #{pid} #{pane_in_mode} #{pane_input_off} #{synchronize-panes} #{pane_width}";
+
+/// Run `tmux -S <socket> <args...>` with the 2 s deadline; its stdout (at most `limit` bytes).
+/// `None` on a missing binary, a missing pane or server, a nonzero exit or a timeout.
+fn run(hint: &TmuxHint, args: &[&str], limit: u64) -> Option<String> {
     let mut command = ProcessCommand::new("tmux");
     command
-        .args(["-S", &hint.socket, "display", "-p", "-t", &hint.pane])
-        .arg("#{pane_pid} #{pid}")
+        .args(["-S", &hint.socket])
+        .args(args)
         // `-S` names the server; an inherited client variable must not redirect the command.
         .env_remove(ENV_TMUX)
         .env_remove(ENV_TMUX_PANE)
@@ -101,6 +119,13 @@ fn pane_facts(hint: &TmuxHint) -> Option<PaneFacts> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    // Read on a thread so a full pipe never stalls the child before the deadline check.
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = (&mut stdout).take(limit).read_to_end(&mut out);
+        out
+    });
     let deadline = Instant::now() + COMMAND_DEADLINE;
     let status = loop {
         match child.try_wait() {
@@ -109,26 +134,51 @@ fn pane_facts(hint: &TmuxHint) -> Option<PaneFacts> {
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = reader.join();
                 return None;
             }
         }
     };
-    if !status.success() {
-        return None;
-    }
-    let mut out = String::new();
-    child
-        .stdout
-        .take()?
-        .take(256)
-        .read_to_string(&mut out)
-        .ok()?;
+    let out = reader.join().ok()?;
+    status
+        .success()
+        .then(|| String::from_utf8_lossy(&out).into_owned())
+}
+
+/// `tmux -S <socket> display -p -t <pane> <PANE_FORMAT>`. `None` on a missing binary, pane or
+/// server, a timeout or output of another shape.
+pub fn pane_facts(hint: &TmuxHint) -> Option<PaneFacts> {
+    let out = run(hint, &["display", "-p", "-t", &hint.pane, PANE_FORMAT], 256)?;
     let mut words = out.split_whitespace();
+    let flag = |word: Option<&str>| match word? {
+        "0" => Some(false),
+        "1" => Some(true),
+        _ => None,
+    };
     let facts = PaneFacts {
         pane_pid: words.next()?.parse().ok()?,
         server_pid: words.next()?.parse().ok()?,
+        in_mode: flag(words.next())?,
+        input_off: flag(words.next())?,
+        synchronized: flag(words.next())?,
+        width: words.next()?.parse().ok()?,
     };
     words.next().is_none().then_some(facts)
+}
+
+/// The pane's visible screen: `capture-pane -p -t <pane>`, one row per line.
+pub fn capture(hint: &TmuxHint) -> Option<String> {
+    run(hint, &["capture-pane", "-p", "-t", &hint.pane], 256 * 1024)
+}
+
+/// `send-keys -t <pane> -l -- <text>`: the text typed literally, no key names, no Enter.
+pub fn type_text(hint: &TmuxHint, text: &str) -> bool {
+    run(hint, &["send-keys", "-t", &hint.pane, "-l", "--", text], 0).is_some()
+}
+
+/// `send-keys -t <pane> <key>` for one named key (`Enter`, `C-u`).
+pub fn press(hint: &TmuxHint, key: &str) -> bool {
+    run(hint, &["send-keys", "-t", &hint.pane, key], 0).is_some()
 }
 
 /// Verify `hint` for the binding whose process is `subject_pid`. On success, returns the
@@ -144,6 +194,16 @@ pub fn verify(
     subject_pid: u32,
     processes: &dyn ProcessInfo,
 ) -> Option<LivenessFingerprint> {
+    verify_walk(hint, subject_pid, processes).map(|(anchor, _)| anchor)
+}
+
+/// [`verify`] and the pids of the walk from the subject up to `#{pane_pid}`: the processes a
+/// binding's own fingerprint may name (the wake matches them like Herdr's foreground pids).
+pub fn verify_walk(
+    hint: &TmuxHint,
+    subject_pid: u32,
+    processes: &dyn ProcessInfo,
+) -> Option<(LivenessFingerprint, Vec<u32>)> {
     let facts = pane_facts(hint)?;
     if facts.server_pid != hint.server_pid {
         return None;
@@ -158,7 +218,7 @@ pub fn verify(
         seen.push(pid);
         let record = processes.process(pid)?;
         if pid == facts.pane_pid {
-            return Some(LivenessFingerprint::of(&below.unwrap_or(record)));
+            return Some((LivenessFingerprint::of(&below.unwrap_or(record)), seen));
         }
         next = record.parent;
         below = Some(record);

@@ -784,7 +784,7 @@ model open work, and summary closure never changes receipt state or installs glo
   (implemented, best effort, client-side).
 - *Second agent*: `launch` refuses to start an agent for a seat whose bound agent (`cooperative_top_level`
   or `managed_launch`) Herdr reports live in another pane (implemented).
-- *No composer wake (named seats; hc seats until upstream wake)*: a named seat's host answers wake `None`, so
+- *No composer wake (named seats without a verified tmux hint; hc seats until upstream wake)*: such a seat's per-target wake answer is `None`, so
   nothing types into its composer and delivery-contract rules 5 and 6 are degraded: p0 ACK requests,
   invitations and warnings arrive on the seat's next turn, and nobody wakes it unless a live, unstalled mod
   channel does. Rules 1-4 hold (a seat with no wake is never nudged). The nudge threshold is inert there: `nudge-threshold N`
@@ -806,13 +806,32 @@ model open work, and summary closure never changes receipt state or installs glo
   picks it, the CLI and hooks act as no seat); only a lone terminal environment is a seat.
 - *tmux wake hint (named seats, N2-hint)*: a named caller inside a tmux pane sends `tmux:<socket>:<server_pid>:<pane>`
   (from `TMUX` and `TMUX_PANE`) in `ResolveSeat.tmux_hint`, never in `CallerClaim` and never as `locator_hint`. The
-  daemon accepts it for a binding only when `tmux -S <socket> display -p -t <pane> '#{pane_pid} #{pid}'` (2 s deadline)
+  daemon accepts it for a binding only when `tmux -S <socket> display -p -t <pane> '#{pane_pid} #{pid} #{pane_in_mode} #{pane_input_off} #{synchronize-panes} #{pane_width}'` (2 s deadline)
   answers the hint's server pid and the pane's process is the caller's process or an ancestor of it; the verified
   binding is held in daemon memory only (lost on restart, pruned when its process exits) and the host's per-target wake
   answer is `Composer` while any live verified binding of the seat exists, else `None`. A failed check (a reused pane
   id, a stale `TMUX_PANE` inherited into a nested Herdr session, a missing server) records nothing: it only leaves that
   binding without a wake path and never moves, rebinds or ends a seat. The hint is the caller's claim, checked against
   the process table and tmux itself (A2); anything that can run as the seat's process in that pane can obtain wake.
+- *tmux composer wake (named seats, N2-wake)*: a named seat with a live verified tmux binding is woken by the
+  built-in host's own wake lane (pacer, reachability, Health) like a Herdr pane: `send-keys -t <pane> -l <wake text>`
+  then `Enter`, read back with `capture-pane` through the bound harness's composer policy, and `C-u` only when the
+  harness opts in and the composer holds exactly the wake. The wake is decided per pane (rule 4): over every live
+  connected top-level binding of the seat the pane is idle only when all are idle; one busy binding, or one `Unknown`
+  (a daemon restart, a binding that has not reported), gives no typing for that attempt. The same holds when
+  the screen is not recognised as unblocked (`screen_blocked == Some(false)` is required), the composer is not read
+  empty (a draft is never typed over, never stashed), and when `#{pane_in_mode}`, `#{pane_input_off}` or
+  `#{synchronize-panes}` is non-zero (copy-mode or another mode, input disabled, synchronized panes): each is a
+  pre-send refusal retried on the ladder, treated as busy and never reported as `no_wake`; the copy-mode scroll
+  position is never touched. The hint is re-verified at the wake's pane query (server pid) and at bind (ancestry). A
+  daemon that holds a wake-armed binding (verified hint, live fingerprint) does not idle-exit, so a p0 more than
+  10 min after the seat's last hook still wakes it; the binding is pruned when its process exits and the daemon then
+  exits as before. Accepted limits: no server-side draft guard beyond the composer read-back and the exact-text
+  clear; a harness with no running-turn recognizer (`screen_turn_running` is `None`) stays unwoken after a user
+  interrupt until its next hook, and one with no `screen_blocked` recognizer is never typed into; the hint, the turn
+  state and the keep-alive live in daemon memory, so after a crash, upgrade or explicit stop there is no wake until that
+  binding's next hook; the sibling set is the seat's connected top-level bindings, so a sibling in another pane
+  also holds the wake (conservative); tmux drops OSC 7501, so no self-reported status exists (T5).
 - *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
   (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
   provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys.

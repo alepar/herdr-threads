@@ -72,7 +72,10 @@ fn host_with(rows: &[(&str, &str)]) -> (NamedHost, Arc<FakeSource>) {
 fn answers_are_the_named_host_policy() {
     let (host, _) = host_with(&[]);
     assert_eq!(host.kind(), HostKind::Named);
-    assert_eq!(host.wake_capability(), WakeCapability::None);
+    assert_eq!(
+        host.wake_capability(),
+        WakeCapability::Composer(ComposerTraits::TMUX)
+    );
     assert_eq!(host.closure_authority(), ClosureAuthority::NonClosing);
     assert_eq!(host.archival_evidence(), ArchivalEvidence::NoEvidence);
     assert_eq!(host.server_process(), None);
