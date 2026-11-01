@@ -1,0 +1,168 @@
+{
+ "inspected": [
+  {
+   "path": "src/store/hosts.rs",
+   "hunks": [
+    "@@ -16,7 +16,7 @@ use std::{collections::BTreeMap, sync::RwLock};",
+    "@@ -30,11 +30,32 @@ pub struct HostRow {",
+    "@@ -43,11 +64,31 @@ pub fn attach_host(",
+    "@@ -57,7 +98,8 @@ pub fn attach_host(",
+    "@@ -65,12 +107,15 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<HostRow>> {",
+    "@@ -110,6 +155,41 @@ pub fn remembered(conn: &Connection, limit: usize) -> Result<Vec<HostRow>, ApiEr"
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -133,6 +133,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &["
+   ]
+  },
+  {
+   "path": "src/service/host_sessions.rs",
+   "hunks": [
+    "@@ -9,7 +9,7 @@ use crate::daemon::logs::LaneErrorLog;",
+    "@@ -31,7 +31,7 @@ use std::{",
+    "@@ -242,7 +242,9 @@ pub struct HostSession {",
+    "@@ -278,8 +280,9 @@ impl HostSession {",
+    "@@ -299,8 +302,8 @@ impl HostSession {",
+    "@@ -354,7 +357,7 @@ impl HostSession {",
+    "@@ -377,7 +380,10 @@ impl BootstrapObserver for RefusedBootstrapObserver {",
+    "@@ -396,6 +402,8 @@ impl BootstrapObserver for RefusedBootstrapObserver {",
+    "@@ -432,6 +440,7 @@ impl HostSessions {",
+    "@@ -475,7 +484,11 @@ impl HostSessions {",
+    "@@ -484,7 +497,7 @@ impl HostSessions {",
+    "@@ -492,6 +505,14 @@ impl HostSessions {",
+    "@@ -628,6 +649,44 @@ impl HostSessions {",
+    "@@ -667,11 +726,13 @@ impl HostSessions {",
+    "@@ -707,8 +768,10 @@ impl HostSessions {",
+    "@@ -728,30 +791,34 @@ impl HostSessions {",
+    "@@ -776,11 +843,11 @@ impl HostSessions {",
+    "@@ -869,6 +936,9 @@ impl HostSessions {",
+    "@@ -917,7 +987,7 @@ impl HostSessions {",
+    "@@ -951,7 +1021,7 @@ impl HostSessions {",
+    "@@ -999,13 +1069,22 @@ mod tests {",
+    "@@ -1132,7 +1211,7 @@ mod tests {",
+    "@@ -1475,6 +1554,59 @@ mod tests {",
+    "@@ -1503,6 +1635,160 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/host/hc/wire.rs",
+   "hunks": [
+    "@@ -0,0 +1,252 @@"
+   ]
+  },
+  {
+   "path": "src/protocol/handoff.rs",
+   "hunks": [
+    "@@ -288,6 +288,19 @@ pub struct BootstrapLaunch {",
+    "@@ -364,6 +377,86 @@ pub enum BootstrapState {"
+   ]
+  },
+  {
+   "path": "src/protocol/commands.rs",
+   "hunks": [
+    "@@ -157,6 +157,8 @@ pub enum Command {",
+    "@@ -426,6 +428,10 @@ pub struct SeatsQuery {",
+    "@@ -1204,6 +1210,10 @@ pub struct ResolveThreadQuery {",
+    "@@ -1897,4 +1907,54 @@ mod host_locator_tests {"
+   ]
+  },
+  {
+   "path": "src/protocol/capabilities.rs",
+   "hunks": [
+    "@@ -51,6 +51,8 @@ pub const AUTOMATIC_HANDOFF_V1: &str = \"handoff.automatic_v1\";",
+    "@@ -101,6 +103,11 @@ pub const INBOX_THREAD_SCOPE: &str = \"inbox.thread_scope_v1\";"
+   ]
+  },
+  {
+   "path": "src/protocol/results.rs",
+   "hunks": [
+    "@@ -123,6 +123,7 @@ pub enum CommandResult {",
+    "@@ -1765,6 +1766,11 @@ pub struct SeatWakeStatus {"
+   ]
+  },
+  {
+   "path": "src/service/dispatch.rs",
+   "hunks": [
+    "@@ -245,9 +245,10 @@ impl DomainService {",
+    "@@ -268,20 +269,11 @@ impl DomainService {",
+    "@@ -1829,6 +1821,11 @@ impl LocalService for DomainService {",
+    "@@ -2295,6 +2292,50 @@ mod topology_contract_dispatch_tests {"
+   ]
+  },
+  {
+   "path": "src/cli/site_capability.rs",
+   "hunks": [
+    "@@ -0,0 +1,78 @@"
+   ]
+  },
+  {
+   "path": "src/store/queries.rs",
+   "hunks": [
+    "@@ -1502,19 +1502,25 @@ fn seats(",
+    "@@ -1611,6 +1617,13 @@ fn seats(",
+    "@@ -2715,6 +2728,20 @@ fn literal_contains_bounded(",
+    "@@ -2743,9 +2770,22 @@ fn resolve_thread(",
+    "@@ -6554,22 +6594,24 @@ fn wake_status_seats("
+   ]
+  },
+  {
+   "path": "src/cli/doctor.rs",
+   "hunks": [
+    "@@ -219,6 +219,25 @@ pub(crate) fn probe_daemon(",
+    "@@ -978,6 +997,7 @@ fn report_captured(",
+    "@@ -988,6 +1008,7 @@ fn report_captured(",
+    "@@ -1095,6 +1116,13 @@ fn report_captured("
+   ]
+  },
+  {
+   "path": "src/ports.rs",
+   "hunks": [
+    "@@ -9,6 +9,7 @@",
+    "@@ -3904,7 +3905,141 @@ pub struct RegisteredComposerEvidence {",
+    "@@ -5595,6 +5730,125 @@ pub enum CreateTabOutcome {"
+   ]
+  },
+  {
+   "path": "src/harness/claude/composer.rs",
+   "hunks": [
+    "@@ -199,8 +199,34 @@ impl ComposerPolicy for NativeComposer {",
+    "@@ -317,4 +343,32 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/harness/agy/composer.rs",
+   "hunks": [
+    "@@ -130,8 +130,34 @@ impl ComposerPolicy for AgyComposer {"
+   ]
+  },
+  {
+   "path": "src/harness/adapter.rs",
+   "hunks": [
+    "@@ -1400,6 +1400,12 @@ pub trait ComposerPolicy: Send + Sync {"
+   ]
+  },
+  {
+   "path": "src/test_support/fake_herdr.rs",
+   "hunks": [
+    "@@ -46,6 +46,8 @@ struct World {",
+    "@@ -93,6 +95,17 @@ impl World {",
+    "@@ -185,6 +198,7 @@ impl FakeHerdr {",
+    "@@ -277,6 +291,15 @@ impl FakeHerdr {"
+   ]
+  },
+  {
+   "path": "src/bin/fake-hc.rs",
+   "hunks": [
+    "@@ -0,0 +1,52 @@"
+   ]
+  },
+  {
+   "path": "migrations/node/0012_host_environments.sql",
+   "hunks": [
+    "@@ -0,0 +1,35 @@"
+   ]
+  }
+ ]
+}
