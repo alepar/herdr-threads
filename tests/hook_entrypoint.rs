@@ -4478,6 +4478,10 @@ fn record_hook_timing(
 /// emitted once, named first in the digest line, within the tool budget; and
 /// SessionStart `clear` carries its digest line within the lifecycle budget.
 fn pending_axis_stays_bounded_and_emits_new_invitation(axis: PendingAxis, n: u64) {
+    let (tool_budget, lifecycle_budget) = (
+        backlog_budget(n, TOOL_BUDGET),
+        backlog_budget(n, LIFECYCLE_BUDGET),
+    );
     let fx = Fixture::start();
     fx.register("w9:p1", "sess-1");
     fx.register("w9:p2", "peer-sess");
@@ -4538,10 +4542,10 @@ fn pending_axis_stays_bounded_and_emits_new_invitation(axis: PendingAxis, n: u64
         &hook,
         phases.as_ref(),
     );
-    assert!(outer < TOOL_BUDGET, "{outer:?}");
+    assert!(outer < tool_budget, "{outer:?}");
     for label in ["history 1", "history 2", "history 3"] {
         let hook = calls.quiet(label);
-        assert!(hook.elapsed < TOOL_BUDGET, "{label}: {:?}", hook.elapsed);
+        assert!(hook.elapsed < tool_budget, "{label}: {:?}", hook.elapsed);
         timings.push((label, hook.elapsed));
     }
     let thread = data(fx.cooperative(
@@ -4579,14 +4583,14 @@ fn pending_axis_stays_bounded_and_emits_new_invitation(axis: PendingAxis, n: u64
         &hook,
         phases.as_ref(),
     );
-    assert!(outer < TOOL_BUDGET, "{outer:?} {summary}");
+    assert!(outer < tool_budget, "{outer:?} {summary}");
     let hook = calls.quiet("invitation repeat");
-    assert!(hook.elapsed < TOOL_BUDGET, "{:?}", hook.elapsed);
+    assert!(hook.elapsed < tool_budget, "{:?}", hook.elapsed);
     timings.push(("invitation repeat", hook.elapsed));
     let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(cleared.stderr.is_empty(), "{}", cleared.stderr);
-    assert!(cleared.elapsed < LIFECYCLE_BUDGET, "{:?}", cleared.elapsed);
+    assert!(cleared.elapsed < lifecycle_budget, "{:?}", cleared.elapsed);
     assert!(
         context_of(&cleared).contains("attention digest: "),
         "{}",
@@ -4774,6 +4778,22 @@ fn hook_phase_capture_rejects_overflow_and_cross_window_handlers() {
     assert_eq!(fresh.len, 3, "new capture must reset prior evidence");
 }
 
+/// The wall-clock bound on one hook at an `n`-item backlog. Only the 10^5 release cases make an
+/// unbounded walk show in elapsed time; at the default sizes the hooks stay in the low hundreds of
+/// milliseconds with or without one, so the production budget there measures the host's load (over
+/// it at load 35, with every item correct). Those runs keep a hang guard, at the scale the hook
+/// child already runs under.
+fn backlog_budget(n: u64, production: Duration) -> Duration {
+    if n >= 100_000 {
+        production
+    } else {
+        production
+            * herdr_threads::test_support::spawn::TIMEOUT_SCALE
+                .parse::<u32>()
+                .unwrap()
+    }
+}
+
 // Default-run size (debug): one item past the 1,000 attention count cap
 // (`MAX_PENDING_WARNING_COUNT`), the smallest history that saturates it.
 // Kills M-post-filter-cap and M-walk-without-LIMIT only at scale (see the
@@ -4895,6 +4915,10 @@ impl Fixture {
 /// (the frontier passes the carried page) and M-frontier-not-occupant-scoped
 /// (the `clear` occupant's offer carries page 4, not the oldest page).
 fn programmatic_backlog_is_offered_page_by_page(n: u64) {
+    let (tool_budget, lifecycle_budget) = (
+        backlog_budget(n, TOOL_BUDGET),
+        backlog_budget(n, LIFECYCLE_BUDGET),
+    );
     assert!(n > 1_100);
     let fx = Fixture::start();
     fx.register("w9:p1", "sess-1");
@@ -4913,7 +4937,7 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     // Page 1: the first tool call has no mark and offers what is pending.
     let (summary, text, elapsed) = calls.offered_data("page 1", &["warnings=1000+ ["]);
     timings.push(("page 1", elapsed));
-    assert!(elapsed < TOOL_BUDGET, "page 1: {elapsed:?} {summary}");
+    assert!(elapsed < tool_budget, "page 1: {elapsed:?} {summary}");
     assert_eq!(carried_notices("page 1", &text), (fx.notice_page(0), true));
     assert_eq!(
         fx.notice_frontier(),
@@ -4925,7 +4949,7 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     for page in 1..=4u64 {
         let label = format!("page {}", page + 1);
         let (summary, text, elapsed) = calls.offered_data(&label, &["warnings=1000+ ["]);
-        assert!(elapsed < TOOL_BUDGET, "{label}: {elapsed:?} {summary}");
+        assert!(elapsed < tool_budget, "{label}: {elapsed:?} {summary}");
         assert_eq!(carried_notices(&label, &text), (fx.notice_page(page), true));
         assert_eq!(
             fx.notice_frontier(),
@@ -4944,7 +4968,7 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(cleared.stderr.is_empty(), "{}", cleared.stderr);
-    assert!(cleared.elapsed < LIFECYCLE_BUDGET, "{:?}", cleared.elapsed);
+    assert!(cleared.elapsed < lifecycle_budget, "{:?}", cleared.elapsed);
     assert!(
         context_of(&cleared).contains("attention digest: "),
         "{}",
