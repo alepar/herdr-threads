@@ -149,6 +149,7 @@ fn peer() -> PeerIdentity {
 fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
     let command = Command::CheckIn(CheckIn {
         lineage_parent: None,
+        readonly: false,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: claim.binding_generation,
         },
