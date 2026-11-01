@@ -49,6 +49,8 @@ fn key() -> TurnKey {
     TurnKey {
         seat: SeatId::new("s"),
         generation: 1,
+        harness: "claude".to_owned(),
+        native_session: NativeSessionId::new("sess"),
     }
 }
 
@@ -273,4 +275,21 @@ fn turn_state_report_without_hint_keeps_its_bytes() {
         serde_json::from_str::<TurnStateReport>(&text).unwrap(),
         hinted
     );
+}
+
+// Kills: a book keyed on seat and generation only, where one binding's Idle overwrites the
+// entry of a sibling session of the same generation.
+#[test]
+fn two_bindings_of_one_generation_keep_separate_entries() {
+    let book = TurnStateBook::default();
+    let a = key();
+    let b = TurnKey {
+        native_session: NativeSessionId::new("other"),
+        ..key()
+    };
+    book.record(&a, TurnEdge::Busy, 0);
+    book.record(&b, TurnEdge::Busy, 0);
+    book.record(&a, TurnEdge::Idle, 1);
+    assert_eq!(book.state(&a), TurnState::Idle);
+    assert_eq!(book.state(&b), TurnState::Busy);
 }

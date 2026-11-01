@@ -210,7 +210,8 @@ impl NamedHost {
 
     /// Every check before a wake is typed, per pane (rule 4): the context fence, one verified pane
     /// for the seat, a pane that delivers keys, every live top-level binding idle (a stale busy is
-    /// cleared by the screen rule), a recognised unblocked screen and an empty composer. Each
+    /// cleared by the screen rule), a screen that does not read as a running turn (a missed Busy
+    /// edge), a recognised unblocked screen and an empty composer. Each
     /// refusal is `TargetUnsafe`: the attempt is retried on the ladder, never `no_wake`.
     fn wake_gate(
         &self,
@@ -266,36 +267,36 @@ impl NamedHost {
             ));
         }
         // The pane is idle only when every live top-level binding of the seat is.
-        let generations = self
+        let keys: Vec<TurnKey> = self
             .source
-            .top_level_generations(&target.seat, &context.budget)?;
-        let keys: Vec<TurnKey> = generations
+            .top_level_bindings(&target.seat, &context.budget)?
             .into_iter()
-            .map(|generation| TurnKey {
+            .map(|binding| TurnKey {
                 seat: target.seat.clone(),
-                generation,
+                generation: binding.generation,
+                harness: binding.harness,
+                native_session: binding.native_session,
             })
             .collect();
         let Some(turns) = self.turns.get().filter(|_| !keys.is_empty()) else {
             return Err(refuse("no turn state for the pane's bindings"));
         };
-        let mut screen = None;
+        // One capture serves the stale-busy clear, the running-turn check and the composer read.
+        let screen = tmux::capture(hint).ok_or_else(|| refuse("pane unreadable"))?;
         if keys.iter().any(|key| turns.state(key) == TurnState::Busy) {
-            let seen = tmux::capture(hint).ok_or_else(|| refuse("pane unreadable"))?;
-            let running = policy.screen_turn_running(&seen);
+            let running = policy.screen_turn_running(&screen);
             let now = self.clock.monotonic_now().0;
             for key in &keys {
                 turns.observe_screen(key, running, now);
             }
-            screen = Some(seen);
         }
         if !keys.iter().all(|key| turns.state(key) == TurnState::Idle) {
             return Err(refuse("pane busy or a binding's turn state is unknown"));
         }
-        let screen = match screen {
-            Some(screen) => screen,
-            None => tmux::capture(hint).ok_or_else(|| refuse("pane unreadable"))?,
-        };
+        // A missed best-effort Busy edge leaves the entry Idle during a running turn.
+        if policy.screen_turn_running(&screen) == Some(true) {
+            return Err(refuse("pane shows a running turn"));
+        }
         if policy.screen_blocked(&screen) != Some(false) {
             return Err(refuse("screen blocked or not recognised"));
         }

@@ -11,7 +11,7 @@ use rusqlite::Connection;
 use super::{SqliteStore, connection::store_error};
 use crate::ports::HostId;
 use crate::protocol::{
-    ids::{SeatId, SeatName},
+    ids::{NativeSessionId, SeatId, SeatName},
     results::ApiError,
     time::CallBudget,
 };
@@ -26,31 +26,59 @@ pub trait NamedSeatSource: Send + Sync {
         budget: &CallBudget,
     ) -> Result<Vec<(SeatId, SeatName)>, ApiError>;
 
-    /// The binding generations of `seat`'s connected top-level non-human bindings: the keys of
-    /// their hook turn state, which the tmux wake gate combines per pane. Default: none known.
-    fn top_level_generations(
+    /// `seat`'s connected top-level non-human bindings: the keys of their hook turn state, which
+    /// the tmux wake gate combines per pane. Default: none known.
+    fn top_level_bindings(
         &self,
         _seat: &SeatId,
         _budget: &CallBudget,
-    ) -> Result<Vec<u64>, ApiError> {
+    ) -> Result<Vec<TopLevelBinding>, ApiError> {
         Ok(Vec::new())
     }
 }
 
-/// The rows behind [`NamedSeatSource::top_level_generations`].
-pub fn top_level_generations(conn: &Connection, seat: &SeatId) -> Result<Vec<u64>, ApiError> {
+/// One connected top-level binding of a seat: the key fields of its turn state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopLevelBinding {
+    pub generation: u64,
+    pub harness: String,
+    pub native_session: NativeSessionId,
+}
+
+/// The rows behind [`NamedSeatSource::top_level_bindings`]; a session id that does not parse is
+/// skipped.
+pub fn top_level_bindings(
+    conn: &Connection,
+    seat: &SeatId,
+) -> Result<Vec<TopLevelBinding>, ApiError> {
     let mut stmt = conn
         .prepare_cached(
-            "SELECT generation FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL \
-             AND liveness='connected' AND role='top_level' AND harness<>'human' ORDER BY ordinal",
+            "SELECT generation,harness,native_session FROM occupant_bindings WHERE seat_id=?1 \
+             AND ended_at IS NULL AND liveness='connected' AND role='top_level' \
+             AND harness<>'human' ORDER BY ordinal",
         )
         .map_err(store_error)?;
     let rows = stmt
-        .query_map([seat.as_str()], |row| row.get::<_, i64>(0))
+        .query_map([seat.as_str()], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
         .map_err(store_error)?;
     let mut out = Vec::new();
     for row in rows {
-        out.extend(u64::try_from(row.map_err(store_error)?).ok());
+        let (generation, harness, session) = row.map_err(store_error)?;
+        if let (Ok(generation), Ok(native_session)) =
+            (u64::try_from(generation), NativeSessionId::parse(session))
+        {
+            out.push(TopLevelBinding {
+                generation,
+                harness,
+                native_session,
+            });
+        }
     }
     Ok(out)
 }
@@ -89,12 +117,12 @@ impl NamedSeatSource for SqliteStore {
         live_named(&db, host)
     }
 
-    fn top_level_generations(
+    fn top_level_bindings(
         &self,
         seat: &SeatId,
         budget: &CallBudget,
-    ) -> Result<Vec<u64>, ApiError> {
+    ) -> Result<Vec<TopLevelBinding>, ApiError> {
         let db = self.context().open_query(budget.clone())?;
-        top_level_generations(&db, seat)
+        top_level_bindings(&db, seat)
     }
 }
