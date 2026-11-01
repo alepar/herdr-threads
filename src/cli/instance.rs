@@ -114,7 +114,9 @@ impl InstanceInputs {
     /// that discovery skips for a named site.
     pub(crate) fn lazy_host_endpoint(&self) -> io::Result<PathBuf> {
         let inputs = Self {
-            named_site: false,
+            non_pane_site: false,
+            // A herdr-core terminal's core socket is not a Herdr server.
+            site_host: None,
             ..self.clone()
         };
         resolve_host_endpoint(&inputs)
