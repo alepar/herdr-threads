@@ -3124,6 +3124,18 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<usize, ApiError> {
         Ok(0)
     }
+    /// Persists one `wake_status` read for `observer`: a row for each `persist` seat, none for
+    /// each `clear` seat. Returns the `persist` seats whose row is new, or `None` when the
+    /// store keeps no such rows (the caller falls back to its in-memory set).
+    fn no_wake_reports_apply(
+        &self,
+        _observer: &SeatId,
+        _persist: &[SeatId],
+        _clear: &[SeatId],
+        _budget: &CallBudget,
+    ) -> Result<Option<Vec<SeatId>>, ApiError> {
+        Ok(None)
+    }
     fn archival_pass(
         &self,
         runtime: &crate::store::archival::Runtime,

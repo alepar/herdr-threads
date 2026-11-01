@@ -84,4 +84,15 @@ mod tests {
         ];
         assert_eq!(lines(&rows), "warning: s1 wake=no_wake\n");
     }
+
+    /// A named seat's overdue line is the golden bytes; a pane seat's line has the same shape.
+    #[test]
+    fn named_seat_overdue_line_is_golden() {
+        let golden = include_str!("../../tests/cli/golden/overdue_no_wake.txt");
+        let named = lines(&[row("seat-nmd00001", Some(WakeBlock::NoWake), true)]);
+        assert_eq!(named, golden);
+        let pane = lines(&[row("seat-pane0001", Some(WakeBlock::NoWake), true)]);
+        assert_eq!(pane, golden.replace("nmd00001", "pane0001"));
+        assert_eq!(pane, "warning: seat-pane0001 wake=no_wake\n");
+    }
 }

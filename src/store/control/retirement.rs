@@ -236,6 +236,7 @@ pub(crate) fn begin_retirement_fence(
             [seat.as_str()],
         )
         .map_err(store_error)?;
+        crate::store::no_wake_reports::delete_for_retired(tx, &seat)?;
         Ok(changed == 1)
     })?;
     tx.execute("UPDATE wake_work SET reason_bits=0,reservation_id=NULL,reservation_boot=NULL,binding_generation=NULL WHERE seat_id=?1",[seat.as_str()]).map_err(store_error)?;

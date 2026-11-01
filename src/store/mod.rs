@@ -24,6 +24,7 @@ pub mod materialization;
 pub mod materialize;
 pub mod messages;
 pub mod named_seats;
+pub mod no_wake_reports;
 pub mod node_directory;
 pub mod node_prune;
 pub mod operator;
@@ -1669,6 +1670,16 @@ impl StorePort for SqliteStore {
             |_| Ok(()),
             |tx, at, ()| bindings::apply_liveness(tx, decisions, at.utc),
         )
+    }
+    fn no_wake_reports_apply(
+        &self,
+        observer: &SeatId,
+        persist: &[SeatId],
+        clear: &[SeatId],
+        budget: &CallBudget,
+    ) -> Result<Option<Vec<SeatId>>, ApiError> {
+        self.no_wake_reports_apply_impl(observer, persist, clear, budget)
+            .map(Some)
     }
     fn archival_pass(
         &self,
