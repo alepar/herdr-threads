@@ -619,6 +619,16 @@ model open work, and summary closure never changes receipt state or installs glo
   unreadable environment (another user, a gone pid, an unsupported platform) or a pane no host answers
   for skips the check, which leaves only observability (D1 limit); and the hint is the caller's
   claim, not verification, so a caller that omits it is not checked (cooperative model).
+- *Second-locator notice (named seats, N4-hint, M9)*: a named resolve that carries `ResolveSeat.locator_hint`
+  records it on the seat's open top-level binding that has none (`occupant_bindings.locator_hint`; when
+  no such binding exists yet nothing is recorded and a later command's resolve records it). When the hint
+  is on no earlier row of the seat (ended rows included) while another distinct hint is, the resolve answers
+  M9 (`herdr-threads: seat <name> now bound from <loc1> and <loc2>`, 41 bytes + fields). The decision reads
+  only the persisted rows, so it fires once per (seat, locator), also across daemon restarts. `seat inspect`
+  lists each binding with its hint. `locator_hint` is a hint, never authority: only M9 and `seat inspect`
+  read it, and it never selects, binds, moves or ends a seat. It is the caller's claim, so the attribution
+  of a hint to a binding is best effort (it lands on the newest unmarked open binding); the tmux hint is a
+  separate field held in daemon memory and is never recorded here.
 - *Independent lifecycle forks (ht-i9a7)*: neutral `EventKind::Fork` maps to a
   journaled `CheckInMode::Fork` with the same expected-generation and exact execution
   checks as an ordinary lifecycle. The adapter maps only its native independent-start

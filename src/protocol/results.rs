@@ -87,6 +87,9 @@ pub enum CommandResult {
         name: crate::protocol::ids::SeatName,
         #[serde(default)]
         created: bool,
+        /// M9: the seat was first addressed from a second locator, as (earlier, new).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        second_locator: Option<(String, String)>,
     },
     ContinuityReattached(ContinuityReattachment),
     /// The seat's open binding after a `RecordManagedLaunch` decision.
@@ -1340,6 +1343,9 @@ pub struct BindingHistory {
     pub registered_at: Option<UtcMillis>,
     pub ended_at: Option<UtcMillis>,
     pub provenance: String,
+    /// N4-hint: the pane or terminal a named binding was addressed from; a hint, never authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator_hint: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

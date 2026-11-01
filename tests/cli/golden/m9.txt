@@ -1,0 +1,1 @@
+herdr-threads: seat reviewer now bound from w1:p1 and w2:p9
