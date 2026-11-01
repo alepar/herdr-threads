@@ -444,6 +444,9 @@ pub enum ErrorCode {
     /// Client-local, never sent by a daemon: the CLI runs under a `codex app-server
     /// --managed-daemon` process, which has no pane to attribute the call to.
     ManagedDaemonRefused,
+    /// A named seat's name is held by another live, unrelated top-level process (M7, SA16): pick
+    /// another name, or wait for the holder to exit.
+    SeatNameInUse,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2252,6 +2255,7 @@ impl ErrorCode {
         ErrorCode::LivenessFingerprintRequired,
         ErrorCode::SubagentReadOnly,
         ErrorCode::ManagedDaemonRefused,
+        ErrorCode::SeatNameInUse,
     ];
 
     /// The failure class this code defaults to, or `None` for codes that
@@ -2303,6 +2307,7 @@ impl ErrorCode {
             ErrorCode::LivenessFingerprintRequired => None,
             ErrorCode::SubagentReadOnly => None,
             ErrorCode::ManagedDaemonRefused => None,
+            ErrorCode::SeatNameInUse => None,
             // The daemon restarted between the caller's view and the request
             // (B5, protocol 2): retry against the new boot.
             ErrorCode::DaemonBootChanged => Some(ErrorClass::Transient),
@@ -2380,6 +2385,7 @@ api_error_constructors! {
     liveness_fingerprint_required => LivenessFingerprintRequired,
     subagent_read_only => SubagentReadOnly,
     managed_daemon_refused => ManagedDaemonRefused,
+    seat_name_in_use => SeatNameInUse,
 }
 
 #[cfg(test)]

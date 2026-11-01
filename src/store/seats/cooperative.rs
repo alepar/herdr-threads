@@ -610,7 +610,7 @@ pub(crate) fn decide_cooperative(
     let mapping = decide_cooperative_fence(
         ctx, tx, at, instance, permit, claim, mode, operation, obligation, digest,
     )?;
-    let resolution = resolve_cooperative(tx, at, claim, mode, &mapping)?;
+    let resolution = resolve_cooperative(tx, ctx.processes(), at, claim, mode, &mapping)?;
     Ok((mapping, resolution))
 }
 
@@ -690,16 +690,113 @@ fn cooperative_placement(
     })
 }
 
+/// The ancestors of `pid` (nearest first), bounded so a cyclic table cannot loop.
+fn ancestor_pids(processes: &dyn crate::ports::ProcessInfo, pid: u32) -> Vec<u32> {
+    let mut chain = Vec::new();
+    let mut next = processes.process(pid).and_then(|p| p.parent);
+    while let Some(parent) = next {
+        if chain.len() >= 64 || chain.contains(&parent) {
+            break;
+        }
+        chain.push(parent);
+        next = processes.process(parent).and_then(|p| p.parent);
+    }
+    chain
+}
+
+/// The live-holder guard (SA16, D19; TRUST-POLICY N rows): when a named seat would gain or
+/// reconnect a top-level binding, refuse with `seat_name_in_use` (M7) if another connected
+/// top-level binding of the seat is held by a live process that differs from the caller's with
+/// neither in the other's parent chain. Admitted beside a live holder: the same process, an
+/// ancestor or descendant, subagents, a `readonly` holder, a Codex fork, and any holder whose
+/// pid is gone or reused (its start stamp no longer matches). A claim without a fingerprint is
+/// left to the admission check that requires one. Cooperative same-user consistency, not
+/// verification.
+fn guard_live_holder(
+    tx: &Connection,
+    processes: &dyn crate::ports::ProcessInfo,
+    claim: &crate::protocol::authority::CallerClaim,
+    fork: bool,
+) -> Result<(), ApiError> {
+    let Some(caller) = claim.liveness else {
+        return Ok(());
+    };
+    if fork || claim.is_subagent() || claim.harness == crate::protocol::authority::Harness::Human {
+        return Ok(());
+    }
+    // An open, connected binding of the caller's own key is already a holder: a touch.
+    if bindings::match_claim(tx, &bindings::BindingKey::from_claim(claim))?
+        .is_some_and(|row| row.liveness == bindings::Liveness::Connected)
+    {
+        return Ok(());
+    }
+    let name: Option<String> = tx
+        .query_row(
+            "SELECT name FROM seats WHERE id=?1",
+            [claim.seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .flatten();
+    let Some(name) = name else {
+        return Ok(());
+    };
+    let mut stmt = tx
+        .prepare(
+            "SELECT liveness_pid,liveness_start FROM occupant_bindings \
+             WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' AND role='top_level' \
+             AND concurrent_session=0 AND readonly=0 AND liveness_pid IS NOT NULL \
+             AND observation_provenance<>?2 \
+             AND NOT (harness=?3 AND native_session=?4 AND agent_id='')",
+        )
+        .map_err(store_error)?;
+    let holders = stmt
+        .query_map(
+            params![
+                claim.seat.as_str(),
+                crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE,
+                claim.harness.as_str(),
+                claim.native_session.as_str(),
+            ],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    let caller_ancestors = ancestor_pids(processes, caller.pid);
+    for (pid, start) in holders {
+        let (Ok(pid), Ok(start)) = (u32::try_from(pid), u64::try_from(start)) else {
+            continue;
+        };
+        let holder = crate::protocol::authority::LivenessFingerprint { pid, start };
+        if holder.pid == caller.pid
+            || !holder.is_alive(processes)
+            || caller_ancestors.contains(&holder.pid)
+            || ancestor_pids(processes, holder.pid).contains(&caller.pid)
+        {
+            continue;
+        }
+        return Err(api_error(
+            ErrorCode::SeatNameInUse,
+            // M7 (59 bytes + fields) after the CLI's `herdr-threads: ` prefix.
+            format!("seat {name} is held by live pid {pid}; use another name"),
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve the claim to its own binding (ht-54r.3): enroll, reconnect, reopen, attach or touch.
 /// Never ends another binding.
 pub(crate) fn resolve_cooperative(
     tx: &Transaction<'_>,
+    processes: &dyn crate::ports::ProcessInfo,
     at: DecisionInstant,
     claim: &crate::protocol::authority::CallerClaim,
     mode: Option<crate::protocol::commands::CheckInMode>,
     mapping: &CooperativeMapping,
 ) -> Result<bindings::Resolution, ApiError> {
-    resolve_cooperative_with_lineage(tx, at, claim, mode, mapping, None)
+    resolve_cooperative_with_lineage(tx, processes, at, claim, mode, mapping, None)
 }
 
 /// [`resolve_cooperative`] with a lineage predecessor hint (Hermes `parent_session_id`, spec §1
@@ -710,6 +807,7 @@ pub(crate) fn resolve_cooperative(
 /// `lineage_from` once and moves no cursor (it keeps its own read position).
 pub(crate) fn resolve_cooperative_with_lineage(
     tx: &Transaction<'_>,
+    processes: &dyn crate::ports::ProcessInfo,
     at: DecisionInstant,
     claim: &crate::protocol::authority::CallerClaim,
     mode: Option<crate::protocol::commands::CheckInMode>,
@@ -723,6 +821,15 @@ pub(crate) fn resolve_cooperative_with_lineage(
                 | crate::protocol::commands::CheckInMode::Fork { .. }
         )
     );
+    guard_live_holder(
+        tx,
+        processes,
+        claim,
+        matches!(
+            mode,
+            Some(crate::protocol::commands::CheckInMode::Fork { .. })
+        ),
+    )?;
     let placement = cooperative_placement(tx, at, claim, lifecycle, mapping)?;
     let predecessor = match lineage_parent {
         Some(parent)
@@ -780,12 +887,13 @@ pub(crate) fn resolve_cooperative_with_lineage(
 /// `(seat, hermes, child, agent_id = child)`. Returns whether the binding was created.
 pub(crate) fn attach_registered_child(
     tx: &Transaction<'_>,
+    processes: &dyn crate::ports::ProcessInfo,
     at: DecisionInstant,
     parent_claim: &crate::protocol::authority::CallerClaim,
     child: &crate::protocol::ids::NativeSessionId,
     mapping: &CooperativeMapping,
 ) -> Result<bool, ApiError> {
-    let parent = resolve_cooperative(tx, at, parent_claim, None, mapping)?
+    let parent = resolve_cooperative(tx, processes, at, parent_claim, None, mapping)?
         .binding()
         .clone();
     let child_claim = bindings::registered_child_claim(parent_claim, child)?;
@@ -892,6 +1000,7 @@ pub fn register_available(
             }
             let resolution = resolve_cooperative_with_lineage(
                 tx,
+                context.processes(),
                 at,
                 claim,
                 Some(command.mode),
@@ -1216,7 +1325,7 @@ pub fn hook_plain_reconnect(
             cooperative_mapping(tx, host, claim, None)
         },
         |tx, at, mapping| {
-            resolve_cooperative(tx, at, claim, None, &mapping)?;
+            resolve_cooperative(tx, context.processes(), at, claim, None, &mapping)?;
             let view = if presentation {
                 presentation_seat_view
             } else {
@@ -1496,3 +1605,7 @@ pub(crate) fn present_check_in_result(
 #[cfg(test)]
 #[path = "../../../tests/store/mod_seat_view.rs"]
 mod mod_seat_view_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/store/live_holder.rs"]
+mod live_holder_tests;

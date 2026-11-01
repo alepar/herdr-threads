@@ -4442,6 +4442,8 @@ mod continuity_gate {
                 | ErrorCode::SequenceExhausted
                 // The reattachment request carries no fingerprint: an identical retry repeats it.
                 | ErrorCode::LivenessFingerprintRequired
+                // M7: the live holder keeps the name until it exits; an identical retry repeats it.
+                | ErrorCode::SeatNameInUse
                 // A deterministic rejection on this branch's retry path
                 // (ht-p03): identical retry repeats it.
                 | ErrorCode::StaleRequirementAcceptance => true,
