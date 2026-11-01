@@ -18,6 +18,12 @@ test-support = []
 # Every target here uses `herdr_threads::test_support` (spawn, isolation,
 # history fixtures, probes), which exists only with the `test-support`
 # feature, so each needs `required-features`.
+# The fake herdr-core server as a process (src/test_support/fake_hc.rs).
+[[bin]]
+name = "fake-hc"
+path = "src/bin/fake-hc.rs"
+required-features = ["test-support"]
+
 [[test]]
 name = "combined"
 path = "tests/combined.rs"
