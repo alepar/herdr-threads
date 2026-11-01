@@ -99,7 +99,10 @@ impl DeliveryMutation {
             != OriginalActor::Agent
             || self.claim.role != super::authority::CallerRole::TopLevel
             || self.claim.instance != self.plan.payload.namespace.instance
-            || self.claim.host.as_path() != self.plan.payload.namespace.host_endpoint.as_path()
+            || !self
+                .claim
+                .host
+                .fronts_namespace(&self.plan.payload.namespace.host_endpoint)
             || self.digest
                 != format!(
                     "{:x}",
@@ -889,7 +892,10 @@ impl BootstrapIdentity {
             || self.digest != self.semantic_digest()?
             || self.claim.role != super::authority::CallerRole::TopLevel
             || self.claim.instance != self.payload.handoff.namespace.instance
-            || self.claim.host.as_path() != self.payload.handoff.namespace.host_endpoint.as_path()
+            || !self
+                .claim
+                .host
+                .fronts_namespace(&self.payload.handoff.namespace.host_endpoint)
             || !matches!(&self.scope, crate::cli::journal::IntentScope::Cooperative { instance, host, seat } if instance == &self.claim.instance && host == &self.claim.host && seat == &self.claim.seat)
         {
             return Err("bootstrap original identity mismatch");
@@ -2047,6 +2053,22 @@ mod automatic_contract_tests {
         let foreign_instance = with_claim(|claim| claim.instance = "0".repeat(32)).unwrap_err();
         assert_eq!(foreign_host, "automatic original identity mismatch");
         assert_eq!(foreign_host, foreign_instance);
+    }
+
+    #[test]
+    fn named_claim_may_target_a_herdr_namespace() {
+        // A named seat's claim sits at the reserved named host; the launch namespace is the Herdr
+        // server (/host.sock in PLAN). Only a named claim may differ from the namespace host.
+        with_claim(|claim| {
+            claim.host =
+                crate::protocol::ids::HostLocator::parse(crate::protocol::ids::NAMED_HOST_LOCATOR)
+                    .unwrap();
+        })
+        .expect("a named claim is admitted against a Herdr namespace");
+        with_claim(|claim| {
+            claim.host = crate::protocol::ids::HostLocator::parse("/other.sock").unwrap();
+        })
+        .expect_err("a non-named claim on another host stays refused");
     }
 
     #[test]

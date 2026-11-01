@@ -348,6 +348,13 @@ impl HostLocator {
         &self.0
     }
     /// Whether this is the reserved named-host locator.
+    /// Whether a claim at this host may own a handoff frozen in the namespace of `namespace_host`
+    /// (a Herdr server): the claim sits at the very server, or at the reserved named host, whose
+    /// seat acts through the named host while its launch runs on the namespace's server.
+    pub fn fronts_namespace(&self, namespace_host: &std::path::Path) -> bool {
+        self.is_named_host() || self.as_path() == namespace_host
+    }
+
     pub fn is_named_host(&self) -> bool {
         self.0 == NAMED_HOST_LOCATOR
     }

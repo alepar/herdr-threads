@@ -2352,7 +2352,7 @@ fn retry_automatic_live<C: LocalClient + ?Sized, W: Write>(
 /// The Herdr server a handoff creates its target on. A pane caller has it already; a caller
 /// outside Herdr (a named seat) has none until now, so it is looked up here, lazily (SA1, SA14).
 /// The reserved named-host path is a claim host, never a Herdr server.
-fn herdr_endpoint(
+pub(super) fn herdr_endpoint(
     resolved: Option<&std::path::Path>,
     lazy: impl FnOnce() -> io::Result<std::path::PathBuf>,
 ) -> io::Result<std::path::PathBuf> {
@@ -2446,7 +2446,16 @@ pub(crate) fn run<W: Write>(
         ))?;
     env.state_dir = Some(runtime.state_dir.clone());
     let claim_host = herdr_endpoint(runtime.require_host().ok(), || {
-        super::instance::InstanceInputs::from_process(None, None).lazy_host_endpoint()
+        super::instance::InstanceInputs::from_process(
+            None,
+            parsed
+                .output
+                .context
+                .host
+                .as_ref()
+                .map(std::path::PathBuf::from),
+        )
+        .lazy_host_endpoint()
     })?;
     env.host_endpoint = Some(claim_host.clone());
     let mut output = parsed.output.clone();
@@ -2457,13 +2466,17 @@ pub(crate) fn run<W: Write>(
         state_dir: runtime.state_dir.clone(),
         host_endpoint: claim_host.clone(),
     };
+    let herdr_locator = crate::protocol::ids::HostLocator::parse(claim_host.to_string_lossy())
+        .map_err(|detail| super::invalid_request(&detail.detail))?;
     let handle = super::host_client::LaunchHandle::herdr(claim_host, Arc::clone(&clock));
     let host = handle.host()?;
     let seats = super::launch::DaemonSeatResolver::new(
         &client,
         journal,
         instance,
-        runtime.claim_host()?,
+        // The recipient's seat lives on the Herdr server the target is created on: the same
+        // locator a Pane caller's claim host has, and the Herdr endpoint for a named caller.
+        herdr_locator,
         clock.as_ref(),
     );
     let shell = super::launch::SystemShellProbe::from_process();

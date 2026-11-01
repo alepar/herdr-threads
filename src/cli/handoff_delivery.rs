@@ -252,7 +252,10 @@ pub(crate) fn prepare_automatic<C: LocalClient + ?Sized>(
     inputs.namespace.validate().map_err(fail)?;
     if inputs.claim.role != CallerRole::TopLevel
         || inputs.claim.instance != inputs.namespace.instance
-        || inputs.claim.host.as_path() != inputs.namespace.host_endpoint.as_path()
+        || !inputs
+            .claim
+            .host
+            .fronts_namespace(&inputs.namespace.host_endpoint)
     {
         return Err(fail(
             "automatic delivery requires original top-level instance claim",
@@ -484,7 +487,10 @@ pub fn prepare<C: LocalClient + ?Sized>(
     inputs.namespace.validate().map_err(fail)?;
     if inputs.claim.role != CallerRole::TopLevel
         || inputs.claim.instance != inputs.namespace.instance
-        || inputs.claim.host.as_path() != inputs.namespace.host_endpoint.as_path()
+        || !inputs
+            .claim
+            .host
+            .fronts_namespace(&inputs.namespace.host_endpoint)
     {
         return Err(fail(
             "delivery requires the original top-level instance claim",
@@ -882,7 +888,9 @@ fn execute_locked<C: LocalClient + ?Sized>(
             seat: claim.seat.clone(),
         })
         || claim.instance != plan.payload.namespace.instance
-        || claim.host.as_path() != plan.payload.namespace.host_endpoint.as_path()
+        || !claim
+            .host
+            .fronts_namespace(&plan.payload.namespace.host_endpoint)
         || claim.role != CallerRole::TopLevel
     {
         return Err(super::invalid_request("delivery original scope mismatch"));
@@ -1096,7 +1104,9 @@ fn delivery_plan(pending: &PendingIntent) -> Result<&DeliveryPlan, RunError> {
             seat: claim.seat.clone(),
         })
         || claim.instance != plan.payload.namespace.instance
-        || claim.host.as_path() != plan.payload.namespace.host_endpoint.as_path()
+        || !claim
+            .host
+            .fronts_namespace(&plan.payload.namespace.host_endpoint)
         || claim.role != CallerRole::TopLevel
     {
         return Err(super::invalid_request("delivery original scope mismatch"));

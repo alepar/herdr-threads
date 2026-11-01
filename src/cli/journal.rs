@@ -422,7 +422,7 @@ impl SemanticMutation {
                 if mutation.namespace().is_some_and(|ns| {
                     let claim = self.frozen_claim().unwrap();
                     ns.instance != claim.instance
-                        || (!own_host && ns.host_endpoint != claim.host.as_path())
+                        || (!own_host && !claim.host.fronts_namespace(&ns.host_endpoint))
                 }) {
                     return Err(invalid("frozen namespace differs from original claim"));
                 }
