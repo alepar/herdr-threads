@@ -1529,7 +1529,8 @@ use crate::protocol::results::MAX_PENDING_WARNING_COUNT;
 /// `sizes`, check-in's offer reads (first inbox page, pending warning count,
 /// first warnings page) and the seat digest return the expected saturated
 /// answer and do the same SQLite VM work (within 10%) as at the first size.
-fn assert_axis_flat(axis: Axis, sizes: &[u64]) {
+/// Returns the first size's (check-in, digest) VM units.
+fn assert_axis_flat(axis: Axis, sizes: &[u64]) -> (u64, u64) {
     let mut observed = Vec::new();
     for &n in sizes {
         let started = std::time::Instant::now();
@@ -1602,9 +1603,11 @@ fn assert_axis_flat(axis: Axis, sizes: &[u64]) {
                 );
             }
             Axis::ProgrammaticUndelivered => {
+                // The history plus the live thread's own notice. Never run by default until the
+                // count-cap guards below, this had drifted.
                 assert_eq!(
                     scalar("SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id='rcv'"),
-                    n as i64
+                    n as i64 + 1
                 );
                 assert_eq!(class(&d.warnings), saturated(n + 1), "{n}");
                 assert_eq!(count, saturated(n + 1), "{n}");
@@ -1658,6 +1661,7 @@ fn assert_axis_flat(axis: Axis, sizes: &[u64]) {
             "{axis:?}: digest work grew at {n}: {observed:?}"
         );
     }
+    (units, digest_units)
 }
 
 // Wave-2 fix1 (a), bounded-walk invariant, pending-invitation axis: 10^3 and
@@ -1704,6 +1708,38 @@ fn undelivered_programmatic_axis_is_flat() {
 #[ignore = "writes 10^4 items through the real writers (60-180 s in debug under parallel load); run in release"]
 fn delivered_programmatic_axis_is_flat() {
     assert_axis_flat(Axis::ProgrammaticDelivered, &[1_000, 10_000]);
+}
+
+// The default-run cost guards for the backlog hook tests, whose wall clock is only a hang guard at
+// these sizes (`backlog_budget` in tests/hook_entrypoint.rs). VM work, so host load cannot touch
+// them. Past the 1,000 count cap the two sizes must cost the same, which catches a lost LIMIT; an
+// N+1 inside the capped window costs the same at both, so the work is also held to a ceiling, about
+// 5-10% over what these walks do today, a few VM steps per row of the window. A query that legitimately grows moves its ceiling.
+fn assert_axis_within(axis: Axis, sizes: &[u64], check_in_ceiling: u64, digest_ceiling: u64) {
+    let (check_in, digest) = assert_axis_flat(axis, sizes);
+    assert!(
+        check_in <= check_in_ceiling,
+        "{axis:?}: check-in vm units {check_in}"
+    );
+    assert!(
+        digest <= digest_ceiling,
+        "{axis:?}: digest vm units {digest}"
+    );
+}
+
+#[test]
+fn pending_invitations_past_the_count_cap_cost_the_same() {
+    assert_axis_within(Axis::PendingInvitations, &[1_001, 3_000], 2_600, 7_800);
+}
+
+#[test]
+fn pending_receipts_past_the_count_cap_cost_the_same() {
+    assert_axis_within(Axis::PendingReceipts, &[1_001, 3_000], 13_500, 13_400);
+}
+
+#[test]
+fn undelivered_notices_past_the_count_cap_cost_the_same() {
+    assert_axis_within(Axis::ProgrammaticUndelivered, &[1_001, 3_000], 2_900, 1_050);
 }
 
 // The four axes at 10^5 against 10^3 (release; writing 10^5 items through

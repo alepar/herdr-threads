@@ -4782,7 +4782,8 @@ fn hook_phase_capture_rejects_overflow_and_cross_window_handlers() {
 /// unbounded walk show in elapsed time; at the default sizes the hooks stay in the low hundreds of
 /// milliseconds with or without one, so the production budget there measures the host's load (over
 /// it at load 35, with every item correct). Those runs keep a hang guard, at the scale the hook
-/// child already runs under.
+/// child already runs under; `*_past_the_count_cap_cost_the_same` in tests/store/attention.rs are
+/// the default-run guard on what the budget would have caught, in VM work rather than time.
 fn backlog_budget(n: u64, production: Duration) -> Duration {
     if n >= 100_000 {
         production
