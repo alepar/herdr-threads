@@ -3833,6 +3833,34 @@ mod hc_closure {
     }
 
     #[test]
+    fn hc_restart_publishes_through_the_port() {
+        let env = env(true, true);
+        let record = |snapshot: crate::ports::HostSnapshot| {
+            let mut conn = env.context.open_writer().unwrap();
+            seats::record_snapshot(
+                &env.context,
+                &mut conn,
+                INSTANCE,
+                crate::test_support::test_host_id(),
+                snapshot,
+            )
+        };
+        let first = env.host.enumerate_targets(&call_context()).unwrap();
+        record(first.clone()).unwrap();
+        // A restarted daemon builds the host as the factory does, behind the port, and
+        // resumes after the persisted epoch: its first snapshot (sequence 1) is accepted.
+        let restarted: Arc<dyn HostPort> = Arc::new(HcHost::with_clock(
+            HcClient::new(env.fake.socket()),
+            Arc::new(FixedClock),
+        ));
+        restarted.resume_after_epoch(first.epoch);
+        let after = restarted.enumerate_targets(&call_context()).unwrap();
+        assert_eq!(after.observation_sequence, 1);
+        assert!(after.epoch > first.epoch);
+        record(after).unwrap();
+    }
+
+    #[test]
     fn same_id_restart_carry_forward_zero_transitions() {
         let mut env = env(true, true);
         assert!(
