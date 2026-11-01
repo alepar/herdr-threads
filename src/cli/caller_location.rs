@@ -96,6 +96,33 @@ pub enum LocatorError {
     InvalidName,
 }
 
+impl LocatorError {
+    /// The one-line CLI refusal for this error, when it has one (`TerminalWithoutSocket` is
+    /// reported as no caller, as before).
+    pub fn refusal(&self) -> Option<&'static str> {
+        match self {
+            Self::InvalidName => Some(M16),
+            Self::TerminalWithoutSocket => None,
+        }
+    }
+}
+
+/// M14 (63 bytes + the flag): an explicit cooperative flag beside a seat name.
+pub fn m14(flag: &str) -> String {
+    format!(
+        "herdr-threads: {} cannot be combined with {flag}",
+        named::ENV_SEAT_NAME
+    )
+}
+
+/// M15 (82 bytes): `me init` under a seat name.
+pub const M15: &str =
+    "herdr-threads: named person seats are not supported; unset HERDR_THREADS_SEAT_NAME";
+
+/// M16 (92 bytes): `HERDR_THREADS_SEAT_NAME` is set and is not a valid seat name.
+pub const M16: &str =
+    "herdr-threads: HERDR_THREADS_SEAT_NAME is not a valid seat name (1-64 bytes of A-Za-z0-9._-)";
+
 /// The caller-location variables of one process, empty values already dropped.
 #[derive(Debug, Clone, Default)]
 pub struct CallerEnv {

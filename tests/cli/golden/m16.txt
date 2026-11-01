@@ -1,0 +1,1 @@
+herdr-threads: HERDR_THREADS_SEAT_NAME is not a valid seat name (1-64 bytes of A-Za-z0-9._-)

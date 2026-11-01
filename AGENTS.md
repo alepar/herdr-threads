@@ -101,6 +101,7 @@ What we do today:
 - A submitted wake is closed-loop: when the ladder's next retry (>= 30 s) is due and no call claiming the seat reached the daemon since the reservation, the attempt is recorded `unreceived` (overdue warnings show `wake=unreceived`) and that attention is not retyped until the seat is heard from, a newer item arrives or its targets change; an agy wake left unsubmitted in the composer is cleared only while the composer holds exactly it: `AwaitingReceipt` in `src/scheduler/mod.rs`, `DeliveryPullState::record_contact`, `clear_own_wake_text` in `src/host/native.rs`.
 - Inbox ACKs on display, so reading needs no separate ACK call: `integrations/skill/SKILL.md` ("What an ACK means").
 - Agent-facing CLI output is compact: one row per item, ids not prose, `next:` continuation lines instead of dumps: `src/protocol/output_compact.rs`.
+- A named seat (`HERDR_THREADS_SEAT_NAME=<name>`, no Herdr pane) is a Named caller site: a valid name replaces only the target, an invalid one is refused (M16), and an explicit `--cooperative-*` flag (M14) or `me init` (M15) beside a name is refused; `watch` and the Claude mod never stop on `no_pane` for it, the mod forwards the name and `HERDR_THREADS_SEAT_READONLY` to its watch child, and the Hermes bridge takes the name from the gateway session's client env: `src/cli/caller_location.rs`, `src/cli/watch.rs` (`precheck`), `integrations/claude/mod/hooks/register.js`, `integrations/hermes/__init__.py` (`PANE_ENV`).
 
 ## Pre-release wake e2e
 

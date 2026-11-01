@@ -336,6 +336,11 @@ where
     W: Write,
 {
     let env = caller_location::CallerEnv::from_process();
+    if let Err(error) = env.locate(caller_location::EnvMode::Cli)
+        && let Some(line) = error.refusal()
+    {
+        return Err(invalid_request(line));
+    }
     let site = env.named().map(caller_location::CallerLocator::Named);
     let pane = cli_caller_pane(&env);
     run_in_site(argv, pane.as_deref(), site.as_ref(), writer)
@@ -521,6 +526,14 @@ fn run_parsed_in_pane<W: Write>(
         writer.flush()?;
         return Ok(());
     }
+    if let Some(caller_location::CallerLocator::Named(_)) = site {
+        if matches!(parsed.action, CliAction::MeInit { .. }) {
+            return Err(invalid_request(caller_location::M15));
+        }
+        if parsed.cooperative.is_some() {
+            return Err(invalid_request(&caller_location::m14("--cooperative-seat")));
+        }
+    }
     if handoff::launch_lacks_summary(&parsed.action) {
         eprintln!("{}", handoff::SUMMARY_HINT);
     }
@@ -546,7 +559,8 @@ fn run_parsed_in_pane<W: Write>(
                 .ok()
                 .as_deref(),
             caller_pane,
-            parsed.cooperative.is_some(),
+            parsed.cooperative.is_some()
+                || matches!(site, Some(caller_location::CallerLocator::Named(_))),
             matches!(&parsed.action, CliAction::Watch(_)),
             writer,
         )?;

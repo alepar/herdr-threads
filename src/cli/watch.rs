@@ -158,7 +158,8 @@ fn exit_result(code: i32) -> Result<(), RunError> {
 
 /// The checks that run before any connection or context read, in order:
 /// `HERDR_THREADS_MOD_DELIVERY=off` (both `watch` and `watch ack`), then, for
-/// `watch` only, a missing pane without `--cooperative-*` selection.
+/// `watch` only, a missing pane without `--cooperative-*` selection or a Named site (the
+/// caller said where it lives with `HERDR_THREADS_SEAT_NAME`, so a missing pane is not `no_pane`).
 pub(crate) fn precheck(
     mod_delivery: Option<&str>,
     caller_pane: Option<&str>,
