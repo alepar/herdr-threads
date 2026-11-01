@@ -435,3 +435,11 @@ fn daily_loop_uses_inbox_and_hook_notifications() {
     assert!(daily.contains("earlier context absent from inbox"));
     assert!(daily.contains("long inbox messages use inbox continuations"));
 }
+
+/// K1 (106 bytes): the named-seat line is in the skill exactly once.
+#[test]
+fn named_seat_line_k1_is_in_the_skill_once() {
+    let k1 = "Outside Herdr, set `HERDR_THREADS_SEAT_NAME=<name>` per command, never in a shell profile or a server env.";
+    assert_eq!(k1.len(), 106);
+    assert_eq!(crate::cli::skill::SKILL_MD.matches(k1).count(), 1);
+}

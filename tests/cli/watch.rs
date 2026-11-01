@@ -498,6 +498,48 @@ fn watch_global_host_failure_is_retryable_without_losing_diagnostics() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// Spike S3: a Named site has no pane, and `watch` never stops on `no_pane` for it. It passes
+/// the precheck and reaches the host (here an unreachable endpoint), where it fails retryably.
+#[test]
+fn named_site_watch_never_stops_on_no_pane() {
+    if std::env::var_os(crate::protocol::watch::MOD_DELIVERY_ENV).is_some() {
+        return;
+    }
+    let root = temp_dir("named-site");
+    let state = root.join("state");
+    let host = root.join("missing.sock");
+    let site = crate::cli::caller_location::CallerLocator::Named(
+        crate::protocol::ids::SeatName::parse("worker-1").unwrap(),
+    );
+    let mut out = Vec::new();
+    let error = crate::cli::run_in_site(
+        [
+            "herdr-threads",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--host-endpoint",
+            host.to_str().unwrap(),
+            "watch",
+            "--harness",
+            "claude",
+            "--session",
+            "s1",
+        ],
+        None,
+        Some(&site),
+        &mut out,
+    )
+    .unwrap_err();
+    assert_ne!(error.exit_code(), 3, "{error}");
+    assert!(
+        lines(&out)
+            .iter()
+            .all(|line| status_of(line).reason != Some(WatchStatusReason::NoPane)),
+        "no no_pane status"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn unlocated_caller_exits_2_no_binding() {
     let root = temp_dir("loc");

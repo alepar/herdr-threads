@@ -34,7 +34,7 @@ HOOKS = ("pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset
 CHILD_EVENTS = ("subagent_start", "subagent_stop")
 IDS = ("platform", "session_id", "parent_session_id", "task_id", "turn_id", "tool_call_id", "api_request_id")
 SLOT = "_herdr_threads_hermes_reader_schema1"
-PANE_ENV = ("HERDR_PANE_ID", "HERDR_ENV")
+PANE_ENV = ("HERDR_PANE_ID", "HERDR_ENV", "HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY")
 CHILD_RESTRICTION = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent."
 # First 16 SHA-256 hex chars of sorted compact JSON of the normalized schema
 # declaration in testdata/callbacks.json. This identifies transport, not the
@@ -335,7 +335,8 @@ def pane_env():
     The hook reads its pane only from HERDR_PANE_ID/HERDR_ENV (src/cli/hook.rs HookEnv). A classic
     CLI process is its pane's own, so it passes its environment on. In the shared gateway (Hermes
     0.22.1+) os.environ is the gateway's, inherited from whichever pane started it; there the pane
-    comes only from the session's client environment, which Hermes binds for that session's turns
+    (or its named seat, HERDR_THREADS_SEAT_NAME, which needs no pane) comes only from the session's
+    client environment, which Hermes binds for that session's turns
     (agent.session_client_env, carried by terminal.client_env_passthrough). A gateway turn without
     one refuses rather than claim the gateway's pane. The native module is observed, never imported.
     """
@@ -343,7 +344,7 @@ def pane_env():
     bound = getattr(scope, "bound_client_env", None)
     client = bound() if callable(bound) else None
     if isinstance(client, dict):
-        if not opaque(client.get("HERDR_PANE_ID")):
+        if not (opaque(client.get("HERDR_PANE_ID")) or opaque(client.get("HERDR_THREADS_SEAT_NAME"))):
             return False
         env = {key: value for key, value in os.environ.items() if key not in PANE_ENV}
         env.update({key: client[key] for key in PANE_ENV if isinstance(client.get(key), str)})

@@ -189,3 +189,72 @@ fn m2_golden() {
     assert!(refusal.m3().ends_with(&caller_guard::m2()));
     assert_eq!(refusal.m3().len(), 88 + 2 + 5 + 29);
 }
+
+fn named_locator() -> CallerLocator {
+    CallerLocator::Named(herdr_threads::protocol::ids::SeatName::parse("worker-1").unwrap())
+}
+
+fn run_named(argv: &[&str]) -> herdr_threads::cli::RunError {
+    let mut out = Vec::new();
+    let locator = named_locator();
+    herdr_threads::cli::run_in_site(argv.iter().copied(), None, Some(&locator), &mut out)
+        .unwrap_err()
+}
+
+fn detail(error: herdr_threads::cli::RunError) -> String {
+    match error {
+        herdr_threads::cli::RunError::Api(api) => api.detail,
+        other => panic!("not an API error: {other:?}"),
+    }
+}
+
+#[test]
+fn m14_m15_m16_goldens() {
+    use herdr_threads::cli::caller_location::{M15, M16, m14};
+    assert_eq!(
+        format!("{}\n", m14("--cooperative-seat")),
+        include_str!("golden/m14.txt")
+    );
+    assert_eq!(m14("").len(), 63);
+    assert_eq!(format!("{M15}\n"), include_str!("golden/m15.txt"));
+    assert_eq!(M15.len(), 82);
+    assert_eq!(format!("{M16}\n"), include_str!("golden/m16.txt"));
+    assert_eq!(M16.len(), 92);
+}
+
+#[test]
+fn invalid_name_maps_to_m16_and_other_errors_to_no_line() {
+    use herdr_threads::cli::caller_location::{LocatorError, M16};
+    for value in ["-bad", "has space", &"a".repeat(65)] {
+        let e = env(&[("HERDR_THREADS_SEAT_NAME", value)]);
+        let error = e.locate(EnvMode::Cli).unwrap_err();
+        assert_eq!(error.refusal(), Some(M16), "{value}");
+    }
+    assert_eq!(LocatorError::TerminalWithoutSocket.refusal(), None);
+}
+
+#[test]
+fn me_init_under_a_name_is_refused_with_m15() {
+    let error = run_named(&["herdr-threads", "human", "me", "init"]);
+    assert_eq!(detail(error), herdr_threads::cli::caller_location::M15);
+}
+
+#[test]
+fn explicit_cooperative_flags_under_a_name_are_refused_with_m14() {
+    let error = run_named(&[
+        "herdr-threads",
+        "--cooperative-seat",
+        "s123",
+        "--cooperative-target",
+        "w1:p1",
+        "--cooperative-harness",
+        "claude",
+        "--cooperative-role",
+        "top-level",
+        "inbox",
+    ]);
+    assert_eq!(
+        detail(error),
+        herdr_threads::cli::caller_location::m14("--cooperative-seat")
+    );
+}
