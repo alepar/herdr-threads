@@ -264,6 +264,7 @@ fn view(seat_name: &str, generation: u64, fingerprint: ModFingerprint) -> ModSea
             connected: true,
             ended_at: None,
             disconnect_reason: None,
+            readonly: false,
         }),
         attention_version: fingerprint.attention_version,
         fingerprint: ModFingerprint {

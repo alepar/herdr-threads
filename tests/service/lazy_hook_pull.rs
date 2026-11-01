@@ -206,6 +206,18 @@ fn check_in_as(
     session: &str,
     pid: u32,
 ) -> CallerClaim {
+    check_in_flagged(f, seat, target, harness, session, pid, false)
+}
+
+fn check_in_flagged(
+    f: &Fixture,
+    seat: &str,
+    target: &str,
+    harness: Harness,
+    session: &str,
+    pid: u32,
+    readonly: bool,
+) -> CallerClaim {
     let claim = CallerClaim {
         host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
@@ -220,7 +232,7 @@ fn check_in_as(
         liveness: Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 }),
     };
     let command = Command::CheckIn(CheckIn {
-        readonly: false,
+        readonly,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },
@@ -599,4 +611,39 @@ fn hook_pull_lazy_row_completed_by_one_binding_is_not_reoffered_to_it() {
         vec![MessageId::new("msg-lz5")],
         "A's own stream still has it"
     );
+}
+
+/// Kills: a read-only binding (D3, `CheckIn.readonly` through the daemon) that is offered a
+/// receipt-bearing row by its hook pull, or that settles it through a delivery confirm, while
+/// the writable sibling of the same seat is offered it and settles it.
+#[test]
+fn hook_pull_readonly_binding_skips_receipt_rows_and_the_writable_sibling_settles() {
+    let f = fixture();
+    let writable = check_in_as(&f, "s", "p", fourth(), "na", 2001);
+    let readonly = check_in_flagged(&f, "s", "p", fourth(), "nb", 2002, true);
+    let ro_binding = binding_of(&f, &readonly);
+    assert!(crate::store::bindings::is_readonly(&f.db, &ro_binding).unwrap());
+    assert!(
+        !crate::store::bindings::is_readonly(&f.db, &binding_of(&f, &writable)).unwrap(),
+        "the flag is per binding"
+    );
+    receivable_ordinary(&f, "s", "msg-ro", "x");
+    assert!(
+        offered(&f, &readonly).is_empty(),
+        "a read-only hook offers no receipt-bearing row"
+    );
+    let state: String =
+        f.db.query_row(
+            "SELECT state FROM receipts WHERE message_id='msg-ro' AND seat_id='s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "pending");
+    assert_eq!(offered(&f, &writable), vec![MessageId::new("msg-ro")]);
+    assert_eq!(
+        confirm(&f, &writable, "msg-ro", "dc-w"),
+        DeliveryConfirmOutcome::Settled
+    );
+    assert_eq!(receipt_row(&f, "msg-ro").0, "acked");
 }

@@ -1410,7 +1410,12 @@ fn mod_seat_view_mode(
         }
     }
     .filter(|row| &row.seat == seat);
+    let readonly = match &row {
+        Some(row) => super::bindings::is_readonly(db, &row.binding_id)?,
+        None => false,
+    };
     let binding = row.map(|row| ModBindingView {
+        readonly,
         generation: row.generation,
         provenance: row.provenance,
         harness: row.harness,
