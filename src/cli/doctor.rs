@@ -243,6 +243,22 @@ fn unattachable_hosts_report(node_dir: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
+/// Restored named seats that lost their name to a live seat of that name (D12): `{seat, name,
+/// holder}` each. Read-only from the store file; no store or an older schema names nothing.
+fn held_names_report(node_dir: &std::path::Path) -> Vec<Value> {
+    let Some(conn) = open_store_read_only(node_dir) else {
+        return Vec::new();
+    };
+    crate::store::seats::held_names(&conn)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|held| {
+            json!({"seat": held.seat.as_str(), "name": held.name,
+                   "holder": held.holder.as_ref().map(|h| h.as_str())})
+        })
+        .collect()
+}
+
 /// How long doctor waits for one stored host's socket to classify itself.
 const DOCTOR_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -1073,6 +1089,7 @@ fn report_captured(
     let mut daemon_limitations: Vec<String> = Vec::new();
     let mut unattachable_hosts: Vec<Value> = Vec::new();
     let mut mismatched_hosts: Vec<Value> = Vec::new();
+    let mut held_names: Vec<Value> = Vec::new();
     match resolved {
         Err(error) => {
             report["daemon"] = json!({"state": "unavailable", "error": error.to_string()});
@@ -1085,6 +1102,7 @@ fn report_captured(
             report["node_dir"] = json!(paths.node_dir.display().to_string());
             unattachable_hosts = unattachable_hosts_report(&paths.node_dir);
             mismatched_hosts = kind_mismatch_hosts_report(&paths.node_dir);
+            held_names = held_names_report(&paths.node_dir);
             report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
             report["harness_manifest"] = harness_manifest_report(
                 &paths.node_dir,
@@ -1207,6 +1225,15 @@ fn report_captured(
             host["probed"].as_str().unwrap_or_default()
         ));
     }
+    for held in &held_names {
+        let holder = held["holder"].as_str().unwrap_or("none");
+        limitations.push(format!(
+            "seat {} holds name '{}' (seat {} owns it): `seat retire SEAT --operator` of either",
+            held["seat"].as_str().unwrap_or_default(),
+            held["name"].as_str().unwrap_or_default(),
+            holder
+        ));
+    }
     let (xdg, home) = super::instance::state_candidates(
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
         std::env::var_os("XDG_STATE_HOME")
@@ -1222,6 +1249,9 @@ fn report_captured(
     report["other_stores"] = json!(extra_stores);
     report["hosts"] =
         json!({"unattachable": unattachable_hosts, "kind_mismatch": mismatched_hosts});
+    if !held_names.is_empty() {
+        report["held_names"] = json!(held_names);
+    }
     if !limitations.is_empty() && result == "ok" {
         result = "degraded";
     }

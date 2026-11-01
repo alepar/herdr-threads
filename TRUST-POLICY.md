@@ -175,7 +175,9 @@ Named rule. The named host is not host evidence and never closes by absence: rec
 an operator or the seat itself retires one). A named seat never rebinds onto a pane or terminal target, and a pane or
 terminal seat never rebinds onto the named host (cross-kind refusal in `rebind_unresolved_seat`, which also skips a
 host kind outside the implemented set); cooperative continuity by native session never matches a named seat. The named
-host never satisfies `wait:host`: an own-seat restore needs a Herdr or herdr-core host row.
+host never satisfies `wait:host`: an own-seat restore needs a Herdr or herdr-core host row, and an unnamed
+restored seat goes to a host row only when every non-named host row of the node has one kind (else the entry waits
+for the operator on `wait:host`).
 
 A herdr-threads daemon upgrade can leave a still-running native session needing recovery;
 C1 does not require that session to restart or emit a resumed SessionStart. Non-resume
@@ -1906,6 +1908,18 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
   is display and the `name@node` selector, a cooperative claim of the seat's home node: two seats of one
   name on a node make `name@node` a refused conflict, never a pick, and no name feeds routing, wake or
   attribution. Names never change after publication.
+
+- Named-seat restore (D12, SA4, N3-restore). An own `seat.created` with a `display_name` pulled back after a wipe
+  restores unresolved on the named host at target = name. When a non-retired local seat of that name already
+  exists there, resolved or unresolved (the rows `seats_live_name` covers), the restored row is inserted with
+  `name` NULL, the held marker; its held name is the `display_name` of its own `seat.created` fact (nothing new
+  is stored, no `allocation_decisions` kind). Limit: there is no merge and no automatic pick. A resolve of the
+  name keeps reaching the existing seat and named continuity never reattaches the held row. The held row gets
+  the name only in the retire transaction of the existing seat (`human seat retire SEAT --operator` or
+  `seat retire --self`), which hands it to the oldest held row of that name (by `created_at`, then id); named
+  continuity then reattaches it on the next resolve. Retiring the held row leaves the existing seat alone.
+  `seat inspect` shows the held name as `hold: reason_data held_name:<name>` and `doctor` lists each held seat
+  with the seat that owns the name. Two live candidates never trade a name.
 
 - Read-only bindings (D3, SA7). A caller whose environment carries `HERDR_THREADS_SEAT_READONLY=1` has its
   binding recorded `occupant_bindings.readonly = 1` by its check-in (the flag only rises; the CLI sends it,

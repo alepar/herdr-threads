@@ -551,7 +551,8 @@ fn operator_retire(
 
 /// The retirement body shared by operator and cooperative self retirement: begins the bounded
 /// retirement cutover for the live local `seat`, authors `seat.retired` with `wire` and records
-/// the local `allocation_decisions` row under `label`. The caller has already checked that the
+/// the local `allocation_decisions` row under `label`, then hands the retired seat's name to the oldest
+/// held seat of that name (D12). The caller has already checked that the
 /// seat is live and local.
 pub(crate) fn retire_seat(
     tx: &Transaction<'_>,
@@ -604,6 +605,7 @@ pub(crate) fn retire_seat(
     )?;
     tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
             params![host.get(),target,seat.as_str(),at.utc.0,boot,epoch,generation,label]).map_err(store_error)?;
+    super::publication::hand_back_name(tx, instance, seat)?;
     lift_baseline_hold_if_clear(tx, instance, host, at.utc)?;
     Ok(())
 }
