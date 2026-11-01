@@ -22,7 +22,7 @@ use crate::{
     store::seats::{mutate_operator, resolve_named_seat},
     sync::facts::{
         payload::SeatKind,
-        seat::{SeatCreated, SeatCreatedPayload},
+        seat::{RetireReason, SeatCreated, SeatCreatedPayload, SeatRetiredPayload},
     },
 };
 use rusqlite::Connection;
@@ -165,6 +165,56 @@ impl Fx {
             None,
         )
         .unwrap();
+    }
+
+    /// A fresh seat id of this node.
+    fn fresh_seat() -> SeatId {
+        let uuid = crate::test_support::test_node_seed().uuid;
+        SeatId::new(generate_public_id(prefix::SEAT, &tag_for(uuid, 0)))
+    }
+
+    /// Replays an own-log `seat.created` through its materializer (`local_origin: true`).
+    fn replay_created(
+        &mut self,
+        seat: &SeatId,
+        display_name: Option<&str>,
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        let payload = SeatCreatedPayload {
+            seat: seat.clone(),
+            kind: SeatKind::Agent,
+            display_name: display_name.map(str::to_owned),
+        };
+        self.context.execute_decision(
+            &mut self.conn,
+            |_| Ok(()),
+            |tx, at, ()| {
+                let m = crate::store::materialize::local_only(tx, at)?;
+                crate::store::seats::materialize_seat_created(tx, &m, &payload)
+            },
+        )
+    }
+
+    /// Replays an own-log `seat.retired` through its materializer (`local_origin: true`).
+    fn replay_retired(&mut self, seat: &SeatId) -> Result<(), crate::protocol::results::ApiError> {
+        let payload = SeatRetiredPayload {
+            seat: seat.clone(),
+            reason: RetireReason::Operator,
+            retired_at: self.clock.0.load(Ordering::SeqCst),
+        };
+        self.context.execute_decision(
+            &mut self.conn,
+            |_| Ok(()),
+            |tx, at, ()| {
+                let m = crate::store::materialize::local_only(tx, at)?;
+                crate::store::seats::materialize_seat_retired(tx, &m, &payload)
+            },
+        )
+    }
+
+    fn retirement_rows(&self) -> i64 {
+        self.conn
+            .query_row("SELECT count(*) FROM retirements", [], |r| r.get(0))
+            .unwrap()
     }
 
     /// `(state, host_id, name, target_id, published)` of `seat`.
@@ -509,4 +559,73 @@ fn s5_unnamed_restored_row_held_unresolved_on_two_kind_node() {
             );
         }
     }
+}
+
+// Kills: a local-origin `seat.retired` replay that returns at once, so an own retired named seat
+// restored after a wipe stays `unresolved` and keeps the name its successor needs.
+#[test]
+fn own_log_retire_keeps_the_retired_seat_retired() {
+    let mut f = fixture();
+    let a = Fx::fresh_seat();
+    let b = Fx::fresh_seat();
+    f.replay_created(&a, Some("w")).unwrap();
+    f.replay_retired(&a).unwrap();
+    f.replay_created(&b, Some("w")).unwrap();
+    assert_eq!(f.row(&a).0, "retired");
+    assert_eq!(f.row(&b).2.as_deref(), Some("w"), "B holds the name");
+    assert_eq!(f.row(&b).0, "unresolved");
+    let (resolved, created) = f.resolve("w", "op-1");
+    assert_eq!((resolved.as_str(), created), (b.as_str(), false));
+    assert_eq!(f.row(&a).0, "retired");
+}
+
+// Kills: a replayed own retirement that leaves a held row of the name nameless.
+#[test]
+fn replayed_retire_hands_the_name_to_a_held_row() {
+    let mut f = fixture();
+    let (a, _) = f.resolve("w", "op-1");
+    let b = f.restore(Some("w")).unwrap();
+    assert_eq!(f.row(&b).2, None, "B restored held");
+    f.replay_retired(&a).unwrap();
+    assert_eq!(f.row(&a).0, "retired");
+    assert_eq!(f.row(&b).2.as_deref(), Some("w"), "B takes the name");
+}
+
+// Kills: a transition that runs again for a row the live retire already retired (a second
+// `retirements` row, or a moved `retired_seq`).
+#[test]
+fn live_node_retire_echo_changes_nothing() {
+    let mut f = fixture();
+    let (a, _) = f.resolve("w", "op-1");
+    f.retire(&a, "retire-1");
+    let before = f.retirement_rows();
+    assert_eq!(before, 1);
+    let seq_before: Option<i64> = f
+        .conn
+        .query_row(
+            "SELECT retired_seq FROM seats WHERE id=?1",
+            [a.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    f.replay_retired(&a).unwrap();
+    assert_eq!(f.retirement_rows(), before);
+    let seq_after: Option<i64> = f
+        .conn
+        .query_row(
+            "SELECT retired_seq FROM seats WHERE id=?1",
+            [a.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(seq_after, seq_before);
+}
+
+// Kills: a local-origin retirement of a seat that never had a row here turning into an error.
+#[test]
+fn local_retire_of_an_unknown_seat_is_ok() {
+    let mut f = fixture();
+    let ghost = Fx::fresh_seat();
+    f.replay_retired(&ghost).unwrap();
+    assert_eq!(f.retirement_rows(), 0);
 }
