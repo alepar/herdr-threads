@@ -555,18 +555,27 @@ impl Cluster {
         let _ = fs::write(self.down_flag(node), b"");
         let _ = self.daemon_verb(node, "stop");
         let endpoint = self.nodes[node].state.join("node").join("endpoint.json");
-        self.wait_until(
-            &format!("node {} to withdraw its endpoint", self.nodes[node].name),
-            Duration::from_secs(60),
-            || (!endpoint.exists()).then_some(()),
-        );
         // The endpoint goes first; the daemon is gone when it has let go of its
-        // owner lease (its WAL is then checkpointed and closed).
+        // owner lease (its WAL is then checkpointed and closed). A pump already
+        // past the down flag can elect a successor in between (ht-d79n): an
+        // endpoint still published a second on is that daemon, and it gets the
+        // same stop. The flag keeps any later pump out.
         let lease = self.nodes[node].state.join("node").join("owner.lock");
+        let mut stop_again = Instant::now() + Duration::from_secs(1);
         self.wait_until(
             &format!("node {} to release its owner lease", self.nodes[node].name),
             Duration::from_secs(60),
-            || lease_released(&lease).then_some(()),
+            || {
+                let published = endpoint.exists();
+                if !published && lease_released(&lease) {
+                    return Some(());
+                }
+                if published && Instant::now() >= stop_again {
+                    let _ = self.daemon_verb(node, "stop");
+                    stop_again = Instant::now() + Duration::from_secs(1);
+                }
+                None
+            },
         );
         self.nodes[node].up = false;
     }
@@ -1070,19 +1079,24 @@ impl Cluster {
         // daemon. A pump already past this gate can still win the election;
         // start_node attaches the host to that store-only winner too.
         let _ = fs::write(self.down_flag(node), b"");
+        let endpoint = self.nodes[node].state.join("node").join("endpoint.json");
+        let stopping = fs::read(&endpoint).ok();
         let out = self.human(node, &["sync", "resync", "--from", from]);
         if out.status.success() {
-            let endpoint = self.nodes[node].state.join("node").join("endpoint.json");
+            // A pump past the flag may start the rebuild in between, publishing its own endpoint
+            // before a poll sees the gap: its daemon holds the lease and start_node attaches to
+            // it, so another boot's endpoint ends both waits.
+            let successor = || fs::read(&endpoint).is_ok_and(|now| Some(now) != stopping);
             self.wait_until(
                 &format!("node {} to stop for the resync", self.nodes[node].name),
                 Duration::from_secs(60),
-                || (!endpoint.exists()).then_some(()),
+                || (!endpoint.exists() || successor()).then_some(()),
             );
             let lease = self.nodes[node].state.join("node").join("owner.lock");
             self.wait_until(
                 &format!("node {} to release its owner lease", self.nodes[node].name),
                 Duration::from_secs(60),
-                || lease_released(&lease).then_some(()),
+                || (lease_released(&lease) || successor()).then_some(()),
             );
             self.nodes[node].up = false;
             self.start_node(node);

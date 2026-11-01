@@ -20,8 +20,9 @@ for k in $(seq 1 "$runs"); do
     cargo nextest run --locked --all-targets --all-features </dev/null >"$log" 2>&1
     status=$?
     secs=$(( $(date +%s) - start ))
-    leaks=$(cd / && "$root/scripts/check-no-leaked-processes" --run-id "$HT_LEAK_RUN_ID" --root "$root" 2>&1 \
-        | grep -E 'rule=run-id' | grep -v 'check-no-leaked' || true)
+    # Captured first: a `grep` in this pipeline carries the run id and the check can list it.
+    report=$(cd / && "$root/scripts/check-no-leaked-processes" --run-id "$HT_LEAK_RUN_ID" --root "$root" 2>&1)
+    leaks=$(printf '%s\n' "$report" | grep -E 'rule=run-id' | grep -v 'check-no-leaked' || true)
     if [ "$status" -ne 0 ] || [ -n "$leaks" ]; then
         echo "run $k: RED (exit $status, ${secs}s) after $green consecutive green; log $log" | tee -a "$out/summary"
         grep -E '^ +(FAIL|SIGSEGV|SIGABRT|TIMEOUT) |^test .*FAILED|panicked at' "$log" | head -20 | tee -a "$out/summary"

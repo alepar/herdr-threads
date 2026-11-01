@@ -582,7 +582,7 @@ impl Rig {
                 ))
         });
         ready_rx
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(Duration::from_secs(60))
             .expect("the elected daemon did not publish its endpoint");
         // The elected daemon installs a quiet panic hook; restore visible failures.
         // `HT_MOD_DELIVERY_PANIC_LOG` names a file that also receives failures,

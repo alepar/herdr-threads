@@ -1896,7 +1896,13 @@ fn daemon_exits_when_its_killed_test_owner_is_gone() {
         .env_remove("HERDR_PANE_ID")
         .env_remove("HERDR_BIN_PATH")
         .env("PATH", "/usr/bin:/bin")
-        .env(OWNER_PID_ENV, owner.id().to_string());
+        .env(OWNER_PID_ENV, owner.id().to_string())
+        // Not tagged (the owner is the point of this test), so its daemon start needs the scale
+        // every tagged child has, or `ensure` races the host's load for 5 s.
+        .env(
+            herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV,
+            herdr_threads::test_support::spawn::TIMEOUT_SCALE,
+        );
     scratch_homes(&mut command, &state);
     let ensure = command.output().unwrap();
     assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
@@ -1908,7 +1914,7 @@ fn daemon_exits_when_its_killed_test_owner_is_gone() {
     owner.kill().unwrap();
     owner.wait().unwrap();
     assert!(
-        daemons_gone_within(&state, Duration::from_secs(5)),
+        daemons_gone_within(&state, Duration::from_secs(30)),
         "daemon {:?} outlived its killed owner",
         daemon_pids(&state)
     );

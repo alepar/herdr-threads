@@ -509,6 +509,8 @@ fn fitted_view_reaches_every_row_through_source_cursors() {
 
 #[test]
 fn rendered_actions_execute_as_shell_commands() {
+    let zsh =
+        herdr_threads::test_support::zsh_present("rendered_actions_execute_as_shell_commands");
     let mut reader = PagedReader {
         rows: (0..2)
             .map(|i| ThreadSummary {
@@ -559,6 +561,9 @@ fn rendered_actions_execute_as_shell_commands() {
             .expect(label);
         let script = format!("herdr-threads() {{ printf '%s\\0' \"$@\"; }}; {command}");
         for shell in ["bash", "zsh"] {
+            if shell == "zsh" && !zsh {
+                continue;
+            }
             let output = std::process::Command::new(shell)
                 .arg("-c")
                 .arg(&script)

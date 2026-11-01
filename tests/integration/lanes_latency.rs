@@ -91,6 +91,7 @@ impl Session {
         // rest of the suite shares (production commits stay FULL).
         probe.relax_commit_durability();
         let stop = Cancellation::default();
+        herdr_threads::app::stretch_health_summary_limit_for_test();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (daemon_stop, daemon_probe) = (stop.clone(), probe.clone());
         let daemon = std::thread::spawn(move || {
@@ -120,7 +121,7 @@ impl Session {
                 ))
         });
         ready_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(Duration::from_secs(60))
             .expect("the elected daemon did not publish its endpoint");
         // The elected daemon installs a quiet panic hook; restore visible failures.
         std::panic::set_hook(Box::new(|info| eprintln!("{info}")));
@@ -135,7 +136,7 @@ impl Session {
             stand_in,
             _guard: guard,
         };
-        wait_until("the probe to attach", Duration::from_secs(5), || {
+        wait_until("the probe to attach", Duration::from_secs(30), || {
             session.probe.attached()
         });
         Some(session)

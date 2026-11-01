@@ -31,13 +31,13 @@ fn wait_idle(pacer: &Pacer, n: u64) {
         std::thread::sleep(Duration::from_millis(1));
     }
 }
-type Lane = mpsc::Receiver<(Wake, Instant)>;
+type Lane = mpsc::Receiver<Wake>;
 fn spawn_lane(pacer: &Pacer, tick_ms: u64) -> Lane {
     let (tx, rx) = mpsc::channel();
     let p = pacer.clone();
     std::thread::spawn(move || {
         let w = p.wait_blocking(Duration::from_millis(tick_ms));
-        let _ = tx.send((w, Instant::now()));
+        let _ = tx.send(w);
     });
     rx
 }
@@ -47,14 +47,30 @@ fn expect_blocked(rx: &Lane) {
         "lane returned early"
     );
 }
-fn expect_wake(rx: &Lane, since: Instant, want: Wake) {
-    let (w, at) = rx.recv_timeout(Duration::from_secs(2)).expect("lane stuck");
+/// A lane the event failed to notify stays parked in its real condvar wait, so this bound tells a
+/// notified lane from a missed notification, as long as the wait outlasts it: `TICK_PARK` on a
+/// tick, and `deep_backoff` where a backoff sets the wait (a first failure parks for only ~100 ms,
+/// which a missed notification would sleep through inside the bound). Anything under the bound is
+/// the scheduler's latency, not the pacer's: a notified thread can run 100 ms late on a loaded
+/// host (ht-0yg4).
+const WAKE_BOUND: Duration = Duration::from_secs(2);
+const TICK_PARK: Duration = Duration::from_millis(5_000);
+const _: () = assert!(WAKE_BOUND.as_millis() < TICK_PARK.as_millis());
+
+/// Fails `pacer` until its retry is far enough off that the real wait outlasts `WAKE_BOUND`;
+/// returns the retry time.
+fn deep_backoff(pacer: &Pacer) -> u64 {
+    let mut at = 0;
+    for _ in 0..9 {
+        at = pacer.on_failure().0;
+    }
+    assert!(at >= 20_000, "9th failure nominal is 25.6 s, got {at}");
+    at
+}
+
+fn expect_wake(rx: &Lane, want: Wake) {
+    let w = rx.recv_timeout(WAKE_BOUND).expect("lane stuck");
     assert_eq!(w, want);
-    assert!(
-        at.saturating_duration_since(since) < Duration::from_millis(20),
-        "woke {:?} after the event",
-        at.saturating_duration_since(since)
-    );
 }
 
 fn nominal(n: u32) -> f64 {
@@ -149,22 +165,20 @@ fn kick_wakes_a_blocked_lane_immediately() {
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 1);
     std::thread::sleep(Duration::from_millis(30));
-    let kicked = Instant::now();
     pacer.kick();
-    expect_wake(&rx, kicked, Wake::Kicked);
+    expect_wake(&rx, Wake::Kicked);
 }
 
 #[test]
 fn retry_due_wakes_at_next_retry_at() {
     let (clock, _c, pacer) = setup();
-    let at = pacer.on_failure().0;
+    let at = deep_backoff(&pacer);
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 1);
     advance(&clock, &pacer, at - 1);
     expect_blocked(&rx);
-    let t = Instant::now();
     advance(&clock, &pacer, 1);
-    expect_wake(&rx, t, Wake::RetryDue);
+    expect_wake(&rx, Wake::RetryDue);
 }
 
 #[test]
@@ -174,9 +188,8 @@ fn tick_fires_at_the_safety_tick() {
     wait_idle(&pacer, 1);
     advance(&clock, &pacer, 4_999);
     expect_blocked(&rx);
-    let t = Instant::now();
     advance(&clock, &pacer, 1);
-    expect_wake(&rx, t, Wake::Tick);
+    expect_wake(&rx, Wake::Tick);
 }
 
 #[test]
@@ -184,12 +197,11 @@ fn cancel_wakes_and_stops() {
     let (_clock, cancel, pacer) = setup();
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 1);
-    let t = Instant::now();
     cancel.cancel();
-    expect_wake(&rx, t, Wake::Cancelled);
+    expect_wake(&rx, Wake::Cancelled);
     let t = Instant::now();
-    assert_eq!(pacer.wait_blocking(Duration::from_secs(5)), Wake::Cancelled);
-    assert!(t.elapsed() < Duration::from_millis(20));
+    assert_eq!(pacer.wait_blocking(TICK_PARK), Wake::Cancelled);
+    assert!(t.elapsed() < WAKE_BOUND);
 }
 
 #[test]
@@ -200,7 +212,7 @@ fn kicked_return_restarts_the_full_tick() {
     advance(&clock, &pacer, 3_000);
     pacer.kick();
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(2)).unwrap().0,
+        rx.recv_timeout(Duration::from_secs(2)).unwrap(),
         Wake::Kicked
     );
     // New call at fake t=3000: the old tick would end at 5000.
@@ -210,51 +222,43 @@ fn kicked_return_restarts_the_full_tick() {
     expect_blocked(&rx);
     advance(&clock, &pacer, 2_999);
     expect_blocked(&rx);
-    let t = Instant::now();
     advance(&clock, &pacer, 1);
-    expect_wake(&rx, t, Wake::Tick);
+    expect_wake(&rx, Wake::Tick);
 }
 
 #[test]
 fn kick_during_backoff_is_latched_not_shortening() {
     let (clock, _c, pacer) = setup();
-    let at = pacer.on_failure().0;
+    let at = deep_backoff(&pacer);
     pacer.kick();
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 1);
     expect_blocked(&rx);
     advance(&clock, &pacer, at - 1);
     expect_blocked(&rx);
-    let t = Instant::now();
     advance(&clock, &pacer, 1);
-    expect_wake(&rx, t, Wake::RetryDue);
+    expect_wake(&rx, Wake::RetryDue);
     // The RetryDue return drained the latched kick.
     pacer.on_success();
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 2);
     expect_blocked(&rx);
-    let t = Instant::now();
     advance(&clock, &pacer, 5_000);
-    expect_wake(&rx, t, Wake::Tick);
+    expect_wake(&rx, Wake::Tick);
 }
 
 #[test]
 fn tick_does_not_cut_a_backoff_short() {
     let (clock, _c, pacer) = setup();
-    let mut at = 0;
-    for _ in 0..9 {
-        at = pacer.on_failure().0;
-    }
-    assert!(at >= 20_000, "9th failure nominal is 25.6 s, got {at}");
+    let at = deep_backoff(&pacer);
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 1);
     advance(&clock, &pacer, 5_000);
     expect_blocked(&rx);
     advance(&clock, &pacer, at - 5_001);
     expect_blocked(&rx);
-    let t = Instant::now();
     advance(&clock, &pacer, 1);
-    expect_wake(&rx, t, Wake::RetryDue);
+    expect_wake(&rx, Wake::RetryDue);
 }
 
 #[test]
@@ -268,7 +272,7 @@ fn idle_hook_fires_once_per_drain() {
         wait_idle(&pacer, i);
         pacer.kick();
         assert_eq!(
-            rx.recv_timeout(Duration::from_secs(2)).unwrap().0,
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             Wake::Kicked
         );
     }
@@ -306,23 +310,21 @@ async fn async_wait_kick_and_cancel() {
 #[test]
 fn explicit_kick_during_backoff_runs_a_pass_and_keeps_the_schedule() {
     let (clock, _c, pacer) = setup();
-    let at = pacer.on_failure().0;
+    let at = deep_backoff(&pacer);
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 1);
     expect_blocked(&rx);
-    let t = Instant::now();
     pacer.kick_explicit();
-    expect_wake(&rx, t, Wake::Kicked);
-    // The schedule is untouched: still one attempt, same retry time.
-    assert_eq!(pacer.attempts(), 1);
+    expect_wake(&rx, Wake::Kicked);
+    // The schedule is untouched: same attempts, same retry time.
+    assert_eq!(pacer.attempts(), 9);
     assert_eq!(pacer.next_retry_at().map(|m| m.0), Some(at));
     // The explicit latch is consumed: the next wait blocks until RetryDue.
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 2);
     expect_blocked(&rx);
-    let t = Instant::now();
     advance(&clock, &pacer, at);
-    expect_wake(&rx, t, Wake::RetryDue);
+    expect_wake(&rx, Wake::RetryDue);
 }
 
 #[test]
@@ -333,7 +335,7 @@ fn explicit_kick_also_consumes_an_ordinary_latched_kick() {
     pacer.kick_explicit();
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 1);
-    expect_wake(&rx, Instant::now(), Wake::Kicked);
+    expect_wake(&rx, Wake::Kicked);
     let rx = spawn_lane(&pacer, 5_000);
     wait_idle(&pacer, 2);
     expect_blocked(&rx); // no second Kicked from the ordinary latch

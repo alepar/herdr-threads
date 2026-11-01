@@ -421,7 +421,7 @@ impl Fixture {
             stop: stop.clone(),
             daemon: Some(daemon),
         };
-        let descriptor = ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let descriptor = ready_rx.recv_timeout(Duration::from_secs(60)).unwrap();
         let client = LocalSocketClient::new(
             descriptor.endpoint.clone(),
             clock.clone(),

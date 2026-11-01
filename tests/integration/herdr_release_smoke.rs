@@ -1784,6 +1784,7 @@ fn herdr_release_live_handoff() {
     let (sender_pane, _sender) = m.person_seat("handoff-sender");
     let status = m.status(&agent_pane);
     let woken = wakes();
+    let sent = Instant::now();
     m.person(
         &sender_pane,
         &[
@@ -1810,7 +1811,9 @@ fn herdr_release_live_handoff() {
     } else {
         wait_for(
             "the p0 wake held for an agent Herdr reports not awaiting input",
-            Duration::from_secs(30),
+            // Usually under a second. When the first attempt logs no refusal the next chance is the
+            // wake ladder's retry, at 30 s or later, so a 30 s wait raced it (ht-caa5).
+            Duration::from_secs(90),
             || {
                 let lane = m.wake_lane_log();
                 if lane
@@ -1819,14 +1822,18 @@ fn herdr_release_live_handoff() {
                 {
                     Ok(())
                 } else {
-                    Err(format!("status {status}; daemon: {lane:?}"))
+                    Err(format!(
+                        "status {status}; wakes since the send: {}; daemon: {lane:?}",
+                        wakes() - woken
+                    ))
                 }
             },
         );
         assert_eq!(wakes(), woken, "a wake was typed into a non-idle agent");
         println!(
-            "herdr {}: agent status `{status}` after the handoff; wake held until it redraws",
-            m.version
+            "herdr {}: agent status `{status}` after the handoff; wake held until it redraws ({:?} after the send)",
+            m.version,
+            sent.elapsed()
         );
     }
 
