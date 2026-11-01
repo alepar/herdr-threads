@@ -1350,17 +1350,28 @@ class BusyBarrier:
                           "    time.sleep(.02)\n")
         return shlex.join([sys.executable, str(helper)])
 
-    def wait_entered(self, timeout=60, throttled=None, throttled_timeout=180):
+    def wait_entered(self, timeout=60, throttled=None, throttled_timeout=180, idle=None, resubmit=None):
         """Wait for the held tool to start. A provider rate limit backs the agent off before its first tool call (Codex
         waited 58-99 s after a 429 in the 2.5.0 qualification): when `throttled()` names one at `timeout`, the wait
         runs on to `throttled_timeout`, and a tool that still never entered fails as provider throttled. Returns the
         throttle a late entry waited out (row evidence), else None. The tool's watchdog counts from its own start, so a
-        longer entry wait never shortens the hold."""
-        end, cause = time.monotonic() + timeout, None
+        longer entry wait never shortens the hold.
+
+        Entering the tool is this case's setup, not what it asserts. A model can pass `timeout` before its first tool
+        call with no throttle to name (Codex at load 35 in the 2.8.3 qualification): the wait then runs on to
+        `throttled_timeout` too, on what `idle()` observes. A recipient back at idle has no turn that will ever run the
+        tool, so `resubmit()` sends the prompt once more."""
+        end, cause, late = time.monotonic() + timeout, None, False
         while not (self.path / "entered").exists():
             if time.monotonic() >= end:
                 if cause is None and throttled is not None and (cause := throttled()):
                     end += throttled_timeout - timeout
+                    continue
+                if idle is not None and cause is None and not late:
+                    late = True
+                    end += throttled_timeout - timeout
+                    if idle():
+                        resubmit()
                     continue
                 raise RuntimeError(f"provider throttled ({cause}); busy tool did not enter" if cause
                                    else "busy tool did not enter")
@@ -1750,6 +1761,20 @@ class Recipient:
             return None
         return lambda: codex_throttle(self.run.codex_home, since)
 
+    def enter_busy(self, hold, prompt):
+        """Submit the held turn's `prompt` and wait for its tool to start (`wait_entered` says what a late tool means).
+        Returns the row's evidence: the throttle waited out, and whether the setup needed a second prompt."""
+        since, resent = time.time(), []
+
+        def resubmit():
+            resent.append(True)
+            self.run.herdr("agent", "prompt", self.pane, prompt)
+
+        self.run.herdr("agent", "prompt", self.pane, prompt)
+        throttled = hold.wait_entered(throttled=self.throttle_probe(since), idle=lambda: self.status() in IDLE,
+                                      resubmit=resubmit)
+        return throttled, bool(resent)
+
     # ---------- busy cases ----------
     def busy_case(self, case, record=None):
         action, channel = case.split("/")
@@ -1767,13 +1792,13 @@ class Recipient:
                 prompt = BUSY_TOOL_PROMPT.format(tag=tag, hold=hold.command(), tool=BUSY_TOOL[self.harness].format(dir=hold.path))
             else:
                 prompt = (BUSY_FAIL_PROMPT if fail else BUSY_PROMPT).format(tag=tag, hold=hold.command())
-            since = time.time()
-            self.run.herdr("agent", "prompt", self.pane, prompt)
-            throttled = hold.wait_entered(throttled=self.throttle_probe(since))
+            throttled, resubmitted = self.enter_busy(hold, prompt)
             busy_at_send = self.status()
             checks = {"busy_at_send": busy_at_send}
             if throttled:
                 checks["provider_throttled"] = throttled
+            if resubmitted:
+                checks["busy_prompt_resubmitted"] = True
             role = "main"
             if kind == "invite" and channel == "1:1":
                 # First contact from the fresh coordinator, mid-turn: the pair auto-joins (no invitation) and the opener
@@ -1862,13 +1887,13 @@ class Recipient:
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
         with BusyBarrier(self.run.root) as hold:
-            since = time.time()
-            self.run.herdr("agent", "prompt", self.pane, EOT_PROMPT.format(tag=tag, hold=hold.command()))
-            throttled = hold.wait_entered(throttled=self.throttle_probe(since))
+            throttled, resubmitted = self.enter_busy(hold, EOT_PROMPT.format(tag=tag, hold=hold.command()))
             busy_at_send = self.status()
             checks = {"busy_at_send": busy_at_send}
             if throttled:
                 checks["provider_throttled"] = throttled
+            if resubmitted:
+                checks["busy_prompt_resubmitted"] = True
             mid = self.send("p0", f"{case} {self.run.run_id}", direct=False)
             hold.assert_held()
         anchor = f"End-of-turn test {tag}"

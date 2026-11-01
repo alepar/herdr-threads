@@ -201,6 +201,43 @@ class ProviderThrottle(TempDir):
                 hold.wait_entered(timeout=0.05, throttled=lambda: None, throttled_timeout=60)
             self.assertLess(time.monotonic() - t0, 5, "no throttle evidence must not widen the wait")
 
+    def test_slow_turn_runs_on_without_a_second_prompt(self):
+        children = []
+        with W.BusyBarrier(self.tmp) as hold:
+            late = threading.Timer(0.3, lambda: children.append(subprocess.Popen(shlex.split(hold.command()))))
+            late.start()
+            sent = []
+            try:
+                cause = hold.wait_entered(timeout=0.05, idle=lambda: False, resubmit=lambda: sent.append(1),
+                                          throttled_timeout=5)
+            finally:
+                late.join()
+            self.assertIsNone(cause)
+            self.assertEqual(sent, [], "a working recipient already has the prompt")
+        children[0].wait(timeout=2)
+
+    def test_recipient_back_at_idle_gets_the_prompt_once_more(self):
+        children = []
+        with W.BusyBarrier(self.tmp) as hold:
+            sent = []
+
+            def resubmit():
+                sent.append(1)
+                children.append(subprocess.Popen(shlex.split(hold.command())))
+
+            hold.wait_entered(timeout=0.05, idle=lambda: True, resubmit=resubmit, throttled_timeout=5)
+            self.assertEqual(sent, [1])
+        children[0].wait(timeout=2)
+
+    def test_tool_that_never_enters_after_the_second_prompt_still_fails(self):
+        with W.BusyBarrier(self.tmp) as hold:
+            sent = []
+            t0 = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, "^busy tool did not enter$"):
+                hold.wait_entered(timeout=0.02, idle=lambda: True, resubmit=lambda: sent.append(1), throttled_timeout=0.2)
+            self.assertLess(time.monotonic() - t0, 5)
+            self.assertEqual(sent, [1], "one resubmission, never a loop")
+
     def test_only_codex_recipients_probe_the_codex_log(self):
         self.log((1100, "codex_core::responses_retry", self.RETRY_429))
         recipient = object.__new__(W.Recipient)
