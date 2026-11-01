@@ -1756,9 +1756,9 @@ fn restored_pane_evidence(
         )
         .map_err(store_error)?;
     // Any kept row blocks, whatever its age: `kept_continuity::due` prunes
-    // expired rows only after a refusal-free pass, so while passes are refused
-    // an old row may be a live session's only claim (it never refreshes
-    // `received_at`). Failing safe here costs a delay, never a seat.
+    // expired rows only after a recorded pass, so while a refusal holds the
+    // marker back an old row may be a live session's only claim (it never
+    // refreshes `received_at`). Failing safe here costs a delay, never a seat.
     let kept_claim: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims k WHERE k.host_id=?1 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=?2 AND b.role='top_level' AND b.agent_id='' AND b.harness=k.harness AND b.native_session=k.native_session))",
@@ -2229,8 +2229,9 @@ pub(crate) fn lift_baseline_hold_if_clear(
     Ok(true)
 }
 
-/// Persist that the saved-seat pass of `published` finished with no refused
-/// transition, then run the hold lift in the same transaction. Writes only
+/// Persist that the saved-seat pass of `published` finished with no refusal
+/// that could still change a C1 answer or the unresolved set (TRUST-POLICY C2),
+/// then run the hold lift in the same transaction. Writes only
 /// while `published` is still the active publication of the instance's current
 /// recovery boot/epoch. Returns whether `published` was current, so that the
 /// marker now names its boot/epoch (false for a stale publication); the
