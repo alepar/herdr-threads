@@ -3013,7 +3013,8 @@ pub struct LaunchGateView {
     /// The asked attempt is the bootstrap's current one.
     pub current_attempt: bool,
     pub cancelled: bool,
-    /// The bootstrap Send is published (`handoff::automatic::published_send`).
+    /// The bootstrap Send is published (`handoff::automatic::published_send`), or for a peer
+    /// launch's gate-only record the creation is recorded (N15).
     pub send_staged: bool,
 }
 

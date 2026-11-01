@@ -5,6 +5,8 @@
 //!   this node acts, its progress (`running` with the pane once a tab exists,
 //!   then `launched`, `refused` or `failed`), the restart rule (a `running`
 //!   row is failed `interrupted`, never resumed) and the 7-day retention.
+//!   For a peer launch onto a herdr-core, the row also holds the launch gate's
+//!   gate-only record (`gate_attempt`, `gate_created`) and its read, `gate_view`.
 //! - Hides: the SQL and the plan's JSON form.
 //! - Must not: decide whether to launch (the peer launcher does), or record
 //!   anything for a seat as its actor: every row is the requesting node's.
@@ -134,6 +136,73 @@ pub fn record(
         params![id, state, pane, seat, detail, now],
     )?;
     Ok(changed == 1)
+}
+
+/// The attempt of a peer launch's gate: a request is never retried here (N15).
+pub const GATE_ATTEMPT: u32 = 1;
+
+/// Makes `id` a gate-only record, before its terminal exists: the shim is told to wait,
+/// not refused as unknown.
+pub fn open_gate(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE peer_requests SET gate_attempt=?2 WHERE id=?1",
+        params![id, GATE_ATTEMPT],
+    )?;
+    Ok(())
+}
+
+/// The creation, seat and terminal of a gate-only record, and its outcome, in one write:
+/// the view releases the gate on this row, so the seat always precedes the gate.
+pub fn record_gate_launch(
+    conn: &Connection,
+    id: &str,
+    created: &str,
+    pane: &str,
+    seat: &str,
+    now: i64,
+) -> rusqlite::Result<bool> {
+    let changed = conn.execute(
+        "UPDATE peer_requests SET state='launched', gate_created=?2, pane=?3, seat=?4, \
+         updated_at=?5 WHERE id=?1 AND state='running' AND gate_attempt IS NOT NULL",
+        params![id, created, pane, seat, now],
+    )?;
+    Ok(changed == 1)
+}
+
+/// The launch gate's read of a gate-only record; `None` for no row or a row without a gate.
+/// There is no local Send on a peer launch (N15), so a recorded creation is the release.
+pub fn gate_view(
+    db: &Connection,
+    id: &str,
+    attempt: crate::protocol::handoff::BootstrapAttempt,
+) -> Result<Option<crate::ports::LaunchGateView>, crate::protocol::results::ApiError> {
+    use crate::store::connection::store_error;
+    let found: Option<(u32, Option<String>, String)> = db
+        .query_row(
+            "SELECT gate_attempt, gate_created, state FROM peer_requests \
+             WHERE id=?1 AND gate_attempt IS NOT NULL",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((gate_attempt, created, state)) = found else {
+        return Ok(None);
+    };
+    let created = created
+        .map(|text| serde_json::from_str::<crate::ports::CreatedTarget>(&text))
+        .transpose()
+        .map_err(|e| {
+            crate::protocol::results::ApiError::store_corrupt(format!(
+                "peer launch gate record: {e}"
+            ))
+        })?;
+    Ok(Some(crate::ports::LaunchGateView {
+        send_staged: created.is_some(),
+        created,
+        current_attempt: gate_attempt == attempt.get(),
+        cancelled: matches!(state.as_str(), "failed" | "refused"),
+    }))
 }
 
 /// Rows are pruned only here, at daemon start; the duplicate guard of an id

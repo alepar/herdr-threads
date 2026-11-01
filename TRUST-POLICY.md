@@ -58,6 +58,11 @@ Amended 2026-10-27 for restored-pane retirement (ht-wpq4): a seat a new Herdr in
 when the pane watched at its target closes within that incarnation and no claim names it for an observed grace
 (C2); the retirement records `closure_evidence = restored_pane_closed`, two accepted limits; no new wire value.
 
+Amended 2026-11-01 for peer launch onto a herdr-core (ht-kqrt.143): the launch gate of a peer-requested launch reads a
+gate-only record on the `peer_requests` row and is released by its recorded creation, and this node's launcher
+allocates the seat with `managed_launch` provenance before the gate opens (N15, the launch gate paragraph in H3, an
+accepted limit); no new provenance or wire value.
+
 Amended 2026-10-27 for remote addresses (`SEAT@MACHINE`, phase 1): a seat name qualified by a machine is resolved
 by that machine's daemon over an authenticated direct link, as a read (N14, the cross-node accepted limit "A
 linked node answers remote resolution"); N13 unchanged; no new provenance value.
@@ -1836,7 +1841,7 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs
 `src/service/remote_resolver.rs`).
 
 **N15. A peer-requested launch is this node's decision; a cross-node handoff is the sender's facts.**
-- *A new terminal on a herdr-core* (`LaunchTarget::NewTerminal`, cap `peer.launch.terminal.v1`) is sent only to a peer that advertised the cap and is decided here like any peer launch: the terminal gets no parent and no caller (`internal peer-target-create`, alias `peer-tab-create`), and its seat arrives only through the launch gate's own bootstrap, never from the request.
+- *A new terminal on a herdr-core* (`LaunchTarget::NewTerminal`, cap `peer.launch.terminal.v1`) is sent only to a peer that advertised the cap and is decided here like any peer launch: the terminal gets no parent and no caller (`internal peer-target-create`, alias `peer-tab-create`), and no seat arrives from the request. This node's launcher allocates the seat, for a new terminal and for a new tab on a herdr-core alike, after the terminal exists and before its gate opens: an ordinary guarded resolution of that terminal with no caller, then a `managed_launch` binding on the gate shim's process, the same process the harness becomes. The launch stays attributed to the peer node in its `peer_requests` row (`peer_request:<node_uuid>`); the binding's provenance is `managed_launch`, as for a Herdr peer launch (a binding carrying the peer provenance would fall out of every `managed_launch` check, such as the first check-in's replacement of the placeholder). The requesting seat is not used, no bootstrap record exists here and nothing is sent here: the gate reads a gate-only record on the `peer_requests` row (see the launch gate paragraph in H3).
 - *Handoff into an existing remote seat* adds no remote action. The thread, invitation, task message and ACK
   request are facts authored by the sender's home node for the sender's seat (A2 there, N3, N4), addressed to a
   seat the sender's node holds as remote (N5); the recipient's home node delivers and wakes them under the
@@ -2601,6 +2606,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   also reveals panes that hold no seat (`no_seat` with its path and pane ID) and every candidate of an ambiguous
   name, more than `seat_status` shares; in-contract between this user's own nodes (A1). Design
   `docs/superpowers/specs/2026-10-27-remote-addresses-design.md`.
+- **A harness launched for a peer on a herdr-core can start before its task exists.** The gate releases on the
+  recorded creation, not on a Send (N15), so the agent may start idle and receive the task by normal delivery once
+  the sender's node authors it, or never, if that node goes away first. The same holds for a Herdr peer launch. The
+  seat and a live terminal remain; `keep: false` retires the seat when the worker exits.
 - **Any linked node can launch agents here.** A node with a direct link and `peer.launch.v1` can make this node
   open a tab and start an agent in a workspace of this node's Herdr, with any registered harness, profile and
   argv and any existing directory as `cwd`: what `ssh <this node> herdr-threads launch` could do as the same
@@ -2884,7 +2893,7 @@ a label, never a path the client names) and authorizes only when the attempt is 
 creation's witness is that core and `tN`, a fresh same-response `terminal.get` through an attached host session
 shows that terminal on that core and serving process, and the bootstrap Send is already published. The Send is staged
 before the reply, so a harness never runs before its first message exists (C4: the recipient's receipt keeps its
-honest availability and deadline). The wait polls the view with one short read per poll, holding no store turn and no
+honest availability and deadline). One exception, a peer-requested launch onto a herdr-core (N15): there is no bootstrap here and no local Send, because the request carries no task and the sender's home node authors it after `Launched{seat}`. Its gate reads a gate-only record on the `peer_requests` row (attempt and `CreatedTarget`, behind the same view), and a recorded creation, written in one update with the launcher's seat, releases it, so that harness can start before its first message exists, as a Herdr peer launch does (Accepted limits). A local handoff into a herdr-core always needs its staged Send; a peer row never stands in for it. The wait polls the view with one short read per poll, holding no store turn and no
 writer lane, and is bounded by the request's `timeout_ms` (at most 30 s) and the call budget; a mismatch, a stale or
 unknown bootstrap, a cancelled bootstrap or the deadline is a refusal and the shim exits without `exec`. A refusal
 authorizes nothing and records nothing. `handoff --new-tab --space`, `--new-terminal` and a plain-shell handoff
