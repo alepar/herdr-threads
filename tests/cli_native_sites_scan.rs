@@ -15,7 +15,6 @@ const KEPT: &[(&str, &str, usize, &str)] = &[
     ("mod.rs", "run_parsed_in_pane", 1, "pane observation"),
     ("mod.rs", "run_launch", 1, "launch"),
     ("handoff.rs", "run", 1, "handoff"),
-    ("peer_launch.rs", "create_tab", 1, "launch"),
     ("topology_runtime.rs", "run", 1, "handoff"),
     ("topology_runtime.rs", "run_operator", 2, "handoff"),
 ];

@@ -6,7 +6,7 @@
 //!   on one attached host and is not held, a new tab's workspace and `cwd`
 //!   exist here), recording it in `peer_requests` before acting, and running
 //!   it as children of this binary with a scrubbed environment: for a new tab
-//!   `internal peer-tab-create` (label ending `[from <tag>]`), then the
+//!   `internal peer-target-create` (label ending `[from <tag>]`), then the
 //!   ordinary `launch --pane`, so the launch is exactly a local `launch`.
 //! - Hides: the child processes and their output.
 //! - Must not: act as the requesting seat or as this node's operator, resume
@@ -199,6 +199,19 @@ pub(crate) fn creation_hosts(sessions: &HostSessions) -> Vec<Arc<HostSession>> {
         .collect()
 }
 
+/// The dialled hosts a new tab or terminal may be created on: the guarded-start Herdr
+/// servers and the herdr-core servers (their creation is `CreateTargetPort::create_target`).
+pub(crate) fn target_hosts(sessions: &HostSessions) -> Vec<Arc<HostSession>> {
+    let mut hosts = creation_hosts(sessions);
+    hosts.extend(
+        sessions
+            .attached()
+            .into_iter()
+            .filter(|session| session.port().kind() == crate::ports::HostKind::Hc),
+    );
+    hosts
+}
+
 /// Where one accepted request launches.
 struct Placement {
     session: Arc<HostSession>,
@@ -273,7 +286,27 @@ impl PeerLaunchService {
         let budget = self.budget();
         let mut found: Vec<Placement> = Vec::new();
         let mut failed = false;
-        let sessions = creation_hosts(&self.sessions);
+        let new_target = !matches!(target, LaunchTarget::Pane { .. });
+        let sessions = if new_target {
+            target_hosts(&self.sessions)
+        } else {
+            creation_hosts(&self.sessions)
+        };
+        if let LaunchTarget::NewTerminal { .. } = target {
+            // A terminal lives on a herdr-core, which has no panes to read.
+            let mut cores: Vec<_> = sessions
+                .into_iter()
+                .filter(|s| s.port().kind() == crate::ports::HostKind::Hc)
+                .collect();
+            return match cores.len() {
+                1 => Ok(Placement {
+                    session: cores.remove(0),
+                    target: String::new(),
+                }),
+                0 => Err(refused("no herdr-core is attached here")),
+                n => Err(refused(format!("ambiguous herdr-core: {n} attached here"))),
+            };
+        }
         if sessions.is_empty() {
             return Err(LaunchState::Unavailable {
                 reason: "no Herdr server is attached here".into(),
@@ -314,7 +347,7 @@ impl PeerLaunchService {
                             }),
                     );
                 }
-                LaunchTarget::Unknown => {}
+                LaunchTarget::NewTerminal { .. } | LaunchTarget::Unknown => {}
             }
         }
         let what = match target {
@@ -448,13 +481,17 @@ impl PeerLaunchService {
             return Ok(row.answer());
         }
         let plan = &request.plan;
-        let new_tab = matches!(plan.target, LaunchTarget::NewTab { .. });
+        let new_tab = matches!(
+            plan.target,
+            LaunchTarget::NewTab { .. } | LaunchTarget::NewTerminal { .. }
+        );
         let plan_text = serde_json::to_string(plan).unwrap_or_default();
         let row = PeerRequest {
             id: id.clone(),
             node_uuid: from.to_string(),
             requester_seat: (!request.requester_seat.is_empty())
                 .then(|| clamp_detail(&request.requester_seat)),
+            // The table's CHECK knows two kinds; a terminal is a new target like a tab.
             kind: if new_tab { "new_tab" } else { "pane" }.into(),
             plan: plan_text,
             state: "running".into(),
@@ -532,6 +569,7 @@ impl PeerLaunchService {
             clock: Arc::clone(&self.clock),
             state_dir: self.state_dir.clone(),
             endpoint: placement.session.locator().as_path().to_path_buf(),
+            hc: placement.session.port().kind() == crate::ports::HostKind::Hc,
             log: Arc::clone(&self.log),
         };
         let request = request.clone();
@@ -582,7 +620,7 @@ pub fn plan_refusal(plan: &crate::sync::frame::LaunchPlan, plan_bytes: usize) ->
             clamp_detail(&plan.kind)
         ));
     }
-    if let LaunchTarget::NewTab { label, .. } = &plan.target
+    if let LaunchTarget::NewTab { label, .. } | LaunchTarget::NewTerminal { label } = &plan.target
         && label.trim_start().starts_with('-')
     {
         return Some("a tab label must not start with -".into());
@@ -590,17 +628,43 @@ pub fn plan_refusal(plan: &crate::sync::frame::LaunchPlan, plan_bytes: usize) ->
     None
 }
 
-/// The `internal peer-tab-create` arguments of a new tab: its label ends in
-/// `[from <tag>]`, the requesting node.
-pub fn tab_args(workspace: &str, label: &str, tag: &str, cwd: &str) -> Vec<String> {
+/// The `internal peer-target-create` arguments of a new tab (`workspace` names its
+/// workspace) or, with no workspace, a new terminal: its label ends in `[from <tag>]`, the
+/// requesting node. `gate_argv` is what a herdr-core terminal starts.
+pub fn target_args(
+    workspace: Option<&str>,
+    label: &str,
+    tag: &str,
+    cwd: &str,
+    gate_argv: &[String],
+) -> Vec<String> {
     // `--flag=value`: a value can never be read as another flag.
-    vec![
+    let mut args = vec!["internal".into(), "peer-target-create".into()];
+    match workspace {
+        Some(workspace) => args.push(format!("--workspace={workspace}")),
+        None => args.push("--new-terminal".into()),
+    }
+    args.push(format!("--label={} [from {tag}]", label.trim()));
+    args.push(format!("--cwd={cwd}"));
+    if !gate_argv.is_empty() {
+        args.push("--".into());
+        args.extend(gate_argv.iter().cloned());
+    }
+    args
+}
+
+/// What a herdr-core terminal of a peer launch starts: this binary's launch gate around the
+/// harness (the gate shim, ht-kqrt.54, owns the rest of the argv).
+pub fn gate_argv(program: &Path, plan: &crate::sync::frame::LaunchPlan) -> Vec<String> {
+    let mut argv = vec![
+        program.display().to_string(),
         "internal".into(),
-        "peer-tab-create".into(),
-        format!("--workspace={workspace}"),
-        format!("--label={} [from {tag}]", label.trim()),
-        format!("--cwd={cwd}"),
-    ]
+        "launch-gate".into(),
+        format!("--kind={}", plan.kind),
+        "--".into(),
+    ];
+    argv.extend(plan.argv.iter().cloned());
+    argv
 }
 
 /// The ordinary `launch --pane` arguments of `plan` on `pane`.
@@ -628,6 +692,8 @@ struct Worker {
     clock: Arc<dyn Clock>,
     state_dir: PathBuf,
     endpoint: PathBuf,
+    /// The host is a herdr-core: its terminals start the gate argv themselves.
+    hc: bool,
     log: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -847,33 +913,61 @@ impl Worker {
     fn run_to_outcome(&self, request: &LaunchRequest, target: String) {
         let plan = &request.plan;
         let pane = match &plan.target {
-            LaunchTarget::NewTab { label, .. } => {
-                let out = self.child(&tab_args(
-                    &target,
+            LaunchTarget::NewTab { label, .. } | LaunchTarget::NewTerminal { label } => {
+                let workspace =
+                    matches!(plan.target, LaunchTarget::NewTab { .. }).then_some(target.as_str());
+                let gate = if self.hc {
+                    gate_argv(&Self::program(), plan)
+                } else {
+                    Vec::new()
+                };
+                let out = self.child(&target_args(
+                    workspace,
                     label,
                     &self.tag,
                     plan.cwd.as_deref().unwrap_or_default(),
+                    &gate,
                 ));
-                let pane = serde_json::from_str::<serde_json::Value>(out.stdout.trim())
-                    .ok()
-                    .and_then(|v| v["pane"].as_str().map(str::to_owned));
-                match (out.ok, pane) {
+                let value = serde_json::from_str::<serde_json::Value>(out.stdout.trim()).ok();
+                let created = value.as_ref().and_then(|v| {
+                    v["pane"]
+                        .as_str()
+                        .or_else(|| v["terminal"].as_str())
+                        .map(str::to_owned)
+                });
+                match (out.ok, created) {
+                    // A herdr-core terminal runs the gate itself: nothing more to start
+                    // here (the seat arrives through the gate's bootstrap).
+                    (true, Some(terminal)) if self.hc => {
+                        self.record("running", Some(&terminal), None, None);
+                        (self.log)(&format!(
+                            "peer launch {} from {}: created {terminal}",
+                            short(&self.id),
+                            self.tag
+                        ));
+                        return;
+                    }
                     (true, Some(pane)) => {
                         self.record("running", Some(&pane), None, None);
                         pane
                     }
-                    // Killed before it answered: the tab may exist.
+                    // Killed before it answered: the target may exist.
                     _ if out.may_have_started() => {
                         return self.fail(
                             None,
                             &format!(
-                                "tab creation: {}; a tab may have been created in workspace {target} here",
-                                out.error
+                                "creation: {}; a tab or terminal may have been created in {} here",
+                                out.error,
+                                if workspace.is_some() {
+                                    format!("workspace {target}")
+                                } else {
+                                    "the herdr-core".to_owned()
+                                }
                             ),
                         );
                     }
                     _ => {
-                        return self.fail(None, &format!("tab creation: {}", out.error));
+                        return self.fail(None, &format!("creation: {}", out.error));
                     }
                 }
             }
@@ -975,18 +1069,40 @@ mod tests {
         };
         assert_eq!(launch.target.as_str(), "w1:p2");
         assert_eq!(launch.argv, ["--model", "x"]);
-        let crate::cli::commands::CliAction::InternalPeerTabCreate {
-            workspace,
+        let crate::cli::commands::CliAction::InternalPeerTargetCreate {
+            spec,
             label,
             cwd,
-        } = parse(tab_args("w1", " review ", "Q0V", "/work"))
+            gate_argv,
+        } = parse(target_args(Some("w1"), " review ", "Q0V", "/work", &[]))
         else {
             panic!("a tab creation")
         };
         assert_eq!(
-            (workspace.as_str(), label.as_str(), cwd.to_str()),
-            ("w1", "review [from Q0V]", Some("/work"))
+            (spec, label.as_str(), cwd.to_str(), gate_argv.len()),
+            (
+                crate::cli::peer_launch::TargetSpec::Tab("w1".into()),
+                "review [from Q0V]",
+                Some("/work"),
+                0
+            )
         );
+        let gate = vec!["/bin/ht".to_owned(), "--x".into()];
+        let crate::cli::commands::CliAction::InternalPeerTargetCreate {
+            spec, gate_argv, ..
+        } = parse(target_args(None, "term", "Q0V", "/work", &gate))
+        else {
+            panic!("a terminal creation")
+        };
+        assert_eq!(spec, crate::cli::peer_launch::TargetSpec::Terminal);
+        assert_eq!(gate_argv, gate);
+        // The previous name parses to the same action.
+        let mut old = target_args(Some("w1"), "x", "Q0V", "/work", &[]);
+        old[1] = "peer-target-create".into();
+        assert!(matches!(
+            parse(old),
+            crate::cli::commands::CliAction::InternalPeerTargetCreate { .. }
+        ));
         assert_eq!(clamp_detail(&"é".repeat(600)).len(), 1024);
     }
 

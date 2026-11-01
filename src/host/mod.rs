@@ -58,6 +58,7 @@ pub mod native;
 pub mod observation;
 pub mod probe;
 pub mod process_table;
+pub mod target_creator;
 mod transport;
 
 pub mod continuity;

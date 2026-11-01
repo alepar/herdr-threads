@@ -219,6 +219,9 @@ mod node_status;
 #[path = "multinode/peer_hygiene.rs"]
 mod peer_hygiene;
 
+#[path = "multinode/peer_launch_terminal.rs"]
+mod peer_launch_terminal;
+
 #[path = "multinode/seat_status.rs"]
 mod seat_status;
 

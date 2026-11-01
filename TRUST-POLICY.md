@@ -1719,6 +1719,7 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs
 `src/service/remote_resolver.rs`).
 
 **N15. A peer-requested launch is this node's decision; a cross-node handoff is the sender's facts.**
+- *A new terminal on a herdr-core* (`LaunchTarget::NewTerminal`, cap `peer.launch.terminal.v1`) is sent only to a peer that advertised the cap and is decided here like any peer launch: the terminal gets no parent and no caller (`internal peer-target-create`, alias `peer-tab-create`), and its seat arrives only through the launch gate's own bootstrap, never from the request.
 - *Handoff into an existing remote seat* adds no remote action. The thread, invitation, task message and ACK
   request are facts authored by the sender's home node for the sender's seat (A2 there, N3, N4), addressed to a
   seat the sender's node holds as remote (N5); the recipient's home node delivers and wakes them under the

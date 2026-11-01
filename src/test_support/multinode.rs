@@ -508,6 +508,38 @@ impl Cluster {
         self.start_store_only(node);
     }
 
+    /// Restarts `node`'s daemon with the server on `endpoint` (a herdr-core socket, say) as
+    /// its startup host, and waits until its `herdr_hosts` holds a row.
+    pub fn restart_with_host(&mut self, node: usize, endpoint: &Path) {
+        self.stop_node(node);
+        let output = self
+            .iso
+            .command(&self.bin)
+            .envs(self.nodes[node].env.iter().map(|(k, v)| (k, v)))
+            .arg("--state-dir")
+            .arg(&self.nodes[node].state)
+            .arg("--host-endpoint")
+            .arg(endpoint)
+            .args(["daemon", "ensure"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "daemon ensure of node {}: {output:?}",
+            self.nodes[node].name
+        );
+        self.nodes[node].up = true;
+        let _ = fs::remove_file(self.down_flag(node));
+        self.wait_until(
+            &format!("node {} to attach its host", self.nodes[node].name),
+            Duration::from_secs(60),
+            || {
+                self.scalar(node, "SELECT count(*) FROM herdr_hosts", &[])
+                    .filter(|n| n != "0")
+            },
+        );
+    }
+
     /// Starts `node`'s daemon the way a peer does: a `peer --stdio` pump
     /// ensures it (store-only, no Herdr server attached), prints the preamble
     /// and is let go.
