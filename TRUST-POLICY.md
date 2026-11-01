@@ -2892,6 +2892,12 @@ authorizes nothing and records nothing. `handoff --new-tab --space`, `--new-term
 and `--new-thread` into a herdr-core target are refused before any creation, and an in-place launch into `tN` is
 refused by the host's `native_launch_capability() == Unsupported`.
 
+Launch closure is the terminal's finality (H3-launch-final). The gate shim `exec`s the harness as the terminal's root, and
+every launch is `keep: false`, so the harness exiting finishes the terminal for good and the D10 row "`finished`, `keep`
+false, any reason" retires the launched seat through the pane-close fence. This is the core's own final record, not an
+inference from the agent's exit: no launched seat is left unresolved or waiting for a restart. A harness that is not the
+terminal's root (a shell-rooted terminal) still ends only its binding.
+
 ## Bounded invitation presentation (2026-10-11)
 
 Invitation presentation is cooperative FULL OFFER evidence after complete stdout
