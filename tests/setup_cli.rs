@@ -6674,6 +6674,52 @@ fn baked_state_dir_equals_named_discovery() {
     assert_eq!(rel(&baked, &s), rel(&found, &d));
 }
 
+/// On an hc-only machine (a herdr-core state dir, no `herdr` on PATH) setup bakes `--state-dir`
+/// and no `--host-endpoint`, and a herdr-core terminal caller's discovery resolves that same dir.
+/// Kills: a TUI host endpoint baked for a machine with no Herdr, and Terminal-site discovery
+/// refusing or querying `herdr` instead of taking the default dir.
+#[test]
+fn hc_only_setup_bakes_state_dir_no_host_endpoint() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)");
+    let core = s.home.join(".local/state/herdr-core/main");
+    fs::create_dir_all(&core).unwrap();
+    fs::write(core.join("core.json"), r#"{"id":"core-1"}"#).unwrap();
+    let out = s
+        .command(&s.root)
+        .args(["setup", "claude", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    let state = standalone_state(&s);
+    let argv: Vec<String> = serde_json::from_value(report["hook_argv"].clone()).unwrap();
+    assert_eq!(
+        argv[1..3],
+        ["--state-dir".to_owned(), state.display().to_string()]
+    );
+    assert!(!argv.iter().any(|a| a == "--host-endpoint"), "{argv:?}");
+    let settings = fs::read_to_string(s.settings()).unwrap();
+    assert!(settings.contains("'--state-dir'"), "{settings}");
+    assert!(!settings.contains("--host-endpoint"), "{settings}");
+
+    // A herdr-core terminal caller on a fresh machine takes the same default dir.
+    let d = Scratch::new();
+    let doctor = d
+        .command(&d.root)
+        .env("HC_TERMINAL_ID", "t1")
+        .env("HC_TERMINAL_SOCKET", d.root.join("hc.sock"))
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    let found: serde_json::Value = serde_json::from_slice(&doctor.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}{}", text(&doctor.stdout), text(&doctor.stderr)));
+    assert_eq!(
+        found["doctor"]["context"]["state_dir"],
+        standalone_state(&d).display().to_string()
+    );
+}
+
 /// With a `herdr` on PATH the default-state-dir behaviour is unchanged: no standalone dir, no
 /// marker, and a missing plugin is refused (golden: the refusal text and no writes).
 #[test]
