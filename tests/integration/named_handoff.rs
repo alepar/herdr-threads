@@ -165,6 +165,127 @@ fn handoff_from_named_seat_into_isolated_herdr_pane() {
     drop(db);
 }
 
+/// `launch --kind codex` into `pane` with the stand-in, from the operator side (the endpoint is
+/// given): the peer seat a named caller then hands off to.
+fn launch_peer(m: &Matrix, pane: &str) -> String {
+    wait_for("peer launched", Duration::from_secs(30), || {
+        let mut command = m.cli();
+        m.globals(&mut command);
+        command
+            .args([
+                "launch",
+                "--kind",
+                "codex",
+                "--pane",
+                pane,
+                "--harness-binary",
+            ])
+            .arg(m.bin.join("codex"));
+        let (code, stdout, stderr) = run(command, None);
+        if code != Some(0) {
+            return Err(format!("{stdout} {stderr}"));
+        }
+        let out: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| e.to_string())?;
+        out["launch"]["seat"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| stdout.clone())
+    })
+}
+
+/// A named caller `alice` and a live pane seat; `handoff --existing --seat PEER` as alice, with
+/// `extra` after the verb. (code, stdout, stderr).
+fn named_existing(m: &Matrix, peer: &str, body: &str) -> (Option<i32>, String, String) {
+    let mut command = named(m, "alice", "s-alice");
+    command
+        .arg("--json")
+        .arg("--state-dir")
+        .arg(state_dir(m))
+        .args(["handoff", "--existing", "--seat", peer, "--", body]);
+    run(command, None)
+}
+
+// Kills: a `handoff --existing` that dials the reserved named locator as a Herdr server (it
+// always takes the topology runtime, not `handoff::run`), a frozen namespace or output context
+// carrying the locator instead of the lazily resolved endpoint, and a frozen claim that is not
+// the reserved locator.
+#[test]
+fn handoff_existing_seat_from_named_seat() {
+    if !herdr_present() {
+        println!("skipped: no herdr: handoff_existing_seat_from_named_seat");
+        return;
+    }
+    let m = Matrix::new("named-existing");
+    m.setup("codex");
+    let peer_pane = m.workspace("named-existing-peer");
+    let peer = launch_peer(&m, &peer_pane);
+    enroll(&m, "alice", "s-alice");
+
+    let (code, stdout, stderr) = named_existing(&m, &peer, "existing-task");
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains(&peer), "{stdout}");
+    assert!(
+        !stdout.contains(herdr_threads::protocol::ids::NAMED_HOST_LOCATOR),
+        "the Herdr endpoint is not the reserved locator: {stdout}"
+    );
+    let mut frozen_at_named_host = false;
+    for entry in fs::read_dir(state_dir(&m).join("node/intents"))
+        .unwrap()
+        .flatten()
+    {
+        if let Ok(text) = fs::read_to_string(entry.path()) {
+            frozen_at_named_host |= text.contains(herdr_threads::protocol::ids::NAMED_HOST_LOCATOR);
+        }
+    }
+    assert!(
+        frozen_at_named_host,
+        "the frozen claim host is the reserved named locator"
+    );
+}
+
+fn find_key<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => map
+            .get(key)
+            .or_else(|| map.values().find_map(|v| find_key(v, key))),
+        serde_json::Value::Array(items) => items.iter().find_map(|v| find_key(v, key)),
+        _ => None,
+    }
+}
+
+// Kills: a retry of a named caller's existing-seat handoff that dials the reserved locator (or
+// compares the frozen Herdr endpoint with it) and so cannot replay the recorded handoff.
+#[test]
+fn retry_of_a_named_existing_handoff_runs() {
+    if !herdr_present() {
+        println!("skipped: no herdr: retry_of_a_named_existing_handoff_runs");
+        return;
+    }
+    let m = Matrix::new("named-existing-retry");
+    m.setup("codex");
+    let peer_pane = m.workspace("named-retry-peer");
+    let peer = launch_peer(&m, &peer_pane);
+    enroll(&m, "alice", "s-alice");
+
+    let (code, stdout, stderr) = named_existing(&m, &peer, "retry-task");
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let out: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let reference = find_key(&out, "recovery_ref")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("a recovery reference: {out}"))
+        .to_owned();
+
+    let mut command = named(&m, "alice", "s-alice");
+    command
+        .arg("--json")
+        .arg("--state-dir")
+        .arg(state_dir(&m))
+        .args(["retry", &reference]);
+    let (code, stdout, stderr) = run(command, None);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains(&peer), "{stdout}");
+}
+
 fn real_herdr() -> PathBuf {
     let path = std::env::var_os("PATH").unwrap();
     std::env::split_paths(&path)
