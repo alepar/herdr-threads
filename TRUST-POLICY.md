@@ -348,6 +348,20 @@ exits back to its shell stays bound until a check-in replaces it or its pane dis
 act as any seat: a child agent, a script, another seat's agent writing the shared client directories. This is
 in-contract (see Accepted limits).
 
+*A1 addendum, F part (two-family callers).* When the environment names both a Herdr pane
+(`HERDR_PANE_ID`) and a herdr-core terminal (`HC_TERMINAL_ID`), the caller is `Ambiguous` and the
+CLI or hook asks the daemon (`LocateCaller`) before anything binds. The daemon walks up from the
+connection's peer pid (or the claim's liveness pid) and verifies a candidate only when its host-reported
+root process (`target_root_process`, for a Herdr pane the pane's shell) is the nearest ancestor. In F only the
+Herdr candidate can verify. If it does, the pane wins; if nothing verifies (not an ancestor, host unreachable,
+daemon too old to know the command), no seat binds and nothing falls back to a candidate: the CLI prints M1
+and hooks exit 0 with M1 on stderr and the guard line M3 in context at lifecycle check-ins and compact
+re-entry (and, for an adapter that repeats its fixed section every turn and has no lifecycle check-in, on its
+first delivering hook per binding). Single-family callers are never verified: that would be adversarial
+verification, which this policy does not add. The first-hook memory is daemon memory keyed by binding, so a
+daemon restart arms it once more (accepted limit, no column). The terminal-root wall and the start-stamped
+verdict cache follow in ht-kqrt.74.
+
 **Invocation spelling.** Ordinary root commands act as agents. Person and local-operator
 commands require immediate argv[1] `human`: `ht human me init [--operator]`,
 `ht human send THREAD --body TEXT`, and `ht human seat rebind ... --operator`.

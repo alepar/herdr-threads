@@ -11,6 +11,7 @@ pub mod host_sessions;
 pub mod kicks;
 pub mod live_gate;
 pub mod liveness;
+pub mod locate;
 pub mod mod_channels;
 pub mod pacer;
 pub mod peer_launcher;

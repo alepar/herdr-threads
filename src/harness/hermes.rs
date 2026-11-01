@@ -2051,6 +2051,7 @@ mod adapter_tests {
                 &crate::cli::hook::HookEnv {
                     herdr_env: true,
                     pane: Some("w1:p1".into()),
+                    ambiguous: None,
                 },
                 Instant::now() + Duration::from_secs(1),
                 Arc::clone(&clock),
@@ -2162,6 +2163,7 @@ mod adapter_tests {
             &crate::cli::hook::HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
+                ambiguous: None,
             },
             Instant::now() + Duration::from_secs(1),
             clock,
@@ -2257,6 +2259,7 @@ mod adapter_tests {
             &crate::cli::hook::HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
+                ambiguous: None,
             },
             Instant::now() + Duration::from_secs(1),
             clock,
@@ -2674,7 +2677,8 @@ mod adapter_tests {
                 Ok(args),
                 &crate::cli::hook::HookEnv {
                     herdr_env: true,
-                    pane: Some("w1:p1".into())
+                    pane: Some("w1:p1".into()),
+                    ambiguous: None,
                 },
                 std::io::Cursor::new(input.bytes)
             ),
@@ -3321,6 +3325,7 @@ mod adapter_tests {
             &crate::cli::hook::HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
+                ambiguous: None,
             },
             Instant::now() + Duration::from_secs(1),
             clock,

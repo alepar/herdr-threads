@@ -173,6 +173,7 @@ fn fourth_author_consumers() {
             &herdr_threads::cli::hook::HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
+                ambiguous: None,
             },
             std::time::Instant::now() + std::time::Duration::from_secs(1),
             std::sync::Arc::clone(&env.clock),
@@ -822,6 +823,7 @@ mod enum_only_callback {
                 &herdr_threads::cli::hook::HookEnv {
                     herdr_env: true,
                     pane: Some("w1:p1".into()),
+                    ambiguous: None,
                 },
                 std::time::Instant::now() + std::time::Duration::from_secs(1),
                 clock.clone(),

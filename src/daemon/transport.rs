@@ -405,6 +405,13 @@ fn skew_reply(frame: &[u8], instance: &str, daemon_boot: &str) -> Option<WireRes
     })
 }
 
+/// The kernel's credential of the connection's peer: uid and pid.
+fn peer_identity(stream: &UnixStream) -> io::Result<PeerIdentity> {
+    let cred = stream.peer_cred()?;
+    let pid = cred.pid().and_then(|pid| u32::try_from(pid).ok());
+    Ok(PeerIdentity::from_kernel_with_pid(cred.uid(), pid))
+}
+
 // Allowed: per-connection state handed over from the accept loop.
 #[allow(clippy::too_many_arguments)]
 async fn serve_connection(
@@ -427,14 +434,14 @@ async fn serve_connection(
     // The ordinary admission permit lives until this function returns, except
     // on a watch connection, which hands it back once sniffed.
     let mut ordinary_permit = Some(permit);
-    let uid = stream.peer_cred()?.uid();
+    let peer = peer_identity(&stream)?;
+    let uid = peer.effective_uid();
     if uid != owner_uid {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "peer UID differs from owner",
         ));
     }
-    let peer = PeerIdentity::from_kernel(uid);
     let expires =
         tokio::time::Instant::now() + crate::protocol::time::external_bound(ORDINARY_TIMEOUT);
     let frame = tokio::select! {

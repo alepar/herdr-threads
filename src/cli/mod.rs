@@ -2,6 +2,7 @@
 pub mod accept_delivery;
 pub mod actor_route;
 pub mod caller;
+pub mod caller_guard;
 pub mod caller_location;
 pub mod commands;
 pub mod direct_send;
@@ -304,13 +305,37 @@ impl ViewReader for SocketViewReader {
     }
 }
 
+/// The pane the CLI acts from ([`caller_guard::cli_pane`]): a two-family caller is verified by
+/// the daemon first, and an unverified one prints M1 and binds nothing.
+fn cli_caller_pane(env: &caller_location::CallerEnv) -> Option<String> {
+    caller_guard::cli_pane(
+        env,
+        |candidates| {
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+            let budget = CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
+                cancellation: Cancellation::default(),
+            };
+            instance::resolve_context(&instance::InstanceInputs::from_process(None, None))
+                .ok()
+                .and_then(|(context, _)| NodePaths::resolve_read_only(&context.state_dir).ok())
+                .and_then(|paths| connect(&paths, &clock).ok())
+                .map_or_else(
+                    || caller_guard::unasked(candidates, ""),
+                    |(_, _, client)| caller_guard::verify(&client, candidates, None, &budget),
+                )
+        },
+        |line| eprintln!("{line}"),
+    )
+}
+
 pub fn run<I, T, W>(argv: I, writer: &mut W) -> Result<(), RunError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
     W: Write,
 {
-    let pane = caller_location::CallerEnv::from_process().pane(caller_location::EnvMode::Cli);
+    let pane = cli_caller_pane(&caller_location::CallerEnv::from_process());
     run_in_pane(argv, pane.as_deref(), writer)
 }
 

@@ -124,6 +124,7 @@ pub enum CommandResult {
     Bootstrap(Box<crate::protocol::handoff::BootstrapResult>),
     BootstrapReserved(Box<crate::protocol::handoff::ReserveBootstrapResult>),
     LaunchGate(crate::protocol::handoff::LaunchGateReply),
+    Located(crate::protocol::locate::LocateReply),
     BootstrapSubmissionChecked(crate::protocol::handoff::BootstrapSubmissionChecked),
     BootstrapRecovered(Box<crate::protocol::handoff::BootstrapRecoveryResult>),
     LinkedBootstrapCompleted(Box<crate::protocol::handoff::CompletedBootstrapResult>),
