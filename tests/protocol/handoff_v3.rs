@@ -487,6 +487,7 @@ fn gate() -> AuthorizeLaunchGate {
         core_id: "core-a".into(),
         terminal: "t7".into(),
         timeout_ms: 5_000,
+        socket: None,
     }
 }
 

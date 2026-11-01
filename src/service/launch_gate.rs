@@ -9,7 +9,10 @@
 //! - Hides: the polling of the canonical view; the wait holds no store turn and no writer
 //!   lane (each poll is one short read).
 //! - Must not: write, authorize on a label or a client-supplied path (A2: the canonical view
-//!   and a same-response read decide), or wait past the request's `timeout_ms`.
+//!   and a same-response read decide; the shim's socket only orders the observers, creation
+//!   core first, and the witness comparison still decides), or wait past the request's
+//!   `timeout_ms`. A host that is unavailable is retried until the deadline and then `TimedOut`,
+//!   never `WitnessMismatch`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +21,7 @@ use crate::{
     ports::{BootstrapObserver, CreatedTarget, HostCallContext, HostWitness, LaunchGateView},
     protocol::{
         handoff::{AuthorizeLaunchGate, LaunchGateRefusal, LaunchGateReply},
-        results::ApiError,
+        results::{ApiError, ErrorCode},
         time::{CallBudget, Clock, MonoInstant},
     },
 };
@@ -43,23 +46,49 @@ fn witness_matches(created: &CreatedTarget, request: &AuthorizeLaunchGate) -> bo
         && created.terminal.as_str() == request.terminal
 }
 
+/// What the observers said of the creation's terminal.
+enum Confirmed {
+    Yes,
+    /// Reachable, and not the creation's terminal.
+    No,
+    /// No observer could say (host unavailable, or the gate's time ran out): poll again.
+    Unavailable,
+}
+
 /// A same-response `terminal.get` on the creation's terminal, on the creation's core and
-/// serving process.
+/// serving process. The observers come creation core first; the gate's deadline is re-checked
+/// before each, and each read is budgeted to what the gate has left.
 fn terminal_confirms(
     created: &CreatedTarget,
     observers: &[Arc<dyn BootstrapObserver>],
     budget: &CallBudget,
-) -> bool {
+    clock: &dyn Clock,
+    deadline: MonoInstant,
+) -> Confirmed {
     let context = HostCallContext {
-        budget: budget.clone(),
+        budget: CallBudget {
+            deadline,
+            cancellation: budget.cancellation.clone(),
+        },
         expected_boot: Some(created.observed_boot()),
         expected_epoch: None,
     };
-    observers.iter().any(|observer| {
-        observer
-            .observe_bootstrap_target(&created.target, &context)
-            .is_ok_and(|seen| seen.host_witness() == created.witness)
-    })
+    let mut unavailable = false;
+    for observer in observers {
+        if clock.monotonic_now() >= deadline {
+            return Confirmed::Unavailable;
+        }
+        match observer.observe_bootstrap_target(&created.target, &context) {
+            Ok(seen) if seen.host_witness() == created.witness => return Confirmed::Yes,
+            Err(error) if error.code == ErrorCode::HostUnavailable => unavailable = true,
+            _ => {}
+        }
+    }
+    if unavailable {
+        Confirmed::Unavailable
+    } else {
+        Confirmed::No
+    }
 }
 
 /// Decide one authorization, waiting at most `request.timeout_ms` (and the call's budget) for
@@ -97,11 +126,11 @@ pub fn authorize(
                 return Ok(refused(LaunchGateRefusal::WitnessMismatch));
             }
             if view.send_staged {
-                return Ok(if terminal_confirms(created, world.observers, budget) {
-                    LaunchGateReply::Authorized
-                } else {
-                    refused(LaunchGateRefusal::WitnessMismatch)
-                });
+                match terminal_confirms(created, world.observers, budget, clock, deadline) {
+                    Confirmed::Yes => return Ok(LaunchGateReply::Authorized),
+                    Confirmed::No => return Ok(refused(LaunchGateRefusal::WitnessMismatch)),
+                    Confirmed::Unavailable => {}
+                }
             }
         }
         if clock.monotonic_now() >= deadline {

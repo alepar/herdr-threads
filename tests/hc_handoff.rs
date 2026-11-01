@@ -450,6 +450,7 @@ impl Gate {
             core_id: core.unwrap_or(core_id).to_owned(),
             terminal: terminal.to_owned(),
             timeout_ms,
+            socket: None,
         }
     }
 
@@ -627,6 +628,135 @@ fn launch_gate_mismatch_refused() {
     refused(
         unknown.decide(&unknown.request("t2", None, 1_000)),
         LaunchGateRefusal::UnknownBootstrap,
+    );
+}
+
+/// An observer that answers `fail` times with `error` (after `delay`), then delegates to the real
+/// observer on the fake core; `calls` counts every call.
+struct Scripted {
+    fail: usize,
+    error: ErrorCode,
+    delay: Duration,
+    calls: AtomicUsize,
+    inner: Arc<dyn BootstrapObserver>,
+}
+impl BootstrapObserver for Scripted {
+    fn observe_bootstrap_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::BootstrapPaneObservation, ApiError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n < self.fail {
+            std::thread::sleep(self.delay);
+            return Err(ApiError::new(self.error.clone(), "scripted"));
+        }
+        self.inner.observe_bootstrap_target(target, context)
+    }
+}
+
+/// An observer that must never be asked.
+struct Never;
+impl BootstrapObserver for Never {
+    fn observe_bootstrap_target(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<herdr_threads::ports::BootstrapPaneObservation, ApiError> {
+        panic!("a later observer is asked only when the earlier ones could not confirm")
+    }
+}
+
+fn scripted(gate: &Gate, fail: usize, error: ErrorCode, delay: Duration) -> Arc<Scripted> {
+    Arc::new(Scripted {
+        fail,
+        error,
+        delay,
+        calls: AtomicUsize::new(0),
+        inner: Arc::clone(&gate.observers[0]),
+    })
+}
+
+fn reason(reply: LaunchGateReply) -> LaunchGateRefusal {
+    match reply {
+        LaunchGateReply::Refused { reason } => reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn transient_terminal_get_failure_retries_until_authorized() {
+    let mut gate = Gate::new(0);
+    let flaky = scripted(&gate, 2, ErrorCode::HostUnavailable, Duration::ZERO);
+    gate.observers = vec![flaky.clone()];
+    let terminal = gate.created.terminal.as_str().to_owned();
+    assert_eq!(
+        gate.decide(&gate.request(&terminal, None, 10_000)),
+        LaunchGateReply::Authorized
+    );
+    assert_eq!(flaky.calls.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn unavailable_until_the_deadline_is_timed_out_never_witness_mismatch() {
+    let mut gate = Gate::new(0);
+    gate.observers = vec![scripted(
+        &gate,
+        usize::MAX,
+        ErrorCode::HostUnavailable,
+        Duration::ZERO,
+    )];
+    let terminal = gate.created.terminal.as_str().to_owned();
+    let started = Instant::now();
+    assert_eq!(
+        reason(gate.decide(&gate.request(&terminal, None, 200))),
+        LaunchGateRefusal::TimedOut
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn not_found_still_refuses_witness_mismatch_without_retrying() {
+    let mut gate = Gate::new(0);
+    let gone = scripted(&gate, usize::MAX, ErrorCode::NotFound, Duration::ZERO);
+    gate.observers = vec![gone.clone()];
+    let terminal = gate.created.terminal.as_str().to_owned();
+    assert_eq!(
+        reason(gate.decide(&gate.request(&terminal, None, 10_000))),
+        LaunchGateRefusal::WitnessMismatch
+    );
+    assert_eq!(gone.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn hung_second_observer_does_not_delay_the_creation_core() {
+    let mut gate = Gate::new(0);
+    let core = Arc::clone(&gate.observers[0]);
+    gate.observers = vec![core, Arc::new(Never)];
+    let terminal = gate.created.terminal.as_str().to_owned();
+    assert_eq!(
+        gate.decide(&gate.request(&terminal, None, 10_000)),
+        LaunchGateReply::Authorized
+    );
+}
+
+#[test]
+fn deadline_is_rechecked_between_observers() {
+    let mut gate = Gate::new(0);
+    // The first observer burns the whole gate time and is unavailable; the second must not run.
+    gate.observers = vec![
+        scripted(
+            &gate,
+            usize::MAX,
+            ErrorCode::HostUnavailable,
+            Duration::from_millis(300),
+        ),
+        Arc::new(Never),
+    ];
+    let terminal = gate.created.terminal.as_str().to_owned();
+    assert_eq!(
+        reason(gate.decide(&gate.request(&terminal, None, 100))),
+        LaunchGateRefusal::TimedOut
     );
 }
 

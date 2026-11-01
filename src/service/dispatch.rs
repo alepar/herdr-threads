@@ -756,18 +756,26 @@ impl DomainService {
             .bootstrap_store
             .as_ref()
             .ok_or_else(|| ApiError::unsupported("launch gate needs the bootstrap store"))?;
-        let observers: Vec<Arc<dyn BootstrapObserver>> = self
+        // The shim's own core first (an ordering hint; the witness comparison decides), so a
+        // hung unrelated host cannot delay the creation core's answer.
+        let mut sessions: Vec<_> = self
             .hosts
             .as_ref()
             .map(|hosts| {
                 hosts
                     .attached()
-                    .iter()
+                    .into_iter()
                     .filter(|session| session.target_bootstrap().is_some())
-                    .map(|session| Arc::clone(session.observer()))
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(socket) = &request.socket {
+            sessions.sort_by_key(|session| session.locator().as_str() != socket);
+        }
+        let observers: Vec<Arc<dyn BootstrapObserver>> = sessions
+            .iter()
+            .map(|session| Arc::clone(session.observer()))
+            .collect();
         let view = |budget: &CallBudget| {
             store.automatic_launch_gate_view(
                 &self.instance,

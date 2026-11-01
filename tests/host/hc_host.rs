@@ -18,7 +18,7 @@ fn hello(core_id: &str) -> HelloReply {
 fn context() -> HostCallContext {
     HostCallContext {
         budget: CallBudget {
-            deadline: MonoInstant(10_000),
+            deadline: MonoInstant(u64::MAX),
             cancellation: Cancellation::default(),
         },
         expected_boot: None,
@@ -83,6 +83,70 @@ fn target_root_process_is_terminal_get_pid() {
     );
     let methods: Vec<String> = fake.calls().into_iter().map(|c| c.method).collect();
     assert!(methods.iter().all(|m| m == "terminal.get"), "{methods:?}");
+}
+
+#[test]
+fn hc_rpc_honours_the_remaining_budget() {
+    use std::os::unix::net::UnixListener;
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "ht-hc-budget-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("s");
+    // Accepts and never answers.
+    let listener = UnixListener::bind(&socket).unwrap();
+    let held = std::thread::spawn(move || {
+        let mut conns = Vec::new();
+        while let Ok((conn, _)) = listener.accept() {
+            conns.push(conn);
+            if conns.len() >= 4 {
+                break;
+            }
+        }
+        conns
+    });
+    let clock = Arc::new(crate::app::SystemClock::new());
+    let host = HcHost::with_clock(HcClient::new(&socket), clock.clone());
+    let within = |ms: u64| HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + ms),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: None,
+        expected_epoch: None,
+    };
+    let started = std::time::Instant::now();
+    let error = host
+        .target_root_process(&HostTargetId::new("t1"), &within(200))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the 5 s call deadline did not bound the read: {:?}",
+        started.elapsed()
+    );
+    // An exhausted budget returns without connecting.
+    let exhausted = HostCallContext {
+        budget: CallBudget {
+            deadline: clock.monotonic_now(),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: None,
+        expected_epoch: None,
+    };
+    let started = std::time::Instant::now();
+    let error = host
+        .target_root_process(&HostTargetId::new("t1"), &exhausted)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::DeadlineExceeded);
+    assert!(started.elapsed() < Duration::from_millis(100));
+    // Unblock the listener thread (it exits after the connections it expects).
+    for _ in 0..3 {
+        let _ = std::os::unix::net::UnixStream::connect(&socket);
+    }
+    let _ = held.join();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

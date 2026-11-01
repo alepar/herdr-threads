@@ -66,7 +66,7 @@ use crate::ports::{
 use crate::protocol::{
     ids::{HostBootId, HostCallId, HostTargetId, SeatId, TerminalId},
     results::{ApiError, ErrorCode},
-    time::{CallBudget, Clock},
+    time::{CallBudget, Clock, MonoInstant},
 };
 use std::sync::{
     Arc,
@@ -286,6 +286,35 @@ impl HcHost {
         }
     }
 
+    /// This host's client under `min(CALL_DEADLINE, budget remaining)`. A cancelled or
+    /// exhausted budget is refused before any connection.
+    fn client_for(&self, budget: &CallBudget) -> Result<HcClient, ApiError> {
+        if budget.cancellation.is_cancelled() {
+            return Err(ApiError::cancelled("hc rpc"));
+        }
+        let now = self.clock.monotonic_now();
+        if now >= budget.deadline {
+            return Err(ApiError::deadline_exceeded("hc rpc budget exhausted"));
+        }
+        let remaining = Duration::from_millis(budget.deadline.0 - now.0);
+        Ok(self
+            .client
+            .clone()
+            .with_deadline(remaining.min(rpc::CALL_DEADLINE)))
+    }
+
+    /// A budget of one plain call deadline, for the reads that carry no caller budget.
+    fn default_budget(&self) -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(
+                self.clock.monotonic_now().0.saturating_add(
+                    u64::try_from(rpc::CALL_DEADLINE.as_millis()).unwrap_or(u64::MAX),
+                ),
+            ),
+            cancellation: Default::default(),
+        }
+    }
+
     /// The witness a creation here expects: this core's id and its peer, read from one
     /// `hello`.
     pub fn core_witness(&self) -> Result<ports::HostWitness, ApiError> {
@@ -321,7 +350,13 @@ impl HcHost {
     /// A transport or decode failure (including a snapshot with no `terminals`) is
     /// `Err(host_unavailable)`; `Ok(None)` is a decoded reply naming no usable core id.
     pub fn capture(&self) -> Result<Option<HcCapture>, ApiError> {
-        let reply = Self::run(self.client.hello_and_snapshot())
+        self.capture_within(&self.default_budget())
+    }
+
+    /// [`Self::capture`] under the caller's budget.
+    pub fn capture_within(&self, budget: &CallBudget) -> Result<Option<HcCapture>, ApiError> {
+        let client = self.client_for(budget)?;
+        let reply = Self::run(client.hello_and_snapshot())
             .map_err(|e| ApiError::host_unavailable(e.to_string()))?;
         let (hello, snapshot) = reply.value;
         let Some(boot) = HcBoot::from_hello(&hello) else {
@@ -415,8 +450,9 @@ impl HcHost {
     }
 
     /// This core's session name (`hello` `core.name`), the `<session>` of its addresses.
-    fn session(&self) -> Option<String> {
-        Self::run(self.client.hello())
+    fn session(&self, budget: &CallBudget) -> Option<String> {
+        let client = self.client_for(budget).ok()?;
+        Self::run(client.hello())
             .ok()
             .map(|reply| reply.value.core.name)
             .filter(|name| !name.is_empty())
@@ -426,7 +462,7 @@ impl HcHost {
     /// names no session, or `target` is not a `tN` address.
     pub fn display_address(&self, target: &HostTargetId) -> Option<labels::HcAddress> {
         Some(labels::HcAddress::new(
-            self.session()?,
+            self.session(&self.default_budget())?,
             labels::TerminalId::parse(target.as_str())?,
         ))
     }
@@ -440,12 +476,17 @@ impl HcHost {
         if budget.cancellation.is_cancelled() {
             return Err(ApiError::cancelled("hc labels"));
         }
-        let snapshot = Self::run(self.client.events_subscribe_snapshot())
+        let client = self.client_for(budget)?;
+        let snapshot = Self::run(client.events_subscribe_snapshot())
             .map_err(|e| ApiError::host_unavailable(e.to_string()))?
             .value;
-        let names = match Self::run(self.client.doc_get(labels::APP_DOC)) {
-            Ok(reply) => self.doc_names.names(&reply.value),
-            Err(_) => Default::default(),
+        let names = match self
+            .client_for(budget)
+            .ok()
+            .and_then(|client| Self::run(client.doc_get(labels::APP_DOC)).ok())
+        {
+            Some(reply) => self.doc_names.names(&reply.value),
+            None => Default::default(),
         };
         let live = snapshot
             .terminals
@@ -501,7 +542,7 @@ impl HcHost {
         let started = self.clock.monotonic_now();
         // Taken before the request: an older capture carries the lower sequence.
         let sequence = self.next_observation_sequence();
-        let hello = Self::run(self.client.hello())
+        let hello = Self::run(self.client_for(&context.budget)?.hello())
             .map_err(|e| ApiError::host_unavailable(e.to_string()))?;
         let boot = HcBoot::from_hello(&hello.value)
             .ok_or_else(|| ApiError::host_unavailable("hc hello names no usable core id"))?;
@@ -514,8 +555,7 @@ impl HcHost {
             return Err(stale("hc core changed before the bootstrap read"));
         }
         let reply = Self::run(
-            self.client
-                .clone()
+            self.client_for(&context.budget)?
                 .expecting(hello.witness.clone())
                 .terminal_get(target.as_str()),
         )
@@ -745,8 +785,11 @@ impl HostPort for HcHost {
         if context.budget.cancellation.is_cancelled() {
             return Err(ApiError::cancelled("hc target_root_process"));
         }
-        let reply = Self::run(self.client.terminal_get(target.as_str()))
-            .map_err(|e| ApiError::host_unavailable(e.to_string()))?;
+        let reply = Self::run(
+            self.client_for(&context.budget)?
+                .terminal_get(target.as_str()),
+        )
+        .map_err(|e| ApiError::host_unavailable(e.to_string()))?;
         Ok(reply.value.pid)
     }
 
@@ -769,7 +812,7 @@ impl HostPort for HcHost {
         // Taken before the request: an older capture carries the lower sequence.
         let sequence = self.next_observation_sequence();
         let capture = self
-            .capture()?
+            .capture_within(&context.budget)?
             .ok_or_else(|| ApiError::host_unavailable("hc host: the core is not readable"))?;
         let boot = capture.boot.0.clone();
         if !capture.is_readable() {
@@ -806,7 +849,7 @@ impl HostPort for HcHost {
         budget: &CallBudget,
     ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
         let (terminals, names) = self.read_labelled(budget)?;
-        let session = self.session();
+        let session = self.session(budget);
         Ok(terminals
             .into_iter()
             .map(|t| {
@@ -884,7 +927,7 @@ impl HostPort for HcHost {
         let started = self.clock.monotonic_now();
         // Taken before the request: an older capture carries the lower sequence.
         let sequence = self.next_observation_sequence();
-        let Some(capture) = self.capture()? else {
+        let Some(capture) = self.capture_within(&context.budget)? else {
             return Ok(Self::unverified(Self::unknown_boot(), epoch));
         };
         let boot = capture.boot.0.clone();
