@@ -216,6 +216,7 @@ impl Rig {
                 host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
                 operation: OperationId::new(format!("resolve-{name}")),
                 locator_hint: None,
+                tmux_hint: None,
             }))
         else {
             panic!("named resolve")

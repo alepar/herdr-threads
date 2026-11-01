@@ -14,6 +14,8 @@ anything in --exclude never match):
   core-test   a `herdr-core serve`/`hold` whose HC_SESSION starts ht-test- or ht-smoke-,
               or whose XDG_STATE_HOME/XDG_RUNTIME_DIR is under a test temp prefix, and
               no live owner tag
+  tmux-test   a tmux server started with `-L ht-test-<id>` (the private-tmux test helper's
+              socket name), and no live owner tag
 With --run-id it also runs scripts/check-no-leaked-temp-files for the same run.
 Exit 0 clean, 1 leaks (one `LEAK rule=... pid=... ppid=... cmd=...` line each), 2 usage.
 Never kills unless --kill is passed; never matches the real ~/.config/herdr server, the
@@ -90,6 +92,10 @@ def _is_test_core(proc: Proc, temp_prefixes) -> bool:
     )
 
 
+def _is_test_tmux(proc: Proc) -> bool:
+    return re.search(r"(^|/)tmux\s(.*\s)?-L\s*ht-test-", proc.command) is not None
+
+
 def _state_dir(command: str) -> "str | None":
     match = re.search(r"--state-dir[ =](\S+)", command)
     return match.group(1) if match else None
@@ -124,6 +130,8 @@ def classify(procs, *, root, run_id, alive, exclude, temp_prefixes):
             leaks.append((proc, "orphan-temp"))
         elif _is_core(proc) and not live_owner and _is_test_core(proc, temp_prefixes):
             leaks.append((proc, "core-test"))
+        elif _is_test_tmux(proc) and not live_owner:
+            leaks.append((proc, "tmux-test"))
     return leaks
 
 

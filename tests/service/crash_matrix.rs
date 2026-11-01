@@ -1892,6 +1892,7 @@ impl Matrix {
                     target: HostTargetId::new(pane),
                     operation: OperationId::new(format!("resolve-{pane}")),
                     locator_hint: None,
+                    tmux_hint: None,
                 }))
                 .unwrap()
             else {
@@ -2509,6 +2510,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
             target: HostTargetId::new("pane-u"),
             operation: OperationId::new("resolve-pane-u"),
             locator_hint: None,
+            tmux_hint: None,
         }))
         .unwrap()
     else {

@@ -4012,6 +4012,10 @@ impl ComposerTraits {
     pub const HERDR_TUI: ComposerTraits = ComposerTraits {
         submit_budget: Duration::from_millis(2_000),
     };
+    /// A tmux pane typed into with `send-keys`: the same 2 000 ms budget.
+    pub const TMUX: ComposerTraits = ComposerTraits {
+        submit_budget: Duration::from_millis(2_000),
+    };
 }
 
 /// Whether and how a host can wake an idle session.
@@ -4080,6 +4084,11 @@ pub trait HostPort: Send + Sync {
     fn target_wake_capability(&self, _target: &HostTargetId) -> WakeCapability {
         self.wake_capability()
     }
+    /// A caller's wake hint for `target`, from a seat-acting call whose process is `subject_pid`
+    /// (a tmux pane, `tmux:<socket>:<server_pid>:<pane>`). The host verifies it and holds the
+    /// result in memory per binding; a hint that does not verify only disables wake for that
+    /// binding. Default: ignored.
+    fn note_wake_hint(&self, _target: &HostTargetId, _subject_pid: u32, _hint: &str) {}
     /// The root process of a target (a pane's shell). Default: none known.
     fn target_root_process(
         &self,
@@ -5075,6 +5084,7 @@ mod allocation_tests {
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("resolve"),
             locator_hint: None,
+            tmux_hint: None,
         };
         let admission = HostObservationAdmission {
             instance: "i".into(),
@@ -5380,6 +5390,7 @@ mod allocation_tests {
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
             locator_hint: None,
+            tmux_hint: None,
         };
         let observation = HostObservation {
             focused: false,
@@ -5688,6 +5699,7 @@ mod contract_adapter_tests {
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
             locator_hint: None,
+            tmux_hint: None,
         };
         let observation = adapter
             .observe_current_target(&request.target, &context)

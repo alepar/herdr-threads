@@ -662,6 +662,7 @@ impl SemanticMutation {
                 host: host.clone(),
                 operation,
                 locator_hint: crate::cli::caller_location::resolve_hint(host),
+                tmux_hint: crate::cli::caller_location::resolve_tmux_hint(host),
             }),
             Self::ContinuityCheckIn {
                 target,

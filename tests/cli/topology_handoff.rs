@@ -5068,6 +5068,7 @@ mod live {
                     target: evidence.root_pane.clone(),
                     operation: f.peer.identity.payload.resolve_key.clone(),
                     locator_hint: None,
+                    tmux_hint: None,
                 },
                 crate::ports::BootstrapPaneObservation::try_new(
                     observation,
@@ -5626,6 +5627,7 @@ mod live {
                 target: observation.target.clone(),
                 operation: peer.identity.payload.resolve_key.clone(),
                 locator_hint: None,
+                tmux_hint: None,
             },
             BootstrapPaneObservation::try_new(
                 observation,
@@ -5750,6 +5752,7 @@ mod live {
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("preexisting-fixture"),
             locator_hint: None,
+            tmux_hint: None,
         };
         let guard = OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
         let OrdinaryResolutionOutcome::Resolved(seat) = crate::store::seats::resolve_seat(
@@ -5983,6 +5986,7 @@ mod live {
                     target: HostTargetId::new("w1:p2"),
                     operation: f.peer.identity.payload.resolve_key.clone(),
                     locator_hint: None,
+                    tmux_hint: None,
                 },
                 response,
                 &admission,
@@ -7386,6 +7390,7 @@ mod live {
                         target: observation.target.clone(),
                         operation: identity.plan.payload.keys.resolve.clone(),
                         locator_hint: None,
+                        tmux_hint: None,
                     },
                     BootstrapPaneObservation::try_new(
                         observation,

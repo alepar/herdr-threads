@@ -357,6 +357,7 @@ fn explicit_target_read_during_backoff_runs_one_capture() {
                 target: HostTargetId::new("pane"),
                 operation: OperationId::new(op),
                 locator_hint: None,
+                tmux_hint: None,
             },
             &CallBudget {
                 deadline: MonoInstant(START + 60_000),
@@ -475,6 +476,7 @@ fn unchanged_host_cycle_commits_touch_no_wakes_mapped_table() {
                 target: HostTargetId::new("pane"),
                 operation: OperationId::new("op-1"),
                 locator_hint: None,
+                tmux_hint: None,
             },
             &CallBudget {
                 deadline: MonoInstant(START + 60_000),

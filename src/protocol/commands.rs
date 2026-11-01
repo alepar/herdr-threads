@@ -699,6 +699,12 @@ pub struct ResolveSeat {
     /// everywhere else, so those requests' bytes are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locator_hint: Option<String>,
+    /// N2-hint: the caller's tmux wake hint, `tmux:<socket>:<server_pid>:<pane>`, sent only by a
+    /// named caller that runs inside a tmux pane. A separate field, never `locator_hint`: the
+    /// daemon verifies it and holds it in memory per binding, and it is never persisted or
+    /// compared by M9. Absent everywhere else, so those requests' bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_hint: Option<String>,
 }
 /// TRUST-POLICY C1. A resumed top-level session asks the daemon to reattach
 /// the one unresolved seat whose last binding carries its session id onto the
@@ -1906,6 +1912,7 @@ mod host_locator_tests {
                 host: explicit.clone(),
                 operation: op(),
                 locator_hint: None,
+                tmux_hint: None,
             }),
             Command::ContinuityCheckIn(ContinuityCheckIn {
                 target: target(),

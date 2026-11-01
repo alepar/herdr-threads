@@ -587,6 +587,7 @@ mod tests {
                 target: observation.target.clone(),
                 operation: id.payload.resolve_key.clone(),
                 locator_hint: None,
+                tmux_hint: None,
             },
             BootstrapPaneObservation::try_new(
                 observation,

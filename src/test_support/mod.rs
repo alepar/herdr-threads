@@ -30,6 +30,7 @@ pub mod snapshot;
 pub mod spawn;
 #[cfg(feature = "test-support")]
 pub mod sync_node;
+pub mod tmux;
 #[cfg(feature = "test-support")]
 pub mod write_guard;
 

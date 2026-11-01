@@ -786,6 +786,7 @@ impl MutationSpec {
                 WireCommand::ResolveSeat(ResolveSeat {
                     target,
                     locator_hint: super::caller_location::resolve_hint(&host),
+                    tmux_hint: super::caller_location::resolve_tmux_hint(&host),
                     host,
                     operation,
                 })

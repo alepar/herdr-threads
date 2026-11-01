@@ -6,6 +6,7 @@
 # (the scan test rejects one). Adding a line here is a review decision.
 src/host/native.rs # herdr TUI host adapter: owns its pane env names and its HostPort answers
 src/host/hc/ # herdr-core host adapter: owns the HC_* env names and its HostPort answers
+src/host/named/ # tmux wake path of the named host: owns the TMUX and TMUX_PANE env names
 src/host/mod.rs # host registration and construction
 src/ports.rs # HostKind, its implemented set and the HostPort trait with the permitted kind() readers
 src/cli/caller_location.rs # the only caller-location env reader in the CLI (F7)

@@ -4793,6 +4793,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         target: HostTargetId::new("p1"),
         operation: OperationId::new("resolve"),
         locator_hint: None,
+        tmux_hint: None,
     };
     let guard =
         crate::ports::OrdinaryResolutionGuard::try_new(&ordinary, observation.clone(), &admission)
@@ -4960,6 +4961,7 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         target: HostTargetId::new("p3"),
         operation: OperationId::new("resolve-once"),
         locator_hint: None,
+        tmux_hint: None,
     };
     let guard =
         || OrdinaryResolutionGuard::try_new(&request, observation.clone(), &admission).unwrap();
@@ -5097,6 +5099,7 @@ fn ordinary_allocation_refuses_a_moved_terminal_until_its_seat_follows() {
             target: HostTargetId::new(target),
             operation: OperationId::new(operation),
             locator_hint: None,
+            tmux_hint: None,
         };
         let guard = OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
         seats::resolve_seat(
@@ -5175,6 +5178,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         target: HostTargetId::new("p3"),
         operation: OperationId::new("ordinary-empty-proof"),
         locator_hint: None,
+        tmux_hint: None,
     };
     let observation = HostObservation {
         focused: false,
@@ -7070,6 +7074,7 @@ fn ordinary_resolution_guard_rejects_unqualified_or_mismatched_read() {
         target: HostTargetId::new("pane-new"),
         operation: OperationId::new("resolve"),
         locator_hint: None,
+        tmux_hint: None,
     };
     let mut observation = snapshot_for_test(2, &["pane-new"]).targets.remove(0);
     observation.terminal = Some(TerminalId::new("terminal-new"));
@@ -7180,6 +7185,7 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
         target: observation.target.clone(),
         operation: OperationId::new("first-resolve"),
         locator_hint: None,
+        tmux_hint: None,
     };
     assert_eq!(
         store
@@ -7324,6 +7330,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
             target: current.target.clone(),
             operation: OperationId::new(key),
             locator_hint: None,
+            tmux_hint: None,
         };
         let guard =
             OrdinaryResolutionGuard::try_new(&request, current.clone(), &admission).unwrap();
@@ -7365,6 +7372,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
         target: current.target.clone(),
         operation: OperationId::new("concurrent-a"),
         locator_hint: None,
+        tmux_hint: None,
     };
     assert_eq!(
         crate::store::seats::resolve_seat(
@@ -7405,6 +7413,7 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
             target: observation.target.clone(),
             operation: OperationId::new("resolve"),
             locator_hint: None,
+            tmux_hint: None,
         };
         let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
         let Outcome::Resolved(seat) = store
@@ -7574,6 +7583,7 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
             target: observation.target.clone(),
             operation: OperationId::new("resolve"),
             locator_hint: None,
+            tmux_hint: None,
         };
         let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
         match state {
@@ -7652,6 +7662,7 @@ fn ordinary_resolution_cancelled_writer_wait_has_no_seat_or_operation_effect() {
         target: observation.target.clone(),
         operation: OperationId::new("cancelled-resolve"),
         locator_hint: None,
+        tmux_hint: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     let guard = OrdinaryResolutionGuard::try_new(&request, current, &admission).unwrap();
@@ -13334,6 +13345,7 @@ fn restore_hold_refusal_names_cause_blockers_and_exact_operator_repairs() {
         target: observation.target.clone(),
         operation: OperationId::new("held-resolve"),
         locator_hint: None,
+        tmux_hint: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     conn.execute(
@@ -13386,6 +13398,7 @@ fn restore_hold_explicit_refusal_carries_exact_repair_guidance() {
         target: observation.target.clone(),
         operation: OperationId::new("explicit-resolve"),
         locator_hint: None,
+        tmux_hint: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "pane-new");

@@ -111,6 +111,7 @@ fn resolve(
             host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
             operation: OperationId::new(operation),
             locator_hint: hint.map(str::to_owned),
+            tmux_hint: None,
         }),
         PeerIdentity::from_kernel(501),
         &budget(),
