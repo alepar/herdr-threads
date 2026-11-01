@@ -177,6 +177,8 @@ fn created_target_validate_per_witness_kind() {
     tab_placement.placement = Placement::NewTab {
         space: HostTargetId::new("t1"),
     };
+    assert!(tab_placement.validate().is_ok());
+    tab_placement.target = HostTargetId::new("t1");
     assert!(tab_placement.validate().is_err());
     let mut same_as_parent = hc.clone();
     same_as_parent.target = HostTargetId::new("t1");

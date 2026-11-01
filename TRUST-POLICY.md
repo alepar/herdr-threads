@@ -2656,6 +2656,15 @@ owned-hook claim. They do not veto an independently validated native launch. The
 selected binary, native API/profile inputs and fingerprints of configuration actually
 used remain mandatory; incomplete structural observations still refuse submission.
 
+
+herdr-core (hc) launch (H3). `terminal.run` creates the terminal with `no_notify`, `outlive_parent`, `no_parent`,
+`keep: false`, no `caller`, no hc `name` and no `first_message`. The `ht.bootstrap` label it writes
+(`herdr.space`/`herdr.tab` for a new tab, `ht.label` always) is a recovery hint only: it never classifies an
+outcome and never reclassifies a recorded unknown. A JSON-RPC error other than `spawn_failed` is the only
+transport-proven `NotSubmitted`; `spawn_failed`, a timeout, a disconnect or an undecodable reply stays
+`OutcomeUnknown`. The created target's witness is the `(core id, peer)` the pre-run `hello` showed, and the run is
+pinned to that peer.
+
 ## Bounded invitation presentation (2026-10-11)
 
 Invitation presentation is cooperative FULL OFFER evidence after complete stdout

@@ -71,3 +71,28 @@ Tree: run branch `super-auto/environments-named-seats-herdr-app` at `bb1d43430de
 | `scripts/check-no-leaked-processes` | 0 | no leaked test processes |
 
 No regression, no code change. Outputs: `evidence/ht-kqrt.13/` (smoke output and matrix, self-test output).
+
+## ht-kqrt.55 (H3c): terminal.run, L1/L3 readings
+
+Read-only readings of herdr-core (`/var/home/alepar/AleCode/herdr-core`, no live core run):
+
+- L3, `crates/herdr-core/src/api/run.rs` `start`: `notify: !p.no_notify`, so `no_notify: true` makes the record carry
+  `notify == false`. `die_with_parent: parent.is_some() && !p.outlive_parent`, so `outlive_parent: true` keeps the
+  child alive with its parent. An explicit `parent` param wins over `no_parent` (`(Some(parent), _) => ...`); `no_parent`
+  only suppresses the caller-derived parent. So `NewTerminal` sends `parent = <caller terminal>` explicitly and
+  `NewTab` sends no `parent`; both send `no_parent: true`.
+- L3, `crates/herdr-core/src/notes.rs`: a note about a child is typed into its parent only `if t.notify` (`Job::Notes` /
+  `Job::NotesAfar` are queued under `t.notify`; `unseen` also filters `t.notify`). With `notify == false` nothing is
+  typed into the parent.
+- `keep: false`: `Registry::finish` makes any finish final for a non-kept terminal; on `spawn_failed` of a non-kept
+  record `start` removes the record (`core.remove`), so a `spawn_failed` outcome usually leaves no record but is still
+  `OutcomeUnknown` per the spec (a kept or timed-out record may remain).
+- L2 (exec keeps the pid) is not exercised here: the gate shim lands with `launch-gate`.
+
+Remaining evidence (live, not run): L1 (an unknown `herdr.tab` id makes a new app tab; herdr-app is macOS only) and the
+live L3 check against a real core (`hc run` with the five flags, then no `<hc>` note typed into a parent agent). Both
+need a real core or the desktop app.
+
+Open seam point for the next hc leaf: `CreatedTarget::validate` (ports.rs) accepts an hc witness only with
+`Placement::NewTerminal`; `HcHost::create_target` returns a `NewTab` result with the hc witness but does not call
+`validate()` on it, because the seam test `created_target_validate_per_witness_kind` pins `HcCore` + `NewTab` as invalid.
