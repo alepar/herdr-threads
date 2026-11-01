@@ -254,8 +254,9 @@ impl SilentServer {
                         let mut line = String::new();
                         let read = std::io::BufReader::new(&connection).read_line(&mut line);
                         if read.is_ok() && line.contains("\"ping\"") {
-                            let _ = connection
-                                .write_all(b"{\"id\":\"hello-probe\",\"result\":{\"type\":\"pong\"}}\n");
+                            let _ = connection.write_all(
+                                b"{\"id\":\"hello-probe\",\"result\":{\"type\":\"pong\"}}\n",
+                            );
                         }
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(10)),

@@ -43,7 +43,11 @@ fn store_only_node_relays() {
         "no local seat on a node without a host"
     );
     assert_eq!(
-        cluster.scalar(1, "SELECT count(*) FROM herdr_hosts WHERE kind='herdr'", &[]),
+        cluster.scalar(
+            1,
+            "SELECT count(*) FROM herdr_hosts WHERE kind='herdr'",
+            &[]
+        ),
         Some("0".into()),
         "no Herdr host was ever attached"
     );

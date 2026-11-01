@@ -1192,7 +1192,8 @@ impl LaneProbe {
     }
     /// How many passes `lane`'s registered Pacer has finished (entered a wait).
     pub fn registered_idle_events(&self, lane: Lane) -> u64 {
-        self.registered_pacer(lane).map_or(0, |pacer| pacer.idle_events())
+        self.registered_pacer(lane)
+            .map_or(0, |pacer| pacer.idle_events())
     }
     /// The Pacer a test follows for `lane`: a dialled host's own for the host lanes (the
     /// built-in host registers first and is never the one under test, 07 §5.3), else the
@@ -1245,7 +1246,8 @@ impl LaneProbe {
     }
     /// Consecutive failed passes `lane`'s registered Pacer is backing off from.
     pub fn registered_attempts(&self, lane: Lane) -> u32 {
-        self.registered_pacer(lane).map_or(0, |pacer| pacer.attempts())
+        self.registered_pacer(lane)
+            .map_or(0, |pacer| pacer.attempts())
     }
     /// Ends an injected failure.
     pub fn heal_lane(&self, lane: Lane) {

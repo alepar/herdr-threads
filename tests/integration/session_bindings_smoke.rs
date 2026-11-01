@@ -1781,7 +1781,10 @@ fn config7_herdr_restart_keeps_seats_in_restore_hold() {
     );
     assert!(!smoke.archived(&thread), "no archival");
     assert_eq!(
-        smoke.count("SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE kind='herdr'", &[]),
+        smoke.count(
+            "SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE kind='herdr'",
+            &[]
+        ),
         1,
         "{}",
         smoke.dump("herdr_hosts")
