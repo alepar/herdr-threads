@@ -58,3 +58,16 @@ parked:
 - graph-pass · graph-change · "seam-contract ht-kqrt.35/ht-kqrt.38: land defaulted HostPort::target_wake_capability signature as a seam contract so .38 runs beside .35 (depth 15→14)"
 - graph-pass · graph-change · "seam-contract ht-kqrt.32/ht-kqrt.35: key the host-side tripwire on target_wake_capability in that contract so .35 stops waiting on .32 (alternative route, 15→14)"
 - 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md · degraded-verdict · "design roast r1 verdict carries [low coverage] [review readiness incomplete]: readiness companion qualifier only (no review-readiness evidence was supplied); no stage lost"
+
+## F behavioural gate (ht-kqrt.13)
+
+Tree: run branch `super-auto/environments-named-seats-herdr-app` at `bb1d43430dece83b8929e7a301bba2cdd52e5030` (tree `939a7323f216709cfef75aef9654f28c56acd356`), every F leaf merged (ht-kqrt.2-.12, .73, .74). `HT_LEAK_RUN_ID=3f8bb4ae-2284-4bc4-bd08-b8c6eaa1a8f8`. No agents, no shared Herdr server; scratch under `/tmp/sp-503081fe/ht-kqrt.13`.
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `heavy nice scripts/herdr-release-smoke --versions 0.9.5` (newest in `tests/herdr-releases.tsv`; builds the integration binary itself) | 0 | 0.9.5 PASS in 127.9s: core, launch/handoff, wake, busy, move all PASS; its own leak check clean |
+| `python3 scripts/wake-e2e.py --self-test` | 0 | Ran 202 tests in 99.6s, OK (skipped=1) |
+| `scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID"` | 0 | no leaked test processes; no leaked temp files (no ledger for this run) |
+| `scripts/check-no-leaked-processes` | 0 | no leaked test processes |
+
+No regression, no code change. Outputs: `evidence/ht-kqrt.13/` (smoke output and matrix, self-test output).
