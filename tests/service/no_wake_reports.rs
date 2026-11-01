@@ -170,6 +170,7 @@ impl Rig {
         let named = HostLocator::parse(NAMED_HOST_LOCATOR).unwrap();
         sessions
             .attach_builtin(
+                HostKind::Named,
                 Arc::new(NamedHost::new(
                     &self.node,
                     HostId::from_row(0),

@@ -11,3 +11,14 @@ src/host/mod.rs # host registration and construction
 src/ports.rs # HostKind, its implemented set and the HostPort trait with the permitted kind() readers
 src/cli/caller_location.rs # the only caller-location env reader in the CLI (F7)
 src/service/host_sessions.rs::any_reachable # peer-discovery gate asks about Herdr; the one permitted kind() reader outside the host adapters
+src/harness/codex.rs::host_launch_argv # permitted reader: the adapter's launch argv per host kind (H3)
+src/store/hosts.rs::attachable # permitted reader: the G4 reattach check; the built-in named host is implemented but never dialled
+src/store/seats/operator.rs::refuse_cross_kind_rebind # permitted reader: the G4 rebind check refuses a named to pane or terminal rebind
+src/main.rs::detached_child # host registration: the production HostFactory::build chooses the host by kind
+src/app.rs::run_elected_impl # host registration: the single source of the built-in named host's kind
+src/host/probe.rs # the kind probe: the one place a server's kind is classified
+src/host/target_creator.rs # host construction by probed kind (H3)
+src/host/named.rs # the named host adapter: owns its env names and its kind
+src/test_support/ # test support, not in a release daemon; env_remove keeps private tmux isolated
+src/service/host_sessions.rs::tests # unit-test fixtures name kinds to set up rows and fakes
+src/store/hosts.rs::tests # unit-test fixtures name kinds to set up rows and fakes

@@ -99,7 +99,9 @@ fn violations(path: &str, src: &str) -> Vec<String> {
 
 /// Line ranges (1-based, inclusive) of the items named `symbol` in `src`.
 fn symbol_spans(src: &str, symbol: &str) -> Vec<(usize, usize)> {
-    const KEYWORDS: [&str; 7] = ["fn", "struct", "enum", "trait", "impl", "const", "type"];
+    const KEYWORDS: [&str; 8] = [
+        "fn", "struct", "enum", "trait", "impl", "const", "type", "mod",
+    ];
     let lines: Vec<&str> = src.lines().collect();
     let mut spans = Vec::new();
     let mut i = 0;
@@ -322,6 +324,17 @@ fn symbol_entry_exempts_only_its_item() {
     assert_eq!(left.len(), 1, "{left:?}");
     assert!(left[0].starts_with("src/x.rs:5:"));
     assert!(unexempted("src/y.rs", src, &entries).len() == 2);
+}
+
+#[test]
+fn mod_entry_exempts_only_its_module() {
+    let src = "fn before() {\n    let k = HostKind::Herdr;\n}\n#[cfg(test)]\nmod tests {\n    fn a() {\n        let k = HostKind::Hc;\n    }\n    fn b() {\n        let k = HostKind::Hc;\n    }\n}\nfn after() {\n    let k = HostKind::Herdr;\n}\n";
+    let (entries, errors) = parse_allowlist("src/x.rs::tests # fixtures");
+    assert!(errors.is_empty(), "{errors:?}");
+    let left = unexempted("src/x.rs", src, &entries);
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert!(left[0].starts_with("src/x.rs:2:"), "{left:?}");
+    assert!(left[1].starts_with("src/x.rs:14:"), "{left:?}");
 }
 
 #[test]

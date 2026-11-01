@@ -200,15 +200,21 @@ impl Rig {
 
     /// Attaches `port` as the built-in host.
     pub(super) fn builtin_port(&self, port: Arc<dyn HostPort>) -> Arc<HostSession> {
+        let kind = port.kind();
         self.sessions
-            .attach_builtin(port, Arc::new(NoObserver), &loc("/builtin/named"))
+            .attach_builtin(kind, port, Arc::new(NoObserver), &loc("/builtin/named"))
             .unwrap()
     }
 
     /// Attaches the built-in fake.
     fn builtin(&self, host: AuditHost) -> Arc<HostSession> {
         self.sessions
-            .attach_builtin(Arc::new(host), Arc::new(NoObserver), &loc("/builtin/named"))
+            .attach_builtin(
+                host.kind,
+                Arc::new(host),
+                Arc::new(NoObserver),
+                &loc("/builtin/named"),
+            )
             .unwrap()
     }
 }
