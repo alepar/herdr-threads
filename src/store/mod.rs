@@ -2596,6 +2596,15 @@ impl StorePort for SqliteStore {
         let mut writer = self.writer(budget)?;
         hosts::attach_host(&mut writer, locator, now, kind)
     }
+    fn attach_host_unprobed(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        budget: &CallBudget,
+    ) -> Result<(crate::ports::HostId, i64, crate::ports::HostKind), ApiError> {
+        let mut writer = self.writer(budget)?;
+        hosts::attach_host_unprobed(&mut writer, locator, now)
+    }
     fn begin_host_observation(
         &self,
         instance: &str,

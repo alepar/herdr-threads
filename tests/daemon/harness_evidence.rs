@@ -2200,6 +2200,14 @@ mod publication_order {
         ) -> Result<(crate::ports::HostId, i64), ApiError> {
             self.inner.attach_host_of_kind(locator, now, kind, budget)
         }
+        fn attach_host_unprobed(
+            &self,
+            locator: &crate::protocol::ids::HostLocator,
+            now: i64,
+            budget: &CallBudget,
+        ) -> Result<(crate::ports::HostId, i64, crate::ports::HostKind), ApiError> {
+            self.inner.attach_host_unprobed(locator, now, budget)
+        }
         fn begin_host_observation(
             &self,
             instance: &str,
