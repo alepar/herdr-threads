@@ -11451,3 +11451,74 @@ fn retained_family_collision_two_v2_terminals_refuses_before_decoder() {
         "ambiguous original intent reference",
     );
 }
+
+/// The V2 `ParentProgress` journal bytes, pinned before V3 shares its path. The fixture is
+/// captured once (`HT_BLESS=1`) and never re-blessed.
+#[test]
+fn v2_parent_progress_bytes_are_pinned() {
+    use crate::{
+        host::continuity::LocalEndpointWitness,
+        ports::CreateTabRequest,
+        protocol::{handoff::*, ids::HostCallId, ids::OperationId},
+    };
+    let old = crate::protocol::handoff::topology_contract_tests::identity();
+    let identity = AutomaticBootstrapIdentity::new(
+        old.scope.clone(),
+        old.claim.clone(),
+        AutomaticBootstrapPlan {
+            placement: None,
+            version: 2,
+            payload: AutomaticBootstrapPayload {
+                directory_context: None,
+                handoff: AutomaticHandoffPayload::new(
+                    old.payload.handoff.namespace.clone(),
+                    OperationId::new("auto-child"),
+                    "automatic work".into(),
+                )
+                .unwrap(),
+                keys: AutomaticBootstrapKeys::new(OperationId::new("auto-parent")),
+                workspace: old.payload.workspace.clone(),
+                cwd: old.payload.cwd.clone(),
+                label: old.payload.label.clone(),
+                focus: false,
+                env: Default::default(),
+                launch: old.payload.launch.clone(),
+                startup_input: None,
+            },
+        },
+    )
+    .unwrap();
+    let created = crate::protocol::handoff::topology_contract_tests::created();
+    let witness: LocalEndpointWitness = created.witness.clone();
+    let request = CreateTabRequest {
+        correlation: HostCallId::new("correlation"),
+        workspace: identity.plan.payload.workspace.clone(),
+        cwd: identity.plan.payload.cwd.clone(),
+        label: identity.plan.payload.label.clone(),
+        focus: false,
+        env: Default::default(),
+        directory_context: None,
+        expected_witness: witness,
+    };
+    let progress = super::automatic::ParentProgress {
+        version: 2,
+        identity,
+        attempt: BootstrapAttempt::first(),
+        possible_creation: true,
+        request: Some(request),
+        creation: Some(created),
+        not_submitted: false,
+    };
+    let bytes = serde_json::to_vec(&progress).unwrap();
+    assert_eq!(bytes, serde_json::to_vec(&progress).unwrap());
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/handoff-journal/automatic-v2-parent-progress.json");
+    if std::env::var_os("HT_BLESS").is_some() {
+        std::fs::write(&path, &bytes).unwrap();
+    }
+    let expected = std::fs::read(&path).unwrap_or_else(|e| panic!("{e}; HT_BLESS=1"));
+    assert_eq!(
+        String::from_utf8_lossy(&bytes),
+        String::from_utf8_lossy(&expected)
+    );
+}

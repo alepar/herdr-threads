@@ -23,14 +23,14 @@ use std::{io::Write, path::PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ParentProgress {
-    version: u32,
-    identity: AutomaticBootstrapIdentity,
-    attempt: BootstrapAttempt,
-    possible_creation: bool,
-    request: Option<CreateTabRequest>,
-    creation: Option<crate::ports::CreatedTab>,
-    not_submitted: bool,
+pub(super) struct ParentProgress {
+    pub(super) version: u32,
+    pub(super) identity: AutomaticBootstrapIdentity,
+    pub(super) attempt: BootstrapAttempt,
+    pub(super) possible_creation: bool,
+    pub(super) request: Option<CreateTabRequest>,
+    pub(super) creation: Option<crate::ports::CreatedTab>,
+    pub(super) not_submitted: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
