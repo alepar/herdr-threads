@@ -115,6 +115,7 @@ fn claim() -> CallerClaim {
 }
 fn lifecycle(claim: CallerClaim, operation: &str) -> Command {
     Command::CheckIn(CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: claim.binding_generation,
@@ -144,6 +145,7 @@ fn elected_owner_checks_in_and_uses_returned_context_without_native_evidence() {
         checked(
             &service,
             Command::CheckIn(CheckIn {
+                readonly: false,
                 lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: result.context.clone(),
@@ -378,6 +380,7 @@ fn changed_context_is_fenced_and_historical_replay_cannot_restore_predecessor() 
             service
                 .handle(
                     Command::CheckIn(CheckIn {
+                        readonly: false,
                         lineage_parent: None,
                         mode: CheckInMode::Current,
                         claim: wrong,
@@ -1145,6 +1148,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
         checked(
             &service,
             Command::CheckIn(CheckIn {
+                readonly: false,
                 lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: claim.clone(),
@@ -2182,6 +2186,7 @@ fn a_current_check_in_refreshing_the_placement_between_stage_and_decide_is_fence
         checked(
             &s.service,
             Command::CheckIn(CheckIn {
+                readonly: false,
                 lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: s.main.clone(),
@@ -2548,6 +2553,7 @@ fn operator_check_in_requires_human_lifecycle() {
     assert_eq!(refused.code, ErrorCode::InvalidRequest);
     // Nor is a Current-mode (non-lifecycle) check-in.
     let current = Command::OperatorCheckIn(CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Current,
         claim: human(claim()),
@@ -3336,6 +3342,7 @@ fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
         checked(
             &service,
             Command::CheckIn(CheckIn {
+                readonly: false,
                 lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: parent.clone(),
@@ -3521,6 +3528,7 @@ fn codex_side_conversations_leave_one_process_composer_for_seat_attention() {
         checked(
             &service,
             Command::CheckIn(CheckIn {
+                readonly: false,
                 lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: CallerClaim {

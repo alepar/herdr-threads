@@ -734,6 +734,15 @@ fn settle_pending(
     how: SettleHow,
     on_hold: OnHold,
 ) -> Result<Vec<MessageId>, ApiError> {
+    // A read-only binding (D3) displays and reads but never settles on display: every
+    // display-like settlement is skipped and its receipts stay pending for a writable binding.
+    if matches!(
+        how,
+        SettleHow::Displayed | SettleHow::ModDelivered | SettleHow::Policy
+    ) && super::bindings::is_readonly(tx, &actor.binding_id)?
+    {
+        return Ok(newly.to_vec());
+    }
     let mut threads = Vec::with_capacity(newly.len());
     let mut last_of: BTreeMap<ThreadId, usize> = BTreeMap::new();
     for (index, id) in newly.iter().enumerate() {

@@ -162,6 +162,7 @@ impl Fixture {
     }
     fn check(&self, seat: &str, op: &str) -> CheckInResult {
         let command = CheckIn {
+            readonly: false,
             lineage_parent: None,
             mode: CheckInMode::Current,
             claim: self.claim(seat),

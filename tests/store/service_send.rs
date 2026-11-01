@@ -802,6 +802,7 @@ fn reads_and_notify_create_no_acks() {
         liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     let check_in = CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Current,
         claim: claim.clone(),

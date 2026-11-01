@@ -492,6 +492,7 @@ impl Node {
     /// Whether `seat` can be named by a check-in permit.
     pub fn check_in_permit(&self, seat: &SeatId) -> Result<MutationPermit, ApiError> {
         let command = CheckIn {
+            readonly: false,
             mode: CheckInMode::Current,
             claim: self.claim_of(seat),
             operation: OperationId::new("check-in-op"),

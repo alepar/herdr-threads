@@ -140,6 +140,7 @@ fn request(command: &CheckIn) -> CooperativePermitRequest {
 fn mapped_generation_zero_can_issue_cooperative_permit_without_native_attestation() {
     let (store, conn, _) = fixture();
     let command = CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 0,
@@ -191,6 +192,7 @@ fn check_in_as(
 }
 pub(crate) fn lifecycle(context: CallerClaim, operation: &str) -> CheckIn {
     CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: context.binding_generation,
@@ -208,6 +210,7 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
     assert_eq!(result.context.binding_generation, 0);
     assert_eq!(check_in(&store, initial.clone()).unwrap(), result);
     let current = CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Current,
         claim: result.context.clone(),
@@ -238,6 +241,7 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
     let mut stale_claim = result.context;
     stale_claim.binding_generation = 7;
     let stale = CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Current,
         claim: stale_claim,
@@ -531,6 +535,7 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
         check_in(
             &store,
             CheckIn {
+                readonly: false,
                 lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: child,
@@ -553,6 +558,7 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
         check_in(
             &store,
             CheckIn {
+                readonly: false,
                 lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: second.context,
@@ -1882,6 +1888,7 @@ fn cooperative_binding_records_observation_evidence_and_refuses_without_it() {
     )
     .unwrap();
     let current = CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Current,
         claim: result.context.clone(),
@@ -1945,6 +1952,7 @@ fn pending_notices(conn: &Connection) -> ((u64, bool), i64) {
 
 fn current(context: &CallerClaim, operation: &str) -> CheckIn {
     CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Current,
         claim: context.clone(),
@@ -3221,6 +3229,7 @@ fn current_check_in_never_adopts_a_managed_launch_binding() {
     exact.native_session = NativeSessionId::new(session);
     let _ = execution; // the placeholder execution is not a UUID; keep a canonical one
     let current = |context: CallerClaim| CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Current,
         claim: context,
@@ -4682,6 +4691,7 @@ fn independent_fork_rejects_borrowed_execution_and_generation_and_ignores_lineag
     let parent_claim = session_claim("main", "00000000-0000-4000-8000-0000000000a1");
     check_in(&store, lifecycle(parent_claim.clone(), "main-start")).unwrap();
     let fork = |claim: CallerClaim, operation: &str| CheckIn {
+        readonly: false,
         mode: CheckInMode::Fork {
             expected_binding_generation: claim.binding_generation,
         },

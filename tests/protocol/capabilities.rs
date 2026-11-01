@@ -892,6 +892,7 @@ fn probe_hook_context_receipts() {
             )),
         };
         let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+            readonly: false,
             lineage_parent: None,
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: 0,
@@ -2733,6 +2734,7 @@ fn presentation_capability_routes_use_configured_domain() {
             )),
         };
         let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+            readonly: false,
             lineage_parent: None,
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: 0,

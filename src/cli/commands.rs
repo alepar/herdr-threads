@@ -914,6 +914,7 @@ impl MutationSpec {
             }
             Self::CheckIn => WireCommand::CheckIn(CheckIn {
                 lineage_parent: None,
+                readonly: false,
                 mode: crate::protocol::commands::CheckInMode::Current,
                 claim: claim.unwrap(),
                 operation,

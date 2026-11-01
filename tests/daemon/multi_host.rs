@@ -613,6 +613,7 @@ impl Rig {
         claim.binding_generation = generation;
         let checked = self
             .call(Command::CheckIn(CheckIn {
+                readonly: false,
                 mode: CheckInMode::Lifecycle {
                     expected_binding_generation: generation,
                 },
@@ -1162,6 +1163,7 @@ fn claim_naming_b_seat_with_host_a_refused() {
     wrong.host = rig.loc_a.clone();
     let refused = rig
         .call(Command::CheckIn(CheckIn {
+            readonly: false,
             mode: CheckInMode::Current,
             claim: wrong,
             operation: rig.op("wrong-host"),
@@ -1175,6 +1177,7 @@ fn claim_naming_b_seat_with_host_a_refused() {
     );
     // The right host for the same seat is accepted.
     rig.call(Command::CheckIn(CheckIn {
+        readonly: false,
         mode: CheckInMode::Current,
         claim: on_b.claim.clone(),
         operation: rig.op("right-host"),

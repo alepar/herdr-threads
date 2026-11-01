@@ -1465,3 +1465,6 @@ fn deadline_traversals_show_every_item_exactly_once() {
         );
     }
 }
+
+#[path = "readonly_bindings.rs"]
+mod readonly_bindings;

@@ -2184,6 +2184,7 @@ fn original_actor_operator_and_native_lifecycle() {
             seat: human.seat.clone(),
         };
         let lifecycle = SemanticMutation::CooperativeCheckIn {
+            readonly: false,
             lineage_parent: None,
             claim: human,
             mode: CheckInMode::Lifecycle {

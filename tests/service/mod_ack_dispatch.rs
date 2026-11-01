@@ -195,6 +195,7 @@ fn second_process(mut claim: CallerClaim) -> CallerClaim {
 /// Lifecycle check-in; returns the claim the daemon hands back.
 fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: claim.binding_generation,
@@ -301,6 +302,7 @@ fn a_plain_call_binding_with_a_live_channel_mod_acks_and_keeps_its_provenance() 
     )
     .unwrap();
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Current,
         claim: claim("s", "p", Harness::Claude, "n1", first.binding_generation),

@@ -336,7 +336,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             native_session: NativeSessionId::new("session-pending"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000111"),
             target: HostTargetId::new("pane-pending"), agent_id: None, liveness: Some(herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session-pending")), };
-        let checked = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
+        let checked = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn { readonly: false,
             lineage_parent: None,
             mode: CheckInMode::Lifecycle { expected_binding_generation: 0 },
             claim: native, operation: OperationId::new("native-check-in"),
@@ -418,7 +418,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             native_session: NativeSessionId::new("session-member-1"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000112"),
             target: HostTargetId::new("pane-member-1"), agent_id: None, liveness: Some(herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session-member-1")), };
-        let checked_recipient = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
+        let checked_recipient = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn { readonly: false,
             lineage_parent: None,
             mode: CheckInMode::Lifecycle { expected_binding_generation: 1 },
             claim: recipient_claim, operation: OperationId::new("recipient-check-in"),

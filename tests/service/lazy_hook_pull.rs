@@ -220,6 +220,7 @@ fn check_in_as(
         liveness: Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 }),
     };
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },

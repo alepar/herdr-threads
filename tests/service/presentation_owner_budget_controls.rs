@@ -199,6 +199,7 @@ impl Fixture {
         let CommandResult::CheckedIn(checked) = service
             .handle(
                 Command::CheckIn(CheckIn {
+                    readonly: false,
                     mode: CheckInMode::Lifecycle {
                         expected_binding_generation: 1,
                     },
@@ -223,6 +224,7 @@ impl Fixture {
         let CommandResult::CheckedIn(sender) = service
             .handle(
                 Command::CheckIn(CheckIn {
+                    readonly: false,
                     mode: CheckInMode::Lifecycle {
                         expected_binding_generation: 1,
                     },

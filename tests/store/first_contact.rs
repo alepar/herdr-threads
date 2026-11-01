@@ -409,6 +409,7 @@ fn first_contact_is_attached_once_per_binding() {
     let again = check_in(&store, lifecycle(same, "a2")).unwrap();
     assert!(again.first_contact.is_none() && again.fast_forward.is_none());
     let current = crate::protocol::commands::CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Current,
         claim: first.context.clone(),
@@ -656,6 +657,7 @@ fn plain_touch_never_fast_forwards() {
     let mut bare = first.context.clone();
     bare.liveness = None;
     let current = crate::protocol::commands::CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Current,
         claim: bare,
@@ -683,6 +685,7 @@ fn plain_call_reconnect_never_fast_forwards() {
     let (store, conn, first, _) = resumed(300, 60);
     // The touch keeps its fingerprint, so the binding reconnects; that is not a lifecycle resume.
     let current = crate::protocol::commands::CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Current,
         claim: first.context.clone(),

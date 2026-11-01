@@ -7253,6 +7253,7 @@ mod live {
                 // A lifecycle check-in records the harness process (session-keyed bindings).
                 successor.liveness = Some(crate::protocol::authority::LivenessFingerprint::TEST);
                 let command = crate::protocol::commands::CheckIn {
+                    readonly: false,
                     mode: crate::protocol::commands::CheckInMode::Lifecycle {
                         expected_binding_generation: successor.binding_generation,
                     },
@@ -10052,6 +10053,7 @@ mod live {
             recipient.execution =
                 crate::protocol::ids::ExecutionId::new(uuid::Uuid::new_v4().to_string());
             let check_in = crate::protocol::commands::CheckIn {
+                readonly: false,
                 mode: crate::protocol::commands::CheckInMode::Lifecycle {
                     expected_binding_generation: 1,
                 },

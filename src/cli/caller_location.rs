@@ -160,6 +160,13 @@ impl CallerEnv {
             .is_some_and(|value| value == "1")
     }
 
+    /// The environment marks the binding read-only (`HERDR_THREADS_SEAT_READONLY=1`, D3).
+    pub fn readonly(&self) -> bool {
+        self.vars
+            .get(named::ENV_SEAT_READONLY)
+            .is_some_and(|value| value == "1")
+    }
+
     /// The valid seat name the environment carries; `None` when absent or invalid
     /// ([`CallerEnv::locate`] tells those apart).
     pub fn named(&self) -> Option<SeatName> {

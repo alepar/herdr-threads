@@ -1268,6 +1268,7 @@ fn presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap() {
             .service
             .handle(
                 Command::CheckIn(CheckIn {
+                    readonly: false,
                     mode: CheckInMode::Lifecycle {
                         expected_binding_generation: a.binding_generation,
                     },
@@ -1857,6 +1858,7 @@ fn fresh_execution(mut claim: CallerClaim, n: u8) -> CallerClaim {
 /// Lifecycle check-in; returns the claim the daemon hands back.
 fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: claim.binding_generation,
         },
@@ -2204,6 +2206,7 @@ fn a_plain_call_enrolled_hook_pull_binding_is_served() {
     // A plain (non-lifecycle) check-in enrolls the session: its binding keeps the honest
     // `cooperative_env_session` provenance and is still served (role + liveness + harness).
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         mode: CheckInMode::Current,
         claim: claim("s", "p", fourth(), "n1", 1),
         operation: OperationId::new("plain-1"),
@@ -3140,6 +3143,7 @@ fn current_check_in(
     operation: &str,
 ) -> crate::protocol::results::CheckInResult {
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         mode: CheckInMode::Current,
         claim,
         operation: OperationId::new(operation),
