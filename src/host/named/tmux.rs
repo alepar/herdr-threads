@@ -181,7 +181,9 @@ pub fn press(hint: &TmuxHint, key: &str) -> bool {
     run(hint, &["send-keys", "-t", &hint.pane, key], 0).is_some()
 }
 
-/// Verify `hint` for the binding whose process is `subject_pid`. On success, returns the
+/// Verify `hint` for the binding whose process is `subject_pid`: the binding's harness process
+/// (a turn edge names it by fingerprint), or the hook that carried a `ResolveSeat` hint, which is
+/// walked from the hook's own process until the next turn edge replaces it. On success, returns the
 /// fingerprint of the long-lived process the verification anchors the binding on: the pane's own
 /// process, or its child on the walk (the harness or the job that launched it). The binding is
 /// alive while that process is.

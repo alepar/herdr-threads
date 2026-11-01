@@ -140,6 +140,14 @@ pub struct DomainService {
     pub(super) turn_state: Arc<super::turn_state::TurnStateBook>,
 }
 
+/// The process a turn edge's tmux hint is verified for: the harness the claim fingerprints, else
+/// the reporting peer. A subagent claim has none: only a top-level binding holds a wake.
+pub fn wake_hint_subject(claim: &CallerClaim, peer_pid: Option<u32>) -> Option<u32> {
+    (claim.role == CallerRole::TopLevel && !claim.is_subagent())
+        .then(|| claim.liveness.map(|f| f.pid).or(peer_pid))
+        .flatten()
+}
+
 type WakeReports =
     std::collections::HashSet<(crate::protocol::ids::SeatId, crate::protocol::ids::SeatId)>;
 /// Bound on `wake_reports`: past it the set starts over (each `no_wake` may be reported again).
@@ -1256,7 +1264,22 @@ impl DomainService {
                 request.edge,
                 self.clock.monotonic_now().0,
             );
+        // The hint belongs to the binding: verify it for the harness process the claim names,
+        // not for the hook that carried it.
+        if let Some(hint) = &request.tmux_hint
+            && let Some(pid) = wake_hint_subject(&request.claim, peer.pid())
+        {
+            self.note_wake_hint(&request.claim.target, pid, hint);
+        }
         Ok(CommandResult::TurnState { recorded })
+    }
+
+    /// Hand a caller's tmux wake hint to every host; only the named host keeps it (verified per
+    /// binding, in memory), and a hint that fails only costs that binding its wake.
+    fn note_wake_hint(&self, target: &crate::protocol::ids::HostTargetId, pid: u32, hint: &str) {
+        for session in self.hosts.iter().flat_map(|h| h.all_for_reads()) {
+            session.port().note_wake_hint(target, pid, hint);
+        }
     }
 
     /// The hook pull's plain touch-or-reconnect of the claim's binding (spec §3), authorised like
@@ -1988,9 +2011,7 @@ impl LocalService for DomainService {
                     // The wake hint is verified and held per binding in host memory; it is never
                     // stored with the seat and a hint that fails only costs that binding its wake.
                     if let (Some(hint), Some(pid)) = (wake_hint, peer.pid()) {
-                        for session in self.hosts.iter().flat_map(|h| h.all_for_reads()) {
-                            session.port().note_wake_hint(&target, pid, &hint);
-                        }
+                        self.note_wake_hint(&target, pid, &hint);
                     }
                     return Ok(resolved);
                 }

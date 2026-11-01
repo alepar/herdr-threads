@@ -4095,7 +4095,9 @@ fn run_admitted_hook_since(
     outcome
 }
 
-/// Report a harness turn edge for the pane's seat, acting as the session the payload names.
+/// Report a harness turn edge for the pane's seat, acting as the session the payload names. The
+/// report carries the named caller's tmux hint and the harness fingerprint, so every turn edge
+/// (also the first after a daemon restart) re-establishes the binding's wake hint.
 fn report_turn_edge(
     args: &HookArgs,
     decoded: &DecodedEvent,
@@ -4154,10 +4156,17 @@ fn report_turn_edge(
         role: Role::TopLevel,
     };
     let host = runtime.claim_host().map_err(|_| invalid("host"))?;
-    let claim = bridge::caller_claim(&context, host).map_err(|_| invalid("session"))?;
+    let mut claim = bridge::caller_claim(&context, host).map_err(|_| invalid("session"))?;
+    // The harness process, not this short-lived hook, is what the tmux hint is verified for.
+    claim.liveness = hook_fingerprint(args.harness).ok();
+    let tmux_hint = super::caller_location::CallerEnv::from_process().tmux_hint();
     client
         .call(
-            Command::TurnState(TurnStateReport { claim, edge }),
+            Command::TurnState(TurnStateReport {
+                claim,
+                edge,
+                tmux_hint,
+            }),
             &budget(deadline, clock.as_ref()),
         )
         .map_err(|e| api_failure("turn edge", &e))?;

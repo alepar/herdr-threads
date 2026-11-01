@@ -306,6 +306,29 @@ fn verified_binding_ends_with_its_process() {
     assert_eq!(host.target_wake_capability(&alice), WakeCapability::None);
 }
 
+// Kills: a binding anchored on the short-lived hook that carried a ResolveSeat hint and left
+// dead by the next turn edge, instead of on the harness the edge fingerprints: the harness here
+// is the pane process itself (no process below it), so the edge's record anchors on it.
+#[test]
+fn harness_as_pane_process_keeps_its_binding() {
+    let Some(tmux) = PrivateTmux::start("harness_as_pane_process_keeps_its_binding") else {
+        return;
+    };
+    // The pane process (the harness) runs a short-lived hook child first, then a long one.
+    let pane = tmux.new_pane("sleep 1; sleep 600; true");
+    let hook = wait_for(|| children(pane.pid).into_iter().next());
+    let host = host();
+    let alice = target("alice");
+    let hint = tmux.hint(&pane);
+    // The ResolveSeat path: the hook is the subject and the anchor.
+    assert!(host.record_tmux_hint(&alice, hook, &hint));
+    // The turn edge path: the harness is the subject; it is the pane process itself.
+    assert!(host.record_tmux_hint(&alice, pane.pid, &hint));
+    wait_for(|| HostProcessTable.process(hook).is_none().then_some(()));
+    assert!(host.has_live_tmux_binding(&alice));
+    assert_eq!(host.target_wake_capability(&alice), composer());
+}
+
 // Kills: answering from one binding only (the first, the last), and an unverified binding that
 // cancels a verified sibling in the same pane.
 #[test]

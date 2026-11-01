@@ -5,7 +5,13 @@ use herdr_threads::{
         adapter::{AdmissionRequest, HookInput, InstallObservation, TurnEdge},
         registry::builtins,
     },
+    protocol::{
+        authority::{CallerClaim, CallerRole, Harness, LivenessFingerprint},
+        commands::TurnStateReport,
+        ids::{AgentId, ExecutionId, HostLocator, HostTargetId, NativeSessionId},
+    },
     protocol::{ids::SeatId, time::CallBudget, time::MonoInstant},
+    service::dispatch::wake_hint_subject,
     service::turn_state::{SCREEN_READ_GAP_MS, STALE_BUSY_MS, TurnKey, TurnState, TurnStateBook},
 };
 
@@ -203,4 +209,68 @@ fn codex_stop_without_continuation_idle() {
     book.record(&key(), TurnEdge::Busy, 0);
     book.answered_turn_end(&key(), false, 10);
     assert_eq!(book.state(&key()), TurnState::Idle);
+}
+
+fn claim(role: CallerRole, liveness: Option<LivenessFingerprint>) -> CallerClaim {
+    CallerClaim {
+        instance: "i".into(),
+        host: HostLocator::parse("/h.sock").unwrap(),
+        seat: SeatId::new("s"),
+        binding_generation: 1,
+        role,
+        harness: Harness::Codex,
+        native_session: NativeSessionId::new("sess"),
+        execution: ExecutionId::new("e"),
+        target: HostTargetId::new("alice"),
+        agent_id: None,
+        liveness,
+    }
+}
+
+// Kills: verifying the hint for the reporting hook process (the peer) when the claim fingerprints
+// the harness, so the binding dies with the hook; no fallback for a harness that cannot be
+// fingerprinted; a subagent claim or a claim with no peer pid holding a wake.
+#[test]
+fn turn_edge_reestablishes_the_hint_after_a_restart() {
+    let harness = LivenessFingerprint {
+        pid: 4242,
+        start: 9,
+    };
+    let top = claim(CallerRole::TopLevel, Some(harness));
+    assert_eq!(wake_hint_subject(&top, Some(77)), Some(4242));
+    let unfingerprinted = claim(CallerRole::TopLevel, None);
+    assert_eq!(wake_hint_subject(&unfingerprinted, Some(77)), Some(77));
+    assert_eq!(wake_hint_subject(&unfingerprinted, None), None);
+    let subagent = claim(CallerRole::Subagent, Some(harness));
+    assert_eq!(wake_hint_subject(&subagent, Some(77)), None);
+    let mut with_agent = top.clone();
+    with_agent.agent_id = Some(AgentId::new("a"));
+    assert_eq!(wake_hint_subject(&with_agent, Some(77)), None);
+}
+
+// Kills: serializing an absent hint (an older daemon's `deny_unknown_fields` would refuse the
+// report), or requiring the field on decode (an older hook's report would not decode).
+#[test]
+fn turn_state_report_without_hint_keeps_its_bytes() {
+    let report = TurnStateReport {
+        claim: claim(CallerRole::TopLevel, None),
+        edge: TurnEdge::Busy,
+        tmux_hint: None,
+    };
+    let text = serde_json::to_string(&report).unwrap();
+    assert!(!text.contains("tmux_hint"), "{text}");
+    assert_eq!(
+        serde_json::from_str::<TurnStateReport>(&text).unwrap(),
+        report
+    );
+    let hinted = TurnStateReport {
+        tmux_hint: Some("tmux:/s:1:%1".into()),
+        ..report
+    };
+    let text = serde_json::to_string(&hinted).unwrap();
+    assert!(text.contains("\"tmux_hint\":\"tmux:/s:1:%1\""), "{text}");
+    assert_eq!(
+        serde_json::from_str::<TurnStateReport>(&text).unwrap(),
+        hinted
+    );
 }
