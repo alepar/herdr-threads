@@ -658,6 +658,7 @@ pub(crate) fn ordinary_resolution_apply(
     if let Some(seat) = owner {
         return Ok((CommandResult::SeatResolved(SeatId::new(seat)), false));
     }
+    refuse_named_seat_pane(tx, target)?;
     // TRUST-POLICY C1, moved panes: the observed terminal already belongs to a
     // resolved seat at another target in this Herdr boot and incarnation, so
     // the pane moved (a new id after a move to another workspace) and the
@@ -688,6 +689,34 @@ pub(crate) fn ordinary_resolution_apply(
         ));
     }
     insert_ordinary_allocation(tx, at, instance, host, proof).map(|result| (result, true))
+}
+
+/// N4-paneform (SA9, M10): a pane that a live named seat's open binding hinted
+/// (`occupant_bindings.locator_hint`) runs a named agent, so pane-form allocation must not mint a
+/// second, ordinary seat for it. The hint is a hint, never authority: it only refuses an
+/// allocation, and the refusal names the seat so the caller addresses it by name.
+fn refuse_named_seat_pane(tx: &Transaction<'_>, pane: &HostTargetId) -> Result<(), ApiError> {
+    let name: Option<String> = tx
+        .query_row(
+            "SELECT s.name FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
+             WHERE b.locator_hint=?1 AND b.ended_at IS NULL AND b.role='top_level' \
+             AND s.name IS NOT NULL AND s.state<>'retired' ORDER BY b.ordinal DESC LIMIT 1",
+            [pane.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    match name {
+        Some(name) => Err(api_error(
+            ErrorCode::TargetAlreadyOwned,
+            // M10 (57 bytes + fields) after the CLI's `herdr-threads: ` prefix.
+            format!(
+                "pane {} runs named seat {name}; address it by name",
+                pane.as_str()
+            ),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// The live seat named `name` on the named host `host`, allocated when none exists.
@@ -946,3 +975,7 @@ mod named_allocation_tests;
 #[cfg(test)]
 #[path = "../../../tests/store/locator_hint.rs"]
 mod locator_hint_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/store/pane_form_refusal.rs"]
+mod pane_form_refusal_tests;
