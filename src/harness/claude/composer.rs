@@ -199,6 +199,9 @@ impl ComposerPolicy for NativeComposer {
     fn restore_text(&self, saved: &str) -> String {
         saved.into()
     }
+    fn recognizes_blocked_screens(&self) -> bool {
+        true
+    }
     /// A permission dialog: an `❯ N.` option row and the `Esc to cancel` footer among the last
     /// non-empty rows (`tests/fixtures/screen_blocked/claude/`). Otherwise a readable composer
     /// is not blocked; anything else cannot be told.

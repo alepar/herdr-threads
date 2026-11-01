@@ -470,6 +470,11 @@ class TmuxNamedCases(TempDir):
             for case in W.CASES + W.SIDE_CASES + W.HOOKS_CASES + W.EOT_CASES:
                 self.assertFalse(W.applies(tmux, case), (harness, case))
 
+    def test_codex_is_not_a_tmux_wake_harness(self):
+        # Codex has no screen_blocked recognizer, so the wake gate never types into a tmux Codex seat.
+        self.assertNotIn("codex", W.TMUX_HARNESSES)
+        self.assertIn("claude", W.TMUX_HARNESSES)
+
     def test_the_seat_name_is_a_valid_seat_name(self):
         name = self.recipient("claude").seat_name
         self.assertRegex(name, r"^[A-Za-z0-9][A-Za-z0-9._-]*$")

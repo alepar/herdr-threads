@@ -74,8 +74,8 @@ harnesses get their credentials:
   carries no live status. Hermes 0.22 hosts its sessions in the gateway, so the native wake matches the
   binding's own pane rather than its process (ht-f0xn; TRUST-POLICY, Hermes composer reader).
 - tmux-named (opt-in only, `--cases tmux-named/send-p0,tmux-named/send-p1`, never in the default matrix and gated on no
-  version): a named seat (`HERDR_THREADS_SEAT_NAME`, no Herdr pane) runs real Claude (hooks-only installation) and Codex,
-  each in its own private `tmux -L ht-test-<uuid>` server, and a person seat sends one direct item. At T=0 the p0 must
+  version): a named seat (`HERDR_THREADS_SEAT_NAME`, no Herdr pane) runs real Claude (hooks-only installation),
+  in its own private `tmux -L ht-test-<uuid>` server, and a person seat sends one direct item. At T=0 the p0 must
   wake the idle seat by a content-free wake typed into the tmux composer; the p1 control must stay silent and arrive
   on the next turn. Cleanup kills every private tmux server and verifies it gone, as part of the completeness check.
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
@@ -180,13 +180,15 @@ WAKE_BLOCK_WAIT_S = 90
 SIDE_DEADLINE_S = 45
 # Opt-in cases (ht-kqrt.61, N2-e2e), never in the default matrix and gated on no version: a named seat
 # (`HERDR_THREADS_SEAT_NAME`, no Herdr pane) runs real Claude (hooks-only installation: the mod's channel would wake it
-# instead) and Codex inside its own private `tmux -L ht-test-<uuid>` server at T=0. A person seat sends one direct item;
+# instead) inside its own private `tmux -L ht-test-<uuid>` server at T=0. A person seat sends one direct item;
 # the daemon must type the content-free wake into the tmux composer iff the priority is <= T (p0 wakes, the p1 control
 # stays silent and arrives on the next turn). The tmux server is the run's: cleanup kills it and verifies it is gone.
 TMUX_CASES = ("tmux-named/send-p0", "tmux-named/send-p1")
 # A running turn's status line (Claude "esc to interrupt", Codex "Esc to interrupt"); the tmux recipient has no Herdr
 # agent status, so its idle/busy comes from the screen.
-TMUX_HARNESSES = ("claude", "codex")
+# Claude only: the tmux wake gate needs the harness's `screen_blocked` recognizer, and Codex has none (no captured
+# fixture), so a tmux Codex seat is never typed and its sender reads `wake=no_wake`; a wake case cannot pass for it.
+TMUX_HARNESSES = ("claude",)
 TMUX_RUNNING = re.compile(r"esc to interrupt", re.I)
 # The composer's prompt glyph at a line start (Claude `❯`, Codex `›`), possibly inside a box border.
 COMPOSER_UP = re.compile(r"^[\s│]*[❯›]", re.M)
@@ -2918,7 +2920,7 @@ def main(argv=None):
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
                     + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES)
-                    + "; opt-in, a named seat in a private tmux server (claude, codex): " + ", ".join(TMUX_CASES))
+                    + "; opt-in, a named seat in a private tmux server (claude): " + ", ".join(TMUX_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
     ap.add_argument("--claude-model", help="passed as --model (default: the account default)")

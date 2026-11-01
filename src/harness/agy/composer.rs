@@ -130,6 +130,9 @@ impl ComposerPolicy for AgyComposer {
     fn clears_unsubmitted_wake(&self) -> bool {
         true
     }
+    fn recognizes_blocked_screens(&self) -> bool {
+        true
+    }
     /// A permission prompt: the `↑/↓ Navigate` hint and a `> N.` option row among the last
     /// non-empty rows (`tests/fixtures/screen_blocked/agy/`). Otherwise a readable idle
     /// composer is not blocked; a busy turn or an overlay cannot be told.

@@ -24,8 +24,8 @@ use crate::ports::{
 use crate::protocol::authority::LivenessFingerprint;
 use crate::protocol::{
     ids::{HostBootId, HostCallId, HostTargetId, SeatId, SeatName, TerminalId},
-    results::{ApiError, ErrorCode},
-    time::{CallBudget, Clock},
+    results::{ApiError, ErrorCode, WakeBlock},
+    time::{CallBudget, Cancellation, Clock},
 };
 use crate::service::turn_state::{TurnKey, TurnState, TurnStateBook};
 use crate::store::named_seats::NamedSeatSource;
@@ -89,6 +89,9 @@ pub struct NamedHost {
     /// The daemon's per-binding hook turn state; unset (or a binding it has not heard from) never
     /// reads as idle.
     turns: OnceLock<Arc<TurnStateBook>>,
+    /// The block each seat's last wake attempt met (`HostPort::wake_block`), with the monotonic
+    /// millisecond it was recorded at.
+    wake_blocks: Mutex<HashMap<SeatId, (WakeBlock, u64)>>,
 }
 
 /// One verified tmux binding of a seat.
@@ -104,6 +107,11 @@ struct TmuxBinding {
 const SETTLE: Duration = Duration::from_millis(300);
 /// `C-u` presses `clear_own_wake_text` makes at most (an Enter taken as a newline leaves two rows).
 const CLEAR_PRESSES: usize = 2;
+
+/// How long a recorded wake block is reported, and the bound on recorded blocks: the same values
+/// as `WAKE_BLOCK_MILLIS` and `MAX_WAKE_BLOCKS` in `host/native.rs`.
+const WAKE_BLOCK_MILLIS: u64 = 10 * 60_000;
+const MAX_WAKE_BLOCKS: usize = 1_024;
 
 /// Most verified bindings held per seat (SA16 admits several in one pane).
 const MAX_TMUX_BINDINGS: usize = 16;
@@ -127,7 +135,28 @@ impl NamedHost {
             processes: Arc::new(crate::host::process_table::HostProcessTable),
             tmux: Mutex::new(HashMap::new()),
             turns: OnceLock::new(),
+            wake_blocks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Records the block a wake attempt met (`None`: it got past the gate). Mirrors
+    /// `NativeHost::note_wake_block`.
+    fn note_wake_block(&self, seat: &SeatId, block: Option<WakeBlock>) {
+        let Ok(mut blocks) = self.wake_blocks.lock() else {
+            return;
+        };
+        let Some(block) = block else {
+            blocks.remove(seat);
+            return;
+        };
+        let now = self.clock.monotonic_now().0;
+        if blocks.len() >= MAX_WAKE_BLOCKS && !blocks.contains_key(seat) {
+            blocks.retain(|_, (_, at)| now.saturating_sub(*at) < WAKE_BLOCK_MILLIS);
+            if blocks.len() >= MAX_WAKE_BLOCKS {
+                return;
+            }
+        }
+        blocks.insert(seat.clone(), (block, now));
     }
 
     /// Install the daemon's turn state (once). Without it every binding reads `Unknown`.
@@ -196,6 +225,43 @@ impl NamedHost {
         map.values().map(Vec::len).sum()
     }
 
+    /// True when the wake gate can never type into `target`: its connected top-level bindings are
+    /// known and none belongs to a harness that recognizes blocked screens (`wake_gate` refuses an
+    /// unrecognised screen). A seat, a store read or a binding that cannot be found answers
+    /// false: the live hint alone decides, and the next read heals a transient.
+    fn gate_never_types(&self, target: &HostTargetId) -> bool {
+        let budget = CallBudget {
+            deadline: crate::protocol::time::MonoInstant(
+                self.clock.monotonic_now().0.saturating_add(1_000),
+            ),
+            cancellation: Cancellation::default(),
+        };
+        let Ok(live) = self.live(&budget) else {
+            return false;
+        };
+        let Some((seat, _)) = live
+            .iter()
+            .find(|(_, name)| name.as_str() == target.as_str())
+        else {
+            return false;
+        };
+        let Ok(bindings) = self.source.top_level_bindings(seat, &budget) else {
+            return false;
+        };
+        if bindings.is_empty() {
+            return false;
+        }
+        let registry = crate::harness::registry::builtins();
+        !bindings.iter().any(|binding| {
+            registry
+                .agent(&binding.harness)
+                .ok()
+                .and_then(|id| registry.by_id(id).ok())
+                .and_then(|adapter| adapter.composer_policy())
+                .is_some_and(|policy| policy.recognizes_blocked_screens())
+        })
+    }
+
     /// The composer policy of the bound harness; `None` means no tmux wake for it.
     fn wake_policy(
         target: &SafeWakeTarget,
@@ -219,12 +285,15 @@ impl NamedHost {
         context: &HostCallContext,
         what: &str,
     ) -> Result<(tmux::TmuxHint, u16), ApiError> {
-        let refuse = |detail: &str| {
+        let refuse_with = |block: WakeBlock, detail: &str| {
+            self.note_wake_block(&target.seat, Some(block));
             ApiError::new(
                 ErrorCode::TargetUnsafe,
                 format!("{what} refused before submission: {detail}"),
             )
         };
+        let refuse = |detail: &str| refuse_with(WakeBlock::Unknown, detail);
+        let unreadable = |detail: &str| refuse_with(WakeBlock::Unreadable, detail);
         if target.basis != WakeTargetBasis::CooperativeAgent {
             return Err(refuse("native execution is unverified"));
         }
@@ -259,7 +328,7 @@ impl NamedHost {
             }));
         };
         let Some(facts) = tmux::pane_facts(hint).filter(|f| f.server_pid == hint.server_pid) else {
-            return Err(refuse("pane unreadable"));
+            return Err(unreadable("pane unreadable"));
         };
         if !facts.delivers_keys() {
             return Err(refuse(
@@ -282,7 +351,7 @@ impl NamedHost {
             return Err(refuse("no turn state for the pane's bindings"));
         };
         // One capture serves the stale-busy clear, the running-turn check and the composer read.
-        let screen = tmux::capture(hint).ok_or_else(|| refuse("pane unreadable"))?;
+        let screen = tmux::capture(hint).ok_or_else(|| unreadable("pane unreadable"))?;
         if keys.iter().any(|key| turns.state(key) == TurnState::Busy) {
             let running = policy.screen_turn_running(&screen);
             let now = self.clock.monotonic_now().0;
@@ -297,8 +366,10 @@ impl NamedHost {
         if policy.screen_turn_running(&screen) == Some(true) {
             return Err(refuse("pane shows a running turn"));
         }
-        if policy.screen_blocked(&screen) != Some(false) {
-            return Err(refuse("screen blocked or not recognised"));
+        match policy.screen_blocked(&screen) {
+            Some(false) => {}
+            Some(true) => return Err(refuse("screen blocked")),
+            None => return Err(unreadable("screen not recognised")),
         }
         match read_composer_in(
             crate::harness::registry::builtins(),
@@ -307,7 +378,7 @@ impl NamedHost {
             Some(facts.width),
         ) {
             ComposerRead::Empty => Ok((hint.clone(), facts.width)),
-            ComposerRead::Unreadable => Err(refuse("composer is unreadable")),
+            ComposerRead::Unreadable => Err(unreadable("composer is unreadable")),
             _ => Err(refuse("composer is nonempty")),
         }
     }
@@ -321,6 +392,7 @@ impl NamedHost {
         still_owed: Option<&dyn Fn() -> Result<bool, ApiError>>,
     ) -> Result<Option<PromptOutcome>, ApiError> {
         let (hint, _) = self.wake_gate(target, context, "wake prompt")?;
+        self.note_wake_block(&target.seat, None);
         if let Some(still_owed) = still_owed
             && !still_owed()?
         {
@@ -445,11 +517,16 @@ impl HostPort for NamedHost {
     /// `Composer` only for a target with a live binding whose tmux hint verified; any other named
     /// seat has no wake path.
     fn target_wake_capability(&self, target: &HostTargetId) -> WakeCapability {
-        if self.has_live_tmux_binding(target) {
+        if self.has_live_tmux_binding(target) && !self.gate_never_types(target) {
             WakeCapability::Composer(ComposerTraits::TMUX)
         } else {
             WakeCapability::None
         }
+    }
+    fn wake_block(&self, seat: &SeatId) -> Option<WakeBlock> {
+        let now = self.clock.monotonic_now().0;
+        let (block, at) = *self.wake_blocks.lock().ok()?.get(seat)?;
+        (now.saturating_sub(at) < WAKE_BLOCK_MILLIS).then_some(block)
     }
     fn note_wake_hint(&self, target: &HostTargetId, subject_pid: u32, hint: &str) {
         self.record_tmux_hint(target, subject_pid, hint);
