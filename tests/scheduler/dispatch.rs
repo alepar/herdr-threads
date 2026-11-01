@@ -5255,6 +5255,62 @@ fn dispatcher_passes_bound_harness_to_prompt_target() {
     }
 }
 
+/// Kills: a dormant target held to its stale pid (the resumed process never matches, so the idle
+/// pane is never woken), or typed to with no foreground report, or a prompt target without the
+/// bound harness (the native recheck is what refuses another harness or a busy agent there).
+#[test]
+fn a_dormant_target_is_prompted_on_the_panes_foreground_with_its_harness() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    for (foreground, prompts) in [(vec![9999], 1), (vec![], 0)] {
+        let mut reservation = test_reservation();
+        reservation.authority = ReservedWakeAuthority::Cooperative {
+            targets: vec![crate::ports::WakeTarget {
+                provenance: "cooperative_top_level".into(),
+                binding: crate::protocol::ids::BindingId::parse(
+                    "dff8c3cecb26d58f0d3b496e750b7b1c".to_string(),
+                )
+                .unwrap(),
+                harness: "codex".into(),
+                fingerprint_pid: Some(4242),
+                dormant: true,
+            }],
+            terminal: TerminalId::new("terminal"),
+            incarnation: "incarnation".into(),
+            binding_generation: Some(1),
+            harness: Some("codex".into()),
+        };
+        let mut observation = fresh_observation();
+        observation.occupant = None;
+        observation.ui = HostUiState::Unknown;
+        observation.occupancy = StructuralOccupancy::Unknown;
+        observation.execution = ExecutionEvidence::Unknown;
+        let host = CooperativeRecordingHost {
+            observation,
+            prompted: std::sync::Mutex::new(vec![]),
+            foreground: foreground.clone(),
+        };
+        let check = FakeReservationCheck {
+            current: true,
+            calls: AtomicU64::new(0),
+        };
+        let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
+        let _ = dispatch.attempt_wake(reservation, &context);
+        let prompted = host.prompted.lock().unwrap();
+        assert_eq!(prompted.len(), prompts, "{foreground:?}");
+        if let Some(target) = prompted.first() {
+            assert_eq!(target.bound_harness.as_deref(), Some("codex"));
+        }
+    }
+}
+
 /// Kills: a cooperative reservation without a bound harness reaching the
 /// prompt (TRUST-POLICY A4: no open binding, no wake).
 #[test]
@@ -5305,6 +5361,7 @@ fn binding_target(id: &str, harness: &str, pid: Option<u32>) -> crate::ports::Wa
         binding: crate::protocol::ids::BindingId::new(id),
         harness: harness.into(),
         fingerprint_pid: pid,
+        dormant: false,
     }
 }
 

@@ -443,6 +443,7 @@ fn the_inbox_marker_follows_the_composer_bindings_parking() {
                 binding: binding.clone(),
                 harness: "agy".to_owned(),
                 fingerprint_pid: Some(pid),
+                dormant: false,
             })
             .collect(),
     };
@@ -489,6 +490,7 @@ fn hook_evidence_keeps_recovery_and_parked_inbox_hints() {
                 harness: harness.into(),
                 provenance: provenance.into(),
                 fingerprint_pid: Some(111),
+                dormant: false,
             }],
         };
         for (provenance, parked, expected) in [

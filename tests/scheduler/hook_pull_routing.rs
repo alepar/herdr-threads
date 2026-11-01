@@ -179,6 +179,7 @@ fn the_outlook_is_asked_about_the_candidates_target_bindings() {
             binding: BindingId::new(id),
             harness: "agy".to_owned(),
             fingerprint_pid: None,
+            dormant: false,
         })
         .collect();
     runner.try_candidate(&candidate, &budget()).unwrap();

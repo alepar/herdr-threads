@@ -717,7 +717,16 @@ model open work, and summary closure never changes receipt state or installs glo
   non-human bindings placed on the observed terminal that have something to act on (seat-level attention
   such as an invitation, receipt or warning reaches every one of them; otherwise the binding's own unread
   mail). Subagent, disconnected, ended and human bindings are never targets, and a seat that holds a human
-  binding is never woken. A target whose mod channel is live and not stalled is woken through that channel
+  binding is never woken. One exception, the *dormant* binding (ht-unmk): a harness may run no hook until its first
+  turn, so a session resumed in the pane sits idle unknown to the daemon. With no top-level binding of the seat
+  connected, the last disconnected top-level agent binding (not a fork, `concurrent_session`) is a target when a
+  process exit disconnected it (`liveness_process_exit`) and it has something to act on at the seat's threshold,
+  placed on the observed terminal and seat generation like any target. Like `managed_launch` it authorizes nothing
+  but a wake prompt: no binding, seat, cursor, receipt or availability changes, and the session reconnects only
+  through its own later check-in. Its pid is stale, so the composer wake takes it on any Herdr-reported foreground
+  process of its own pane (no foreground report, no wake) and the native recheck requires Herdr's agent kind there
+  to be its harness and awaiting input. An accepted limit: another session of that harness in the pane, which the
+  seat would enroll anyway, gets the wake. An end event never leaves a dormant binding. A target whose mod channel is live and not stalled is woken through that channel
   and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
   only to the one target whose fingerprint pid is among Herdr's pane foreground processes (the non-shell
   entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness

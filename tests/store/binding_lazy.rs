@@ -733,6 +733,90 @@ fn the_wake_frontier_ignores_process_exited_bindings() {
     assert_eq!(first(&db, RowFilter::Binding(&b)), (Some(msg(3)), 1));
 }
 
+/// A resumed harness may run no hook until its first turn, so its pane looks idle while its only
+/// binding sits disconnected: what its threshold admits still has to wake it.
+#[test]
+fn a_dormant_binding_holds_the_wake_frontier_while_nothing_is_connected() {
+    let t0 = NudgeThreshold::new(0).unwrap();
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    disconnect(&db, &a, DisconnectReason::ProcessExit);
+    publish(&mut db, 3);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), None, "p1 at T=0");
+    assert!(!has_wake_rows(&db, "s").unwrap());
+    publish_p0(&mut db, 4);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), Some(4));
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(),
+        Some(4)
+    );
+    assert_eq!(oldest_pending_at(&db, "s", t0).unwrap(), Some(0));
+    assert!(has_wake_rows(&db, "s").unwrap());
+    assert_eq!(view(&db, &a), 0, "no view is held for it");
+
+    // A connected sibling reads for the seat: the dormant row wakes nothing.
+    let b = enroll_binding(&db, "sess-B", None);
+    complete(&mut db, Some(&b), &[msg(3), msg(4)]);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), None);
+    // The last binding read it itself, so nothing is owed once it exits too.
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=6,disconnect_reason='liveness_process_exit' WHERE binding_id=?1",
+        [b.as_str()],
+    )
+    .unwrap();
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), None);
+    publish_p0(&mut db, 5);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), Some(5));
+}
+
+#[test]
+fn only_a_process_exit_makes_a_binding_dormant() {
+    for reason in [
+        DisconnectReason::EndEvent,
+        DisconnectReason::Superseded,
+        DisconnectReason::Replaced,
+    ] {
+        let mut db = db();
+        let a = enroll_binding(&db, "sess-A", None);
+        let b = enroll_binding(&db, "sess-B", None);
+        disconnect(&db, &a, DisconnectReason::ProcessExit);
+        db.execute(
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=6,disconnect_reason=?2 WHERE binding_id=?1",
+            params![b.as_str(), reason.as_str()],
+        )
+        .unwrap();
+        publish_p0(&mut db, 3);
+        assert_eq!(
+            wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(),
+            None,
+            "the last binding's {reason:?} decides"
+        );
+        assert!(!has_wake_rows(&db, "s").unwrap(), "{reason:?}");
+    }
+    // A fork of a live process (`concurrent_session`) ends with that process's successor unable
+    // to resume it.
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    db.execute("UPDATE occupant_bindings SET concurrent_session=1", [])
+        .unwrap();
+    disconnect(&db, &a, DisconnectReason::ProcessExit);
+    publish_p0(&mut db, 3);
+    assert_eq!(wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(), None);
+    // A subagent is never woken.
+    let mut db = db_with_subagent_only();
+    publish_p0(&mut db, 3);
+    assert_eq!(wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(), None);
+}
+
+fn db_with_subagent_only() -> Connection {
+    let db = db();
+    let parent = enroll_binding(&db, "sess-P", None);
+    let child = enroll_binding(&db, "sess-P", Some(&parent));
+    disconnect(&db, &parent, DisconnectReason::EndEvent);
+    disconnect(&db, &child, DisconnectReason::ProcessExit);
+    db
+}
+
 #[test]
 fn legacy_rows_enter_top_level_views_and_leave_once_displayed() {
     let mut db = db();

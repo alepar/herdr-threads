@@ -2635,6 +2635,7 @@ fn sole_target(store: &SqliteStore, harness: &str) -> crate::ports::WakeTarget {
         binding: crate::protocol::ids::BindingId::new(id),
         harness: harness.into(),
         fingerprint_pid: pid.map(|pid| u32::try_from(pid).unwrap()),
+        dormant: false,
     }
 }
 
@@ -2906,6 +2907,7 @@ fn composer_choice_is_pane_scoped_for_a_process_spanning_seats() {
         binding: crate::protocol::ids::BindingId::new(binding),
         harness: harness.into(),
         fingerprint_pid: Some(pid),
+        dormant: false,
     };
     let authority = |targets| crate::ports::ReservedWakeAuthority::Cooperative {
         terminal: crate::protocol::ids::TerminalId::new("t"),
@@ -2951,6 +2953,102 @@ fn composer_choice_is_pane_scoped_for_a_process_spanning_seats() {
 /// Kills: a composer predicate that guesses (latest touch, first row) instead of requiring
 /// exactly one connected top-level binding whose fingerprint pid is the foreground pid. This is
 /// the production pair: `wake_targets` filters, `ReservedWakeAuthority::composer_choice` decides.
+/// A resumed harness that runs no hook until its first turn: the seat's process-exited binding is
+/// the wake's target, placed on the observed terminal, for a composer wake and nothing else.
+#[test]
+fn a_dormant_binding_is_a_cooperative_wake_target_on_its_own_terminal() {
+    use crate::ports::{ComposerChoice, ReservedWakeAuthority};
+    let open = |reason: &str| {
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-wake-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
+        let db = context.open_writer().unwrap();
+        db.execute_batch("\
+            UPDATE herdr_hosts SET host_boot='host',host_epoch=2; UPDATE local_node SET decision_seq=1;\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+            INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane','host',2,1,0,'fresh','term-pane','inc','native_current_target',1);\
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
+            INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','invited');\
+            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','s',1,'pending',0,1,100,100,(SELECT id FROM local_node));\
+        ").unwrap();
+        // An older epoch: the outage carry may lag a row nothing is connected on.
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',1,'codex','session','self-reported','cooperative_top_level',0,0,'term-pane','inc','disconnected',5,?1,4242,1)",[reason]).unwrap();
+        drop(db);
+        let store = SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings {
+                daemon_boot: Some(uuid::Uuid::parse_str(DAEMON_BOOT).unwrap()),
+                ..StoreSettings::default()
+            },
+        )
+        .unwrap();
+        (store, path)
+    };
+    let reserve = |store: &SqliteStore| {
+        let host = crate::test_support::test_host_id();
+        let candidate = StorePort::wake_candidates(store, host, PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .remove(0);
+        StorePort::reserve_wake(store, host, &candidate, &budget()).unwrap()
+    };
+    let (store, path) = open("liveness_process_exit");
+    let reservation = reserve(&store).expect("the idle resumed pane is woken");
+    let ReservedWakeAuthority::Cooperative {
+        targets, harness, ..
+    } = &reservation.authority
+    else {
+        panic!("{:?}", reservation.authority);
+    };
+    assert_eq!(harness.as_deref(), Some("codex"));
+    assert_eq!(targets.len(), 1);
+    assert!(targets[0].dormant);
+    assert!(StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap());
+    // The new process's pid is not the binding's: it matches on the pane's foreground alone.
+    assert!(matches!(
+        reservation.authority.composer_choice(&[9999]),
+        ComposerChoice::Binding(found) if found.dormant
+    ));
+    assert_eq!(
+        reservation.authority.composer_choice(&[]),
+        ComposerChoice::NoMatch,
+        "no foreground report, no wake"
+    );
+    let set = |store: &SqliteStore, sql: &str| {
+        store
+            .context
+            .open_writer()
+            .unwrap()
+            .execute(sql, [])
+            .unwrap();
+    };
+    // A new terminal and an empty shell stay unwoken.
+    for (change, restore) in [
+        (
+            "UPDATE observed_targets SET terminal_id='term-new'",
+            "UPDATE observed_targets SET terminal_id='term-pane'",
+        ),
+        (
+            "UPDATE observed_targets SET occupancy='empty_shell'",
+            "UPDATE observed_targets SET occupancy='unknown'",
+        ),
+    ] {
+        set(&store, change);
+        assert!(reserve(&store).is_none(), "{change}");
+        set(&store, restore);
+    }
+    drop(store);
+    let _ = std::fs::remove_file(path);
+    // An end event says the session is over: no wake (today's rule).
+    let (store, path) = open("liveness_end_event");
+    assert!(reserve(&store).is_none());
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
     let (store, path) = multi_store(&[
