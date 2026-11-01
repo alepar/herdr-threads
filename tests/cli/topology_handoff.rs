@@ -52,6 +52,7 @@ impl LocalClient for ReadOnly {
 }
 fn request() -> Request {
     Request {
+        new_terminal: false,
         summary: None,
         policy: None,
         target: None,
@@ -375,6 +376,7 @@ fn publication_freezes_route_argv_caller_and_channel() {
     // Names and options can change after publication; reread is only saved bytes.
     let changed = prepared(
         &Request {
+            new_terminal: false,
             automatic: false,
             thread: Some("now ambiguous".into()),
             ..request()
@@ -522,6 +524,7 @@ fn publication_validation_has_zero_journal_effects() {
         assert!(
             prepared(
                 &Request {
+                    new_terminal: false,
                     automatic: false,
                     cwd: Some(cwd),
                     ..request()
@@ -752,6 +755,7 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
         host_endpoint: "/host.sock".into(),
     };
     let r = Request {
+        new_terminal: false,
         automatic: false,
         cwd: Some(work.clone()),
         kind: Some("claude".into()),
@@ -800,30 +804,36 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
     std::fs::write(&file, "file").unwrap();
     for r in [
         Request {
+            new_terminal: false,
             automatic: false,
             cwd: Some(file),
             ..request()
         },
         Request {
+            new_terminal: false,
             body: "".into(),
             ..request()
         },
         Request {
+            new_terminal: false,
             policy: None,
             new_tab: Some(" ".into()),
             ..request()
         },
         Request {
+            new_terminal: false,
             automatic: false,
             kind: None,
             ..request()
         },
         Request {
+            new_terminal: false,
             automatic: false,
             kind: Some("human".into()),
             ..request()
         },
         Request {
+            new_terminal: false,
             automatic: false,
             topic: Some("conflict".into()),
             ..request()
@@ -840,6 +850,7 @@ fn publication_refuses_cwd_removed_after_preparation() {
     std::fs::create_dir(&work).unwrap();
     let identity = prepared(
         &Request {
+            new_terminal: false,
             automatic: false,
             cwd: Some(work.clone()),
             ..request()
@@ -8174,6 +8185,48 @@ mod live {
                 assert_eq!(&harness[1..], &peer.identity.plan.payload.launch.argv[..]);
             }
 
+            /// The public retry arm of a V3 record: it rebuilds the host handle from the frozen
+            /// namespace endpoint and runs the whole sequence (it used to error on a V3 plan).
+            #[test]
+            fn v3_retry_arm_resumes_through_run_target() {
+                let placement = placements()[0].clone();
+                let world = world(&placement);
+                let peer = peer_for(&world, &placement);
+                let parsed =
+                    parse_argv(["ht", "retry", peer.reference.recovery_ref().as_str()]).unwrap();
+                assert!(matches!(parsed.action, CliAction::Retry(_)));
+                assert_eq!(
+                    crate::cli::topology_runtime::target_endpoint(&parsed, &peer.base.journal)
+                        .unwrap()
+                        .as_deref(),
+                    Some(world.fake.socket()),
+                    "a V3 record names its host in the frozen namespace"
+                );
+                crate::cli::topology_runtime::run_target(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &peer.base.journal,
+                    &peer.ns().state_dir,
+                    None,
+                    &peer.ns().instance,
+                    &peer,
+                    &(Arc::new(crate::app::SystemClock::new())
+                        as Arc<dyn crate::protocol::time::Clock>),
+                    world.fake.socket().to_path_buf(),
+                    &mut Vec::new(),
+                )
+                .unwrap();
+                // The port is the arm's own handle on the fake core, so the peer's `hc_create`
+                // marker (the `Ordered` wrapper's) is not recorded; the core saw one run.
+                let expected: Vec<&str> = WHOLE
+                    .iter()
+                    .copied()
+                    .filter(|c| *c != "hc_create")
+                    .collect();
+                assert_eq!(calls(&peer), expected);
+                assert_eq!(runs(&world).len(), 1);
+            }
+
             #[test]
             fn v3_profile_plan_passes_its_config_root() {
                 let placement = placements()[0].clone();
@@ -11443,6 +11496,7 @@ fn current_main_topology_native_argv_preserves_empty_tokens() {
 
 fn fourth_request() -> Request {
     Request {
+        new_terminal: false,
         kind: Some("synthetic_fourth".into()),
         binary: None,
         argv: vec![],
@@ -11604,6 +11658,7 @@ fn created_tab() -> crate::ports::CreatedTab {
 }
 fn kind_request(kind: &str, argv: &[&str]) -> Request {
     Request {
+        new_terminal: false,
         kind: Some(kind.into()),
         binary: None,
         argv: argv.iter().map(|a| (*a).to_owned()).collect(),

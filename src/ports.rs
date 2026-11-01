@@ -1464,11 +1464,33 @@ impl BootstrapPaneObservation {
     pub fn witness(&self) -> &crate::host::continuity::LocalEndpointWitness {
         &self.witness
     }
+    /// The creation witness this read corresponds to: the core and its serving process for a
+    /// terminal read, the socket witness for a Herdr pane.
+    pub fn host_witness(&self) -> HostWitness {
+        host_witness_of(self.core_id.as_deref(), &self.witness)
+    }
     pub fn workspace(&self) -> &HostTargetId {
         &self.workspace
     }
     pub fn tab(&self) -> &HostTargetId {
         &self.tab
+    }
+}
+
+fn host_witness_of(
+    core_id: Option<&str>,
+    witness: &crate::host::continuity::LocalEndpointWitness,
+) -> HostWitness {
+    match core_id {
+        Some(core_id) => HostWitness::HcCore {
+            core_id: core_id.to_owned(),
+            peer: HcPeer {
+                pid: witness.peer_pid,
+                start_seconds: witness.start_seconds,
+                uid: witness.peer_uid,
+            },
+        },
+        None => HostWitness::HerdrSocket(witness.clone()),
     }
 }
 
@@ -1512,17 +1534,7 @@ impl BootstrapAttachmentGuard {
     /// The creation witness this read corresponds to: the core and its serving process for a
     /// terminal read, the socket witness for a Herdr pane.
     pub fn host_witness(&self) -> HostWitness {
-        match &self.core_id {
-            Some(core_id) => HostWitness::HcCore {
-                core_id: core_id.clone(),
-                peer: HcPeer {
-                    pid: self.witness.peer_pid,
-                    start_seconds: self.witness.start_seconds,
-                    uid: self.witness.peer_uid,
-                },
-            },
-            None => HostWitness::HerdrSocket(self.witness.clone()),
-        }
+        host_witness_of(self.core_id.as_deref(), &self.witness)
     }
     pub fn ordinary(&self) -> &OrdinaryResolutionGuard {
         &self.ordinary

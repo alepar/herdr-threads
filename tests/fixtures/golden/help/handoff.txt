@@ -18,28 +18,30 @@ Options:
           Emit a structured JSON result on stdout
       --new-tab <NEW_TAB>
           
-      --existing
-          
       --human
           Human-readable tables and transcripts (the default on a terminal)
+      --new-terminal
+          A new terminal on a herdr-core host, parented on the calling terminal (no app labels)
+      --existing
+          
       --machine
           The stable `key: value` text form for scripts and models (the default when stdout is not a terminal)
-      --seat <SEAT>
-          SEAT: exact ID or SPACE/TAB/PANE[@MACHINE]; single-quote path: names with \/ \\ \@ escapes
       --cooperative-seat <COOPERATIVE_SEAT>
           Explicit seat ID for a cooperative agent call; requires all four --cooperative-* options
-      --cwd <CWD>
-          Working directory for --new-tab; guarded pane launches cannot change it
+      --seat <SEAT>
+          SEAT: exact ID or SPACE/TAB/PANE[@MACHINE]; single-quote path: names with \/ \\ \@ escapes
       --cooperative-target <COOPERATIVE_TARGET>
           Exact live pane ID or scoped name bound to the cooperative seat
-      --profile-dir <PROFILE_DIR>
-          Existing profile directory for --new-tab, distinct from native named profiles. Guarded pane launches cannot change the profile directory
+      --cwd <CWD>
+          Working directory for --new-tab; guarded pane launches cannot change it
       --cooperative-harness <COOPERATIVE_HARNESS>
           Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
-      --space <SPACE>
-          Exact workspace ID or label; omitted inherits the caller's live workspace, never focus
+      --profile-dir <PROFILE_DIR>
+          Existing profile directory for --new-tab, distinct from native named profiles. Guarded pane launches cannot change the profile directory
       --cooperative-role <COOPERATIVE_ROLE>
           Agent role for the cooperative call [possible values: top-level, subagent]
+      --space <SPACE>
+          Exact workspace ID or label; omitted inherits the caller's live workspace, never focus
       --tab <TAB>
           Exact tab ID or label in the selected workspace; a tab ID supplies its workspace
       --pane <PANE>

@@ -2064,6 +2064,9 @@ struct HandoffArgs {
     invite_deadline: Option<u64>,
     #[arg(long, conflicts_with_all = ["existing", "tab", "pane", "seat"])]
     new_tab: Option<String>,
+    /// A new terminal on a herdr-core host, parented on the calling terminal (no app labels).
+    #[arg(long, conflicts_with_all = ["new_tab", "existing", "space", "tab", "pane", "seat"])]
+    new_terminal: bool,
     #[arg(long)]
     existing: bool,
     /// SEAT: exact ID or SPACE/TAB/PANE[@MACHINE]; single-quote path: names with \/ \\ \@ escapes
@@ -2858,7 +2861,10 @@ fn parse_cli_in_registry(
     // Reject launch-only conflicts and normalize before reading instructions or
     // constructing selectors: no recipient resolution or publication can precede this.
     if let Top::Handoff(args) = &mut cli.command {
-        if (args.cwd.is_some() || args.profile_dir.is_some()) && args.new_tab.is_none() {
+        if (args.cwd.is_some() || args.profile_dir.is_some())
+            && args.new_tab.is_none()
+            && !args.new_terminal
+        {
             return Err(invalid(
                 "--cwd and --profile-dir require --new-tab; guarded pane launches cannot change directories",
             ));
@@ -2997,7 +3003,7 @@ fn parse_cli_in_registry(
             Some(selector.clone())
         }
         Top::Handoff(args) => {
-            if args.new_tab.is_some() {
+            if args.new_tab.is_some() || args.new_terminal {
                 None
             } else if args.existing {
                 if args.selector.pane.is_none() && args.seat.is_none() {
@@ -3096,7 +3102,9 @@ fn parse_cli_in_registry(
         | Top::Leave { thread }
         | Top::Archive { thread }
         | Top::Reopen { thread } => Some(thread.clone()),
-        Top::Handoff(args) if args.new_tab.is_none() && !args.existing => args.thread.clone(),
+        Top::Handoff(args) if args.new_tab.is_none() && !args.new_terminal && !args.existing => {
+            args.thread.clone()
+        }
         Top::Invite(args) => Some(args.thread.clone()),
         Top::Send(args) => args.thread.clone(),
         Top::Read(args) => args.thread.clone(),
@@ -3776,6 +3784,7 @@ fn parse_cli_in_registry(
                     target: None,
                     automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: None,
+                    new_terminal: false,
                     existing: true,
                     selector: super::panes::PaneSelector::default(),
                     seat: None,
@@ -3802,7 +3811,7 @@ fn parse_cli_in_registry(
                     },
                     then: Some(Box::new(then)),
                 }))
-            } else if args.new_tab.is_some() || args.existing {
+            } else if args.new_tab.is_some() || args.new_terminal || args.existing {
                 if args.existing
                     && (args.harness_binary.is_some()
                         || args.name.is_some()
@@ -3815,6 +3824,7 @@ fn parse_cli_in_registry(
                     target: None,
                     automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: args.new_tab,
+                    new_terminal: args.new_terminal,
                     existing: args.existing,
                     // With --seat, its --space/--tab narrow the name (`seat_narrowing`), never
                     // qualify a pane (root D8a).

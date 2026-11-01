@@ -44,6 +44,9 @@ pub mod labels;
 pub mod rpc;
 pub mod wire;
 
+/// The kind of host every herdr-core socket is (discovery and a `Terminal` site name only cores).
+pub const KIND: ports::HostKind = ports::HostKind::Hc;
+
 pub use discovery::{DiscoveredCore, HcDiscovery};
 pub use rpc::{HcClient, HcError, HcReply, RunRequest, Snapshot};
 pub use wire::{

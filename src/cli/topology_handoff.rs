@@ -7,6 +7,9 @@ pub struct Request {
     pub policy: Option<crate::protocol::handoff::HandoffPolicy>,
     pub automatic: bool,
     pub new_tab: Option<String>,
+    /// `--new-terminal`: a herdr-core terminal parented on the caller, no app labels.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub new_terminal: bool,
     pub existing: bool,
     pub selector: PaneSelector,
     pub seat: Option<String>,
