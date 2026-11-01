@@ -1,7 +1,7 @@
 //! Cancellation-owned channel lifecycle lane. All host/filesystem I/O is outside writer ownership.
 use crate::{
     archival_legacy::Source,
-    ports::{HostId, HostPort, StorePort},
+    ports::{ArchivalEvidence, HostId, HostPort, StorePort},
     protocol::{
         results::{ApiError, ErrorCode},
         time::{CallBudget, Cancellation, MonoInstant},
@@ -40,15 +40,23 @@ fn archival_host(session: &crate::service::host_sessions::HostSession) -> Archiv
         reachability: Arc::clone(session.reachability()),
     }
 }
+/// Whether the host can supply archival evidence (07 §5.3: archival filters on it).
+fn supplies_evidence(session: &crate::service::host_sessions::HostSession) -> bool {
+    session.port().archival_evidence() == ArchivalEvidence::Supported
+}
 impl ArchivalHosts for HostSessions {
     fn attached(&self) -> Vec<ArchivalHost> {
+        // Dialled-only, and only hosts with archival evidence (07 §5.3).
         HostSessions::attached(self)
             .iter()
+            .filter(|session| supplies_evidence(session))
             .map(|session| archival_host(session))
             .collect()
     }
     fn get(&self, id: HostId) -> Option<ArchivalHost> {
-        HostSessions::get(self, id).map(|session| archival_host(&session))
+        HostSessions::get(self, id)
+            .filter(|session| supplies_evidence(session))
+            .map(|session| archival_host(&session))
     }
 }
 /// A fixed host set (tests, and a daemon composed with one fixed host).

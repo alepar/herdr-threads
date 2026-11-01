@@ -186,6 +186,19 @@ pub struct PeerLaunchService {
     pub log: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
+/// The dialled hosts a peer launch may place on: those that can start a guarded
+/// native launch (07 §5.3). The built-in host is never dialled and never listed.
+pub(crate) fn creation_hosts(sessions: &HostSessions) -> Vec<Arc<HostSession>> {
+    sessions
+        .attached()
+        .into_iter()
+        .filter(|session| {
+            session.port().native_launch_capability()
+                == crate::ports::NativeLaunchCapability::HostGuardedStart
+        })
+        .collect()
+}
+
 /// Where one accepted request launches.
 struct Placement {
     session: Arc<HostSession>,
@@ -260,7 +273,7 @@ impl PeerLaunchService {
         let budget = self.budget();
         let mut found: Vec<Placement> = Vec::new();
         let mut failed = false;
-        let sessions = self.sessions.attached();
+        let sessions = creation_hosts(&self.sessions);
         if sessions.is_empty() {
             return Err(LaunchState::Unavailable {
                 reason: "no Herdr server is attached here".into(),

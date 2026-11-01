@@ -517,11 +517,14 @@ impl HostSessions {
         self.sessions.read().map_or(0, |map| map.len())
     }
 
-    /// Whether any attached server is not marked down.
+    /// Whether any attached Herdr server is not marked down. The peer-discovery
+    /// gate asks about Herdr (`machines` come from its CLI), so this is the one
+    /// new `kind()` reader: dialled sessions of another kind never open it.
     pub fn any_reachable(&self) -> bool {
-        self.attached()
-            .iter()
-            .any(|session| !session.reachability.is_down())
+        self.attached().iter().any(|session| {
+            session.port().kind() == crate::ports::HostKind::Herdr
+                && !session.reachability.is_down()
+        })
     }
 
     /// One Health entry per attached server, ascending by host id, with the
@@ -910,12 +913,19 @@ impl HostSessions {
     /// The session the node-wide seams without a claim host follow (Health,
     /// archival, the advertised bootstrap capability): the hint's, else the first server startup
     /// attached (the most recently attached remembered one), else the lowest
-    /// attached `host_id`; `None` when no server is attached.
+    /// attached `host_id` whose port has `HostGuardedStart` (never the
+    /// built-in host); `None` when there is none.
     pub fn startup_primary(&self, hint: Option<&HostLocator>) -> Option<Arc<HostSession>> {
         let first = *self.startup_first.lock().unwrap_or_else(|e| e.into_inner());
         hint.and_then(|hint| self.by_locator(hint))
             .or_else(|| first.and_then(|id| self.get(id)))
-            .or_else(|| self.attached().into_iter().next())
+            // Dialled-only fallback, filtered to guarded-start hosts (07 §5.3).
+            .or_else(|| {
+                self.attached().into_iter().find(|session| {
+                    session.port().native_launch_capability()
+                        == NativeLaunchCapability::HostGuardedStart
+                })
+            })
     }
 
     fn remembered_rows(&self) -> Vec<HostRow> {
@@ -979,6 +989,7 @@ impl HostSessions {
 
     /// One sweep pass: at most 64 unattached rows, round-robin by `host_id`.
     fn sweep_tick(&self) {
+        // Dialled-only: the sweep re-attaches remembered rows; the built-in host is never dialled.
         let attached: Vec<HostLocator> = self
             .attached()
             .iter()

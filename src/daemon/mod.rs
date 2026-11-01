@@ -435,3 +435,7 @@ where
 #[cfg(test)]
 #[path = "../../tests/daemon/detached_diagnostics.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/daemon/consumer_audit.rs"]
+mod consumer_audit;

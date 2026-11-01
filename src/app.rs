@@ -1033,6 +1033,7 @@ impl LaneProbe {
     }
     /// The first attached server's Pacer for a host lane.
     fn first_host_pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
+        // Dialled-only: the built-in host has no observation Pacer to follow (07 §5.3).
         let session = self.host_sessions()?.attached().into_iter().next()?;
         match lane {
             Lane::Observation => Some(Arc::clone(session.observation().pacer())),
@@ -1048,6 +1049,7 @@ impl LaneProbe {
     /// Whether the first attached server's observation lane has it marked
     /// down (its wake lane is frozen); false before the daemon is attached.
     pub fn host_down(&self) -> bool {
+        // Dialled-only: the built-in host is never marked down by reachability (07 §5.3).
         self.host_sessions()
             .and_then(|sessions| sessions.attached().into_iter().next())
             .is_some_and(|session| session.reachability().is_down())
