@@ -2,7 +2,7 @@
 //! binary), and the contract of both with the vendored 0.1.15 OpenRPC schema.
 //! The schema check is evidence, not a version gate: extra schema fields pass.
 
-use herdr_threads::host::hc::{HcClient, HcError, HcEvent, HcEventKind};
+use herdr_threads::host::hc::{HcClient, HcError, HcEvent, HcEventKind, RunRequest};
 use herdr_threads::test_support::{
     fake_hc::{FakeHc, FakeTerminal, SERVED_METHODS},
     scratch,
@@ -312,4 +312,60 @@ fn fake_hc_bin_serves_same_code() {
     assert_eq!((t.address.as_str(), t.state.as_str()), ("t1", "live"));
     child.stop();
     assert!(block_on(client.hello()).is_err(), "child stopped");
+}
+
+#[test]
+fn terminal_run_params_exist_in_vendored_schema() {
+    let schema = schema();
+    let run = schema["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "terminal.run")
+        .expect("terminal.run is in the vendored schema");
+    let allowed: BTreeSet<String> = run["params"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap().to_owned())
+        .collect();
+    let fake = FakeHc::start();
+    fake.add_terminal(FakeTerminal::live("t1"));
+    let client = HcClient::new(fake.socket());
+    let request = RunRequest {
+        argv: vec!["sh".into()],
+        cwd: "/".into(),
+        env: [("K".to_owned(), "V".to_owned())].into(),
+        labels: [("ht.bootstrap".to_owned(), "c".to_owned())].into(),
+        parent: Some("t1".into()),
+    };
+    block_on(client.terminal_run(&request)).unwrap();
+    let calls = fake.calls_to("terminal.run");
+    assert_eq!(calls.len(), 1);
+    let params = calls[0].params.as_object().unwrap();
+    for key in [
+        "no_notify",
+        "outlive_parent",
+        "no_parent",
+        "keep",
+        "labels",
+        "parent",
+        "argv",
+        "cwd",
+        "env",
+    ] {
+        assert!(params.contains_key(key), "client sends {key}");
+        assert!(
+            allowed.contains(key),
+            "{key} is not a terminal.run param in the schema"
+        );
+    }
+    for key in params.keys() {
+        assert!(
+            allowed.contains(key),
+            "sent param {key} is not in the schema"
+        );
+    }
+    assert_eq!(params["keep"], json!(false));
+    assert!(!params.contains_key("caller") && !params.contains_key("first_message"));
 }

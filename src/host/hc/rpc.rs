@@ -3,7 +3,8 @@
 //! Each call connects, captures the peer witness, writes one request line,
 //! reads reply lines up to the response carrying its id, and closes. The only
 //! methods are `hello`, `terminal.get`, `events.subscribe` (a one-shot
-//! snapshot) and `doc.get`. There is deliberately no way to send
+//! snapshot), `doc.get` and `terminal.run` (launch only, with a fixed
+//! parameter set). There is deliberately no way to send
 //! `terminal.list` (it prunes and fans out to machines), `doc.set`, or a
 //! `caller` param (it mutates hc's parent bookkeeping): [`HcClient::call`] is
 //! private and its params are built here.
@@ -24,10 +25,27 @@ use tokio::{
 
 /// Default budget for one call, connect to last reply byte.
 pub const CALL_DEADLINE: Duration = Duration::from_secs(5);
+/// Budget for `terminal.run`: herdr-core waits up to 10 s for the holder to
+/// spawn the program before it answers `spawn_failed`.
+pub const RUN_DEADLINE: Duration = Duration::from_secs(15);
 /// A reply line larger than this is refused.
 const MAX_LINE_BYTES: u64 = 16 * 1024 * 1024;
 /// Notification lines read before the response before giving up.
 const MAX_PRELUDE_LINES: usize = 4096;
+
+/// What a launch asks of `terminal.run`. There is deliberately no `caller`,
+/// hc `name`, template or first message here: the fixed parameters
+/// (`no_notify`, `outlive_parent`, `no_parent`, `keep: false`) are set by
+/// [`HcClient::terminal_run`] itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunRequest {
+    pub argv: Vec<String>,
+    pub cwd: String,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub labels: std::collections::BTreeMap<String, String>,
+    /// An explicit parent terminal (`tN`); `None` starts the terminal parentless.
+    pub parent: Option<String>,
+}
 
 #[derive(Debug)]
 pub enum HcError {
@@ -166,6 +184,28 @@ impl HcClient {
 
     pub async fn doc_get(&self, name: &str) -> Result<HcReply<AppDoc>, HcError> {
         self.typed("doc.get", json!({"name": name})).await
+    }
+
+    /// Starts a terminal. The parameters are fixed here: `no_notify`,
+    /// `outlive_parent` and `no_parent` true, `keep` false (any finish is
+    /// final), no `caller`, no `name`, no `first_message`. The caller gives
+    /// the client a deadline of at least [`RUN_DEADLINE`] (a spawn may take
+    /// that long).
+    pub async fn terminal_run(&self, request: &RunRequest) -> Result<HcReply<HcTerminal>, HcError> {
+        let mut params = json!({
+            "argv": request.argv,
+            "cwd": request.cwd,
+            "env": request.env,
+            "labels": request.labels,
+            "keep": false,
+            "no_notify": true,
+            "outlive_parent": true,
+            "no_parent": true,
+        });
+        if let Some(parent) = &request.parent {
+            params["parent"] = json!(parent);
+        }
+        self.typed("terminal.run", params).await
     }
 
     async fn typed<T: for<'de> Deserialize<'de>>(

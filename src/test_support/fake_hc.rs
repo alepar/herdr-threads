@@ -4,16 +4,19 @@
 //!
 //! Responsibility
 //! - Owns: serving `hello`, `server.status`, `terminal.get`,
-//!   `events.subscribe` (snapshot, `seq`, `missed`, heartbeat) and `doc.get`
-//!   for a set of scripted terminals, and recording every call (method and
-//!   params JSON) so a test can assert what a client never sent.
+//!   `events.subscribe` (snapshot, `seq`, `missed`, heartbeat), `doc.get` and
+//!   `terminal.run` for a set of scripted terminals, and recording every call
+//!   (method and params JSON) so a test can assert what a client never sent.
+//!   `terminal.run` records the request, creates a live terminal from its
+//!   argv, labels, `keep`, `parent` and `cwd`, and honours herdr-core's
+//!   explicit-parent rule; [`RunFailure`] scripts its failures.
 //! - Knobs: per-terminal state, status (including `null`), turn, pid,
 //!   foreground, labels and `keep`; finishes with herdr-core's reason strings
 //!   under its `Registry::finish` rule; record pruning (the `removed` event);
 //!   core id rotation (a wipe) and seq reset (a restart); a socket rebind
 //!   (the peer witness changes); unknown reply fields and unknown events.
-//! - Must not: model `terminal.run`, `terminal.read` or any send; they are not
-//!   served and answer `method_not_found`.
+//! - Must not: model `terminal.read`, templates, `wait` or any send; they are
+//!   not served and answer `method_not_found` (or are ignored).
 //! - Role: test fixture for `host::hc`.
 
 use serde_json::{Map, Value, json};
@@ -38,6 +41,7 @@ pub const SERVED_METHODS: &[&str] = &[
     "terminal.get",
     "events.subscribe",
     "doc.get",
+    "terminal.run",
 ];
 
 /// Reasons for which a kept terminal stays `live` (herdr-core `Registry::finish`).
@@ -69,6 +73,22 @@ pub struct FakeTerminal {
     pub finished_ms: Option<u64>,
     /// The terminal's `title` (a program-set string, never a label).
     pub title: String,
+    pub argv: Vec<String>,
+    pub cwd: String,
+    pub parent: Option<String>,
+}
+
+/// How the next `terminal.run` fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunFailure {
+    /// A JSON-RPC error of this kind before any record exists.
+    Error(&'static str),
+    /// The record is made and then the spawn fails: `spawn_failed`, record kept.
+    SpawnFailed,
+    /// The record is made, then the connection closes with no reply.
+    Disconnect,
+    /// The record is made, then no reply is ever sent.
+    Hang,
 }
 
 impl FakeTerminal {
@@ -89,6 +109,9 @@ impl FakeTerminal {
             signal: None,
             finished_ms: None,
             title: String::new(),
+            argv: vec!["sh".into()],
+            cwd: "/".into(),
+            parent: None,
         }
     }
 
@@ -99,9 +122,9 @@ impl FakeTerminal {
             "turn": self.turn, "pid": self.pid, "foreground": self.foreground,
             "labels": self.labels, "keep": self.keep, "reason": self.reason,
             "exit_code": self.exit_code, "signal": self.signal,
-            "finished_ms": self.finished_ms, "argv": ["sh"], "cwd": "/",
+            "finished_ms": self.finished_ms, "argv": self.argv, "cwd": self.cwd,
             "created_ms": 1, "screen": "exact", "cols": 80, "rows": 24,
-            "title": self.title, "parent": null,
+            "title": self.title, "parent": self.parent,
         });
         if unknown {
             t["x_unknown"] = json!({"nested": [1, 2]});
@@ -129,6 +152,8 @@ struct Inner {
     unknown_fields: bool,
     unknown_events: bool,
     stream_before_result: bool,
+    run_failure: Option<RunFailure>,
+    close_after_reply: bool,
 }
 
 /// The scripted world and call record behind a fake hc socket.
@@ -153,6 +178,8 @@ impl FakeHcState {
             unknown_fields: false,
             unknown_events: false,
             stream_before_result: false,
+            run_failure: None,
+            close_after_reply: false,
         }))
     }
 
@@ -286,6 +313,16 @@ impl FakeHcState {
         self.lock().unknown_events = on;
     }
 
+    /// The next `terminal.run` fails this way (once).
+    pub fn fail_next_run(&self, failure: RunFailure) {
+        self.lock().run_failure = Some(failure);
+    }
+
+    /// Whether the last request asked the connection to close (read once).
+    fn take_close(&self) -> bool {
+        std::mem::take(&mut self.lock().close_after_reply)
+    }
+
     /// The `event` params of every fact change so far (`seq`, `type`,
     /// `terminal`, `data`), e.g. to see that a prune emitted `removed`.
     pub fn events(&self) -> Vec<Value> {
@@ -342,6 +379,7 @@ impl FakeHcState {
                 vec![s.result_line(&id, json!({"value": value, "version": version}))]
             }
             "events.subscribe" => s.subscribe(&id, &params),
+            "terminal.run" => s.run(&id, &params),
             other => vec![error_line(&id, -32601, "method_not_found", other)],
         }
     }
@@ -383,6 +421,78 @@ impl Inner {
             map.insert("x_unknown".into(), json!("ignored"));
         }
         json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
+    }
+
+    /// `terminal.run`: herdr-core's `start` for the params this system sends.
+    fn run(&mut self, id: &Value, params: &Value) -> Vec<String> {
+        let failure = self.run_failure.take();
+        if let Some(RunFailure::Error(kind)) = failure {
+            return vec![error_line(id, -32000, kind, "scripted run failure")];
+        }
+        let text = |key: &str| params[key].as_str().map(str::to_owned);
+        let argv: Vec<String> = params["argv"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let parent = match text("parent") {
+            Some(p) if self.find(&p).is_none() => {
+                return vec![error_line(id, -32000, "not_found", &p)];
+            }
+            explicit => explicit,
+        };
+        let next = self
+            .terminals
+            .iter()
+            .filter_map(|t| t.address.strip_prefix('t')?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let address = format!("t{next}");
+        let mut t = FakeTerminal::live(&address);
+        t.pid = Some(5000 + next as u32);
+        t.argv = argv;
+        t.cwd = text("cwd").unwrap_or_else(|| "/".into());
+        t.keep = params["keep"].as_bool().unwrap_or(false);
+        t.parent = parent;
+        t.labels = params["labels"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let notify = !params["no_notify"].as_bool().unwrap_or(false);
+        let mut reply = t.to_json(self.unknown_fields);
+        reply["notify"] = json!(notify);
+        reply["first_message"] = Value::Null;
+        match failure {
+            Some(RunFailure::SpawnFailed) => {
+                self.terminals.push(t);
+                self.emit("created", &address, json!({}));
+                vec![error_line(
+                    id,
+                    -32000,
+                    "spawn_failed",
+                    "scripted spawn failure",
+                )]
+            }
+            Some(RunFailure::Disconnect | RunFailure::Hang) => {
+                self.terminals.push(t);
+                self.emit("created", &address, json!({}));
+                self.close_after_reply = failure == Some(RunFailure::Disconnect);
+                Vec::new()
+            }
+            _ => {
+                self.terminals.push(t);
+                self.emit("created", &address, json!({}));
+                vec![self.result_line(id, reply)]
+            }
+        }
     }
 
     fn subscribe(&self, id: &Value, params: &Value) -> Vec<String> {
@@ -452,6 +562,9 @@ fn handle(stream: UnixStream, state: &FakeHcState) {
             }
         }
         let _ = out.flush();
+        if state.take_close() {
+            return;
+        }
     }
 }
 

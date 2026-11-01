@@ -9,7 +9,11 @@
 //!   doc ([`labels`]), `server_process` from the `LocalEndpointWitness` peer
 //!   pid, and discovery from `core.json` plus `hello`. Closure and labels
 //!   land in later beads; today [`HcHost`] holds the boot, the capability
-//!   answers, the observation counter and `target_root_process`.
+//!   answers, the observation counter, `target_root_process` and target
+//!   creation (`CreateTargetPort` via `terminal.run`: `no_notify`,
+//!   `outlive_parent`, `no_parent`, `keep: false`, no `caller`, no hc `name`,
+//!   no `first_message`; the `ht.bootstrap` label is written as a hint and
+//!   never read to classify an outcome).
 //! - Discovery ([`HcDiscovery`], `discovery.rs`): lists
 //!   `$XDG_STATE_HOME|~/.local/state/herdr-core/*/core.json`, derives each
 //!   socket by the core's rules (`HC_SOCKET` or config, else
@@ -38,23 +42,24 @@ pub mod rpc;
 pub mod wire;
 
 pub use discovery::{DiscoveredCore, HcDiscovery};
-pub use rpc::{HcClient, HcError, HcReply, Snapshot};
+pub use rpc::{HcClient, HcError, HcReply, RunRequest, Snapshot};
 pub use wire::{
     AppDoc, CoreInfo, HcEvent, HcEventKind, HcForeground, HcStatus, HcTerminal, HelloReply,
 };
 
 use crate::ports::{
-    AgentComposerState, ArchivalEvidence, ClosureAuthority, ComposerObservation,
+    self, AgentComposerState, ArchivalEvidence, ClosureAuthority, ComposerObservation,
     EnumerationEvidence, HostCallContext, HostKind, HostObservation, HostPort, HostSnapshot,
     IncarnationEvidence, NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest,
     PromptOutcome, SafeWakeTarget, WakeCapability,
 };
 use crate::protocol::{
     ids::{HostBootId, HostTargetId, SeatId},
-    results::ApiError,
+    results::{ApiError, ErrorCode},
     time::CallBudget,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// Environment herdr-core sets for a terminal: its id and socket (read for
 /// caller recognition) and its scope and session. Every child the daemon side
@@ -105,6 +110,10 @@ pub struct HcHost {
     client: HcClient,
     observation_sequence: AtomicU64,
     doc_names: labels::DocNames,
+    /// The full argv `terminal.run` starts (the launch-gate shim, composed by
+    /// the creator). Empty until set: nothing is created without it.
+    gate_argv: Vec<String>,
+    run_deadline: Duration,
 }
 
 impl HcHost {
@@ -113,7 +122,21 @@ impl HcHost {
             client,
             observation_sequence: AtomicU64::new(0),
             doc_names: labels::DocNames::default(),
+            gate_argv: Vec::new(),
+            run_deadline: rpc::RUN_DEADLINE,
         }
+    }
+
+    /// Sets the argv `create_target` starts (the gate shim and its harness argv).
+    pub fn with_gate_argv(mut self, argv: Vec<String>) -> Self {
+        self.gate_argv = argv;
+        self
+    }
+
+    /// Overrides the `terminal.run` budget (default [`rpc::RUN_DEADLINE`]).
+    pub fn with_run_deadline(mut self, deadline: Duration) -> Self {
+        self.run_deadline = deadline;
+        self
     }
 
     /// The next value of this host's own observation counter (starts at 1).
@@ -200,6 +223,151 @@ impl crate::ports::BootstrapObserver for HcBootstrapObserver {
         _: &HostCallContext,
     ) -> Result<crate::ports::BootstrapPaneObservation, ApiError> {
         Err(HcHost::unavailable("bootstrap observation"))
+    }
+}
+
+fn api_error(code: ErrorCode, detail: impl Into<String>) -> ApiError {
+    ApiError::new(code, detail)
+}
+
+/// Maps a failed `terminal.run` to an outcome. Only a JSON-RPC error other
+/// than `spawn_failed` proves the record was never made; `spawn_failed`, a
+/// timeout, a disconnect or an undecodable reply leave it unknown. Never
+/// consults `ht.bootstrap` or any terminal state.
+fn run_failure(error: HcError) -> ports::CreateTargetOutcome {
+    use ports::CreateTargetOutcome::{NotSubmitted, OutcomeUnknown};
+    match &error {
+        HcError::Rpc { kind, .. } if kind.as_deref() != Some("spawn_failed") => {
+            NotSubmitted(api_error(ErrorCode::HostUnavailable, error.to_string()))
+        }
+        HcError::Timeout => {
+            OutcomeUnknown(api_error(ErrorCode::DeadlineExceeded, error.to_string()))
+        }
+        _ => OutcomeUnknown(api_error(ErrorCode::HostUnavailable, error.to_string())),
+    }
+}
+
+impl ports::CreateTargetPort for HcHost {
+    /// `terminal.run` starts the gate shim argv. Nothing is submitted unless
+    /// `hello` first shows the expected core and peer, and the run is pinned
+    /// to that peer's witness.
+    fn create_target(
+        &self,
+        request: &ports::CreateTargetRequest,
+        context: &HostCallContext,
+    ) -> ports::CreateTargetOutcome {
+        use ports::CreateTargetOutcome::{Created, NotSubmitted, OutcomeUnknown};
+        let ports::HostWitness::HcCore {
+            core_id: expected_core,
+            peer: expected_peer,
+        } = &request.expected_witness
+        else {
+            return NotSubmitted(api_error(
+                ErrorCode::InvalidRequest,
+                "hc host creates terminals against an hc core witness only",
+            ));
+        };
+        let Some(cwd) = request.cwd.to_str().filter(|_| request.cwd.is_absolute()) else {
+            return NotSubmitted(api_error(ErrorCode::InvalidRequest, "invalid launch cwd"));
+        };
+        if self.gate_argv.is_empty() || request.label.trim().is_empty() {
+            return NotSubmitted(api_error(
+                ErrorCode::InvalidRequest,
+                "hc launch needs a gate argv and a label",
+            ));
+        }
+        if context.budget.cancellation.is_cancelled() {
+            return NotSubmitted(api_error(ErrorCode::Cancelled, "hc create_target"));
+        }
+        let client = self.client.clone().with_deadline(self.run_deadline);
+        let hello = match Self::run(client.hello()) {
+            Ok(reply) => reply,
+            Err(e) => {
+                return NotSubmitted(api_error(ErrorCode::HostUnavailable, e.to_string()));
+            }
+        };
+        let witness = hello.witness.clone();
+        let peer = ports::HcPeer {
+            pid: witness.peer_pid,
+            start_seconds: witness.start_seconds,
+            uid: witness.peer_uid,
+        };
+        let boot = HcBoot::from_hello(&hello.value);
+        if &hello.value.core.id != expected_core
+            || &peer != expected_peer
+            || context
+                .expected_boot
+                .as_ref()
+                .is_some_and(|expected| Some(expected) != boot.as_ref().map(HcBoot::id))
+        {
+            return NotSubmitted(api_error(
+                ErrorCode::StaleHostObservation,
+                "hc core changed before launch",
+            ));
+        }
+        let mut labels = std::collections::BTreeMap::new();
+        let parent = match &request.placement {
+            ports::Placement::NewTab { space } => {
+                labels.insert(labels::LABEL_SPACE.to_owned(), space.as_str().to_owned());
+                labels.insert(
+                    labels::LABEL_TAB.to_owned(),
+                    format!("ht-{}", uuid::Uuid::new_v4().simple()),
+                );
+                None
+            }
+            ports::Placement::NewTerminal { parent } => Some(parent.as_str().to_owned()),
+        };
+        labels.insert(
+            labels::LABEL_BOOTSTRAP.to_owned(),
+            request.correlation.as_str().to_owned(),
+        );
+        labels.insert(labels::LABEL_HT.to_owned(), request.label.clone());
+        let run = RunRequest {
+            argv: self.gate_argv.clone(),
+            cwd: cwd.to_owned(),
+            env: request.env.clone(),
+            labels,
+            parent,
+        };
+        let reply = match Self::run(client.clone().expecting(witness).terminal_run(&run)) {
+            Ok(reply) => reply,
+            Err(HcError::WitnessChanged | HcError::Witness(_)) => {
+                return NotSubmitted(api_error(
+                    ErrorCode::StaleHostObservation,
+                    "hc peer changed before launch",
+                ));
+            }
+            Err(e) => return run_failure(e),
+        };
+        let address = reply.value.address;
+        let created = ports::CreatedTarget {
+            correlation: request.correlation.clone(),
+            placement: request.placement.clone(),
+            target: HostTargetId::new(address.clone()),
+            root_pane: None,
+            terminal: crate::protocol::ids::TerminalId::new(address),
+            host_incarnation: HostBootId::new(format!(
+                "{BOOT_PREFIX}{expected_core}:pid={}:start={}:uid={}",
+                peer.pid, peer.start_seconds, peer.uid
+            )),
+            witness: request.expected_witness.clone(),
+        };
+        // The record exists now: a result this host cannot vouch for stays unknown.
+        // A tab placement is not yet covered by `CreatedTarget::validate` (see the
+        // seam: hc witnesses validate for `NewTerminal` only).
+        let coherent = !created.target.as_str().is_empty()
+            && match &request.placement {
+                ports::Placement::NewTerminal { .. } => created.validate().is_ok(),
+                ports::Placement::NewTab { .. } => true,
+            };
+        if coherent {
+            Created(Box::new(created))
+        } else {
+            OutcomeUnknown(api_error(
+                ErrorCode::StaleHostObservation,
+                "incoherent hc terminal creation evidence",
+            ))
+        }
     }
 }
 
@@ -381,3 +549,7 @@ mod tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "../../../tests/host/hc_labels.rs"]
 mod label_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../../tests/host/hc_terminal_run.rs"]
+mod terminal_run_tests;

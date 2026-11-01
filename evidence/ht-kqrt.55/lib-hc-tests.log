@@ -1,0 +1,39 @@
+heavy: slot 1 acquired 21:41:35
+   Compiling herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.55)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 14s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-c08af7214c360d3c)
+
+running 29 tests
+test host::hc::label_tests::doc_unknown_fields_tolerated ... ok
+test host::hc::label_tests::bare_tn_ok_with_one_core ... ok
+test host::hc::discovery::tests::ignores_stale_dir_without_socket ... ok
+test host::hc::tests::env_vars_are_the_scrub_set ... ok
+test host::hc::tests::address_format ... ok
+test host::hc::tests::hc_boot_from_hello ... ok
+test host::hc::label_tests::bare_t1_ambiguous_refused_with_both_candidates ... ok
+test host::hc::tests::answers_wake_none_closing_no_evidence ... ok
+test host::hc::tests::hc_in_implemented_set ... ok
+test host::hc::discovery::tests::duplicates_dedupe_by_id ... ok
+test host::hc::discovery::tests::finds_fake_core_from_core_json ... ok
+test host::hc::tests::observation_sequence_is_its_own_counter ... ok
+test host::hc::tests::target_root_process_works_inside_a_runtime ... ok
+test host::hc::tests::enumerate_targets_failed_hello_closes_nothing ... ok
+test host::hc::discovery::tests::socket_comes_from_config_when_no_env_override ... ok
+test host::hc::discovery::tests::id_mismatch_drops_core ... ok
+test host::hc::discovery::tests::never_spawns_hc ... ok
+test host::hc::terminal_run_tests::refusals_before_any_call_are_not_submitted ... ok
+test host::hc::terminal_run_tests::new_terminal_no_app_labels_parent_caller ... ok
+test host::hc::label_tests::unnamed_tab_shows_position ... ok
+test host::hc::terminal_run_tests::recorded_unknown_never_reclassified_by_bootstrap_label ... ok
+test host::hc::label_tests::title_never_used ... ok
+test host::hc::terminal_run_tests::terminal_run_params ... ok
+test host::hc::tests::target_root_process_is_terminal_get_pid ... ok
+test host::hc::terminal_run_tests::new_tab_labels ... ok
+test host::hc::label_tests::doc_cache_invalidated_by_version ... ok
+test host::hc::label_tests::two_cores_t1_labels_never_cross ... ok
+test host::hc::terminal_run_tests::pre_record_rpc_error_not_submitted ... ok
+test host::hc::terminal_run_tests::spawn_failed_timeout_disconnect_outcome_unknown ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 6501 filtered out; finished in 0.48s
+
+exit 0

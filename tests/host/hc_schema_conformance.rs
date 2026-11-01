@@ -225,6 +225,16 @@ fn replies(state: &FakeHcState) -> Vec<(&'static str, Vec<Value>)> {
             call(state, "doc.get", json!({"name": "herdr-app"})),
         ),
         ("doc.get", call(state, "doc.get", json!({"name": "absent"}))),
+        (
+            "terminal.run",
+            call(
+                state,
+                "terminal.run",
+                json!({"argv": ["sh"], "cwd": "/", "keep": false, "no_notify": true,
+                       "outlive_parent": true, "no_parent": true,
+                       "labels": {"ht.bootstrap": "c"}, "parent": "t1"}),
+            ),
+        ),
     ]
 }
 
