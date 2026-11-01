@@ -672,3 +672,190 @@ fn launch_gate_timeout_refuses_shim_exits() {
     assert!(error.to_string().contains("timed out"), "{error}");
     assert!(!marker.exists(), "the harness never ran");
 }
+
+// ---- launched-worker finality (H3, D10) ----
+
+mod launched_finality {
+    use super::*;
+    use herdr_threads::{
+        identity::reconcile::plan_page,
+        ports::{
+            DurableWorkAdmission, ReconciliationAction, ReconciliationOutcome, SnapshotHeader,
+        },
+        protocol::time::{Cancellation as Cancel, UtcMillis},
+        store::{connection::StoreContext, seats},
+        test_support::{snapshot::stage_all, test_host_id},
+    };
+
+    const INSTANCE: &str = "34750f98bd59fcfc946da45aaabe933b";
+
+    struct FixedClock;
+    impl Clock for FixedClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(100)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(100)
+        }
+    }
+
+    /// Publishes a capture of the fake core through the real `HcHost`, plans the saved seats
+    /// and applies the planned transitions; returns the planned actions.
+    fn settle(
+        host: &HcHost,
+        context: &StoreContext,
+        conn: &mut rusqlite::Connection,
+    ) -> Vec<ReconciliationAction> {
+        let budget = CallBudget {
+            deadline: MonoInstant(1_000),
+            cancellation: Cancel::default(),
+        };
+        let snapshot = host
+            .enumerate_targets(&HostCallContext {
+                budget: CallBudget {
+                    deadline: MonoInstant(10_000),
+                    cancellation: Cancel::default(),
+                },
+                expected_boot: None,
+                expected_epoch: None,
+            })
+            .expect("capture");
+        assert!(snapshot.authorizes_absence_closure(), "{snapshot:?}");
+        let admission =
+            seats::begin_host_observation(context, conn, INSTANCE, test_host_id(), &budget)
+                .unwrap();
+        let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
+        let stage = seats::begin_snapshot_stage(context, conn, header, &budget).unwrap();
+        if !snapshot.targets.is_empty() {
+            stage_all(&snapshot.targets, |offset, targets| {
+                seats::stage_snapshot_targets(
+                    context,
+                    conn,
+                    &stage.id,
+                    offset,
+                    targets,
+                    DurableWorkAdmission::new(16).unwrap(),
+                    &budget,
+                )
+            })
+            .unwrap();
+        }
+        seats::seal_snapshot_stage(context, conn, &stage.id, &budget).unwrap();
+        let published = seats::publish_snapshot_stage(context, conn, &stage.id, &budget).unwrap();
+        let page =
+            seats::saved_seats_page(context, conn, &published.id, 0, None, 16, &budget).unwrap();
+        let transitions = plan_page(&page).unwrap();
+        for transition in &transitions {
+            let outcome =
+                seats::apply_reconciliation_transition(context, conn, transition.clone(), &budget)
+                    .unwrap();
+            assert!(
+                matches!(
+                    outcome,
+                    ReconciliationOutcome::Applied | ReconciliationOutcome::RetirementStarted(_)
+                ),
+                "{transition:?}: {outcome:?}"
+            );
+        }
+        transitions.into_iter().map(|t| t.action).collect()
+    }
+
+    fn seat_state(conn: &rusqlite::Connection) -> String {
+        conn.query_row("SELECT state FROM seats WHERE id='s'", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// R48: a worker launched end to end (`terminal.run` with `keep: false`, the gate shim
+    /// authorized, the stand-in exec'd as the terminal's root) that exits finishes its terminal
+    /// for good; the core's own record retires the seat through the pane-close fence, resolved
+    /// or not, and no launched seat is left unresolved.
+    #[test]
+    fn launched_worker_exit_retires_seat() {
+        let gate = Gate::new(2);
+        let terminal = gate.created.terminal.as_str().to_owned();
+        let core = match &gate.created.witness {
+            herdr_threads::ports::HostWitness::HcCore { core_id, .. } => core_id.clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            run_params(&gate.fake)["keep"],
+            serde_json::json!(false),
+            "every launch is keep: false"
+        );
+        // The shim waits for the daemon's authorization, then execs the stand-in: the fake
+        // terminal stays live with the harness as its root.
+        let shim = launch_gate::Gate {
+            compound: OperationId::new("op-1"),
+            attempt: BootstrapAttempt::new(1).unwrap(),
+            socket: gate.fake.socket().to_string_lossy().into_owned(),
+            terminal: terminal.clone(),
+        };
+        let clock = clock();
+        launch_gate::authorize(
+            &InProcessDaemon(&gate),
+            &shim,
+            &core,
+            10_000,
+            clock.as_ref(),
+        )
+        .expect("authorized");
+
+        // The launched seat, resolved on the new terminal in the core's boot.
+        let boot = format!("hc-core:{core}");
+        let path = temp_path(format!("ht-hc-final-{}.db", uuid::Uuid::new_v4().simple()));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
+        let mut conn = context.open_writer().unwrap();
+        conn.execute("UPDATE herdr_hosts SET host_boot=?1,host_epoch=1", [&boot])
+            .unwrap();
+        let kind = herdr_threads::ports::EvidenceKind::CoherentEnumeration
+            .structural_storage_spelling()
+            .unwrap();
+        conn.execute(
+            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_open,home_node,is_local,host_id) VALUES ('s',?1,'resolved',NULL,'native',?4,1,1,?4,?2,?3,?2,1,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+            rusqlite::params![INSTANCE, boot, kind, terminal],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,?2,?1,1,'claude','plugin_context:x','exec-x','cooperative_top_level',7,8,?2,?1)",
+            rusqlite::params![boot, terminal],
+        )
+        .unwrap();
+
+        let host = HcHost::with_clock(HcClient::new(gate.fake.socket()), Arc::new(FixedClock));
+        assert!(
+            settle(&host, &context, &mut conn).is_empty(),
+            "a running worker changes nothing"
+        );
+        assert_eq!(seat_state(&conn), "resolved");
+
+        // The worker exits: herdr-core finishes the keep: false terminal for good.
+        gate.fake.state().finish(&terminal, "exited", Some(0), None);
+        let actions = settle(&host, &context, &mut conn);
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [ReconciliationAction::BeginRetirement { .. }]
+            ),
+            "{actions:?}"
+        );
+        assert_eq!(seat_state(&conn), "retired");
+        let unresolved: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM seats WHERE state='unresolved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unresolved, 0, "no launched seat is left unresolved");
+        let open: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(open, 0);
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
