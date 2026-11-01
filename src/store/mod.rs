@@ -23,6 +23,7 @@ pub mod local_seat_status;
 pub mod materialization;
 pub mod materialize;
 pub mod messages;
+pub mod named_seats;
 pub mod node_directory;
 pub mod node_prune;
 pub mod operator;

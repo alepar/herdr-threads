@@ -115,6 +115,8 @@ mod peer_wire_freeze;
 mod read_picker_pty;
 #[path = "store/remote_seats.rs"]
 mod remote_seats;
+#[path = "seat_name_corpus.rs"]
+mod seat_name_corpus;
 #[path = "setup_cli.rs"]
 mod setup_cli;
 #[path = "store/sync_contacts.rs"]

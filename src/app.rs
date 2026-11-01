@@ -1872,6 +1872,7 @@ where
             let publisher_store = sqlite.clone();
             let first_attach_store = sqlite.clone();
             let apply_node_json = identity_paths.node_json_path.clone();
+            let named_seats: Arc<dyn crate::store::named_seats::NamedSeatSource> = sqlite.clone();
             let store: Arc<dyn StorePort> = sqlite;
             // The manifest policy, logged after election (stderr is the daemon
             // log from here on).
@@ -2039,6 +2040,27 @@ where
                     _links: links,
                 });
             factory_probe.attach_host_sessions(&host_sessions);
+            // The built-in named host: never dialled, in its own slot (not in
+            // `attached()`); a failure is one log line and never fatal.
+            match crate::protocol::ids::HostLocator::parse(
+                crate::protocol::ids::NAMED_HOST_LOCATOR,
+            )
+            .and_then(|locator| {
+                let host_id = host_sessions.reserve_host_id(&locator, crate::ports::HostKind::Named)?;
+                let port = Arc::new(crate::host::named::NamedHost::new(
+                    &instance.to_string(),
+                    host_id,
+                    Arc::clone(&named_seats),
+                    Arc::clone(&factory_clock),
+                ));
+                host_sessions.attach_builtin(port, Arc::new(crate::host::named::NoBootstrap), &locator)
+            }) {
+                Ok(_) => {}
+                Err(error) => rate_limited_log.write_line(&format!(
+                    "named host not attached: {:?}: {}",
+                    error.code, error.detail
+                )),
+            }
             host_sessions.attach_startup(factory_hint.as_ref())?;
             // The service routes by claim host (`DomainService::attached_host`);
             // Health and archival still follow the startup session (`None`

@@ -665,6 +665,26 @@ impl HostSessions {
         Ok(session)
     }
 
+    /// Upserts the host row of `locator` and returns its id, so a built-in
+    /// port that needs its own host id (the named host's store read is keyed on
+    /// it) can be built before [`HostSessions::attach_builtin`]. Idempotent: the
+    /// attach that follows returns the same id.
+    pub fn reserve_host_id(
+        &self,
+        locator: &HostLocator,
+        kind: crate::ports::HostKind,
+    ) -> Result<HostId, ApiError> {
+        let budget = self.background_budget();
+        let _turn = self
+            .deps
+            .writer
+            .enter_foreground(&budget, self.deps.clock.as_ref())?;
+        self.deps
+            .store
+            .attach_host_of_kind(locator, self.deps.clock.utc_now().0, kind, &budget)
+            .map(|(host_id, _)| host_id)
+    }
+
     /// Attaches the built-in host under `locator`: the one session that is never
     /// dialled. It skips `factory.exists`, the canonical-path check and
     /// [`MAX_ATTACHED_HOSTS`], runs the first-attach hook never, and lives in its
@@ -691,9 +711,12 @@ impl HostSessions {
                 .deps
                 .writer
                 .enter_foreground(&budget, self.deps.clock.as_ref())?;
-            self.deps
-                .store
-                .attach_host(locator, self.deps.clock.utc_now().0, &budget)?
+            self.deps.store.attach_host_of_kind(
+                locator,
+                self.deps.clock.utc_now().0,
+                port.kind(),
+                &budget,
+            )?
         };
         port.resume_after_epoch(u64::try_from(epoch).unwrap_or(0));
         let session = self.start_session(host_id, locator, port, observer)?;

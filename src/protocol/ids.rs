@@ -317,9 +317,17 @@ pub struct HostLocator(String);
 const HOST_LOCATOR_INVALID: &str = "host locator is not a canonical absolute path";
 const HOST_LOCATOR_MAX_BYTES: usize = 4096;
 
+/// The reserved locator of the built-in named host (SA15, D14): a fixed path
+/// that is never on disk, so `parse` recognises it by text and never stats.
+pub const NAMED_HOST_LOCATOR: &str = "/.herdr-threads/named-host";
+
 impl HostLocator {
     pub fn parse(value: impl Into<String>) -> Result<Self, crate::protocol::results::ApiError> {
         let value = value.into();
+        // The reserved named-host path is decided first, by text alone.
+        if value == NAMED_HOST_LOCATOR {
+            return Ok(Self(value));
+        }
         let canonical = !value.is_empty()
             && value.len() <= HOST_LOCATOR_MAX_BYTES
             && !value.contains('\0')
@@ -339,6 +347,10 @@ impl HostLocator {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+    /// Whether this is the reserved named-host locator.
+    pub fn is_named_host(&self) -> bool {
+        self.0 == NAMED_HOST_LOCATOR
+    }
     pub fn as_path(&self) -> &std::path::Path {
         std::path::Path::new(&self.0)
     }
@@ -354,6 +366,50 @@ impl<'de> Deserialize<'de> for HostLocator {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
         Self::parse(value).map_err(|error| serde::de::Error::custom(error.detail))
+    }
+}
+
+/// SeatName: the durable name of a named seat.
+///
+/// Owns: the grammar (1..=64 bytes of `[A-Za-z0-9._-]`, no leading `-` or `.`,
+/// not shaped like a public seat id) and string serde. The 0012 migration's
+/// CHECK is a superset of it (length and charset); the other two rules are
+/// decided here only.
+/// Hides: nothing; a validated string.
+/// Must not: be built from text without `parse`, or be compared as a seat id.
+/// Role: leaf value type. Where a name is accepted, `parse` is the one gate.
+/// Errors: `parse` returns one fixed message.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct SeatName(String);
+
+/// The longest seat name, in bytes.
+pub const SEAT_NAME_MAX_BYTES: usize = 64;
+
+impl SeatName {
+    pub fn parse(value: impl Into<String>) -> Result<Self, &'static str> {
+        let value = value.into();
+        let valid = !value.is_empty()
+            && value.len() <= SEAT_NAME_MAX_BYTES
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            && !value.starts_with(['-', '.'])
+            && !is_public_id(prefix::SEAT, &value);
+        if !valid {
+            return Err("invalid seat name");
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for SeatName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
     }
 }
 

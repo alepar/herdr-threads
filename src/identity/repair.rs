@@ -221,12 +221,13 @@ impl OrdinaryIdentity {
         })?;
         match outcome {
             crate::identity::reconcile::ObservationOutcome::Published(publication) => {
-                crate::identity::reconcile::reconcile_published_page(
+                crate::identity::reconcile::reconcile_published_page_for(
                     store,
                     publication,
                     after,
                     high,
                     budget,
+                    self.host.closure_authority(),
                 )
             }
             crate::identity::reconcile::ObservationOutcome::Invalidated {
