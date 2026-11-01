@@ -44,17 +44,26 @@ fn runtime(output: &OutputSpec) -> Result<RuntimeContext, RunError> {
         .0,
     )
 }
+/// The namespace a handoff was (or is to be) recorded under. A named caller's selected host is the
+/// reserved claim locator, never a Herdr server: its Herdr endpoint is the lazily resolved one,
+/// as at the handoff itself (SA14).
 fn namespace(
     selected: &RuntimeContext,
     instance: crate::node::NodeUuid,
+    output: &OutputSpec,
 ) -> Result<HandoffNamespace, RunError> {
+    let host_endpoint = super::handoff::herdr_endpoint(selected.require_host().ok(), || {
+        super::instance::InstanceInputs::from_process(
+            None,
+            output.context.host.as_ref().map(std::path::PathBuf::from),
+        )
+        .lazy_host_endpoint()
+    })
+    .map_err(super::context_error)?;
     Ok(HandoffNamespace {
         instance: instance.to_string(),
         state_dir: selected.state_dir.clone(),
-        host_endpoint: selected
-            .require_host()
-            .map_err(super::context_error)?
-            .to_path_buf(),
+        host_endpoint,
     })
 }
 fn recovery_origin_host_matches(
@@ -156,7 +165,7 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
     writer: &mut dyn Write,
 ) -> Result<bool, RunError> {
-    let ns = namespace(selected, instance)?;
+    let ns = namespace(selected, instance, &parsed.output)?;
     try_completed_with_namespace(parsed, journal, &ns, client, clock, writer)
 }
 
@@ -586,7 +595,7 @@ pub(crate) fn run(
             writer,
         );
     }
-    let ns = namespace(&selected, instance)?;
+    let ns = namespace(&selected, instance, &parsed.output)?;
     if matches!(&parsed.action, CliAction::TopologyHandoff(request) if request.profile_dir.is_some())
     {
         super::topology_handoff::require_directory_capability(&client, clock.as_ref())?;
@@ -1171,7 +1180,10 @@ pub(crate) fn run_operator(
     let journal = Journal::open(paths.node_dir.join("intents"))?;
     let mut automatic_connect = || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
         let (instance, _, client) = super::connect(paths, clock)?;
-        Ok((namespace(selected, instance)?, Box::new(client)))
+        Ok((
+            namespace(selected, instance, &parsed.output)?,
+            Box::new(client),
+        ))
     };
     let mut automatic_observe =
         |target: &crate::protocol::ids::HostTargetId,
@@ -1234,7 +1246,7 @@ pub(crate) fn run_operator(
         ));
     }
     let (instance, _, client) = super::connect(paths, clock)?;
-    let ns = namespace(selected, instance)?;
+    let ns = namespace(selected, instance, &parsed.output)?;
     super::topology_recover::require_capability(&client, clock.as_ref())?;
     let reference = if let Some(original) = original {
         original.header.reference
