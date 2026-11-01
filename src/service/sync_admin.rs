@@ -890,7 +890,10 @@ impl SyncAdmin {
                     last_contact_at: last.and_then(|c| i64::try_from(c.last_contact_at).ok()),
                 }
             }
-            Some(LaunchAnswer::NoCap { version }) => RemoteLaunchAnswer::NoCap { version },
+            Some(LaunchAnswer::NoCap { version, cap }) => RemoteLaunchAnswer::NoCap {
+                version,
+                cap: cap.to_owned(),
+            },
             Some(LaunchAnswer::Answered(state)) => match &state {
                 LaunchState::Launched { seat, .. }
                     if !self.wait_replicated(seat, &uuid, REPLICA_WAIT_MS, budget)? =>

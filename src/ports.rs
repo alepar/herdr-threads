@@ -4036,6 +4036,11 @@ pub trait HostPort: Send + Sync {
     fn kind(&self) -> HostKind {
         HostKind::Herdr
     }
+    /// Whether this host creates targets through `CreateTargetPort` and starts
+    /// the gate itself (no pane to read, no `launch --pane`). Default: no.
+    fn creates_targets_itself(&self) -> bool {
+        false
+    }
     /// Host-level wake capability. Default: Herdr's TUI composer.
     fn wake_capability(&self) -> WakeCapability {
         WakeCapability::Composer(ComposerTraits::HERDR_TUI)

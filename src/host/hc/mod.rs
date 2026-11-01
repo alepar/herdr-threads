@@ -85,6 +85,10 @@ pub(crate) const HC_TERMINAL_ID_ENV: &str = "HC_TERMINAL_ID";
 /// The core socket herdr-core sets for a terminal's processes.
 pub(crate) const HC_TERMINAL_SOCKET_ENV: &str = "HC_TERMINAL_SOCKET";
 
+/// The `NewTerminal` parent of a creation with no caller terminal (a peer-requested
+/// launch: the daemon is the caller): `create_target` sends no `parent`.
+pub const NO_PARENT: &str = "-";
+
 const BOOT_PREFIX: &str = "hc-core:";
 const MAX_BOOT_BYTES: usize = 128;
 
@@ -267,6 +271,24 @@ impl HcHost {
             gate_argv: Vec::new(),
             run_deadline: rpc::RUN_DEADLINE,
         }
+    }
+
+    /// The witness a creation here expects: this core's id and its peer, read from one
+    /// `hello`.
+    pub fn core_witness(&self) -> Result<ports::HostWitness, ApiError> {
+        let hello = Self::run(self.client.hello())
+            .map_err(|e| ApiError::host_unavailable(e.to_string()))?;
+        if hello.value.core.id.is_empty() {
+            return Err(ApiError::host_unavailable("hc hello names no core id"));
+        }
+        Ok(ports::HostWitness::HcCore {
+            core_id: hello.value.core.id.clone(),
+            peer: ports::HcPeer {
+                pid: hello.witness.peer_pid,
+                start_seconds: hello.witness.start_seconds,
+                uid: hello.witness.peer_uid,
+            },
+        })
     }
 
     /// Sets the argv `create_target` starts (the gate shim and its harness argv).
@@ -540,7 +562,9 @@ impl ports::CreateTargetPort for HcHost {
                 labels.insert(labels::LABEL_HT.to_owned(), request.label.clone());
                 None
             }
-            ports::Placement::NewTerminal { parent } => Some(parent.as_str().to_owned()),
+            ports::Placement::NewTerminal { parent } => {
+                Some(parent.as_str().to_owned()).filter(|p| p != NO_PARENT)
+            }
         };
         let run = RunRequest {
             argv: self.gate_argv.clone(),
@@ -588,6 +612,10 @@ impl ports::CreateTargetPort for HcHost {
 impl HostPort for HcHost {
     fn kind(&self) -> HostKind {
         HostKind::Hc
+    }
+
+    fn creates_targets_itself(&self) -> bool {
+        true
     }
 
     fn wake_capability(&self) -> WakeCapability {

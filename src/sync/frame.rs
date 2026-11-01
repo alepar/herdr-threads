@@ -67,6 +67,10 @@ pub const ADDR_CHECK_CAP: &str = "addr.check.v1";
 /// Capability: this node takes [`PeerFrame::LaunchRequest`] and answers with
 /// [`PeerFrame::LaunchReply`] (remote launch, TRUST-POLICY N15).
 pub const PEER_LAUNCH_CAP: &str = "peer.launch.v1";
+/// Capability: this node takes a [`LaunchTarget::NewTerminal`] launch (a new
+/// herdr-core terminal). A node sends one only to a peer that advertised it;
+/// a peer without it would read the target as `unknown`.
+pub const PEER_LAUNCH_TERMINAL_CAP: &str = "peer.launch.terminal.v1";
 /// Most `argv` entries a launch plan carries.
 pub const MAX_LAUNCH_ARGS: usize = 64;
 /// Longest single launch plan text (a label, path, harness id or argument),
@@ -588,6 +592,13 @@ pub enum LaunchTarget {
     NewTab {
         #[serde(default)]
         space: String,
+        #[serde(default)]
+        label: String,
+    },
+    /// A new herdr-core terminal on the receiving node (parent = none: the
+    /// receiving daemon is the caller).
+    // cap: PEER_LAUNCH_TERMINAL_CAP
+    NewTerminal {
         #[serde(default)]
         label: String,
     },

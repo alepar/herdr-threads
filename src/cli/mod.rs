@@ -563,23 +563,23 @@ fn run_parsed_in_pane<W: Write>(
     if let CliAction::InternalDaemonDetach { program, args } = &parsed.action {
         return internal::daemon_detach(program, args, writer);
     }
-    if let CliAction::InternalPeerTabCreate {
-        workspace,
+    if let CliAction::InternalPeerTargetCreate {
+        spec,
         label,
         cwd,
+        gate_argv,
     } = &parsed.action
     {
-        let endpoint = parsed
-            .output
-            .context
-            .host
-            .as_deref()
-            .ok_or_else(|| invalid_request("internal peer-tab-create needs --host-endpoint"))?;
-        return peer_launch::create_tab(
+        let endpoint =
+            parsed.output.context.host.as_deref().ok_or_else(|| {
+                invalid_request("internal peer-target-create needs --host-endpoint")
+            })?;
+        return peer_launch::create_target(
             std::path::Path::new(endpoint),
-            workspace,
+            spec,
             label,
             cwd,
+            gate_argv.clone(),
             Arc::new(crate::app::SystemClock::new()),
             writer,
         );
@@ -1217,7 +1217,7 @@ fn run_parsed_in_pane<W: Write>(
         | CliAction::InternalPreUpgradeBackup { .. }
         | CliAction::Update(_)
         | CliAction::InternalStoreCheck
-        | CliAction::InternalPeerTabCreate { .. }
+        | CliAction::InternalPeerTargetCreate { .. }
         | CliAction::InternalDaemonDetach { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }

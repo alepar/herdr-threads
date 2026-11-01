@@ -289,7 +289,7 @@ while [ -e "$log/hold" ]; do sleep 0.1; done
 [ -e "$log/killself" ] && kill -9 $$
 for a in "$@"; do
   case "$a" in
-    peer-tab-create) echo '{"pane":"w1:p9","tab":"w1:t9"}'; exit 0;;
+    peer-target-create) echo '{"pane":"w1:p9","tab":"w1:t9"}'; exit 0;;
     launch) printf '{"launch":{"outcome":"started","seat":"%s"}}\n' "$(cat "$log/seat")"; exit 0;;
   esac
 done
@@ -512,7 +512,7 @@ fn remote_launch_runs_on_the_target_machine_once() {
     assert_eq!(code, 0, "{stdout}{stderr}");
     let tab_call = calls(&calls_dir)
         .into_iter()
-        .find(|c| c.contains("peer-tab-create"))
+        .find(|c| c.contains("peer-target-create"))
         .unwrap_or_else(|| panic!("no tab created: {stdout}{stderr}"));
     assert!(
         tab_call.contains(&format!("--label=review [from {a_tag}]")),

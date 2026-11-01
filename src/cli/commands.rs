@@ -471,10 +471,11 @@ pub enum CliAction {
     InternalStoreCheck,
     /// A launch (and, with `then`, a handoff) on another machine (remote launch).
     RemoteLaunch(Box<super::peer_launch::RemoteLaunch>),
-    InternalPeerTabCreate {
-        workspace: String,
+    InternalPeerTargetCreate {
+        spec: super::peer_launch::TargetSpec,
         label: String,
         cwd: std::path::PathBuf,
+        gate_argv: Vec<String>,
     },
     InternalDaemonDetach {
         program: std::path::PathBuf,
@@ -653,7 +654,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::InternalPreUpgradeBackup { .. }
         | CliAction::Update(_)
         | CliAction::InternalStoreCheck
-        | CliAction::InternalPeerTabCreate { .. }
+        | CliAction::InternalPeerTargetCreate { .. }
         | CliAction::InternalDaemonDetach { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
@@ -1388,15 +1389,22 @@ enum InternalSub {
     /// Open the existing node store of --state-dir at this build's schema, applying its
     /// migrations, without a daemon (`update` judges a store this way).
     StoreCheck,
-    /// Create the tab of a peer-requested launch on --host-endpoint (run only by this
-    /// node's daemon for a recorded request; prints the root pane).
-    PeerTabCreate {
-        #[arg(long, value_name = "WORKSPACE_ID")]
-        workspace: String,
+    /// Create the tab or terminal of a peer-requested launch on --host-endpoint (run only
+    /// by this node's daemon for a recorded request; prints the root pane or the terminal).
+    /// `peer-tab-create` is the previous name, kept for one release.
+    #[command(alias = "peer-tab-create")]
+    PeerTargetCreate {
+        #[arg(long, value_name = "WORKSPACE_ID", conflicts_with = "new_terminal")]
+        workspace: Option<String>,
+        #[arg(long, requires = "gate_argv")]
+        new_terminal: bool,
         #[arg(long)]
         label: String,
         #[arg(long, value_name = "DIR")]
         cwd: std::path::PathBuf,
+        /// What a herdr-core terminal starts (a Herdr tab takes none).
+        #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+        gate_argv: Vec<String>,
     },
     /// Start PROGRAM ARGS... as a daemon in its own session, print its pid and exit at
     /// once (run only by the daemon launcher: the daemon is reparented off the launcher).
@@ -3697,13 +3705,23 @@ fn parse_cli_in_registry(
                                 "a new tab on another machine needs --cwd DIR (absolute, on that machine)",
                             ));
                         }
-                        (
-                            machine.to_owned(),
-                            crate::sync::frame::LaunchTarget::NewTab {
+                        (machine.to_owned(), {
+                            let tab = crate::sync::frame::LaunchTarget::NewTab {
                                 space: space.to_owned(),
                                 label: label.clone(),
-                            },
-                        )
+                            };
+                            // Test-support builds: `HT_TEST_REMOTE_TERMINAL` asks for a
+                            // new terminal where the CLI has no flag for one yet.
+                            #[cfg(feature = "test-support")]
+                            let tab = if std::env::var_os("HT_TEST_REMOTE_TERMINAL").is_some() {
+                                crate::sync::frame::LaunchTarget::NewTerminal {
+                                    label: label.clone(),
+                                }
+                            } else {
+                                tab
+                            };
+                            tab
+                        })
                     }
                     None => remote_pane_target(&args.selector)?,
                 };
@@ -3965,15 +3983,26 @@ fn parse_cli_in_registry(
         } => CliAction::InternalStoreCheck,
         Top::Internal {
             command:
-                InternalSub::PeerTabCreate {
+                InternalSub::PeerTargetCreate {
                     workspace,
+                    new_terminal,
                     label,
                     cwd,
+                    gate_argv,
                 },
-        } => CliAction::InternalPeerTabCreate {
-            workspace,
+        } => CliAction::InternalPeerTargetCreate {
+            spec: match (workspace, new_terminal) {
+                (Some(workspace), false) => super::peer_launch::TargetSpec::Tab(workspace),
+                (None, true) => super::peer_launch::TargetSpec::Terminal,
+                _ => {
+                    return Err(invalid(
+                        "internal peer-target-create needs --workspace or --new-terminal",
+                    ));
+                }
+            },
             label,
             cwd,
+            gate_argv,
         },
         Top::Internal {
             command: InternalSub::DaemonDetach { program, args },
