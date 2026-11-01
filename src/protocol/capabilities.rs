@@ -82,6 +82,9 @@ pub const INVITATION_REJECT: &str = "invitation.reject_v1";
 pub const LAZY_SEND: &str = "send.lazy_v1";
 pub const INBOX_BATCH_V2: &str = "inbox.batch_v2";
 pub const SEAT_WAKE_ON_V1: &str = "seat.wake_on_v1";
+/// `CheckIn.readonly` (D3): the daemon records the binding read-only. A CLI sends the field only
+/// to a daemon that advertises this; `CheckIn` is `deny_unknown_fields`.
+pub const SEAT_READONLY_V1: &str = "seat.readonly_v1";
 pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
 /// Lazy rows in the attention digest (`AttentionDigestQuery.lazy`) and
 /// `CompleteInboxDelivery.via = hook_context` (standard hook inbox pages).
@@ -201,6 +204,7 @@ pub const ADVERTISED: &[&str] = &[
     MOD_WATCH_PRESENTATION_V2,
     MOD_ACK_ROW_V1,
     SEAT_WAKE_ON_V1,
+    SEAT_READONLY_V1,
     DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,
     HOOK_CONTEXT_RECEIPTS_V1,

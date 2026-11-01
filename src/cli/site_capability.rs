@@ -8,7 +8,8 @@
 use super::caller_location::CallerSite;
 use crate::ports::LocalClient;
 use crate::protocol::{
-    commands::ResolveThreadQuery,
+    capabilities::SEAT_READONLY_V1,
+    commands::{Command, ResolveThreadQuery},
     ids::{HostLocator, HostTargetId, SeatId},
     results::{ApiError, ErrorCode},
     time::CallBudget,
@@ -16,6 +17,26 @@ use crate::protocol::{
 
 /// M13 (63 bytes): the daemon does not advertise the capability a non-Pane site needs.
 pub const M13: &str = "herdr-threads: daemon predates named/terminal seats; restart it";
+
+/// A refused readonly check-in (58 bytes): the daemon does not advertise `seat.readonly_v1`.
+pub const READONLY_REFUSAL: &str = "herdr-threads: daemon predates read-only seats; restart it";
+
+/// Passes a check-in without `readonly`, with no round trip, so a default caller's bytes are
+/// unchanged. One that carries it goes only to a daemon that advertises [`SEAT_READONLY_V1`].
+pub fn require_readonly<C: LocalClient + ?Sized>(
+    command: &Command,
+    client: &C,
+    budget: &CallBudget,
+) -> Result<(), ApiError> {
+    match command {
+        Command::CheckIn(check) | Command::OperatorCheckIn(check)
+            if check.readonly && !client.supports_capability(SEAT_READONLY_V1, budget) =>
+        {
+            Err(ApiError::new(ErrorCode::Unsupported, READONLY_REFUSAL))
+        }
+        _ => Ok(()),
+    }
+}
 
 /// Passes when the daemon advertises `capability`; otherwise refuses with `refusal_line` as an
 /// `Unsupported` error, before anything is sent.
@@ -127,6 +148,80 @@ mod tests {
             deadline: MonoInstant(u64::MAX),
             cancellation: Cancellation::default(),
         }
+    }
+
+    fn check_in(readonly: bool) -> crate::protocol::commands::CheckIn {
+        use crate::protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::{CheckIn, CheckInMode},
+            ids::{ExecutionId, HostTargetId, NativeSessionId, OperationId},
+        };
+        CheckIn {
+            mode: CheckInMode::Current,
+            claim: CallerClaim {
+                instance: "i".into(),
+                host: HostLocator::parse("/claim.sock").unwrap(),
+                seat: SeatId::new("s"),
+                binding_generation: 1,
+                role: CallerRole::TopLevel,
+                harness: Harness::Codex,
+                native_session: NativeSessionId::new("n"),
+                execution: ExecutionId::new("e"),
+                target: HostTargetId::new("w1:p1"),
+                agent_id: None,
+                liveness: None,
+            },
+            operation: OperationId::new("op"),
+            lineage_parent: None,
+            readonly,
+        }
+    }
+
+    #[test]
+    fn readonly_check_in_needs_the_capability() {
+        let command = Command::CheckIn(check_in(true));
+        let error = require_readonly(&command, &Fake(&[]), &budget()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert_eq!(error.detail, READONLY_REFUSAL);
+        require_readonly(&command, &Fake(&[SEAT_READONLY_V1]), &budget()).unwrap();
+    }
+
+    #[test]
+    fn operator_check_in_is_gated_alike() {
+        let command = Command::OperatorCheckIn(check_in(true));
+        let error = require_readonly(&command, &Fake(&[]), &budget()).unwrap_err();
+        assert_eq!(error.detail, READONLY_REFUSAL);
+        require_readonly(&command, &Fake(&[SEAT_READONLY_V1]), &budget()).unwrap();
+    }
+
+    struct Panics;
+    impl LocalClient for Panics {
+        fn supports_capability(&self, _: &str, _: &CallBudget) -> bool {
+            panic!("a plain check-in asks the daemon nothing")
+        }
+        fn call(&self, _: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            unreachable!()
+        }
+        fn call_with_output(
+            &self,
+            _: Command,
+            _: &crate::protocol::output::OutputSpec,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn plain_check_in_asks_nothing() {
+        require_readonly(&Command::CheckIn(check_in(false)), &Panics, &budget()).unwrap();
+        require_readonly(
+            &Command::OperatorCheckIn(check_in(false)),
+            &Panics,
+            &budget(),
+        )
+        .unwrap();
+        assert_eq!(READONLY_REFUSAL.len(), 58);
     }
 
     #[test]
