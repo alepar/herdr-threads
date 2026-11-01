@@ -229,6 +229,42 @@ class ProviderThrottle(TempDir):
             self.assertEqual(sent, [1])
         children[0].wait(timeout=2)
 
+    def test_recipient_going_idle_late_in_the_wait_still_gets_the_second_prompt(self):
+        children = []
+        with W.BusyBarrier(self.tmp) as hold:
+            sent, asked = [], []
+
+            def idle():
+                asked.append(1)
+                return len(asked) >= 2
+
+            def resubmit():
+                sent.append(1)
+                children.append(subprocess.Popen(shlex.split(hold.command())))
+
+            with mock.patch.object(W.time, "monotonic", side_effect=self.fast_clock()):
+                hold.wait_entered(timeout=1, idle=idle, resubmit=resubmit, throttled_timeout=60)
+            self.assertEqual(sent, [1])
+            self.assertEqual(len(asked), 2, "polled through the late wait, and not after the second prompt")
+        children[0].wait(timeout=5)
+
+    @staticmethod
+    def fast_clock():
+        now = 0.0
+        while True:
+            yield now
+            now += 0.5
+
+    def test_split_after_a_resubmission_starts_at_the_second_prompt(self):
+        first = "Busy-turn test tag: print BUSY-DONE.\n\u2022 BUSY-DONE\n"
+        second = "Busy-turn test tag: print BUSY-DONE.\n\u2022 tool output\n\u2022 BUSY-DONE\nafter\n"
+        in_turn, after, seen = W.busy_turn_split(first + second, "Busy-turn test tag", prompt_end_text="print BUSY-DONE.",
+                                                 resent=True)
+        self.assertTrue(seen)
+        self.assertIn("tool output", in_turn)
+        self.assertNotIn("tool output", first)
+        self.assertEqual(after.strip(), "after")
+
     def test_tool_that_never_enters_after_the_second_prompt_still_fails(self):
         with W.BusyBarrier(self.tmp) as hold:
             sent = []

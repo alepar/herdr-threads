@@ -102,8 +102,8 @@ impl Session {
                     },
                 ))
         });
-        // Fixture readiness, a hang guard: a starved host took the full former 10 s, and the
-        // panic was silent under the daemon's quiet hook, replaced just below.
+        // Fixture readiness, a hang guard: a starved host took the full former 10 s. A panic here
+        // prints nothing, the in-process daemon having redirected this process's stderr to its log.
         let descriptor = ready_rx
             .recv_timeout(Duration::from_secs(60))
             .expect("the elected daemon did not publish its endpoint");

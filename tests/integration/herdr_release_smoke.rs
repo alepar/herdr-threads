@@ -1823,8 +1823,7 @@ fn herdr_release_live_handoff() {
                     Ok(())
                 } else {
                     Err(format!(
-                        "status {status}, now {}; wakes since the send: {}; daemon: {lane:?}",
-                        m.status(&agent_pane),
+                        "status {status}; wakes since the send: {}; daemon: {lane:?}",
                         wakes() - woken
                     ))
                 }

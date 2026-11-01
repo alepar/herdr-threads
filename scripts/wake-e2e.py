@@ -1360,8 +1360,8 @@ class BusyBarrier:
         Entering the tool is this case's setup, not what it asserts. A model can pass `timeout` before its first tool
         call with no throttle to name (Codex at load 35 in the 2.8.3 qualification): the wait then runs on to
         `throttled_timeout` too, on what `idle()` observes. A recipient back at idle has no turn that will ever run the
-        tool, so `resubmit()` sends the prompt once more."""
-        end, cause, late = time.monotonic() + timeout, None, False
+        tool, so `resubmit()` sends the prompt once, whenever in that wait it is seen idle."""
+        end, cause, late, resent, probe = time.monotonic() + timeout, None, False, False, 0
         while not (self.path / "entered").exists():
             if time.monotonic() >= end:
                 if cause is None and throttled is not None and (cause := throttled()):
@@ -1370,11 +1370,14 @@ class BusyBarrier:
                 if idle is not None and cause is None and not late:
                     late = True
                     end += throttled_timeout - timeout
-                    if idle():
-                        resubmit()
                     continue
                 raise RuntimeError(f"provider throttled ({cause}); busy tool did not enter" if cause
                                    else "busy tool did not enter")
+            if late and not resent and time.monotonic() >= probe:
+                probe = time.monotonic() + 2
+                if idle():
+                    resent = True
+                    resubmit()
             time.sleep(.02)
         self.assert_held()
         return cause
@@ -1415,11 +1418,13 @@ def codex_throttle(codex_home, since):
     return f"429 retry {m.group(1)} in {delay:.0f}s"
 
 
-def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROMPT_END, last=False):
+def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROMPT_END, last=False, resent=False):
     """Split the screen at the busy turn's native boundaries: (in_turn, after_turn, end_seen). `in_turn` runs from
     the busy prompt `anchor` to the agent's done line (the last one with `last`: a continued turn prints it twice),
-    `after_turn` is everything later; None if the prompt is not on screen."""
-    at = text.find(anchor)  # the prompt itself: an agent echoing the tag later must not move it
+    `after_turn` is everything later; None if the prompt is not on screen. With `resent` the held turn is the second
+    prompt's, so the split starts at the anchor's last copy."""
+    # The prompt itself: an agent echoing the tag later must not move it.
+    at = text.rfind(anchor) if resent else text.find(anchor)
     if at < 0:
         return None
     rest = text[at:]
@@ -1820,7 +1825,7 @@ class Recipient:
         # The quiet window starts at the busy turn's native end (its BUSY-DONE line, then the first idle status),
         # not after a confirmed-idle wait: that wait would absorb a short wake turn typed right after the turn.
         end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
-        while time.time() < end and not (busy_turn_split(self.screen(1000), anchor) or ("", "", False))[2]:
+        while time.time() < end and not (busy_turn_split(self.screen(1000), anchor, resent=resubmitted) or ("", "", False))[2]:
             idle_since = (idle_since or time.time()) if self.status() in IDLE else None
             if idle_since and time.time() - idle_since > BUSY_END_GRACE_S:
                 break  # recorded below as busy_turn_end_seen False, without waiting out the turn timeout
@@ -1830,7 +1835,7 @@ class Recipient:
         # A wake owed after the turn (even one held by the 30 s per-seat guard) would start a turn in here.
         checks["self_started_turn_after_s"] = self.watch_quiet(BUSY_AFTER_S)
         self.wait_idle()
-        split = busy_turn_split(self.screen(1000), anchor)
+        split = busy_turn_split(self.screen(1000), anchor, resent=resubmitted)
         if split is None:
             in_turn, after_turn, checks["busy_turn_end_seen"] = "", "", "busy prompt not on screen"
         else:
@@ -1897,7 +1902,7 @@ class Recipient:
             mid = self.send("p0", f"{case} {self.run.run_id}", direct=False)
             hold.assert_held()
         anchor = f"End-of-turn test {tag}"
-        split_at = lambda: busy_turn_split(self.screen(1000), anchor, EOT_DONE_LINE, EOT_PROMPT_END, last=True)
+        split_at = lambda: busy_turn_split(self.screen(1000), anchor, EOT_DONE_LINE, EOT_PROMPT_END, resent=resubmitted, last=True)
         end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
         while time.time() < end:
             idle_since = (idle_since or time.time()) if self.status() in IDLE else None
