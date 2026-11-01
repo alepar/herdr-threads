@@ -365,8 +365,13 @@ and hooks exit 0 with M1 on stderr and the guard line M3 in context at lifecycle
 re-entry (and, for an adapter that repeats its fixed section every turn and has no lifecycle check-in, on its
 first delivering hook per binding). Single-family callers are never verified: that would be adversarial
 verification, which this policy does not add. The first-hook memory is daemon memory keyed by binding, so a
-daemon restart arms it once more (accepted limit, no column). The terminal-root wall and the start-stamped
-verdict cache follow in ht-kqrt.74.
+daemon restart arms it once more (accepted limit, no column). The walk stops at a terminal-root wall: a
+process whose `argv[0]` basename is `herdr-core` or `hc` (`host::foreign_terminal_process_names`), because
+on herdr-core's spawn path the core stays a descendant of the `hc` client and so of the pane shell, and a
+Herdr pane root above the wall must not verify an agent inside an hc terminal. A process whose argv is
+unreadable is not a wall (accepted limit, F/N only). Verdicts are cached by (candidates, subject pid,
+subject start stamp, boot/epoch): a reused pid has another stamp and misses, and a subject with no readable
+start stamp is never cached.
 
 **Invocation spelling.** Ordinary root commands act as agents. Person and local-operator
 commands require immediate argv[1] `human`: `ht human me init [--operator]`,

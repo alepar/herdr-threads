@@ -3,10 +3,13 @@
 //! Responsibility (LocateCaller)
 //! - Owns: the walk from the subject (the claim's liveness pid, else the
 //!   transport peer pid) up `ProcessInfo` parents against each candidate's
-//!   `HostPort::target_root_process`, and its cache keyed on (candidates,
-//!   subject pid, host set). The terminal-root wall and the start-stamped key
-//!   (unstamped subjects uncached) land with ht-kqrt.74; the server-environ
-//!   read for the inherited-name refusal (M6) lands with the named-seat phase.
+//!   `HostPort::target_root_process`, the herdr-core terminal-root wall (a
+//!   process whose argv[0] basename is in `host::foreign_terminal_process_names`
+//!   ends the walk: a root above it does not verify; unreadable argv is not a
+//!   wall, an accepted F/N limit), and its cache keyed on (candidates, subject
+//!   pid, subject start stamp, host set epoch) with unstamped subjects
+//!   uncached; the server-environ read for the inherited-name refusal (M6)
+//!   lands with the named-seat phase.
 //! - Hides: how a pid maps to a host target.
 //! - Must not: run for a `One` caller (that would be adversarial verification,
 //!   which TRUST-POLICY forbids; the CLI sends this command only for
@@ -26,6 +29,7 @@
 //! - Role: domain service (stateless apart from a bounded verdict cache).
 
 use crate::{
+    host::foreign_terminal_process_names,
     ports::{HostCallContext, HostPort, ProcessInfo},
     protocol::{
         ids::HostTargetId,
@@ -43,7 +47,13 @@ const MAX_WALK: usize = 128;
 /// Verdicts kept; past it the cache starts over.
 const MAX_CACHED: usize = 256;
 
-type CacheKey = (Vec<LocateCandidate>, u32, u64);
+type CacheKey = (Vec<LocateCandidate>, u32, u64, u64);
+
+/// One pid of the walk and whether it is a herdr-core terminal process (a wall).
+struct Ancestor {
+    pid: u32,
+    wall: bool,
+}
 
 pub struct LocateCallerService {
     processes: Arc<dyn ProcessInfo>,
@@ -116,8 +126,18 @@ impl LocateCallerService {
         let Some(subject) = request.subject.map(|f| f.pid).or(peer_pid) else {
             return unverified(CandidateVerdict::NotAncestor);
         };
-        let key = (request.candidates.clone(), subject, epoch);
-        if let Some(hit) = self.cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        // The start stamp keeps a reused pid off another process's verdict; a subject whose
+        // record is unreadable has none, so it is never cached (its walk is cheap).
+        let key = self
+            .processes
+            .process(subject)
+            .map(|r| (request.candidates.clone(), subject, r.start, epoch));
+        if let Some(hit) = key.as_ref().and_then(|key| {
+            self.cache
+                .lock()
+                .ok()
+                .and_then(|cache| cache.get(key).cloned())
+        }) {
             return hit;
         }
         let ancestors = self.ancestry(subject);
@@ -134,7 +154,10 @@ impl LocateCallerService {
         let reply = verify(&ancestors, &roots);
         let transient = matches!(&reply, LocateReply::Unverified { per_candidate, .. }
             if per_candidate.contains(&CandidateVerdict::Unreachable));
-        if !transient && let Ok(mut cache) = self.cache.lock() {
+        if !transient
+            && let Some(key) = key
+            && let Ok(mut cache) = self.cache.lock()
+        {
             if cache.len() >= MAX_CACHED {
                 cache.clear();
             }
@@ -143,29 +166,43 @@ impl LocateCallerService {
         reply
     }
 
-    /// `subject` and its parents, nearest first.
-    fn ancestry(&self, subject: u32) -> Vec<u32> {
-        let mut chain = vec![subject];
-        let mut next = self.processes.process(subject).and_then(|r| r.parent);
+    /// `subject` and its parents, nearest first, each marked when it is a wall.
+    fn ancestry(&self, subject: u32) -> Vec<Ancestor> {
+        let mut chain: Vec<Ancestor> = Vec::new();
+        let mut next = Some(subject);
         while let Some(pid) = next {
-            if pid == 0 || chain.contains(&pid) || chain.len() >= MAX_WALK {
+            if (pid == 0 && !chain.is_empty())
+                || chain.iter().any(|a| a.pid == pid)
+                || chain.len() >= MAX_WALK
+            {
                 break;
             }
-            chain.push(pid);
-            next = self.processes.process(pid).and_then(|r| r.parent);
+            let record = self.processes.process(pid);
+            let wall = record.as_ref().is_some_and(|r| {
+                r.argv.first().is_some_and(|argv0| {
+                    let name = argv0.rsplit('/').next().unwrap_or(argv0);
+                    foreign_terminal_process_names().contains(&name)
+                })
+            });
+            chain.push(Ancestor { pid, wall });
+            next = record.and_then(|r| r.parent);
         }
         chain
     }
 }
 
 /// Nearest ancestor first: the first pid on the chain that is some candidate's root wins.
-fn verify(ancestors: &[u32], roots: &[Root]) -> LocateReply {
-    for pid in ancestors {
+/// A wall process may itself be a root, but nothing above it verifies.
+fn verify(ancestors: &[Ancestor], roots: &[Root]) -> LocateReply {
+    for Ancestor { pid, wall } in ancestors {
         if let Some(index) = roots
             .iter()
             .position(|root| matches!(root, Root::Pid(root) if root == pid))
         {
             return LocateReply::Verified { index, root: *pid };
+        }
+        if *wall {
+            break;
         }
     }
     LocateReply::Unverified {

@@ -27,6 +27,13 @@ pub(crate) const NAMED_SCRUB_ENV_VARS: &[&str] =
 
 pub(crate) use hc::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV};
 
+/// Basenames of herdr-core terminal processes (the `hc` client, the core). `LocateCaller`
+/// treats one on the walk as a wall: a Herdr pane root above it does not verify. Moves to
+/// `host::hc` in H1 (ht-kqrt.46).
+pub fn foreign_terminal_process_names() -> &'static [&'static str] {
+    &["herdr-core", "hc"]
+}
+
 /// The single env scrub list for every child the daemon side spawns (K5): the
 /// union of each host family's names. `spawn_detached` and handoff spawns
 /// remove all of it; the H3 gate shim removes it minus `host::hc::ENV_VARS`
