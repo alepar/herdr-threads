@@ -618,7 +618,11 @@ model open work, and summary closure never changes receipt state or installs glo
   only a different name, or a server restarted without the variable, binds); a server with no pid, an
   unreadable environment (another user, a gone pid, an unsupported platform) or a pane no host answers
   for skips the check, which leaves only observability (D1 limit); and the hint is the caller's
-  claim, not verification, so a caller that omits it is not checked (cooperative model).
+  claim, not verification, so a caller that omits it is not checked (cooperative model). A herdr-core
+  terminal caller sends `<session>:<tN>` (the core socket's file stem and `HC_TERMINAL_ID`) when it has
+  no pane; the hc host answers `server_process()` with the peer pid of its core socket (the
+  `herdr-core serve` process, from the connection's `LocalEndpointWitness`), the same environ read
+  applies, and M6 then names `herdr-core` in place of `Herdr` (same 129 bytes plus name and label).
 - *Second-locator notice (named seats, N4-hint, M9)*: a named resolve that carries `ResolveSeat.locator_hint`
   records it on the seat's open top-level binding that has none (`occupant_bindings.locator_hint`; when
   no such binding exists yet nothing is recorded and a later command's resolve records it). When the hint

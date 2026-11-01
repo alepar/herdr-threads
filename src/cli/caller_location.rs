@@ -176,11 +176,15 @@ impl CallerEnv {
 
     /// The host candidate that sits beside the seat name (N4-inherit): the Herdr pane id the
     /// environment carries, sent as `ResolveSeat.locator_hint` so the daemon can check the
-    /// pane's server for an inherited name. `None` without a name or without a pane. A
-    /// herdr-core terminal hint arrives with H1.
+    /// pane's server for an inherited name: the pane id, else the herdr-core terminal as
+    /// `<session>:<tN>`. `None` without a name or without either.
     pub fn locator_hint(&self) -> Option<String> {
         self.named()?;
-        self.text(native::ENV_PANE_ID)
+        self.text(native::ENV_PANE_ID).or_else(|| {
+            let id = self.text(HC_TERMINAL_ID_ENV)?;
+            let socket = self.text(HC_TERMINAL_SOCKET_ENV)?;
+            Some(terminal_address(&socket, &id))
+        })
     }
 
     pub fn locate(&self, mode: EnvMode) -> Result<Option<Located>, LocatorError> {
@@ -303,13 +307,7 @@ impl<'a> CallerSite<'a> {
     /// socket has none. `None` for other sites.
     pub fn terminal_address(self) -> Option<String> {
         match self.0 {
-            CallerLocator::Terminal { socket, id } => {
-                let session = std::path::Path::new(socket)
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .filter(|stem| !stem.is_empty());
-                Some(session.map_or_else(|| id.clone(), |session| format!("{session}:{id}")))
-            }
+            CallerLocator::Terminal { socket, id } => Some(terminal_address(socket, id)),
             CallerLocator::Pane { .. } | CallerLocator::Named(_) => None,
         }
     }
@@ -347,6 +345,17 @@ impl<'a> CallerSite<'a> {
             }
         }
     }
+}
+
+/// A herdr-core terminal as the refusal line and the locator hint print it, `<session>:<tN>`;
+/// the session is the core socket's file stem (herdr-core names its socket `<session>.sock`),
+/// omitted when the socket has none.
+fn terminal_address(socket: &str, id: &str) -> String {
+    let session = std::path::Path::new(socket)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty());
+    session.map_or_else(|| id.to_owned(), |session| format!("{session}:{id}"))
 }
 
 /// `ResolveSeat.locator_hint` for a request to `host`: only a resolve on the named host carries

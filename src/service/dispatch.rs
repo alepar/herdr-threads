@@ -209,7 +209,7 @@ impl DomainService {
             expected_boot: None,
             expected_epoch: None,
         };
-        if super::locate::inherited_name(
+        if let Some(label) = super::locate::inherited_name_host(
             request.target.as_str(),
             hint,
             &ports,
@@ -218,7 +218,7 @@ impl DomainService {
         ) {
             return Err(error(
                 ErrorCode::InheritedSeatName,
-                &super::locate::inherited_name_detail(request.target.as_str(), "Herdr"),
+                &super::locate::inherited_name_detail(request.target.as_str(), label),
             ));
         }
         Ok(())

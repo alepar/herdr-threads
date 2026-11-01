@@ -160,11 +160,16 @@ pub fn inherited_name_detail(name: &str, host: &str) -> String {
     )
 }
 
-/// The inherited-name check (SA2, D1): whether the server that owns the hinted pane carries
-/// `name` in its own environment, read through `read`. Only a host that answers for the pane is
-/// asked; a server with no pid, or one whose environment is unreadable, skips the check (D1
-/// limit): it never refuses on a read that failed. The comparison is on the name alone, so a
-/// per-command name equal to the server's own is refused too (an accepted limit).
+/// The local terminal id (`tN`) of a herdr-core hint (`tN` or `<session>:tN`); `None` for a
+/// Herdr pane id (`w1:p2`).
+fn terminal_hint(hint: &str) -> Option<&str> {
+    let local = hint.rsplit(':').next()?;
+    let digits = local.strip_prefix('t')?;
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(local)
+}
+
+/// The inherited-name check (SA2, D1): whether the server that owns the hinted pane or terminal
+/// carries `name` in its own environment, read through `read`.
 pub fn inherited_name(
     name: &str,
     hint: &str,
@@ -172,21 +177,42 @@ pub fn inherited_name(
     context: &HostCallContext,
     read: impl Fn(u32) -> Option<Environ>,
 ) -> bool {
-    let Ok(pane) = HostTargetId::parse(hint.to_owned()) else {
-        return false;
+    inherited_name_host(name, hint, hosts, context, read).is_some()
+}
+
+/// [`inherited_name`] naming (`HostPort::server_label`) the host whose server holds the name. Only a host that
+/// answers for the hint is asked (a terminal hint goes to the hosts that answer terminal ids,
+/// a pane hint to the others); a server with no pid, or one whose environment is unreadable,
+/// skips the check (D1 limit): it never refuses on a read that failed. The comparison is on the
+/// name alone, so a per-command name equal to the server's own is refused too (an accepted
+/// limit).
+pub fn inherited_name_host(
+    name: &str,
+    hint: &str,
+    hosts: &[Arc<dyn HostPort>],
+    context: &HostCallContext,
+    read: impl Fn(u32) -> Option<Environ>,
+) -> Option<&'static str> {
+    let terminal = terminal_hint(hint);
+    let Ok(target) = HostTargetId::parse(terminal.unwrap_or(hint).to_owned()) else {
+        return None;
     };
-    hosts.iter().any(|host| {
-        matches!(host.target_root_process(&pane, context), Ok(Some(_)))
-            && host
-                .server_process()
-                .and_then(&read)
-                .is_some_and(|environ| {
-                    environ.iter().any(|(key, value)| {
-                        key.as_os_str() == crate::host::named::ENV_SEAT_NAME
-                            && value.as_os_str() == name
+    hosts
+        .iter()
+        .filter(|host| host.answers_terminal_ids() == terminal.is_some())
+        .find(|host| {
+            matches!(host.target_root_process(&target, context), Ok(Some(_)))
+                && host
+                    .server_process()
+                    .and_then(&read)
+                    .is_some_and(|environ| {
+                        environ.iter().any(|(key, value)| {
+                            key.as_os_str() == crate::host::named::ENV_SEAT_NAME
+                                && value.as_os_str() == name
+                        })
                     })
-                })
-    })
+        })
+        .map(|host| host.server_label())
 }
 
 /// Longest ancestry the walk follows (a loop or a pathological tree ends it).
