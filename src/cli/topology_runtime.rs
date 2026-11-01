@@ -465,7 +465,7 @@ pub(crate) fn run_target(
         state_dir: state_dir.to_path_buf(),
         host_endpoint: endpoint.clone(),
     };
-    let handle = super::host_client::LaunchHandle::hc(
+    let handle = super::host_client::LaunchHandle::probed(
         &endpoint,
         clock.clone(),
         &super::cooperative_budget(clock.as_ref()),

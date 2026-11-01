@@ -50,11 +50,6 @@ const RECORD_RETRIES: [Duration; 3] = [
 ];
 /// Budget of one store read or write, and of the topology reads (ms).
 const CALL_BUDGET_MS: u64 = 3_000;
-/// Budget of the seat allocation of a herdr-core launch (ms), under the gate shim's own wait
-/// (`launch_gate::GATE_TIMEOUT_MS`) so the shim is still waiting when the gate opens.
-const GATE_SEAT_BUDGET_MS: u64 = 6_000;
-/// How often a stale host observation is retried within that budget.
-const GATE_SEAT_RETRY: Duration = Duration::from_millis(100);
 /// A child still running after this long is killed and the request failed.
 const CHILD_TIMEOUT: Duration = Duration::from_secs(180);
 /// How often a running child is checked.
@@ -931,90 +926,33 @@ impl Worker {
         }
     }
 
-    /// The seat of a gate-only launch, allocated before its gate opens: the target's ordinary
-    /// guarded resolution (no caller, as `Command::ResolveSeat` runs it), then the
-    /// `managed_launch` binding on the process the gate shim is, which `exec` keeps (L2). No
-    /// pid or process record is an error: the gate never opens without its placeholder.
+    /// The seat of a gate-only launch, allocated before its gate opens (see
+    /// `launch_gate::allocate_seat`).
     fn allocate_gate_seat(
         &self,
         plan: &crate::sync::frame::LaunchPlan,
         created: &crate::ports::CreatedTarget,
     ) -> Result<crate::protocol::ids::SeatId, ApiError> {
-        use crate::ports::{IncarnationEvidence, ProcessInfo, StorePort};
-        use crate::protocol::{
-            authority::LivenessFingerprint, commands::RecordManagedLaunch, commands::ResolveSeat,
-            ids::OperationId, results::ErrorCode,
-        };
+        use crate::protocol::results::ErrorCode;
         let registry = crate::harness::registry::builtins();
-        let unsupported =
-            |_| ApiError::new(ErrorCode::UnsupportedHarness, "harness not registered");
-        let harness = crate::harness::registry::OccupantHarness::Agent(
-            registry.agent(&plan.kind).map_err(unsupported)?,
-        );
-        let budget = CallBudget {
-            deadline: MonoInstant(self.clock.monotonic_now().0 + GATE_SEAT_BUDGET_MS),
-            cancellation: Cancellation::default(),
-        };
-        let seat = self.session.identity().resolve(
-            ResolveSeat {
-                target: created.target.clone(),
-                host: self.session.locator().clone(),
-                operation: OperationId::new(format!("peer-launch:{}", self.id)),
-                locator_hint: None,
-                tmux_hint: None,
+        let harness =
+            crate::harness::registry::OccupantHarness::Agent(registry.agent(&plan.kind).map_err(
+                |_| ApiError::new(ErrorCode::UnsupportedHarness, "harness not registered"),
+            )?);
+        super::launch_gate::allocate_seat(
+            &super::launch_gate::GateSeat {
+                session: &self.session,
+                store: self.store.as_ref(),
+                writer: &self.writer,
+                clock: self.clock.as_ref(),
+                harness,
+                operation: crate::protocol::ids::OperationId::new(format!(
+                    "peer-launch:{}",
+                    self.id
+                )),
             },
-            &budget,
-        )?;
-        let context = crate::ports::HostCallContext {
-            budget: budget.clone(),
-            expected_boot: None,
-            expected_epoch: None,
-        };
-        let port = self.session.port();
-        let observation = port.observe_current_target(&created.target, &context)?;
-        let evidence = |detail: &'static str| ApiError::new(ErrorCode::InvalidRequest, detail);
-        let terminal = observation
-            .terminal
-            .clone()
-            .ok_or_else(|| evidence("the launched terminal reports no terminal id"))?;
-        let IncarnationEvidence::Verified { identity, .. } = &observation.incarnation else {
-            return Err(evidence(
-                "the launched terminal has no verified incarnation",
-            ));
-        };
-        let pid = port
-            .target_root_process(&created.target, &context)?
-            .ok_or_else(|| evidence("the launched terminal reports no process"))?;
-        let record = crate::host::process_table::HostProcessTable
-            .process(pid)
-            .ok_or_else(|| evidence("the launched terminal's process is not observable"))?;
-        let command = RecordManagedLaunch {
-            seat: seat.clone(),
-            target: created.target.clone(),
-            harness,
-            terminal,
-            incarnation: identity.clone(),
-            host_boot: observation.host_boot.clone(),
-            target_generation: observation.generation,
-            fingerprint: LivenessFingerprint::of(&record),
-        };
-        loop {
-            let attempt = self
-                .writer
-                .enter_background(&budget, self.clock.as_ref())
-                .and_then(|_turn| self.store.record_managed_launch(command.clone(), &budget));
-            match attempt {
-                Ok(_) => return Ok(seat),
-                // The store decides on its effective observation, which can lag the fresh read.
-                Err(error)
-                    if error.code == ErrorCode::StaleHostObservation
-                        && self.clock.monotonic_now() < budget.deadline =>
-                {
-                    std::thread::sleep(GATE_SEAT_RETRY);
-                }
-                Err(error) => return Err(error),
-            }
-        }
+            created,
+        )
     }
 
     /// The program the children run: this binary (a test stand-in in

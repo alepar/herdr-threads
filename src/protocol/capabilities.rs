@@ -136,6 +136,9 @@ pub const LOCATE_CALLER_V1: &str = "caller.locate_v1";
 /// (ht-kqrt H3). Served by `service::launch_gate`.
 pub const LAUNCH_GATE_V1: &str = "launch.gate_v1";
 
+/// `Command::LocalLaunchGate`: a plain `launch` onto a herdr-core records its gate-only record.
+pub const LOCAL_LAUNCH_GATE_V1: &str = "launch.local_gate_v1";
+
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 
@@ -229,6 +232,7 @@ pub const ADVERTISED: &[&str] = &[
     TERMINAL_SITES_V1,
     AUTOMATIC_TARGET_V1,
     LAUNCH_GATE_V1,
+    LOCAL_LAUNCH_GATE_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

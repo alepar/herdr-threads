@@ -27,6 +27,7 @@ pub mod irc;
 pub mod journal;
 pub mod launch;
 pub mod launch_gate;
+pub mod launch_new;
 pub mod lazy_display;
 pub(crate) mod legacy;
 pub mod me;
@@ -689,6 +690,9 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::Handoff(request) => {
             request.launch = request.launch.clone().with_process_options()?;
         }
+        CliAction::LaunchNew(request) => {
+            request.launch = request.launch.clone().with_process_options()?;
+        }
         _ => {}
     }
     let (context, _) = instance::resolve_context(&instance::InstanceInputs::from_process(
@@ -1018,6 +1022,18 @@ fn run_parsed_in_pane<W: Write>(
     if let CliAction::Launch(request) = &parsed.action {
         return run_launch(request, &parsed, &context, &paths, &clock, writer);
     }
+    if let CliAction::LaunchNew(request) = &parsed.action {
+        return launch_new::run(
+            request,
+            &parsed,
+            caller_pane,
+            site,
+            &context,
+            &paths,
+            &clock,
+            writer,
+        );
+    }
     if let CliAction::Picker(request) = &parsed.action {
         picker::require_terminal(&parsed)?;
         let (_, client) = connection.get()?;
@@ -1314,6 +1330,7 @@ fn run_parsed_in_pane<W: Write>(
             unreachable!("internal json-field is handled before context resolution")
         }
         CliAction::Launch(_)
+        | CliAction::LaunchNew(_)
         | CliAction::RemoteLaunch(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)

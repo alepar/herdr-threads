@@ -1,4 +1,4 @@
-Start a registered agent harness in one explicit existing empty shell pane with the owned hooks, after resolving the pane's seat. Launch never registers, accepts or ACKs: the handoff is read through the hooks
+Start a registered agent harness in an existing empty shell pane, a new tab or a new terminal, with the owned hooks, after resolving the seat. Launch never registers, accepts or ACKs: the handoff is read through the hooks
 
 Usage: herdr-threads launch [OPTIONS] --kind <KIND> [-- <AGENT_ARG>...]
 
@@ -32,8 +32,12 @@ Options:
           Herdr agent name (default: the pane's Herdr label, else the compact seat ID, or `seat-<short seat id>` for a persisted seat). Fitted to Herdr's `[a-z][a-z0-9_-]{0,31}`
       --cooperative-target <COOPERATIVE_TARGET>
           Exact live pane ID or scoped name bound to the cooperative seat
+      --new-tab <LABEL>
+          A new tab labelled LABEL to launch in: in --space, else the caller's workspace on Herdr; a herdr-core needs --space
       --cooperative-harness <COOPERATIVE_HARNESS>
           Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
+      --new-terminal
+          A new terminal on a herdr-core host, parented on the calling terminal (no app labels)
       --cooperative-role <COOPERATIVE_ROLE>
           Agent role for the cooperative call [possible values: top-level, subagent]
   -h, --help
@@ -41,8 +45,13 @@ Options:
 
 Target:
   --pane names one existing Herdr pane at its interactive shell prompt; launch never
-  creates, splits or picks a pane and never types into an occupied one. Herdr's
+  splits or picks a pane and never types into an occupied one. Herdr's
   guarded `agent start` refuses a busy pane.
+  --new-tab LABEL creates a tab in --space, else the caller's workspace, and launches in
+  its root pane; a herdr-core needs --space (an app space).
+  --new-terminal creates a herdr-core terminal parented on the calling terminal.
+  A herdr-core target runs the launch gate: --harness-binary and --name are refused, the
+  preflight below is the argument check alone, and the agent starts idle.
 
 Preflight (nothing is started when any step refuses):
   - the selected executable must resolve; its registered contract is declared without

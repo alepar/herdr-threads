@@ -142,6 +142,8 @@ pub enum CommandResult {
     Bootstrap(Box<crate::protocol::handoff::BootstrapResult>),
     BootstrapReserved(Box<crate::protocol::handoff::ReserveBootstrapResult>),
     LaunchGate(crate::protocol::handoff::LaunchGateReply),
+    /// The seat allocated by a `LocalLaunchGate` `Record`; `None` for `Open`.
+    LocalLaunchGate(Option<SeatId>),
     Located(crate::protocol::locate::LocateReply),
     BootstrapSubmissionChecked(crate::protocol::handoff::BootstrapSubmissionChecked),
     BootstrapRecovered(Box<crate::protocol::handoff::BootstrapRecoveryResult>),

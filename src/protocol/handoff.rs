@@ -461,6 +461,37 @@ impl AuthorizeLaunchGate {
         Ok(())
     }
 }
+/// A plain `launch` onto a herdr-core: the gate-only record (TRUST-POLICY H3). `Open` precedes
+/// the terminal; `Record` follows it and allocates the seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalLaunchGate {
+    pub id: OperationId,
+    /// The core's socket: attached on a miss, and any other host kind is refused.
+    pub host: crate::protocol::ids::HostLocator,
+    pub action: LocalLaunchGateAction,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalLaunchGateAction {
+    Open,
+    Record {
+        harness: crate::protocol::authority::Harness,
+        created: Box<crate::ports::CreatedTarget>,
+    },
+}
+impl LocalLaunchGate {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match &self.action {
+            LocalLaunchGateAction::Open => Ok(()),
+            LocalLaunchGateAction::Record { harness, created } => {
+                if *harness == crate::protocol::authority::Harness::Human {
+                    return Err("a managed launch starts an agent, never a person");
+                }
+                created.validate()
+            }
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaunchGateRefusal {

@@ -1271,7 +1271,8 @@ pub(crate) fn complete(
 /// `None` for an unknown compound or one two actors share. Read-only; the creation is the
 /// current attempt's and `current_attempt` says whether `attempt` is that one. A compound with
 /// no automatic bootstrap at all may be a peer launch's gate-only record (`peer_requests`,
-/// N15), read by `peer_requests::gate_view`; a bootstrap always wins over such a row.
+/// N15), read by `peer_requests::gate_view`, or a plain local launch's (`local_launch_gates`,
+/// H3); a bootstrap always wins over such a row.
 pub(crate) fn launch_gate_view(
     db: &Connection,
     instance: &str,
@@ -1289,7 +1290,10 @@ pub(crate) fn launch_gate_view(
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
     if rows.is_empty() {
-        return crate::store::peer_requests::gate_view(db, compound.as_str(), attempt);
+        return match crate::store::peer_requests::gate_view(db, compound.as_str(), attempt)? {
+            Some(view) => Ok(Some(view)),
+            None => super::local_gate::gate_view(db, compound.as_str(), attempt),
+        };
     }
     let [bytes] = rows.as_slice() else {
         return Ok(None);

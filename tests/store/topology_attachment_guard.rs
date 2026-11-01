@@ -3251,6 +3251,139 @@ fn launch_gate_view_answers() {
     let _ = std::fs::remove_file(path);
 }
 
+fn local_gate_open(store: &crate::store::SqliteStore, id: &str, budget: &CallBudget) {
+    crate::ports::BootstrapStorePort::local_launch_gate_open(store, &OperationId::new(id), budget)
+        .unwrap();
+}
+
+fn local_gate_record(
+    store: &crate::store::SqliteStore,
+    id: &str,
+    created: &CreatedTarget,
+    budget: &CallBudget,
+) -> bool {
+    crate::ports::BootstrapStorePort::local_launch_gate_record(
+        store,
+        &OperationId::new(id),
+        created,
+        &SeatId::new("launched"),
+        budget,
+    )
+    .unwrap()
+}
+
+#[test]
+fn local_gate_view_opens_only_on_a_recorded_creation() {
+    let [_, placement] = v3_placements();
+    let fx = v3_fixture();
+    let created = v3_created(&placement);
+    let first = BootstrapAttempt::first();
+    assert_eq!(gate_view(&fx.store, "launch-1", first, &fx.budget), None);
+    local_gate_open(&fx.store, "launch-1", &fx.budget);
+    assert_eq!(
+        gate_view(&fx.store, "launch-1", first, &fx.budget),
+        Some(crate::ports::LaunchGateView {
+            created: None,
+            current_attempt: true,
+            cancelled: false,
+            send_staged: false,
+        })
+    );
+    assert!(local_gate_record(
+        &fx.store, "launch-1", &created, &fx.budget
+    ));
+    assert_eq!(
+        gate_view(&fx.store, "launch-1", first, &fx.budget),
+        Some(crate::ports::LaunchGateView {
+            created: Some(created.clone()),
+            current_attempt: true,
+            cancelled: false,
+            send_staged: true,
+        })
+    );
+    let stale = gate_view(
+        &fx.store,
+        "launch-1",
+        BootstrapAttempt::new(2).unwrap(),
+        &fx.budget,
+    )
+    .unwrap();
+    assert!(!stale.current_attempt);
+    assert!(
+        !local_gate_record(&fx.store, "launch-1", &created, &fx.budget),
+        "a second record changes nothing"
+    );
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+}
+
+#[test]
+fn a_local_gate_never_stands_in_for_a_staged_send() {
+    let [_, placement] = v3_placements();
+    let fx = v3_fixture();
+    let id = v3_identity(&fx.old, &placement);
+    let created = v3_created(&placement);
+    let compound = id.plan.payload.keys.compound.as_str().to_owned();
+    v3_record_created(&fx, &id, &created);
+    local_gate_open(&fx.store, &compound, &fx.budget);
+    assert!(local_gate_record(
+        &fx.store, &compound, &created, &fx.budget
+    ));
+    let view = gate_view(&fx.store, &compound, BootstrapAttempt::first(), &fx.budget).unwrap();
+    assert!(
+        !view.send_staged,
+        "a handoff's gate still waits for its staged Send"
+    );
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+}
+
+#[test]
+fn a_local_gate_is_recorded_only_once_open() {
+    let [_, placement] = v3_placements();
+    let fx = v3_fixture();
+    let created = v3_created(&placement);
+    assert!(!local_gate_record(
+        &fx.store,
+        "never-opened",
+        &created,
+        &fx.budget
+    ));
+    let rows: i64 = fx
+        .db
+        .query_row("SELECT count(*) FROM local_launch_gates", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+}
+
+#[test]
+fn opening_a_local_gate_drops_stale_rows() {
+    let fx = v3_fixture();
+    let stale = 100 - crate::store::topology_handoff::local_gate::RETENTION_MS - 1;
+    for (id, at) in [("old", stale), ("young", 50)] {
+        fx.db
+            .execute(
+                "INSERT INTO local_launch_gates(id, opened_at) VALUES(?1, ?2)",
+                rusqlite::params![id, at],
+            )
+            .unwrap();
+    }
+    local_gate_open(&fx.store, "fresh", &fx.budget);
+    let ids: Vec<String> = fx
+        .db
+        .prepare("SELECT id FROM local_launch_gates ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(ids, ["fresh", "young"]);
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+}
+
 fn peer_row(id: &str) -> crate::store::peer_requests::PeerRequest {
     crate::store::peer_requests::PeerRequest {
         id: id.to_owned(),

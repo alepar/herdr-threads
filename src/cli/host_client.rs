@@ -35,9 +35,9 @@ impl LaunchHandle {
         }
     }
 
-    /// The server on `endpoint`, probed: a herdr-core terminal host. The gate argv rides each
-    /// creation request, so the port is built with none.
-    pub fn hc(
+    /// The server on `endpoint`, probed: either host. The probe gives a witness with no target
+    /// pane; the gate argv rides each creation request, so the port is built with none.
+    pub fn probed(
         endpoint: &Path,
         clock: Arc<dyn Clock>,
         budget: &CallBudget,

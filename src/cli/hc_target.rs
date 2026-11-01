@@ -1,4 +1,4 @@
-//! Which host a `handoff` creates its target on: a herdr-core host, or today's Herdr tab.
+//! Which host a `handoff` or `launch` creates its target on: a herdr-core host, or today's Herdr tab.
 //!
 //! Responsibility
 //! - Owns: choosing the herdr-core host of a V3 automatic handoff from the caller's site (a
@@ -23,6 +23,17 @@ use crate::{
     protocol::ids::HostTargetId,
 };
 
+/// What a creation asks for, read from `handoff`'s or `launch`'s flags.
+pub struct Wanted<'a> {
+    pub new_tab: bool,
+    pub new_terminal: bool,
+    pub space: Option<&'a str>,
+    /// `--tab` or `--pane` beside the creation.
+    pub narrowed: bool,
+    /// False for `--thread` and `--new-thread`, which have no V3 record; a plain launch is true.
+    pub automatic: bool,
+}
+
 /// The target a handoff creates on a herdr-core host, or `None` for the Herdr new-tab path.
 ///
 /// `herdr_context` is true when the call carries a Herdr server (a host endpoint from the
@@ -36,7 +47,28 @@ pub fn select(
     if request.existing || request.target.is_some() {
         return Ok(None);
     }
-    if request.new_tab.is_none() && !request.new_terminal {
+    select_wanted(
+        &Wanted {
+            new_tab: request.new_tab.is_some(),
+            new_terminal: request.new_terminal,
+            space: request.selector.space.as_deref(),
+            narrowed: request.selector.tab.is_some() || request.selector.pane.is_some(),
+            automatic: request.automatic,
+        },
+        site,
+        herdr_context,
+        env,
+    )
+}
+
+/// The target a creation asks for on a herdr-core host, or `None` for the Herdr new-tab path.
+pub fn select_wanted(
+    wanted: &Wanted<'_>,
+    site: Option<&CallerLocator>,
+    herdr_context: bool,
+    env: EnvLookup<'_>,
+) -> Result<Option<TargetSelection>, RunError> {
+    if !wanted.new_tab && !wanted.new_terminal {
         return Ok(None);
     }
     let (socket, parent) = match site {
@@ -45,7 +77,7 @@ pub fn select(
             Some(HostTargetId::parse(id).map_err(invalid_request)?),
         ),
         Some(_) => {
-            if request.new_terminal {
+            if wanted.new_terminal {
                 return Err(invalid_request(
                     "--new-terminal needs a calling herdr-core terminal; this caller is not one",
                 ));
@@ -53,7 +85,7 @@ pub fn select(
             return Ok(None);
         }
         None if herdr_context => {
-            if request.new_terminal {
+            if wanted.new_terminal {
                 return Err(invalid_request(
                     "--new-terminal needs a calling herdr-core terminal; this caller is not one",
                 ));
@@ -62,25 +94,25 @@ pub fn select(
         }
         None => (None, None),
     };
-    if !request.automatic {
+    if !wanted.automatic {
         return Err(invalid_request(
             "--thread and --new-thread cannot create a herdr-core terminal; \
              use the automatic handoff",
         ));
     }
-    let placement = if request.new_terminal {
+    let placement = if wanted.new_terminal {
         Placement::NewTerminal {
             parent: parent.ok_or_else(|| {
                 invalid_request("--new-terminal needs a calling herdr-core terminal")
             })?,
         }
     } else {
-        if request.selector.tab.is_some() || request.selector.pane.is_some() {
+        if wanted.narrowed {
             return Err(invalid_request(
                 "a herdr-core new tab takes --space only; --tab and --pane select Herdr panes",
             ));
         }
-        let space = request.selector.space.as_deref().ok_or_else(|| {
+        let space = wanted.space.ok_or_else(|| {
             invalid_request("a herdr-core new tab needs --space SPACE (an app space id or label)")
         })?;
         Placement::NewTab {

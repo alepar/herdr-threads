@@ -7939,7 +7939,7 @@ mod live {
                 }
                 let clock: Arc<dyn crate::protocol::time::Clock> =
                     Arc::new(crate::app::SystemClock::new());
-                let handle = LaunchHandle::hc(
+                let handle = LaunchHandle::probed(
                     fake.socket(),
                     clock.clone(),
                     &crate::cli::cooperative_budget(clock.as_ref()),

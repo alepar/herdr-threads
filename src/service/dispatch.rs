@@ -765,6 +765,95 @@ impl DomainService {
             .automatic_bootstrap_mutate(&runtime.canonical, request, permit, None, budget)
     }
 
+    /// The writer of the elected owner, for a caller whose peer is that owner.
+    fn elected_writer(&self, peer: PeerIdentity) -> Result<&Arc<FairWriter>, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        Ok(writer)
+    }
+
+    /// The session of the herdr-core at `host`, attached first when it is new. `by_locator`
+    /// first: `resolve` answers a sole session for any locator.
+    fn core_session(
+        &self,
+        host: &crate::protocol::ids::HostLocator,
+        budget: &CallBudget,
+    ) -> Result<Arc<crate::service::host_sessions::HostSession>, ApiError> {
+        let hosts = self
+            .hosts
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("no host sessions"))?;
+        let session = match hosts.by_locator(host) {
+            Some(session) => session,
+            None => hosts.resolve(host, budget)?,
+        };
+        if !session.port().creates_targets_itself() {
+            return Err(ApiError::unsupported(
+                "this host does not start its own targets",
+            ));
+        }
+        Ok(session)
+    }
+
+    /// A plain `launch` onto a herdr-core: its gate-only record (TRUST-POLICY H3). `Open` runs
+    /// before the terminal exists, `Record` after it: the seat is allocated first, then the
+    /// creation and seat are recorded in one write, which releases the gate.
+    fn local_launch_gate(
+        &self,
+        request: &crate::protocol::handoff::LocalLaunchGate,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        use crate::protocol::handoff::LocalLaunchGateAction;
+        let store = self
+            .bootstrap_store
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("launch gate needs the bootstrap store"))?;
+        let writer = self.elected_writer(peer)?;
+        // `Open` attaches the core too, so a socket that is no core refuses before anything
+        // is created.
+        let session = self.core_session(&request.host, budget)?;
+        match &request.action {
+            LocalLaunchGateAction::Open => {
+                let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                store.local_launch_gate_open(&request.id, budget)?;
+                Ok(CommandResult::LocalLaunchGate(None))
+            }
+            LocalLaunchGateAction::Record { harness, created } => {
+                // No turn here: `allocate_seat` enters the writer itself.
+                let seat = super::launch_gate::allocate_seat(
+                    &super::launch_gate::GateSeat {
+                        session: &session,
+                        store: self.store.as_ref(),
+                        writer,
+                        clock: self.clock.as_ref(),
+                        harness: *harness,
+                        operation: crate::protocol::ids::OperationId::new(format!(
+                            "local-launch:{}",
+                            request.id.as_str()
+                        )),
+                    },
+                    created,
+                )?;
+                let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                if !store.local_launch_gate_record(&request.id, created, &seat, budget)? {
+                    return Err(error(ErrorCode::Conflict, "launch gate record is not open"));
+                }
+                Ok(CommandResult::LocalLaunchGate(Some(seat)))
+            }
+        }
+    }
+
     /// The launch gate's decision for a shim in a herdr-core terminal. The store is read per
     /// poll and the wait holds no store turn and no writer lane.
     fn authorize_launch_gate(
@@ -2138,18 +2227,7 @@ impl LocalService for DomainService {
             // observation in one transaction (A2) and opens nothing but an
             // unregistered binding on a seat with none.
             Command::RecordManagedLaunch(launch) => {
-                let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
-                    error(
-                        ErrorCode::CallerUnverified,
-                        "cooperative elected runtime unavailable",
-                    )
-                })?;
-                if peer.effective_uid() != *owner_uid {
-                    return Err(error(
-                        ErrorCode::Unauthorized,
-                        "caller peer does not match elected owner",
-                    ));
-                }
+                let writer = self.elected_writer(peer)?;
                 let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.record_managed_launch(launch, budget)
             }
@@ -2187,6 +2265,7 @@ impl LocalService for DomainService {
                 "local intents are client-owned",
             )),
             Command::AuthorizeLaunchGate(request) => self.authorize_launch_gate(&request, budget),
+            Command::LocalLaunchGate(request) => self.local_launch_gate(&request, peer, budget),
             Command::Health
             | Command::Capabilities
             | Command::HookParseFailure(_)
