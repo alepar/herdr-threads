@@ -150,6 +150,27 @@ fn hint_host_is_attached_at_startup_with_its_pacers() {
     assert!(daemon.probe.registered(Lane::Observation));
 }
 
+// Kills: a built-in entry listed beside a dialled server while its lanes are
+// clean, which would skew the aggregate Health fields.
+#[test]
+fn health_lists_no_builtin_while_its_lanes_are_clean() {
+    let isolation = TestIsolation::new("hs-daemon-health-builtin");
+    let world = FakeHostWorld::new();
+    let hint = loc("/herdr/hint.sock");
+    world.add(&hint, refusing());
+    let daemon = Daemon::start(
+        &isolation,
+        &world,
+        Some(hint.clone()),
+        Duration::from_secs(60),
+    );
+    let sessions = daemon.probe.host_sessions().unwrap();
+    assert_eq!(sessions.all_for_reads().len(), 2, "dialled plus built-in");
+    let entries = sessions.health_entries();
+    assert_eq!(entries.len(), 1, "only the dialled host");
+    assert_eq!(entries[0].input.endpoint, hint.as_str());
+}
+
 // Kills: startup attaching only the hint (or only one remembered row).
 #[test]
 fn restart_reattaches_two_remembered_rows() {
