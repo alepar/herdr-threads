@@ -19,10 +19,11 @@
 //!   on an unreadable server environ (`server_process() == None` skips that
 //!   check).
 //! - Relationships: delegates to `HostPort::target_root_process` of the
-//!   sessions `HostSessions::all_for_reads` returns. A terminal candidate asks the
-//!   hosts that answer terminal ids (`answers_terminal_ids`), a pane candidate the
-//!   others; a terminal no attached host answers for is `Unsupported`. With both
-//!   families the nearest ancestor wins, whichever family owns it.
+//!   sessions `HostSessions::all_for_reads` returns for a pane candidate (the hosts
+//!   that do not answer terminal ids). A terminal candidate asks only the core its
+//!   socket names (`CorePort`, attached on a miss); a socket that is not a core is
+//!   `Unsupported`, one that cannot be attached `Unreachable`. With both families
+//!   the nearest ancestor wins, whichever family owns it.
 //! - Where new behaviour goes: a new host candidate verifies through its host's
 //!   `target_root_process` answer, with one arm in `candidate_root`.
 //! - Lifecycle: one per daemon; the cache is its only mutable state, behind a
@@ -37,6 +38,7 @@ use crate::{
     protocol::{
         ids::HostTargetId,
         locate::{CandidateVerdict, LocateCaller, LocateCandidate, LocateReply},
+        results::{ApiError, ErrorCode},
         time::CallBudget,
     },
 };
@@ -160,59 +162,85 @@ pub fn inherited_name_detail(name: &str, host: &str) -> String {
     )
 }
 
-/// The local terminal id (`tN`) of a herdr-core hint (`tN` or `<session>:tN`); `None` for a
-/// Herdr pane id (`w1:p2`).
-fn terminal_hint(hint: &str) -> Option<&str> {
-    let local = hint.rsplit(':').next()?;
-    let digits = local.strip_prefix('t')?;
-    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(local)
+/// The core a terminal candidate names, by socket: attached, or attached now.
+pub type CorePort<'a> = &'a dyn Fn(&str) -> Result<Arc<dyn HostPort>, ApiError>;
+
+/// The candidates of a `ResolveSeat.locator_hint`: parts joined by `\n`; a part starting with `/`
+/// is `<socket>:<tN>`, split at its last `:`; anything else is a pane.
+pub fn hint_candidates(hint: &str) -> Vec<LocateCandidate> {
+    hint.split('\n')
+        .filter(|part| !part.is_empty())
+        .map(
+            |part| match part.strip_prefix('/').and(part.rsplit_once(':')) {
+                Some((socket, id)) => LocateCandidate::Terminal {
+                    socket: socket.to_owned(),
+                    id: id.to_owned(),
+                },
+                None => LocateCandidate::Pane {
+                    id: part.to_owned(),
+                },
+            },
+        )
+        .collect()
 }
 
-/// The inherited-name check (SA2, D1): whether the server that owns the hinted pane or terminal
+/// The inherited-name check (SA2, D1): whether the server that owns a hinted pane or terminal
 /// carries `name` in its own environment, read through `read`.
 pub fn inherited_name(
     name: &str,
     hint: &str,
     hosts: &[Arc<dyn HostPort>],
+    core: CorePort<'_>,
     context: &HostCallContext,
     read: impl Fn(u32) -> Option<Environ>,
 ) -> bool {
-    inherited_name_host(name, hint, hosts, context, read).is_some()
+    inherited_name_host(name, hint, hosts, core, context, read).is_some()
 }
 
-/// [`inherited_name`] naming (`HostPort::server_label`) the host whose server holds the name. Only a host that
-/// answers for the hint is asked (a terminal hint goes to the hosts that answer terminal ids,
-/// a pane hint to the others); a server with no pid, or one whose environment is unreadable,
-/// skips the check (D1 limit): it never refuses on a read that failed. The comparison is on the
-/// name alone, so a per-command name equal to the server's own is refused too (an accepted
-/// limit).
+/// [`inherited_name`] naming (`HostPort::server_label`) the host whose server holds the name,
+/// for the first candidate of the hint whose server does. A pane candidate asks the hosts that
+/// do not answer terminal ids; a terminal candidate asks only the core its socket names
+/// (`core`, attached on a miss), and a core that cannot be had skips that candidate. A server
+/// with no pid, or one whose environment is unreadable, skips the check (D1 limit): it never
+/// refuses on a read that failed. The comparison is on the name alone, so a per-command name
+/// equal to the server's own is refused too (an accepted limit).
 pub fn inherited_name_host(
     name: &str,
     hint: &str,
     hosts: &[Arc<dyn HostPort>],
+    core: CorePort<'_>,
     context: &HostCallContext,
     read: impl Fn(u32) -> Option<Environ>,
 ) -> Option<&'static str> {
-    let terminal = terminal_hint(hint);
-    let Ok(target) = HostTargetId::parse(terminal.unwrap_or(hint).to_owned()) else {
-        return None;
-    };
-    hosts
-        .iter()
-        .filter(|host| host.answers_terminal_ids() == terminal.is_some())
-        .find(|host| {
-            matches!(host.target_root_process(&target, context), Ok(Some(_)))
-                && host
-                    .server_process()
-                    .and_then(&read)
-                    .is_some_and(|environ| {
-                        environ.iter().any(|(key, value)| {
-                            key.as_os_str() == crate::host::named::ENV_SEAT_NAME
-                                && value.as_os_str() == name
-                        })
+    let holds = |host: &Arc<dyn HostPort>, target: &HostTargetId| {
+        matches!(host.target_root_process(target, context), Ok(Some(_)))
+            && host
+                .server_process()
+                .and_then(&read)
+                .is_some_and(|environ| {
+                    environ.iter().any(|(key, value)| {
+                        key.as_os_str() == crate::host::named::ENV_SEAT_NAME
+                            && value.as_os_str() == name
                     })
+                })
+    };
+    hint_candidates(hint)
+        .into_iter()
+        .find_map(|candidate| match candidate {
+            LocateCandidate::Pane { id } => {
+                let target = HostTargetId::parse(id).ok()?;
+                hosts
+                    .iter()
+                    .filter(|host| !host.answers_terminal_ids())
+                    .find(|host| holds(host, &target))
+                    .map(|host| host.server_label())
+            }
+            LocateCandidate::Terminal { socket, id } => {
+                let target = HostTargetId::parse(id).ok()?;
+                let port = core(&socket).ok()?;
+                holds(&port, &target).then(|| port.server_label())
+            }
         })
-        .map(|host| host.server_label())
 }
 
 /// Longest ancestry the walk follows (a loop or a pathological tree ends it).
@@ -248,7 +276,8 @@ impl LocateCallerService {
     }
 
     /// Verifies `request` for a caller whose connection came from `peer_pid`.
-    /// `hosts` are the ports of `HostSessions::all_for_reads`; `epoch` names
+    /// `hosts` are the ports of `HostSessions::all_for_reads`, `core` the port of a terminal
+    /// candidate's socket; `epoch` names
     /// that set (it changes when a host attaches or restarts, dropping every
     /// cached verdict).
     pub fn locate(
@@ -256,10 +285,11 @@ impl LocateCallerService {
         request: &LocateCaller,
         peer_pid: Option<u32>,
         hosts: &[Arc<dyn HostPort>],
+        core: CorePort<'_>,
         epoch: u64,
         budget: &CallBudget,
     ) -> LocateReply {
-        self.verdict(request, peer_pid, hosts, epoch, budget)
+        self.verdict(request, peer_pid, hosts, core, epoch, budget)
     }
 
     fn verdict(
@@ -267,6 +297,7 @@ impl LocateCallerService {
         request: &LocateCaller,
         peer_pid: Option<u32>,
         hosts: &[Arc<dyn HostPort>],
+        core: CorePort<'_>,
         epoch: u64,
         budget: &CallBudget,
     ) -> LocateReply {
@@ -299,7 +330,7 @@ impl LocateCallerService {
         let roots: Vec<Root> = request
             .candidates
             .iter()
-            .map(|candidate| candidate_root(candidate, hosts, &context))
+            .map(|candidate| candidate_root(candidate, hosts, core, &context))
             .collect();
         let reply = verify(&ancestors, &roots);
         let transient = matches!(&reply, LocateReply::Unverified { per_candidate, .. }
@@ -369,34 +400,43 @@ fn verify(ancestors: &[Ancestor], roots: &[Root]) -> LocateReply {
 fn candidate_root(
     candidate: &LocateCandidate,
     hosts: &[Arc<dyn HostPort>],
+    core: CorePort<'_>,
     context: &HostCallContext,
 ) -> Root {
-    let (target, terminal_family) = match candidate {
-        LocateCandidate::Pane { id } => (id, false),
-        LocateCandidate::Terminal { id, .. } => (id, true),
-    };
-    let Ok(target) = HostTargetId::parse(target.clone()) else {
-        return Root::Verdict(CandidateVerdict::NoRoot);
-    };
-    // A family asks only the hosts of its own kind: a pane id means nothing to a core, nor a
-    // terminal id to a Herdr server.
-    let mut asked = false;
-    let mut verdict = CandidateVerdict::Unreachable;
-    for host in hosts
-        .iter()
-        .filter(|host| host.answers_terminal_ids() == terminal_family)
-    {
-        asked = true;
-        match host.target_root_process(&target, context) {
-            Ok(Some(pid)) => return Root::Pid(pid),
-            Ok(None) => verdict = CandidateVerdict::NoRoot,
-            Err(_) => {}
+    match candidate {
+        // A pane id means nothing to a core: only the hosts that do not answer terminal ids.
+        LocateCandidate::Pane { id } => {
+            let Ok(target) = HostTargetId::parse(id.clone()) else {
+                return Root::Verdict(CandidateVerdict::NoRoot);
+            };
+            let mut verdict = CandidateVerdict::Unreachable;
+            for host in hosts.iter().filter(|host| !host.answers_terminal_ids()) {
+                match host.target_root_process(&target, context) {
+                    Ok(Some(pid)) => return Root::Pid(pid),
+                    Ok(None) => verdict = CandidateVerdict::NoRoot,
+                    Err(_) => {}
+                }
+            }
+            Root::Verdict(verdict)
+        }
+        // A terminal id is local to the core its socket names, so only that core is asked.
+        LocateCandidate::Terminal { socket, id } => {
+            let Ok(target) = HostTargetId::parse(id.clone()) else {
+                return Root::Verdict(CandidateVerdict::NoRoot);
+            };
+            match core(socket) {
+                Ok(port) => match port.target_root_process(&target, context) {
+                    Ok(Some(pid)) => Root::Pid(pid),
+                    Ok(None) => Root::Verdict(CandidateVerdict::NoRoot),
+                    Err(_) => Root::Verdict(CandidateVerdict::Unreachable),
+                },
+                Err(error) if error.code == ErrorCode::Unsupported => {
+                    Root::Verdict(CandidateVerdict::Unsupported)
+                }
+                Err(_) => Root::Verdict(CandidateVerdict::Unreachable),
+            }
         }
     }
-    if !asked && terminal_family {
-        return Root::Verdict(CandidateVerdict::Unsupported);
-    }
-    Root::Verdict(verdict)
 }
 
 #[cfg(test)]

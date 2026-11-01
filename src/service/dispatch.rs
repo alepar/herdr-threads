@@ -210,9 +210,28 @@ impl DomainService {
             request,
             peer.pid(),
             &ports,
+            &|socket| self.core_port(socket, budget),
             hasher.finish(),
             budget,
         ))
+    }
+    /// The session of the herdr-core `socket`, attached first when it is new. A socket that is
+    /// not a core, or a daemon with no sessions, is `Unsupported`.
+    fn core_port(&self, socket: &str, budget: &CallBudget) -> Result<Arc<dyn HostPort>, ApiError> {
+        let hosts = self
+            .hosts
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("no host sessions"))?;
+        let locator = crate::protocol::ids::HostLocator::parse(socket)?;
+        // `by_locator` first: `resolve` answers a daemon's `sole` session for any locator.
+        let session = match hosts.by_locator(&locator) {
+            Some(session) => session,
+            None => hosts.resolve(&locator, budget)?,
+        };
+        if !session.port().answers_terminal_ids() {
+            return Err(ApiError::unsupported("not a herdr-core socket"));
+        }
+        Ok(Arc::clone(session.port()))
     }
     /// SA2, D1 (M6): a named resolve that carries a host candidate is refused when the server
     /// owning it holds the same name in its own environment, before anything is allocated or
@@ -241,6 +260,7 @@ impl DomainService {
             request.target.as_str(),
             hint,
             &ports,
+            &|socket| self.core_port(socket, budget),
             &context,
             super::locate::read_server_environ,
         ) {

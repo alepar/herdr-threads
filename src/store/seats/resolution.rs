@@ -818,8 +818,23 @@ fn reattach_named_seat(
     Ok(())
 }
 
-/// Longest `locator_hint` recorded (a pane id or `<core>:<tN>` is far shorter).
+/// Longest `locator_hint` recorded (a pane id or `<stem>:<tN>` is far shorter).
 const LOCATOR_HINT_MAX_BYTES: usize = 128;
+
+/// What a binding records of a wire hint: its first candidate, a terminal in the `<stem>:<tN>`
+/// display form (`caller_location::terminal_address`'s rule), so stored rows, M9, `seat
+/// inspect` and M10 read as before. A socket with no file stem stores the bare `tN`.
+fn stored_hint(hint: &str) -> Option<String> {
+    let first = hint.split('\n').next().filter(|part| !part.is_empty())?;
+    let Some((socket, id)) = first.strip_prefix('/').and(first.rsplit_once(':')) else {
+        return Some(first.to_owned());
+    };
+    let stem = std::path::Path::new(socket)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty());
+    Some(stem.map_or_else(|| id.to_owned(), |stem| format!("{stem}:{id}")))
+}
 
 /// N4-hint: record the locator a named seat is addressed from on the seat's open top-level
 /// binding that carries none yet, and return M9's `(earlier, new)` pair when `hint` is on no
@@ -833,6 +848,10 @@ fn record_locator_hint(
     seat: &SeatId,
     hint: &str,
 ) -> Result<Option<(String, String)>, ApiError> {
+    let Some(hint) = stored_hint(hint) else {
+        return Ok(None);
+    };
+    let hint = hint.as_str();
     if hint.is_empty() || hint.len() > LOCATOR_HINT_MAX_BYTES || hint.chars().any(char::is_control)
     {
         return Ok(None);

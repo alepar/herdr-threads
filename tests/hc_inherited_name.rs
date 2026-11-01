@@ -7,7 +7,10 @@ use herdr_threads::{
         named::ENV_SEAT_NAME,
     },
     ports::{HostCallContext, HostPort},
-    protocol::time::{CallBudget, Cancellation, MonoInstant},
+    protocol::{
+        results::ApiError,
+        time::{CallBudget, Cancellation, MonoInstant},
+    },
     service::locate::{inherited_name_detail, inherited_name_host, read_server_environ},
     test_support::{
         scratch,
@@ -19,6 +22,8 @@ use std::{process::Stdio, sync::Arc, time::Duration};
 struct Core {
     child: OwnedChild,
     host: Arc<dyn HostPort>,
+    /// The core's socket path, as a terminal hint names it.
+    socket: String,
 }
 
 /// A `fake-hc` child whose environ carries `name` (or not) and an `HcHost` over its socket.
@@ -44,6 +49,7 @@ fn core(name: Option<&str>) -> Core {
     Core {
         child,
         host: Arc::new(host),
+        socket: socket.to_str().expect("utf-8 socket path").to_owned(),
     }
 }
 
@@ -58,14 +64,20 @@ fn context() -> HostCallContext {
     }
 }
 
+/// The inherited-name check with a `core` closure that answers only the sockets of `cores`.
+fn check_cores(cores: &[&Core], name: &str, hint: &str) -> Option<&'static str> {
+    let core = |socket: &str| {
+        cores
+            .iter()
+            .find(|core| core.socket == socket)
+            .map(|core| Arc::clone(&core.host))
+            .ok_or_else(|| ApiError::host_unavailable("no such core"))
+    };
+    inherited_name_host(name, hint, &[], &core, &context(), read_server_environ)
+}
+
 fn check(core: &Core, name: &str, hint: &str) -> Option<&'static str> {
-    inherited_name_host(
-        name,
-        hint,
-        std::slice::from_ref(&core.host),
-        &context(),
-        read_server_environ,
-    )
+    check_cores(&[core], name, hint)
 }
 
 // Kills: a `server_process` left at the trait default (`None`), one that returns the test's own
@@ -90,10 +102,9 @@ fn inherited_name_refused_m6_herdr_core() {
             .any(|(k, v)| k.as_os_str() == ENV_SEAT_NAME && v.as_os_str() == "x")
     );
 
-    for hint in ["t1", "core-0001:t1"] {
-        let label = check(&core, "x", hint).unwrap_or_else(|| panic!("{hint}: refused"));
-        assert_eq!(label, "herdr-core");
-    }
+    let hint = format!("{}:t1", core.socket);
+    let label = check(&core, "x", &hint).expect("refused");
+    assert_eq!(label, "herdr-core");
     assert_eq!(
         inherited_name_detail("x", "herdr-core"),
         format!(
@@ -104,7 +115,9 @@ fn inherited_name_refused_m6_herdr_core() {
     // A Herdr pane hint is not this core's to answer.
     assert_eq!(check(&core, "x", "w1:p1"), None);
     // A terminal the core does not hold is not asked about.
-    assert_eq!(check(&core, "x", "t99"), None);
+    assert_eq!(check(&core, "x", &format!("{}:t99", core.socket)), None);
+    // A socket that is no attachable core skips the check.
+    assert_eq!(check(&core, "x", "/no/such.sock:t1"), None);
 }
 
 // Kills: a comparison on presence rather than value (any name refused), and a server without the
@@ -112,16 +125,54 @@ fn inherited_name_refused_m6_herdr_core() {
 #[test]
 fn per_command_name_in_terminal_honoured() {
     let carrying = core(Some("x"));
-    assert_eq!(check(&carrying, "y", "t1"), None, "another name binds");
+    let hint = format!("{}:t1", carrying.socket);
+    assert_eq!(check(&carrying, "y", &hint), None, "another name binds");
 
     let plain = core(None);
-    assert_eq!(check(&plain, "x", "t1"), None, "no inherited name");
+    let hint = format!("{}:t1", plain.socket);
+    assert_eq!(check(&plain, "x", &hint), None, "no inherited name");
+}
+
+// Kills: a check that takes the first core holding `t1` instead of the hinted one: two cores own
+// `t1`, only the second carries the name.
+#[test]
+fn inherited_name_checks_the_hinted_core_only() {
+    let first = core(None);
+    let second = core(Some("x"));
+    let both = [&first, &second];
+    assert_eq!(
+        check_cores(&both, "x", &format!("{}:t1", first.socket)),
+        None
+    );
+    assert_eq!(
+        check_cores(&both, "x", &format!("{}:t1", second.socket)),
+        Some("herdr-core")
+    );
+}
+
+// Kills: a hint with a pane and a terminal checking only its first part.
+#[test]
+fn hint_with_pane_and_terminal_checks_both() {
+    let carrying = core(Some("x"));
+    let hint = format!("w1:p2\n{}:t1", carrying.socket);
+    assert_eq!(check(&carrying, "x", &hint), Some("herdr-core"));
+}
+
+// Kills: a core that cannot be had refusing (or erroring) instead of skipping its candidate.
+#[test]
+fn unattachable_core_skips_the_check() {
+    let carrying = core(Some("x"));
+    let hint = format!("/gone/core.sock:t1\n{}:t1", carrying.socket);
+    // The unattachable candidate is skipped; the attachable one still refuses.
+    assert_eq!(check(&carrying, "x", &hint), Some("herdr-core"));
+    assert_eq!(check_cores(&[], "x", "/gone/core.sock:t1"), None);
 }
 
 // Kills: a hint that ignores the terminal (the hc path never checked), a hint without a name
-// (a plain shell has no inherited name to refuse), and a pane that loses to the terminal.
+// (a plain shell has no inherited name to refuse), a pane that loses the terminal, or a terminal
+// that loses its socket.
 #[test]
-fn terminal_site_sends_session_terminal_hint_beside_a_name() {
+fn named_caller_hint_carries_socket_and_every_candidate() {
     use herdr_threads::cli::caller_location::CallerEnv;
     fn env(vars: &[(&str, &str)]) -> CallerEnv {
         let vars: Vec<(String, String)> = vars
@@ -140,10 +191,13 @@ fn terminal_site_sends_session_terminal_hint_beside_a_name() {
     ];
     let named = [(ENV_SEAT_NAME, "x")];
     let hint = |parts: &[&[(&str, &str)]]| env(&parts.concat()).locator_hint();
-    assert_eq!(hint(&[&named, &terminal]).as_deref(), Some("core-a:t4"));
+    assert_eq!(
+        hint(&[&named, &terminal]).as_deref(),
+        Some("/run/hc/core-a.sock:t4")
+    );
     assert_eq!(hint(&[&terminal]), None, "no name, no hint");
     assert_eq!(
         hint(&[&named, &terminal, &[("HERDR_PANE_ID", "w1:p2")]]).as_deref(),
-        Some("w1:p2")
+        Some("w1:p2\n/run/hc/core-a.sock:t4")
     );
 }

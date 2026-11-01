@@ -3,6 +3,14 @@
 //! refused name binds once the server restarts without the variable.
 use crate::ports::{LocalService, StorePort};
 use crate::{
+    host::named::{NamedHost, NoBootstrap},
+    ports::HostKind,
+    protocol::{authority::LivenessFingerprint, locate::*},
+    service::host_sessions::{HostSessions, SessionDeps},
+    store::hosts::HostIndex,
+    test_support::{FakeHostWorld, isolation::TestIsolation},
+};
+use crate::{
     ports::HostId,
     protocol::{
         commands::{Command, ResolveSeat},
@@ -177,4 +185,151 @@ fn no_hint_or_no_server_pid_skips_the_check() {
     let f = fixture(None);
     resolve(&f, "reviewer", "op-b", Some(PANE)).expect("no server pid: the check is skipped");
     assert_eq!(seats_named(&f.db, "reviewer"), 1);
+}
+
+/// A daemon whose sessions attach by locator: the built-in named host, and a herdr-core stand-in
+/// registered in the fixture world but not attached until a command names its socket.
+struct Sessions {
+    service: DomainService,
+    sessions: Arc<HostSessions>,
+    db: std::path::PathBuf,
+    core: HostLocator,
+    _isolation: TestIsolation,
+}
+
+impl Drop for Sessions {
+    fn drop(&mut self) {
+        self.sessions.stop_all();
+    }
+}
+
+struct Chain(Vec<(u32, Option<u32>)>);
+impl crate::ports::ProcessInfo for Chain {
+    fn process(&self, pid: u32) -> Option<crate::ports::ProcessRecord> {
+        self.0
+            .iter()
+            .find(|(p, _)| *p == pid)
+            .map(|(pid, parent)| crate::ports::ProcessRecord {
+                pid: *pid,
+                parent: *parent,
+                start: 1,
+                argv: Vec::new(),
+            })
+    }
+}
+
+fn with_sessions(server: Option<u32>) -> Sessions {
+    let isolation = TestIsolation::new("daemon-inherited-core");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let index = Arc::new(HostIndex::new());
+    let db = isolation.path("store.db");
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::with_host_index(db.clone(), Arc::clone(&clock), Arc::clone(&index)),
+            INSTANCE,
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let world = FakeHostWorld::new();
+    let sessions = Arc::new(HostSessions::new(
+        index,
+        world.plan(None).factory,
+        SessionDeps::detached(store.clone(), Arc::clone(&clock), INSTANCE.to_owned()),
+    ));
+    sessions
+        .attach_builtin(
+            HostKind::Named,
+            Arc::new(NamedHost::new(
+                INSTANCE,
+                HostId::from_row(0),
+                store.clone(),
+                Arc::clone(&clock),
+            )),
+            Arc::new(NoBootstrap),
+            &HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+        )
+        .unwrap();
+    // A core owning `t1`, whose root process is pid 20.
+    let core = HostLocator::parse(isolation.socket_path("core.sock").to_string_lossy()).unwrap();
+    world.add(&core, EnvHost::core("t1", server));
+    let service = DomainService::new(INSTANCE.into(), store, clock)
+        .with_sessions(Arc::clone(&sessions))
+        .with_processes(Arc::new(Chain(vec![
+            (30, Some(20)),
+            (20, Some(1)),
+            (1, None),
+        ])))
+        .with_operator_owner(501)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
+    Sessions {
+        service,
+        sessions,
+        db,
+        core,
+        _isolation: isolation,
+    }
+}
+
+// Kills: an M6 check that reads only the attached sessions: the hinted core is not attached yet,
+// so the name would bind. The check attaches the core the hint names, then refuses.
+#[test]
+fn named_resolve_attaches_the_hinted_core_for_m6() {
+    let server = server_child(Some("reviewer"));
+    let f = with_sessions(Some(server.id()));
+    assert!(f.sessions.by_locator(&f.core).is_none(), "not attached yet");
+    let hint = format!("{}:t1", f.core.as_str());
+    let refused = f
+        .service
+        .handle(
+            Command::ResolveSeat(ResolveSeat {
+                target: HostTargetId::new("reviewer"),
+                host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
+                operation: OperationId::new("op-core"),
+                locator_hint: Some(hint),
+                tmux_hint: None,
+            }),
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .expect_err("the hinted core's server holds the name");
+    assert_eq!(refused.code, ErrorCode::InheritedSeatName);
+    assert!(
+        f.sessions.by_locator(&f.core).is_some(),
+        "attached for the check"
+    );
+    let db = Connection::open(&f.db).unwrap();
+    assert_eq!(seats_named(&db, "reviewer"), 0);
+}
+
+// Kills: `LocateCaller` that never attaches the core (a first call in a new core stayed
+// Unverified): the terminal candidate's core is attached on the call and verifies.
+#[test]
+fn locate_caller_attaches_the_core_on_a_miss() {
+    let f = with_sessions(None);
+    assert!(f.sessions.by_locator(&f.core).is_none());
+    let request = LocateCaller {
+        candidates: vec![LocateCandidate::Terminal {
+            socket: f.core.as_str().to_owned(),
+            id: "t1".into(),
+        }],
+        subject: Some(LivenessFingerprint { pid: 30, start: 1 }),
+    };
+    // The stand-in's terminal root is pid 1 (EnvHost), the top of the subject's ancestry.
+    let CommandResult::Located(reply) = f
+        .service
+        .handle(
+            Command::LocateCaller(request),
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("LocateCaller answers Located");
+    };
+    assert_eq!(reply, LocateReply::Verified { index: 0, root: 1 });
+    assert!(
+        f.sessions.by_locator(&f.core).is_some(),
+        "attached by the call"
+    );
 }

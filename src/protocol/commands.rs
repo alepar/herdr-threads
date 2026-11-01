@@ -693,9 +693,11 @@ pub struct ResolveSeat {
     pub target: HostTargetId,
     pub host: HostLocator,
     pub operation: OperationId,
-    /// N4-inherit: the host candidate that sits beside a named target (a Herdr pane id), sent
-    /// only by a caller whose environment carries both. The daemon reads the server environ of
-    /// the host that owns it and refuses a name equal to the server's own (M6). Absent
+    /// N4-inherit: the host candidates that sit beside a named target, joined by `\n`: a Herdr
+    /// pane id and/or a herdr-core terminal as `<socket>:<tN>`, sent only by a caller whose
+    /// environment carries them. The daemon reads the server environ of the host that owns each
+    /// (the core a socket names, attached for the check) and refuses a name equal to the
+    /// server's own (M6). A binding stores only the first, a terminal as `<stem>:<tN>`. Absent
     /// everywhere else, so those requests' bytes are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locator_hint: Option<String>,

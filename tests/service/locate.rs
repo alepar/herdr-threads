@@ -149,6 +149,16 @@ fn budget() -> CallBudget {
     }
 }
 
+/// No core can be had for any socket.
+fn no_core(_: &str) -> Result<Arc<dyn HostPort>, ApiError> {
+    Err(ApiError::unsupported("no core"))
+}
+
+/// A `CorePort` answering `port` for every socket.
+fn core_of(port: Arc<dyn HostPort>) -> impl Fn(&str) -> Result<Arc<dyn HostPort>, ApiError> {
+    move |_| Ok(Arc::clone(&port))
+}
+
 fn pane(id: &str) -> LocateCandidate {
     LocateCandidate::Pane { id: id.into() }
 }
@@ -189,6 +199,7 @@ fn herdr_candidate_verifies_nearest_ancestor() {
         &request(vec![terminal(), pane("w1:p1")], Some(30)),
         None,
         &[host],
+        &no_core,
         0,
         &budget(),
     );
@@ -204,6 +215,7 @@ fn peer_pid_is_the_subject_without_a_fingerprint() {
         &request(vec![pane("w1:p1")], None),
         Some(30),
         &[host],
+        &no_core,
         0,
         &budget(),
     );
@@ -220,6 +232,7 @@ fn no_candidate_verifies_is_unverified() {
         &request(vec![pane("w1:p1"), terminal()], Some(99)),
         None,
         &[host],
+        &no_core,
         0,
         &budget(),
     );
@@ -230,7 +243,14 @@ fn no_candidate_verifies_is_unverified() {
         }
     );
     // No subject at all verifies nothing either.
-    let none = service.locate(&request(vec![pane("w1:p1")], None), None, &[], 0, &budget());
+    let none = service.locate(
+        &request(vec![pane("w1:p1")], None),
+        None,
+        &[],
+        &no_core,
+        0,
+        &budget(),
+    );
     assert!(matches!(none, LocateReply::Unverified { .. }));
 }
 
@@ -244,6 +264,7 @@ fn unreachable_host_counts_unverified() {
         &request(vec![pane("w1:p1")], Some(30)),
         None,
         std::slice::from_ref(&down),
+        &no_core,
         0,
         &budget(),
     );
@@ -258,6 +279,7 @@ fn unreachable_host_counts_unverified() {
         &request(vec![pane("w1:p1")], Some(30)),
         None,
         &[up],
+        &no_core,
         0,
         &budget(),
     );
@@ -267,6 +289,7 @@ fn unreachable_host_counts_unverified() {
         &request(vec![pane("w1:p1")], Some(98)),
         None,
         &[],
+        &no_core,
         0,
         &budget(),
     );
@@ -294,6 +317,7 @@ fn cache_hits_same_key() {
             &request(vec![pane("w1:p1")], Some(subject)),
             None,
             std::slice::from_ref(&port),
+            &no_core,
             epoch,
             &budget(),
         )
@@ -332,6 +356,7 @@ fn native_cli_candidate_verifies_against_fake_herdr() {
         &request(vec![terminal(), pane("w1:p1")], Some(30)),
         None,
         std::slice::from_ref(&cli),
+        &no_core,
         0,
         &budget(),
     );
@@ -340,6 +365,7 @@ fn native_cli_candidate_verifies_against_fake_herdr() {
         &request(vec![terminal(), pane("w1:p1")], Some(99)),
         None,
         &[cli],
+        &no_core,
         0,
         &budget(),
     );
@@ -393,6 +419,7 @@ fn herdr_verdict(table: Arc<Table>, subject: u32, shell: u32) -> LocateReply {
         &request(vec![pane("w1:p1")], Some(subject)),
         None,
         &[herdr_pane_at(shell)],
+        &no_core,
         0,
         &budget(),
     )
@@ -483,6 +510,7 @@ fn reused_pid_with_new_start_misses_cache() {
             &request(vec![pane("w1:p1")], Some(30)),
             None,
             std::slice::from_ref(&port),
+            &no_core,
             0,
             &budget(),
         )
@@ -513,6 +541,7 @@ fn unstamped_subject_never_cached() {
             &request(vec![pane("w1:p1")], Some(30)),
             None,
             std::slice::from_ref(&port),
+            &no_core,
             0,
             &budget(),
         )
@@ -538,7 +567,8 @@ fn both_verdict(
     LocateCallerService::new(table).locate(
         &request(vec![pane("w1:p1"), terminal()], Some(subject)),
         None,
-        &[herdr_pane_at(pane_shell), hc_terminal_at(terminal_root)],
+        &[herdr_pane_at(pane_shell)],
+        &core_of(hc_terminal_at(terminal_root)),
         0,
         &budget(),
     )
@@ -596,6 +626,7 @@ fn each_family_asks_only_its_own_hosts() {
         &request(vec![pane("w1:p1"), terminal()], Some(30)),
         None,
         &ports,
+        &core_of(hc.clone()),
         0,
         &budget(),
     );
@@ -612,6 +643,7 @@ fn terminal_without_an_hc_host_is_unsupported() {
         &request(vec![terminal()], Some(30)),
         None,
         &[herdr_pane_at(10)],
+        &no_core,
         0,
         &budget(),
     );
@@ -718,12 +750,13 @@ fn two_families_nearest_ancestor_wins() {
     let hc: Arc<dyn HostPort> = Arc::new(crate::host::hc::HcHost::new(
         crate::host::hc::HcClient::new(core.socket()),
     ));
-    let ports = [cli, hc];
+    let ports = [cli];
     let ask = |service: &LocateCallerService| {
         service.locate(
             &request(vec![pane("w1:p1"), terminal()], Some(30)),
             None,
             &ports,
+            &core_of(hc.clone()),
             0,
             &budget(),
         )
@@ -747,4 +780,126 @@ fn two_families_nearest_ancestor_wins() {
         LocateReply::Verified { index: 0, root: 1 }
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A `CorePort` selecting by socket: the port registered for it, else `Unsupported`.
+fn cores(
+    table: Vec<(&'static str, Arc<dyn HostPort>)>,
+) -> impl Fn(&str) -> Result<Arc<dyn HostPort>, ApiError> {
+    move |socket| {
+        table
+            .iter()
+            .find(|(s, _)| *s == socket)
+            .map(|(_, port)| Arc::clone(port))
+            .ok_or_else(|| ApiError::unsupported("no core"))
+    }
+}
+
+fn terminal_at(socket: &str) -> LocateCandidate {
+    LocateCandidate::Terminal {
+        socket: socket.into(),
+        id: "t1".into(),
+    }
+}
+
+// Kills: `candidate_root` taking the first core answering for `tN`: two cores both own `t1`,
+// only the second one's root is the subject's ancestor.
+#[test]
+fn two_cores_sharing_tn_select_by_socket() {
+    let table = Table::new(&[(30, Some(20), 5, "claude"), (20, None, 5, "sh")]);
+    let first = hc_terminal_at(99);
+    let second = hc_terminal_at(20);
+    let core = cores(vec![("/a.sock", first), ("/b.sock", second)]);
+    let service = LocateCallerService::new(table);
+    let reply = service.locate(
+        &request(vec![terminal_at("/b.sock")], Some(30)),
+        None,
+        &[],
+        &core,
+        0,
+        &budget(),
+    );
+    assert_eq!(reply, LocateReply::Verified { index: 0, root: 20 });
+    let other = service.locate(
+        &request(vec![terminal_at("/a.sock")], Some(30)),
+        None,
+        &[],
+        &core,
+        1,
+        &budget(),
+    );
+    assert_eq!(
+        other,
+        LocateReply::Unverified {
+            per_candidate: vec![CandidateVerdict::NotAncestor],
+        }
+    );
+}
+
+// Kills: a terminal candidate asking only the already attached hosts: `hosts` is empty, the
+// core is attached on the call.
+#[test]
+fn terminal_candidate_attaches_its_core_on_a_miss() {
+    let table = Table::new(&[(30, Some(20), 5, "claude"), (20, None, 5, "sh")]);
+    let reply = LocateCallerService::new(table).locate(
+        &request(vec![terminal()], Some(30)),
+        None,
+        &[],
+        &core_of(hc_terminal_at(20)),
+        0,
+        &budget(),
+    );
+    assert_eq!(reply, LocateReply::Verified { index: 0, root: 20 });
+}
+
+// Kills: an attach failure reported as a final verdict or cached: the next call, with the core
+// attachable, verifies.
+#[test]
+fn unattachable_core_is_unreachable_and_uncached() {
+    let table = Table::new(&[(30, Some(20), 5, "claude"), (20, None, 5, "sh")]);
+    let service = LocateCallerService::new(table);
+    let down = |_: &str| -> Result<Arc<dyn HostPort>, ApiError> {
+        Err(ApiError::host_unavailable("attach failed"))
+    };
+    let first = service.locate(
+        &request(vec![terminal()], Some(30)),
+        None,
+        &[],
+        &down,
+        0,
+        &budget(),
+    );
+    assert_eq!(
+        first,
+        LocateReply::Unverified {
+            per_candidate: vec![CandidateVerdict::Unreachable],
+        }
+    );
+    let second = service.locate(
+        &request(vec![terminal()], Some(30)),
+        None,
+        &[],
+        &core_of(hc_terminal_at(20)),
+        0,
+        &budget(),
+    );
+    assert_eq!(second, LocateReply::Verified { index: 0, root: 20 });
+}
+
+// Kills: a hint parser that reads a pane id as a terminal or loses the socket.
+#[test]
+fn hint_candidates_split_pane_and_terminals() {
+    assert_eq!(hint_candidates("w1:p2"), vec![pane("w1:p2")]);
+    assert_eq!(
+        hint_candidates("w1:p2\n/run/hc/a.sock:t4"),
+        vec![pane("w1:p2"), terminal_at_id("/run/hc/a.sock", "t4")]
+    );
+    assert_eq!(hint_candidates(""), Vec::<LocateCandidate>::new());
+}
+
+fn terminal_at_id(socket: &str, id: &str) -> LocateCandidate {
+    LocateCandidate::Terminal {
+        socket: socket.into(),
+        id: id.into(),
+    }
 }

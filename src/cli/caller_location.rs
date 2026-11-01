@@ -175,17 +175,22 @@ impl CallerEnv {
         SeatName::parse(self.text(named::ENV_SEAT_NAME)?).ok()
     }
 
-    /// The host candidate that sits beside the seat name (N4-inherit): the Herdr pane id the
-    /// environment carries, sent as `ResolveSeat.locator_hint` so the daemon can check the
-    /// pane's server for an inherited name: the pane id, else the herdr-core terminal as
-    /// `<session>:<tN>`. `None` without a name or without either.
+    /// The host candidates that sit beside the seat name (N4-inherit), sent as
+    /// `ResolveSeat.locator_hint` so the daemon can check each one's server for an inherited
+    /// name: the Herdr pane id and/or the herdr-core terminal as `<socket>:<tN>`, joined by
+    /// `\n` (which a canonical locator cannot contain). `None` without a name or without either.
     pub fn locator_hint(&self) -> Option<String> {
         self.named()?;
-        self.text(native::ENV_PANE_ID).or_else(|| {
-            let id = self.text(HC_TERMINAL_ID_ENV)?;
-            let socket = self.text(HC_TERMINAL_SOCKET_ENV)?;
-            Some(terminal_address(&socket, &id))
-        })
+        let terminal = self
+            .text(HC_TERMINAL_ID_ENV)
+            .zip(self.text(HC_TERMINAL_SOCKET_ENV))
+            .map(|(id, socket)| format!("{socket}:{id}"));
+        let parts: Vec<String> = self
+            .text(native::ENV_PANE_ID)
+            .into_iter()
+            .chain(terminal)
+            .collect();
+        (!parts.is_empty()).then(|| parts.join("\n"))
     }
 
     /// The tmux wake hint `tmux:<socket>:<server_pid>:<pane>` of a named caller that runs inside
