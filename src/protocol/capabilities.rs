@@ -103,6 +103,11 @@ pub const INBOX_THREAD_SCOPE: &str = "inbox.thread_scope_v1";
 /// offer). An explicit `inbox` read never sets it.
 pub const INBOX_PUSHED_HOLD: &str = "inbox.pushed_hold_v1";
 
+/// `Command::AuthorizeLaunchGate`: a launched terminal asks the daemon to authorize its `exec`
+/// (ht-kqrt H3). Defined by the ht-kqrt.53 seam; NOT in `ADVERTISED` until its handler exists
+/// (ht-kqrt.57), so a CLI refuses the command against every daemon today.
+pub const LAUNCH_GATE_V1: &str = "launch.gate_v1";
+
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 

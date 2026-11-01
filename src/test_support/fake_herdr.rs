@@ -46,6 +46,8 @@ struct World {
     screens: Mutex<HashMap<String, (String, Option<String>)>>,
     /// Every `(pane, source)` an `agent.read` asked for, in order.
     reads: Mutex<Vec<(String, String)>>,
+    /// Every `tab.create` params, in order.
+    tabs_created: Mutex<Vec<Value>>,
 }
 
 impl World {
@@ -93,6 +95,17 @@ impl World {
                 }
                 None => missing("pane_not_found"),
             },
+            // A new tab in the named workspace: `<ws>:tN` with root pane `<ws>:pN`.
+            "tab.create" => {
+                let mut created = self.tabs_created.lock().unwrap_or_else(|e| e.into_inner());
+                created.push(params.clone());
+                let n = created.len() + 100;
+                let ws = params["workspace_id"].as_str().unwrap_or("w1");
+                json!({"id":id,"result":{"type":"tab_created",
+                    "tab":{"workspace_id":ws,"tab_id":format!("{ws}:t{n}")},
+                    "root_pane":{"workspace_id":ws,"tab_id":format!("{ws}:t{n}"),
+                                 "pane_id":format!("{ws}:p{n}"),"terminal_id":format!("term-tab-{n}")}}})
+            }
             "agent.get" => match self.pane(&params["target"]) {
                 Some(agent) => json!({"id":id,"result":{"type":"agent_info","agent":agent}}),
                 None => missing("agent_not_found"),
@@ -185,6 +198,7 @@ impl FakeHerdr {
             prompts: Mutex::new(Vec::new()),
             screens: Mutex::new(HashMap::new()),
             reads: Mutex::new(Vec::new()),
+            tabs_created: Mutex::new(Vec::new()),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let (serving, stopped) = (Arc::clone(&world), Arc::clone(&stop));
@@ -275,6 +289,15 @@ impl FakeHerdr {
             .iter()
             .filter(|(p, s)| p == pane && s == source)
             .count()
+    }
+
+    /// The params of every `tab.create` the server answered, in order.
+    pub fn tabs_created(&self) -> Vec<Value> {
+        self.world
+            .tabs_created
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Sets the Herdr agent kind (`claude`, `hermes`, ...) of `pane`.

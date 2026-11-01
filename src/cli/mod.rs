@@ -1619,6 +1619,15 @@ fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
             "seat binding details unavailable; daemon requires seat.binding_details_v1",
         ));
     }
+    if matches!(&command, Command::AuthorizeLaunchGate(_))
+        && !client.supports_capability(crate::protocol::capabilities::LAUNCH_GATE_V1, &budget())
+    {
+        return Err(invalid_request(&older_daemon_refusal(
+            client,
+            "launch gate authorization",
+            budget,
+        )));
+    }
     // Peer hygiene (2.8.0): an older daemon cannot decode these, so they go
     // only to one that advertises them.
     if let Command::Sync(sync) = &command {

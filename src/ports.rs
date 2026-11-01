@@ -5730,6 +5730,125 @@ pub enum CreateTabOutcome {
     OutcomeUnknown(ApiError),
 }
 
+/// CreateTargetPort owns creating a host target for launch and handoff (a new tab or a new
+/// terminal) and validating the witness that proves where it was created. It does not own
+/// the host-specific transport (the `tab.create` call, a core's `terminal.run`), the journal,
+/// or any decision about whether to create at all. A new host's creation is one more impl of
+/// this port, and launch and handoff code stays generic over it and never branches on the host
+/// type. Pattern: port with a witness-dispatching value type (`CreatedTarget::validate`);
+/// `NativeCli` is the first impl and delegates to [`CreateTabPort`].
+///
+/// The launch gate rides the same seam: a launched harness waits in `internal launch-gate` for
+/// the daemon to authorize its `(core, tN)` witness against the bootstrap `<compound>:<attempt>`.
+/// The creator stages the bootstrap Send before that reply, so an authorized gate never
+/// `exec`s a harness whose first message does not yet exist.
+pub trait CreateTargetPort: Send + Sync {
+    fn create_target(
+        &self,
+        request: &CreateTargetRequest,
+        context: &HostCallContext,
+    ) -> CreateTargetOutcome;
+}
+/// Where a new target goes: a new tab in a space, or a new terminal under a parent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Placement {
+    NewTab { space: HostTargetId },
+    NewTerminal { parent: HostTargetId },
+}
+/// Process identity of a herdr-core server (`hc`), derived from the transport peer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HcPeer {
+    pub pid: u32,
+    pub start_seconds: u64,
+    pub uid: u32,
+}
+/// What proves where a target was created, per host kind.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HostWitness {
+    HerdrSocket(crate::host::continuity::LocalEndpointWitness),
+    HcCore { core_id: String, peer: HcPeer },
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CreateTargetRequest {
+    pub correlation: HostCallId,
+    pub placement: Placement,
+    pub cwd: std::path::PathBuf,
+    pub label: String,
+    pub focus: bool,
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_context: Option<crate::protocol::handoff::LaunchDirectoryContext>,
+    pub expected_witness: HostWitness,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CreatedTarget {
+    pub correlation: HostCallId,
+    pub placement: Placement,
+    /// The new tab (`NewTab`) or the new terminal's target (`NewTerminal`).
+    pub target: HostTargetId,
+    /// The tab's root pane; present exactly for a Herdr socket tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_pane: Option<HostTargetId>,
+    pub terminal: TerminalId,
+    /// Derived from transport peer/process/socket, never a response field.
+    pub host_incarnation: HostBootId,
+    pub witness: HostWitness,
+}
+impl CreatedTarget {
+    /// The Herdr-socket creation as the frozen tab record, or `None` for another witness.
+    pub fn as_created_tab(&self) -> Option<CreatedTab> {
+        let (HostWitness::HerdrSocket(witness), Placement::NewTab { space }) =
+            (&self.witness, &self.placement)
+        else {
+            return None;
+        };
+        Some(CreatedTab {
+            correlation: self.correlation.clone(),
+            workspace: space.clone(),
+            tab: self.target.clone(),
+            root_pane: self.root_pane.clone()?,
+            terminal: self.terminal.clone(),
+            host_incarnation: self.host_incarnation.clone(),
+            witness: witness.clone(),
+        })
+    }
+    pub fn validate(&self) -> Result<(), &'static str> {
+        const INVALID: &str = "invalid correlated creation evidence";
+        match (&self.witness, &self.placement) {
+            (HostWitness::HerdrSocket(_), Placement::NewTab { .. }) => {
+                self.as_created_tab().ok_or(INVALID)?.validate()
+            }
+            (HostWitness::HcCore { core_id, peer }, Placement::NewTerminal { parent }) => {
+                let incarnation = format!(
+                    "hc-core:{core_id}:pid={}:start={}:uid={}",
+                    peer.pid, peer.start_seconds, peer.uid
+                );
+                if core_id.is_empty()
+                    || peer.pid == 0
+                    || peer.start_seconds == 0
+                    || self.host_incarnation.as_str() != incarnation
+                    || self.root_pane.is_some()
+                    || self.target.as_str().is_empty()
+                    || &self.target == parent
+                {
+                    return Err(INVALID);
+                }
+                Ok(())
+            }
+            _ => Err(INVALID),
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateTargetOutcome {
+    Created(Box<CreatedTarget>),
+    /// Transport-proven zero submission, never inferred from a guessed error.
+    NotSubmitted(ApiError),
+    OutcomeUnknown(ApiError),
+}
+
 /// One process-local physical recovery pass for an exact live Watch owner.
 /// No body, render state, receipt authority or logical offer is retained here.
 #[derive(Debug, Clone, PartialEq, Eq)]

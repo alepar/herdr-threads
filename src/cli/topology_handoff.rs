@@ -1276,7 +1276,7 @@ fn resolve_and_attach(
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BootstrapProgress {
+pub struct BootstrapProgress {
     pub version: u32,
     pub identity: crate::protocol::handoff::BootstrapIdentity,
     pub attempt: crate::protocol::handoff::BootstrapAttempt,

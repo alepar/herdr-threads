@@ -157,6 +157,8 @@ pub enum Command {
     BootstrapStatus(Box<crate::protocol::handoff::BootstrapStatus>),
     ResolveBootstrapSeat(Box<crate::protocol::handoff::ResolveBootstrapSeat>),
     RecoverBootstrap(Box<crate::protocol::handoff::RecoverBootstrap>),
+    /// Launch-gate authorization (`capabilities::LAUNCH_GATE_V1`).
+    AuthorizeLaunchGate(Box<crate::protocol::handoff::AuthorizeLaunchGate>),
     /// Operator and status commands for cross-node sync (ht-5fr.8). The mutating
     /// ones are admitted only for the elected owner's peer UID.
     Sync(crate::protocol::sync_admin::SyncCommand),

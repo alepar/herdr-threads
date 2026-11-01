@@ -67,6 +67,8 @@ mod handoff_fences;
 mod handoff_topology_authority;
 #[path = "handoff_topology_cli.rs"]
 mod handoff_topology_cli;
+#[path = "protocol/handoff_v3.rs"]
+mod handoff_v3;
 #[path = "host_adapter.rs"]
 mod host_adapter;
 #[path = "cli/inbox_continuation_context.rs"]
