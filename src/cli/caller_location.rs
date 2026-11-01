@@ -131,9 +131,44 @@ pub struct CallerEnv {
     vars: HashMap<&'static str, OsString>,
 }
 
+thread_local! {
+    static VERIFIED_TERMINAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While held, this thread's caller is the terminal `LocateCaller` verified. Drop restores the
+/// previous value.
+pub struct VerifiedTerminalScope(bool);
+
+/// Marks this thread's caller as its verified terminal until the scope drops.
+pub fn enter_verified_terminal() -> VerifiedTerminalScope {
+    VerifiedTerminalScope(VERIFIED_TERMINAL.replace(true))
+}
+
+/// Whether this thread's caller is its verified terminal.
+pub fn verified_terminal_active() -> bool {
+    VERIFIED_TERMINAL.get()
+}
+
+impl Drop for VerifiedTerminalScope {
+    fn drop(&mut self) {
+        VERIFIED_TERMINAL.set(self.0);
+    }
+}
+
 impl CallerEnv {
+    /// This environment with the pane id dropped: `LocateCaller` verified the terminal.
+    pub fn verified_terminal(mut self) -> Self {
+        self.vars.remove(native::ENV_PANE_ID);
+        self
+    }
+
     pub fn from_process() -> Self {
-        Self::from_lookup(|name| std::env::var_os(name))
+        let env = Self::from_lookup(|name| std::env::var_os(name));
+        if VERIFIED_TERMINAL.get() {
+            env.verified_terminal()
+        } else {
+            env
+        }
     }
 
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Self {

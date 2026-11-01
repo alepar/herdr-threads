@@ -1137,11 +1137,13 @@ where
     // A named seat's watch locates the seat its hook enrolled: `watch` never allocates, so an
     // unknown name is "no binding" before the (resolving) selection runs.
     let site = super::caller_location::CallerEnv::from_process()
-        .non_pane_locator(super::caller_location::EnvMode::Cli)
+        .non_pane_locator(super::caller_location::EnvMode::Cli);
+    let named = site
+        .as_ref()
         .filter(|site| matches!(site, super::caller_location::CallerLocator::Named(_)));
-    if site.is_some()
+    if named.is_some()
         && !matches!(
-            super::named_site_seat(site.as_ref(), connection, &parsed.output, clock),
+            super::named_site_seat(named, connection, &parsed.output, clock),
             Ok(Some(_))
         )
     {

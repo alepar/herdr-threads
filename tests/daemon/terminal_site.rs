@@ -54,6 +54,43 @@ fn terminal_site_uses_herdr_command_group_store() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+/// Kills: a verified two-family caller whose instance discovery keeps the Pane-site rules (or
+/// loses `HERDR_ENV`) and lands in a split standalone store instead of the command group's.
+#[test]
+fn verified_terminal_keeps_the_command_group_store() {
+    let root = scratch("term-verified");
+    let xdg = root.join("st");
+    let store = xdg.join("herdr/plugins/herdr-threads");
+    fs::create_dir_all(store.join("node")).unwrap();
+    fs::write(
+        store.join("node").join(crate::daemon::paths::DATABASE_FILE),
+        b"",
+    )
+    .unwrap();
+    let both = env(&[
+        ("HERDR_PANE_ID", "w1:p1"),
+        ("HERDR_ENV", "1"),
+        ("HC_TERMINAL_ID", "t3"),
+        ("HC_TERMINAL_SOCKET", "/core/work.sock"),
+    ])
+    .verified_terminal();
+    assert!(both.herdr_env());
+    let inputs = InstanceInputs {
+        home: Some(root.join("home")),
+        xdg_state_home: Some(xdg),
+        herdr_env: both.herdr_env(),
+        non_pane_site: both.non_pane_site(),
+        ..InstanceInputs::default()
+    };
+    assert!(
+        inputs.non_pane_site,
+        "a verified terminal is a non-Pane site"
+    );
+    assert_eq!(default_state_dir_to_create(&inputs), Ok(None));
+    assert_eq!(resolve_state_dir(&inputs).unwrap().0, store);
+    fs::remove_dir_all(&root).unwrap();
+}
+
 /// Kills: a terminal caller on a machine with no Herdr that finds no state dir at all.
 #[test]
 fn terminal_site_without_herdr_gets_the_standalone_default() {

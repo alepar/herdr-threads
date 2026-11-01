@@ -311,9 +311,17 @@ impl ViewReader for SocketViewReader {
 }
 
 /// The pane the CLI acts from ([`caller_guard::cli_pane`]): a two-family caller is verified by
-/// the daemon first, and an unverified one prints M4 and binds nothing.
-fn cli_caller_pane(env: &caller_location::CallerEnv) -> Option<String> {
-    caller_guard::cli_pane(
+/// the daemon first, and an unverified one prints M4 and binds nothing. A verified terminal comes
+/// back as a scope: while held, every `CallerEnv::from_process()` reads the caller as that lone
+/// Terminal site.
+fn cli_caller_pane(
+    env: &caller_location::CallerEnv,
+) -> (
+    Option<String>,
+    Option<caller_location::VerifiedTerminalScope>,
+) {
+    let mut scope = None;
+    let pane = caller_guard::cli_pane(
         env,
         |candidates| {
             let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
@@ -321,17 +329,23 @@ fn cli_caller_pane(env: &caller_location::CallerEnv) -> Option<String> {
                 deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
                 cancellation: Cancellation::default(),
             };
-            instance::resolve_context(&instance::InstanceInputs::from_process(None, None))
-                .ok()
-                .and_then(|(context, _)| NodePaths::resolve_read_only(&context.state_dir).ok())
-                .and_then(|paths| connect(&paths, &clock).ok())
-                .map_or_else(
-                    || caller_guard::unasked(candidates),
-                    |(_, _, client)| caller_guard::verify(&client, candidates, &budget),
-                )
+            let guard =
+                instance::resolve_context(&instance::InstanceInputs::from_process(None, None))
+                    .ok()
+                    .and_then(|(context, _)| NodePaths::resolve_read_only(&context.state_dir).ok())
+                    .and_then(|paths| connect(&paths, &clock).ok())
+                    .map_or_else(
+                        || caller_guard::unasked(candidates),
+                        |(_, _, client)| caller_guard::verify(&client, candidates, &budget),
+                    );
+            if matches!(guard, caller_guard::Guard::Terminal(_)) {
+                scope = Some(caller_location::enter_verified_terminal());
+            }
+            guard
         },
         |line| eprintln!("{line}"),
-    )
+    );
+    (pane, scope)
 }
 
 pub fn run<I, T, W>(argv: I, writer: &mut W) -> Result<(), RunError>
@@ -340,16 +354,21 @@ where
     T: Into<OsString> + Clone,
     W: Write,
 {
-    let env = caller_location::CallerEnv::from_process();
+    let mut env = caller_location::CallerEnv::from_process();
     if let Err(error) = env.locate(caller_location::EnvMode::Cli)
         && let Some(line) = error.refusal()
     {
         return Err(invalid_request(line));
     }
+    let (guarded_pane, _verified_terminal) = cli_caller_pane(&env);
+    if _verified_terminal.is_some() {
+        // The guard verified the terminal: read the environment again as that lone site.
+        env = caller_location::CallerEnv::from_process();
+    }
     let site = env.non_pane_locator(caller_location::EnvMode::Cli);
     // A lone herdr-core terminal acts as its `tN` target: it has no pane, and its seat lookup
     // is the same target lookup a pane's is.
-    let pane = cli_caller_pane(&env).or_else(|| match &site {
+    let pane = guarded_pane.or_else(|| match &site {
         Some(terminal @ caller_location::CallerLocator::Terminal { .. }) => {
             terminal.site().moved_target().map(str::to_owned)
         }
@@ -1669,6 +1688,7 @@ where
                 body_reader_claim(
                     &parsed.output,
                     caller_pane,
+                    site,
                     context,
                     paths,
                     connection,
@@ -1942,6 +1962,7 @@ fn advance_over_body_read<C: LocalClient + ?Sized>(
 fn body_reader_claim<C, F>(
     output: &OutputSpec,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     context: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
@@ -1956,7 +1977,15 @@ where
     };
     let pane = parse_pane(caller_pane.filter(|pane| !pane.is_empty())?).ok()?;
     let (_, client) = connection.get().ok()?;
-    let seat = pane_seat(client, output, &pane, clock).ok().flatten()?;
+    let host = site_capability::seats_host(
+        site.map(caller_location::CallerLocator::site),
+        client,
+        &cooperative_budget(clock),
+    )
+    .ok()?;
+    let seat = pane_seat_on(client, output, &pane, host, clock)
+        .ok()
+        .flatten()?;
     let instance = read_node_uuid_hint(paths).ok().flatten()?;
     let selection = CooperativeSelection {
         seat,
@@ -3712,6 +3741,8 @@ pub(crate) fn require_handoff_capabilities<C: LocalClient + ?Sized>(
 /// Guarded recipient-seat allocation: one journaled `ResolveSeat` under the
 /// `ServiceAllocation` scope. Gates (session refusal, p0 receipts capability, invitation
 /// confirmation capability) are the caller's job and must run before this.
+// Allowed: the allocation's full address (context, store, client, clock, output, target, host).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
     context: &RuntimeContext,
     paths: &NodePaths,
@@ -3720,8 +3751,9 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
     output: &OutputSpec,
     target: crate::protocol::ids::HostTargetId,
+    host: Option<crate::protocol::ids::HostLocator>,
 ) -> Result<crate::protocol::ids::SeatId, RunError> {
-    let host = context.claim_host().map_err(context_error)?;
+    let host = host.map_or_else(|| context.claim_host().map_err(context_error), Ok)?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
         &journal,
@@ -3801,6 +3833,7 @@ where
             clock.as_ref(),
             &parsed.output,
             target,
+            None,
         )
     };
     if let Some(selector) = selector {
@@ -3897,7 +3930,7 @@ where
                 (Some(selection), _) => Some(selection.seat.clone()),
                 (None, Some(pane)) => parse_pane(pane).ok().and_then(|pane| {
                     let (_, client) = connection.get().ok()?;
-                    located_pane_seat(client, &parsed.output, &pane, context, clock)
+                    located_pane_seat(client, &parsed.output, &pane, site, context, clock)
                         .ok()
                         .flatten()
                         .map(|located| located.seat)
@@ -3922,7 +3955,7 @@ where
                 (None, Some(pane)) => {
                     let pane = parse_pane(pane)?;
                     let (_, client) = connection.get()?;
-                    match located_pane_seat(client, &parsed.output, &pane, context, clock)? {
+                    match located_pane_seat(client, &parsed.output, &pane, site, context, clock)? {
                         Some(located) => Some(located.seat),
                         None if parsed.caller_read_default
                             && matches!(&parsed.action, CliAction::Wire(Command::Diagnostics(q)) if q.page.cursor.is_none()) =>
@@ -4114,14 +4147,21 @@ struct LocatedSeat {
 /// when that id maps to no resolved seat, one Herdr read asks for the current
 /// id of that exact pane ([`moved_pane`]); the lookup is repeated there. The
 /// daemon's mapping still decides the seat. Steady state costs nothing extra.
-fn located_pane_seat<C: LocalClient + ?Sized>(
+fn located_pane_seat<C: LocalClient>(
     client: &C,
     output: &OutputSpec,
     pane: &crate::protocol::ids::HostTargetId,
+    site: Option<&caller_location::CallerLocator>,
     runtime: &RuntimeContext,
     clock: &Arc<dyn Clock>,
 ) -> Result<Option<LocatedSeat>, RunError> {
-    if let Some(seat) = pane_seat(client, output, pane, clock.as_ref())? {
+    // A non-pane site (a terminal) looks its seat up on its own core: two cores may each seat `t1`.
+    let host = site_capability::seats_host(
+        site.map(caller_location::CallerLocator::site),
+        client,
+        &cooperative_budget(clock.as_ref()),
+    )?;
+    if let Some(seat) = pane_seat_on(client, output, pane, host, clock.as_ref())? {
         return Ok(Some(LocatedSeat {
             seat,
             pane: pane.clone(),
@@ -4130,10 +4170,7 @@ fn located_pane_seat<C: LocalClient + ?Sized>(
     }
     // The caller's own Herdr host (the claim host); a moved pane stays on it. A terminal's
     // host is a herdr-core socket, not a Herdr server, and its id does not move.
-    if caller_location::CallerEnv::from_process()
-        .non_pane_locator(caller_location::EnvMode::Cli)
-        .is_some()
-    {
+    if site.is_some() {
         return Ok(None);
     }
     let Ok(endpoint) = runtime.require_host() else {
@@ -4289,7 +4326,7 @@ where
             })?;
             let pane = parse_pane(pane)?;
             let (_, client) = connection.get()?;
-            located_pane_seat(client, &parsed.output, &pane, runtime, clock)?
+            located_pane_seat(client, &parsed.output, &pane, site, runtime, clock)?
                 .ok_or_else(|| no_seat_for_pane(&pane))?
         }
     };

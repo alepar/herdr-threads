@@ -11448,6 +11448,27 @@ mod two_family_guard {
         assert_eq!(printed, [M4]);
     }
 
+    // Kills: a verified terminal that loses its socket and id (so nothing can act as the site),
+    // and one that is reported as the pane.
+    #[test]
+    fn verify_yields_the_verified_terminal_locator() {
+        let (terminal_wins, _) = daemon_with(vec![
+            Roots::port(vec![("w1:p1", Ok(Some(10)))]),
+            Roots::hc_port(vec![("t3", Ok(Some(20)))]),
+        ]);
+        let candidates = match both().locate(crate::cli::caller_location::EnvMode::Cli) {
+            Ok(Some(crate::cli::caller_location::Located::Ambiguous(all))) => all,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            verify(&terminal_wins, &candidates, &budget()),
+            Guard::Terminal(crate::cli::caller_location::CallerLocator::Terminal {
+                socket: "/hc.sock".into(),
+                id: "t3".into(),
+            })
+        );
+    }
+
     // Kills: a guard that falls back to the pane when the daemon cannot be asked, is too old
     // to know the command (no request is sent), or answers with an error.
     #[test]
@@ -11827,7 +11848,7 @@ mod two_family_guard {
 
     // Kills: the F guard text surviving into a Terminal site: M1 (CLI/hook stderr) and M3 (hook
     // context) are gone, so a terminal that verifies (nearest root 20) prints and injects neither
-    // and binds nothing, and no refusal line names "not supported yet" or "guard".
+    // and acts as its terminal's seat, and no refusal line names "not supported yet" or "guard".
     #[test]
     fn m1_m3_absent_from_terminal_site() {
         let iso = crate::test_support::isolation::TestIsolation::new("guard-terminal-wins");
@@ -11843,12 +11864,16 @@ mod two_family_guard {
             &hook_args(&iso, "claude", Some("SessionStart")),
             &claude_payload("SessionStart", Some("startup")),
         );
-        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
-        assert!(outcome.stdout.is_empty(), "{:?}", injected(&outcome));
-        assert_eq!(
-            daemon.other_commands(),
-            Vec::<Command>::new(),
-            "nothing binds"
+        // The verified terminal acts as its Terminal site: no refusal, and the hook goes on to
+        // look up the terminal's seat (the scripted daemon answers nothing further).
+        assert_ne!(outcome.diagnostic.as_deref(), Some(M4), "{outcome:?}");
+        assert!(
+            daemon
+                .other_commands()
+                .iter()
+                .any(|c| matches!(c, Command::Seats(q) if q.target.as_ref().is_some_and(|t| t.as_str() == "t3"))),
+            "{:?}",
+            daemon.other_commands()
         );
         drop(daemon);
         // Another isolation: the first daemon's socket is still being torn down.

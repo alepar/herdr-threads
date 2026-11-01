@@ -200,6 +200,8 @@ enum Resolved {
     Seat(SeatId),
     Pane {
         pane: HostTargetId,
+        /// The core a herdr-core terminal lives on; `None` for the caller's own host.
+        host: Option<HostLocator>,
         /// `Some((path, tier))` for a name (D2 step 4): pass 2 prints its `resolved:` line after
         /// allocating; `None` for a direct pane ID (D6: no line).
         line: Option<(String, String)>,
@@ -217,6 +219,8 @@ pub(crate) struct DeferredSeats {
 struct Deferred {
     slot: SeatSlot,
     pane: HostTargetId,
+    /// The core the target lives on (`None`: the caller's own host).
+    host: Option<HostLocator>,
     /// Set on the first slot of a distinct raw name only, so a repeated name prints once.
     line: Option<(String, String)>,
 }
@@ -301,11 +305,12 @@ where
         }
         match resolved {
             Resolved::Seat(seat) => arg.slot.set(&mut parsed.action, seat).map_err(run_error)?,
-            Resolved::Pane { pane, line } => {
+            Resolved::Pane { pane, host, line } => {
                 deferred_slot[index] = true;
                 entries.push(Deferred {
                     slot: arg.slot,
                     pane,
+                    host,
                     line: line.filter(|_| first),
                 });
             }
@@ -374,11 +379,18 @@ where
         }
         let same = match (target, recipient) {
             (Resolved::Seat(a), Resolved::Seat(b)) => a == b,
-            (Resolved::Pane { pane: a, .. }, Resolved::Pane { pane: b, .. }) => a == b,
-            (Resolved::Seat(seat), Resolved::Pane { pane, .. })
-            | (Resolved::Pane { pane, .. }, Resolved::Seat(seat)) => {
+            (
+                Resolved::Pane {
+                    pane: a, host: ha, ..
+                },
+                Resolved::Pane {
+                    pane: b, host: hb, ..
+                },
+            ) => a == b && ha == hb,
+            (Resolved::Seat(seat), Resolved::Pane { pane, host, .. })
+            | (Resolved::Pane { pane, host, .. }, Resolved::Seat(seat)) => {
                 let (_, client) = connection.get()?;
-                super::pane_seat(client, &parsed.output, pane, clock.as_ref())?
+                super::pane_seat_on(client, &parsed.output, pane, host.clone(), clock.as_ref())?
                     .is_some_and(|existing| existing == *seat)
             }
         };
@@ -417,9 +429,11 @@ where
     }
     let (instance, client) = connection.get()?;
     run_gates(parsed, client, clock.as_ref())?;
-    let mut allocated: HashMap<HostTargetId, SeatId> = HashMap::new();
+    // Two cores' `t2` are two targets.
+    let mut allocated: HashMap<(Option<HostLocator>, HostTargetId), SeatId> = HashMap::new();
     for entry in &deferred.entries {
-        let seat = match allocated.get(&entry.pane) {
+        let key = (entry.host.clone(), entry.pane.clone());
+        let seat = match allocated.get(&key) {
             Some(seat) => seat.clone(),
             None => {
                 let seat = super::allocate_recipient_seat(
@@ -430,8 +444,9 @@ where
                     clock.as_ref(),
                     &parsed.output,
                     entry.pane.clone(),
+                    entry.host.clone(),
                 )?;
-                allocated.insert(entry.pane.clone(), seat.clone());
+                allocated.insert(key, seat.clone());
                 seat
             }
         };
@@ -720,8 +735,9 @@ where
                 write_resolved_line(self.stderr, &path, &candidate.pane, &seat, &tier)?;
                 Ok(Resolved::Seat(seat))
             }
-            Resolved::Pane { pane, .. } => Ok(Resolved::Pane {
+            Resolved::Pane { pane, host, .. } => Ok(Resolved::Pane {
                 pane,
+                host,
                 line: Some((path, tier)),
             }),
         }
@@ -1209,7 +1225,11 @@ where
                     .map(Resolved::Seat)
                     .ok_or_else(|| super::no_seat_for_pane(&pane))
             }
-            SeatMapping::Allocate => Ok(Resolved::Pane { pane, line: None }),
+            SeatMapping::Allocate => Ok(Resolved::Pane {
+                pane,
+                host,
+                line: None,
+            }),
         }
     }
 
@@ -1228,7 +1248,11 @@ where
                     .map(Resolved::Seat)
                     .ok_or_else(|| super::no_seat_for_pane(&pane))
             }
-            SeatMapping::Allocate => Ok(Resolved::Pane { pane, line: None }),
+            SeatMapping::Allocate => Ok(Resolved::Pane {
+                pane,
+                host: None,
+                line: None,
+            }),
         }
     }
 }
@@ -1245,7 +1269,14 @@ fn cannot_resolve_machines(error: &ApiError) -> bool {
 fn same_resolution(a: &Resolved, b: &Resolved) -> bool {
     match (a, b) {
         (Resolved::Seat(a), Resolved::Seat(b)) => a == b,
-        (Resolved::Pane { pane: a, .. }, Resolved::Pane { pane: b, .. }) => a == b,
+        (
+            Resolved::Pane {
+                pane: a, host: ha, ..
+            },
+            Resolved::Pane {
+                pane: b, host: hb, ..
+            },
+        ) => a == b && ha == hb,
         _ => false,
     }
 }
@@ -1555,6 +1586,10 @@ mod hc_selector_tests {
             command: Command,
             _: &crate::protocol::time::CallBudget,
         ) -> Result<CommandResult, ApiError> {
+            if matches!(command, Command::SeatInspect(_)) {
+                // A raw `alpha:t2` is first tried as a seat ID.
+                return Err(ApiError::not_found("no such seat"));
+            }
             assert!(matches!(command, Command::HostTopologies));
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(CommandResult::HostTopologies(two_core_rows()))
@@ -1617,6 +1652,50 @@ mod hc_selector_tests {
         // A second tN selector reuses the one read.
         assert!(stage.hc_target("alpha:t2").unwrap().is_some());
         assert_eq!(calls(), 1);
+    }
+
+    /// Kills: an allocate slot that drops the core (`alpha:t2` allocated on the caller's own
+    /// host, or as a named seat `t2`), and two cores' `t1` read as one target.
+    #[test]
+    fn allocate_slot_keeps_the_core() {
+        let connection = LazyConnection::new(|| {
+            Ok((
+                crate::node::NodeUuid::new_v4(),
+                Counting(std::sync::atomic::AtomicUsize::new(0)),
+            ))
+        });
+        let clock: Arc<dyn Clock> = Arc::new(TestClock);
+        let mut parsed = crate::cli::commands::parse_argv([
+            "herdr-threads",
+            "invite",
+            "thread-1",
+            "--seat",
+            "alpha:t2",
+        ])
+        .unwrap();
+        let mut stderr = Vec::new();
+        let deferred = resolve_cli_seats(
+            &mut parsed,
+            &connection,
+            &clock,
+            || Err(ApiError::invalid_request("no herdr")),
+            || Ok(None),
+            &mut stderr,
+        )
+        .unwrap();
+        let [entry] = deferred.entries.as_slice() else {
+            panic!("one deferred slot");
+        };
+        assert_eq!(entry.pane.as_str(), "t2");
+        assert_eq!(entry.host.as_ref().map(HostLocator::as_str), Some("/a"));
+
+        let on = |host: &str| Resolved::Pane {
+            pane: HostTargetId::new("t2"),
+            host: Some(HostLocator::parse(host).unwrap()),
+            line: None,
+        };
+        assert!(same_resolution(&on("/a"), &on("/a")));
+        assert!(!same_resolution(&on("/a"), &on("/b")));
     }
 
     #[test]
