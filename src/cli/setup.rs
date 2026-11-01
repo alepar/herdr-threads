@@ -382,7 +382,9 @@ impl SetupEnv {
         );
         inputs.herdr = hook::resolve_on_path("herdr", path.as_deref());
         let mut source = serde_json::Map::new();
-        let state_dir = match super::instance::resolve_state_dir(&inputs) {
+        let resolved = super::instance::herdrless_state_dir(&inputs)
+            .unwrap_or_else(|| super::instance::resolve_state_dir(&inputs));
+        let state_dir = match resolved {
             Ok((state, how)) => {
                 if let Some(leftover) = super::instance::leftover_state_dir(&inputs, &state, &how) {
                     source.insert("state_dir_leftover".into(), json!(leftover));
@@ -482,6 +484,17 @@ impl SetupEnv {
         Ok(context.require_host()?.to_path_buf())
     }
 
+    /// [`Self::host_endpoint`], except that a standalone (Herdr-less) install has no host to
+    /// name: `None`.
+    pub(crate) fn host_endpoint_optional(&self) -> Result<Option<PathBuf>, RunError> {
+        let standalone =
+            self.instance_source["state_dir"].as_str() == Some(super::instance::STANDALONE_HOW);
+        if standalone && self.host_endpoint.is_none() {
+            return Ok(None);
+        }
+        self.host_endpoint().map(Some)
+    }
+
     pub(crate) fn hook_argv(&self, harness: Harness) -> Result<Vec<String>, RunError> {
         let executable = self
             .executable
@@ -491,16 +504,15 @@ impl SetupEnv {
             .state_dir()?
             .to_str()
             .ok_or_else(|| invalid("state directory path is not UTF-8"))?;
-        let host = self.host_endpoint()?;
+        let host = self.host_endpoint_optional()?;
         let host = host
-            .to_str()
-            .ok_or_else(|| invalid("host endpoint path is not UTF-8"))?;
-        Ok(hook::installed_argv(
-            executable,
-            Some(state),
-            Some(host),
-            harness,
-        ))
+            .as_deref()
+            .map(|host| {
+                host.to_str()
+                    .ok_or_else(|| invalid("host endpoint path is not UTF-8"))
+            })
+            .transpose()?;
+        Ok(hook::installed_argv(executable, Some(state), host, harness))
     }
 
     /// The config root of adapter `id`; adapters join their own file names to it.

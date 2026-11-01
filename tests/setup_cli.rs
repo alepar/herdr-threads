@@ -706,7 +706,9 @@ fn invalid_arguments_and_settings_exit_two() {
         let project = s.run(&["setup", harness, "--project", "x"]);
         assert_eq!(project.status.code(), Some(2), "{harness}");
     }
-    // No --state-dir, no HERDR_PLUGIN_STATE_DIR and no `herdr` to ask.
+    // No --state-dir, no HERDR_PLUGIN_STATE_DIR and a `herdr` that lists no plugin to ask
+    // (without any `herdr`, setup uses the standalone state dir).
+    fake_herdr(&s, "[]", &s.root.join("herdr.sock"));
     let no_state = s
         .command(&s.root)
         .args(["setup", "claude"])
@@ -715,8 +717,9 @@ fn invalid_arguments_and_settings_exit_two() {
     assert_eq!(no_state.status.code(), Some(2));
     let stderr = text(&no_state.stderr);
     assert!(stderr.contains("state directory unknown"), "{stderr}");
-    assert!(stderr.contains("no `herdr` executable"), "{stderr}");
+    assert!(stderr.contains("not installed"), "{stderr}");
     assert!(!s.settings().exists());
+    fs::remove_file(s.bin.join("herdr")).unwrap();
     let unknown = s.run(&["setup", "vim"]);
     assert_eq!(unknown.status.code(), Some(2));
 
@@ -1739,6 +1742,7 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
     assert_eq!(binary.status.code(), Some(2));
     assert!(text(&binary.stderr).contains("--harness-binary needs a harness"));
 
+    fake_herdr(&s, "[]", &s.root.join("herdr.sock"));
     for verb in ["setup", "unsetup"] {
         let no_state = s.command(&s.root).arg(verb).output().unwrap();
         assert_eq!(no_state.status.code(), Some(2), "{verb}");
@@ -2576,6 +2580,8 @@ fn setup_refuses_a_leftover_fast_state_dir_but_other_commands_work() {
     let registry = s.home.join(".config/herdr/plugins.json");
     fs::create_dir_all(registry.parent().unwrap()).unwrap();
     fs::write(&registry, "[]").unwrap();
+    // A `herdr` on PATH: without one the state dir is the standalone default, no leftover.
+    fake_herdr(&s, "[]", &s.host());
     let run = |args: &[&str]| {
         s.command(&s.root)
             .args(args)
@@ -6565,4 +6571,129 @@ fn login_bash_gets_the_block_in_its_existing_login_file() {
         "export PATH=$HOME/bin:$PATH\n"
     );
     assert!(!p.bashrc().exists(), "the created ~/.bashrc is deleted");
+}
+
+/// The standalone state dir of a scratch HOME with no `XDG_STATE_HOME`.
+fn standalone_state(s: &Scratch) -> PathBuf {
+    s.home.join(".local/state/herdr/plugins/herdr-threads")
+}
+
+/// With no `herdr` on PATH and no flag, setup uses the standalone default state dir, bakes it
+/// into the hooks as `--state-dir`, writes the `install.json` marker, and neither setup nor
+/// `doctor` reports a leftover even when a Herdr registry says the plugin is not installed.
+/// Kills: refusing to run without Herdr, hooks without a baked state dir, no marker, and a
+/// leftover refusal of the standalone dir.
+#[test]
+fn herdrless_setup_bakes_state_dir_and_writes_marker() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)");
+    let registry = s.home.join(".config/herdr/plugins.json");
+    fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    fs::write(&registry, r#"[{"plugin_id":"other","enabled":true}]"#).unwrap();
+    let out = s
+        .command(&s.root)
+        .args(["setup", "claude", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    let state = standalone_state(&s);
+    assert_eq!(report["instance"]["state_dir"], state.display().to_string());
+    assert!(
+        report["instance"]["source"]["state_dir_leftover"].is_null(),
+        "{report}"
+    );
+    let argv: Vec<String> = serde_json::from_value(report["hook_argv"].clone()).unwrap();
+    assert_eq!(
+        argv[1..3],
+        ["--state-dir".to_owned(), state.display().to_string()]
+    );
+    let settings = fs::read_to_string(s.settings()).unwrap();
+    assert!(
+        settings.contains(&format!("'--state-dir' '{}'", state.display())),
+        "{settings}"
+    );
+    let marker = fs::read_to_string(state.join("node/install.json")).unwrap();
+    assert_eq!(marker, r#"{"mode":"standalone"}"#);
+    let mode = fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+
+    // Rerun is idempotent, and doctor reports no leftover.
+    let again = s
+        .command(&s.root)
+        .args(["setup", "claude", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    let doctor = s
+        .command(&s.root)
+        .args(["--state-dir"])
+        .arg(&state)
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        !text(&doctor.stdout).contains("leftover"),
+        "{}",
+        text(&doctor.stdout)
+    );
+}
+
+/// The state dir Herdr-less setup bakes is the one named-site discovery resolves with no flag.
+/// Kills: two definitions of the standalone path drifting apart.
+#[test]
+fn baked_state_dir_equals_named_discovery() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)");
+    let out = s
+        .command(&s.root)
+        .args(["setup", "claude", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let baked = json(&out)["instance"]["state_dir"].clone();
+    // A fresh scratch HOME so discovery creates the dir itself.
+    let d = Scratch::new();
+    let doctor = d
+        .command(&d.root)
+        .env("HERDR_THREADS_SEAT_NAME", "worker-1")
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}{}", text(&doctor.stdout), text(&doctor.stderr)));
+    let found = report["doctor"]["context"]["state_dir"].clone();
+    let rel = |value: &serde_json::Value, s: &Scratch| {
+        value
+            .as_str()
+            .unwrap_or_else(|| panic!("{report}"))
+            .strip_prefix(s.home.to_str().unwrap())
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(rel(&baked, &s), rel(&found, &d));
+}
+
+/// With a `herdr` on PATH the default-state-dir behaviour is unchanged: no standalone dir, no
+/// marker, and a missing plugin is refused (golden: the refusal text and no writes).
+#[test]
+fn setup_with_stub_herdr_unchanged() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)");
+    fake_herdr(&s, "[]", &s.root.join("herdr.sock"));
+    let out = s
+        .command(&s.root)
+        .args(["setup", "claude"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stdout));
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/golden/setup/herdr_present_not_installed.txt");
+    let got = text(&out.stderr).replace(s.root.to_str().unwrap(), "<root>");
+    if std::env::var_os("HT_BLESS_GOLDEN").is_some() {
+        fs::write(&golden, &got).unwrap();
+    }
+    assert_eq!(got, fs::read_to_string(golden).unwrap());
+    assert!(!standalone_state(&s).exists());
+    assert!(!s.settings().exists());
 }

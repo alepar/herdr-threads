@@ -318,7 +318,7 @@ pub fn plugin_registry(inputs: &InstanceInputs) -> PluginRegistry {
 /// installed plugin) may be a leftover: Herdr's registry says the plugin is not installed or
 /// is disabled. `setup` refuses on it, `doctor` warns, other commands keep working.
 pub fn leftover_state_dir(inputs: &InstanceInputs, state: &Path, how: &str) -> Option<String> {
-    if !(how.starts_with("default") || how.starts_with("legacy")) {
+    if !(how.starts_with("default") || how.starts_with("legacy")) || has_standalone_marker(state) {
         return None;
     }
     match plugin_registry(inputs) {
@@ -372,9 +372,55 @@ pub fn resolve_state_dir(inputs: &InstanceInputs) -> Result<(PathBuf, String), S
     }
 }
 
-/// The source label of a state directory that [`resolve_state_dir`] chose as the standalone
-/// default for a Named site.
-const STANDALONE_HOW: &str = "standalone default";
+/// The source label of a state directory chosen as the standalone default (a Named site, or
+/// Herdr-less `setup`).
+pub const STANDALONE_HOW: &str = "standalone default";
+
+/// The standalone install marker, `<state>/node/install.json`: written by Herdr-less `setup`
+/// (and so by the installer), it says no Herdr plugin owns this state dir, so it is no leftover.
+const INSTALL_MARKER: &str = "install.json";
+const STANDALONE_MARKER_BODY: &str = "{\"mode\":\"standalone\"}";
+
+fn install_marker_path(state: &Path) -> PathBuf {
+    crate::daemon::paths::node_dir(state).join(INSTALL_MARKER)
+}
+
+/// True when `state` carries the standalone install marker.
+pub fn has_standalone_marker(state: &Path) -> bool {
+    fs::read(install_marker_path(state)).is_ok_and(|bytes| {
+        serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| v["mode"] == "standalone")
+    })
+}
+
+/// Write the standalone marker (owner-only; the node dir is created 0700 when absent).
+pub fn write_standalone_marker(state: &Path) -> io::Result<()> {
+    let node = crate::daemon::paths::node_dir(state);
+    crate::daemon::paths::ensure_private_dir(&node)?;
+    let path = install_marker_path(state);
+    if fs::read(&path).is_ok_and(|bytes| bytes == STANDALONE_MARKER_BODY.as_bytes()) {
+        return Ok(());
+    }
+    fs::write(&path, STANDALONE_MARKER_BODY)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+}
+
+/// The state dir of a Herdr-less `setup`: no flag, no `HERDR_PLUGIN_STATE_DIR`, no Herdr
+/// configured and no `herdr` on PATH. `None` when any of those holds (the usual resolution
+/// applies); otherwise the standalone default, which is also what named-site discovery resolves.
+pub fn herdrless_state_dir(inputs: &InstanceInputs) -> Option<Result<(PathBuf, String), String>> {
+    if inputs.state_flag.is_some()
+        || inputs.env_state.is_some()
+        || inputs.herdr.is_some()
+        || inputs.herdr_configured()
+    {
+        return None;
+    }
+    Some(match standalone_state_dir(inputs) {
+        Ok(Some(dir)) => Ok((dir, STANDALONE_HOW.into())),
+        Ok(None) => Err("neither XDG_STATE_HOME nor HOME is an absolute path".into()),
+        Err(error) => Err(error),
+    })
+}
 
 /// The claim host: the Herdr server of the calling pane. An explicit user flag on an interactive
 /// command wins, then the pane's own `HERDR_SOCKET_PATH`, then the host baked into an installed
@@ -552,6 +598,46 @@ mod tests {
             )),
             ..InstanceInputs::default()
         }
+    }
+
+    /// The standalone marker exempts a fast-default state dir from the leftover check, and the
+    /// Herdr-less state dir is the standalone default that named discovery also resolves.
+    #[test]
+    fn standalone_marker_is_no_leftover_and_herdrless_dir_is_the_default() {
+        let dir = scratch();
+        let mut inputs = InstanceInputs {
+            home: Some(dir.join("home")),
+            ..InstanceInputs::default()
+        };
+        let state = standalone_state_dir(&inputs).unwrap().unwrap();
+        assert_eq!(
+            herdrless_state_dir(&inputs).unwrap().unwrap(),
+            (state.clone(), STANDALONE_HOW.into())
+        );
+        // A Herdr on PATH, a flag or a configured Herdr leave the usual resolution.
+        inputs.herdr = Some(dir.join("herdr"));
+        assert!(herdrless_state_dir(&inputs).is_none());
+        inputs.herdr = None;
+        inputs.state_flag = Some(dir.join("s"));
+        assert!(herdrless_state_dir(&inputs).is_none());
+        inputs.state_flag = None;
+
+        fs::create_dir_all(&state).unwrap();
+        let registry = dir.join("home/.config/herdr/plugins.json");
+        fs::create_dir_all(registry.parent().unwrap()).unwrap();
+        fs::write(&registry, "[]").unwrap();
+        let fast = "default (~/.local/state)";
+        assert!(leftover_state_dir(&inputs, &state, fast).is_some());
+        assert!(!has_standalone_marker(&state));
+        write_standalone_marker(&state).unwrap();
+        write_standalone_marker(&state).unwrap();
+        assert!(has_standalone_marker(&state));
+        assert_eq!(
+            fs::read_to_string(state.join("node/install.json")).unwrap(),
+            r#"{"mode":"standalone"}"#
+        );
+        assert_eq!(leftover_state_dir(&inputs, &state, fast), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
