@@ -9,6 +9,7 @@
 //! requested page/output bounds. No client supplies a decision timestamp or actor.
 
 use serde::Serialize;
+use std::time::Duration;
 
 use crate::protocol::ids::ServiceAuthorId;
 use crate::protocol::{
@@ -3904,7 +3905,123 @@ pub struct RegisteredComposerEvidence {
     pub basis: ComposerEvidenceBasis,
 }
 
+/// Which environment a host is. Persisted per host row; `Unknown` is any kind
+/// this build does not know (fail-closed, see [`HostKind::IMPLEMENTED`]).
+///
+/// Responsibility
+/// - Owns: the closed set of host environments and, beside it, the static set
+///   of kinds this build can construct ([`HostKind::IMPLEMENTED`], G4). It
+///   grows one variant per phase.
+/// - Hides: phase skew between binaries and stored rows.
+/// - Must not: be bypassed by reattach, restore or rebind. A row whose kind is
+///   outside the set is skipped and named by `doctor`, never dialled as Herdr.
+/// - Where new behaviour goes: a new kind is added here, in the phase that
+///   builds it, together with its entry in `IMPLEMENTED`.
+/// - Role: closed enum plus capability set (fail-closed registry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostKind {
+    Herdr,
+    Unknown,
+}
+
+impl HostKind {
+    /// The kinds this build can construct. `Unknown` is never in it.
+    pub const IMPLEMENTED: &'static [HostKind] = &[HostKind::Herdr];
+
+    /// Whether this build can construct a host of this kind.
+    pub fn is_implemented(self) -> bool {
+        Self::IMPLEMENTED.contains(&self)
+    }
+}
+
+/// What a host's composer needs from a wake submission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComposerTraits {
+    /// Time the dispatcher spends submitting a wake prompt.
+    pub submit_budget: Duration,
+}
+
+impl ComposerTraits {
+    /// Herdr's TUI composer: today's 2 000 ms prompt submission budget.
+    pub const HERDR_TUI: ComposerTraits = ComposerTraits {
+        submit_budget: Duration::from_millis(2_000),
+    };
+}
+
+/// Whether and how a host can wake an idle session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeCapability {
+    /// No wake path; the submit path is never reached.
+    None,
+    /// Wake by typing into a composer with these traits.
+    Composer(ComposerTraits),
+}
+
+/// Whether the host can supply archival evidence for a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchivalEvidence {
+    Supported,
+    NoEvidence,
+}
+
+/// Whether the host's targets may be closed by this system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosureAuthority {
+    Closing,
+    NonClosing,
+}
+
+/// A host's port to the environment that runs seats.
+///
+/// Responsibility (HostPort capability answers: [`HostKind`],
+/// [`WakeCapability`]/[`ComposerTraits`], [`ClosureAuthority`],
+/// [`ArchivalEvidence`])
+/// - Owns: one defaulted answer per policy question: kind, wake, closure
+///   authority, archival evidence, target root pid and server pid. Every
+///   default reproduces today's Herdr behaviour.
+/// - Hides: which environment a host is. Delivery, closure, wake, archival,
+///   placement and binding policy branch on the answer, never on the kind.
+/// - Must not: be read by [`HostPort::kind`] outside the four permitted
+///   readers: `any_reachable`, the G4 implemented-kinds check and probe
+///   comparison, adapter `host_launch_argv`, and doctor/diagnostics. A default
+///   must never return `ErrorCode::Unsupported`; a method a built-in host
+///   cannot serve returns a non-`Unsupported` `Err` that a capability answer
+///   refuses before it is reached.
+/// - Where new behaviour goes: a different answer in that host's impl.
+/// - Errors: only `target_root_process` is fallible (`ApiError`, i.e. host
+///   unreachable); the others are plain values.
+/// - Role: port (hexagonal) with defaulted capability methods, so existing
+///   impls compile unchanged.
 pub trait HostPort: Send + Sync {
+    /// The environment this host is. Read only by the four permitted readers
+    /// listed on the trait.
+    fn kind(&self) -> HostKind {
+        HostKind::Herdr
+    }
+    /// Host-level wake capability. Default: Herdr's TUI composer.
+    fn wake_capability(&self) -> WakeCapability {
+        WakeCapability::Composer(ComposerTraits::HERDR_TUI)
+    }
+    /// The root process of a target (a pane's shell). Default: none known.
+    fn target_root_process(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        Ok(None)
+    }
+    /// The host server's own process, when it has one this system can name.
+    fn server_process(&self) -> Option<u32> {
+        None
+    }
+    /// Default: archival evidence is supported.
+    fn archival_evidence(&self) -> ArchivalEvidence {
+        ArchivalEvidence::Supported
+    }
+    /// Default: this system closes targets it launched.
+    fn closure_authority(&self) -> ClosureAuthority {
+        ClosureAuthority::Closing
+    }
     /// Adapter-owned, verified support; callers cannot assert a launch capability.
     fn native_launch_capability(&self) -> NativeLaunchCapability;
     fn observe_current_target(
