@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.8.3
+
+No schema or peer wire change (node schema stays 12). No setup re-run is needed.
+
+### Fixed
+
+- **New panes get a seat again when one seat's reconciliation keeps failing.** A seat whose open binding had been reopened in place was read from the wrong binding row, so reconciliation refused it as stale on every pass. The pass never completed, so every new pane on that host was told to retry and never got a seat. Reconciliation now reads the open binding first, then the most recently ended one. While reconciliation lags, a session that no seat could claim enrolls normally instead of waiting (TRUST-POLICY "Startup enrollment").
+- Each refused reconciliation transition is logged with its seat and reason (rate-limited), and `daemon health` names the most-refused seats with a true count of the rest. Transient refusals from a superseded publication are not listed.
+- **Tests:** the peer stdio non-blocking test no longer counts the daemon's start against its 5 s timeout.
+
 ## v2.8.2
 
 One-way store upgrade to node schema 12 (migration 0012 rebuilds `allocation_decisions` for the new rebind kind). Binaries before 2.8.2 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. No peer wire change and no setup re-run needed.
