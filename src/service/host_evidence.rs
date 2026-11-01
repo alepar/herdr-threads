@@ -47,6 +47,25 @@ struct State {
     transitions_refused: u64,
     /// Refusals on the pages of the pass in progress.
     pass_refused: u64,
+    /// Non-transient refusals per seat and reason since boot: at most
+    /// [`MAX_REFUSED_SEATS`] pairs, the least recently refused evicted first,
+    /// so a seat refused on every pass stays listed.
+    refused_seats: Vec<RefusedSeat>,
+    /// Orders `RefusedSeat::last_seen`.
+    refusal_tick: u64,
+}
+
+/// How many (seat, reason) refusal pairs Health names.
+pub const MAX_REFUSED_SEATS: usize = 8;
+
+/// One seat the store keeps refusing to reconcile, for Health (ht-kaw9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedSeat {
+    pub seat: crate::protocol::ids::SeatId,
+    pub reason: crate::ports::StaleReason,
+    pub count: u64,
+    /// When the pair was last refused, in the ledger's own tick order.
+    pub last_seen: u64,
 }
 
 /// Shared between the observation worker (writer) and the Health producer.
@@ -112,14 +131,56 @@ impl HostEvidenceStatus {
     /// `completes_publication` marks the pass's last page. Success-only:
     /// `last_reconciliation_at` advances only when the whole pass completed
     /// and the store refused no transition on any of its pages.
-    pub fn record_reconcile_page(&self, refused: u64, completes_publication: bool, at: UtcMillis) {
+    pub fn record_reconcile_page(
+        &self,
+        refusals: &[(crate::protocol::ids::SeatId, crate::ports::StaleReason)],
+        completes_publication: bool,
+        at: UtcMillis,
+    ) {
         if let Ok(mut state) = self.state.lock() {
+            let refused = refusals.len() as u64;
             state.transitions_refused = state.transitions_refused.saturating_add(refused);
             state.pass_refused = state.pass_refused.saturating_add(refused);
+            for (seat, reason) in refusals.iter().filter(|(_, reason)| !reason.is_transient()) {
+                state.refusal_tick += 1;
+                let tick = state.refusal_tick;
+                let known = &mut state.refused_seats;
+                if let Some(pair) = known
+                    .iter_mut()
+                    .find(|pair| pair.seat == *seat && pair.reason == *reason)
+                {
+                    pair.count = pair.count.saturating_add(1);
+                    pair.last_seen = tick;
+                    continue;
+                }
+                if known.len() >= MAX_REFUSED_SEATS
+                    && let Some(oldest) = (0..known.len()).min_by_key(|&i| known[i].last_seen)
+                {
+                    known.swap_remove(oldest);
+                }
+                known.push(RefusedSeat {
+                    seat: seat.clone(),
+                    reason: *reason,
+                    count: 1,
+                    last_seen: tick,
+                });
+            }
             if completes_publication && state.pass_refused == 0 {
                 state.last_reconciliation_at = Some(at);
             }
         }
+    }
+
+    /// The non-transient (seat, reason) pairs the ledger holds, most refused
+    /// first (most recent first among equal counts).
+    pub fn refused_seats(&self) -> Vec<RefusedSeat> {
+        let mut pairs = self
+            .state
+            .lock()
+            .map(|state| state.refused_seats.clone())
+            .unwrap_or_default();
+        pairs.sort_by(|a, b| b.count.cmp(&a.count).then(b.last_seen.cmp(&a.last_seen)));
+        pairs
     }
 
     /// Total transitions the store refused since boot; 0 when unreadable.
@@ -262,7 +323,7 @@ mod tests {
     fn latest_outcome_wins_and_reconciliation_time_is_kept() {
         let status = HostEvidenceStatus::default();
         status.record_published();
-        status.record_reconcile_page(0, true, UtcMillis(42));
+        status.record_reconcile_page(&[], true, UtcMillis(42));
         let verified = status.health(CapabilityState::Unknown);
         assert_eq!(verified.host, ComponentStatus::Ready);
         assert_eq!(verified.coherent_enumeration, CapabilityState::Supported);
@@ -307,7 +368,7 @@ mod tests {
     fn errored_attempt_after_publication_is_not_verified() {
         let status = HostEvidenceStatus::default();
         status.record_published();
-        status.record_reconcile_page(0, true, UtcMillis(7));
+        status.record_reconcile_page(&[], true, UtcMillis(7));
         status.record_capture_failed(&ApiError::store_busy("writer contended"));
         let health = status.health(CapabilityState::Unknown);
         let ComponentStatus::Degraded(detail) = &health.host else {

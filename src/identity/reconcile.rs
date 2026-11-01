@@ -358,6 +358,8 @@ pub struct ReconcilePageProgress {
     /// Guarded per-seat transitions the store refused on this page. They are
     /// skipped, never allowed to abort the other seats' reconciliation.
     pub transitions_refused: u8,
+    /// Each refused transition's seat and the store's reason, in page order.
+    pub refusals: Vec<(crate::protocol::ids::SeatId, crate::ports::StaleReason)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,15 +420,18 @@ pub fn reconcile_published_page(
     let mut transitions = 0u8;
     let mut retirements = 0u8;
     let mut refused = 0u8;
+    let mut refusals = Vec::new();
     for transition in plan_page(&page)? {
+        let seat = transition.seat.clone();
         let result = store.apply_reconciliation_transition(transition, budget)?;
         match result {
             // A refused transition is that seat's alone (D2): its guarded
             // decision changed nothing, so it is recorded and skipped, and
             // the rest of the page still reconciles. The next ordered
             // publication reassesses the refused seat from fresh evidence.
-            ReconciliationOutcome::Stale => {
+            ReconciliationOutcome::Stale(reason) => {
                 refused = refused.saturating_add(1);
+                refusals.push((seat, reason));
                 continue;
             }
             ReconciliationOutcome::RetirementStarted(_) => {
@@ -442,6 +447,7 @@ pub fn reconcile_published_page(
         transition_count: transitions,
         retirements_started: retirements,
         transitions_refused: refused,
+        refusals,
     })
 }
 
@@ -496,7 +502,7 @@ pub fn reconcile_invalidated_page(
             },
             budget,
         )?;
-        if result == ReconciliationOutcome::Stale {
+        if matches!(result, ReconciliationOutcome::Stale(_)) {
             return Err(ApiError::cursor_stale(
                 "host invalidation or saved seat changed",
             ));
@@ -512,6 +518,7 @@ pub fn reconcile_invalidated_page(
         transition_count: transitions,
         retirements_started: 0,
         transitions_refused: 0,
+        refusals: Vec::new(),
     })
 }
 

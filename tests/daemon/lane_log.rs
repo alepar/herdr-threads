@@ -212,3 +212,36 @@ fn wake_refusal_lines_are_rate_limited_per_seat_and_check() {
         ]
     );
 }
+
+/// Kills (ht-kaw9): a refused reconciliation transition that never reaches
+/// daemon.log, a line without its seat or reason, and keying the limiter on
+/// the lane alone (a second seat's or reason's first line would be hidden).
+#[test]
+fn reconciliation_refusal_lines_name_seat_and_reason() {
+    use crate::ports::StaleReason;
+    let (clock, log, lines) = limiter();
+    let (a, b) = (
+        crate::protocol::ids::SeatId::new("seat_a"),
+        crate::protocol::ids::SeatId::new("seat_b"),
+    );
+    let mismatch = StaleReason::new("structure_binding_evidence_mismatch");
+    for ms in [0, 5_000, 10_000] {
+        at(&clock, ms);
+        log.record_reconciliation_refusal(&a, mismatch);
+    }
+    log.record_reconciliation_refusal(&b, mismatch);
+    log.record_reconciliation_refusal(&a, StaleReason::new("seat_cas_failed"));
+    at(&clock, 31_000);
+    log.record_reconciliation_refusal(&a, mismatch);
+    let detail =
+        "reconciliation transition refused; the seat was skipped and the pass is not recorded";
+    assert_eq!(
+        lines.lock().unwrap().clone(),
+        vec![
+            format!("lane observation: refused seat_a (structure_binding_evidence_mismatch): {detail}"),
+            format!("lane observation: refused seat_b (structure_binding_evidence_mismatch): {detail}"),
+            format!("lane observation: refused seat_a (seat_cas_failed): {detail}"),
+            "lane observation: refused seat_a (structure_binding_evidence_mismatch) repeated 3 times in the last 30s (attempt 0)".to_owned(),
+        ]
+    );
+}

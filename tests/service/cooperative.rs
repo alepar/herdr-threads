@@ -2375,6 +2375,135 @@ fn an_older_connected_binding_is_carried_past_a_newer_session_of_the_new_epoch()
     assert_eq!(scenario.published(&message), (true, vec![]));
 }
 
+// Kills (ht-kaw9): a carry whose binding evidence is the seat's highest
+// binding ordinal. A binding reopened after a rebind keeps its old ordinal, so
+// rows that ended earlier (a subagent of an older Herdr incarnation) can sort
+// above it. Judging the carry by such a row refused it as Stale on every pass,
+// so the epoch's reconciliation marker was never recorded.
+#[test]
+fn a_reopened_binding_below_ended_rows_is_still_carried() {
+    let scenario = SendScenario::new();
+    let second = publish_snapshot_at(&scenario.context, 2, 7, &["p", "q"], true);
+    checked(
+        &scenario.service,
+        lifecycle(scenario.sender.clone(), "sender-again"),
+    );
+    // An ended subagent row of an older incarnation, at a higher ordinal than
+    // the recipient's open (reopened) main binding.
+    let columns: Vec<String> = scenario
+        .db
+        .prepare("SELECT name FROM pragma_table_info('occupant_bindings') WHERE name NOT IN ('ordinal','binding_id','terminal_id','host_boot','incarnation','ended_at','role','agent_id','parent_binding','liveness','disconnect_reason')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let columns = columns.join(",");
+    scenario
+        .db
+        .execute(
+            &format!(
+                "INSERT INTO occupant_bindings({columns},binding_id,terminal_id,host_boot,incarnation,ended_at,role,agent_id,parent_binding,liveness,disconnect_reason) \
+                 SELECT {columns},'old-subagent','term-old','old-boot','old-inc',1,'subagent','old-agent',binding_id,'disconnected','liveness_end_event' \
+                 FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND native_session='recipient-main'"
+            ),
+            [],
+        )
+        .unwrap();
+    let mut outcomes = Vec::new();
+    let page = scenario
+        .store
+        .saved_seats_page(&second.id, 0, None, 16, &budget())
+        .unwrap();
+    for transition in crate::identity::reconcile::plan_page(&page).unwrap() {
+        let seat = transition.seat.as_str().to_owned();
+        let action = format!("{:?}", transition.action);
+        let outcome = scenario
+            .store
+            .apply_reconciliation_transition(transition, &budget())
+            .unwrap();
+        outcomes.push((seat, action, outcome));
+    }
+    assert!(
+        outcomes
+            .iter()
+            .any(|(seat, action, outcome)| seat == "recipient"
+                && action.contains("CarryForward")
+                && *outcome == crate::ports::ReconciliationOutcome::Applied),
+        "the recipient's open binding is carried: {outcomes:?}"
+    );
+    assert_eq!(
+        recipient_bindings(&scenario),
+        vec![("recipient-main".to_owned(), 2, "connected".to_owned())]
+    );
+}
+
+// Kills (ht-kaw9 review): a seat with no open binding whose latest binding is
+// judged by ordinal. The main row (reopened once, so a low ordinal) ended last;
+// an older subagent row with a higher ordinal ended before it. The saved-seat
+// page must carry the main row's terminal and boot, which seed the invalidated
+// seat CAS, ReconfirmStructure and BeginRetirement evidence.
+#[test]
+fn a_seat_without_an_open_binding_reads_its_most_recently_ended_row() {
+    let scenario = SendScenario::new();
+    let second = publish_snapshot_at(&scenario.context, 2, 7, &["p", "q"], true);
+    let columns: Vec<String> = scenario
+        .db
+        .prepare("SELECT name FROM pragma_table_info('occupant_bindings') WHERE name NOT IN ('ordinal','binding_id','terminal_id','host_boot','incarnation','ended_at','role','agent_id','parent_binding','liveness','disconnect_reason')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let columns = columns.join(",");
+    scenario
+        .db
+        .execute(
+            &format!(
+                "INSERT INTO occupant_bindings({columns},binding_id,terminal_id,host_boot,incarnation,ended_at,role,agent_id,parent_binding,liveness,disconnect_reason) \
+                 SELECT {columns},'old-subagent','term-old','old-boot','old-inc',1,'subagent','old-agent',binding_id,'disconnected','liveness_end_event' \
+                 FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND native_session='recipient-main'"
+            ),
+            [],
+        )
+        .unwrap();
+    let (main_terminal, main_boot): (Option<String>, String) = scenario
+        .db
+        .query_row(
+            "SELECT terminal_id,host_boot FROM occupant_bindings WHERE seat_id='recipient' AND native_session='recipient-main' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_ne!(main_terminal.as_deref(), Some("term-old"));
+    // End every open row after the subagent's end; drop the structural proof
+    // so the page reads the seat's evidence from its bindings.
+    scenario
+        .db
+        .execute_batch(
+            "UPDATE occupant_bindings SET ended_at=5 WHERE seat_id='recipient' AND ended_at IS NULL; \
+             UPDATE seats SET structural_terminal_id=NULL,structural_incarnation=NULL,structural_incarnation_kind=NULL,structural_host_boot=NULL,structural_host_epoch=NULL,structural_connection_epoch=NULL,structural_observation_sequence=NULL WHERE id='recipient';",
+        )
+        .unwrap();
+    let page = scenario
+        .store
+        .saved_seats_page(&second.id, 0, None, 16, &budget())
+        .unwrap();
+    let saved = page
+        .seats
+        .iter()
+        .find(|saved| saved.seat.as_str() == "recipient")
+        .unwrap();
+    assert_eq!(
+        (
+            saved.terminal.as_ref().map(|t| t.as_str().to_owned()),
+            saved.bound_boot.as_ref().map(|b| b.as_str().to_owned())
+        ),
+        (main_terminal, Some(main_boot)),
+        "the most recently ended row is the seat's latest binding"
+    );
+}
+
 // Kills (C4, availability follows liveness): a carry that anchors availability
 // (starting receipt timers) and closes the unavailability episode although no
 // carried row is connected, and a `carry_pending` that suppresses the warning

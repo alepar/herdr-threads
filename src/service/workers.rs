@@ -649,6 +649,19 @@ impl WorkerStatus {
             log.record_wake_refusal(seat, detail);
         }
     }
+    /// Reports a reconciliation transition the store refused to the lane
+    /// error log (rate limited there, per seat and reason). A no-op when no
+    /// log is set; Health counts refusals through `HostEvidenceStatus`.
+    pub fn report_reconciliation_refusal(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        reason: crate::ports::StaleReason,
+    ) {
+        let log = self.error_log.lock().ok().and_then(|slot| slot.clone());
+        if let Some(log) = log {
+            log.record_reconciliation_refusal(seat, reason);
+        }
+    }
     /// The only way a lane reports a good pass: clears the lane's reported
     /// failure and advances `last_tick`.
     pub fn record_success(&self, at: crate::protocol::time::UtcMillis) {
@@ -2495,9 +2508,12 @@ where
                     status.observe_reconciliation(&page);
                     if let Ok(page) = page {
                         let (done, refused) = pass_complete(refused, &page);
+                        for (seat, reason) in &page.refusals {
+                            status.report_reconciliation_refusal(seat, *reason);
+                        }
                         // Health: success-only `last_reconciliation_at` (B3).
                         host_evidence.record_reconcile_page(
-                            u64::from(page.transitions_refused),
+                            &page.refusals,
                             done && matches!(
                                 outcome,
                                 crate::identity::reconcile::ObservationOutcome::Published(_)

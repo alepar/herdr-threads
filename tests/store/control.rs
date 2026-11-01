@@ -617,7 +617,7 @@ fn guarded_reconciliation_rejects_stale_publication_and_binding() {
         &budget,
     )
     .unwrap();
-    assert_eq!(stale, ReconciliationOutcome::Stale);
+    assert!(matches!(stale, ReconciliationOutcome::Stale(_)));
     let current =
         seats::saved_seats_page(&context, &conn, &newer_stage, 0, None, 16, &budget).unwrap();
     let stale_binding = seats::apply_reconciliation_transition(
@@ -634,7 +634,7 @@ fn guarded_reconciliation_rejects_stale_publication_and_binding() {
         &budget,
     )
     .unwrap();
-    assert_eq!(stale_binding, ReconciliationOutcome::Stale);
+    assert!(matches!(stale_binding, ReconciliationOutcome::Stale(_)));
     let state: String = conn
         .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
         .unwrap();
@@ -793,11 +793,11 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(
+    assert!(matches!(
         seats::apply_reconciliation_transition(&context, &mut conn, transition.clone(), &budget)
             .unwrap(),
-        ReconciliationOutcome::Stale
-    );
+        ReconciliationOutcome::Stale(_)
+    ));
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM retirements", [], |r| r
             .get::<_, i64>(0))
@@ -1005,7 +1005,10 @@ fn move_with_absent_occupant_evidence(
 #[test]
 fn guarded_move_refuses_registered_binding_with_absent_occupant_evidence() {
     let (outcome, state) = move_with_absent_occupant_evidence(true);
-    assert_eq!(outcome, crate::ports::ReconciliationOutcome::Stale);
+    assert!(matches!(
+        outcome,
+        crate::ports::ReconciliationOutcome::Stale(_)
+    ));
     assert_eq!(state, ("s1".into(), 1, "s1".into(), None));
 }
 
@@ -1462,11 +1465,11 @@ fn invalidated_seat_reconfirms_moved_terminal_without_restoring_registration() {
         [],
     )
     .unwrap();
-    assert_eq!(
+    assert!(matches!(
         seats::apply_reconciliation_transition(&context, &mut conn, transition.clone(), &budget)
             .unwrap(),
-        ReconciliationOutcome::Stale
-    );
+        ReconciliationOutcome::Stale(_)
+    ));
     conn.execute(
         "UPDATE seats SET unresolved_reason='host_invalidation',unresolved_from_generation_id=?1,unresolved_prior_binding_generation=?2 WHERE id='s1'",
         rusqlite::params![old.prior_published_observation.as_ref().unwrap().generation_id.as_str(), 1],
@@ -6817,10 +6820,12 @@ fn reject_changed_structural_continuity(
     ] {
         let proof: (String,i64,i64) = conn.query_row("SELECT structural_incarnation,structural_observation_sequence,structural_connection_epoch FROM seats WHERE id='s1'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
         conn.execute(change, []).unwrap();
-        assert_eq!(
-            seats::apply_reconciliation_transition(context, conn, transition.clone(), budget)
-                .unwrap(),
-            ReconciliationOutcome::Stale,
+        assert!(
+            matches!(
+                seats::apply_reconciliation_transition(context, conn, transition.clone(), budget)
+                    .unwrap(),
+                ReconciliationOutcome::Stale(_)
+            ),
             "{change}"
         );
         if let Some(restore) = restore {
@@ -6830,23 +6835,23 @@ fn reject_changed_structural_continuity(
     }
     let proof: (String,String,String,String,i64,i64,i64) = conn.query_row("SELECT structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence FROM seats WHERE id='s1'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).unwrap();
     conn.execute_batch("UPDATE seats SET structural_terminal_id=NULL,structural_incarnation=NULL,structural_incarnation_kind=NULL,structural_host_boot=NULL,structural_host_epoch=NULL,structural_connection_epoch=NULL,structural_observation_sequence=NULL WHERE id='s1';").unwrap();
-    assert_eq!(
+    assert!(matches!(
         seats::apply_reconciliation_transition(context, conn, transition.clone(), budget).unwrap(),
-        ReconciliationOutcome::Stale
-    );
+        ReconciliationOutcome::Stale(_)
+    ));
     conn.execute("UPDATE seats SET structural_terminal_id=?1,structural_incarnation=?2,structural_incarnation_kind=?3,structural_host_boot=?4,structural_host_epoch=?5,structural_connection_epoch=?6,structural_observation_sequence=?7 WHERE id='s1'", rusqlite::params![proof.0,proof.1,proof.2,proof.3,proof.4,proof.5,proof.6]).unwrap();
     let mut stale = transition.clone();
     stale.publication.observation_sequence += 1;
-    assert_eq!(
+    assert!(matches!(
         seats::apply_reconciliation_transition(context, conn, stale, budget).unwrap(),
-        ReconciliationOutcome::Stale
-    );
+        ReconciliationOutcome::Stale(_)
+    ));
     let mut stale = transition.clone();
     stale.expected_terminal = Some(TerminalId::new("changed-terminal"));
-    assert_eq!(
+    assert!(matches!(
         seats::apply_reconciliation_transition(context, conn, stale, budget).unwrap(),
-        ReconciliationOutcome::Stale
-    );
+        ReconciliationOutcome::Stale(_)
+    ));
 }
 
 #[test]
@@ -6971,10 +6976,10 @@ fn review_operator_rebind_new_incarnation_then_absence() {
         matches!(outcome, ReconciliationOutcome::RetirementStarted(_)),
         "authoritative absence after qualified repair returned {outcome:?}"
     );
-    assert_eq!(
+    assert!(matches!(
         seats::apply_reconciliation_transition(&context, &mut conn, t, &budget).unwrap(),
-        ReconciliationOutcome::Stale
-    );
+        ReconciliationOutcome::Stale(_)
+    ));
     assert_eq!(
         crate::store::effective::effective_receipt(&conn, "fix3-message", "s1")
             .unwrap()
@@ -9856,6 +9861,9 @@ fn continuity_without_match_is_retryable_until_reconciled() {
         [],
     )
     .unwrap();
+    // The resolved seat s2 holds this session: the lagging pass may still
+    // unresolve s2, which would make it this session's candidate.
+    c1_bind(&conn, "s2", 1, "claude", "sess-other");
     let command = c1_command("held-pane", "sess-other", "c1-lag");
     let lagging = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
     assert_eq!(lagging.code, ErrorCode::ServiceBusy);
@@ -9884,6 +9892,169 @@ fn continuity_without_match_is_retryable_until_reconciled() {
     assert_eq!(settled.code, ErrorCode::NotFound);
     drop(conn);
     let _ = std::fs::remove_file(path);
+}
+
+// Kills (ht-kaw9): a continuity claim answered "retry" while the host's
+// reconciliation marker lags although no seat's binding names the session. A
+// pass only unresolves seats and adds no bindings, so such a session can never
+// become a candidate; with one seat refused on every pass the marker never
+// catches up, and a new pane's startup claim was refused forever instead of
+// falling through to guarded enrollment.
+#[test]
+fn continuity_for_an_unknown_session_is_final_while_reconciliation_lags() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute(
+        "UPDATE herdr_hosts SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch-1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
+    // A pane created after the recovery baseline, where a new session starts.
+    c1_observe(&conn, "new-pane");
+    let refused = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("new-pane", "sess-new", "c1-new"),
+        "absent",
+    )
+    .unwrap_err();
+    assert_eq!(
+        refused.code,
+        ErrorCode::NotFound,
+        "a session no seat knows is a final no-match: {refused:?}"
+    );
+    // The hook's fallback after that no-match: guarded ordinary enrollment,
+    // which the lagging marker does not block.
+    let budget = b5_budget();
+    let request = crate::protocol::commands::ResolveSeat {
+        host: crate::test_support::test_host_locator(),
+        target: HostTargetId::new("new-pane"),
+        operation: OperationId::new("kaw9-enroll"),
+    };
+    let mut observation = b5_fresh_observation("new-pane");
+    observation.observation_sequence = 4;
+    observation.terminal = Some(TerminalId::new("term-new-pane"));
+    observation.incarnation = crate::ports::IncarnationEvidence::Verified {
+        identity: "test-incarnation".into(),
+        evidence_kind: crate::ports::EvidenceKind::CoherentEnumeration,
+    };
+    let admission = crate::store::seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
+    assert!(
+        crate::store::seats::publish_current_target_observation(
+            &context,
+            &mut conn,
+            &admission,
+            &observation,
+            &budget
+        )
+        .unwrap()
+    );
+    let guard =
+        crate::ports::OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
+    let outcome = crate::store::seats::resolve_seat(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        request,
+        crate::ports::OrdinaryResolutionAttempt::Observed(guard),
+        &budget,
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            crate::ports::OrdinaryResolutionOutcome::Resolved(_)
+        ),
+        "the new pane gets a seat while reconciliation lags: {outcome:?}"
+    );
+    let lagging: bool = conn
+        .query_row(
+            "SELECT reconciled_epoch IS NOT recovery_epoch FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        lagging,
+        "the marker still lags: the refused pass never recorded it"
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+// Kills (ht-kaw9): a lag gate that drifts from the C1 candidate predicate. A
+// binding no candidate query can match (retired seat, subagent, managed
+// launch, another harness) must not keep a claim pending; a
+// resolved seat's matching top-level binding must, since the lagging pass may
+// still unresolve that seat.
+#[test]
+fn lagging_continuity_is_pending_only_for_a_possible_candidate() {
+    use crate::protocol::results::ErrorCode;
+    let decide = |setup: &str, session: &str| {
+        let (context, mut conn, path) = c1_fixture();
+        conn.execute(
+            "UPDATE herdr_hosts SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch-1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+            [],
+        )
+        .unwrap();
+        c1_bind(&conn, "s2", 1, "claude", session);
+        if !setup.is_empty() {
+            conn.execute_batch(setup).unwrap();
+        }
+        c1_observe(&conn, "new-pane");
+        let code = c1_decide(
+            &context,
+            &mut conn,
+            &c1_command("new-pane", session, "c1-gate"),
+            "absent",
+        )
+        .unwrap_err()
+        .code;
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+        code
+    };
+    assert_eq!(
+        decide("", "sess-x"),
+        ErrorCode::ServiceBusy,
+        "a resolved seat's binding"
+    );
+    for (case, setup, session) in [
+        (
+            "retired seat",
+            "UPDATE seats SET state='retired',retired_at=1 WHERE id='s2'",
+            "sess-x",
+        ),
+        (
+            "subagent",
+            "UPDATE occupant_bindings SET role='subagent',agent_id='a1' WHERE seat_id='s2'",
+            "sess-x",
+        ),
+        (
+            "agent id",
+            "UPDATE occupant_bindings SET agent_id='a1' WHERE seat_id='s2'",
+            "sess-x",
+        ),
+        (
+            "managed launch",
+            "UPDATE occupant_bindings SET observation_provenance='managed_launch' WHERE seat_id='s2'",
+            "sess-x",
+        ),
+        (
+            "other harness",
+            "UPDATE occupant_bindings SET harness='codex' WHERE seat_id='s2'",
+            "sess-x",
+        ),
+    ] {
+        assert_eq!(decide(setup, session), ErrorCode::NotFound, "{case}");
+    }
 }
 
 #[test]

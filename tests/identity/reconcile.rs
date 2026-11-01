@@ -919,7 +919,7 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
                 )
                 .unwrap();
             assert_eq!(live, 0);
-            assert_eq!(
+            assert!(matches!(
                 seats::apply_reconciliation_transition(
                     &context,
                     &mut conn,
@@ -927,8 +927,8 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
                     &budget
                 )
                 .unwrap(),
-                ReconciliationOutcome::Stale
-            );
+                ReconciliationOutcome::Stale(_)
+            ));
         } else {
             assert_eq!(actions[0].action, ReconciliationAction::MarkUnresolved);
             let mut forged = actions[0].clone();
@@ -936,11 +936,11 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
                 target: HostTargetId::new("pane"),
                 terminal: TerminalId::new("terminal-a"),
             };
-            assert_eq!(
+            assert!(matches!(
                 seats::apply_reconciliation_transition(&context, &mut conn, forged, &budget)
                     .unwrap(),
-                ReconciliationOutcome::Stale
-            );
+                ReconciliationOutcome::Stale(_)
+            ));
             assert_eq!(state(&conn), ("unresolved".into(), 2));
         }
         drop(conn);
@@ -1249,7 +1249,7 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
                 )
                 .unwrap();
             assert_eq!(bindings, 0, "reconfirmation registers nothing");
-            assert_eq!(
+            assert!(matches!(
                 seats::apply_reconciliation_transition(
                     &context,
                     &mut conn,
@@ -1257,17 +1257,17 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
                     &budget
                 )
                 .unwrap(),
-                ReconciliationOutcome::Stale
-            );
+                ReconciliationOutcome::Stale(_)
+            ));
         } else {
             assert_eq!(actions[0].action, ReconciliationAction::MarkUnresolved);
             let mut forged = actions[0].clone();
             forged.action = reconfirm;
-            assert_eq!(
+            assert!(matches!(
                 seats::apply_reconciliation_transition(&context, &mut conn, forged, &budget)
                     .unwrap(),
-                ReconciliationOutcome::Stale
-            );
+                ReconciliationOutcome::Stale(_)
+            ));
             assert_eq!(state(&conn), ("unresolved".into(), 2));
         }
         drop(conn);
@@ -1499,7 +1499,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         .unwrap(),
         ReconciliationOutcome::Applied
     );
-    assert_eq!(
+    assert!(matches!(
         seats::apply_reconciliation_transition(
             &context,
             &mut conn,
@@ -1507,8 +1507,8 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
             &budget
         )
         .unwrap(),
-        ReconciliationOutcome::Stale
-    );
+        ReconciliationOutcome::Stale(_)
+    ));
     let moved_saved: (String, i64) = conn
         .query_row(
             "SELECT target_id,generation FROM seats WHERE id=?1",
@@ -1705,10 +1705,12 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
                     terminal: TerminalId::new("terminal-b"),
                 },
             };
-            assert_eq!(
-                seats::apply_reconciliation_transition(&context, &mut conn, forged, &budget)
-                    .unwrap(),
-                crate::ports::ReconciliationOutcome::Stale,
+            assert!(
+                matches!(
+                    seats::apply_reconciliation_transition(&context, &mut conn, forged, &budget)
+                        .unwrap(),
+                    crate::ports::ReconciliationOutcome::Stale(_)
+                ),
                 "a binding on another terminal must not carry the seat"
             );
             let target: String = conn
@@ -2060,7 +2062,9 @@ mod fake_port {
         ) -> Result<ReconciliationOutcome, ApiError> {
             let mut state = self.state.lock().unwrap();
             if state.refuse_seats.contains(&transition.seat) {
-                return Ok(ReconciliationOutcome::Stale);
+                return Ok(ReconciliationOutcome::Stale(
+                    crate::ports::StaleReason::new("test"),
+                ));
             }
             state.actions.push(transition.action.clone());
             if matches!(
@@ -3364,7 +3368,10 @@ mod carry_forward {
             target: HostTargetId::new("pane"),
             terminal: TerminalId::new("terminal-a"),
         };
-        assert_eq!(apply(&mut f, forged), ReconciliationOutcome::Stale);
+        assert!(matches!(
+            apply(&mut f, forged),
+            ReconciliationOutcome::Stale(_)
+        ));
     }
 
     #[test]
@@ -3379,10 +3386,10 @@ mod carry_forward {
         f.conn
             .execute("UPDATE seats SET generation=2 WHERE id='s'", [])
             .unwrap();
-        assert_eq!(
+        assert!(matches!(
             apply(&mut f, transitions[0].clone()),
-            ReconciliationOutcome::Stale
-        );
+            ReconciliationOutcome::Stale(_)
+        ));
         let epoch: i64 = f
             .conn
             .query_row(

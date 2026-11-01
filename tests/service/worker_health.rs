@@ -1095,7 +1095,9 @@ impl crate::identity::reconcile::observation_store::ObservationStore
         budget: &CallBudget,
     ) -> Result<crate::ports::ReconciliationOutcome, ApiError> {
         if self.refuse_transitions.load(Ordering::SeqCst) {
-            return Ok(crate::ports::ReconciliationOutcome::Stale);
+            return Ok(crate::ports::ReconciliationOutcome::Stale(
+                crate::ports::StaleReason::new("test"),
+            ));
         }
         self.inner
             .apply_reconciliation_transition(transition, budget)
@@ -1546,7 +1548,7 @@ fn last_reconciliation_at_advances_only_on_success() {
     let evidence = HostEvidenceStatus::default();
     let at = |n| UtcMillis(n);
     evidence.begin_reconcile_pass();
-    evidence.record_reconcile_page(0, false, at(1));
+    evidence.record_reconcile_page(&[], false, at(1));
     assert_eq!(
         evidence
             .health(CapabilityState::Unknown)
@@ -1554,7 +1556,7 @@ fn last_reconciliation_at_advances_only_on_success() {
         None,
         "a middle page does not complete the pass"
     );
-    evidence.record_reconcile_page(0, true, at(2));
+    evidence.record_reconcile_page(&[], true, at(2));
     assert_eq!(
         evidence
             .health(CapabilityState::Unknown)
@@ -1563,8 +1565,8 @@ fn last_reconciliation_at_advances_only_on_success() {
     );
     // A pass with one refusal (on a middle page) does not advance the time.
     evidence.begin_reconcile_pass();
-    evidence.record_reconcile_page(1, false, at(3));
-    evidence.record_reconcile_page(0, true, at(4));
+    evidence.record_reconcile_page(&refused(&["s"]), false, at(3));
+    evidence.record_reconcile_page(&[], true, at(4));
     assert_eq!(
         evidence
             .health(CapabilityState::Unknown)
@@ -1574,7 +1576,7 @@ fn last_reconciliation_at_advances_only_on_success() {
     );
     // The next clean pass advances it again.
     evidence.begin_reconcile_pass();
-    evidence.record_reconcile_page(0, true, at(5));
+    evidence.record_reconcile_page(&[], true, at(5));
     assert_eq!(
         evidence
             .health(CapabilityState::Unknown)
@@ -1623,17 +1625,138 @@ fn transitions_refused_reaches_health() {
         cancellation: Cancellation::default(),
     };
     assert_eq!(provider(&budget).transitions_refused, 0);
-    evidence.record_reconcile_page(2, true, UtcMillis(1));
-    evidence.record_reconcile_page(1, true, UtcMillis(2));
+    evidence.record_reconcile_page(&refused(&["s1", "s2"]), true, UtcMillis(1));
+    evidence.record_reconcile_page(&refused(&["s1"]), true, UtcMillis(2));
     let inputs = provider(&budget);
     assert_eq!(inputs.transitions_refused, 3);
     assert!(
-        inputs
-            .assemble()
-            .notes
-            .iter()
-            .any(|note| note.contains("refused 3 seat transition(s)"))
+        inputs.assemble().notes.iter().any(|note| note.ends_with(
+            "refused 3 seat transition(s) since boot; those seats were skipped, the others \
+             reconciled; refused: s1 test_reason x2, s2 test_reason x1"
+        )),
+        "Health names each refused seat with its reason"
     );
+}
+
+/// Kills (ht-kaw9 review): a refusal ledger that keeps the first pairs seen
+/// forever. Early in a daemon's life a superseded pass refuses every seat on
+/// its page (transient by design) and one-off refusals fill the ledger; a seat
+/// refused on every later pass must still be the one Health names, and the
+/// note's remainder counts every refusal it does not name.
+#[test]
+fn an_every_pass_refuser_is_named_after_an_early_burst() {
+    use crate::ports::StaleReason;
+    use crate::protocol::ids::SeatId;
+    use crate::service::host_evidence::{HostEvidenceStatus, MAX_REFUSED_SEATS};
+    let evidence = HostEvidenceStatus::default();
+    let superseded: Vec<_> = (0..12)
+        .map(|n| {
+            (
+                SeatId::new(format!("early-{n}")),
+                StaleReason::PUBLICATION_SUPERSEDED,
+            )
+        })
+        .collect();
+    evidence.record_reconcile_page(&superseded, false, UtcMillis(1));
+    let one_off: Vec<_> = (0..MAX_REFUSED_SEATS)
+        .map(|n| {
+            (
+                SeatId::new(format!("once-{n}")),
+                StaleReason::new("seat_cas_failed"),
+            )
+        })
+        .collect();
+    evidence.record_reconcile_page(&one_off, false, UtcMillis(2));
+    let culprit = (
+        SeatId::new("sQ0VU3wP88WZ"),
+        StaleReason::new("structure_binding_evidence_mismatch"),
+    );
+    for pass in 0..3 {
+        evidence.record_reconcile_page(std::slice::from_ref(&culprit), true, UtcMillis(3 + pass));
+    }
+    let pairs = evidence.refused_seats();
+    assert!(pairs.len() <= MAX_REFUSED_SEATS);
+    assert!(
+        pairs.iter().all(|pair| !pair.reason.is_transient()),
+        "transient refusals name no seat: {pairs:?}"
+    );
+    assert_eq!(
+        (pairs[0].seat.as_str(), pairs[0].reason, pairs[0].count),
+        ("sQ0VU3wP88WZ", culprit.1, 3)
+    );
+    let mut inputs = crate::daemon::health::HealthInputs::unknown(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    inputs.transitions_refused = evidence.transitions_refused();
+    assert_eq!(
+        inputs.transitions_refused,
+        12 + MAX_REFUSED_SEATS as u64 + 3
+    );
+    inputs.refused_seats = pairs;
+    let notes = inputs.assemble().notes;
+    let note = notes
+        .iter()
+        .find(|note| note.starts_with("reconciliation:"))
+        .unwrap();
+    // 23 refusals: the culprit's 3 and one once-N's 1 are named, 19 are not.
+    assert!(
+        note.contains("; refused: sQ0VU3wP88WZ structure_binding_evidence_mismatch x3, once-")
+            && note.ends_with(" seat_cas_failed x1; 19 other"),
+        "{note}"
+    );
+}
+
+/// Kills (ht-kaw9): a refusal note that lists every pair, so with real seat
+/// ids and reason slugs the 256-byte line bound truncates it mid-pair and
+/// hides how many pairs were left out.
+#[test]
+fn refusal_note_fits_its_line_bound_with_real_ids() {
+    let mut inputs = crate::daemon::health::HealthInputs::unknown(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    inputs.transitions_refused = 4 * 37_214 + 5;
+    inputs.refused_seats = [
+        "sQ0VU3wP88WZ",
+        "sQ0VnTDasAbY",
+        "sQ0Vj7cYH6Jh",
+        "sQ0VQIPuoUBS",
+    ]
+    .iter()
+    .map(|seat| crate::service::host_evidence::RefusedSeat {
+        seat: crate::protocol::ids::SeatId::new(*seat),
+        reason: crate::ports::StaleReason::new("structure_binding_evidence_mismatch"),
+        count: 37_214,
+        last_seen: 1,
+    })
+    .collect();
+    let notes = inputs.assemble().notes;
+    let note = notes
+        .iter()
+        .find(|note| note.starts_with("reconciliation:"))
+        .unwrap();
+    assert!(
+        note.ends_with(
+            "; refused: sQ0VU3wP88WZ structure_binding_evidence_mismatch x37214, \
+             sQ0VnTDasAbY structure_binding_evidence_mismatch x37214; 74433 other"
+        ),
+        "{note}"
+    );
+    assert!(note.len() <= 256, "{} bytes: {note}", note.len());
+}
+
+/// One refusal per seat, all with the same reason.
+fn refused(seats: &[&str]) -> Vec<(crate::protocol::ids::SeatId, crate::ports::StaleReason)> {
+    seats
+        .iter()
+        .map(|seat| {
+            (
+                crate::protocol::ids::SeatId::new(*seat),
+                crate::ports::StaleReason::new("test_reason"),
+            )
+        })
+        .collect()
 }
 
 /// The lane-error hook that records what `record_failure` reported.
@@ -1980,6 +2103,7 @@ fn page_progress(
         transition_count: 1,
         retirements_started: 0,
         transitions_refused: refused,
+        refusals: Vec::new(),
     }
 }
 
@@ -2075,12 +2199,31 @@ fn refusal_free_pass_records_marker_once() {
     worker.stop();
 }
 
+/// Records the reconciliation refusals a worker reports to its lane log.
+#[derive(Default)]
+struct ReconciliationRefusals(Mutex<Vec<(String, String)>>);
+impl crate::daemon::logs::LaneErrorLog for ReconciliationRefusals {
+    fn record(&self, _lane: crate::service::kicks::Lane, _error: &ApiError) {}
+    fn record_reconciliation_refusal(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        reason: crate::ports::StaleReason,
+    ) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((seat.as_str().to_owned(), reason.as_str().to_owned()));
+    }
+}
+
 // Kills: a worker loop that records the reconciliation marker after a pass in
 // which the store refused a transition (TRUST-POLICY C2: a refused pass leaves
 // the marker behind so readers keep treating the instance as not reconciled).
 #[test]
 fn stale_refused_pass_skips_reconciliation_marker() {
     let observation = Arc::new(WorkerStatus::default());
+    let refusals = Arc::new(ReconciliationRefusals::default());
+    observation.set_error_log(refusals.clone());
     let production = Production::new([Default::default(), Default::default(), observation.clone()]);
     let clock = production.clock.clone();
     let host = Arc::new(ObservedHost {
@@ -2138,9 +2281,10 @@ fn stale_refused_pass_skips_reconciliation_marker() {
         ),
     );
     let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    // The refused pass completed: its page was read and the loop moved on.
-    while port.pages_ok.load(Ordering::SeqCst) == 0 {
-        assert!(std::time::Instant::now() < until, "no page was reconciled");
+    // The refused pass completed: the worker reported its refusal (after the
+    // page was reconciled) and the loop moved on.
+    while refusals.0.lock().unwrap().is_empty() {
+        assert!(std::time::Instant::now() < until, "no refusal was reported");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -2148,6 +2292,11 @@ fn stale_refused_pass_skips_reconciliation_marker() {
         port.pass_records.load(Ordering::SeqCst),
         0,
         "a Stale-refused pass must not record the marker"
+    );
+    // ht-kaw9: the refusal reaches daemon.log's hook with its seat and reason.
+    assert_eq!(
+        refusals.0.lock().unwrap().first().cloned(),
+        Some(("synthetic-seat".to_owned(), "test".to_owned()))
     );
     // A clean pass (next capture due) records it once.
     port.refuse_transitions.store(false, Ordering::SeqCst);

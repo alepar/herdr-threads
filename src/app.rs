@@ -323,6 +323,7 @@ impl ElectedHealth {
         }
         inputs.degraded_lanes.extend(session_lanes);
         inputs.transitions_refused = self.host.status.transitions_refused();
+        inputs.refused_seats = self.host.status.refused_seats();
         inputs.last_scheduler_tick_at = self.workers.first().and_then(|status| status.last_tick());
         if let Ok(observed) = self.host.harnesses.lock() {
             // A harness with a legacy contract always reports (`Unknown` until
