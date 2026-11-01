@@ -28,7 +28,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -251,6 +251,25 @@ const DOCTOR_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_milli
 /// probed}`. Read-only: it probes (`hello`, then `ping`) and writes nothing. A
 /// row whose socket is absent or silent names nothing; that is host
 /// reachability, not a kind mismatch.
+/// Other state dirs of this user that hold a store besides the one in use: the two Herdr plugin
+/// state roots (`$XDG_STATE_HOME` and `~/.local/state`) are one user's candidate homes, and a
+/// store in each is a split (messages and seats in two places). Filesystem checks only.
+pub(crate) fn other_stores(selected: &Path, candidates: [Option<PathBuf>; 2]) -> Vec<String> {
+    let same = |a: &Path, b: &Path| {
+        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    };
+    let mut found: Vec<PathBuf> = Vec::new();
+    for dir in candidates.into_iter().flatten() {
+        if !same(&dir, selected)
+            && !found.iter().any(|seen| same(seen, &dir))
+            && crate::daemon::paths::holds_store(&dir)
+        {
+            found.push(dir);
+        }
+    }
+    found.iter().map(|dir| dir.display().to_string()).collect()
+}
+
 fn kind_mismatch_hosts_report(node_dir: &std::path::Path) -> Vec<Value> {
     let Some(conn) = open_store_read_only(node_dir) else {
         return Vec::new();
@@ -1183,6 +1202,19 @@ fn report_captured(
             host["probed"].as_str().unwrap_or_default()
         ));
     }
+    let (xdg, home) = super::instance::state_candidates(
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .as_deref(),
+    );
+    let extra_stores = other_stores(&context.state_dir, [xdg, home]);
+    for dir in &extra_stores {
+        limitations.push(format!(
+            "second store at {dir}: this user has two stores; keep one and pass --state-dir"
+        ));
+    }
+    report["other_stores"] = json!(extra_stores);
     report["hosts"] =
         json!({"unattachable": unattachable_hosts, "kind_mismatch": mismatched_hosts});
     if !limitations.is_empty() && result == "ok" {

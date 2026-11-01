@@ -1868,3 +1868,30 @@ fn doctor_names_unattachable_kind_row() {
     );
     assert!(!limitations.contains("/herdr/ok.sock"), "{limitations}");
 }
+
+/// Kills: a check that ignores the second candidate root, flags the selected dir itself,
+/// counts a dir without a database as a store, or reports a store twice.
+#[test]
+fn doctor_flags_two_live_stores() {
+    let case = PathCase::new("two-stores");
+    let mk = |name: &str, store: bool| {
+        let dir = case.dir.join(name);
+        let node = dir.join("node");
+        std::fs::create_dir_all(&node).unwrap();
+        if store {
+            std::fs::write(node.join(crate::daemon::paths::DATABASE_FILE), b"").unwrap();
+        }
+        dir
+    };
+    let (a, b, empty) = (mk("a", true), mk("b", true), mk("c", false));
+    assert_eq!(
+        other_stores(&a, [Some(a.clone()), Some(b.clone())]),
+        vec![b.display().to_string()]
+    );
+    assert!(other_stores(&a, [Some(a.clone()), Some(empty)]).is_empty());
+    assert!(other_stores(&a, [Some(a.clone()), Some(a.clone())]).is_empty());
+    assert_eq!(
+        other_stores(&a, [Some(b.clone()), Some(b.clone())]).len(),
+        1
+    );
+}

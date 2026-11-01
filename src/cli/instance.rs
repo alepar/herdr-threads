@@ -62,6 +62,12 @@ pub struct InstanceInputs {
     pub non_default_server: bool,
     /// The `herdr` executable on PATH, for the slow fallback only.
     pub herdr: Option<PathBuf>,
+    /// `HERDR_ENV` is set: the caller runs beside a Herdr (SA1 step 4).
+    pub herdr_env: bool,
+    /// The caller is a Named (non-Pane) site (`HERDR_THREADS_SEAT_NAME`): with no Herdr
+    /// configured or on PATH it gets the standalone default state dir, and its Herdr host
+    /// endpoint resolves lazily (fast sources only, never a `herdr` query).
+    pub named_site: bool,
 }
 
 fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
@@ -71,6 +77,7 @@ fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
 impl InstanceInputs {
     pub fn from_process(state_flag: Option<PathBuf>, host_flag: Option<PathBuf>) -> Self {
         let path = std::env::var_os("PATH");
+        let caller = super::caller_location::CallerEnv::from_process();
         Self {
             state_flag,
             host_flag,
@@ -82,7 +89,14 @@ impl InstanceInputs {
             non_default_server: non_empty(std::env::var_os("HERDR_SESSION")).is_some()
                 || non_empty(std::env::var_os("HERDR_CONFIG_PATH")).is_some(),
             herdr: hook::resolve_on_path("herdr", path.as_deref()),
+            herdr_env: caller.herdr_env(),
+            named_site: caller.named().is_some(),
         }
+    }
+
+    /// A Herdr is configured for this process: a pane or session env, or a named server.
+    fn herdr_configured(&self) -> bool {
+        self.herdr_env || self.non_default_server
     }
 
     fn detect(&self) -> DetectInputs {
@@ -189,15 +203,40 @@ pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, Str
     }))
 }
 
-/// Where the default state dir would be, whether or not it exists yet. `None` for a named
-/// Herdr session or no usable HOME/XDG root; `Err` when both roots already hold a store
-/// (ambiguous, as for [`default_state_dir`]).
+/// The standalone default state dir, whether or not it exists yet: the single definition of
+/// that path (discovery and Herdr-less `setup` use it). `None` with no usable HOME/XDG root;
+/// `Err` when both roots already hold a store (ambiguous, as for [`default_state_dir`]).
+pub fn standalone_state_dir(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
+    let (xdg, home) = state_candidates(absolute(&inputs.home), absolute(&inputs.xdg_state_home));
+    Ok(choose_state_dir(xdg, home)?.map(|(dir, _, _)| dir))
+}
+
+/// Where the default state dir would be created. `None` for a named Herdr session. For a Named
+/// site (`named_site`) also `None` unless no Herdr is configured (`HERDR_ENV`, `HERDR_SESSION`,
+/// `HERDR_CONFIG_PATH` unset) and no `herdr` is on PATH: beside a Herdr the command group's
+/// store is found by the `herdr plugin list` query (or refused), never split off a second store.
 fn default_state_dir_to_create(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
     if inputs.non_default_server {
         return Ok(None);
     }
-    let (xdg, home) = state_candidates(absolute(&inputs.home), absolute(&inputs.xdg_state_home));
-    Ok(choose_state_dir(xdg, home)?.map(|(dir, _, _)| dir))
+    if inputs.named_site && (inputs.herdr_configured() || inputs.herdr.is_some()) {
+        return Ok(None);
+    }
+    standalone_state_dir(inputs)
+}
+
+/// Create `dir` owner-only (the daemon refuses a group/other-writable state root, so the leaf
+/// is 0700 whatever the umask).
+fn create_state_dir(dir: &Path) -> io::Result<()> {
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
 }
 
 /// The context for `peer --stdio`, the ssh-side pump. Like [`resolve_context`], except that a
@@ -218,17 +257,7 @@ pub fn resolve_peer_context(inputs: &InstanceInputs) -> io::Result<RuntimeContex
     if dir.exists() {
         return Err(first);
     }
-    if let Some(parent) = dir.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    // The daemon refuses a group/other-writable state root, so the leaf is created 0700
-    // whatever the umask (an ssh session may run with 002).
-    match fs::DirBuilder::new().mode(0o700).create(&dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    create_state_dir(&dir)?;
     let created = InstanceInputs {
         state_flag: Some(dir),
         ..inputs.clone()
@@ -334,9 +363,18 @@ pub fn resolve_state_dir(inputs: &InstanceInputs) -> Result<(PathBuf, String), S
     }
     match default_state_dir(inputs)? {
         Some(found) => Ok(found),
-        None => detect_state_dir(&inputs.detect()),
+        None => match default_state_dir_to_create(inputs) {
+            // A Named site with no Herdr configured or on PATH: the standalone default dir
+            // (created by the context resolution). Otherwise the one `herdr plugin list` query.
+            Ok(Some(dir)) if inputs.named_site => Ok((dir, STANDALONE_HOW.into())),
+            _ => detect_state_dir(&inputs.detect()),
+        },
     }
 }
+
+/// The source label of a state directory that [`resolve_state_dir`] chose as the standalone
+/// default for a Named site.
+const STANDALONE_HOW: &str = "standalone default";
 
 /// The claim host: the Herdr server of the calling pane. An explicit user flag on an interactive
 /// command wins, then the pane's own `HERDR_SOCKET_PATH`, then the host baked into an installed
@@ -361,6 +399,11 @@ pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String
     }
     match default_host_endpoint(inputs) {
         Some(found) => Ok(found),
+        // Lazy for a non-Pane site: no `herdr status server` query on every call; a command
+        // that needs the host fails later, in `RuntimeContext::require_host`.
+        None if inputs.named_site => {
+            Err("Herdr host endpoint not resolved for a named site".into())
+        }
         None => detect_host_endpoint(&inputs.detect()),
     }
 }
@@ -396,6 +439,9 @@ pub(crate) fn resolve_context_with_selected_paths(
         Ok((host, how)) => (Some(host), how),
         Err(_) => (None, "none".to_owned()),
     };
+    if state_how == STANDALONE_HOW {
+        create_state_dir(&state)?;
+    }
     let selected_state = state.clone();
     let selected_host = host.clone();
     let context = RuntimeContext::explicit(
@@ -416,6 +462,10 @@ pub(crate) fn resolve_context_with_selected_paths(
         selected_host,
     ))
 }
+
+#[cfg(test)]
+#[path = "../../tests/cli/instance_named.rs"]
+mod instance_named;
 
 #[cfg(test)]
 mod tests {
