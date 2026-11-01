@@ -634,6 +634,28 @@ fn injected_lane_failure_logs_and_degrades_then_clears() {
                 .starts_with(&format!("lane {name}: StoreBusy: ")),
             "{name}: {lines:?}"
         );
+        // The injected fault hits every worker of the lane: the dialled host's
+        // observation and wake lanes and the built-in named host's own, which
+        // reaches Health while degraded; one scheduler line each, then the pointer.
+        let lane_lines = if matches!(lane, Lane::Observation | Lane::Wakes) {
+            2
+        } else {
+            1
+        };
+        // The built-in host's lane reports on its own pass: wait for its line.
+        wait_until(
+            &format!("{name} to show {lane_lines} scheduler line(s) in Health"),
+            Duration::from_secs(10),
+            || {
+                s.probe.kick_registered(lane);
+                s.health()
+                    .1
+                    .iter()
+                    .filter(|l| l.starts_with("scheduler degraded: "))
+                    .count()
+                    == lane_lines
+            },
+        );
         let (state, degraded) = s.health();
         assert_eq!(state, "degraded", "{name}: {degraded:?}");
         let mut others = without_degraded(&degraded);
@@ -656,14 +678,16 @@ fn injected_lane_failure_logs_and_degrades_then_clears() {
         let added: Vec<&String> = degraded.iter().filter(|l| is_degraded_line(l)).collect();
         assert_eq!(
             added.len(),
-            2,
-            "{name}: the scheduler line and the pointer: {degraded:?}"
+            lane_lines + 1,
+            "{name}: the scheduler line(s) and the pointer: {degraded:?}"
         );
         assert!(
-            added[0].starts_with("scheduler degraded: ") && added[0].contains(name),
+            added[..lane_lines]
+                .iter()
+                .all(|line| line.starts_with("scheduler degraded: ") && line.contains(name)),
             "{name}: {added:?}"
         );
-        assert_eq!(added[1], &pointer, "{name}");
+        assert_eq!(added[lane_lines], &pointer, "{name}");
 
         s.probe.heal_lane(lane);
         // Kicked, so the deadline and wake lanes' next good pass need not wait
@@ -674,6 +698,15 @@ fn injected_lane_failure_logs_and_degrades_then_clears() {
             || {
                 s.probe.kick_registered(lane);
                 s.probe.lane_health(lane).is_none()
+            },
+        );
+        // The built-in host's lane clears on its own pass.
+        wait_until(
+            &format!("Health to clear after {name}"),
+            Duration::from_secs(20),
+            || {
+                s.probe.kick_registered(lane);
+                s.health().0 == "healthy"
             },
         );
         let (state, cleared) = s.health();

@@ -201,6 +201,11 @@ impl LaneHandle {
 pub struct HostHealthEntry {
     pub input: HostHealthInput,
     pub lanes: Vec<LaneDegradation>,
+    /// Whether `input` joins `Health.hosts` and its aggregate. False for the
+    /// built-in named host: only its failed lanes reach Health, because its
+    /// capability answers (no cooperative Herdr prompt) are not a dialled
+    /// server's and would skew the aggregate and its wake limitation.
+    pub aggregated: bool,
 }
 
 /// `lane` as a Health degradation when its worker recorded a failure after its
@@ -344,6 +349,7 @@ impl HostSession {
                 last_reconciliation_at: evidence.last_reconciliation_at,
             },
             lanes,
+            aggregated: true,
         }
     }
 
@@ -617,7 +623,13 @@ impl HostSessions {
     }
 
     /// One Health entry per attached server, ascending by host id, with the
-    /// server's own failed lanes (`observation[<host_id>]`, `wake[<host_id>]`).
+    /// server's own failed lanes (`observation[<host_id>]`, `wake[<host_id>]`),
+    /// then the built-in named host's entry only while one of its lanes is
+    /// degraded, and not aggregated (`HostHealthEntry::aggregated`).
+    /// `DaemonHealthInputs.hosts` empty means a store-only daemon, and `assemble`
+    /// aggregates over `hosts`, so an always-present built-in input would turn
+    /// every store-only daemon's capability fields into the named host's; its
+    /// lane failure still reaches Health and doctor.
     ///
     /// Operator-only surface: it feeds `Health.hosts` and the degraded-lane
     /// lines of `doctor`, which carry the node-local host id and the socket
@@ -625,9 +637,18 @@ impl HostSessions {
     /// outage or recovery shows without a restart. A server the observation
     /// lane marked down reports unreachable even before its evidence says so.
     pub fn health_entries(&self) -> Vec<HostHealthEntry> {
+        let builtin = self
+            .builtin
+            .get()
+            .map(|session| HostHealthEntry {
+                aggregated: false,
+                ..session.health_entry()
+            })
+            .filter(|entry| !entry.lanes.is_empty());
         self.attached()
             .iter()
             .map(|session| session.health_entry())
+            .chain(builtin)
             .collect()
     }
 

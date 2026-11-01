@@ -307,15 +307,13 @@ impl ElectedHealth {
         // (the shared slots above stay untouched when sessions exist); they
         // degrade the scheduler like any lane, the first one through its
         // component line.
-        let (hosts, session_lanes): (Vec<_>, Vec<_>) = self
-            .host
-            .release
-            .entries()
-            .into_iter()
-            .map(|entry| (entry.input, entry.lanes))
-            .unzip();
-        inputs.hosts = hosts;
-        let session_lanes: Vec<_> = session_lanes.into_iter().flatten().collect();
+        let mut session_lanes = Vec::new();
+        for entry in self.host.release.entries() {
+            if entry.aggregated {
+                inputs.hosts.push(entry.input);
+            }
+            session_lanes.extend(entry.lanes);
+        }
         if inputs.scheduler == ComponentStatus::Ready
             && let Some(first) = session_lanes.first()
         {

@@ -884,6 +884,67 @@ fn named_host_is_built_in_and_never_attached() {
     assert_eq!(kind, "named");
 }
 
+// Kills: a built-in session left out of `health_entries`, so a failed tmux wake
+// lane of the named host never reaches Health (`wake[<id>]` stayed invisible),
+// and a built-in input that joins `Health.hosts` (it must not skew the aggregate).
+#[test]
+fn builtin_wake_lane_failure_reaches_health() {
+    let rig = Rig::start("mh-builtin-wake-lane", false);
+    let degraded_line = |health: &Health| {
+        health
+            .limitations
+            .iter()
+            .any(|line| line.starts_with("scheduler degraded: "))
+    };
+    let clean = rig.health();
+    assert!(!degraded_line(&clean), "{clean:?}");
+    let builtin_id: i64 = rig
+        .db()
+        .query_row(
+            "SELECT host_id FROM herdr_hosts WHERE endpoint=?1",
+            [herdr_threads::protocol::ids::NAMED_HOST_LOCATOR],
+            |r| r.get(0),
+        )
+        .expect("the built-in host has a row");
+    let probe = &rig.daemon.probe;
+    probe.fail_lane(Lane::Wakes, ErrorCode::StoreBusy);
+    rig.wait("the built-in wake lane to reach Health", || {
+        probe.kick_registered(Lane::Wakes);
+        let health = rig.health();
+        health.state == HealthState::Degraded && degraded_line(&health)
+    });
+    let lanes: Vec<String> = rig
+        .sessions()
+        .health_entries()
+        .into_iter()
+        .flat_map(|entry| entry.lanes)
+        .map(|lane| lane.lane)
+        .collect();
+    assert_eq!(lanes, vec![format!("wake[{builtin_id}]")]);
+    let health = rig.health();
+    assert!(health.hosts.is_empty(), "lanes only, no input: {health:?}");
+    probe.heal_lane(Lane::Wakes);
+    rig.wait("the built-in lane to recover", || {
+        probe.kick_registered(Lane::Wakes);
+        !degraded_line(&rig.health())
+    });
+}
+
+// Kills: a built-in entry that is always present, which would turn a
+// store-only daemon's capability fields into the named host's.
+#[test]
+fn store_only_daemon_stays_store_only_with_a_healthy_builtin() {
+    let rig = Rig::start("mh-store-only-builtin", false);
+    assert_eq!(rig.sessions().all_for_reads().len(), 1, "built-in attached");
+    rig.wait("lanes to settle", || {
+        std::thread::sleep(Duration::from_millis(300));
+        true
+    });
+    let health = rig.health();
+    assert!(health.hosts.is_empty(), "{health:?}");
+    assert_eq!(rig.sessions().health_entries().len(), 0);
+}
+
 // Kills: a daemon that attaches only its startup hint (or nothing without
 // one): with no hint and no remembered row nothing is attached, and the
 // first claim from fake host A attaches A, and only A, with its two workers.
