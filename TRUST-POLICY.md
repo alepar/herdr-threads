@@ -161,7 +161,7 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 |---|---|---|
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
 | Cooperative continuity | A top-level lifecycle or turn event, or a push-channel harness's in-process watch for its own session (ht-dtx0), carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
-| Process continuity (ht-hsyg) | After a new or unknown Herdr incarnation, a top-level harness binding (not human, `managed_launch` or subagent) that was open and connected when its seat became unresolved has a live fingerprinted process (same pid and start stamp) that is the shell Herdr reports for the seat's saved target in the current incarnation or belongs to the session that shell leads, on that shell's controlling terminal; a unique seat for that pane, and the pane has no resolved owner | `structural_process_continuity` |
+| Process continuity (ht-hsyg) | After a new or unknown Herdr incarnation, a top-level harness binding (not human, `managed_launch` or subagent) that was open and connected when its seat was last unresolved has a live fingerprinted process (same pid and start stamp) that is the shell Herdr reports for the seat's saved target in the current incarnation or belongs to the session that shell leads, on that shell's controlling terminal; no other seat saved at that target has a live fingerprinted process, no kept C1 claim names the target, the pane has no resolved owner, and the session's unique C1 match is that seat at the judged generation | `structural_process_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 
 A herdr-threads daemon upgrade can leave a still-running native session needing recovery;
@@ -272,18 +272,21 @@ so the same session can reopen it after a rebind.
 **Process continuity (ht-hsyg).** A new incarnation can keep the pane processes alive: a Herdr live handoff
 (`herdr server live-handoff`, `herdr update --handoff`) passes each pane's terminal to a new server process, which
 assigns new terminal ids. Old ids still prove nothing. What carries over is the process: after each completed
-reconciliation pass of the current recovery boot and epoch, the daemon checks each unresolved seat (reason
-`other`) whose top-level harness binding was open and connected at the unresolve (ended `seat_unresolved`) and
-carries a liveness fingerprint. If that binding's fingerprinted process is still the same process (pid and start
-stamp) and is the shell Herdr reports for the pane at the seat's saved target, or belongs to the session that shell
-leads, with that shell's controlling terminal, the seat is rebound there through the C1 transaction (provenance
-`structural_process_continuity` in seat history), the pane's hold is released and the binding reopens under its own
-session and fingerprint. The saved target only selects the pane to ask (one `pane process-info` read per candidate,
-no scan); the kernel session and terminal are the evidence. A cold restart cannot satisfy it: the old shells are
-gone, and a process that survived the hangup lost its controlling terminal. A pane that two seats' processes point
-to, an owned pane, an unreadable fact or any C1 refusal leaves the seat under the restore holds; a candidate the facts
-rule out is not read again for that seat generation and fingerprint. Person seats and `managed_launch` bindings are
-not covered.
+reconciliation pass of the current recovery boot and epoch, and after the kept claims (the sessions' own word), the
+daemon walks the unresolved seats (reason `other`) a page at a time, each with the top-level harness bindings its
+latest unresolve ended while open and connected (`seat_unresolved`) that carry a liveness fingerprint. If such a
+binding's fingerprinted process is still the same process (pid and start stamp) and is the shell Herdr reports for the
+pane at the seat's saved target, or belongs to the session that shell leads, with that shell's controlling terminal,
+the seat's newest such binding is reattached there through the C1 transaction: provenance
+`structural_process_continuity` in seat history, the pane's hold released, the binding reopened under its own session
+and fingerprint. The saved target only selects the pane to ask (one `pane process-info` read per seat, no scan); the
+kernel session and terminal are the evidence. A cold restart cannot satisfy it: the old shells are gone, and a process
+that survived the hangup lost its controlling terminal. Nothing is decided while another seat saved at the same target
+has a live fingerprinted process (the pane's process could be either's), while a kept C1 claim names the target, when
+the pane has an owner, or when the session's unique C1 match is not the judged seat at its judged generation; nor on an
+unreadable fact. A candidate the facts rule out, or that a definitive C1 refusal answers, is not read again for that
+seat generation and fingerprint; a gone process, an unread fact or a not-ready refusal is retried next pass. Person
+seats and `managed_launch` bindings are not covered.
 
 **Restored-pane retirement (ht-wpq4).** A seat that a new incarnation left unresolved (reason `other`) keeps a
 saved target from the old one, which proves nothing (C2), so its absence never retires the seat. What retires it

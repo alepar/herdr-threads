@@ -1732,14 +1732,24 @@ pub struct ContinuityRequest {
 }
 
 /// What a C1 reattachment rests on; it selects the provenance recorded in seat history.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContinuityEvidence {
     /// The session's own claim (a hook, a watch, or the daemon deciding a kept claim):
     /// `cooperative_continuity`.
     Cooperative,
     /// The daemon observed the binding's own process in the pane's kernel session and
     /// controlling terminal (C1 process continuity, ht-hsyg): `structural_process_continuity`.
-    Process,
+    /// The decision is valid only for the judged seat at the judged generation: the deciding
+    /// transaction refuses when the session's unique match is another seat, or the seat moved.
+    Process { seat: SeatId, seat_generation: u64 },
+}
+
+/// Which C1 process continuity candidates to list: the page after a seat (seat order), and/or
+/// only the seats saved at one target (the rivals of a match).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessContinuityPage {
+    pub after: Option<SeatId>,
+    pub target: Option<HostTargetId>,
 }
 
 /// One unresolved seat's binding that C1 process continuity may reattach (ht-hsyg): a
@@ -3347,6 +3357,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     fn process_continuity_candidates(
         &self,
         host: HostId,
+        page: ProcessContinuityPage,
         budget: &CallBudget,
     ) -> Result<Vec<ProcessContinuityCandidate>, ApiError>;
     /// The host's kept claims due for another decision, oldest first and

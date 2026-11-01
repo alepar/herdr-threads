@@ -98,10 +98,11 @@ pub struct OrdinaryIdentity {
     /// generation and fingerprint: none of those facts can turn into a match, so they are not
     /// read again. Bounded; cleared when full.
     process_declined: std::sync::Mutex<std::collections::HashSet<ProcessDeclineKey>>,
+    /// The last seat C1 process continuity walked this round; `None` starts over.
+    process_cursor: std::sync::Mutex<Option<SeatId>>,
 }
 
-/// (binding id, seat generation, fingerprint pid, fingerprint start).
-type ProcessDeclineKey = (String, u64, u32, u64);
+use crate::identity::process_continuity::DeclineKey as ProcessDeclineKey;
 /// Most C1 process continuity declines remembered before the set is cleared.
 const PROCESS_DECLINED_CAP: usize = 1024;
 
@@ -127,6 +128,7 @@ impl OrdinaryIdentity {
             service: Cancellation::default(),
             observation_pacer: None,
             process_declined: std::sync::Mutex::new(std::collections::HashSet::new()),
+            process_cursor: std::sync::Mutex::new(None),
         }
     }
 
@@ -443,117 +445,154 @@ impl OrdinaryIdentity {
     /// the observation lane (after the kept claims, which are the sessions' own), reattach each
     /// unresolved seat whose top-level harness binding's own process Herdr's pane at the seat's
     /// saved target still hosts (see [`crate::identity::process_continuity`]). The saved target
-    /// only selects the pane to ask; one quiet `pane process-info` read per candidate. A pane
-    /// two seats' processes point to decides nothing. The decision is the ordinary C1
-    /// transaction, under a daemon operation key per (seat, binding, seat generation), recorded
-    /// `structural_process_continuity`. A candidate the facts rule out is remembered for its seat
-    /// generation and fingerprint, so it costs no further reads; one whose facts were unreadable
-    /// is retried next pass.
+    /// only selects the pane to ask: one quiet `pane process-info` read per seat with a live,
+    /// undeclined candidate. Seats are walked a page at a time from a cursor, so every one is
+    /// reached however many others are declined, and each match is decided at once, before the
+    /// next seat is read. A match is not decided while another seat saved at the same target has
+    /// a live process. The decision is the ordinary C1 transaction, pinned to the judged seat and
+    /// generation, under a daemon operation key per (seat, binding, seat generation), recorded
+    /// `structural_process_continuity`. A candidate the facts rule out, or that a definitive C1
+    /// refusal answers, is remembered for its seat generation and fingerprint; a gone process, an
+    /// unread fact or a not-ready refusal is retried next pass.
     pub fn decide_process_continuity(&self) -> Result<(), ApiError> {
-        use crate::identity::process_continuity::{Verdict, judge};
+        use crate::identity::process_continuity::{decline_key, judge_seat, page_groups};
         let budget = self.maintenance_budget();
-        let candidates = {
+        let after = self
+            .process_cursor
+            .lock()
+            .ok()
+            .and_then(|cursor| cursor.clone());
+        let rows = {
             let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
-            self.store
-                .process_continuity_candidates(self.host_id, &budget)?
-        };
-        if candidates.is_empty() {
-            return Ok(());
-        }
-        let processes = crate::host::process_table::HostProcessTable;
-        let declined_key = |c: &crate::ports::ProcessContinuityCandidate| {
-            (
-                c.binding_id.clone(),
-                c.seat_generation,
-                c.liveness.pid,
-                c.liveness.start,
-            )
-        };
-        let mut matched: std::collections::BTreeMap<
-            HostTargetId,
-            Vec<crate::ports::ProcessContinuityCandidate>,
-        > = std::collections::BTreeMap::new();
-        for candidate in candidates {
-            if budget.is_exhausted(self.clock.as_ref()) {
-                break;
-            }
-            let key = declined_key(&candidate);
-            if self
-                .process_declined
-                .lock()
-                .is_ok_and(|declined| declined.contains(&key))
-            {
-                continue;
-            }
-            let verdict = if candidate.liveness.is_alive(&processes) {
-                let context = HostCallContext {
-                    budget: CallBudget {
-                        deadline: budget.deadline.min(MonoInstant(
-                            self.clock
-                                .monotonic_now()
-                                .0
-                                .saturating_add(DIAGNOSTIC_READ_MILLIS),
-                        )),
-                        cancellation: budget.cancellation.clone(),
-                    },
-                    expected_boot: None,
-                    expected_epoch: None,
-                };
-                match self.host.pane_shell_pid(&candidate.target, &context) {
-                    Ok(Some(shell)) => judge(&processes, candidate.liveness, shell),
-                    _ => Verdict::Unknown,
-                }
-            } else {
-                Verdict::NotContinuous
-            };
-            match verdict {
-                Verdict::Continuous => matched
-                    .entry(candidate.target.clone())
-                    .or_default()
-                    .push(candidate),
-                Verdict::NotContinuous => self.decline_process_candidate(key),
-                Verdict::Unknown => {}
-            }
-        }
-        for (_, at_target) in matched {
-            if budget.is_exhausted(self.clock.as_ref()) {
-                break;
-            }
-            let seat = &at_target[0].seat;
-            if at_target.iter().any(|other| &other.seat != seat) {
-                continue;
-            }
-            // The store lists a seat's bindings newest first.
-            let candidate = &at_target[0];
-            let Ok(operation) = crate::protocol::ids::OperationId::parse(format!(
-                "process-continuity:{}:{}:{}",
-                candidate.seat.as_str(),
-                candidate.binding_id,
-                candidate.seat_generation
-            )) else {
-                continue;
-            };
-            let command = ContinuityCheckIn {
-                target: candidate.target.clone(),
-                host: candidate.host.clone(),
-                harness: candidate.harness,
-                native_session: candidate.native_session.clone(),
-                source: ContinuityCheckIn::SAME_SESSION_SOURCE.to_owned(),
-                operation,
-                execution: candidate.execution.clone(),
-                liveness: Some(candidate.liveness),
-            };
-            let (result, not_ready) = self.decide_continuity_now(
-                command,
+            self.store.process_continuity_candidates(
+                self.host_id,
+                crate::ports::ProcessContinuityPage {
+                    after,
+                    target: None,
+                },
                 &budget,
-                true,
-                crate::ports::ContinuityEvidence::Process,
-            );
-            if result.is_err() && !not_ready {
-                self.decline_process_candidate(declined_key(candidate));
+            )?
+        };
+        let full = rows.len() >= crate::store::seats::PROCESS_CONTINUITY_CANDIDATES_PER_PASS;
+        let (groups, last_page) = page_groups(rows, full);
+        let processes = crate::host::process_table::HostProcessTable;
+        let declined = |key: &ProcessDeclineKey| {
+            self.process_declined
+                .lock()
+                .is_ok_and(|declined| declined.contains(key))
+        };
+        let mut walked_all = true;
+        for group in &groups {
+            if budget.is_exhausted(self.clock.as_ref()) {
+                walked_all = false;
+                break;
             }
+            let worth_reading = group.iter().any(|candidate| {
+                !declined(&decline_key(candidate)) && candidate.liveness.is_alive(&processes)
+            });
+            if worth_reading {
+                let shell = self
+                    .host
+                    .pane_shell_pid(&group[0].target, &self.quiet_read_context(&budget))
+                    .ok()
+                    .flatten();
+                let judged = judge_seat(group, &processes, shell, &declined);
+                for key in judged.declines {
+                    self.decline_process_candidate(key);
+                }
+                if let Some(candidate) = judged.matched {
+                    self.decide_process_match(candidate, &processes, &budget)?;
+                }
+            }
+            if let Ok(mut cursor) = self.process_cursor.lock() {
+                *cursor = Some(group[0].seat.clone());
+            }
+        }
+        if walked_all
+            && last_page
+            && let Ok(mut cursor) = self.process_cursor.lock()
+        {
+            *cursor = None;
         }
         Ok(())
+    }
+
+    /// One judged match: refuse to choose while another seat at the target has a live process,
+    /// else the C1 transaction pinned to the judged seat and generation.
+    fn decide_process_match(
+        &self,
+        candidate: &crate::ports::ProcessContinuityCandidate,
+        processes: &dyn crate::ports::ProcessInfo,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let at_target = {
+            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+            self.store.process_continuity_candidates(
+                self.host_id,
+                crate::ports::ProcessContinuityPage {
+                    after: None,
+                    target: Some(candidate.target.clone()),
+                },
+                budget,
+            )?
+        };
+        if crate::identity::process_continuity::has_live_rival(
+            &at_target,
+            &candidate.seat,
+            processes,
+        ) {
+            return Ok(());
+        }
+        let Ok(operation) = crate::protocol::ids::OperationId::parse(format!(
+            "process-continuity:{}:{}:{}",
+            candidate.seat.as_str(),
+            candidate.binding_id,
+            candidate.seat_generation
+        )) else {
+            return Ok(());
+        };
+        let command = ContinuityCheckIn {
+            target: candidate.target.clone(),
+            host: candidate.host.clone(),
+            harness: candidate.harness,
+            native_session: candidate.native_session.clone(),
+            source: ContinuityCheckIn::SAME_SESSION_SOURCE.to_owned(),
+            operation,
+            execution: candidate.execution.clone(),
+            liveness: Some(candidate.liveness),
+        };
+        let (result, not_ready) = self.decide_continuity_now(
+            command,
+            budget,
+            true,
+            crate::ports::ContinuityEvidence::Process {
+                seat: candidate.seat.clone(),
+                seat_generation: candidate.seat_generation,
+            },
+        );
+        if result.is_err() && !not_ready {
+            self.decline_process_candidate(crate::identity::process_continuity::decline_key(
+                candidate,
+            ));
+        }
+        Ok(())
+    }
+
+    /// A quiet host read's context: its own short budget within `budget`, no fences.
+    fn quiet_read_context(&self, budget: &CallBudget) -> HostCallContext {
+        HostCallContext {
+            budget: CallBudget {
+                deadline: budget.deadline.min(MonoInstant(
+                    self.clock
+                        .monotonic_now()
+                        .0
+                        .saturating_add(DIAGNOSTIC_READ_MILLIS),
+                )),
+                cancellation: budget.cancellation.clone(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        }
     }
 
     fn decline_process_candidate(&self, key: ProcessDeclineKey) {

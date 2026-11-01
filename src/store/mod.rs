@@ -2292,9 +2292,10 @@ impl StorePort for SqliteStore {
     fn process_continuity_candidates(
         &self,
         host: crate::ports::HostId,
+        page: crate::ports::ProcessContinuityPage,
         budget: &CallBudget,
     ) -> Result<Vec<crate::ports::ProcessContinuityCandidate>, ApiError> {
-        seats::process_continuity_candidates(&self.context, &self.instance, host, budget)
+        seats::process_continuity_candidates(&self.context, &self.instance, host, &page, budget)
     }
     fn kept_continuity_claims(
         &self,

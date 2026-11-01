@@ -9331,12 +9331,17 @@ fn c1_tables_mentioning(conn: &Connection, needle: &str) -> Vec<String> {
 }
 
 /// TRUST-POLICY C1 process continuity (ht-hsyg): the candidate query lists exactly the
-/// unresolved seat's top-level harness binding the unresolve ended while open and that carries a
-/// fingerprint, and a decision on process evidence records `structural_process_continuity`.
+/// unresolved seat's top-level harness bindings its latest unresolve ended while open and that
+/// carry a fingerprint, pages by seat and filters by target; a decision on process evidence is
+/// refused unless the session's match is the judged seat at the judged generation with no kept
+/// claim on the target, and records `structural_process_continuity`.
 /// Kills: listing a binding without a fingerprint, a human or managed-launch binding, one ended
-/// for another reason, or a seat unresolved for host invalidation; recording the cooperative kind.
+/// for another reason or at an earlier unresolve, or a seat unresolved for host invalidation;
+/// ignoring the page filters; deciding for another seat, a moved seat or past a kept claim;
+/// recording the cooperative kind.
 #[test]
 fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
+    use crate::ports::{ContinuityEvidence, ProcessContinuityPage};
     use crate::protocol::time::{CallBudget, Cancellation};
     let (context, mut conn, path) = c1_fixture();
     let budget = CallBudget {
@@ -9349,12 +9354,13 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
     )
     .unwrap();
     conn.execute(
-        "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',liveness_pid=4242,liveness_start=7 WHERE seat_id='s1'",
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',disconnected_at=50,liveness_pid=4242,liveness_start=7 WHERE seat_id='s1'",
         [],
     )
     .unwrap();
-    // Excluded: no fingerprint, a human binding, a managed launch, another end reason.
-    for (generation, harness, session, provenance, reason, pid) in [
+    // Excluded: no fingerprint, a human binding, a managed launch, another end reason, and a
+    // binding an earlier unresolve ended (never reopened since).
+    for (generation, harness, session, provenance, reason, pid, at) in [
         (
             2,
             "claude",
@@ -9362,6 +9368,7 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             "cooperative_top_level",
             "seat_unresolved",
             None,
+            50,
         ),
         (
             3,
@@ -9370,6 +9377,7 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             "cooperative_top_level",
             "seat_unresolved",
             Some(1),
+            50,
         ),
         (
             4,
@@ -9378,6 +9386,7 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             "managed_launch",
             "seat_unresolved",
             Some(1),
+            50,
         ),
         (
             5,
@@ -9386,58 +9395,152 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             "cooperative_top_level",
             "superseded",
             Some(1),
+            50,
+        ),
+        (
+            6,
+            "claude",
+            "stale",
+            "cooperative_top_level",
+            "seat_unresolved",
+            Some(1),
+            20,
         ),
     ] {
         c1_bind(&conn, "s1", generation, harness, session);
         conn.execute(
-            "UPDATE occupant_bindings SET observation_provenance=?2,liveness='disconnected',disconnect_reason=?3,liveness_pid=?4,liveness_start=?4 WHERE seat_id='s1' AND native_session=?1",
-            rusqlite::params![session, provenance, reason, pid],
+            "UPDATE occupant_bindings SET observation_provenance=?2,liveness='disconnected',disconnect_reason=?3,liveness_pid=?4,liveness_start=?4,disconnected_at=?5 WHERE seat_id='s1' AND native_session=?1",
+            rusqlite::params![session, provenance, reason, pid, at],
         )
         .unwrap();
     }
-    let candidates = crate::store::seats::process_continuity_candidates(
-        &context,
-        "34750f98bd59fcfc946da45aaabe933b",
-        crate::test_support::test_host_id(),
-        &budget,
-    )
-    .unwrap();
-    let listed: Vec<_> = candidates
+    let list = |page: ProcessContinuityPage| {
+        crate::store::seats::process_continuity_candidates(
+            &context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &page,
+            &budget,
+        )
+        .unwrap()
+    };
+    let page = |after: Option<&str>, target: Option<&str>| ProcessContinuityPage {
+        after: after.map(SeatId::new),
+        target: target.map(HostTargetId::new),
+    };
+    let listed: Vec<_> = list(page(None, None))
         .iter()
         .map(|c| {
             (
-                c.seat.as_str(),
-                c.target.as_str(),
-                c.native_session.as_str(),
+                c.seat.as_str().to_owned(),
+                c.target.as_str().to_owned(),
+                c.native_session.as_str().to_owned(),
                 c.liveness.pid,
                 c.liveness.start,
             )
         })
         .collect();
-    assert_eq!(listed, vec![("s1", "held-pane", "sess-1", 4242, 7)]);
+    assert_eq!(
+        listed,
+        vec![("s1".into(), "held-pane".into(), "sess-1".into(), 4242, 7)]
+    );
+    assert_eq!(list(page(Some("s0"), Some("held-pane"))).len(), 1);
+    assert!(
+        list(page(Some("s1"), None)).is_empty(),
+        "the page starts after the cursor"
+    );
+    assert!(
+        list(page(None, Some("other-pane"))).is_empty(),
+        "only the given target"
+    );
     // A seat unresolved for host invalidation is the structural bridge's, not this path's.
     conn.execute(
         "UPDATE seats SET unresolved_reason='host_invalidation' WHERE id='s1'",
         [],
     )
     .unwrap();
-    assert!(
-        crate::store::seats::process_continuity_candidates(
-            &context,
-            "34750f98bd59fcfc946da45aaabe933b",
-            crate::test_support::test_host_id(),
-            &budget,
-        )
-        .unwrap()
-        .is_empty()
-    );
+    assert!(list(page(None, None)).is_empty());
     conn.execute(
         "UPDATE seats SET unresolved_reason='other' WHERE id='s1'",
         [],
     )
     .unwrap();
 
-    let mut command = c1_command("held-pane", "sess-1", "process-continuity:s1:b:1");
+    let generation: i64 = conn
+        .query_row("SELECT generation FROM seats WHERE id='s1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let mut decide = |operation: &str, seat: &str, seat_generation: i64| {
+        let mut command = c1_command("held-pane", "sess-1", operation);
+        command.source = "same_session".into();
+        let guard = crate::ports::ContinuityTargetGuard::try_new(
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &command,
+            b5_fresh_observation("held-pane"),
+        )
+        .unwrap();
+        crate::store::seats::decide_continuity(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::ports::ContinuityRequest {
+                command,
+                guard,
+                diagnostic: "absent",
+                evidence: ContinuityEvidence::Process {
+                    seat: SeatId::new(seat),
+                    seat_generation: seat_generation as u64,
+                },
+            },
+        )
+    };
+    let refused = decide("pc-other-seat", "s2", generation).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict, "{refused:?}");
+    let refused = decide("pc-moved", "s1", generation + 1).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict, "{refused:?}");
+    drop(decide);
+    conn.execute(
+        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),'held-pane','claude','someone','{}',1)",
+        [],
+    )
+    .unwrap();
+    let mut decide = |operation: &str| {
+        let mut command = c1_command("held-pane", "sess-1", operation);
+        command.source = "same_session".into();
+        let guard = crate::ports::ContinuityTargetGuard::try_new(
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &command,
+            b5_fresh_observation("held-pane"),
+        )
+        .unwrap();
+        crate::store::seats::decide_continuity(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::ports::ContinuityRequest {
+                command,
+                guard,
+                diagnostic: "absent",
+                evidence: ContinuityEvidence::Process {
+                    seat: SeatId::new("s1"),
+                    seat_generation: generation as u64,
+                },
+            },
+        )
+    };
+    let refused = decide("pc-kept").unwrap_err();
+    assert_eq!(
+        refused.code,
+        ErrorCode::ServiceBusy,
+        "a kept claim is decided first: {refused:?}"
+    );
+    drop(decide);
+    conn.execute("DELETE FROM kept_continuity_claims", [])
+        .unwrap();
+    let mut command = c1_command("held-pane", "sess-1", "pc-ok");
     command.source = "same_session".into();
     let guard = crate::ports::ContinuityTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
@@ -9454,7 +9557,10 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             command,
             guard,
             diagnostic: "absent",
-            evidence: crate::ports::ContinuityEvidence::Process,
+            evidence: ContinuityEvidence::Process {
+                seat: SeatId::new("s1"),
+                seat_generation: generation as u64,
+            },
         },
     )
     .unwrap();
@@ -9479,6 +9585,7 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             &context,
             "34750f98bd59fcfc946da45aaabe933b",
             crate::test_support::test_host_id(),
+            &ProcessContinuityPage::default(),
             &budget,
         )
         .unwrap()
