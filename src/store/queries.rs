@@ -5986,12 +5986,17 @@ fn inbox_batch(
                                     "inbox body changed",
                                 ));
                             }
+                            let sender_label = match sender.as_deref() {
+                                Some(s) => crate::store::seat_directory::sender_label(db, s)?,
+                                None => None,
+                            };
                             let complete = InboxBatchItem::Message {
                                 thread: ThreadId::new(thread.clone()),
                                 topic_data: batch_topic(db, &thread)?,
                                 message: MessageId::new(&receipt.message_id),
                                 sequence: sequence as u64,
                                 sender: sender.clone().map(SeatId::new),
+                                sender_label: sender_label.clone(),
                                 author_role,
                                 relays_user,
                                 user_intent,
@@ -6041,6 +6046,7 @@ fn inbox_batch(
                                         message: MessageId::new(&receipt.message_id),
                                         sequence: sequence as u64,
                                         sender: sender.clone().map(SeatId::new),
+                                        sender_label: sender_label.clone(),
                                         author_role,
                                         relays_user,
                                         user_intent,

@@ -233,6 +233,7 @@ fn page<T>(items: Vec<T>, next: Option<&str>) -> Page<T> {
 
 fn message(id: &str, body: &str, start: u64, end: u64, len: u64, ack: bool) -> InboxBatchV2Item {
     InboxBatchV2Item::Message {
+        sender_label: None,
         priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
@@ -258,6 +259,7 @@ fn whole(id: &str, body: &str) -> InboxBatchV2Item {
 
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        sender_label: None,
         priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),

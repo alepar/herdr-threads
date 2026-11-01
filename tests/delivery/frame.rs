@@ -11,7 +11,7 @@ macro_rules! golden {
     };
 }
 
-const GOLDENS: [(&str, &str, &str); 8] = [
+const GOLDENS: [(&str, &str, &str); 9] = [
     golden!("empty"),
     golden!("multiline"),
     golden!("controls"),
@@ -20,6 +20,7 @@ const GOLDENS: [(&str, &str, &str); 8] = [
     golden!("attention"),
     golden!("priority"),
     golden!("tagged-ids"),
+    golden!("sender-label"),
 ];
 
 fn items(json: &str) -> Vec<FrameItem> {
@@ -34,6 +35,22 @@ fn frame_matches_the_js_golden_byte_for_byte() {
         assert!(!got.starts_with('/'), "case {name}");
         assert!(got.starts_with(HEADER), "case {name}");
     }
+}
+
+#[test]
+fn a_label_replaces_the_id_and_quoted_name() {
+    let got = frame(&[FrameItem {
+        kind: "message".into(),
+        id: "m1".into(),
+        thread: Some("T1".into()),
+        sender: Some("S1".into()),
+        sender_name: Some("alice".into()),
+        sender_label: Some("reviewer@B".into()),
+        body: "b".into(),
+        ..FrameItem::default()
+    }]);
+    assert!(got.contains(" from reviewer@B:\n"), "{got}");
+    assert!(!got.contains("S1 ") && !got.contains("alice"), "{got}");
 }
 
 #[test]

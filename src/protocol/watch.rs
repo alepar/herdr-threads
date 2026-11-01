@@ -512,6 +512,10 @@ pub struct WatchMessage {
     /// The sender as the native inbox shows it: the seat id, or `service` for
     /// an item with no sender seat.
     pub sender_name: Option<String>,
+    /// A named sender's name (`reviewer`, `reviewer@B`), shown in the header in place of the id;
+    /// absent for other seats and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_label: Option<String>,
     pub author_role: Option<AuthorRole>,
     pub relays_user: bool,
     pub user_intent: Option<UserIntent>,

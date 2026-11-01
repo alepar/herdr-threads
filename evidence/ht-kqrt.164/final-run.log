@@ -1,0 +1,23 @@
+=== clippy
+heavy: slot 2 acquired 09:21:59
+    Checking herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.164)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 51.70s
+check-harness-neutral: ok — 0 violations, 84 allowlisted (to-migrate 0, frozen-wire 49, history 0, registration 35), 51 entries
+check-wire-compat: ok — 0 violations, 0 stale, 416 fields, 24 variants, 268 baseline entries
+=== --lib -- sender_label a_label_replaces reads_as_its_name inbox_row_shows the_assembler_carries an_absent_sender frame_matches the_mod_test_copy
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 6766 filtered out; finished in 0.93s
+=== --lib delivery
+test result: ok. 526 passed; 0 failed; 0 ignored; 0 measured; 6249 filtered out; finished in 4.60s
+=== --lib store::queries
+test result: ok. 199 passed; 0 failed; 0 ignored; 0 measured; 6576 filtered out; finished in 5.00s
+=== --lib service::delivery_pull
+test result: ok. 175 passed; 0 failed; 0 ignored; 0 measured; 6600 filtered out; finished in 4.02s
+=== --test config_smoke
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 29.45s
+=== --test multinode named_seats
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 1.70s
+=== --test hc_messaging
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+=== --test combined golden_surfaces
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 1259 filtered out; finished in 2.90s
+ALLDONE

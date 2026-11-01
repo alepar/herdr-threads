@@ -77,6 +77,11 @@ const cases = {
     msg('mQ7aAb12Cd34', { thread: 'tQ7aZz99Yy88', sender: 'sQ7aK3Fq9a2B' }),
     msg('mQ7aEf56Gh78', { priority: 0, thread: 'dK3Fq9a2B7x', sender: 'sQ7aK3Fq9a2B', senderName: 'bob' }),
   ],
+  // A named sender's label replaces the id and quoted name (the default msg sets both).
+  'sender-label': [
+    msg('m1', { senderLabel: 'reviewer' }),
+    msg('m2', { senderLabel: 'reviewer@Q0V' }),
+  ],
   attention: [
     { kind: 'attention', id: 'attention:4', body: 'You have pending herdr-threads items.' },
     msg('m1'),

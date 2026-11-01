@@ -110,6 +110,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                         message,
                         sequence,
                         sender,
+                        sender_label,
                         author_role,
                         relays_user,
                         user_intent,
@@ -126,6 +127,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                         message,
                         sequence,
                         sender,
+                        sender_label,
                         author_role,
                         relays_user,
                         user_intent,
@@ -141,6 +143,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                         message: message.clone(),
                         sequence: *sequence,
                         sender: sender.clone(),
+                        sender_label: sender_label.clone(),
                         author_role: *author_role,
                         relays_user: *relays_user,
                         user_intent: *user_intent,
@@ -277,6 +280,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                             message,
                             sequence,
                             sender,
+                            sender_label,
                             author_role,
                             relays_user,
                             user_intent,
@@ -291,7 +295,10 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                                 message.as_str(),
                                 thread.as_str(),
                                 sequence,
-                                sender.as_ref().map_or("service", |s| s.as_str()),
+                                sender_label
+                                    .as_deref()
+                                    .or_else(|| sender.as_ref().map(|s| s.as_str()))
+                                    .unwrap_or("service"),
                                 crate::protocol::results::author_markers(
                                     MessageKind::Ordinary,
                                     *author_role,
@@ -1721,6 +1728,7 @@ mod inbox_batch_tests {
         let page = Page {
             items: vec![
                 InboxBatchItem::Message {
+                    sender_label: None,
                     thread: ThreadId::new("full-thread-id"),
                     topic_data: "Topic".into(),
                     message: MessageId::new("full-message-id"),

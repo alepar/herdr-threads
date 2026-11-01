@@ -63,6 +63,7 @@ impl Drop for Fixture {
 fn page(start: u64, end: u64) -> CommandResult {
     CommandResult::InboxBatchV2(Page {
         items: vec![InboxBatchV2Item::LazyMessage {
+            sender_label: None,
             priority: None,
             thread: ThreadId::new("thread"),
             topic_data: "topic".into(),
@@ -569,6 +570,7 @@ fn lazy_display_mixed_candidates_and_human_policy() {
         unreachable!()
     };
     p.items.push(InboxBatchV2Item::Message {
+        sender_label: None,
         priority: None,
         thread: ThreadId::new("thread"),
         topic_data: "topic".into(),
@@ -853,6 +855,7 @@ fn continuation_mixed_sources_preserve_invocation() {
             informational: false,
         },
         InboxBatchV2Item::Message {
+            sender_label: None,
             priority: None,
             thread: ThreadId::new("thread"),
             topic_data: "topic".into(),

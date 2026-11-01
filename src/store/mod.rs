@@ -3326,10 +3326,15 @@ impl StorePort for SqliteStore {
                 .optional()
                 .map_err(store_error)?
                 .flatten();
+            let author_label = match author.as_deref() {
+                Some(a) => seat_directory::sender_label(&db, a)?,
+                None => None,
+            };
             Ok(crate::ports::PulledNotice {
                 notice: offered.notice,
                 topic,
                 author: author.map(SeatId::new),
+                author_label,
             })
         })
         .collect()

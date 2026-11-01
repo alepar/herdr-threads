@@ -86,3 +86,52 @@ fn reviewer_at_b_addresses_and_displays() {
     assert!(row.contains("reviewer"), "{row}");
     assert_eq!(row.matches("reviewer").count(), 1, "{row}");
 }
+
+// Kills: a delivery header that shows the replicated name without its node tag, or the seat id
+// instead of the name, for a remote named sender.
+#[test]
+fn remote_named_sender_reads_name_at_tag_in_headers() {
+    let mut cluster = Cluster::start(
+        "mn-named-header",
+        crate::BIN,
+        2,
+        ClusterOptions {
+            links: vec![(0, 1)],
+            ..Default::default()
+        },
+    );
+    cluster.add_host(0, &[P1]);
+    cluster.add_host(1, &[P1]);
+    let b = cluster.seat(1, P1);
+    let tag_a: String = cluster
+        .scalar(0, "SELECT tag FROM local_node", &[])
+        .expect("node A's tag");
+    let reviewer = cluster.named_seat(0, P1, "reviewer");
+    cluster.wait_converged(crate::WAIT);
+    support::wait_seats(&cluster, 1, 2);
+
+    let (code, text, stderr) = cluster.text_as(
+        Some(&reviewer),
+        0,
+        &["send", "--seat", &b.id, "--body", "header probe"],
+    );
+    assert_eq!(code, 0, "{stderr}{text}");
+    cluster.wait_until("the message to reach B", crate::WAIT, || {
+        cluster
+            .scalar(
+                1,
+                "SELECT count(*) FROM messages WHERE body='header probe'",
+                &[],
+            )
+            .filter(|n| n != "0")
+    });
+    let (code, inbox, stderr) = cluster.text_as(Some(&b), 1, &["inbox"]);
+    assert_eq!(code, 0, "{stderr}");
+    let row = inbox
+        .lines()
+        .find(|l| l.starts_with("message "))
+        .unwrap_or_else(|| panic!("{inbox}"));
+    assert!(row.contains(&format!(" from reviewer@{tag_a}")), "{row}");
+    let header = row.split(" bytes ").next().unwrap();
+    assert!(!header.contains(&reviewer.id), "{header}");
+}

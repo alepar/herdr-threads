@@ -853,6 +853,74 @@ fn inbox_v2_current_agent_counts_registered_harnesses_only() {
     }
 }
 
+/// Kills: a label for a pane seat or an unknown id (their headers must keep the id), a remote
+/// name without its node tag, a remote node with no directory row that does not fall back to the
+/// short uuid, and an inbox read whose `sender` stops being the seat id.
+#[test]
+fn sender_label_is_the_name_locally_and_name_at_tag_remotely() {
+    use crate::store::seat_directory::sender_label;
+    let (store, db) = fixture();
+    bind_query_agent(&db);
+    let tagged = "ab".repeat(16);
+    let untagged = "cd".repeat(16);
+    db.execute_batch(&format!(
+        "PRAGMA foreign_keys=OFF;
+         INSERT INTO node_directory(node_uuid,tag,tag_k,first_seen_at) VALUES ('{tagged}','Q0V',0,0);
+         INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published,name)
+           VALUES ('r-tag','34750f98bd59fcfc946da45aaabe933b','remote','native',1,0,'{tagged}',0,'agent',1,'reviewer'),
+                  ('r-bare','34750f98bd59fcfc946da45aaabe933b','remote','native',1,0,'{untagged}',0,'agent',1,'reviewer');
+         UPDATE seats SET name=NULL WHERE id='s';"
+    ))
+    .unwrap();
+    assert_eq!(
+        sender_label(&db, "s").unwrap(),
+        None,
+        "a pane seat keeps its id"
+    );
+    assert_eq!(sender_label(&db, "nobody").unwrap(), None);
+    db.execute("UPDATE seats SET name='reviewer' WHERE id='s'", [])
+        .unwrap();
+    assert_eq!(sender_label(&db, "s").unwrap().as_deref(), Some("reviewer"));
+    assert_eq!(
+        sender_label(&db, "r-tag").unwrap().as_deref(),
+        Some("reviewer@Q0V")
+    );
+    assert_eq!(
+        sender_label(&db, "r-bare").unwrap().as_deref(),
+        Some("reviewer@cdcdcdcd")
+    );
+
+    db.execute_batch("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('34750f98bd59fcfc946da45aaabe933b',1,'m-named',  't',1,'ordinary','s','hi',0);
+        INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m-named','t','s','pending',300);
+        UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    let result = query(
+        &store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
+            thread: None,
+            seat: Some(SeatId::new("s")),
+            page: page(None),
+            claim: None,
+        }),
+        &budget(),
+    )
+    .unwrap();
+    let CommandResult::InboxBatchV2(batch) = result else {
+        panic!("wrong result")
+    };
+    let crate::protocol::results::InboxBatchV2Item::Message {
+        sender,
+        sender_label,
+        ..
+    } = &batch.items[0]
+    else {
+        panic!("wrong item")
+    };
+    assert_eq!(sender.as_ref().map(SeatId::as_str), Some("s"));
+    assert_eq!(sender_label.as_deref(), Some("reviewer"));
+}
+
 #[test]
 fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
     let (store, db) = fixture();

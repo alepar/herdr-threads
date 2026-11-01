@@ -56,6 +56,7 @@ impl PageSource for Scripted {
 
 fn message(id: &str, body: &str, start: u64, end: u64, len: u64, ack: bool) -> InboxBatchV2Item {
     InboxBatchV2Item::Message {
+        sender_label: None,
         priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
@@ -81,6 +82,7 @@ fn whole(id: &str, body: &str) -> InboxBatchV2Item {
 
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        sender_label: None,
         priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
@@ -629,4 +631,26 @@ fn an_omitted_invitation_goal_is_incomplete_until_full_context_at_the_same_revis
     assert!(!item.content.truncated);
     assert!(item.content.body.contains("goal: review recipient remit"));
     assert!(matches!(assembler.push(full), Ok(Assembled::Duplicate)));
+}
+
+// Kills: an assembler that drops the daemon's sender label, leaving the watch line and the
+// mod's frame to show the seat id.
+#[test]
+fn the_assembler_carries_the_sender_label_onto_the_watch_message() {
+    let labelled = |id: &str, label: Option<&str>| {
+        let mut item = whole(id, "body");
+        if let InboxBatchV2Item::Message { sender_label, .. } = &mut item {
+            *sender_label = label.map(str::to_owned);
+        }
+        item
+    };
+    let mut source = Scripted::of(vec![vec![
+        labelled("l1", Some("reviewer@B")),
+        labelled("l2", None),
+    ]]);
+    let (_, events) = drain(&mut source, &mut Assembler::default(), 1);
+    let first = &item_of(&events[0]).message;
+    assert_eq!(first.sender_label.as_deref(), Some("reviewer@B"));
+    assert_eq!(first.sender.as_ref().map(SeatId::as_str), Some("sender"));
+    assert_eq!(item_of(&events[1]).message.sender_label, None);
 }

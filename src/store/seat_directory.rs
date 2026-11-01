@@ -111,6 +111,35 @@ pub fn directory(
     })))
 }
 
+/// What a delivery header shows for a named sender: `reviewer`, or `reviewer@B` for a remote
+/// seat (its replicated `display_name`, `seats.name` here, and its node's tag). `None` for
+/// any other seat, which keeps its id. Store data only: no delivery path asks a host.
+pub fn sender_label(db: &Connection, seat: &str) -> Result<Option<String>, ApiError> {
+    let row: Option<(String, bool, Option<String>)> = db
+        .query_row(
+            "SELECT home_node, is_local, name FROM seats WHERE id=?1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((home, is_local, Some(name))) = row else {
+        return Ok(None);
+    };
+    if is_local {
+        return Ok(Some(name));
+    }
+    let node_row = match home.parse::<NodeUuid>() {
+        Ok(uuid) => node_directory::get(db, uuid).map_err(store_error)?,
+        Err(_) => None,
+    };
+    let tag = node_label(
+        node_row.as_ref().map(|r| r.tag.to_string()).as_deref(),
+        &home,
+    );
+    Ok(Some(format!("{name}@{tag}")))
+}
+
 /// Show `labels` as `entry`'s workspace, tab and pane.
 pub fn set_labels(entry: &mut SeatDirectory, labels: &TargetLabels) {
     entry.workspace = Some(labels.workspace.clone());

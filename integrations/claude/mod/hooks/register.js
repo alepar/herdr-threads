@@ -59,7 +59,7 @@ export function frame(items) {
   const blocks = items.map((it) =>
     it.kind === 'attention'
       ? `[herdr-threads] attention ${oneLine(it.id)}:\n${indent(it.body)}`
-      : `[herdr-threads] ${it.kind === 'lazy' ? 'message' : oneLine(it.kind)} ${oneLine(it.id)} in ${label(it.thread, it.threadName)} from ${label(it.sender, it.senderName)}${markers(it)}:\n${indent(it.body)}`,
+      : `[herdr-threads] ${it.kind === 'lazy' ? 'message' : oneLine(it.kind)} ${oneLine(it.id)} in ${label(it.thread, it.threadName)} from ${it.senderLabel ? oneLine(it.senderLabel) : label(it.sender, it.senderName)}${markers(it)}:\n${indent(it.body)}`,
   )
   return `${HEADER}\n\n${blocks.join('\n\n')}`
 }
@@ -391,6 +391,7 @@ export function createCore(io) {
         threadName: o.thread_name ?? null,
         sender: o.sender ?? null,
         senderName: o.sender_name ?? null,
+        senderLabel: o.sender_label ?? null,
         author_role: o.author_role ?? null,
         relays_user: o.relays_user === true,
         user_intent: o.user_intent ?? null,
