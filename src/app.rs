@@ -1192,18 +1192,22 @@ impl LaneProbe {
     }
     /// How many passes `lane`'s registered Pacer has finished (entered a wait).
     pub fn registered_idle_events(&self, lane: Lane) -> u64 {
-        let registry = self.state().registry.clone();
-        registry
-            .and_then(|kicks| kicks.pacer(lane))
-            .map_or(0, |pacer| pacer.idle_events())
+        self.registered_pacer(lane).map_or(0, |pacer| pacer.idle_events())
+    }
+    /// The Pacer a test follows for `lane`: a dialled host's own for the host lanes (the
+    /// built-in host registers first and is never the one under test, 07 §5.3), else the
+    /// first the commit-kick registry holds.
+    fn registered_pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
+        let dialled = match lane {
+            Lane::Observation | Lane::Wakes => self.first_host_pacer(lane),
+            _ => None,
+        };
+        dialled.or_else(|| self.state().registry.clone()?.pacer(lane))
     }
     /// Observe a completed pass before the registered worker evaluates its
     /// next wait. The callback must not reenter or replace its own idle hook.
     pub fn set_registered_idle_hook(&self, lane: Lane, hook: Box<dyn Fn(u64) + Send + Sync>) {
-        let registry = self.state().registry.clone();
-        let pacer = registry
-            .and_then(|kicks| kicks.pacer(lane))
-            .expect("registered lane");
+        let pacer = self.registered_pacer(lane).expect("registered lane");
         pacer.set_idle_hook(hook);
     }
     /// Observe each pass start (a wait ending) of the registered worker, with
@@ -1213,10 +1217,7 @@ impl LaneProbe {
         lane: Lane,
         hook: Box<dyn Fn(crate::service::pacer::Wake) + Send + Sync>,
     ) {
-        let registry = self.state().registry.clone();
-        let pacer = registry
-            .and_then(|kicks| kicks.pacer(lane))
-            .expect("registered lane");
+        let pacer = self.registered_pacer(lane).expect("registered lane");
         pacer.set_wake_hook(hook);
     }
     /// Kicks `lane` through the commit-kick registry, as a store commit does.
@@ -1244,10 +1245,7 @@ impl LaneProbe {
     }
     /// Consecutive failed passes `lane`'s registered Pacer is backing off from.
     pub fn registered_attempts(&self, lane: Lane) -> u32 {
-        let registry = self.state().registry.clone();
-        registry
-            .and_then(|kicks| kicks.pacer(lane))
-            .map_or(0, |pacer| pacer.attempts())
+        self.registered_pacer(lane).map_or(0, |pacer| pacer.attempts())
     }
     /// Ends an injected failure.
     pub fn heal_lane(&self, lane: Lane) {
