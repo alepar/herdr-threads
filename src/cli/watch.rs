@@ -1134,7 +1134,28 @@ where
     let (instance, client) = connection.get().map_err(|_| CallerFailure::Daemon)?;
     let origin = watch_origin(parsed, session);
     let _origin = super::caller::ActiveGuard::enter(origin.clone());
-    let selection = match derive_caller(parsed, caller_pane, context, paths, connection, clock) {
+    // A named seat's watch locates the seat its hook enrolled: `watch` never allocates, so an
+    // unknown name is "no binding" before the (resolving) selection runs.
+    let site = super::caller_location::CallerEnv::from_process()
+        .non_pane_locator(super::caller_location::EnvMode::Cli)
+        .filter(|site| matches!(site, super::caller_location::CallerLocator::Named(_)));
+    if site.is_some()
+        && !matches!(
+            super::named_site_seat(site.as_ref(), connection, &parsed.output, clock),
+            Ok(Some(_))
+        )
+    {
+        return Err(CallerFailure::NoBinding);
+    }
+    let selection = match derive_caller(
+        parsed,
+        caller_pane,
+        site.as_ref(),
+        context,
+        paths,
+        connection,
+        clock,
+    ) {
         Ok(Some(selection)) => selection,
         Ok(None) => return Err(CallerFailure::NoBinding),
         Err(RunError::Api(error))

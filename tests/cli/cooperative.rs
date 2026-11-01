@@ -1722,6 +1722,7 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
         crate::cli::derive_caller(
             &mut parsed,
             None,
+            None,
             &runtime,
             &paths,
             &no_connection(),
@@ -1738,9 +1739,17 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
             crate::cli::commands::parse_argv(["herdr-threads"].iter().chain(tail).copied())
                 .unwrap();
         assert!(
-            crate::cli::derive_caller(&mut bare, None, &runtime, &paths, &no_connection(), &clock)
-                .unwrap()
-                .is_none()
+            crate::cli::derive_caller(
+                &mut bare,
+                None,
+                None,
+                &runtime,
+                &paths,
+                &no_connection(),
+                &clock,
+            )
+            .unwrap()
+            .is_none()
         );
         let caller = match &bare.action {
             crate::cli::commands::CliAction::Wire(Command::Participants(q)) => q.caller.clone(),
@@ -7688,6 +7697,7 @@ impl OrdinaryHumanRetryFixture {
         let selection = crate::cli::derive_selection(
             &parsed,
             Some("w:p1"),
+            None,
             &self.runtime,
             &self.paths,
             &connection,
@@ -8359,6 +8369,7 @@ fn restore_hold_bare_diagnostics_without_a_seat_falls_back_to_health() {
     crate::cli::derive_caller(
         &mut parsed,
         Some("held-pane"),
+        None,
         &runtime,
         &paths,
         &connection,

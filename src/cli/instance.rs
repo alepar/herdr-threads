@@ -69,8 +69,9 @@ pub struct InstanceInputs {
     /// standalone default state dir, beside a Herdr the command group's store, and its Herdr
     /// host endpoint resolves lazily (fast sources only, never a `herdr` query).
     pub non_pane_site: bool,
-    /// The lone herdr-core terminal's core socket (`HC_TERMINAL_SOCKET`): the claim host of such
-    /// a caller, ahead of a Herdr `HERDR_SOCKET_PATH` that may be stale in its environment.
+    /// The lone non-Pane site's claim host: a herdr-core terminal's core socket
+    /// (`HC_TERMINAL_SOCKET`) or a named seat's reserved locator, ahead of a Herdr
+    /// `HERDR_SOCKET_PATH` that may be stale in its environment.
     pub site_host: Option<PathBuf>,
 }
 
@@ -95,12 +96,9 @@ impl InstanceInputs {
             herdr: hook::resolve_on_path("herdr", path.as_deref()),
             herdr_env: caller.herdr_env(),
             non_pane_site: caller.non_pane_site(),
-            site_host: match caller.non_pane_locator(super::caller_location::EnvMode::Cli) {
-                Some(site @ super::caller_location::CallerLocator::Terminal { .. }) => {
-                    site.site().claim_host_locator().map(PathBuf::from)
-                }
-                _ => None,
-            },
+            site_host: caller
+                .non_pane_locator(super::caller_location::EnvMode::Cli)
+                .and_then(|site| site.site().claim_host_locator().map(PathBuf::from)),
         }
     }
 
@@ -462,6 +460,15 @@ pub fn claim_host(
 
 /// The host endpoint and where it came from.
 pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String), String> {
+    // A named seat's claim host is always its reserved locator; an explicit `--host-endpoint`
+    // beside a name names the Herdr server a handoff creates its target on (`lazy_host_endpoint`).
+    if let Some(host) = inputs
+        .site_host
+        .as_ref()
+        .filter(|host| host.as_os_str() == crate::protocol::ids::NAMED_HOST_LOCATOR)
+    {
+        return Ok((host.clone(), "the named site reserved locator".into()));
+    }
     if let Some(host) = &inputs.host_flag {
         return Ok((host.clone(), "--host-endpoint".into()));
     }

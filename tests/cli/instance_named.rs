@@ -125,3 +125,73 @@ fn pane_site_discovery_unchanged() {
     assert!(calls(&root).contains("status server"));
     fs::remove_dir_all(&root).unwrap();
 }
+
+/// Kills: a named CLI process whose claim host is the Herdr server (or nothing) instead of the
+/// reserved locator, with or without a Herdr configured, and an explicit `--host-endpoint`
+/// that displaces it (the hook path keys on the reserved locator, so the CLI must too).
+#[test]
+fn named_site_host_is_the_reserved_locator() {
+    let root = scratch("reserved");
+    let state = root.join("state");
+    fs::create_dir(&state).unwrap();
+    let reserved = PathBuf::from(crate::protocol::ids::NAMED_HOST_LOCATOR);
+    let herdr_socket = root.join("herdr.sock");
+    for (env_host, host_flag) in [
+        (None, None),
+        (Some(herdr_socket.clone()), None),
+        (Some(herdr_socket.clone()), Some(root.join("flag.sock"))),
+    ] {
+        let inputs = InstanceInputs {
+            home: Some(root.join("home")),
+            state_flag: Some(state.clone()),
+            env_host: env_host.clone(),
+            host_flag,
+            non_pane_site: true,
+            site_host: Some(reserved.clone()),
+            ..InstanceInputs::default()
+        };
+        let (context, source, ..) = resolve_context_with_selected_paths(&inputs).unwrap();
+        assert_eq!(
+            context.host_endpoint.as_ref(),
+            Some(&reserved),
+            "{env_host:?}"
+        );
+        assert_eq!(source["host_endpoint"], "the named site reserved locator");
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// Kills: a lazy Herdr endpoint that answers the reserved named locator as a Herdr server, and
+/// one that drops the Herdr socket (or an explicit `--host-endpoint`) the environment names.
+#[test]
+fn lazy_host_endpoint_never_answers_the_reserved_locator() {
+    let root = scratch("lazy-reserved");
+    let reserved = PathBuf::from(crate::protocol::ids::NAMED_HOST_LOCATOR);
+    let herdr_socket = root.join("herdr.sock");
+    let base = InstanceInputs {
+        home: Some(root.join("home")),
+        non_pane_site: true,
+        site_host: Some(reserved.clone()),
+        ..InstanceInputs::default()
+    };
+    let with_env = InstanceInputs {
+        env_host: Some(herdr_socket.clone()),
+        ..base.clone()
+    };
+    assert_eq!(with_env.lazy_host_endpoint().unwrap(), herdr_socket);
+    let flagged = InstanceInputs {
+        host_flag: Some(root.join("flag.sock")),
+        ..with_env
+    };
+    assert_eq!(
+        flagged.lazy_host_endpoint().unwrap(),
+        root.join("flag.sock")
+    );
+    // No Herdr anywhere: an error, never the reserved locator.
+    let none = InstanceInputs {
+        non_default_server: true,
+        ..base
+    };
+    assert!(none.lazy_host_endpoint().is_err());
+    fs::remove_dir_all(&root).unwrap();
+}

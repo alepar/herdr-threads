@@ -167,8 +167,10 @@ impl AutomaticBootstrapIdentity {
             // A V3 plan's namespace endpoint is the target core's socket, which a caller in a
             // Herdr pane or a named seat does not share.
             || (self.plan.placement.is_none()
-                && self.claim.host.as_path()
-                    != self.plan.payload.handoff.namespace.host_endpoint.as_path())
+                && !self
+                    .claim
+                    .host
+                    .fronts_namespace(&self.plan.payload.handoff.namespace.host_endpoint))
             || self.digest != self.semantic_digest()?
             || classify_original_claim(&self.scope, &self.claim)
                 .map_err(|_| "invalid bootstrap scope")?

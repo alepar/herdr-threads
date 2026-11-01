@@ -444,8 +444,13 @@ impl AutomaticDeliveryMutation {
         if self.version != AUTOMATIC_PLAN_VERSION
             || self.claim.role != CallerRole::TopLevel
             || self.claim.instance != plan.payload.namespace.instance
+            // A named seat's claim sits at the reserved named host while the launch namespace is
+            // the Herdr server it creates the recipient on; no other claim has a reserved host.
             || (!self.targets_own_host()
-                && self.claim.host.as_path() != plan.payload.namespace.host_endpoint.as_path())
+                && !self
+                    .claim
+                    .host
+                    .fronts_namespace(&plan.payload.namespace.host_endpoint))
             || self.claim.seat == plan.recipient
             || self.digest != self.original.digest(&self.claim)?
             || classify_original_actor(&self.scope, &self.original.semantic(self.claim.clone()))

@@ -294,6 +294,66 @@ pub(crate) fn resolve_seat(
     budget: &CallBudget,
 ) -> Result<SeatId, ApiError> {
     let output = OutputSpec::default();
+    let call = |command| client.call_with_output_definitive(command, &output, budget);
+    match resolve_result(journal, instance, host, target, clock, call)? {
+        CommandResult::SeatResolved(seat) | CommandResult::NamedSeatResolved { seat, .. } => {
+            Ok(seat)
+        }
+        _ => Err(api(
+            ErrorCode::TargetUnresolved,
+            "service returned no resolved seat",
+        )),
+    }
+}
+
+/// A seat-acting resolve under a name on the named host (`CommandResult::NamedSeatResolved`).
+pub(crate) struct NamedResolution {
+    pub seat: SeatId,
+    pub name: crate::protocol::ids::SeatName,
+    pub created: bool,
+    pub second_locator: Option<(String, String)>,
+}
+
+/// The journaled `ResolveSeat` of a named caller at the reserved locator: the request the hook
+/// and `seat resolve` send (the locator and tmux hints ride it), so the daemon's guards run.
+pub(crate) fn resolve_named<C: LocalClient + ?Sized>(
+    client: &C,
+    journal: &Journal,
+    instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
+    target: &HostTargetId,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+) -> Result<NamedResolution, ApiError> {
+    let call = |command| client.call_definitive(command, budget);
+    match resolve_result(journal, instance, host, target, clock, call)? {
+        CommandResult::NamedSeatResolved {
+            seat,
+            name,
+            created,
+            second_locator,
+        } => Ok(NamedResolution {
+            seat,
+            name,
+            created,
+            second_locator,
+        }),
+        _ => Err(api(
+            ErrorCode::TargetUnresolved,
+            "service returned no resolved seat",
+        )),
+    }
+}
+
+fn resolve_result(
+    journal: &Journal,
+    instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
+    target: &HostTargetId,
+    clock: &dyn Clock,
+    call: impl Fn(Command) -> Result<Result<CommandResult, ApiError>, ApiError>,
+) -> Result<CommandResult, ApiError> {
+    let output = OutputSpec::default();
     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
         journal,
         IntentScope::ServiceAllocation {
@@ -311,7 +371,7 @@ pub(crate) fn resolve_seat(
                 "ordinary resolution has no native claim",
             ))
         },
-        |command| client.call_with_output_definitive(command, &output, budget),
+        call,
         &output,
         &mut io::sink(),
     )
@@ -322,13 +382,7 @@ pub(crate) fn resolve_seat(
         ),
         retry::RetryFailure::Submit(error) => error,
     })?;
-    match result {
-        CommandResult::SeatResolved(seat) => Ok(seat),
-        _ => Err(api(
-            ErrorCode::TargetUnresolved,
-            "service returned no resolved seat",
-        )),
-    }
+    Ok(result)
 }
 
 impl LaunchSeatResolver for DaemonSeatResolver<'_> {

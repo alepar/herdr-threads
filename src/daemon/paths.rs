@@ -76,6 +76,10 @@ impl RuntimeContext {
         };
         let host_endpoint = host_endpoint
             .map(|host| -> io::Result<PathBuf> {
+                // The reserved named-host locator names no filesystem path: it is canonical as is.
+                if host.as_os_str() == crate::protocol::ids::NAMED_HOST_LOCATOR {
+                    return Ok(host);
+                }
                 let parent = host.parent().unwrap().canonicalize()?;
                 Ok(parent.join(host.file_name().unwrap()))
             })

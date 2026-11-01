@@ -525,6 +525,17 @@ pub(crate) fn resolve_automatic_new_selectors<C: LocalClient + ?Sized>(
     Ok(())
 }
 
+/// The claim host a continuation line pins (`--host-endpoint`): the Herdr server or core socket
+/// the caller attaches to. A named caller's reserved locator names no server, so it is never
+/// pinned (44 bytes saved on every `next:` line) and re-derives from the name.
+fn pinned_host(context: &RuntimeContext) -> Option<String> {
+    context
+        .host_endpoint
+        .as_deref()
+        .filter(|host| host.as_os_str() != crate::protocol::ids::NAMED_HOST_LOCATOR)
+        .map(|host| host.to_string_lossy().into_owned())
+}
+
 fn run_parsed_in_pane<W: Write>(
     mut parsed: commands::ParsedCli,
     caller_pane: Option<&str>,
@@ -690,10 +701,7 @@ fn run_parsed_in_pane<W: Write>(
     ) {
         parsed.output.context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-            host: context
-                .host_endpoint
-                .as_ref()
-                .map(|host| host.to_string_lossy().into_owned()),
+            host: pinned_host(&context),
         };
     }
     let original_actor = if let CliAction::Retry(recovery) = &parsed.action {
@@ -705,10 +713,7 @@ fn run_parsed_in_pane<W: Write>(
         if direct_send::plan(&original.semantic).is_some() {
             parsed.output.context = crate::protocol::output::ContinuationContext {
                 state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-                host: context
-                    .host_endpoint
-                    .as_ref()
-                    .map(|host| host.to_string_lossy().into_owned()),
+                host: pinned_host(&context),
             };
         }
         Some(retry::preflight_original_actor(
@@ -717,10 +722,7 @@ fn run_parsed_in_pane<W: Write>(
             parsed.actor,
             &crate::protocol::output::ContinuationContext {
                 state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-                host: context
-                    .host_endpoint
-                    .as_ref()
-                    .map(|host| host.to_string_lossy().into_owned()),
+                host: pinned_host(&context),
             },
         )?)
     } else {
@@ -787,12 +789,34 @@ fn run_parsed_in_pane<W: Write>(
     }
     // The claim host's adapter, built only when a pane selector needs the host:
     // a store-only command (sync, peer, daemon, pending-ops) never asks.
+    // A named caller has no Herdr server: its claim host is the reserved locator, never dialled.
+    // Only a handoff action reads a Herdr endpoint, resolved lazily at that call (SA1, SA14).
+    let named = matches!(site, Some(caller_location::CallerLocator::Named(_)));
+    let host_flag = parsed.output.context.host.as_ref().map(PathBuf::from);
+    let named_handoff = named
+        && matches!(
+            parsed.action,
+            CliAction::Handoff(_) | CliAction::TopologyHandoff(_) | CliAction::RemoteLaunch(_)
+        );
     let host = || -> Result<crate::host::native::NativeCli, ApiError> {
-        Ok(crate::host::native::NativeCli::new(
+        let endpoint = if !named {
             context
                 .require_host()
                 .map_err(host_context_error)?
-                .to_path_buf(),
+                .to_path_buf()
+        } else if named_handoff {
+            handoff::herdr_endpoint(context.require_host().ok(), || {
+                instance::InstanceInputs::from_process(None, host_flag.clone()).lazy_host_endpoint()
+            })
+            .map_err(host_context_error)?
+        } else {
+            return Err(host_context_error(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Herdr host endpoint not resolved for a named site",
+            )));
+        };
+        Ok(crate::host::native::NativeCli::new(
+            endpoint,
             Arc::clone(&clock),
         ))
     };
@@ -809,10 +833,7 @@ fn run_parsed_in_pane<W: Write>(
         let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
         let selected_context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-            host: context
-                .host_endpoint
-                .as_ref()
-                .map(|host| host.to_string_lossy().into_owned()),
+            host: pinned_host(&context),
         };
         if topology_runtime::try_completed(
             parsed,
@@ -1089,6 +1110,7 @@ fn run_parsed_in_pane<W: Write>(
             parsed,
             deferred,
             caller_pane,
+            site,
             &context,
             &paths,
             &connection,
@@ -1099,7 +1121,7 @@ fn run_parsed_in_pane<W: Write>(
     };
     // Labels and peer locations are host data, read by the daemon: with no
     // host they are absent.
-    let outcome = if context.host_endpoint.is_some() {
+    let outcome = if pinned_host(&context).is_some() {
         peer_locations::with_active(run)
     } else {
         run()
@@ -1474,6 +1496,7 @@ where
         parsed,
         seat_resolution::DeferredSeats::none(),
         caller_pane,
+        None,
         context,
         paths,
         connection,
@@ -1490,6 +1513,7 @@ fn run_caller_scoped_deferred<C, F, W>(
     mut parsed: commands::ParsedCli,
     deferred: seat_resolution::DeferredSeats,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     context: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
@@ -1513,10 +1537,7 @@ where
             .state_dir
             .get_or_insert_with(|| context.state_dir.to_string_lossy().into_owned());
         if parsed.output.context.host.is_none() {
-            parsed.output.context.host = context
-                .host_endpoint
-                .as_ref()
-                .map(|host| host.to_string_lossy().into_owned());
+            parsed.output.context.host = pinned_host(context);
         }
     }
     // Who is calling comes from the environment (decision 15): an agent without a session id is
@@ -1554,7 +1575,15 @@ where
     // Capture omission before default_seat resolves the caller read. The second
     // guard below adds the canonical selected seat while retaining that choice.
     let _origin_inbox = output::InboxInvocationGuard::enter(&parsed, None);
-    let selected = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock);
+    let selected = derive_caller(
+        &mut parsed,
+        caller_pane,
+        site,
+        context,
+        paths,
+        connection,
+        clock,
+    );
     let selection =
         selected.map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
     // Pass 2 of the seat stage: the journaled allocations, now that the caller is derived and
@@ -3634,6 +3663,7 @@ where
 fn derive_caller<C, F>(
     parsed: &mut commands::ParsedCli,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     context: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
@@ -3673,7 +3703,9 @@ where
                         .flatten()
                         .map(|located| located.seat)
                 }),
-                (None, None) => None,
+                (None, None) => named_site_seat(site, connection, &parsed.output, clock)
+                    .ok()
+                    .flatten(),
             };
             if let Some(seat) = seat {
                 default_seat(&mut parsed.action, seat);
@@ -3682,9 +3714,8 @@ where
         }
         CallerNeed::Selection => match parsed.cooperative.clone() {
             Some(selection) => Ok(Some(selection)),
-            None => {
-                derive_selection(parsed, caller_pane, context, paths, connection, clock).map(Some)
-            }
+            None => derive_selection(parsed, caller_pane, site, context, paths, connection, clock)
+                .map(Some),
         },
         CallerNeed::SeatDefault { required } => {
             let seat = match (&parsed.cooperative, caller_pane.filter(|p| !p.is_empty())) {
@@ -3707,13 +3738,16 @@ where
                         None => None,
                     }
                 }
-                (None, None) if required => {
-                    return Err(caller_not_located(
-                        "this read defaults to the caller's seat: pass --seat SEAT, or run it \
-                         inside the agent's own Herdr pane (HERDR_PANE_ID)",
-                    ));
-                }
-                (None, None) => None,
+                (None, None) => match named_site_seat(site, connection, &parsed.output, clock)? {
+                    Some(seat) => Some(seat),
+                    None if required => {
+                        return Err(caller_not_located(
+                            "this read defaults to the caller's seat: pass --seat SEAT, or run it \
+                             inside the agent's own Herdr pane (HERDR_PANE_ID)",
+                        ));
+                    }
+                    None => None,
+                },
             };
             if let Some(seat) = seat {
                 default_seat(&mut parsed.action, seat);
@@ -3921,6 +3955,96 @@ fn located_pane_seat<C: LocalClient + ?Sized>(
     )
 }
 
+/// The existing seat of a Named site (host-scoped lookup behind `seat.host_sites_v1`, M13):
+/// `None` for another site or an unknown name. A read: it allocates nothing.
+fn named_site_seat<C, F>(
+    site: Option<&caller_location::CallerLocator>,
+    connection: &LazyConnection<C, F>,
+    output: &OutputSpec,
+    clock: &Arc<dyn Clock>,
+) -> Result<Option<crate::protocol::ids::SeatId>, RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
+{
+    let Some(site @ caller_location::CallerLocator::Named(name)) = site else {
+        return Ok(None);
+    };
+    let (_, client) = connection.get()?;
+    let host = site_capability::seats_host(
+        Some(site.site()),
+        client,
+        &cooperative_budget(clock.as_ref()),
+    )?;
+    pane_seat_on(
+        client,
+        output,
+        &crate::protocol::ids::HostTargetId::new(name.as_str()),
+        host,
+        clock.as_ref(),
+    )
+}
+
+/// The seat of a Named site for a seat-acting command: always the journaled `ResolveSeat` at the
+/// reserved locator (the request the hook and `seat resolve` send), so the daemon's M6/M7 guards
+/// and the first-use allocation run on the CLI path and a repeat call binds the same seat.
+/// Harness and role come from the same two sources a pane caller has: the agent session, else
+/// the context a hook saved; a caller with neither is refused (M15) before anything is created.
+fn named_located_seat<C: LocalClient>(
+    name: &crate::protocol::ids::SeatName,
+    paths: &NodePaths,
+    runtime: &RuntimeContext,
+    client: &C,
+    clock: &Arc<dyn Clock>,
+) -> Result<LocatedSeat, RunError> {
+    let locator = caller_location::CallerLocator::Named(name.clone());
+    site_capability::require_site(locator.site(), client, &cooperative_budget(clock.as_ref()))?;
+    let instance = read_node_uuid_hint(paths)?.ok_or_else(daemon_unavailable)?;
+    let host = runtime.claim_host().map_err(context_error)?;
+    let target = crate::protocol::ids::HostTargetId::new(name.as_str());
+    if !matches!(caller::active(), Some(caller::CallerOrigin::Agent(_))) {
+        let known = pane_seat_on(
+            client,
+            &OutputSpec::default(),
+            &target,
+            Some(host.clone()),
+            clock.as_ref(),
+        )?;
+        let saved = match known {
+            Some(seat) => {
+                let contexts = seat_contexts(paths, instance, &host, &seat)?;
+                contexts.current().map_err(context_run_error)?.is_some()
+                    || contexts.pending().map_err(context_run_error)?.is_some()
+            }
+            None => false,
+        };
+        if !saved {
+            return Err(invalid_request(caller_location::M15));
+        }
+    }
+    let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
+    let resolved = launch::resolve_named(
+        client,
+        &journal,
+        instance,
+        &host,
+        &target,
+        clock.as_ref(),
+        &cooperative_budget(clock.as_ref()),
+    )?;
+    if resolved.created {
+        eprint!("{}", human::m8(&resolved.seat, &resolved.name));
+    }
+    if let Some((earlier, new)) = &resolved.second_locator {
+        eprint!("{}", human::m9(&resolved.name, earlier, new));
+    }
+    Ok(LocatedSeat {
+        seat: resolved.seat,
+        pane: target,
+        moved_from: None,
+    })
+}
+
 /// The current id Herdr reports for `pane` when it differs (the pane moved to
 /// another workspace). Herdr resolves an earlier id of a pane to that pane's
 /// current record, and answers `pane_not_found` for an id it never issued; it
@@ -3940,6 +4064,7 @@ pub(crate) fn moved_pane(
 fn derive_selection<C, F>(
     parsed: &commands::ParsedCli,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     runtime: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
@@ -3950,17 +4075,25 @@ where
     F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
 {
     let replay = ordinary_retry_claim(parsed, &paths.node_dir.join("intents"))?;
-    let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
-        caller_not_located(&format!("this command acts as a seat: {CALLER_HELP}"))
-    })?;
-    let pane = parse_pane(pane)?;
-    let (_, client) = connection.get()?;
     let LocatedSeat {
         seat,
         pane,
         moved_from,
-    } = located_pane_seat(client, &parsed.output, &pane, runtime, clock)?
-        .ok_or_else(|| no_seat_for_pane(&pane))?;
+    } = match site {
+        Some(caller_location::CallerLocator::Named(name)) => {
+            let (_, client) = connection.get()?;
+            named_located_seat(name, paths, runtime, client, clock)?
+        }
+        _ => {
+            let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
+                caller_not_located(&format!("this command acts as a seat: {CALLER_HELP}"))
+            })?;
+            let pane = parse_pane(pane)?;
+            let (_, client) = connection.get()?;
+            located_pane_seat(client, &parsed.output, &pane, runtime, clock)?
+                .ok_or_else(|| no_seat_for_pane(&pane))?
+        }
+    };
     let instance = read_node_uuid_hint(paths)?.ok_or_else(daemon_unavailable)?;
     let origin = caller::active();
     if let Some(caller::CallerOrigin::Agent(env)) = &origin {

@@ -60,6 +60,26 @@ pub fn with_inbox_topics<T>(topics: InboxTopics, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// M8 (31 bytes + fields): printed by the call that allocated a named seat, once.
+pub(crate) fn m8(
+    seat: &crate::protocol::ids::SeatId,
+    name: &crate::protocol::ids::SeatName,
+) -> String {
+    format!(
+        "herdr-threads: created seat {} ({})\n",
+        seat.as_str(),
+        name.as_str()
+    )
+}
+
+/// M9 (41 bytes + fields): the first binding of a named seat from a second locator, once.
+pub(crate) fn m9(name: &crate::protocol::ids::SeatName, earlier: &str, new: &str) -> String {
+    format!(
+        "herdr-threads: seat {} now bound from {earlier} and {new}\n",
+        name.as_str()
+    )
+}
+
 /// Render a result for a person at a terminal. Returns `None` for result
 /// kinds without a dedicated human form; callers then emit the machine text.
 pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
@@ -103,22 +123,13 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
             created,
             second_locator,
         } => {
-            // M8 (31 bytes + fields): printed by the call that allocated the seat, once.
             if *created {
-                out.push_str(&format!(
-                    "herdr-threads: created seat {} ({})\n",
-                    seat.as_str(),
-                    name.as_str()
-                ));
+                out.push_str(&m8(seat, name));
             } else {
                 out.push_str(&format!("You are seat {}.\n", seat.as_str()));
             }
-            // M9 (41 bytes + fields): the first binding from a second locator, once.
             if let Some((earlier, new)) = second_locator {
-                out.push_str(&format!(
-                    "herdr-threads: seat {} now bound from {earlier} and {new}\n",
-                    name.as_str()
-                ));
+                out.push_str(&m9(name, earlier, new));
             }
         }
         CommandResult::ThreadCreated(thread) => {

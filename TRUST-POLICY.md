@@ -608,6 +608,18 @@ model open work, and summary closure never changes receipt state or installs glo
   already-connected binding is a touch, never judged. The refusal rolls the transaction back, so two
   concurrent unrelated enrolls of one name yield one binding (SA7). The guard is cooperative same-user
   consistency, not verification (see Accepted limits).
+- *Named CLI caller and handoff (named seats, N5-cli)*: a seat-acting CLI call under a name (no pane, no
+  `--cooperative-*` flag: M14) resolves the seat at the reserved named-host locator through the journaled
+  `ResolveSeat` every time (the hook's request, tmux hint included), so the daemon's M6 and M7 guards run on
+  that path and a repeat call binds the same seat; the first call that allocates it prints M8 on stderr
+  once. Harness and role come from the harness session in the environment, else from the context a hook
+  saved for (reserved locator, seat); a caller with neither is refused with M15 and nothing is created.
+  Reads (`inbox --json|--machine|--seat`, `seat list`, `thread show`) create nothing. A named caller's
+  automatic or explicit handoff into a Herdr pane freezes the reserved locator as the claim host and the
+  Herdr endpoint, resolved at that call only, as the namespace host: the seat acts through the named host,
+  the launch runs on the namespace's host, and neither is inferred from the other. A claim may differ from
+  the namespace host only when it sits at the reserved locator (`HostLocator::fronts_namespace`); every other
+  claim must still equal it. The recipient's seat is resolved on the Herdr host.
 - *Inherited-name refusal (named seats, D1, SA2, N4-inherit)*: a named resolve whose caller also carries
   a Herdr pane (`ResolveSeat.locator_hint`, the pane id beside `HERDR_THREADS_SEAT_NAME`) is checked
   against the environment of the server that owns the pane: the daemon reads the pid the host answers
