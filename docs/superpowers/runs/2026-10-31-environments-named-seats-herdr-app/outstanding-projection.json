@@ -1,0 +1,4005 @@
+{
+  "version": 1,
+  "findings": [
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Must fix before landing",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Must fix before landing",
+          "position": 1,
+          "key": "Renumber `migrations/node/0012_host_environments.sql` / `NodeDelta { version: 12 }` after main's own version-12 delta (`0012_process_continuity.sql`, seats rebuild) when merging main. Verify the rebuild keeps `seats.name`, `seats_live_name`, `occupant_bindings.locator_hint`/`readonly`, and add a migration test from a 2.8.2-shaped store.",
+          "text": "Renumber `migrations/node/0012_host_environments.sql` / `NodeDelta { version: 12 }` after main's own version-12 delta (`0012_process_continuity.sql`, seats rebuild) when merging main. Verify the rebuild keeps `seats.name`, `seats_live_name`, `occupant_bindings.locator_hint`/`readonly`, and add a migration test from a 2.8.2-shaped store."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Must fix before landing",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Must fix before landing",
+          "position": 2,
+          "key": "Merge main (25 commits ahead, v2.8.2) into the run branch before landing, and resolve the version, CHANGELOG and schema conflicts.",
+          "text": "Merge main (25 commits ahead, v2.8.2) into the run branch before landing, and resolve the version, CHANGELOG and schema conflicts."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Must fix before landing",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Must fix before landing",
+          "position": 3,
+          "key": "The epic goal is not delivered: 58 of 93 children are open, including every named, tmux and hc leaf, the phase gates ht-kqrt.13/.62/.63/.64, the host-neutrality scan ht-kqrt.65 and the integration sweep ht-kqrt.66. Do not land as the completed epic.",
+          "text": "The epic goal is not delivered: 58 of 93 children are open, including every named, tmux and hc leaf, the phase gates ht-kqrt.13/.62/.63/.64, the host-neutrality scan ht-kqrt.65 and the integration sweep ht-kqrt.66. Do not land as the completed epic."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Must fix before landing",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Must fix before landing",
+          "position": 4,
+          "key": "Merge or reopen ht-kqrt.6, .9, .11 and .14: they are closed as implemented, but their review beads (.91, .92, .93, .84) are open, their branches are not in head, and the ht-kqrt.14 merge is held because its worktree is missing.",
+          "text": "Merge or reopen ht-kqrt.6, .9, .11 and .14: they are closed as implemented, but their review beads (.91, .92, .93, .84) are open, their branches are not in head, and the ht-kqrt.14 merge is held because its worktree is missing."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Must fix before landing",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Must fix before landing",
+          "position": 5,
+          "key": "`attach_builtin` (ht-kqrt.5) goes through `store.attach_host` (ht-kqrt.4), which hardcodes `kind='herdr'`. Make the stored kind follow the attaching host, and keep the built-in row out of `attach_remembered_live`/`startup_first` and `sweep_tick` before ht-kqrt.15 wires it. Otherwise the startup primary falls back to the lowest host_id and the sweep re-probes the named row on every tick.",
+          "text": "`attach_builtin` (ht-kqrt.5) goes through `store.attach_host` (ht-kqrt.4), which hardcodes `kind='herdr'`. Make the stored kind follow the attaching host, and keep the built-in row out of `attach_remembered_live`/`startup_first` and `sweep_tick` before ht-kqrt.15 wires it. Otherwise the startup primary falls back to the lowest host_id and the sweep re-probes the named row on every tick."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Must fix before landing",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Must fix before landing",
+          "position": 6,
+          "key": "Claude/agy `screen_blocked` returns `Some(false)` (typeable) for any readable uncaptured dialog, such as an AskUserQuestion screen. Add a capture and recognizer, or return `None` for unrecognized selection dialogs, before the tmux composer wake (ht-kqrt.69) consumes it. This was graded minor in ht-kqrt.37 but names a product-defect path.",
+          "text": "Claude/agy `screen_blocked` returns `Some(false)` (typeable) for any readable uncaptured dialog, such as an AskUserQuestion screen. Add a capture and recognizer, or return `None` for unrecognized selection dialogs, before the tmux composer wake (ht-kqrt.69) consumes it. This was graded minor in ht-kqrt.37 but names a product-defect path."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 1,
+          "key": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed",
+          "text": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed"
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 2,
+          "key": "No full-suite measurement of head 124759cc8 exists. The sweep is deferred to the caller, so the branch is not tested as merged.",
+          "text": "No full-suite measurement of head 124759cc8 exists. The sweep is deferred to the caller, so the branch is not tested as merged."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 3,
+          "key": "This review ran no cargo build, clippy, check-default-features or tests on head. Only check-harness-neutral and check-wire-compat ran (both ok).",
+          "text": "This review ran no cargo build, clippy, check-default-features or tests on head. Only check-harness-neutral and check-wire-compat ran (both ok)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 4,
+          "key": "Task evidence for clippy and check-default-features is pre-rebase only for ht-kqrt.4, .5, .8, .37 and .53. Most task reports carry no sourceTree-bound evidence records.",
+          "text": "Task evidence for clippy and check-default-features is pre-rebase only for ht-kqrt.4, .5, .8, .37 and .53. Most task reports carry no sourceTree-bound evidence records."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 5,
+          "key": "The real `hc run --bg` / `server.stop` path of `scripts/lib/isolated-core.sh` and its shellcheck test were never exercised (no hc, no shellcheck).",
+          "text": "The real `hc run --bg` / `server.stop` path of `scripts/lib/isolated-core.sh` and its shellcheck test were never exercised (no hc, no shellcheck)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 6,
+          "key": "No Claude/agy question-screen capture exists, so the `screen_blocked` behaviour there is unknown.",
+          "text": "No Claude/agy question-screen capture exists, so the `screen_blocked` behaviour there is unknown."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 7,
+          "key": "The hook pane gate change (`HookEnv.pane` requires `HERDR_ENV=1`) is not pinned for `pane_context_journal` and `record_observer_reset`.",
+          "text": "The hook pane gate change (`HookEnv.pane` requires `HERDR_ENV=1`) is not pinned for `pane_context_journal` and `record_observer_reset`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 8,
+          "key": "Bounded review, hunks not inspected: `src/host/hc/wire.rs`, `src/test_support/fake_hc.rs`, `src/test_support/fake_herdr.rs`, `src/test_support/mod.rs`, and the main-merge hunks in `src/cli/handoff.rs` (33), `src/cli/topology_handoff.rs` (7), `src/cli/instance.rs` (3), `src/protocol/handoff.rs` (3), `src/protocol/handoff/automatic_bootstrap.rs` (2), `src/store/topology_handoff/automatic.rs` (2) and one each in `src/cli/{handoff_delivery,hook,mod,peer_launch}.rs`, `src/cli/topology_handoff/automatic.rs`, `src/daemon/{control,lifecycle}.rs`, `src/host/{mod,native,observation,transport}.rs`, `src/protocol/capabilities.rs` and `src/protocol/handoff/automatic.rs`.",
+          "text": "Bounded review, hunks not inspected: `src/host/hc/wire.rs`, `src/test_support/fake_hc.rs`, `src/test_support/fake_herdr.rs`, `src/test_support/mod.rs`, and the main-merge hunks in `src/cli/handoff.rs` (33), `src/cli/topology_handoff.rs` (7), `src/cli/instance.rs` (3), `src/protocol/handoff.rs` (3), `src/protocol/handoff/automatic_bootstrap.rs` (2), `src/store/topology_handoff/automatic.rs` (2) and one each in `src/cli/{handoff_delivery,hook,mod,peer_launch}.rs`, `src/cli/topology_handoff/automatic.rs`, `src/daemon/{control,lifecycle}.rs`, `src/host/{mod,native,observation,transport}.rs`, `src/protocol/capabilities.rs` and `src/protocol/handoff/automatic.rs`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 9,
+          "key": "Bounded review, paths not inspected: every `tests/**` path (67 paths, including the golden fixtures and `tests/fixtures/hc/hc-0.1.15.openrpc.json`), every `docs/**` path, `CHANGELOG.md`, `Cargo.lock` and `docs/release.md`.",
+          "text": "Bounded review, paths not inspected: every `tests/**` path (67 paths, including the golden fixtures and `tests/fixtures/hc/hc-0.1.15.openrpc.json`), every `docs/**` path, `CHANGELOG.md`, `Cargo.lock` and `docs/release.md`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 10,
+          "key": "Provenance gap: `124759cc8:docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md:39` malformed collection record (record outside approvals or invalid prefix).",
+          "text": "Provenance gap: `124759cc8:docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md:39` malformed collection record (record outside approvals or invalid prefix)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 11,
+          "key": "Provenance gap: `f4ddaeffa:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51` inv-8759cc82-264d-4506-beaa-307c9600bb8d invalid failed assembly archive (failed bounded archive contains successful assembly or split claims).",
+          "text": "Provenance gap: `f4ddaeffa:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51` inv-8759cc82-264d-4506-beaa-307c9600bb8d invalid failed assembly archive (failed bounded archive contains successful assembly or split claims)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 12
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 12,
+          "key": "Provenance gap: `f4ddaeffa:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58` inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f invalid failed assembly archive (failed bounded archive contains successful assembly or split claims).",
+          "text": "Provenance gap: `f4ddaeffa:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58` inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f invalid failed assembly archive (failed bounded archive contains successful assembly or split claims)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 13
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 13,
+          "key": "Provenance gap: `124759cc8:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51` inv-8759cc82-264d-4506-beaa-307c9600bb8d invalid failed assembly archive (same cause).",
+          "text": "Provenance gap: `124759cc8:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51` inv-8759cc82-264d-4506-beaa-307c9600bb8d invalid failed assembly archive (same cause)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 14
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 14,
+          "key": "Provenance gap: `124759cc8:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58` inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f invalid failed assembly archive (same cause).",
+          "text": "Provenance gap: `124759cc8:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58` inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f invalid failed assembly archive (same cause)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Untested scope",
+        "position": 15
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Untested scope",
+          "position": 15,
+          "key": "Ledger metrics `landed≠completed 13 vs 8`, with ledger/completed and ledger/Git identity gaps, so the completion record is incomplete.",
+          "text": "Ledger metrics `landed≠completed 13 vs 8`, with ledger/completed and ledger/Git identity gaps, so the completion record is incomplete."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 1,
+          "key": "Recurring `[missing-evidence]` process cluster across ht-kqrt.2, .3, .10, .12, .53, .75 and .8 (a reporting practice; its test-coverage effect is listed under Untested scope).",
+          "text": "Recurring `[missing-evidence]` process cluster across ht-kqrt.2, .3, .10, .12, .53, .75 and .8 (a reporting practice; its test-coverage effect is listed under Untested scope)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 2,
+          "key": "ht-kqrt.10 hook pane gate: stricter than before, and real Herdr panes set `HERDR_ENV=1`. Pin it with a test later.",
+          "text": "ht-kqrt.10 hook pane gate: stricter than before, and real Herdr panes set `HERDR_ENV=1`. Pin it with a test later."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 3,
+          "key": "ht-kqrt.10 empty `HERDR_PANE_ID` is now filtered to `None`.",
+          "text": "ht-kqrt.10 empty `HERDR_PANE_ID` is now filtered to `None`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 4,
+          "key": "ht-kqrt.12: `host`/`caller_host` are never set by the CLI yet (planned in the site phases). Its tests live in `tests/store/queries.rs`.",
+          "text": "ht-kqrt.12: `host`/`caller_host` are never set by the CLI yet (planned in the site phases). Its tests live in `tests/store/queries.rs`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 5,
+          "key": "ht-kqrt.3 shallow budget test: I verified that both submit paths use `submit_budget_millis()`.",
+          "text": "ht-kqrt.3 shallow budget test: I verified that both submit paths use `submit_budget_millis()`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 6,
+          "key": "ht-kqrt.7: `has_idle_wake` is still `pub`.",
+          "text": "ht-kqrt.7: `has_idle_wake` is still `pub`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 7,
+          "key": "ht-kqrt.5: the first-attach hook skip is untested, and the health_hosts coverage claim is unconfirmed.",
+          "text": "ht-kqrt.5: the first-attach hook skip is untested, and the health_hosts coverage claim is unconfirmed."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 8,
+          "key": "ht-kqrt.53: `BootstrapProgress` widened to `pub`, and the `AuthorizeLaunchGate` capability is cited in prose (check-wire-compat passes; it is the local protocol, not the peer wire).",
+          "text": "ht-kqrt.53: `BootstrapProgress` widened to `pub`, and the `AuthorizeLaunchGate` capability is cited in prose (check-wire-compat passes; it is the local protocol, not the peer wire)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 9,
+          "key": "ht-kqrt.8: `SeatWakeStatus.host` is `serde(skip)` (no client needs it yet).",
+          "text": "ht-kqrt.8: `SeatWakeStatus.host` is `serde(skip)` (no client needs it yet)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 10,
+          "key": "ht-kqrt.75: the Cargo.toml `[[bin]] fake-hc` placement detaches the required-features comment.",
+          "text": "ht-kqrt.75: the Cargo.toml `[[bin]] fake-hc` placement detaches the required-features comment."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 11,
+          "key": "ht-kqrt.76: the `ic_pids` ps field layout assumption, and the core-test leak rule does not require PPID 1.",
+          "text": "ht-kqrt.76: the `ic_pids` ps field layout assumption, and the core-test leak rule does not require PPID 1."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 12
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 12,
+          "key": "ht-kqrt.1: the commit trailer model name.",
+          "text": "ht-kqrt.1: the commit trailer model name."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 13
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 13,
+          "key": "The doctor unattachable-host limitation line prints JSON-quoted endpoint and kind.",
+          "text": "The doctor unattachable-host limitation line prints JSON-quoted endpoint and kind."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 14
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 14,
+          "key": "`wake_status` duplicates the `scheduler::mod_suppressed` formula instead of sharing it.",
+          "text": "`wake_status` duplicates the `scheduler::mod_suppressed` formula instead of sharing it."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 15
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 15,
+          "key": "The hc rpc response id is not matched to the request id, and an oversize line is misreported as a closed connection.",
+          "text": "The hc rpc response id is not matched to the request id, and an oversize line is misreported as a closed connection."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 16
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 16,
+          "key": "`caller_location` `Ambiguous` uses the pane unverified until ht-kqrt.11's M1/M3 guard merges.",
+          "text": "`caller_location` `Ambiguous` uses the pane unverified until ht-kqrt.11's M1/M3 guard merges."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-1/final",
+        "section": "Deferred OK",
+        "position": 17
+      },
+      "occurrences": [
+        {
+          "source": "inv-1/final",
+          "artifact": "reviews/inv-1/final-review-inv-1.md",
+          "section": "Deferred OK",
+          "position": 17,
+          "key": "Duplicate closed beads ht-kqrt.40 and ht-kqrt.75 (same title; .75 merged).",
+          "text": "Duplicate closed beads ht-kqrt.40 and ht-kqrt.75 (same title; .75 merged)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-1/final-review-inv-1.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Must fix before landing",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Must fix before landing",
+          "position": 1,
+          "key": "Renumber `migrations/node/0012_host_environments.sql` / `NodeDelta { version: 12 }` after main's own version-12 delta (`0012_process_continuity.sql`, seats rebuild) when merging main; verify the rebuild keeps `seats.name`, `seats_live_name`, `occupant_bindings.locator_hint`/`readonly`, and add a migration test from a 2.8.2-shaped store.",
+          "text": "Renumber `migrations/node/0012_host_environments.sql` / `NodeDelta { version: 12 }` after main's own version-12 delta (`0012_process_continuity.sql`, seats rebuild) when merging main; verify the rebuild keeps `seats.name`, `seats_live_name`, `occupant_bindings.locator_hint`/`readonly`, and add a migration test from a 2.8.2-shaped store."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Must fix before landing",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Must fix before landing",
+          "position": 2,
+          "key": "Merge main (25 commits ahead, v2.8.2) into the run branch and resolve version, CHANGELOG and schema conflicts before landing.",
+          "text": "Merge main (25 commits ahead, v2.8.2) into the run branch and resolve version, CHANGELOG and schema conflicts before landing."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Must fix before landing",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Must fix before landing",
+          "position": 3,
+          "key": "The epic goal is not delivered: 58 of 93 children are open, including every named, tmux and hc leaf, the phase gates, ht-kqrt.65 and the integration sweep ht-kqrt.66; do not land this as the completed epic.",
+          "text": "The epic goal is not delivered: 58 of 93 children are open, including every named, tmux and hc leaf, the phase gates, ht-kqrt.65 and the integration sweep ht-kqrt.66; do not land this as the completed epic."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Must fix before landing",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Must fix before landing",
+          "position": 4,
+          "key": "Merge or reopen ht-kqrt.6, .9, .11 and .14: closed, but their branches are not in head (.14's merge held for a missing worktree).",
+          "text": "Merge or reopen ht-kqrt.6, .9, .11 and .14: closed, but their branches are not in head (.14's merge held for a missing worktree)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Must fix before landing",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Must fix before landing",
+          "position": 5,
+          "key": "Make `attach_host` write the attaching host's kind instead of hardcoding `'herdr'`, and keep the built-in row out of `attach_remembered_live`/`startup_first` and `sweep_tick`, before ht-kqrt.15 wires `attach_builtin`; otherwise the startup primary falls back to the lowest host_id and the sweep re-probes the named row every tick.",
+          "text": "Make `attach_host` write the attaching host's kind instead of hardcoding `'herdr'`, and keep the built-in row out of `attach_remembered_live`/`startup_first` and `sweep_tick`, before ht-kqrt.15 wires `attach_builtin`; otherwise the startup primary falls back to the lowest host_id and the sweep re-probes the named row every tick."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Must fix before landing",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Must fix before landing",
+          "position": 6,
+          "key": "Claude/agy `screen_blocked` returns `Some(false)` (typeable) for any readable uncaptured dialog such as AskUserQuestion; add captures and recognizers or return `None` for unrecognized selection dialogs before the tmux composer wake (ht-kqrt.69) consumes it (ht-kqrt.37 minor misgraded).",
+          "text": "Claude/agy `screen_blocked` returns `Some(false)` (typeable) for any readable uncaptured dialog such as AskUserQuestion; add captures and recognizers or return `None` for unrecognized selection dialogs before the tmux composer wake (ht-kqrt.69) consumes it (ht-kqrt.37 minor misgraded)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 1,
+          "key": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed",
+          "text": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed"
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 2,
+          "key": "No full-suite measurement of head 04df0e77a exists; the sweep is deferred to the caller, so the branch is not tested as merged.",
+          "text": "No full-suite measurement of head 04df0e77a exists; the sweep is deferred to the caller, so the branch is not tested as merged."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 3,
+          "key": "This review ran no cargo build, clippy, check-default-features or tests; check-harness-neutral and check-wire-compat ran only in inv-1 on code-identical head 124759cc8.",
+          "text": "This review ran no cargo build, clippy, check-default-features or tests; check-harness-neutral and check-wire-compat ran only in inv-1 on code-identical head 124759cc8."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 4,
+          "key": "Task evidence for clippy and check-default-features is pre-rebase or not sourceTree-bound for most tasks (recurring `[missing-evidence]` cluster).",
+          "text": "Task evidence for clippy and check-default-features is pre-rebase or not sourceTree-bound for most tasks (recurring `[missing-evidence]` cluster)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 5,
+          "key": "The real `hc run --bg` / `server.stop` path of `scripts/lib/isolated-core.sh` and its shellcheck test were never exercised.",
+          "text": "The real `hc run --bg` / `server.stop` path of `scripts/lib/isolated-core.sh` and its shellcheck test were never exercised."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 6,
+          "key": "No Claude/agy question-screen capture exists, so `screen_blocked` behaviour on those screens is unknown.",
+          "text": "No Claude/agy question-screen capture exists, so `screen_blocked` behaviour on those screens is unknown."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 7,
+          "key": "The hook pane gate change (`HookEnv.pane` requires `HERDR_ENV=1`) is not pinned for `pane_context_journal` and `record_observer_reset`.",
+          "text": "The hook pane gate change (`HookEnv.pane` requires `HERDR_ENV=1`) is not pinned for `pane_context_journal` and `record_observer_reset`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 8,
+          "key": "No test migrates a 2.8.2-shaped (main v12) store through this branch's deltas.",
+          "text": "No test migrates a 2.8.2-shaped (main v12) store through this branch's deltas."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 9,
+          "key": "Bounded review, hunks not inspected: `src/protocol/handoff.rs` test hunks `@@ -1053,6 +1146,7 @@` and `@@ -2118,6 +2212,7 @@`; `src/test_support/fake_hc.rs` beyond its start/listen/halt/rebind/drop section.",
+          "text": "Bounded review, hunks not inspected: `src/protocol/handoff.rs` test hunks `@@ -1053,6 +1146,7 @@` and `@@ -2118,6 +2212,7 @@`; `src/test_support/fake_hc.rs` beyond its start/listen/halt/rebind/drop section."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 10,
+          "key": "Bounded review, paths not inspected in this invocation: `src/host/hc/rpc.rs`, `src/host/hc/mod.rs`, `src/cli/caller_location.rs`, `src/cli/hook.rs`, `src/cli/handoff.rs`, `src/cli/handoff_delivery.rs`, `src/cli/topology_handoff.rs`, `src/cli/topology_handoff/automatic.rs`, `src/cli/mod.rs`, `src/cli/commands.rs`, `src/cli/instance.rs`, `src/cli/follow.rs`, `src/cli/peer_launch.rs`, `src/cli/wake_warning.rs`, `src/app.rs`, `src/daemon/control.rs`, `src/daemon/lifecycle.rs`, `src/harness/codex/composer.rs`, `src/harness/registry.rs`, `src/host/mod.rs`, `src/host/native.rs`, `src/host/observation.rs`, `src/host/transport.rs`, `src/notification/dispatch.rs`, `src/protocol/handoff/automatic.rs`, `src/protocol/handoff/automatic_bootstrap.rs`, `src/store/topology_handoff/automatic.rs`, `src/test_support/mod.rs`, `scripts/**`, `Cargo.toml`, `Cargo.lock`, `herdr-plugin.toml`, `.github/workflows/ci.yml`, `AGENTS.md`, `TRUST-POLICY.md`, `CHANGELOG.md`, `integrations/**`, every `tests/**` path (including golden fixtures and `tests/fixtures/hc/hc-0.1.15.openrpc.json` beyond the schema types named above) and every `docs/**` path.",
+          "text": "Bounded review, paths not inspected in this invocation: `src/host/hc/rpc.rs`, `src/host/hc/mod.rs`, `src/cli/caller_location.rs`, `src/cli/hook.rs`, `src/cli/handoff.rs`, `src/cli/handoff_delivery.rs`, `src/cli/topology_handoff.rs`, `src/cli/topology_handoff/automatic.rs`, `src/cli/mod.rs`, `src/cli/commands.rs`, `src/cli/instance.rs`, `src/cli/follow.rs`, `src/cli/peer_launch.rs`, `src/cli/wake_warning.rs`, `src/app.rs`, `src/daemon/control.rs`, `src/daemon/lifecycle.rs`, `src/harness/codex/composer.rs`, `src/harness/registry.rs`, `src/host/mod.rs`, `src/host/native.rs`, `src/host/observation.rs`, `src/host/transport.rs`, `src/notification/dispatch.rs`, `src/protocol/handoff/automatic.rs`, `src/protocol/handoff/automatic_bootstrap.rs`, `src/store/topology_handoff/automatic.rs`, `src/test_support/mod.rs`, `scripts/**`, `Cargo.toml`, `Cargo.lock`, `herdr-plugin.toml`, `.github/workflows/ci.yml`, `AGENTS.md`, `TRUST-POLICY.md`, `CHANGELOG.md`, `integrations/**`, every `tests/**` path (including golden fixtures and `tests/fixtures/hc/hc-0.1.15.openrpc.json` beyond the schema types named above) and every `docs/**` path."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 11,
+          "key": "Provenance gap: `f4ddaeffa:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51` inv-8759cc82-264d-4506-beaa-307c9600bb8d invalid failed assembly archive (failed bounded archive contains successful assembly or split claims).",
+          "text": "Provenance gap: `f4ddaeffa:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51` inv-8759cc82-264d-4506-beaa-307c9600bb8d invalid failed assembly archive (failed bounded archive contains successful assembly or split claims)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 12
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 12,
+          "key": "Provenance gap: `f4ddaeffa:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58` inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f invalid failed assembly archive (same cause).",
+          "text": "Provenance gap: `f4ddaeffa:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58` inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f invalid failed assembly archive (same cause)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 13
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 13,
+          "key": "Provenance gap: `04df0e77a:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51` inv-8759cc82-264d-4506-beaa-307c9600bb8d invalid failed assembly archive (same cause).",
+          "text": "Provenance gap: `04df0e77a:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51` inv-8759cc82-264d-4506-beaa-307c9600bb8d invalid failed assembly archive (same cause)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 14
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 14,
+          "key": "Provenance gap: `04df0e77a:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58` inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f invalid failed assembly archive (same cause).",
+          "text": "Provenance gap: `04df0e77a:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58` inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f invalid failed assembly archive (same cause)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Untested scope",
+        "position": 15
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Untested scope",
+          "position": 15,
+          "key": "Ledger completion record incomplete (inv-1 `landed≠completed 13 vs 8`, malformed ledger-digest header, ledger/Git identity mismatch).",
+          "text": "Ledger completion record incomplete (inv-1 `landed≠completed 13 vs 8`, malformed ledger-digest header, ledger/Git identity mismatch)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 1,
+          "key": "Recurring `[missing-evidence]` process cluster (a reporting practice; its coverage effect is under Untested scope).",
+          "text": "Recurring `[missing-evidence]` process cluster (a reporting practice; its coverage effect is under Untested scope)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 2,
+          "key": "ht-kqrt.10 hook pane gate is stricter than before and real Herdr panes set `HERDR_ENV=1`; pin it with a test later.",
+          "text": "ht-kqrt.10 hook pane gate is stricter than before and real Herdr panes set `HERDR_ENV=1`; pin it with a test later."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 3,
+          "key": "ht-kqrt.10 empty `HERDR_PANE_ID` is now filtered to `None`.",
+          "text": "ht-kqrt.10 empty `HERDR_PANE_ID` is now filtered to `None`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 4,
+          "key": "ht-kqrt.12 `host`/`caller_host` are not yet set by any CLI (planned in the site phases); tests live in `tests/store/queries.rs`.",
+          "text": "ht-kqrt.12 `host`/`caller_host` are not yet set by any CLI (planned in the site phases); tests live in `tests/store/queries.rs`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 5,
+          "key": "ht-kqrt.3 shallow budget test; both submit paths use `submit_budget_millis()`.",
+          "text": "ht-kqrt.3 shallow budget test; both submit paths use `submit_budget_millis()`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 6,
+          "key": "ht-kqrt.7 `has_idle_wake` is still `pub`.",
+          "text": "ht-kqrt.7 `has_idle_wake` is still `pub`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 7,
+          "key": "ht-kqrt.5 first-attach hook skip untested and health_hosts coverage claim unconfirmed.",
+          "text": "ht-kqrt.5 first-attach hook skip untested and health_hosts coverage claim unconfirmed."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 8,
+          "key": "ht-kqrt.53 `BootstrapProgress` widened to `pub` and the `AuthorizeLaunchGate` capability cited in prose.",
+          "text": "ht-kqrt.53 `BootstrapProgress` widened to `pub` and the `AuthorizeLaunchGate` capability cited in prose."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 9,
+          "key": "ht-kqrt.8 `SeatWakeStatus.host` is `serde(skip)`.",
+          "text": "ht-kqrt.8 `SeatWakeStatus.host` is `serde(skip)`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 10,
+          "key": "ht-kqrt.75 Cargo.toml `[[bin]] fake-hc` placement detaches the required-features comment.",
+          "text": "ht-kqrt.75 Cargo.toml `[[bin]] fake-hc` placement detaches the required-features comment."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 11,
+          "key": "ht-kqrt.76 `ic_pids` ps field layout assumption and the core-test leak rule not requiring PPID 1.",
+          "text": "ht-kqrt.76 `ic_pids` ps field layout assumption and the core-test leak rule not requiring PPID 1."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 12
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 12,
+          "key": "ht-kqrt.1 commit trailer model name.",
+          "text": "ht-kqrt.1 commit trailer model name."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 13
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 13,
+          "key": "The doctor unattachable-host limitation line prints JSON-quoted endpoint and kind.",
+          "text": "The doctor unattachable-host limitation line prints JSON-quoted endpoint and kind."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 14
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 14,
+          "key": "`classify_wake_rows` caller duplicates the `mod_suppressed` formula inline.",
+          "text": "`classify_wake_rows` caller duplicates the `mod_suppressed` formula inline."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 15
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 15,
+          "key": "`wire.rs` module comment claims null tolerance that `serde(default)` does not give; matches the 0.1.15 schema today.",
+          "text": "`wire.rs` module comment claims null tolerance that `serde(default)` does not give; matches the 0.1.15 schema today."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 16
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 16,
+          "key": "`fake-hc` binary leaves its socket on SIGTERM despite the doc's exit claim.",
+          "text": "`fake-hc` binary leaves its socket on SIGTERM despite the doc's exit claim."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 17
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 17,
+          "key": "The hc rpc response id is not matched to the request id, and an oversize line is reported as a closed connection (from inv-1; not re-inspected here).",
+          "text": "The hc rpc response id is not matched to the request id, and an oversize line is reported as a closed connection (from inv-1; not re-inspected here)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 18
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 18,
+          "key": "`caller_location` `Ambiguous` uses the pane unverified until ht-kqrt.11's guard merges (from inv-1; not re-inspected here).",
+          "text": "`caller_location` `Ambiguous` uses the pane unverified until ht-kqrt.11's guard merges (from inv-1; not re-inspected here)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-2/final",
+        "section": "Deferred OK",
+        "position": 19
+      },
+      "occurrences": [
+        {
+          "source": "inv-2/final",
+          "artifact": "reviews/inv-2/final-review-inv-2.md",
+          "section": "Deferred OK",
+          "position": 19,
+          "key": "Duplicate closed beads ht-kqrt.40 and ht-kqrt.75 (same title; .75 merged).",
+          "text": "Duplicate closed beads ht-kqrt.40 and ht-kqrt.75 (same title; .75 merged)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-2/final-review-inv-2.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 1,
+          "key": "Every hook on a named site dies: `RuntimeContext::explicit` canonicalizes the parent of `/.herdr-threads/named-host` (src/daemon/paths.rs:79), which never exists. Reproduced. No bead owns it.",
+          "text": "Every hook on a named site dies: `RuntimeContext::explicit` canonicalizes the parent of `/.herdr-threads/named-host` (src/daemon/paths.rs:79), which never exists. Reproduced. No bead owns it."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 2,
+          "key": "Named CLI cannot act: `run()` gives a Named site no pane (src/cli/mod.rs:350) and no claim host (src/cli/instance.rs:98), so inbox, thread create and seat resolve are refused. Reproduced. Ledger 615, and 620 records `watch` reporting no_binding; no bead owns it.",
+          "text": "Named CLI cannot act: `run()` gives a Named site no pane (src/cli/mod.rs:350) and no claim host (src/cli/instance.rs:98), so inbox, thread create and seat resolve are refused. Reproduced. Ledger 615, and 620 records `watch` reporting no_binding; no bead owns it."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 3,
+          "key": "`launch::resolve_seat` and `allocate_recipient_seat` reject `NamedSeatResolved`: after the context fix, each lifecycle hook mints or finds the seat, then fails with no check-in (src/cli/launch.rs:326, src/cli/mod.rs:3518).",
+          "text": "`launch::resolve_seat` and `allocate_recipient_seat` reject `NamedSeatResolved`: after the context fix, each lifecycle hook mints or finds the seat, then fails with no check-in (src/cli/launch.rs:326, src/cli/mod.rs:3518)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 4,
+          "key": "A verified terminal gets no seat in the spec's common nested case (src/cli/caller_guard.rs:98, src/cli/hook.rs:4021); TRUST-POLICY.md:805 records a limit the spec never accepted. Bind it, or get a human decision.",
+          "text": "A verified terminal gets no seat in the spec's common nested case (src/cli/caller_guard.rs:98, src/cli/hook.rs:4021); TRUST-POLICY.md:805 records a limit the spec never accepted. Bind it, or get a human decision."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 5,
+          "key": "`candidate_root` ignores the socket and a fresh core is never attached (src/service/locate.rs:376, :396): two cores sharing `tN`, or a first call in a new core, print a false M4.",
+          "text": "`candidate_root` ignores the socket and a fresh core is never attached (src/service/locate.rs:376, :396): two cores sharing `tN`, or a first call in a new core, print a false M4."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 6,
+          "key": "`HcHost` never overrides `HostPort::resume_after_epoch`: after a daemon restart hc publications are refused until the counter passes the persisted sequence, blinding D10 closure. One-line fix plus a restart test.",
+          "text": "`HcHost` never overrides `HostPort::resume_after_epoch`: after a daemon restart hc publications are refused until the counter passes the persisted sequence, blinding D10 closure. One-line fix plus a restart test."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 7,
+          "key": "`map_hc_pane` drops the core on Allocate (src/cli/seat_resolution.rs:1060): `alpha:t2` allocates on the caller's own core, or mints a named seat `t2`. Needs host on the deferred entry and a Stage-level test.",
+          "text": "`map_hc_pane` drops the core on Allocate (src/cli/seat_resolution.rs:1060): `alpha:t2` allocates on the caller's own core, or mints a named seat `t2`. Needs host on the deferred entry and a Stage-level test."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 8,
+          "key": "`guard_live_holder` refuses a read-only caller beside a live holder with M7 (src/store/seats/cooperative.rs:718), failing spec N acceptance and use case 3. Pass `readonly` in and test the caller side.",
+          "text": "`guard_live_holder` refuses a read-only caller beside a live holder with M7 (src/store/seats/cooperative.rs:718), failing spec N acceptance and use case 3. Pass `readonly` in and test the caller side."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 9,
+          "key": "Per-target `Composer` merged without its lane: a tmux-hinted seat loses `wake=no_wake`, its report row is deleted and nothing wakes it. Land `.69` first or gate the answer on the lane; `.69` must also suppress pokes for bound no-wake seats (ledger 808).",
+          "text": "Per-target `Composer` merged without its lane: a tmux-hinted seat loses `wake=no_wake`, its report row is deleted and nothing wakes it. Land `.69` first or gate the answer on the lane; `.69` must also suppress pokes for bound no-wake seats (ledger 808)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 10,
+          "key": "The tmux hint is not refreshed by hooks: `CheckIn` has no field and steady turns skip the resolver, so the spec's every-hook refresh and the next-hook recovery limit are both false. Carry it, or amend spec and TRUST-POLICY.",
+          "text": "The tmux hint is not refreshed by hooks: `CheckIn` has no field and steady turns skip the resolver, so the spec's every-hook refresh and the next-hook recovery limit are both false. Carry it, or amend spec and TRUST-POLICY."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 11,
+          "key": "Parked `.24`, needs a human decision: a session enrolled only through plain commands stays writable, so its display discharges ACKs under `HERDR_THREADS_SEAT_READONLY=1`. Accept the limit or carry the flag at enroll.",
+          "text": "Parked `.24`, needs a human decision: a session enrolled only through plain commands stays writable, so its display discharges ACKs under `HERDR_THREADS_SEAT_READONLY=1`. Accept the limit or carry the flag at enroll."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 12
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 12,
+          "key": "Parked `.56`, needs a human decision: V3 records have no writer or consumer (src/protocol/handoff.rs:384) and journal validation takes 1|2 only, so hc attempts have no journal record. Assign the writer to `.57` or amend the spec.",
+          "text": "Parked `.56`, needs a human decision: V3 records have no writer or consumer (src/protocol/handoff.rs:384) and journal validation takes 1|2 only, so hc attempts have no journal record. Assign the writer to `.57` or amend the spec."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 13
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 13,
+          "key": "Owner-less failures on record: golden_surfaces ×6 (doctor golden lacks keys doctor.rs emits), host_neutral_scan (probe.rs, main.rs, target_creator.rs unallowlisted), every_table_is_classified (no_wake_reports). Own and fix them; run the skipped shellcheck test.",
+          "text": "Owner-less failures on record: golden_surfaces ×6 (doctor golden lacks keys doctor.rs emits), host_neutral_scan (probe.rs, main.rs, target_creator.rs unallowlisted), every_table_is_classified (no_wake_reports). Own and fix them; run the skipped shellcheck test."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 14
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 14,
+          "key": "Merge `main` (65 commits): renumber `0012`, reconcile `src/store/seats.rs` with the module split, and verify `structural_process_continuity` against the cross-kind refusal. Then run the full suite and leak checks on the merged tree.",
+          "text": "Merge `main` (65 commits): renumber `0012`, reconcile `src/store/seats.rs` with the module split, and verify `structural_process_continuity` against the cross-kind refusal. Then run the full suite and leak checks on the merged tree."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Must fix before landing",
+        "position": 15
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Must fix before landing",
+          "position": 15,
+          "key": "16 beads open: .30 .33 .34 .50 .57 .59 .60 .61 .62 .63 .64 .66 .68 .69 .71 .119, including the N2, H1 and final gates. Also fix TRUST-POLICY's undocumented limits and its `never CoherentVerified` contradiction (ledger 737, 839, 860).",
+          "text": "16 beads open: .30 .33 .34 .50 .57 .59 .60 .61 .62 .63 .64 .66 .68 .69 .71 .119, including the N2, H1 and final gates. Also fix TRUST-POLICY's undocumented limits and its `never CoherentVerified` contradiction (ledger 737, 839, 860)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 1,
+          "key": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed",
+          "text": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed"
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 2,
+          "key": "Whole-range review outstanding: 27 of 446 changed paths were inspected, and only 65 hunks are claimed; every other path and hunk is unreviewed.",
+          "text": "Whole-range review outstanding: 27 of 446 changed paths were inspected, and only 65 hunks are claimed; every other path and hunk is unreviewed."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 3,
+          "key": "Four provenance gaps remain, at base and head: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md lines 51 and 58, invocations inv-8759cc82-264d-4506-beaa-307c9600bb8d and inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f (invalid failed assembly archive).",
+          "text": "Four provenance gaps remain, at base and head: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md lines 51 and 58, invocations inv-8759cc82-264d-4506-beaa-307c9600bb8d and inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f (invalid failed assembly archive)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 4,
+          "key": "No full-suite measurement of this branch exists, and no test or clippy run was made by this review; the sweep is deferred to the caller.",
+          "text": "No full-suite measurement of this branch exists, and no test or clippy run was made by this review; the sweep is deferred to the caller."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 5,
+          "key": "The reproduction used the `.49` binary at 22436a8fe, 25 commits behind head; head itself was not built or run. Findings without a reproduction come from reading source and are unexecuted.",
+          "text": "The reproduction used the `.49` binary at 22436a8fe, 25 commits behind head; head itself was not built or run. Findings without a reproduction come from reading source and are unexecuted."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 6,
+          "key": "Partly read and not listed in coverage: src/store/seats/cooperative.rs, observation.rs, resolution.rs, src/ports.rs, TRUST-POLICY.md and the unlisted hunks of the partly read files. No conclusion covers their unread parts.",
+          "text": "Partly read and not listed in coverage: src/store/seats/cooperative.rs, observation.rs, resolution.rs, src/ports.rs, TRUST-POLICY.md and the unlisted hunks of the partly read files. No conclusion covers their unread parts."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 7,
+          "key": "Unreviewed: src/cli/launch_gate.rs, hc rpc, wire, labels and discovery, fake_hc, sync and peer launch, Hermes bridge and Claude mod changes, setup and install flow, doctor, self-retire, no-wake reports and almost all new tests.",
+          "text": "Unreviewed: src/cli/launch_gate.rs, hc rpc, wire, labels and discovery, fake_hc, sync and peer launch, Hermes bridge and Claude mod changes, setup and install flow, doctor, self-retire, no-wake reports and almost all new tests."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 8,
+          "key": "Metrics are UNAVAILABLE (ledger re-read malformed), so ledger absence proves nothing, and BLOCKED-AUTH absence is only as good as the ledger.",
+          "text": "Metrics are UNAVAILABLE (ledger re-read malformed), so ledger absence proves nothing, and BLOCKED-AUTH absence is only as good as the ledger."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 9,
+          "key": "Real herdr-core behaviour: `HcClosure::PendingRestart` keys are unchecked against a real core (ledger 533), H-C1, L1-L3 and Codex `--no-daemon` live runs are remaining evidence, and production `HcBootstrapObserver` refuses every call pending `.57`.",
+          "text": "Real herdr-core behaviour: `HcClosure::PendingRestart` keys are unchecked against a real core (ledger 533), H-C1, L1-L3 and Codex `--no-daemon` live runs are remaining evidence, and production `HcBootstrapObserver` refuses every call pending `.57`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Untested scope",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Untested scope",
+          "position": 10,
+          "key": "Wake e2e and macOS paths (E1 `KERN_PROCARGS2`, herdr-app labels) were not run. `dialled_hosts_active` approximates the spec's seat-holding rule (ledger 444); the seatless core case waits on `.50`.",
+          "text": "Wake e2e and macOS paths (E1 `KERN_PROCARGS2`, herdr-app labels) were not run. `dialled_hosts_active` approximates the spec's seat-holding rule (ledger 444); the seatless core case waits on `.50`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Deferred OK",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Deferred OK",
+          "position": 1,
+          "key": "The four `missing-evidence` clusters (ht-kqrt.2, .12, .3; .10, .53, .75; .6, .14, .9; .23, .21, .26) are process findings: fix the report template, but only the deferred sweep can replace the evidence they lack.",
+          "text": "The four `missing-evidence` clusters (ht-kqrt.2, .12, .3; .10, .53, .75; .6, .14, .9; .23, .21, .26) are process findings: fix the report template, but only the deferred sweep can replace the evidence they lack."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Deferred OK",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Deferred OK",
+          "position": 2,
+          "key": "Doc comment and comment placement minors (ledger 220, 431, 443, 588, 614) and duplicate arms or small visibility drift (ledger 188, 207, 491, 750) are cosmetic.",
+          "text": "Doc comment and comment placement minors (ledger 220, 431, 443, 588, 614) and duplicate arms or small visibility drift (ledger 188, 207, 491, 750) are cosmetic."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Deferred OK",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Deferred OK",
+          "position": 3,
+          "key": "`[swallowed-error]` no_wake_reports_apply (ledger 742) falls back to the in-memory set, so the worst case is a repeated warning.",
+          "text": "`[swallowed-error]` no_wake_reports_apply (ledger 742) falls back to the in-memory set, so the worst case is a repeated warning."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Deferred OK",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Deferred OK",
+          "position": 4,
+          "key": "`[sync-on-request-path]` (ledger 872): a 2 s tmux check on a named resolve is bounded and runs outside the writer turn.",
+          "text": "`[sync-on-request-path]` (ledger 872): a 2 s tmux check on a named resolve is bounded and runs outside the writer turn."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Deferred OK",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Deferred OK",
+          "position": 5,
+          "key": "`[extra-round-trip]` (ledger 795): turn edges add connect, locate and call on every turn for pane seats too, and nothing reads them yet. Gate them when `.69` lands; not a blocker alone.",
+          "text": "`[extra-round-trip]` (ledger 795): turn edges add connect, locate and call on every turn for pane seats too, and nothing reads them yet. Gate them when `.69` lands; not a blocker alone."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Deferred OK",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Deferred OK",
+          "position": 6,
+          "key": "`[silent-failure-relaunch]` and `[narrow-race-window]` (ledger 478, 480): startup diagnostics only, bounded by the startup deadline.",
+          "text": "`[silent-failure-relaunch]` and `[narrow-race-window]` (ledger 478, 480): startup diagnostics only, bounded by the startup deadline."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Deferred OK",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Deferred OK",
+          "position": 7,
+          "key": "`[config-root-optional]` (ledger 830) and `[test-only-stopgap]` (ledger 550, cfg-gated to test-support): carry to `.57`, which has to close both.",
+          "text": "`[config-root-optional]` (ledger 830) and `[test-only-stopgap]` (ledger 550, cfg-gated to test-support): carry to `.57`, which has to close both."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Deferred OK",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Deferred OK",
+          "position": 8,
+          "key": "Run artifacts committed under `evidence/` and the large `docs/superpowers/runs` dumps (ledger 810): prune as a follow-up.",
+          "text": "Run artifacts committed under `evidence/` and the large `docs/superpowers/runs` dumps (ledger 810): prune as a follow-up."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-3/final",
+        "section": "Deferred OK",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-3/final",
+          "artifact": "reviews/inv-3/final-review-inv-3.md",
+          "section": "Deferred OK",
+          "position": 9,
+          "key": "Cleanup records with `process cleanup incomplete (exit 4)` and kept `/tmp/sp-503081fe` paths: a run-finish chore, not a code defect.",
+          "text": "Cleanup records with `process cleanup incomplete (exit 4)` and kept `/tmp/sp-503081fe` paths: a run-finish chore, not a code defect."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-3/final-review-inv-3.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 1,
+          "key": "A verified terminal binds nothing: `Guard::Terminal` yields no pane and no site (src/cli/caller_guard.rs:98, src/cli/mod.rs:348, src/cli/hook.rs `two_family_guard`), so an agent in any core autostarted from a Herdr pane has no seat despite the spec Goal and 04 B; acting as the Terminal site is the fix, or a human accepts the limit, because the TRUST-POLICY text alone is not that decision.",
+          "text": "A verified terminal binds nothing: `Guard::Terminal` yields no pane and no site (src/cli/caller_guard.rs:98, src/cli/mod.rs:348, src/cli/hook.rs `two_family_guard`), so an agent in any core autostarted from a Herdr pane has no seat despite the spec Goal and 04 B; acting as the Terminal site is the fix, or a human accepts the limit, because the TRUST-POLICY text alone is not that decision."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 2,
+          "key": "`LocateCaller` never attaches the core and ignores the socket (src/service/locate.rs:376, :396, src/service/dispatch.rs `locate_caller`): a first call in a new core prints a false M4 forever since nothing else attaches it, and two cores sharing `tN` print a false M4 for the second core's callers.",
+          "text": "`LocateCaller` never attaches the core and ignores the socket (src/service/locate.rs:376, :396, src/service/dispatch.rs `locate_caller`): a first call in a new core prints a false M4 forever since nothing else attaches it, and two cores sharing `tN` print a false M4 for the second core's callers."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 3,
+          "key": "`HcHost::resume_after_epoch` is an inherent method (src/host/hc/mod.rs:320), so `port.resume_after_epoch` at src/service/host_sessions.rs:740 hits the no-op trait default: after a daemon restart `src/store/seats/observation.rs:2838` refuses hc snapshots until the sequence passes the persisted one, blinding D10 closure for about as long as the previous run published; tests/identity/reconcile.rs:4309 calls the concrete type and masks it.",
+          "text": "`HcHost::resume_after_epoch` is an inherent method (src/host/hc/mod.rs:320), so `port.resume_after_epoch` at src/service/host_sessions.rs:740 hits the no-op trait default: after a daemon restart `src/store/seats/observation.rs:2838` refuses hc snapshots until the sequence passes the persisted one, blinding D10 closure for about as long as the previous run published; tests/identity/reconcile.rs:4309 calls the concrete type and masks it."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 4,
+          "key": "`map_hc_pane` drops the core on Allocate (src/cli/seat_resolution.rs:1198-1213): `alpha:t2` in an allocate slot resolves on the caller's own host, or under a named caller mints a named seat `t2`; carry the host on `Deferred`.",
+          "text": "`map_hc_pane` drops the core on Allocate (src/cli/seat_resolution.rs:1198-1213): `alpha:t2` in an allocate slot resolves on the caller's own host, or under a named caller mints a named seat `t2`; carry the host on `Deferred`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 5,
+          "key": "`guard_live_holder` has no caller-side readonly (src/store/seats/cooperative.rs:718, called at :827): a `HERDR_THREADS_SEAT_READONLY=1` caller beside a live holder is refused M7, against spec line 1225 and TRUST-POLICY N; tests/store/live_holder.rs covers only a readonly holder row.",
+          "text": "`guard_live_holder` has no caller-side readonly (src/store/seats/cooperative.rs:718, called at :827): a `HERDR_THREADS_SEAT_READONLY=1` caller beside a live holder is refused M7, against spec line 1225 and TRUST-POLICY N; tests/store/live_holder.rs covers only a readonly holder row."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 6,
+          "key": "tmux Codex seats are never typed and never reported: `screen_blocked` is `None` so `wake_gate` always refuses, yet `target_wake_capability` says `Composer`, which suppresses `wake=no_wake` and deletes its report row; make the per-target answer `None` for a harness with no blocked recognizer, or ship a Codex recognizer from a captured fixture, and fix `TMUX_HARNESSES`, because `--harness codex --cases tmux-named/send-p0` cannot pass today.",
+          "text": "tmux Codex seats are never typed and never reported: `screen_blocked` is `None` so `wake_gate` always refuses, yet `target_wake_capability` says `Composer`, which suppresses `wake=no_wake` and deletes its report row; make the per-target answer `None` for a harness with no blocked recognizer, or ship a Codex recognizer from a captured fixture, and fix `TMUX_HARNESSES`, because `--harness codex --cases tmux-named/send-p0` cannot pass today."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 7,
+          "key": "`NamedHost` records no wake block: N2 acceptance \"the sender gets the existing `wake=` overdue rendering\" fails for draft, busy, blocked, unknown and tmux-mode refusals, since `wake_block` is the default `None`; `wake_gate` refusals need `note_wake_block` and a test, because no tmux test asserts `wake=`.",
+          "text": "`NamedHost` records no wake block: N2 acceptance \"the sender gets the existing `wake=` overdue rendering\" fails for draft, busy, blocked, unknown and tmux-mode refusals, since `wake_block` is the default `None`; `wake_gate` refusals need `note_wake_block` and a test, because no tmux test asserts `wake=`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 8,
+          "key": "The tmux hint is not refreshed by hooks: `CheckIn` has no field and steady turns skip the resolver (src/cli/hook.rs:2080), so spec line 557 (\"every hook call\") and TRUST-POLICY's \"until that binding's next hook\" are both false after a restart; carry the hint or amend both.",
+          "text": "The tmux hint is not refreshed by hooks: `CheckIn` has no field and steady turns skip the resolver (src/cli/hook.rs:2080), so spec line 557 (\"every hook call\") and TRUST-POLICY's \"until that binding's next hook\" are both false after a restart; carry the hint or amend both."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 9,
+          "key": "`launch` has no `--space`, `--new-tab` or `--new-terminal` (`LaunchArgs`, src/cli/commands.rs:2036) although spec lines 849 and 1446 and the epic Goal require them; parked on `.57` as a spec deviation, so implement it or get a human decision.",
+          "text": "`launch` has no `--space`, `--new-tab` or `--new-terminal` (`LaunchArgs`, src/cli/commands.rs:2036) although spec lines 849 and 1446 and the epic Goal require them; parked on `.57` as a spec deviation, so implement it or get a human decision."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 10,
+          "key": "Parked `.24`, needs a human decision: a session enrolled only by plain commands stays writable, so its display discharges ACKs under `HERDR_THREADS_SEAT_READONLY=1`.",
+          "text": "Parked `.24`, needs a human decision: a session enrolled only by plain commands stays writable, so its display discharges ACKs under `HERDR_THREADS_SEAT_READONLY=1`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 11,
+          "key": "Merge `main`: 65 commits behind, dry-run conflicts in 23 files including src/store/schema.rs, src/store/seats.rs, src/identity/reconcile.rs and TRUST-POLICY.md, and `0012_host_environments.sql` collides with main's `0012_process_continuity` pair; renumber on merge as the spec requires, and verify `structural_process_continuity` against the cross-kind refusal.",
+          "text": "Merge `main`: 65 commits behind, dry-run conflicts in 23 files including src/store/schema.rs, src/store/seats.rs, src/identity/reconcile.rs and TRUST-POLICY.md, and `0012_host_environments.sql` collides with main's `0012_process_continuity` pair; renumber on merge as the spec requires, and verify `structural_process_continuity` against the cross-kind refusal."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 12
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 12,
+          "key": "Ledger 1137 `[known-unfixed-defect]`: `handoff --existing --seat PEER` from a named seat fails dialing the reserved locator, no bead; reported by `.34`, not reproduced here.",
+          "text": "Ledger 1137 `[known-unfixed-defect]`: `handoff --existing --seat PEER` from a named seat fails dialing the reserved locator, no bead; reported by `.34`, not reproduced here."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 13
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 13,
+          "key": "Ledger 1050 `[latent-panic]`: `HostBootId::new` at src/host/hc/mod.rs:678 panics on a long core id, since the composed string can exceed 128 bytes while `HcBoot` admits 120 of core id; use `parse` and return `OutcomeUnknown`.",
+          "text": "Ledger 1050 `[latent-panic]`: `HostBootId::new` at src/host/hc/mod.rs:678 panics on a long core id, since the composed string can exceed 128 bytes while `HcBoot` admits 120 of core id; use `parse` and return `OutcomeUnknown`."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 14
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 14,
+          "key": "Ledger 1114 and 1179 `[transient-failure-no-retry]`: one failed `terminal.get` after the Send is staged refuses the gate as `WitnessMismatch`, which kills a launch that was fine; retry until the deadline.",
+          "text": "Ledger 1114 and 1179 `[transient-failure-no-retry]`: one failed `terminal.get` after the Send is staged refuses the gate as `WitnessMismatch`, which kills a launch that was fine; retry until the deadline."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 15
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 15,
+          "key": "Ledger 839 `[undocumented-accepted-limit]`: the session of a `<session>:tN` hint is ignored, so a core that is not the caller's can refuse with M6; pass the core or document the limit.",
+          "text": "Ledger 839 `[undocumented-accepted-limit]`: the session of a `<session>:tN` hint is ignored, so a core that is not the caller's can refuse with M6; pass the core or document the limit."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 16
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 16,
+          "key": "Ledger 1202 and 1136 `[silent-skip]`: `named_tmux_idle_recipient_wakes_for_p0_not_p1` and the beside-Herdr tests pass with nothing exercised when tmux or Herdr is absent, and `.github/workflows/ci.yml` has no step that installs tmux, so whether CI ever runs the only daemon-level tmux wake test is unconfirmed.",
+          "text": "Ledger 1202 and 1136 `[silent-skip]`: `named_tmux_idle_recipient_wakes_for_p0_not_p1` and the beside-Herdr tests pass with nothing exercised when tmux or Herdr is absent, and `.github/workflows/ci.yml` has no step that installs tmux, so whether CI ever runs the only daemon-level tmux wake test is unconfirmed."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 17
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 17,
+          "key": "Ledger 213 `[unverified-live-path]`: the shellcheck test of scripts/lib/isolated-core.sh is skipped when shellcheck is absent and its result is unrecorded; run it once where shellcheck exists.",
+          "text": "Ledger 213 `[unverified-live-path]`: the shellcheck test of scripts/lib/isolated-core.sh is skipped when shellcheck is absent and its result is unrecorded; run it once where shellcheck exists."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Must fix before landing",
+        "position": 18
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Must fix before landing",
+          "position": 18,
+          "key": "Ledger 1204 `[environmental-test-failures]`, with parked `.64`: the unfiltered suite is red on this host for the zsh trio; a green run on a host with zsh is required, which CI supplies.",
+          "text": "Ledger 1204 `[environmental-test-failures]`, with parked `.64`: the unfiltered suite is red on this host for the zsh trio; a green run on a host with zsh is required, which CI supplies."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 1,
+          "key": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed",
+          "text": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed"
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 2,
+          "key": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed",
+          "text": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed"
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 3,
+          "key": "Whole-range review outstanding: 21 of 588 changed paths are listed in coverage, with 126 hunks; every other path and hunk is unreviewed.",
+          "text": "Whole-range review outstanding: 21 of 588 changed paths are listed in coverage, with 126 hunks; every other path and hunk is unreviewed."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 4,
+          "key": "Four provenance gaps remain, at base and at head: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md lines 51 and 58, invocations inv-8759cc82-264d-4506-beaa-307c9600bb8d and inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f (invalid failed assembly archive).",
+          "text": "Four provenance gaps remain, at base and at head: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md lines 51 and 58, invocations inv-8759cc82-264d-4506-beaa-307c9600bb8d and inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f (invalid failed assembly archive)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 5,
+          "key": "No full-suite measurement of this head exists and the sweep is deferred to the caller; the run's gate (248 s, 3 zsh failures, leak check clean) was on `.64`'s tree before `.66` merged, and is not treated as testing this head.",
+          "text": "No full-suite measurement of this head exists and the sweep is deferred to the caller; the run's gate (248 s, 3 zsh failures, leak check clean) was on `.64`'s tree before `.66` merged, and is not treated as testing this head."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 6,
+          "key": "This review ran nothing; findings are from reading the head, and no finding was reproduced.",
+          "text": "This review ran nothing; findings are from reading the head, and no finding was reproduced."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 7,
+          "key": "Partly read and not listed in coverage: src/host/hc/mod.rs, src/cli/seat_resolution.rs, src/cli/mod.rs, src/store/seats/cooperative.rs, src/store/seats/observation.rs, src/harness/claude/composer.rs, src/harness/codex/composer.rs, TRUST-POLICY.md, the design, and the unlisted hunks of src/service/host_sessions.rs and src/service/peer_launcher.rs; no conclusion covers their unread parts.",
+          "text": "Partly read and not listed in coverage: src/host/hc/mod.rs, src/cli/seat_resolution.rs, src/cli/mod.rs, src/store/seats/cooperative.rs, src/store/seats/observation.rs, src/harness/claude/composer.rs, src/harness/codex/composer.rs, TRUST-POLICY.md, the design, and the unlisted hunks of src/service/host_sessions.rs and src/service/peer_launcher.rs; no conclusion covers their unread parts."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 8,
+          "key": "Unreviewed: src/store/seats restore, retire, held-name and publication paths; hc rpc, wire, labels and discovery; fake_hc; sync and name@node; Hermes bridge and Claude mod; setup, install and doctor; self-retire; handoff and topology_handoff rewrites; almost all new tests; the `seats.rs` split as a pure move.",
+          "text": "Unreviewed: src/store/seats restore, retire, held-name and publication paths; hc rpc, wire, labels and discovery; fake_hc; sync and name@node; Hermes bridge and Claude mod; setup, install and doctor; self-retire; handoff and topology_handoff rewrites; almost all new tests; the `seats.rs` split as a pure move."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 9,
+          "key": "Metrics are UNAVAILABLE (ledger re-read malformed), so ledger absence proves nothing, and BLOCKED-AUTH absence is only as good as the ledger.",
+          "text": "Metrics are UNAVAILABLE (ledger re-read malformed), so ledger absence proves nothing, and BLOCKED-AUTH absence is only as good as the ledger."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 10,
+          "key": "Real herdr-core and macOS: `PendingRestart` keys, H-C1, L1-L3, Codex `--no-daemon`, `KERN_PROCARGS2` and herdr-app labels are not exercised; ledger 1174 notes hc-smoke was not rerun at the H1 gate.",
+          "text": "Real herdr-core and macOS: `PendingRestart` keys, H-C1, L1-L3, Codex `--no-daemon`, `KERN_PROCARGS2` and herdr-app labels are not exercised; ledger 1174 notes hc-smoke was not rerun at the H1 gate."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Untested scope",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Untested scope",
+          "position": 11,
+          "key": "Live wake e2e was not run, including the opt-in tmux-named cases (ledger 1107), whose status regex and glyph checks are unexercised; ledger 1115 and 1122 leave `authorize_launch_gate` and the shim `exec` without a spawned-daemon test; ledger 1184 leaves mod tests unrun (no bun on this host).",
+          "text": "Live wake e2e was not run, including the opt-in tmux-named cases (ledger 1107), whose status regex and glyph checks are unexercised; ledger 1115 and 1122 leave `authorize_launch_gate` and the shim `exec` without a spawned-daemon test; ledger 1184 leaves mod tests unrun (no bun on this host)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 1,
+          "key": "The six recurring clusters (`missing-evidence` .2/.12/.3, .10/.53/.75, .6/.14/.9, .23/.21/.26, .136/.141/.69; `suite-not-run` .30/.139/.71) are process findings: fix the report template, and let the deferred sweep replace the evidence they lack.",
+          "text": "The six recurring clusters (`missing-evidence` .2/.12/.3, .10/.53/.75, .6/.14/.9, .23/.21/.26, .136/.141/.69; `suite-not-run` .30/.139/.71) are process findings: fix the report template, and let the deferred sweep replace the evidence they lack."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 2,
+          "key": "Ledger 808 `[ambiguous-acceptance]`: a bound no-wake named seat stays a poke candidate, but `safe_wake_target` answers `None` without a live binding, so nothing is typed; the cost is a spent `soft_poked_at`, traced no further.",
+          "text": "Ledger 808 `[ambiguous-acceptance]`: a bound no-wake named seat stays a poke candidate, but `safe_wake_target` answers `None` without a live binding, so nothing is typed; the cost is a spent `soft_poked_at`, traced no further."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 3,
+          "key": "Ledger 226 `[wire-form-deferred]`: `SeatWakeStatus.host` is `serde(skip)`; it is consumed in the daemon only, so no client needs it yet.",
+          "text": "Ledger 226 `[wire-form-deferred]`: `SeatWakeStatus.host` is `serde(skip)`; it is consumed in the daemon only, so no client needs it yet."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 4,
+          "key": "Ledger 742 `[swallowed-error]`: `no_wake_reports_apply` falls back to the in-memory set, so the worst case is a repeated warning.",
+          "text": "Ledger 742 `[swallowed-error]`: `no_wake_reports_apply` falls back to the in-memory set, so the worst case is a repeated warning."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 5,
+          "key": "Ledger 1100 `[doc-drift]`: seatless-host idle exit is spec-mandated and undocumented outside it; add a line when next touched.",
+          "text": "Ledger 1100 `[doc-drift]`: seatless-host idle exit is spec-mandated and undocumented outside it; add a line when next touched."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 6,
+          "key": "Ledger 1142 `[over-broad-suppression]`, 478 and 480: lane log and startup diagnostics only, bounded by the startup deadline.",
+          "text": "Ledger 1142 `[over-broad-suppression]`, 478 and 480: lane log and startup diagnostics only, bounded by the startup deadline."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 7,
+          "key": "Ledger 1178 `[orphan-binding-on-write-failure]`: the shim times out and the terminal finish retires the seat, so it heals itself.",
+          "text": "Ledger 1178 `[orphan-binding-on-write-failure]`: the shim times out and the terminal finish retires the seat, so it heals itself."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 8,
+          "key": "Ledger 1193 `[load-flake]`: tracked by bead ht-62tr, and flakes do not block.",
+          "text": "Ledger 1193 `[load-flake]`: tracked by bead ht-62tr, and flakes do not block."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 9,
+          "key": "Ledger 1135 and 1172 `[suite-over-budget]`: load on a shared host; the last gate was 248 s, and budget is not a landing gate.",
+          "text": "Ledger 1135 and 1172 `[suite-over-budget]`: load on a shared host; the last gate was 248 s, and budget is not a landing gate."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 10,
+          "key": "`ht-tyil` (unused `CallerSite` answers) is filed; the unused answers are harmless and it can follow.",
+          "text": "`ht-tyil` (unused `CallerSite` answers) is filed; the unused answers are harmless and it can follow."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 11,
+          "key": "Doc comment, comment placement, weak-assertion and scope-note minors (for example ledger 431, 1088, 1090, 1092, 1099, 1101, 1165, 1205) are cosmetic or test-quality follow-ups.",
+          "text": "Doc comment, comment placement, weak-assertion and scope-note minors (for example ledger 431, 1088, 1090, 1092, 1099, 1101, 1165, 1205) are cosmetic or test-quality follow-ups."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-4/final",
+        "section": "Deferred OK",
+        "position": 12
+      },
+      "occurrences": [
+        {
+          "source": "inv-4/final",
+          "artifact": "reviews/inv-4/final-review-inv-4.md",
+          "section": "Deferred OK",
+          "position": 12,
+          "key": "Committed run artifacts under `evidence/` and `docs/superpowers/runs` (ledger 1030) are bulk to prune as a follow-up, and retained cleanup records (exit 4) are a run-finish chore.",
+          "text": "Committed run artifacts under `evidence/` and `docs/superpowers/runs` (ledger 1030) are bulk to prune as a follow-up, and retained cleanup records (exit 4) are a run-finish chore."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-4/final-review-inv-4.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    }
+  ],
+  "gaps": [],
+  "metrics": {
+    "scope": "retained sources",
+    "sources": 4,
+    "sourceKinds": [
+      "final-review"
+    ],
+    "occurrences": 153,
+    "occurrenceGroups": 153,
+    "findings": 153,
+    "otherSectionGroups": 0,
+    "sections": [
+      "Must fix before landing",
+      "Untested scope",
+      "Deferred OK"
+    ],
+    "repaired": 0,
+    "rejected": 0,
+    "outstanding": 153,
+    "deferred": 0,
+    "gaps": 0
+  }
+}

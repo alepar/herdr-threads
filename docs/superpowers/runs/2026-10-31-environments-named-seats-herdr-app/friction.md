@@ -13,3 +13,4 @@
 - [2026-11-01] session relaunched on aisw profile claude-2 (user request); coordinator inv-3 resumed with skillsRoot under claude-2 (same version 6.4.2-alepar6.6), resumeFromRunId wf_a0c7a8e1-89d
 - [2026-11-02] super-code inv-3 stopped stalled: ready set held only the three quarantined tasks (.30, .57, .69); a read-ledger:finish agent died on an API safeguards false positive, so the Finish metrics are unavailable
 - [2026-11-02] orchestrator decisions: ht-kqrt.143 moved to a gate-only peer record (my earlier V3 wording violated TRUST-POLICY N15; caught by the planner and triage); .60 narrowed to thread show/seat list for hc labels; named-sender delivery headers filed as a leaf to keep the approved spec
+roastBase: 22b4be9e0 (the main snapshot F1 merged; main was later rewritten by the scrubbed publish, so the raw merge-base f4ddaeffa would count v2.8.1 as run work)
