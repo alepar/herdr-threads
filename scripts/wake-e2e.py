@@ -1504,6 +1504,11 @@ def wake_count(text):
     return sum(is_wake_line(line) for line in text.splitlines())
 
 
+def wake_delta(before, after):
+    """Wake lines a case added: the capture is cumulative, so a case judges the delta, not the whole screen."""
+    return wake_count(after) - wake_count(before)
+
+
 def admission_observation(observations):
     """The ACK observation to judge: one that carries a `row` if any does, else the first, else None."""
     return next((o for o in observations if o.get("row")), observations[0] if observations else None)
@@ -2747,6 +2752,7 @@ class TmuxRecipient(Recipient):
         if gap > 0:
             self.run.stopping.wait(gap)
         self.wait_idle()
+        screen_before = self.screen(1000)
         calls_before = self.inbox_calls()
         mid = self.send(action.split("-")[1], f"{case} {self.run.run_id}", direct=True)
         t_wake = self.watch_for_wake(WAKE_WINDOW_S)
@@ -2764,7 +2770,7 @@ class TmuxRecipient(Recipient):
         self.wait_idle()
         self.settled()
         checks["delivered"] = self.on_screen(mid)
-        wake_lines = wake_count(self.screen(1000))
+        wake_lines = wake_delta(screen_before, self.screen(1000))
         checks["wake_lines"] = wake_lines
         if woke:
             checks["inbox_calls"] = self.inbox_calls() - calls_before
