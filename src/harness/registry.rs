@@ -1,8 +1,21 @@
 //! Validated static identities and registration-bound typed admission.
 use super::adapter::*;
+use crate::ports::WakeCapability;
 use crate::protocol::time::CallBudget;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{any::Any, sync::OnceLock};
+
+/// Who wakes an idle session of a harness on a host, as [`HarnessRegistry::idle_wake_on`]
+/// classifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleWakeOn {
+    /// The host types the wake prompt into the harness composer.
+    Composer,
+    /// The harness wakes itself through its live push channel.
+    Channel,
+    /// No wake path: the session picks the item up on its next turn.
+    None,
+}
 
 /// Operational identity can only come from a validated registry lookup.
 /// ```compile_fail
@@ -1457,6 +1470,35 @@ impl Registry {
                     .is_some_and(|p| p.idle_wake() == IdleWake::Channel),
         )
     }
+    /// The single classifier combining harness, host wake capability and channel liveness.
+    /// A harness whose delivery policy wakes itself (`IdleWake::Channel`) wakes through a live
+    /// channel (`channel_live`, from `ModChannels::mod_suppressed`) whatever the host offers;
+    /// otherwise the host's composer wakes it when the host has one and the harness has a
+    /// composer policy. `None` for an id this build does not register. `has_idle_wake` stays
+    /// the oracle: on a Herdr composer host this agrees with it.
+    pub fn idle_wake_on(
+        &self,
+        harness_id: &str,
+        wake: WakeCapability,
+        channel_live: bool,
+    ) -> Option<IdleWakeOn> {
+        let adapter = &self
+            .registrations
+            .iter()
+            .find(|r| r.metadata().id == harness_id)?
+            .adapter;
+        let self_waking = adapter
+            .delivery_policy()
+            .is_some_and(|p| p.idle_wake() == IdleWake::Channel);
+        Some(if channel_live && self_waking {
+            IdleWakeOn::Channel
+        } else if matches!(wake, WakeCapability::Composer(_)) && adapter.composer_policy().is_some()
+        {
+            IdleWakeOn::Composer
+        } else {
+            IdleWakeOn::None
+        })
+    }
     /// The binding policy of an agent harness id; `"human"` and unknown ids give the default.
     pub fn binding_policy(&self, harness_id: &str) -> BindingPolicy {
         self.registrations
@@ -1616,6 +1658,63 @@ mod tests {
         }
         assert_eq!(registry.has_idle_wake("human"), None);
         assert_eq!(registry.has_idle_wake("pi"), None);
+    }
+    /// `idle_wake_on` never regresses `has_idle_wake`: on a Herdr composer host, for every
+    /// registration and either channel state, it is a wake path exactly when the oracle says so.
+    #[test]
+    fn idle_wake_on_agrees_with_has_idle_wake() {
+        use crate::ports::{ComposerTraits, WakeCapability};
+        let registry = builtins();
+        for r in registry.registrations() {
+            let id = r.metadata().id;
+            for c in [false, true] {
+                let got = registry
+                    .idle_wake_on(id, WakeCapability::Composer(ComposerTraits::HERDR_TUI), c)
+                    .map(|w| w != IdleWakeOn::None);
+                assert_eq!(got, registry.has_idle_wake(id), "{id} channel_live={c}");
+            }
+        }
+    }
+
+    /// Every cell of the spec table: harness x host wake capability x channel liveness.
+    #[test]
+    fn idle_wake_on_spec_table() {
+        use crate::ports::{ComposerTraits, WakeCapability};
+        use IdleWakeOn::{Channel, Composer, None as NoWake};
+        let registry = builtins();
+        let tui = WakeCapability::Composer(ComposerTraits::HERDR_TUI);
+        let cell = |id: &str, wake, c| registry.idle_wake_on(id, wake, c);
+        // (id, [Composer c=false, Composer c=true, None c=false, None c=true])
+        #[cfg_attr(not(feature = "test-support"), allow(unused_mut))]
+        let mut rows = vec![
+            ("claude", [Composer, Channel, NoWake, Channel]),
+            ("codex", [Composer, Composer, NoWake, NoWake]),
+            ("hermes", [Composer, Composer, NoWake, NoWake]),
+            ("agy", [Composer, Composer, NoWake, NoWake]),
+        ];
+        #[cfg(feature = "test-support")]
+        rows.push(("synthetic_fourth", [NoWake; 4]));
+        for (id, want) in rows {
+            assert_eq!(cell(id, tui, false), Some(want[0]), "{id} composer c=false");
+            assert_eq!(cell(id, tui, true), Some(want[1]), "{id} composer c=true");
+            assert_eq!(
+                cell(id, WakeCapability::None, false),
+                Some(want[2]),
+                "{id} none c=false"
+            );
+            assert_eq!(
+                cell(id, WakeCapability::None, true),
+                Some(want[3]),
+                "{id} none c=true"
+            );
+        }
+        for id in ["human", "pi"] {
+            for wake in [tui, WakeCapability::None] {
+                for c in [false, true] {
+                    assert_eq!(cell(id, wake, c), Option::None, "{id} unregistered");
+                }
+            }
+        }
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct TestAdapter {
