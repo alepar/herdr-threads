@@ -30,6 +30,11 @@ path = "tests/combined.rs"
 required-features = ["test-support"]
 
 [[test]]
+name = "hc_messaging"
+path = "tests/hc_messaging.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "hook_entrypoint"
 path = "tests/hook_entrypoint.rs"
 required-features = ["test-support"]

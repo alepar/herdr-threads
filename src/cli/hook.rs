@@ -248,7 +248,10 @@ pub(crate) fn parse_hook_argv_registered(
 /// Pane identity comes only from the Herdr-provided environment.
 #[derive(Debug, Clone, Default)]
 pub struct HookEnv {
+    /// The environment marks a host the hook may claim: a Herdr pane (`HERDR_ENV=1`), or a lone
+    /// herdr-core terminal (`HC_TERMINAL_ID` with its socket).
     pub herdr_env: bool,
+    /// The host target: the Herdr pane id, or for a lone terminal its `tN`.
     pub pane: Option<String>,
     /// Set when the environment names both a Herdr pane and a herdr-core terminal: the
     /// daemon must verify which one runs the hook before it binds (`caller_guard`).
@@ -274,9 +277,14 @@ impl HookEnv {
     pub fn from_process() -> Self {
         use super::caller_location::{CallerEnv, EnvMode};
         let env = CallerEnv::from_process();
+        // A lone herdr-core terminal is a host target of its own: no Herdr environment marks it.
+        let terminal = match env.non_pane_locator(EnvMode::Hook) {
+            Some(super::caller_location::CallerLocator::Terminal { id, .. }) => Some(id),
+            _ => None,
+        };
         Self {
-            herdr_env: env.herdr_env(),
-            pane: env.pane(EnvMode::Hook),
+            herdr_env: env.herdr_env() || terminal.is_some(),
+            pane: env.pane(EnvMode::Hook).or(terminal),
             ambiguous: super::caller_guard::hook_candidates(&env),
             named: env.named(),
         }
@@ -1568,10 +1576,10 @@ fn find_seat_for(
     deadline: Instant,
     clock: &dyn Clock,
 ) -> Result<PaneSeat, Failure> {
-    // A named seat's lookup is host-scoped (F9), behind `seat.host_sites_v1` (M13).
+    // A named seat's or terminal's lookup is host-scoped (F9), behind `seat.host_sites_v1` /
+    // `seat.terminal_sites_v1` (M13).
     let site = super::caller_location::CallerEnv::from_process()
-        .named()
-        .map(super::caller_location::CallerLocator::Named);
+        .non_pane_locator(super::caller_location::EnvMode::Hook);
     let host = super::site_capability::seats_host(
         site.as_ref()
             .map(super::caller_location::CallerLocator::site),
@@ -1660,8 +1668,13 @@ fn locate_seat_for(
     let Ok(endpoint) = context.require_host() else {
         return Ok(seat);
     };
-    // The reserved named host is never dialled; a named target does not move.
-    if endpoint == Path::new(crate::protocol::ids::NAMED_HOST_LOCATOR) {
+    // The reserved named host is never dialled; a named target does not move, and a terminal
+    // id (a herdr-core socket, not a Herdr server) is stable.
+    if endpoint == Path::new(crate::protocol::ids::NAMED_HOST_LOCATOR)
+        || super::caller_location::CallerEnv::from_process()
+            .non_pane_locator(super::caller_location::EnvMode::Hook)
+            .is_some()
+    {
         return Ok(seat);
     }
     let host = crate::host::native::NativeCli::new(endpoint.to_path_buf(), Arc::clone(clock));

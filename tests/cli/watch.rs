@@ -540,6 +540,76 @@ fn named_site_watch_never_stops_on_no_pane() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A Terminal site (a herdr-core terminal) has no pane either, and `watch` never stops on
+/// `no_pane` for it: it passes the precheck and reaches the core socket (here a missing one),
+/// where it fails retryably. The delivering run against `fake_hc` is `tests/hc_messaging.rs`.
+#[test]
+fn terminal_site_watch_never_stops_on_no_pane() {
+    if std::env::var_os(crate::protocol::watch::MOD_DELIVERY_ENV).is_some() {
+        return;
+    }
+    let root = temp_dir("terminal-site");
+    let state = root.join("state");
+    let core = root.join("missing-core.sock");
+    let site = crate::cli::caller_location::CallerLocator::Terminal {
+        socket: core.to_str().unwrap().to_owned(),
+        id: "t2".to_owned(),
+    };
+    let mut out = Vec::new();
+    let error = crate::cli::run_in_site(
+        [
+            "herdr-threads",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--host-endpoint",
+            core.to_str().unwrap(),
+            "watch",
+            "--harness",
+            "claude",
+            "--session",
+            "s1",
+        ],
+        None,
+        Some(&site),
+        &mut out,
+    )
+    .unwrap_err();
+    assert_ne!(error.exit_code(), 3, "{error}");
+    assert!(
+        lines(&out)
+            .iter()
+            .all(|line| status_of(line).reason != Some(WatchStatusReason::NoPane)),
+        "no no_pane status"
+    );
+    // The same call without a site is the pane refusal this test must tell apart from.
+    let mut pane_out = Vec::new();
+    let refused = crate::cli::run_in_site(
+        [
+            "herdr-threads",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--host-endpoint",
+            core.to_str().unwrap(),
+            "watch",
+            "--harness",
+            "claude",
+            "--session",
+            "s1",
+        ],
+        None,
+        None,
+        &mut pane_out,
+    )
+    .unwrap_err();
+    assert_eq!(refused.exit_code(), 3);
+    assert!(
+        lines(&pane_out)
+            .iter()
+            .any(|line| status_of(line).reason == Some(WatchStatusReason::NoPane))
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn unlocated_caller_exits_2_no_binding() {
     let root = temp_dir("loc");

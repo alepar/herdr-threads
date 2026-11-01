@@ -670,12 +670,42 @@ impl HostPort for HcHost {
         NativeLaunchCapability::Unsupported
     }
 
+    /// One terminal read from a fresh capture, as an enumeration would show it. An absent,
+    /// finished or unreadable record is `NotFound`: a current read never invents a target.
     fn observe_current_target(
         &self,
-        _: &HostTargetId,
-        _: &HostCallContext,
+        target: &HostTargetId,
+        context: &HostCallContext,
     ) -> Result<HostObservation, ApiError> {
-        Err(Self::unavailable("observe_current_target"))
+        if context.budget.cancellation.is_cancelled() {
+            return Err(ApiError::cancelled("hc observe_current_target"));
+        }
+        let epoch = self.epoch.load(Ordering::Acquire);
+        let started = self.clock.monotonic_now();
+        let capture = self
+            .capture()
+            .ok_or_else(|| ApiError::host_unavailable("hc host: the core is not readable"))?;
+        let boot = capture.boot.0.clone();
+        if !capture.is_readable() {
+            return Err(ApiError::host_unavailable(
+                "hc host: the capture is not readable",
+            ));
+        }
+        let not_found = || ApiError::new(ErrorCode::NotFound, "no such terminal");
+        let record = capture
+            .records
+            .iter()
+            .find(|record| record.address == target.as_str())
+            .ok_or_else(not_found)?;
+        let terminal = match HcClosure::of(record) {
+            HcClosure::Present => Some(TerminalId::new(record.address.clone())),
+            HcClosure::PendingRestart => None,
+            HcClosure::Final | HcClosure::Unreadable => return Err(not_found()),
+        };
+        let sequence = self.next_observation_sequence();
+        let mut observation = self.target(record, &boot, epoch, sequence, started, terminal);
+        observation.provenance = ObservationProvenance::FreshCurrentTarget;
+        Ok(observation)
     }
 
     fn observe_current_target_for_archival(

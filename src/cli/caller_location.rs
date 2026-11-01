@@ -215,6 +215,17 @@ impl CallerEnv {
         })
     }
 
+    /// The caller's host-scoped site: its seat name, else a lone herdr-core terminal. `None` for
+    /// a pane, a two-family caller (the daemon's guard decides it) or an unlocated one.
+    pub fn non_pane_locator(&self, mode: EnvMode) -> Option<CallerLocator> {
+        match self.locate(mode) {
+            Ok(Some(Located::One(
+                site @ (CallerLocator::Named(_) | CallerLocator::Terminal { .. }),
+            ))) => Some(site),
+            _ => None,
+        }
+    }
+
     /// The caller is a lone non-Pane site (a named seat or a herdr-core terminal): it has no
     /// Herdr pane to ask Herdr about, so instance discovery treats it alike (SA1).
     pub fn non_pane_site(&self) -> bool {
@@ -262,7 +273,7 @@ impl<'a> CallerSite<'a> {
 
     /// A target with no seat yet is registered by its first hook or call.
     pub fn enrolls_on_first_use(self) -> bool {
-        matches!(self.0, CallerLocator::Pane { .. } | CallerLocator::Named(_))
+        true
     }
 
     /// The daemon may re-attach a seat after the host restarted.
@@ -272,19 +283,35 @@ impl<'a> CallerSite<'a> {
 
     /// Seat lookup is scoped to this site's host.
     pub fn host_scoped_lookup(self) -> bool {
-        matches!(self.0, CallerLocator::Pane { .. } | CallerLocator::Named(_))
+        true
     }
 
     /// The host and target a request from this site carries, only for a site that sends them:
-    /// a named seat is its name at the reserved named-host locator. A Pane site sends neither
-    /// (its request bytes are unchanged).
+    /// a named seat is its name at the reserved named-host locator, a terminal its id at the
+    /// core's socket. A Pane site sends neither (its request bytes are unchanged). A terminal
+    /// whose socket is not a canonical absolute path sends none: the daemon cannot place it.
     pub fn sent_scope(self) -> Option<(HostLocator, HostTargetId)> {
         match self.0 {
             CallerLocator::Named(name) => Some((
                 HostLocator::parse(NAMED_HOST_LOCATOR).expect("the reserved locator parses"),
                 HostTargetId::new(name.as_str()),
             )),
-            CallerLocator::Pane { .. } | CallerLocator::Terminal { .. } => None,
+            CallerLocator::Terminal { socket, id } => HostLocator::parse(socket.as_str())
+                .ok()
+                .map(|host| (host, HostTargetId::new(id.as_str()))),
+            CallerLocator::Pane { .. } => None,
+        }
+    }
+
+    /// The local capability a daemon must advertise before this site's scope is sent
+    /// (`cli::site_capability`, M13); `None` for a Pane site, which sends no scope.
+    pub fn required_capability(self) -> Option<&'static str> {
+        match self.0 {
+            CallerLocator::Named(_) => Some(crate::protocol::capabilities::HOST_SITES_V1),
+            CallerLocator::Terminal { .. } => {
+                Some(crate::protocol::capabilities::TERMINAL_SITES_V1)
+            }
+            CallerLocator::Pane { .. } => None,
         }
     }
 

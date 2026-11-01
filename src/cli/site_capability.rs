@@ -1,14 +1,13 @@
 //! The CLI's site-capability gate (F9): before a request that carries a non-Pane caller site is
 //! sent, the daemon must advertise the local capability that understands it. Without it the CLI
 //! refuses with a fixed line instead of sending a request an older daemon would reject as an
-//! unknown field. Named sites are gated on `seat.host_sites_v1` (M13); terminal sites
-//! (`seat.terminal_sites_v1`) add theirs with the phase that builds the site. A Pane site never
-//! goes through this gate.
+//! unknown field. Named sites are gated on `seat.host_sites_v1` and Terminal sites on
+//! `seat.terminal_sites_v1` (M13), so a new CLI never sends a Terminal site to a daemon that only
+//! knows Named ones. A Pane site never goes through this gate.
 
 use super::caller_location::CallerSite;
 use crate::ports::LocalClient;
 use crate::protocol::{
-    capabilities::HOST_SITES_V1,
     commands::ResolveThreadQuery,
     ids::{HostLocator, HostTargetId, SeatId},
     results::{ApiError, ErrorCode},
@@ -33,23 +32,39 @@ pub fn require_site_capability(
     }
 }
 
-/// The host a seat lookup for `site` carries (`SeatsQuery.host`): a Named site passes the
-/// `seat.host_sites_v1` gate (M13) and sends its reserved named-host locator; any other site
-/// sends none, so its bytes are unchanged.
+/// Passes when the daemon advertises what `site` needs to be sent (its scope is sent only then);
+/// a Pane site needs nothing.
+pub fn require_site(
+    site: CallerSite<'_>,
+    client: &dyn LocalClient,
+    budget: &CallBudget,
+) -> Result<(), ApiError> {
+    match site.required_capability() {
+        Some(capability) => require_site_capability(client, capability, M13, budget),
+        None => Ok(()),
+    }
+}
+
+/// The host a seat lookup for `site` carries (`SeatsQuery.host`): a Named or Terminal site passes
+/// its capability gate (M13) and sends its host locator (the reserved named host, the core's
+/// socket); a Pane site sends none, so its bytes are unchanged.
 pub fn seats_host(
     site: Option<CallerSite<'_>>,
     client: &dyn LocalClient,
     budget: &CallBudget,
 ) -> Result<Option<HostLocator>, ApiError> {
-    let Some((host, _)) = site.and_then(CallerSite::sent_scope) else {
+    let Some(site) = site else {
         return Ok(None);
     };
-    require_site_capability(client, HOST_SITES_V1, M13, budget)?;
+    let Some((host, _)) = site.sent_scope() else {
+        return Ok(None);
+    };
+    require_site(site, client, budget)?;
     Ok(Some(host))
 }
 
-/// The thread-resolution request for the caller's site. A site that sends a host scope (Named)
-/// first passes the `seat.host_sites_v1` gate (M13) and then carries its host and target; any
+/// The thread-resolution request for the caller's site. A site that sends a host scope (Named,
+/// Terminal) first passes its capability gate (M13) and then carries its host and target; any
 /// other caller keeps the pane target it was given and sends no host, so its bytes are unchanged.
 pub fn resolve_thread_query(
     site: Option<CallerSite<'_>>,
@@ -60,8 +75,8 @@ pub fn resolve_thread_query(
     budget: &CallBudget,
 ) -> Result<ResolveThreadQuery, ApiError> {
     let scope = site.and_then(CallerSite::sent_scope);
-    if scope.is_some() {
-        require_site_capability(client, HOST_SITES_V1, M13, budget)?;
+    if let (Some(site), Some(_)) = (site, &scope) {
+        require_site(site, client, budget)?;
     }
     let (caller_target, caller_host) = match scope {
         Some((host, target)) => (Some(target), Some(host)),
@@ -83,6 +98,8 @@ mod tests {
         results::CommandResult,
         time::{Cancellation, MonoInstant},
     };
+
+    use crate::protocol::capabilities::{HOST_SITES_V1, TERMINAL_SITES_V1};
 
     const TEST_CAP: &str = "test.site_v1";
     const LINE: &str = "herdr-threads: daemon predates named/terminal seats; restart it";
@@ -142,5 +159,37 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn terminal_site_needs_its_own_capability_not_the_named_one() {
+        use super::super::caller_location::CallerLocator;
+        let terminal = CallerLocator::Terminal {
+            socket: "/core/work.sock".into(),
+            id: "t2".into(),
+        };
+        let host = seats_host(
+            Some(terminal.site()),
+            &Fake(&[HOST_SITES_V1, TERMINAL_SITES_V1]),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(host.as_str(), "/core/work.sock");
+        // A daemon that only knows Named sites refuses with M13 and nothing is sent.
+        let error =
+            seats_host(Some(terminal.site()), &Fake(&[HOST_SITES_V1]), &budget()).unwrap_err();
+        assert_eq!(error.detail, M13);
+        let query = resolve_thread_query(
+            Some(terminal.site()),
+            "ops",
+            None,
+            None,
+            &Fake(&[TERMINAL_SITES_V1]),
+            &budget(),
+        )
+        .unwrap();
+        assert_eq!(query.caller_host.unwrap().as_str(), "/core/work.sock");
+        assert_eq!(query.caller_target.unwrap().as_str(), "t2");
     }
 }

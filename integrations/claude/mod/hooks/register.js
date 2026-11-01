@@ -307,8 +307,8 @@ export function createCore(io) {
         void pumpLazy()
         void pump()
       } else if (o.state === 'closing' || o.state === 'refused') {
-        // A named seat has no pane: `no_pane` is never a reason to stop for it.
-        const named = !!io.watchEnv?.HERDR_THREADS_SEAT_NAME
+        // A named seat or a herdr-core terminal has no pane: `no_pane` is never a reason to stop for it.
+        const named = !!(io.watchEnv?.HERDR_THREADS_SEAT_NAME || io.watchEnv?.HC_TERMINAL_ID)
         S.stopReason = o.exit === 3 &&
           ['not_claude', 'disabled', 'replaced', 'no_pane', 'env_disabled', 'unsupported'].includes(o.reason) &&
           !(named && o.reason === 'no_pane')
@@ -1197,9 +1197,16 @@ export const register = (on) => {
     const watchEnv = {}
     const seatName = await $.env.get('HERDR_THREADS_SEAT_NAME')
     if (seatName) watchEnv.HERDR_THREADS_SEAT_NAME = seatName
+    // A herdr-core terminal (no HERDR_PANE_ID either) is forwarded the same way: its id and core socket.
+    const terminalId = await $.env.get('HC_TERMINAL_ID')
+    const terminalSocket = await $.env.get('HC_TERMINAL_SOCKET')
+    if (terminalId) {
+      watchEnv.HC_TERMINAL_ID = terminalId
+      if (terminalSocket) watchEnv.HC_TERMINAL_SOCKET = terminalSocket
+    }
     const seatReadonly = await $.env.get('HERDR_THREADS_SEAT_READONLY')
     if (seatReadonly) watchEnv.HERDR_THREADS_SEAT_READONLY = seatReadonly
-    core = createCore(buildIo($, ledgerFile, binName, watchEnv.HERDR_THREADS_SEAT_NAME ? watchEnv : null))
+    core = createCore(buildIo($, ledgerFile, binName, watchEnv.HERDR_THREADS_SEAT_NAME || watchEnv.HC_TERMINAL_ID ? watchEnv : null))
     await core.onLoad()
     timer = $.clock.every(1000, () => {
       if (core) void core.onTick()

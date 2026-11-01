@@ -458,3 +458,12 @@ fn skill_explains_no_wake_and_the_none_meaning() {
     assert!(warnings.contains(&format!("{k3} {k2}")), "{warnings}");
     assert!(!SKILL_MD.contains("a mod-channel seat wakes without one"));
 }
+
+/// K4 (140 bytes): the terminal-site line is in the skill exactly once, after K1 in the Seats
+/// section, not in per-message framing.
+#[test]
+fn terminal_site_line_k4_is_in_the_skill_once() {
+    let k4 = "herdr-threads works alike in a Herdr pane, a named process and a herdr-core terminal: `hc` runs terminals, `herdr-threads` carries messages.";
+    assert_eq!(k4.len(), 140);
+    assert_eq!(crate::cli::skill::SKILL_MD.matches(k4).count(), 1);
+}

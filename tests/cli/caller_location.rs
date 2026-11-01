@@ -217,12 +217,17 @@ fn pane_site_answers() {
 }
 
 #[test]
-fn recognition_only_terminal_site_is_not_a_pane() {
+fn terminal_site_is_not_a_pane_but_enrolls_and_scopes_its_lookup() {
     let locator = terminal("/s", "t1");
     let site = locator.site();
     assert_eq!(site.relative_pane(), None);
     assert!(!site.person_origin_allowed());
-    assert!(!site.enrolls_on_first_use());
+    assert!(site.enrolls_on_first_use());
+    assert!(site.host_scoped_lookup());
+    assert!(!site.attempts_continuity());
+    assert_eq!(site.required_capability(), Some("seat.terminal_sites_v1"));
+    let (host, target) = site.sent_scope().unwrap();
+    assert_eq!((host.as_str(), target.as_str()), ("/s", "t1"));
 }
 
 #[test]
