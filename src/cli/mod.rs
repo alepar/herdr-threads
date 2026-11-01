@@ -2805,6 +2805,172 @@ fn replay_selection(
     })
 }
 
+/// D3 on a plain path: a seat-acting call under `HERDR_THREADS_SEAT_READONLY=1` first sends the
+/// check-in that records it, so nothing this call displays can settle a receipt. A failure refuses
+/// the call: a readonly caller must not fall back to writable. A subagent (its role already
+/// forbids settlement), a person, a replay (it carries its original claim) and a check-in (which
+/// stamps the marker itself) are skipped.
+pub(crate) fn mark_readonly_caller<C: LocalClient + ?Sized>(
+    parsed: &commands::ParsedCli,
+    selection: &CooperativeSelection,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    let readonly = caller_location::CallerEnv::from_process().readonly();
+    mark_readonly(
+        readonly, parsed, selection, paths, instance, host, client, clock,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mark_readonly<C: LocalClient + ?Sized>(
+    readonly: bool,
+    parsed: &commands::ParsedCli,
+    selection: &CooperativeSelection,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    if !readonly
+        || selection.role != crate::harness::context::Role::TopLevel
+        || selection.harness == crate::harness::context::Harness::Human
+        || matches!(
+            &parsed.action,
+            CliAction::Retry(_)
+                | CliAction::Mutation(
+                    MutationSpec::CheckIn | MutationSpec::CheckInLifecycle { .. }
+                )
+        )
+    {
+        return Ok(());
+    }
+    let mut check_in = parsed.clone();
+    check_in.action = CliAction::Mutation(MutationSpec::CheckIn);
+    run_selected(
+        check_in,
+        selection,
+        paths,
+        instance,
+        host,
+        client,
+        clock,
+        &mut io::sink(),
+    )
+}
+
+#[cfg(test)]
+mod readonly_caller_tests {
+    use super::*;
+    use crate::protocol::{
+        ids::{HostTargetId, SeatId},
+        results::{ApiError, ErrorCode},
+        time::{CallBudget, MonoInstant, UtcMillis},
+    };
+    use std::sync::Mutex;
+
+    /// Refuses every command and records how many it was sent.
+    struct Refusing(Mutex<usize>);
+    impl LocalClient for Refusing {
+        fn call(&self, _: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            *self.0.lock().unwrap() += 1;
+            Err(ApiError::new(ErrorCode::Unsupported, "refused"))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+
+    struct Zero;
+    impl Clock for Zero {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(0)
+        }
+    }
+
+    fn run(readonly: bool, role: crate::harness::context::Role, argv: &[&str]) -> (bool, usize) {
+        let parsed = commands::parse_argv(argv.iter().copied()).unwrap();
+        let selection = CooperativeSelection {
+            seat: SeatId::new("snSGreadonly1"),
+            target: HostTargetId::new("reviewer"),
+            harness: crate::harness::context::Harness::Claude,
+            role,
+        };
+        let dir = std::path::PathBuf::from("/nonexistent/readonly-caller");
+        let paths = NodePaths {
+            state_dir: dir.clone(),
+            node_dir: dir.clone(),
+            key_path: dir.clone(),
+            node_json_path: dir.clone(),
+            database_path: dir.clone(),
+            lock_path: dir.clone(),
+            descriptor_path: dir.clone(),
+            socket_path: dir,
+        };
+        let host =
+            crate::protocol::ids::HostLocator::parse(crate::protocol::ids::NAMED_HOST_LOCATOR)
+                .unwrap();
+        let client = Refusing(Mutex::new(0));
+        let outcome = mark_readonly(
+            readonly,
+            &parsed,
+            &selection,
+            &paths,
+            crate::node::NodeUuid::new_v4(),
+            &host,
+            &client,
+            &Zero,
+        );
+        let calls = *client.0.lock().unwrap();
+        (outcome.is_err(), calls)
+    }
+
+    // Kills: a readonly caller whose failed check-in falls back to a writable command.
+    #[test]
+    fn readonly_failure_refuses_the_command() {
+        let (refused, calls) = run(
+            true,
+            crate::harness::context::Role::TopLevel,
+            &["ht", "inbox"],
+        );
+        assert!(refused, "the refused check-in must refuse the call");
+        assert!(calls >= 1, "the check-in reached the daemon");
+    }
+
+    // Kills: a check-in sent without the variable, and one sent for a subagent.
+    #[test]
+    fn no_check_in_without_the_variable_or_for_a_subagent() {
+        assert_eq!(
+            run(
+                false,
+                crate::harness::context::Role::TopLevel,
+                &["ht", "inbox"]
+            ),
+            (false, 0)
+        );
+        assert_eq!(
+            run(
+                true,
+                crate::harness::context::Role::Subagent,
+                &["ht", "inbox"]
+            ),
+            (false, 0)
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     parsed: commands::ParsedCli,
@@ -2820,6 +2986,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         harness::context::{OccupantContext, SessionReference},
         protocol::{commands::SeatInspectQuery, pagination::PageRequest, results::CommandResult},
     };
+    mark_readonly_caller(&parsed, selection, paths, instance, host, client, clock)?;
     let replay = ordinary_retry_claim(&parsed, &paths.node_dir.join("intents"))?;
     let historical = replay
         .as_ref()

@@ -476,3 +476,146 @@ fn no_next_line_carries_the_reserved_locator() {
         );
     }
 }
+
+impl Rig {
+    /// `args` as the agent of `session` named `name` under `HERDR_THREADS_SEAT_READONLY=1`.
+    fn readonly_agent(&self, name: &str, session: &str, args: &[&str]) -> Ran {
+        let mut command = self.command();
+        command
+            .args(args)
+            .env("HERDR_THREADS_SEAT_NAME", name)
+            .env("HERDR_THREADS_SEAT_READONLY", "1");
+        as_agent(&mut command, "claude", session);
+        run(command, None)
+    }
+
+    /// The `readonly` flags of the named seat's bindings.
+    fn readonly_flags(&self, seat: &str) -> Vec<i64> {
+        let db = self.db();
+        let mut statement = db
+            .prepare("SELECT readonly FROM occupant_bindings WHERE seat_id=?1")
+            .unwrap();
+        statement
+            .query_map([seat], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+}
+
+/// Alice (hook-enrolled) sends bob an ACK request; bob is enrolled only by plain commands, with
+/// or without the readonly variable. Returns the message id after bob's `inbox` displayed it.
+fn plain_enrolled_bob_reads(rig: &Rig, readonly: bool) -> (String, String) {
+    let (id, bob, _) = plain_enrolled_bob_display(rig, readonly);
+    (id, bob)
+}
+
+fn plain_enrolled_bob_display(rig: &Rig, readonly: bool) -> (String, String, Ran) {
+    enroll(rig, "alice", "s-alice");
+    let bob_agent = |args: &[&str]| {
+        if readonly {
+            rig.readonly_agent("bob", "s-bob", args)
+        } else {
+            rig.agent("bob", "s-bob", args)
+        }
+    };
+    // The first plain command allocates and enrolls bob: no hook ever runs for him. The named
+    // host observes a new seat on its cadence: until then a readonly check-in (and a send to the
+    // seat) is refused, so each step retries like `enroll`.
+    let until = Instant::now() + Duration::from_secs(60);
+    let retry = |step: &dyn Fn() -> Ran| {
+        loop {
+            let ran = step();
+            if ran.code == Some(0) {
+                return ran;
+            }
+            assert!(Instant::now() < until, "never succeeded: {ran:?}");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    // A refused check-in stays a pending local intent (a bare Conflict on every rerun) until
+    // `retry <ref>` replays it once the seat is observed.
+    retry(&|| {
+        let ran = bob_agent(&["inbox"]);
+        if ran.code != Some(0) {
+            let pending = bob_agent(&["pending-ops"]);
+            if let Some(at) = pending.stdout.find("local:") {
+                let reference: String = pending.stdout[at..]
+                    .chars()
+                    .take_while(|c| *c != '"')
+                    .collect();
+                bob_agent(&[
+                    "--host-endpoint",
+                    "/.herdr-threads/named-host",
+                    "retry",
+                    &reference,
+                ]);
+            }
+        }
+        ran
+    });
+    let bob = rig.seat_of("bob");
+    let sent = retry(&|| {
+        rig.agent(
+            "alice",
+            "s-alice",
+            &[
+                "send",
+                "--seat",
+                &bob,
+                "--body",
+                "ack me",
+                "--require-ack",
+                &bob,
+            ],
+        )
+    });
+    let id = sent_message(&sent);
+    // One display: it exits clean with or without the variable.
+    let shown = bob_agent(&["inbox"]);
+    assert!(shown.stdout.contains("ack me"), "{shown:?}");
+    assert_eq!(shown.code, Some(0), "{shown:?}");
+    // The row is shown again and the second display settles it (writable) or leaves it owed
+    // (readonly): both displays exit clean.
+    let again = bob_agent(&["inbox"]);
+    assert_eq!(again.code, Some(0), "{again:?}");
+    (id, bob, shown)
+}
+
+// Kills: a session enrolled only by plain commands under the readonly variable whose display
+// discharges the ACK, and a binding row left writable.
+#[test]
+fn plain_commands_under_readonly_never_discharge_an_ack() {
+    let rig = Rig::start("nc-ro-plain");
+    let (id, bob, _) = plain_enrolled_bob_display(&rig, true);
+    let owed = rig.readonly_agent("bob", "s-bob", &["pending-receipts", "--machine"]);
+    assert!(
+        owed.stdout.contains(&id),
+        "still owed after display: {owed:?}"
+    );
+    let flags = rig.readonly_flags(&bob);
+    assert!(
+        !flags.is_empty() && flags.iter().all(|flag| *flag == 1),
+        "every binding of the seat is readonly: {flags:?}"
+    );
+}
+
+// The control: without the variable the same flow sends no marking check-in, so the binding
+// stays writable and the display exits clean.
+#[test]
+fn plain_commands_without_the_variable_stay_writable() {
+    let rig = Rig::start("nc-rw-plain");
+    let (id, bob) = plain_enrolled_bob_reads(&rig, false);
+    // The control that makes the readonly test's "still owed" discriminate: the writable displays
+    // discharge the same ACK.
+    let owed = rig.agent("bob", "s-bob", &["pending-receipts", "--machine"]);
+    assert!(
+        !owed.stdout.contains(&id),
+        "writable display settles the ACK: {owed:?}"
+    );
+    let flags = rig.readonly_flags(&bob);
+    assert!(
+        !flags.is_empty() && flags.iter().all(|flag| *flag == 0),
+        "{flags:?}"
+    );
+}

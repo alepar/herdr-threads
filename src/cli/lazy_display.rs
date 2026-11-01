@@ -148,8 +148,12 @@ where
     };
     let human = candidates.claim.harness == crate::protocol::authority::Harness::Human;
     let mut refs = Vec::new();
+    // D3: a readonly caller's display never settles a receipt (the daemon would skip it and
+    // return nothing acknowledged), so no ACK settlement is recorded or submitted for it; the
+    // cursor walk below still completes.
+    let readonly = crate::cli::caller_location::CallerEnv::from_process().readonly();
     let mutations = [
-        (!candidates.ordinary.is_empty()).then_some(SemanticMutation::AckDisplayed {
+        (!readonly && !candidates.ordinary.is_empty()).then_some(SemanticMutation::AckDisplayed {
             messages: candidates.ordinary,
         }),
         (!candidates.lazy.is_empty()).then_some(SemanticMutation::CompleteInboxDelivery {

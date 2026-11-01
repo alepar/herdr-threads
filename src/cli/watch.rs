@@ -1168,6 +1168,19 @@ where
         }
         Err(_) => return Err(CallerFailure::Other),
     };
+    // D3: a readonly watch records the marker before it registers (the watch enrolls through
+    // `register_available`, which never stamps it).
+    let marker_host = context.claim_host().map_err(|_| CallerFailure::Other)?;
+    super::mark_readonly_caller(
+        parsed,
+        &selection,
+        paths,
+        *instance,
+        &marker_host,
+        client,
+        clock.as_ref(),
+    )
+    .map_err(|_| CallerFailure::Other)?;
     if let Some(super::caller::CallerOrigin::Agent(env)) = origin {
         // The mod's watch child runs under the session's harness: its claim is the environment's
         // (the fingerprint is the harness process's), with the `--session` the mod passed.
