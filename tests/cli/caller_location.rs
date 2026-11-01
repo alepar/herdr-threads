@@ -236,7 +236,11 @@ fn named_site_answers() {
     assert!(!site.attempts_continuity());
     assert!(site.host_scoped_lookup());
     assert_eq!(site.locate_candidate(), None);
-    assert_eq!(site.terminal_id(), None);
+    assert_eq!(site.terminal_address(), None);
+    assert_eq!(
+        site.claim_host_locator(),
+        Some("/.herdr-threads/named-host")
+    );
     assert_eq!(site.cache_key(), "named:worker-1");
 }
 
@@ -279,4 +283,78 @@ fn readonly_marker_is_exactly_one() {
         both.locate(EnvMode::Cli),
         Ok(Some(Located::One(pane("w1:p1"))))
     );
+}
+
+#[test]
+fn terminal_site_answers() {
+    let locator = terminal("/run/herdr-core/work.sock", "t3");
+    let site = locator.site();
+    assert_eq!(site.moved_target(), Some("t3"));
+    assert_eq!(site.relative_pane(), None);
+    assert!(!site.person_origin_allowed());
+    assert_eq!(site.terminal_address().as_deref(), Some("work:t3"));
+    // The core's own socket is the claim host; the installed Herdr endpoint never is.
+    assert_eq!(site.claim_host_locator(), Some("/run/herdr-core/work.sock"));
+    assert_eq!(
+        site.env_assignments(),
+        vec![
+            "HC_TERMINAL_ID=t3".to_owned(),
+            "HC_TERMINAL_SOCKET=/run/herdr-core/work.sock".to_owned()
+        ]
+    );
+    // A socket with no file stem leaves the bare terminal id.
+    assert_eq!(
+        terminal("/", "t3").site().terminal_address().as_deref(),
+        Some("t3")
+    );
+    assert_eq!(pane("w1:p1").site().claim_host_locator(), None);
+}
+
+/// The lone non-Pane callers instance discovery treats alike; a pane family anywhere makes the
+/// caller a Pane site (Herdr's own discovery applies).
+#[test]
+fn non_pane_site_is_a_lone_name_or_terminal() {
+    let term = [("HC_TERMINAL_ID", "t1"), ("HC_TERMINAL_SOCKET", "/s")];
+    assert!(env(&term).non_pane_site());
+    assert!(env(&[("HERDR_THREADS_SEAT_NAME", "worker-1")]).non_pane_site());
+    assert!(!env(&[("HERDR_PANE_ID", "w1:p1")]).non_pane_site());
+    assert!(!env(&[]).non_pane_site());
+    assert!(
+        !env(&[
+            ("HC_TERMINAL_ID", "t1"),
+            ("HC_TERMINAL_SOCKET", "/s"),
+            ("HERDR_PANE_ID", "w1:p1")
+        ])
+        .non_pane_site()
+    );
+    // The refusal is not a site.
+    assert!(!env(&[("HC_TERMINAL_ID", "t1")]).non_pane_site());
+}
+
+/// Kills: a terminal id with no socket silently treated as no caller, instead of the M17 refusal;
+/// M17 beside a pane (the pane stands) or with nothing at all.
+#[test]
+fn terminal_without_socket_m17() {
+    use herdr_threads::cli::caller_location::M17;
+    let refusal = |pairs: &[(&str, &str)]| {
+        env(pairs)
+            .locate(EnvMode::Cli)
+            .err()
+            .and_then(|error| error.refusal())
+    };
+    assert_eq!(refusal(&[("HC_TERMINAL_ID", "t1")]), Some(M17));
+    assert_eq!(
+        refusal(&[("HC_TERMINAL_ID", "t1"), ("HC_TERMINAL_SOCKET", "")]),
+        Some(M17)
+    );
+    assert_eq!(
+        M17,
+        "herdr-threads: HC_TERMINAL_ID is set without HC_TERMINAL_SOCKET; cannot locate the terminal"
+    );
+    assert_eq!(M17.len(), 91);
+    assert_eq!(
+        refusal(&[("HC_TERMINAL_ID", "t1"), ("HERDR_PANE_ID", "w1:p1")]),
+        None
+    );
+    assert_eq!(refusal(&[]), None);
 }

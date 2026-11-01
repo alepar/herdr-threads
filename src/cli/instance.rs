@@ -64,10 +64,11 @@ pub struct InstanceInputs {
     pub herdr: Option<PathBuf>,
     /// `HERDR_ENV` is set: the caller runs beside a Herdr (SA1 step 4).
     pub herdr_env: bool,
-    /// The caller is a Named (non-Pane) site (`HERDR_THREADS_SEAT_NAME`): with no Herdr
-    /// configured or on PATH it gets the standalone default state dir, and its Herdr host
-    /// endpoint resolves lazily (fast sources only, never a `herdr` query).
-    pub named_site: bool,
+    /// The caller is a lone non-Pane site (a Named seat, `HERDR_THREADS_SEAT_NAME`, or a
+    /// herdr-core terminal, `HC_TERMINAL_ID`): with no Herdr configured or on PATH it gets the
+    /// standalone default state dir, beside a Herdr the command group's store, and its Herdr
+    /// host endpoint resolves lazily (fast sources only, never a `herdr` query).
+    pub non_pane_site: bool,
 }
 
 fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
@@ -90,7 +91,7 @@ impl InstanceInputs {
                 || non_empty(std::env::var_os("HERDR_CONFIG_PATH")).is_some(),
             herdr: hook::resolve_on_path("herdr", path.as_deref()),
             herdr_env: caller.herdr_env(),
-            named_site: caller.named().is_some(),
+            non_pane_site: caller.non_pane_site(),
         }
     }
 
@@ -211,15 +212,15 @@ pub fn standalone_state_dir(inputs: &InstanceInputs) -> Result<Option<PathBuf>, 
     Ok(choose_state_dir(xdg, home)?.map(|(dir, _, _)| dir))
 }
 
-/// Where the default state dir would be created. `None` for a named Herdr session. For a Named
-/// site (`named_site`) also `None` unless no Herdr is configured (`HERDR_ENV`, `HERDR_SESSION`,
+/// Where the default state dir would be created. `None` for a named Herdr session. For a
+/// non-Pane site (`non_pane_site`) also `None` unless no Herdr is configured (`HERDR_ENV`, `HERDR_SESSION`,
 /// `HERDR_CONFIG_PATH` unset) and no `herdr` is on PATH: beside a Herdr the command group's
 /// store is found by the `herdr plugin list` query (or refused), never split off a second store.
 fn default_state_dir_to_create(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
     if inputs.non_default_server {
         return Ok(None);
     }
-    if inputs.named_site && (inputs.herdr_configured() || inputs.herdr.is_some()) {
+    if inputs.non_pane_site && (inputs.herdr_configured() || inputs.herdr.is_some()) {
         return Ok(None);
     }
     standalone_state_dir(inputs)
@@ -364,9 +365,9 @@ pub fn resolve_state_dir(inputs: &InstanceInputs) -> Result<(PathBuf, String), S
     match default_state_dir(inputs)? {
         Some(found) => Ok(found),
         None => match default_state_dir_to_create(inputs) {
-            // A Named site with no Herdr configured or on PATH: the standalone default dir
+            // A non-Pane site with no Herdr configured or on PATH: the standalone default dir
             // (created by the context resolution). Otherwise the one `herdr plugin list` query.
-            Ok(Some(dir)) if inputs.named_site => Ok((dir, STANDALONE_HOW.into())),
+            Ok(Some(dir)) if inputs.non_pane_site => Ok((dir, STANDALONE_HOW.into())),
             _ => detect_state_dir(&inputs.detect()),
         },
     }
@@ -447,7 +448,7 @@ pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String
         Some(found) => Ok(found),
         // Lazy for a non-Pane site: no `herdr status server` query on every call; a command
         // that needs the host fails later, in `RuntimeContext::require_host`.
-        None if inputs.named_site => {
+        None if inputs.non_pane_site => {
             Err("Herdr host endpoint not resolved for a named site".into())
         }
         None => detect_host_endpoint(&inputs.detect()),
@@ -512,6 +513,10 @@ pub(crate) fn resolve_context_with_selected_paths(
 #[cfg(test)]
 #[path = "../../tests/cli/instance_named.rs"]
 mod instance_named;
+
+#[cfg(test)]
+#[path = "../../tests/daemon/terminal_site.rs"]
+mod terminal_site;
 
 #[cfg(test)]
 mod tests {

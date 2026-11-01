@@ -1,0 +1,1 @@
+herdr-threads: HC_TERMINAL_ID is set without HC_TERMINAL_SOCKET; cannot locate the terminal

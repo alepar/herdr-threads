@@ -22,11 +22,6 @@ pub struct LocateCaller {
     pub candidates: Vec<LocateCandidate>,
     #[serde(default)]
     pub subject: Option<LivenessFingerprint>,
-    /// The binding a guard line (M3) is owed to, for a hook of an adapter that
-    /// repeats its fixed section every turn and has no lifecycle check-in. The
-    /// daemon remembers the keys it answered `Unverified` for.
-    #[serde(default)]
-    pub guard_key: Option<String>,
 }
 
 /// Why one candidate did not verify.
@@ -50,8 +45,5 @@ pub enum LocateReply {
     Verified { index: usize, root: u32 },
     Unverified {
         per_candidate: Vec<CandidateVerdict>,
-        /// `guard_key` was not seen before by this daemon (it is remembered now).
-        #[serde(default)]
-        first_guard: bool,
     },
 }

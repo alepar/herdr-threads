@@ -251,7 +251,7 @@ pub struct HookEnv {
     pub herdr_env: bool,
     pub pane: Option<String>,
     /// Set when the environment names both a Herdr pane and a herdr-core terminal: the
-    /// daemon must verify the pane before the hook binds to it (`caller_guard`).
+    /// daemon must verify which one runs the hook before it binds (`caller_guard`).
     pub ambiguous: Option<Vec<super::caller_location::CallerLocator>>,
     /// A valid `HERDR_THREADS_SEAT_NAME`: the Named site. It replaces only the target and needs
     /// no Herdr environment (`herdr_env` and `pane` are then unused for the target).
@@ -3979,31 +3979,13 @@ fn report_binding_event(
     Ok(())
 }
 
-/// Whether the guard line M3 rides this hook (token rule (a): never on a routine per-turn hook).
-///
-/// - A lifecycle check-in or a compact re-entry (`lifecycle`): yes, for every harness.
-/// - A per-turn delivering hook: only for an adapter whose policy repeats its fixed section
-///   every turn (`guidance_every_turn`) and that has no lifecycle check-in to carry it
-///   (`lifecycle_check_in` false), and only the first time the daemon sees the binding
-///   (`first`: daemon memory, re-armed by a restart). Chosen by policy, never by harness name.
-pub(crate) fn guard_line_due(
-    lifecycle: bool,
-    per_turn: bool,
-    guidance_every_turn: bool,
-    lifecycle_check_in: bool,
-    first: bool,
-) -> bool {
-    lifecycle || (per_turn && guidance_every_turn && !lifecycle_check_in && first)
-}
-
-/// The two-family guard of one hook (F): the daemon verifies the Herdr pane before the hook
-/// binds to it. `None`: the pane verified, carry on. `Some`: nothing verified, no seat binds;
-/// the hook exits 0 with M1 as its one stderr diagnostic and M3 in context when due.
+/// The two-family guard of one hook: the daemon verifies which family runs this process before
+/// the hook binds to anything. `None`: the Herdr pane verified, carry on. `Some`: no seat binds
+/// and nothing is injected; the hook exits 0, with M4 as its one stderr diagnostic when
+/// nothing verified. A verified terminal names no pane, so it binds nothing here either.
 #[allow(clippy::too_many_arguments)]
 fn two_family_guard(
     args: &HookArgs,
-    registration: &'static Registration,
-    admitted: &AdmittedHandle,
     decoded: &DecodedEvent,
     env: &HookEnv,
     candidates: &[super::caller_location::CallerLocator],
@@ -4012,61 +3994,23 @@ fn two_family_guard(
     ensure_executable: Option<&Path>,
 ) -> Option<HookOutcome> {
     use super::caller_guard::{Guard, unasked, verify};
-    let policy = registration.output_policy();
-    let lifecycle_check_in =
-        registration.enrollment_policy() == crate::harness::adapter::EnrollmentPolicy::Lifecycle;
-    let lifecycle = matches!(decoded.intent, EventIntent::Lifecycle(_));
-    let per_turn = matches!(
-        decoded.intent,
-        EventIntent::Current | EventIntent::QualifiedTurn(_)
-    );
-    let key = (per_turn && policy.guidance_every_turn && !lifecycle_check_in)
-        .then(|| {
-            decoded
-                .native_session
-                .as_ref()
-                .map(|session| format!("{}:{session}", args.harness.as_str()))
-        })
-        .flatten();
     let guard = match connect_pane(args, env, deadline, clock, ensure_executable) {
         Ok(connected) => verify(
             &connected.client,
             candidates,
-            key,
             &budget(deadline, clock.as_ref()),
         ),
-        Err(_) => unasked(candidates, env.pane.as_deref().unwrap_or_default()),
-    };
-    let Guard::Refused(refusal) = guard else {
-        return None;
+        Err(_) => unasked(candidates),
     };
     let top_level = matches!(decoded.role, EventRole::TopLevel);
-    let due = top_level
-        && guard_line_due(
-            lifecycle,
-            per_turn,
-            policy.guidance_every_turn,
-            lifecycle_check_in,
-            refusal.first,
-        );
-    let stdout = if due {
-        // Nothing was bound, so a qualified turn has no prepared result kind: it encodes as a
-        // plain current-turn context (a qualified intent alone is not encodable).
-        let mut encoding = decoded.clone();
-        if matches!(encoding.intent, EventIntent::QualifiedTurn(_)) {
-            encoding.intent = EventIntent::Current;
-        }
-        output_bytes(registration.encode(admitted, &encoding, &neutral_offer(refusal.m3()))).0
-    } else {
-        Vec::new()
-    };
-    Some(HookOutcome {
-        stdout,
-        diagnostic: top_level.then(|| refusal.m1()),
-        attention: None,
-        lazy: None,
-        step_completion: None,
-    })
+    match guard {
+        Guard::Pane(_) => None,
+        Guard::Terminal => Some(HookOutcome::default()),
+        Guard::Refused(refusal) => Some(HookOutcome {
+            diagnostic: top_level.then(|| refusal.m4()),
+            ..HookOutcome::default()
+        }),
+    }
 }
 
 /// Executes adapter-normalized intent. Ineligible callbacks never reach seat resolution.
@@ -4145,8 +4089,6 @@ fn run_admitted_hook_since(
     if let Some(candidates) = &env.ambiguous
         && let Some(outcome) = two_family_guard(
             args,
-            registration,
-            admitted,
             decoded,
             env,
             candidates,
@@ -4500,17 +4442,32 @@ fn same_endpoint(a: &Path, b: &Path) -> bool {
 /// the calling pane (`HERDR_SOCKET_PATH`) before the installed argv's `--host-endpoint`
 /// ([`super::instance::claim_host`]).
 fn hook_runtime_context(args: &HookArgs) -> io::Result<RuntimeContext> {
-    // A named seat's claim host is the reserved named host, never a Herdr server.
-    let pane_host = if super::caller_location::CallerEnv::from_process()
-        .named()
-        .is_some()
-    {
-        Some(PathBuf::from(crate::protocol::ids::NAMED_HOST_LOCATOR))
-    } else {
-        std::env::var_os("HERDR_SOCKET_PATH")
+    hook_runtime_context_in(
+        args,
+        &super::caller_location::CallerEnv::from_process(),
+        std::env::var_os("HERDR_SOCKET_PATH"),
+    )
+}
+
+/// [`hook_runtime_context`] for a given caller environment and the pane's `HERDR_SOCKET_PATH`.
+/// A named seat's claim host is the reserved named host and a terminal's is its core socket,
+/// never the Herdr server the installed argv bakes in.
+pub(crate) fn hook_runtime_context_in(
+    args: &HookArgs,
+    env: &super::caller_location::CallerEnv,
+    herdr_socket: Option<OsString>,
+) -> io::Result<RuntimeContext> {
+    let site_host = match env.locate(super::caller_location::EnvMode::Hook) {
+        Ok(Some(super::caller_location::Located::One(locator))) => {
+            locator.site().claim_host_locator().map(PathBuf::from)
+        }
+        _ => None,
+    };
+    let pane_host = site_host.or_else(|| {
+        herdr_socket
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-    };
+    });
     hook_runtime_context_with(args, pane_host)
 }
 

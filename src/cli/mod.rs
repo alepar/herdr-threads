@@ -307,7 +307,7 @@ impl ViewReader for SocketViewReader {
 }
 
 /// The pane the CLI acts from ([`caller_guard::cli_pane`]): a two-family caller is verified by
-/// the daemon first, and an unverified one prints M1 and binds nothing.
+/// the daemon first, and an unverified one prints M4 and binds nothing.
 fn cli_caller_pane(env: &caller_location::CallerEnv) -> Option<String> {
     caller_guard::cli_pane(
         env,
@@ -322,8 +322,8 @@ fn cli_caller_pane(env: &caller_location::CallerEnv) -> Option<String> {
                 .and_then(|(context, _)| NodePaths::resolve_read_only(&context.state_dir).ok())
                 .and_then(|paths| connect(&paths, &clock).ok())
                 .map_or_else(
-                    || caller_guard::unasked(candidates, ""),
-                    |(_, _, client)| caller_guard::verify(&client, candidates, None, &budget),
+                    || caller_guard::unasked(candidates),
+                    |(_, _, client)| caller_guard::verify(&client, candidates, &budget),
                 )
         },
         |line| eprintln!("{line}"),

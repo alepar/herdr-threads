@@ -1,11 +1,9 @@
-//! The Named caller site's command shape and its `seat.host_sites_v1` gate (M13), plus the M2
-//! suffix on the two-family guard lines.
+//! The Named caller site's command shape and its `seat.host_sites_v1` gate (M13).
 
 use std::ffi::OsString;
 use std::sync::Mutex;
 
 use herdr_threads::cli::{
-    caller_guard::{self, Refusal},
     caller_location::{CallerEnv, CallerLocator, EnvMode, Located},
     hook::HookEnv,
     site_capability::{M13, resolve_thread_query},
@@ -172,22 +170,6 @@ fn m13_golden() {
     let golden = include_str!("golden/m13.txt");
     assert_eq!(format!("{M13}\n"), golden);
     assert_eq!(M13.len(), 63);
-}
-
-#[test]
-fn m2_golden() {
-    let golden = include_str!("golden/m2.txt");
-    assert_eq!(format!("{}\n", caller_guard::m2()), golden);
-    assert_eq!(caller_guard::m2().len(), 29);
-    let refusal = Refusal {
-        terminal: "t3".into(),
-        pane: "w1:p1".into(),
-        first: true,
-    };
-    assert!(refusal.m1().ends_with(&caller_guard::m2()));
-    assert_eq!(refusal.m1().len(), 62 + 2 + 29);
-    assert!(refusal.m3().ends_with(&caller_guard::m2()));
-    assert_eq!(refusal.m3().len(), 88 + 2 + 5 + 29);
 }
 
 fn named_locator() -> CallerLocator {

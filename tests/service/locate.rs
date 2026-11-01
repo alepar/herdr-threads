@@ -42,6 +42,8 @@ impl ProcessInfo for Tree {
 pub(crate) struct Roots {
     answers: Vec<(&'static str, Result<Option<u32>, ()>)>,
     asked: AtomicUsize,
+    /// Answers terminal ids (a herdr-core host) rather than pane ids.
+    terminals: bool,
 }
 
 impl Roots {
@@ -49,11 +51,26 @@ impl Roots {
         Arc::new(Self {
             answers,
             asked: AtomicUsize::new(0),
+            terminals: false,
+        })
+    }
+
+    /// A herdr-core host answering terminal ids.
+    pub(crate) fn hc_port(
+        answers: Vec<(&'static str, Result<Option<u32>, ()>)>,
+    ) -> Arc<dyn HostPort> {
+        Arc::new(Self {
+            answers,
+            asked: AtomicUsize::new(0),
+            terminals: true,
         })
     }
 }
 
 impl HostPort for Roots {
+    fn answers_terminal_ids(&self) -> bool {
+        self.terminals
+    }
     fn target_root_process(
         &self,
         target: &HostTargetId,
@@ -147,7 +164,6 @@ fn request(candidates: Vec<LocateCandidate>, subject: Option<u32>) -> LocateCall
     LocateCaller {
         candidates,
         subject: subject.map(|pid| LivenessFingerprint { pid, start: 1 }),
-        guard_key: None,
     }
 }
 
@@ -211,7 +227,6 @@ fn no_candidate_verifies_is_unverified() {
         reply,
         LocateReply::Unverified {
             per_candidate: vec![CandidateVerdict::NotAncestor, CandidateVerdict::Unsupported],
-            first_guard: false,
         }
     );
     // No subject at all verifies nothing either.
@@ -236,7 +251,6 @@ fn unreachable_host_counts_unverified() {
         reply,
         LocateReply::Unverified {
             per_candidate: vec![CandidateVerdict::Unreachable],
-            first_guard: false,
         }
     );
     let up = Roots::port(vec![("w1:p1", Ok(Some(10)))]);
@@ -260,7 +274,6 @@ fn unreachable_host_counts_unverified() {
         empty,
         LocateReply::Unverified {
             per_candidate: vec![CandidateVerdict::Unreachable],
-            first_guard: false,
         }
     );
 }
@@ -273,6 +286,7 @@ fn cache_hits_same_key() {
     let host = Arc::new(Roots {
         answers: vec![("w1:p1", Ok(Some(10)))],
         asked: AtomicUsize::new(0),
+        terminals: false,
     });
     let port: Arc<dyn HostPort> = host.clone();
     let ask = |subject: u32, epoch: u64| {
@@ -333,35 +347,6 @@ fn native_cli_candidate_verifies_against_fake_herdr() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-// Kills: a guard memory that answers `first` more than once per key, one shared across keys, and
-// one that survives the service (a restarted daemon is a new service and arms it again).
-#[test]
-fn guard_memory_is_once_per_key_and_per_daemon() {
-    let ask = |service: &LocateCallerService, key: &str| {
-        let mut req = request(vec![pane("w1:p1")], Some(99));
-        req.guard_key = Some(key.into());
-        match service.locate(&req, None, &[], 0, &budget()) {
-            LocateReply::Unverified { first_guard, .. } => first_guard,
-            other => panic!("{other:?}"),
-        }
-    };
-    let service = LocateCallerService::new(tree());
-    assert!(ask(&service, "hermes:s1"));
-    assert!(!ask(&service, "hermes:s1"));
-    assert!(!ask(&service, "hermes:s1"));
-    assert!(ask(&service, "hermes:s2"));
-    assert!(ask(&LocateCallerService::new(tree()), "hermes:s1"));
-    // A verified caller is never remembered: it owes no guard line.
-    let host = Roots::port(vec![("w1:p1", Ok(Some(10)))]);
-    let mut verified = request(vec![pane("w1:p1")], Some(30));
-    verified.guard_key = Some("hermes:s3".into());
-    assert!(matches!(
-        service.locate(&verified, None, &[host], 0, &budget()),
-        LocateReply::Verified { .. }
-    ));
-    assert!(ask(&service, "hermes:s3"));
-}
-
 /// A fake process table with start stamps and argv, replaceable between calls.
 struct Table(Mutex<Vec<ProcessRecord>>);
 
@@ -416,7 +401,6 @@ fn herdr_verdict(table: Arc<Table>, subject: u32, shell: u32) -> LocateReply {
 fn walled() -> LocateReply {
     LocateReply::Unverified {
         per_candidate: vec![CandidateVerdict::NotAncestor],
-        first_guard: false,
     }
 }
 
@@ -491,6 +475,7 @@ fn reused_pid_with_new_start_misses_cache() {
     let host = Arc::new(Roots {
         answers: vec![("w1:p1", Ok(Some(10)))],
         asked: AtomicUsize::new(0),
+        terminals: false,
     });
     let port: Arc<dyn HostPort> = host.clone();
     let ask = || {
@@ -520,6 +505,7 @@ fn unstamped_subject_never_cached() {
     let host = Arc::new(Roots {
         answers: vec![("w1:p1", Ok(Some(10)))],
         asked: AtomicUsize::new(0),
+        terminals: false,
     });
     let port: Arc<dyn HostPort> = host.clone();
     let ask = || {
@@ -537,4 +523,228 @@ fn unstamped_subject_never_cached() {
     // Once the process is readable the walk sees it, not a cached miss.
     table.set(&[(30, Some(10), 7, "a"), (10, None, 1, "sh")]);
     assert_eq!(ask(), LocateReply::Verified { index: 0, root: 10 });
+}
+
+fn hc_terminal_at(root: u32) -> Arc<dyn HostPort> {
+    Roots::hc_port(vec![("t1", Ok(Some(root)))])
+}
+
+fn both_verdict(
+    table: Arc<Table>,
+    subject: u32,
+    pane_shell: u32,
+    terminal_root: u32,
+) -> LocateReply {
+    LocateCallerService::new(table).locate(
+        &request(vec![pane("w1:p1"), terminal()], Some(subject)),
+        None,
+        &[herdr_pane_at(pane_shell), hc_terminal_at(terminal_root)],
+        0,
+        &budget(),
+    )
+}
+
+fn unverified_both() -> LocateReply {
+    LocateReply::Unverified {
+        per_candidate: vec![CandidateVerdict::NotAncestor, CandidateVerdict::NotAncestor],
+    }
+}
+
+// Kills: a family-ranked verdict (pane always, or terminal always) instead of the nearest
+// ancestor, in either nesting order.
+#[test]
+fn nearest_ancestor_wins_in_both_nestings() {
+    // An hc terminal run inside a Herdr pane: the terminal's root is nearer.
+    let inside_pane = Table::new(&[
+        (30, Some(20), 5, "claude"),
+        (20, Some(10), 5, "sh"),
+        (10, None, 5, "-bash"),
+    ]);
+    assert_eq!(
+        both_verdict(inside_pane, 30, 10, 20),
+        LocateReply::Verified { index: 1, root: 20 }
+    );
+    // A Herdr pane opened inside an hc terminal: the pane's shell is nearer.
+    let inside_terminal = Table::new(&[
+        (30, Some(20), 5, "claude"),
+        (20, Some(10), 5, "-bash"),
+        (10, None, 5, "sh"),
+    ]);
+    assert_eq!(
+        both_verdict(inside_terminal, 30, 20, 10),
+        LocateReply::Verified { index: 0, root: 20 }
+    );
+}
+
+// Kills: asking every host about both families (a core handed a pane id, a Herdr server a
+// terminal id), which would count a foreign host's error against a candidate.
+#[test]
+fn each_family_asks_only_its_own_hosts() {
+    let table = Table::new(&[(30, Some(10), 5, "claude"), (10, None, 5, "sh")]);
+    let herdr = Arc::new(Roots {
+        answers: vec![("w1:p1", Ok(Some(10)))],
+        asked: AtomicUsize::new(0),
+        terminals: false,
+    });
+    let hc = Arc::new(Roots {
+        answers: vec![("t1", Err(()))],
+        asked: AtomicUsize::new(0),
+        terminals: true,
+    });
+    let ports: Vec<Arc<dyn HostPort>> = vec![herdr.clone(), hc.clone()];
+    let reply = LocateCallerService::new(table).locate(
+        &request(vec![pane("w1:p1"), terminal()], Some(30)),
+        None,
+        &ports,
+        0,
+        &budget(),
+    );
+    assert_eq!(reply, LocateReply::Verified { index: 0, root: 10 });
+    assert_eq!(herdr.asked.load(Ordering::SeqCst), 1, "one pane question");
+    assert_eq!(hc.asked.load(Ordering::SeqCst), 1, "one terminal question");
+}
+
+// Kills: a terminal candidate with no hc host attached reported as anything but unsupported.
+#[test]
+fn terminal_without_an_hc_host_is_unsupported() {
+    let table = Table::new(&[(30, Some(10), 5, "claude"), (10, None, 5, "sh")]);
+    let reply = LocateCallerService::new(table).locate(
+        &request(vec![terminal()], Some(30)),
+        None,
+        &[herdr_pane_at(10)],
+        0,
+        &budget(),
+    );
+    assert_eq!(
+        reply,
+        LocateReply::Unverified {
+            per_candidate: vec![CandidateVerdict::Unsupported],
+        }
+    );
+}
+
+// Kills: a daemon-mode Codex (its process reparented to init, outside both roots' subtrees)
+// verifying either family: with two families nothing is an ancestor, so the call is refused.
+// H-C1 by fallback: the live real-core run is remaining evidence.
+#[test]
+fn daemon_mode_codex_reparented_two_families_refuse() {
+    let table = Table::new(&[
+        (50, Some(1), 5, "codex"),
+        (1, None, 5, "init"),
+        (20, Some(10), 5, "sh"),
+        (10, None, 5, "-bash"),
+    ]);
+    assert_eq!(both_verdict(table, 50, 10, 20), unverified_both());
+}
+
+// Kills: the double-forked caller (reparented before it ran anything) being verified by a
+// root it only shares a session with.
+#[test]
+fn double_forked_two_families_refuse() {
+    let table = Table::new(&[(60, Some(1), 5, "sh"), (1, None, 5, "init")]);
+    assert_eq!(both_verdict(table, 60, 10, 20), unverified_both());
+}
+
+// Kills: one-family verification. A single family is accepted unverified (TRUST-POLICY A1):
+// the CLI never asks the daemon, so a reparented Codex with one family keeps working.
+#[test]
+fn one_family_accepted_unverified() {
+    use crate::cli::caller_guard::{Guard, cli_pane};
+    use crate::cli::caller_location::CallerEnv;
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        CallerEnv::from_lookup(move |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| std::ffi::OsString::from(v))
+        })
+    };
+    let never = |_: &[crate::cli::caller_location::CallerLocator]| -> Guard {
+        panic!("a One caller must not be verified")
+    };
+    assert_eq!(
+        cli_pane(&env(&[("HERDR_PANE_ID", "w1:p1")]), never, |_| {}).as_deref(),
+        Some("w1:p1")
+    );
+    // A terminal alone names no pane, and is no refusal either.
+    let reported = std::cell::Cell::new(false);
+    assert_eq!(
+        cli_pane(
+            &env(&[("HC_TERMINAL_ID", "t1"), ("HC_TERMINAL_SOCKET", "/s")]),
+            never,
+            |_| reported.set(true),
+        ),
+        None
+    );
+    assert!(!reported.get());
+}
+
+// Kills: a wall that hides the hc candidate's own root, which sits below it (H1: the wall changes
+// no outcome for an hc caller), and a Herdr root above the wall verifying for the same caller.
+#[test]
+fn hc_root_below_wall_found_first() {
+    let table = Table::new(&[
+        (50, Some(40), 5, "claude"),
+        (40, Some(30), 5, "sh"),
+        (30, Some(20), 5, "herdr-core"),
+        (20, Some(10), 5, "-bash"),
+        (10, None, 5, "herdr"),
+    ]);
+    // Both families: the hc root (40) is met before the wall (30) and the Herdr shell (20).
+    assert_eq!(
+        both_verdict(table.clone(), 50, 20, 40),
+        LocateReply::Verified { index: 1, root: 40 }
+    );
+    // The Herdr candidate alone stays walled off, as before the hc host existed.
+    assert_eq!(herdr_verdict(table, 50, 20), walled());
+}
+
+// The real adapters against both fakes: the Herdr pane's shell is pid 1 (fake_herdr) and the
+// terminal's root is whatever pid fake_hc reports. The nearest ancestor wins.
+#[cfg(feature = "test-support")]
+#[test]
+fn two_families_nearest_ancestor_wins() {
+    use crate::test_support::fake_hc::{FakeHc, FakeTerminal};
+    let dir = crate::test_support::scratch::temp_path("locate-two-families");
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("h.sock");
+    let _herdr = crate::test_support::fake_herdr::FakeHerdr::start("loc", &socket, &["w1:p1"]);
+    let cli: Arc<dyn HostPort> = Arc::new(crate::host::native::NativeCli::new(
+        socket,
+        Arc::new(SystemClock::new()),
+    ));
+    let core = FakeHc::start();
+    core.add_terminal(FakeTerminal::live("t1"));
+    let hc: Arc<dyn HostPort> = Arc::new(crate::host::hc::HcHost::new(
+        crate::host::hc::HcClient::new(core.socket()),
+    ));
+    let ports = [cli, hc];
+    let ask = |service: &LocateCallerService| {
+        service.locate(
+            &request(vec![pane("w1:p1"), terminal()], Some(30)),
+            None,
+            &ports,
+            0,
+            &budget(),
+        )
+    };
+    // tree: 30 -> 20 -> 10 -> 1. The terminal's root (10) is nearer than the pane's shell (1).
+    core.set_pid("t1", Some(10));
+    assert_eq!(
+        ask(&LocateCallerService::new(tree())),
+        LocateReply::Verified { index: 1, root: 10 }
+    );
+    // A terminal root outside the subject's ancestry leaves the pane the only ancestor root.
+    core.set_pid("t1", Some(99));
+    assert_eq!(
+        ask(&LocateCallerService::new(tree())),
+        LocateReply::Verified { index: 0, root: 1 }
+    );
+    // A terminal with no pid verifies nothing; the pane still does.
+    core.set_pid("t1", None);
+    assert_eq!(
+        ask(&LocateCallerService::new(tree())),
+        LocateReply::Verified { index: 0, root: 1 }
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

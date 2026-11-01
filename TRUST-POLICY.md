@@ -392,24 +392,31 @@ exits back to its shell stays bound until a check-in replaces it or its pane dis
 act as any seat: a child agent, a script, another seat's agent writing the shared client directories. This is
 in-contract (see Accepted limits).
 
-*A1 addendum, F part (two-family callers).* When the environment names both a Herdr pane
-(`HERDR_PANE_ID`) and a herdr-core terminal (`HC_TERMINAL_ID`), the caller is `Ambiguous` and the
-CLI or hook asks the daemon (`LocateCaller`) before anything binds. The daemon walks up from the
-connection's peer pid (or the claim's liveness pid) and verifies a candidate only when its host-reported
-root process (`target_root_process`, for a Herdr pane the pane's shell) is the nearest ancestor. In F only the
-Herdr candidate can verify. If it does, the pane wins; if nothing verifies (not an ancestor, host unreachable,
-daemon too old to know the command), no seat binds and nothing falls back to a candidate: the CLI prints M1
-and hooks exit 0 with M1 on stderr and the guard line M3 in context at lifecycle check-ins and compact
-re-entry (and, for an adapter that repeats its fixed section every turn and has no lifecycle check-in, on its
-first delivering hook per binding). Single-family callers are never verified: that would be adversarial
-verification, which this policy does not add. The first-hook memory is daemon memory keyed by binding, so a
-daemon restart arms it once more (accepted limit, no column). The walk stops at a terminal-root wall: a
-process whose `argv[0]` basename is `herdr-core` or `hc` (`host::foreign_terminal_process_names`), because
-on herdr-core's spawn path the core stays a descendant of the `hc` client and so of the pane shell, and a
-Herdr pane root above the wall must not verify an agent inside an hc terminal. A process whose argv is
-unreadable is not a wall (accepted limit, F/N only). Verdicts are cached by (candidates, subject pid,
-subject start stamp, boot/epoch): a reused pid has another stamp and misses, and a subject with no readable
-start stamp is never cached.
+*A1 addendum (two-family callers).* When the environment names both a Herdr pane
+(`HERDR_PANE_ID`) and a herdr-core terminal (`HC_TERMINAL_ID` with `HC_TERMINAL_SOCKET`), the caller is
+`Ambiguous` and the CLI or hook asks the daemon (`LocateCaller`) before anything binds. The daemon walks up
+from the connection's peer pid (or the claim's liveness pid) and verifies a candidate only when its
+host-reported root process (`target_root_process`: a Herdr pane's shell, an hc terminal's pid) is an ancestor;
+the nearest ancestor root wins, whichever family owns it. A pane candidate asks only the Herdr hosts and a
+terminal candidate only the hc hosts. If nothing verifies (not an ancestor, host unreachable, daemon too old
+to know the command), no seat binds and nothing falls back to a candidate: the CLI prints M4 (naming both
+candidates and asking to unset the stale one) and hooks exit 0 with M4 on stderr and inject nothing. A
+verified terminal binds nothing to the pane the environment also named. `HC_TERMINAL_ID` without
+`HC_TERMINAL_SOCKET` and no pane is refused with M17. Single-family callers are never verified: that would be
+adversarial verification, which this policy does not add. The walk stops at a terminal-root wall: a process
+whose `argv[0]` basename is `herdr-core` or `hc` (`host::hc::foreign_terminal_process_names`), because on
+herdr-core's spawn path the core stays a descendant of the `hc` client and so of the pane shell, and a Herdr
+pane root above the wall must not verify an agent inside an hc terminal; the hc candidate's own root sits
+below the wall and is found first, so the wall changes no outcome for an hc caller. Verdicts are cached by
+(candidates, subject pid, subject start stamp, boot/epoch): a reused pid has another stamp and misses, and a
+subject with no readable start stamp is never cached. Accepted limits: (1) a process whose argv is unreadable
+is not a wall; (2) a double-forked process, and a Codex in daemon mode (its process reparented away from the
+terminal), has no ancestor root, so with two families it is unverifiable and refused, and with one family it
+is accepted unverified; (3) a single-family stale environment (a `HERDR_PANE_ID` left in an hc terminal with
+no `HC_TERMINAL_ID`, or the reverse) is accepted as that family, as A1 always did; (4) the terminal candidate
+matches an attached hc host by terminal id, not by core socket, so with several cores attached a `tN` of
+another core whose root is an ancestor would verify. The live run of Codex in a real core, with and without
+`--no-daemon` (spike H-C1), is remaining evidence: only the fallback over fake process trees is tested.
 
 **Invocation spelling.** Ordinary root commands act as agents. Person and local-operator
 commands require immediate argv[1] `human`: `ht human me init [--operator]`,
