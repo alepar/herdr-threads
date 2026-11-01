@@ -586,16 +586,17 @@ impl HostSessions {
         locator: &HostLocator,
         budget: &CallBudget,
     ) -> Result<Arc<HostSession>, ApiError> {
-        self.resolve_checked(locator, budget, true)
+        self.resolve_checked(locator, budget, false)
     }
 
-    /// `resolve` with the canonical-path check optional: the operator's startup
-    /// hint is explicit, so it skips the check (its socket may not exist yet).
+    /// `resolve` for the operator's startup hint when `startup_hint`: it is explicit,
+    /// so it skips the canonical-path check (its socket may not exist yet) and a
+    /// silent probe does not refuse it.
     fn resolve_checked(
         &self,
         locator: &HostLocator,
         budget: &CallBudget,
-        canonical_check: bool,
+        startup_hint: bool,
     ) -> Result<Arc<HostSession>, ApiError> {
         if let Some(sole) = &self.sole {
             return Ok(Arc::clone(sole));
@@ -607,7 +608,7 @@ impl HostSessions {
         if let Some(session) = self.by_locator(locator) {
             return Ok(session);
         }
-        self.attach_locked(locator, budget, canonical_check)
+        self.attach_locked(locator, budget, startup_hint)
     }
 
     fn lock_attach(&self, budget: &CallBudget) -> Result<std::sync::MutexGuard<'_, ()>, ApiError> {
@@ -634,7 +635,7 @@ impl HostSessions {
         &self,
         locator: &HostLocator,
         budget: &CallBudget,
-        canonical_check: bool,
+        startup_hint: bool,
     ) -> Result<Arc<HostSession>, ApiError> {
         if self.stopped.load(Ordering::SeqCst) {
             return Err(unavailable("host sessions are stopped"));
@@ -645,8 +646,7 @@ impl HostSessions {
                 locator.as_str()
             )));
         }
-        if canonical_check && self.deps.check_canonical && !is_canonical_on_disk(locator.as_path())
-        {
+        if !startup_hint && self.deps.check_canonical && !is_canonical_on_disk(locator.as_path()) {
             return Err(ApiError::invalid_request("host locator is not canonical"));
         }
         if self.attached_count() >= MAX_ATTACHED_HOSTS {
@@ -655,18 +655,31 @@ impl HostSessions {
             )));
         }
         // Probe before the row is written (H1b), still under `attach_lock`.
-        let kind = (self.factory.probe)(locator, PROBE_BUDGET)?;
-        let (host_id, epoch) = {
+        let probed = match (self.factory.probe)(locator, PROBE_BUDGET) {
+            Ok(kind) => Some(kind),
+            // The operator named this server and its socket may not be up yet: it
+            // attaches under the kind its row holds (the default for a new row,
+            // `kind_probed_at` NULL), the observation lane reports it down and
+            // reconnects, and a later attach whose probe answers stamps the kind.
+            Err(_) if startup_hint => None,
+            Err(error) => return Err(error),
+        };
+        let (host_id, epoch, kind) = {
             let _turn = self
                 .deps
                 .writer
                 .enter_foreground(budget, self.deps.clock.as_ref())?;
-            self.deps.store.attach_host_of_kind(
-                locator,
-                self.deps.clock.utc_now().0,
-                kind,
-                budget,
-            )?
+            let now = self.deps.clock.utc_now().0;
+            match probed {
+                Some(kind) => {
+                    let (host_id, epoch) = self
+                        .deps
+                        .store
+                        .attach_host_of_kind(locator, now, kind, budget)?;
+                    (host_id, epoch, kind)
+                }
+                None => self.deps.store.attach_host_unprobed(locator, now, budget)?,
+            }
         };
         let (port, observer) = (self.factory.build)(kind, locator);
         port.resume_after_epoch(u64::try_from(epoch).unwrap_or(0));
@@ -958,7 +971,7 @@ impl HostSessions {
     /// thread failing to start is an error.
     pub fn attach_startup(self: &Arc<Self>, hint: Option<&HostLocator>) -> std::io::Result<()> {
         if let Some(hint) = hint
-            && let Err(error) = self.resolve_checked(hint, &self.background_budget(), false)
+            && let Err(error) = self.resolve_checked(hint, &self.background_budget(), true)
         {
             self.log_attach_failure(hint, &error);
         }
@@ -1378,6 +1391,18 @@ mod tests {
 
         fn lines(&self) -> Vec<String> {
             self.log.lock().unwrap().clone()
+        }
+
+        /// The stored `(kind, kind_probed_at)` of `endpoint`.
+        fn row_kind(&self, endpoint: &str) -> (String, Option<i64>) {
+            rusqlite::Connection::open(self._isolation.path("store.db"))
+                .unwrap()
+                .query_row(
+                    "SELECT kind,kind_probed_at FROM herdr_hosts WHERE endpoint=?1",
+                    [endpoint],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
         }
 
         fn remember(&self, locator: &str) {
@@ -1816,6 +1841,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kind, "herdr", "the stored kind is not rewritten");
+    }
+
+    // Kills: a startup hint whose server is not up yet being refused (no row, no
+    // session, no observation lane) instead of attaching unprobed.
+    #[test]
+    fn a_hint_whose_probe_fails_attaches_unprobed() {
+        let rig = Rig::new("hs-hint-silent", false, Duration::from_secs(60));
+        let hint = loc("/herdr/hint.sock");
+        rig.world.set_live(hint.as_str(), true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert(hint.as_str().into(), None);
+        rig.sessions.attach_startup(Some(&hint)).unwrap();
+        assert!(rig.sessions.by_locator(&hint).is_some());
+        assert_eq!(
+            *rig.world.built_kinds.lock().unwrap(),
+            vec![HostKind::Herdr]
+        );
+        assert_eq!(rig.row_kind("/herdr/hint.sock"), ("herdr".into(), None));
+    }
+
+    // Kills: a silent hint rebuilding a stamped hc row as the default kind.
+    #[test]
+    fn a_silent_hint_keeps_a_stamped_row() {
+        let rig = Rig::new("hs-hint-stamped", false, Duration::from_secs(60));
+        let hint = loc("/hc/core.sock");
+        rig.store
+            .attach_host_of_kind(&hint, 1, HostKind::Hc, &rig.budget(5_000))
+            .unwrap();
+        rig.world.set_live(hint.as_str(), true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert(hint.as_str().into(), None);
+        rig.sessions.attach_startup(Some(&hint)).unwrap();
+        assert!(rig.sessions.by_locator(&hint).is_some());
+        assert_eq!(*rig.world.built_kinds.lock().unwrap(), vec![HostKind::Hc]);
+        assert_eq!(rig.row_kind("/hc/core.sock"), ("hc".into(), Some(1)));
     }
 
     fn builtin_parts(no_wake: bool) -> (Arc<dyn HostPort>, Arc<dyn BootstrapObserver>) {

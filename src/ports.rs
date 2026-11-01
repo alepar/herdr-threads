@@ -3422,6 +3422,15 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         kind: HostKind,
         budget: &CallBudget,
     ) -> Result<(HostId, i64), ApiError>;
+    /// `attach_host` for a startup hint whose probe got no answer: a new row takes
+    /// the default kind with `kind_probed_at` NULL, an existing row keeps both;
+    /// returns the kind the row holds.
+    fn attach_host_unprobed(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        budget: &CallBudget,
+    ) -> Result<(HostId, i64, HostKind), ApiError>;
     /// Reserve durable ordering before a host capture. This sequence fences
     /// late failed reads; it does not certify coherent enumeration.
     fn begin_host_observation(

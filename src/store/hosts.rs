@@ -59,7 +59,8 @@ impl HostRow {
 /// `HostUnavailable` and left untouched (G4: never dialled as Herdr), and so is
 /// a row whose implemented stored kind differs from `kind` (H1b: the endpoint
 /// changed identity, nothing is rewritten silently). One `BEGIN IMMEDIATE`; a
-/// second call returns the same id.
+/// second call returns the same id. A row whose `kind_probed_at` is NULL takes
+/// the probed kind and the stamp.
 pub fn attach_host(
     conn: &mut Connection,
     locator: &HostLocator,
@@ -75,15 +76,15 @@ pub fn attach_host(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(store_error)?;
-    let stored: Option<String> = tx
+    let stored: Option<(String, Option<i64>)> = tx
         .query_row(
-            "SELECT kind FROM herdr_hosts WHERE endpoint=?1",
+            "SELECT kind,kind_probed_at FROM herdr_hosts WHERE endpoint=?1",
             [locator.as_str()],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(store_error)?;
-    if let Some(stored) = stored {
+    if let Some((stored, stamped)) = stored {
         if !HostKind::from_stored(&stored).is_implemented() {
             return Err(api_error(
                 ErrorCode::HostUnavailable,
@@ -93,7 +94,9 @@ pub fn attach_host(
                 ),
             ));
         }
-        if stored != kind_name {
+        // A NULL stamp means the kind came from the default (or a migration), so
+        // the probe overwrites it instead of being refused.
+        if stored != kind_name && stamped.is_some() {
             return Err(api_error(
                 ErrorCode::HostUnavailable,
                 format!(
@@ -116,6 +119,44 @@ pub fn attach_host(
         .map_err(store_error)?;
     tx.commit().map_err(store_error)?;
     Ok((HostId::from_row(host_id), epoch))
+}
+
+/// Upserts the row of `locator` without a probe answer (the startup hint whose
+/// socket is silent): a new row takes the column default kind with
+/// `kind_probed_at` NULL, an existing row keeps its kind and stamp. Returns the
+/// id, the persisted host epoch and the kind the row holds. Refuses a stored
+/// kind this build does not implement, as [`attach_host`] does.
+pub fn attach_host_unprobed(
+    conn: &mut Connection,
+    locator: &HostLocator,
+    now: i64,
+) -> Result<(HostId, i64, HostKind), ApiError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(store_error)?;
+    let (host_id, epoch, stored): (i64, i64, String) = tx
+        .query_row(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at) \
+             VALUES ((SELECT id FROM local_node),?1,?2,?2) \
+             ON CONFLICT(endpoint) DO UPDATE SET last_attached_at=excluded.last_attached_at \
+             RETURNING host_id,host_epoch,kind",
+            params![locator.as_str(), now],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(store_error)?;
+    let kind = HostKind::from_stored(&stored);
+    if !kind.is_implemented() {
+        // Dropping `tx` rolls the upsert back.
+        return Err(api_error(
+            ErrorCode::HostUnavailable,
+            format!(
+                "host {} has kind '{stored}', which this build does not implement",
+                locator.as_str()
+            ),
+        ));
+    }
+    tx.commit().map_err(store_error)?;
+    Ok((HostId::from_row(host_id), epoch, kind))
 }
 
 const ROW_COLUMNS: &str =
@@ -334,6 +375,69 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
         assert_eq!(host_row(&db, HostId::from_row(999)).unwrap(), None);
+    }
+
+    #[test]
+    fn null_probed_row_takes_the_probed_kind_and_the_stamp() {
+        let mut db = db();
+        let a = loc("/run/a.sock");
+        let (id, _, kind) = attach_host_unprobed(&mut db, &a, 100).unwrap();
+        assert_eq!(kind, HostKind::Herdr);
+        let (again, _) = attach_host(&mut db, &a, 200, HostKind::Hc).unwrap();
+        assert_eq!(again, id);
+        let row = host_row(&db, id).unwrap().unwrap();
+        assert_eq!(row.kind, "hc");
+        assert_eq!(row.kind_probed_at, Some(200));
+    }
+
+    #[test]
+    fn stamped_row_of_another_kind_stays_refused() {
+        let mut db = db();
+        let a = loc("/run/a.sock");
+        let (id, _) = attach_host(&mut db, &a, 100, HostKind::Herdr).unwrap();
+        let error = attach_host(&mut db, &a, 200, HostKind::Hc).unwrap_err();
+        assert_eq!(error.code, ErrorCode::HostUnavailable);
+        assert!(error.detail.contains("stored as kind 'herdr'"), "{error:?}");
+        let row = host_row(&db, id).unwrap().unwrap();
+        assert_eq!(
+            (row.kind.as_str(), row.kind_probed_at),
+            ("herdr", Some(100))
+        );
+    }
+
+    #[test]
+    fn unprobed_attach_returns_the_default_for_a_new_row_and_keeps_an_existing_one() {
+        let mut db = db();
+        let a = loc("/run/a.sock");
+        let (id, epoch, kind) = attach_host_unprobed(&mut db, &a, 100).unwrap();
+        assert_eq!((epoch, kind), (0, HostKind::Herdr));
+        let row = host_row(&db, id).unwrap().unwrap();
+        assert_eq!((row.kind.as_str(), row.kind_probed_at), ("herdr", None));
+        // A stamped hc row keeps both columns and answers hc.
+        let b = loc("/run/b.sock");
+        let (bid, _) = attach_host(&mut db, &b, 100, HostKind::Hc).unwrap();
+        let (again, _, kind) = attach_host_unprobed(&mut db, &b, 300).unwrap();
+        assert_eq!((again, kind), (bid, HostKind::Hc));
+        let row = host_row(&db, bid).unwrap().unwrap();
+        assert_eq!((row.kind.as_str(), row.kind_probed_at), ("hc", Some(100)));
+        assert_eq!(row.last_attached_at, Some(300));
+    }
+
+    #[test]
+    fn unprobed_attach_refuses_an_unimplemented_kind() {
+        let mut db = db();
+        let a = loc("/run/a.sock");
+        let (id, _) = attach_host(&mut db, &a, 100, HostKind::Herdr).unwrap();
+        db.execute(
+            "UPDATE herdr_hosts SET kind='future' WHERE host_id=?1",
+            [id.get()],
+        )
+        .unwrap();
+        let error = attach_host_unprobed(&mut db, &a, 200).unwrap_err();
+        assert_eq!(error.code, ErrorCode::HostUnavailable);
+        assert!(error.detail.contains("does not implement"), "{error:?}");
+        let row = host_row(&db, id).unwrap().unwrap();
+        assert_eq!(row.last_attached_at, Some(100), "the refusal rolled back");
     }
 
     #[test]
