@@ -1511,6 +1511,19 @@ fn install_sh_with_stub_herdr_byte_identical() {
     let site = Site::new();
     site.stub_herdr();
     let (output, code) = site.install_sh();
+    // The installer caps the advice at 600 chars of raw text that embeds the temp root, so
+    // where the cap lands depends on the root's length. Cut the line at a point before any
+    // root text, which the cap cannot reach.
+    let output = output
+        .split('\n')
+        .map(|line| match line.find("adds the block to") {
+            Some(at) if line.trim_start().starts_with("pane environment:") => {
+                &line[..at + "adds the block to".len()]
+            }
+            _ => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let claude = fs::read_to_string(site.root().join("claude/settings.json")).unwrap_or_default();
     let got = format!(
         "exit={code:?}\n{output}\n--- claude settings.json\n{}\n",
