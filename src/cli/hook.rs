@@ -253,11 +253,11 @@ pub struct HookEnv {
 }
 impl HookEnv {
     pub fn from_process() -> Self {
+        use super::caller_location::{CallerEnv, EnvMode};
+        let env = CallerEnv::from_process();
         Self {
-            herdr_env: std::env::var_os("HERDR_ENV").is_some_and(|v| v == "1"),
-            pane: std::env::var("HERDR_PANE_ID")
-                .ok()
-                .filter(|p| !p.is_empty()),
+            herdr_env: env.herdr_env(),
+            pane: env.pane(EnvMode::Hook),
         }
     }
 }

@@ -15,10 +15,14 @@ mod adapter_smoke;
 mod archival_legacy;
 #[path = "store/archival_worker.rs"]
 mod archival_worker;
+#[path = "cli/caller_location.rs"]
+mod caller_location;
 #[path = "canary_manifest_writer.rs"]
 mod canary_manifest_writer;
 #[path = "store/channel_archival.rs"]
 mod channel_archival;
+#[path = "cli_env_read_scan.rs"]
+mod cli_env_read_scan;
 #[path = "contracts.rs"]
 mod contracts;
 #[path = "store/deadline_scope.rs"]
