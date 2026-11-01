@@ -6608,12 +6608,27 @@ fn wake_status_seats(
         else {
             continue;
         };
-        let harness = open_binding(db, &seat)?.map(|binding| binding.harness);
+        let mut harness = open_binding(db, &seat)?.map(|binding| binding.harness);
+        // A named seat whose bindings ended is `offline` (M19): classified by its last binding.
+        let mut offline = false;
+        if harness.is_none() {
+            harness = db
+                .query_row(
+                    "SELECT b.harness FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
+                     WHERE b.seat_id=?1 AND s.name IS NOT NULL ORDER BY b.ordinal DESC LIMIT 1",
+                    [&seat],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| db.map_error(e))?;
+            offline = harness.is_some();
+        }
         rows.push(crate::protocol::results::SeatWakeStatus {
             seat: SeatId::new(seat),
             harness,
             wake: None,
             first: false,
+            offline,
             host: host.map(crate::ports::HostId::from_row),
         });
     }

@@ -1648,9 +1648,11 @@ mod tests {
     use super::*;
 
     /// The send warning's `no_wake` rests on this classification: Claude (channel), Codex, agy
-    /// and Hermes (composer) wake; an unregistered id is unknown, never `no_wake`. Every shipped
-    /// harness wakes, so SKILL.md does not explain `warning: SEAT wake=no_wake`; only the
-    /// test-support `synthetic_fourth` (no composer, no channel) produces it.
+    /// and Hermes (composer) wake; an unregistered id is unknown, never `no_wake`. A host with
+    /// no wake path also produces `wake=no_wake`, and `tests/host_no_wake_tripwire.rs` makes
+    /// SKILL.md explain it (K2) whenever any implemented host kind has one; this test keeps the
+    /// harness half: every shipped harness wakes on a composer host, and only the test-support
+    /// `synthetic_fourth` (no composer, no channel) does not.
     #[test]
     fn idle_wake_classification_of_the_builtins() {
         let registry = builtins();
@@ -1660,8 +1662,9 @@ mod tests {
             assert_eq!(
                 registry.has_idle_wake(id),
                 Some(shipped),
-                "{id}: a shipped harness without idle wake makes `wake=no_wake` reachable; \
-                 explain that warning in integrations/skill/SKILL.md (Warnings)"
+                "{id}: a shipped harness without idle wake; the `no_wake` warning is explained in \
+                 SKILL.md by the host-side tripwire (tests/host_no_wake_tripwire.rs); decide \
+                 there whether a harness with no wake is still a host fact"
             );
         }
         assert_eq!(registry.has_idle_wake("human"), None);

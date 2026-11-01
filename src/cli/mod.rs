@@ -53,7 +53,7 @@ pub mod topology_handoff;
 pub mod topology_recover;
 mod topology_runtime;
 pub mod wake_on;
-mod wake_warning;
+pub(crate) mod wake_warning;
 pub mod watch;
 
 use crate::{

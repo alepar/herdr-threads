@@ -1851,6 +1851,9 @@ pub struct SeatWakeStatus {
     /// First report of this seat's `no_wake` to the query's observer.
     #[serde(default, skip_serializing_if = "is_false")]
     pub first: bool,
+    /// A named seat none of whose bindings is open (M19): its `harness` is the last binding's.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub offline: bool,
     /// The seat's own host (`seats.host_id`), set by the store for the daemon's per-row
     /// classification. `HostId` is node-local and has no wire form, so the row never carries
     /// it to a client: it decodes as `None` and encodes without it.

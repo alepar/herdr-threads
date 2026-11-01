@@ -443,3 +443,18 @@ fn named_seat_line_k1_is_in_the_skill_once() {
     assert_eq!(k1.len(), 106);
     assert_eq!(crate::cli::skill::SKILL_MD.matches(k1).count(), 1);
 }
+
+// Kills: the `none` meaning reverting to K3's old text, or the `no_wake` explanation (K2, 77 bytes
+// plus one separating space) missing from the Warnings paragraph that lists the `wake=` values.
+#[test]
+fn skill_explains_no_wake_and_the_none_meaning() {
+    let k2 = "`no_wake`: the seat's host cannot wake it; it sees the item on its next turn.";
+    assert_eq!(k2.len(), 77);
+    let k3 = "`none`: no native wake was needed (a mod-channel seat wakes itself).";
+    let warnings = SKILL_MD
+        .split("\n## ")
+        .find(|section| section.starts_with("Warnings"))
+        .expect("Warnings section");
+    assert!(warnings.contains(&format!("{k3} {k2}")), "{warnings}");
+    assert!(!SKILL_MD.contains("a mod-channel seat wakes without one"));
+}

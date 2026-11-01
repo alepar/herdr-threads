@@ -36,7 +36,7 @@ struct Boot {
     sessions: Arc<HostSessions>,
 }
 
-struct Rig {
+pub(super) struct Rig {
     isolation: TestIsolation,
     node: String,
     clock: Arc<dyn Clock>,
@@ -45,7 +45,7 @@ struct Rig {
 }
 
 impl Rig {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let mut rig = Self {
             isolation: TestIsolation::new(label),
             node: uuid::Uuid::new_v4().simple().to_string(),
@@ -127,12 +127,12 @@ impl Rig {
             .unwrap()
     }
 
-    fn sql(&self) -> rusqlite::Connection {
+    pub(super) fn sql(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(self.db()).unwrap()
     }
 
     /// A named seat with an open binding of `harness`.
-    fn named_seat(&self, name: &str, harness: &str) -> SeatId {
+    pub(super) fn named_seat(&self, name: &str, harness: &str) -> SeatId {
         let CommandResult::NamedSeatResolved { seat, .. } =
             self.call(Command::ResolveSeat(ResolveSeat {
                 target: HostTargetId::new(name),
@@ -152,7 +152,7 @@ impl Rig {
         seat
     }
 
-    fn status(&self, observer: &SeatId, seat: &SeatId) -> SeatWakeStatus {
+    pub(super) fn status(&self, observer: &SeatId, seat: &SeatId) -> SeatWakeStatus {
         let CommandResult::WakeStatus(mut rows) = self.call(Command::WakeStatus(WakeStatusQuery {
             all: false,
             seats: vec![seat.clone()],
@@ -163,6 +163,29 @@ impl Rig {
         };
         assert_eq!(rows.len(), 1);
         rows.remove(0)
+    }
+
+    /// Every open binding of `seat` ends (the process exited).
+    pub(super) fn end_bindings(&self, seat: &SeatId) {
+        self.sql()
+            .execute(
+                "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id=?1 AND ended_at IS NULL",
+                [seat.as_str()],
+            )
+            .unwrap();
+    }
+
+    /// `doctor`'s read: the wake status of every seat with an open binding.
+    pub(super) fn status_all(&self) -> Vec<SeatWakeStatus> {
+        let CommandResult::WakeStatus(rows) = self.call(Command::WakeStatus(WakeStatusQuery {
+            all: true,
+            seats: Vec::new(),
+            message: None,
+            observer: None,
+        })) else {
+            panic!("wake status")
+        };
+        rows
     }
 
     fn reports(&self) -> Vec<(String, String)> {
