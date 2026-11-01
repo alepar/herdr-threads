@@ -56,6 +56,7 @@ pub mod compatibility;
 pub mod hc;
 pub mod native;
 pub mod observation;
+pub mod probe;
 pub mod process_table;
 mod transport;
 

@@ -1339,3 +1339,197 @@ fn multi_host_hook_claim_attaches_b() {
     assert_eq!(first["kind"], "status", "{first}");
     assert_eq!(first["state"], "connected", "{first}");
 }
+
+// ---- H1b / D1: the kind probe, before any `herdr_hosts` row ----
+
+mod kind_probe {
+    use herdr_threads::{
+        host::probe::probe_kind,
+        ports::HostKind,
+        test_support::{
+            fake_hc::FakeHc, fake_herdr::FakeHerdr, isolated_herdr::IsolatedHerdr,
+            scratch::temp_path,
+        },
+    };
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::{UnixListener, UnixStream},
+        path::PathBuf,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    /// A scripted peer: one canned reply line per method (`None`: read the
+    /// request and never answer). Stops and unlinks its socket on drop.
+    struct ScriptedPeer {
+        socket: PathBuf,
+        stop: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl ScriptedPeer {
+        fn start(hello: Option<&str>, ping: Option<&str>) -> Self {
+            let socket = temp_path(format!("ht-scripted-{}", uuid::Uuid::new_v4().simple()));
+            let listener = UnixListener::bind(&socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let replies = (hello.map(str::to_owned), ping.map(str::to_owned));
+            let worker = {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    let mut held: Vec<UnixStream> = Vec::new();
+                    while !stop.load(Ordering::SeqCst) {
+                        let Ok((stream, _)) = listener.accept() else {
+                            std::thread::sleep(Duration::from_millis(5));
+                            continue;
+                        };
+                        stream.set_nonblocking(false).unwrap();
+                        let mut line = String::new();
+                        let _ = BufReader::new(&stream).read_line(&mut line);
+                        let reply = if line.contains("\"hello\"") {
+                            &replies.0
+                        } else {
+                            &replies.1
+                        };
+                        if let Some(reply) = reply {
+                            let mut stream = &stream;
+                            let _ = writeln!(stream, "{reply}");
+                        }
+                        // A silent answer keeps the connection open.
+                        held.push(stream);
+                    }
+                })
+            };
+            Self {
+                socket,
+                stop,
+                worker: Some(worker),
+            }
+        }
+    }
+
+    impl Drop for ScriptedPeer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+            let _ = std::fs::remove_file(&self.socket);
+        }
+    }
+
+    const BUDGET: Duration = Duration::from_millis(800);
+    const PONG: &str =
+        r#"{"id":"hello-probe","result":{"type":"pong","version":"0.9.1","protocol":22}}"#;
+
+    // Kills: a probe that sees `core.id` in a fake_hc reply and still calls it
+    // Herdr, or sends a Herdr reply down the hc path. The ordering against the
+    // row write is `service::host_sessions::tests::probe_runs_before_the_row_*`.
+    #[test]
+    fn probe_classifies_fake_hc_and_fake_herdr_before_row_written() {
+        let hc = FakeHc::start();
+        assert_eq!(probe_kind(hc.socket(), BUDGET).unwrap(), HostKind::Hc);
+        assert_eq!(
+            hc.calls()
+                .iter()
+                .map(|c| c.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hello"],
+            "an hc answer to hello needs no second call"
+        );
+
+        let socket = temp_path(format!(
+            "hello-probe-herdr-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let herdr = FakeHerdr::start("probe", &socket, &["w1:p1"]);
+        assert_eq!(probe_kind(herdr.socket(), BUDGET).unwrap(), HostKind::Herdr);
+    }
+
+    // Kills: a probe that waits for a reply that never comes, and one that
+    // classifies a peer answering neither dialect.
+    #[test]
+    fn silent_peer_fails_within_probe_deadline() {
+        let silent = ScriptedPeer::start(None, None);
+        let started = Instant::now();
+        let error = probe_kind(&silent.socket, Duration::from_millis(400)).unwrap_err();
+        let elapsed = started.elapsed();
+        assert_eq!(
+            error.code,
+            herdr_threads::protocol::results::ErrorCode::HostUnavailable
+        );
+        assert!(
+            elapsed >= Duration::from_millis(200) && elapsed < Duration::from_millis(900),
+            "the probe waits out its deadline and no longer: {elapsed:?}"
+        );
+        // Silent on hello only: the ping still classifies, inside the deadline.
+        let late = ScriptedPeer::start(None, Some(PONG));
+        assert_eq!(probe_kind(&late.socket, BUDGET).unwrap(), HostKind::Herdr);
+        // An error reply to hello (an unknown method) is not an hc answer.
+        let errors = ScriptedPeer::start(
+            Some(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no method"}}"#),
+            Some(PONG),
+        );
+        assert_eq!(probe_kind(&errors.socket, BUDGET).unwrap(), HostKind::Herdr);
+        // A peer that closes on hello and answers neither is unavailable.
+        assert!(probe_kind(&temp_path("ht-no-such-socket"), BUDGET).is_err());
+    }
+
+    /// The reply a live Herdr TUI socket gave to a `hello` line (D1), captured
+    /// once in an isolated session; `CLOSED` when it closed without a line.
+    const CAPTURED: &str = include_str!("../fixtures/herdr-hello/reply.txt");
+
+    // Kills: a Herdr that answers hello in a way the probe takes for hc, and a
+    // fixture that no longer matches what the probe does with it.
+    #[test]
+    fn d1_captured_herdr_hello_reply_classifies_as_herdr() {
+        let reply = CAPTURED.trim();
+        let hello = (reply != "CLOSED").then_some(reply);
+        let peer = ScriptedPeer::start(hello, Some(PONG));
+        assert_eq!(probe_kind(&peer.socket, BUDGET).unwrap(), HostKind::Herdr);
+    }
+
+    // D1 live: an isolated Herdr test session answers hello (or closes) and
+    // never hangs; the probe classifies it as Herdr. Skips when `herdr` is
+    // absent and HT_SKIP_HERDR_TESTS=1. `HT_D1_CAPTURE=1` prints the raw
+    // reply, which is how `herdr-hello/reply.txt` was recorded.
+    #[test]
+    fn d1_live_herdr_hello_capture() {
+        let Some(herdr) = IsolatedHerdr::new("d1_live_herdr_hello_capture") else {
+            return;
+        };
+        herdr.start();
+        let socket = herdr.socket_path();
+        assert_eq!(
+            probe_kind(&socket, Duration::from_secs(3)).unwrap(),
+            HostKind::Herdr
+        );
+
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hello\"}\n")
+            .unwrap();
+        let mut line = String::new();
+        let read = BufReader::new(&stream).read_line(&mut line);
+        let reply = match read {
+            Ok(0) => "CLOSED".to_owned(),
+            Ok(_) => line.trim().to_owned(),
+            Err(error) => panic!("a live Herdr hung on hello: {error}"),
+        };
+        if std::env::var_os("HT_D1_CAPTURE").is_some() {
+            eprintln!("D1 CAPTURE: {reply}");
+        }
+        let parsed: Option<serde_json::Value> = serde_json::from_str(&reply).ok();
+        assert!(
+            parsed.is_none_or(|v| v["result"]["core"]["id"].as_str().is_none()),
+            "a Herdr TUI socket must not look like an hc core: {reply}"
+        );
+        herdr.stop();
+    }
+}

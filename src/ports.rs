@@ -3379,6 +3379,17 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         locator: &crate::protocol::ids::HostLocator,
         now: i64,
         budget: &CallBudget,
+    ) -> Result<(HostId, i64), ApiError> {
+        self.attach_host_of_kind(locator, now, HostKind::Herdr, budget)
+    }
+    /// `attach_host` for a probed `kind`: stamps `kind` and `kind_probed_at`, and
+    /// refuses a row whose stored kind is another implemented kind.
+    fn attach_host_of_kind(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        kind: HostKind,
+        budget: &CallBudget,
     ) -> Result<(HostId, i64), ApiError>;
     /// Reserve durable ordering before a host capture. This sequence fences
     /// late failed reads; it does not certify coherent enumeration.

@@ -190,6 +190,19 @@ impl HcHost {
     }
 }
 
+/// The hc host has no bootstrap pane observation yet: every call is refused.
+pub struct HcBootstrapObserver;
+
+impl crate::ports::BootstrapObserver for HcBootstrapObserver {
+    fn observe_bootstrap_target(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<crate::ports::BootstrapPaneObservation, ApiError> {
+        Err(HcHost::unavailable("bootstrap observation"))
+    }
+}
+
 impl HostPort for HcHost {
     fn kind(&self) -> HostKind {
         HostKind::Hc

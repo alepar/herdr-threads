@@ -67,12 +67,24 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
     let plan = HostAttachPlan {
         hint,
         factory: HostFactory {
-            build: Arc::new(move |locator| {
-                let host = Arc::new(herdr_threads::host::native::NativeCli::new(
-                    locator.as_path().to_path_buf(),
-                    Arc::clone(&factory_clock),
-                ));
-                (host.clone(), host)
+            build: Arc::new(move |kind, locator| match kind {
+                herdr_threads::ports::HostKind::Hc => {
+                    let client = herdr_threads::host::hc::HcClient::new(locator.as_path());
+                    (
+                        Arc::new(herdr_threads::host::hc::HcHost::new(client)),
+                        Arc::new(herdr_threads::host::hc::HcBootstrapObserver),
+                    )
+                }
+                _ => {
+                    let host = Arc::new(herdr_threads::host::native::NativeCli::new(
+                        locator.as_path().to_path_buf(),
+                        Arc::clone(&factory_clock),
+                    ));
+                    (host.clone(), host)
+                }
+            }),
+            probe: Arc::new(|locator, budget| {
+                herdr_threads::host::probe::probe_kind(locator.as_path(), budget)
             }),
             exists: Arc::new(|path| {
                 use std::os::unix::fs::FileTypeExt;

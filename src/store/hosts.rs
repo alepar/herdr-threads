@@ -52,15 +52,24 @@ impl HostRow {
 
 /// Upserts the host row of `locator` for this node, stamping `last_attached_at`
 /// to `now`, and returns its id with the persisted host epoch (0 for a new
-/// row). A Herdr attach also writes `kind='herdr'` and `kind_probed_at=now`. A
-/// row whose stored kind this build does not implement is refused with
-/// `HostUnavailable` and left untouched (G4: never dialled as Herdr). One
-/// `BEGIN IMMEDIATE`; a second call returns the same id.
+/// row). The attach writes the probed `kind` and `kind_probed_at=now`. A row
+/// whose stored kind this build does not implement is refused with
+/// `HostUnavailable` and left untouched (G4: never dialled as Herdr), and so is
+/// a row whose implemented stored kind differs from `kind` (H1b: the endpoint
+/// changed identity, nothing is rewritten silently). One `BEGIN IMMEDIATE`; a
+/// second call returns the same id.
 pub fn attach_host(
     conn: &mut Connection,
     locator: &HostLocator,
     now: i64,
+    kind: HostKind,
 ) -> Result<(HostId, i64), ApiError> {
+    let Some(kind_name) = kind.stored_name() else {
+        return Err(api_error(
+            ErrorCode::HostUnavailable,
+            format!("host {} has no attachable kind", locator.as_str()),
+        ));
+    };
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(store_error)?;
@@ -72,25 +81,34 @@ pub fn attach_host(
         )
         .optional()
         .map_err(store_error)?;
-    if let Some(kind) = stored
-        && !HostKind::from_stored(&kind).is_implemented()
-    {
-        return Err(api_error(
-            ErrorCode::HostUnavailable,
-            format!(
-                "host {} has kind '{kind}', which this build does not implement",
-                locator.as_str()
-            ),
-        ));
+    if let Some(stored) = stored {
+        if !HostKind::from_stored(&stored).is_implemented() {
+            return Err(api_error(
+                ErrorCode::HostUnavailable,
+                format!(
+                    "host {} has kind '{stored}', which this build does not implement",
+                    locator.as_str()
+                ),
+            ));
+        }
+        if stored != kind_name {
+            return Err(api_error(
+                ErrorCode::HostUnavailable,
+                format!(
+                    "host {} is stored as kind '{stored}' but answers as '{kind_name}'",
+                    locator.as_str()
+                ),
+            ));
+        }
     }
     let (host_id, epoch): (i64, i64) = tx
         .query_row(
             "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at,kind,kind_probed_at) \
-             VALUES ((SELECT id FROM local_node),?1,?2,?2,'herdr',?2) \
+             VALUES ((SELECT id FROM local_node),?1,?2,?2,?3,?2) \
              ON CONFLICT(endpoint) DO UPDATE SET last_attached_at=excluded.last_attached_at, \
-                 kind='herdr', kind_probed_at=excluded.kind_probed_at \
+                 kind=excluded.kind, kind_probed_at=excluded.kind_probed_at \
              RETURNING host_id,host_epoch",
-            params![locator.as_str(), now],
+            params![locator.as_str(), now, kind_name],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(store_error)?;
@@ -296,14 +314,14 @@ mod tests {
     fn attach_host_inserts_then_restamps_same_id_and_epoch() {
         let mut db = db();
         let a = loc("/run/a.sock");
-        let (id, epoch) = attach_host(&mut db, &a, 100).unwrap();
+        let (id, epoch) = attach_host(&mut db, &a, 100, HostKind::Herdr).unwrap();
         assert_eq!(epoch, 0);
         db.execute(
             "UPDATE herdr_hosts SET host_epoch=7 WHERE host_id=?1",
             [id.get()],
         )
         .unwrap();
-        let (again, epoch) = attach_host(&mut db, &a, 250).unwrap();
+        let (again, epoch) = attach_host(&mut db, &a, 250, HostKind::Herdr).unwrap();
         assert_eq!(again, id);
         assert_eq!(epoch, 7);
         let row = host_row(&db, id).unwrap().unwrap();
@@ -319,10 +337,10 @@ mod tests {
     #[test]
     fn remembered_orders_by_last_attached_desc_with_limit() {
         let mut db = db();
-        let (a, _) = attach_host(&mut db, &loc("/run/a.sock"), 10).unwrap();
-        let (b, _) = attach_host(&mut db, &loc("/run/b.sock"), 20).unwrap();
-        let (c, _) = attach_host(&mut db, &loc("/run/c.sock"), 30).unwrap();
-        attach_host(&mut db, &loc("/run/a.sock"), 40).unwrap();
+        let (a, _) = attach_host(&mut db, &loc("/run/a.sock"), 10, HostKind::Herdr).unwrap();
+        let (b, _) = attach_host(&mut db, &loc("/run/b.sock"), 20, HostKind::Herdr).unwrap();
+        let (c, _) = attach_host(&mut db, &loc("/run/c.sock"), 30, HostKind::Herdr).unwrap();
+        attach_host(&mut db, &loc("/run/a.sock"), 40, HostKind::Herdr).unwrap();
         let all: Vec<HostId> = remembered(&db, 10).unwrap().iter().map(|r| r.id).collect();
         assert_eq!(all, vec![a, c, b]);
         let two: Vec<HostId> = remembered(&db, 2).unwrap().iter().map(|r| r.id).collect();

@@ -2555,14 +2555,15 @@ impl StorePort for SqliteStore {
             other => other,
         }
     }
-    fn attach_host(
+    fn attach_host_of_kind(
         &self,
         locator: &crate::protocol::ids::HostLocator,
         now: i64,
+        kind: crate::ports::HostKind,
         budget: &CallBudget,
     ) -> Result<(crate::ports::HostId, i64), ApiError> {
         let mut writer = self.writer(budget)?;
-        hosts::attach_host(&mut writer, locator, now)
+        hosts::attach_host(&mut writer, locator, now, kind)
     }
     fn begin_host_observation(
         &self,
