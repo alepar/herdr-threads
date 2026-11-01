@@ -23,9 +23,18 @@ pub struct Pane {
     pub pid: u32,
 }
 
+/// A missing `tmux`: the skip line, or a panic naming `case` when tmux is required.
+fn on_missing(required: bool, case: &str) {
+    if required {
+        panic!("tmux required (HT_REQUIRE_TMUX set) but not found on PATH (case: {case})");
+    }
+    println!("skipped: no tmux: {case}");
+}
+
 impl PrivateTmux {
     /// A fresh server with one window running `sleep 600`. `None` (after printing
-    /// `skipped: no tmux: <case>`, the recorded reason) when `tmux` is not installed.
+    /// `skipped: no tmux: <case>`, the recorded reason) when `tmux` is not installed; with
+    /// `HT_REQUIRE_TMUX` set (CI), a missing `tmux` panics instead.
     pub fn start(case: &str) -> Option<Self> {
         let name = format!("ht-test-{}", uuid::Uuid::new_v4().simple());
         let mut command = spawn::command("tmux");
@@ -44,7 +53,7 @@ impl PrivateTmux {
         let mut client = match command.spawn_owned() {
             Ok(client) => client,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                println!("skipped: no tmux: {case}");
+                on_missing(std::env::var_os("HT_REQUIRE_TMUX").is_some(), case);
                 return None;
             }
             Err(error) => panic!("tmux start failed: {error}"),
@@ -129,5 +138,21 @@ impl PrivateTmux {
 impl Drop for PrivateTmux {
     fn drop(&mut self) {
         let _ = self.run(&["kill-server"]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::on_missing;
+
+    #[test]
+    #[should_panic(expected = "case: wake-case")]
+    fn missing_tmux_is_a_failure_when_required() {
+        on_missing(true, "wake-case");
+    }
+
+    #[test]
+    fn missing_tmux_is_a_skip_when_not_required() {
+        on_missing(false, "wake-case");
     }
 }
