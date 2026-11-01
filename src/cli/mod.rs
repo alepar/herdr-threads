@@ -3793,7 +3793,18 @@ fn pane_seat<C: LocalClient + ?Sized>(
     pane: &crate::protocol::ids::HostTargetId,
     clock: &dyn Clock,
 ) -> Result<Option<crate::protocol::ids::SeatId>, RunError> {
-    let seats = collect_pane_seats(pane, |command| {
+    pane_seat_on(client, output, pane, None, clock)
+}
+
+/// [`pane_seat`] scoped to `host` (`SeatsQuery.host`) when given.
+fn pane_seat_on<C: LocalClient + ?Sized>(
+    client: &C,
+    output: &OutputSpec,
+    pane: &crate::protocol::ids::HostTargetId,
+    host: Option<crate::protocol::ids::HostLocator>,
+    clock: &dyn Clock,
+) -> Result<Option<crate::protocol::ids::SeatId>, RunError> {
+    let seats = collect_seats_on(pane, host, |command| {
         client.call_with_output(command, output, &cooperative_budget(clock))
     })
     .map_err(|error| match error {

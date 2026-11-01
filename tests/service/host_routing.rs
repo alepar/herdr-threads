@@ -225,6 +225,7 @@ fn pane_labels(workspace: &str, pane: &str) -> Vec<crate::host::observation::Sea
         tab_id: format!("tab-{workspace}"),
         tab_label: None,
         pane_label: Some(pane.into()),
+        session: None,
     }]
 }
 

@@ -1126,6 +1126,14 @@ pub struct HostPaneLabels {
     pub tab_label: Option<String>,
     #[serde(default)]
     pub pane_label: Option<String>,
+    /// The herdr-core session (`hello` `core.name`) of the reporting host; absent for
+    /// Herdr and named hosts and from an older daemon. Display data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// The reporting host's locator, sent with `session` so a CLI selector can scope a
+    /// seat lookup to that host (`SeatsQuery.host`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<crate::protocol::ids::HostLocator>,
 }
 
 /// One seat's directory entry (ht-xg88). Every value is a display hint: a

@@ -668,6 +668,7 @@ impl HostPort for HcHost {
         budget: &CallBudget,
     ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
         let (terminals, names) = self.read_labelled(budget)?;
+        let session = self.session();
         Ok(terminals
             .into_iter()
             .map(|t| {
@@ -682,6 +683,7 @@ impl HostPort for HcHost {
                     tab_id: tab.cloned().unwrap_or_else(|| "-".into()),
                     tab_label: tab.and_then(|id| names.tab_label(id)),
                     pane_label: t.name.filter(|name| !name.is_empty()),
+                    session: session.clone(),
                 }
             })
             .collect())

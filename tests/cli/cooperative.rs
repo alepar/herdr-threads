@@ -4688,6 +4688,7 @@ mod scoped_runtime {
                     tab_id: tab.into(),
                     tab_label: Some(tab_label.into()),
                     pane_label: Some(pane.into()),
+                    session: None,
                 }
             };
             for (seat, target, tab, tab_label, pane, expected) in [

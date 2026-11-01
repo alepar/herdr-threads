@@ -111,6 +111,7 @@ fn agent_nick_escapes_host_names_bounds_each_component_and_keeps_full_legacy_id(
         tab_id: "t1".into(),
         tab_label: Some("must-not-appear".into()),
         pane_label: Some("alice\u{202e}".into()),
+        session: None,
     };
     let nick = |labels: Option<&crate::host::observation::SeatHostLabels>| {
         Nick {
@@ -478,6 +479,7 @@ fn relative_nick_long_parents_keep_pane_component() {
         tab_id: "t".into(),
         tab_label: Some("tryout".repeat(30)),
         pane_label: Some("alice".into()),
+        session: None,
     };
     let nick = Nick {
         name: relative_pane_nick(&labels, None),
@@ -505,6 +507,7 @@ fn relative_nick_expanded_escaped_parents_reserve_pane_budget() {
             tab_id: "tab".into(),
             tab_label: Some(tab),
             pane_label: Some(pane),
+            session: None,
         };
         let formatted = relative_pane_nick(&labels, None);
         let nick = Nick {
@@ -605,6 +608,7 @@ fn registered_agents_render_messages_and_recipients_without_suffix_or_id_clippin
         tab_id: "t1".into(),
         tab_label: Some("must-not-appear".into()),
         pane_label: Some("alice\u{202e}".into()),
+        session: None,
     };
     for registration in crate::harness::registry::builtins().registrations() {
         let id = registration.metadata().id;

@@ -196,6 +196,7 @@ impl HostPort for NamedHost {
                 tab_id: "named".to_owned(),
                 tab_label: None,
                 pane_label: Some(name.as_str().to_owned()),
+                session: None,
             })
             .collect())
     }

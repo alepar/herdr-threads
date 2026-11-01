@@ -463,6 +463,32 @@ impl HostSessions {
         }
     }
 
+    /// A registry over several prebuilt sessions (distinct host ids), for fixtures that read
+    /// every host's labels. Nothing attaches; there is no sole session, so locators resolve
+    /// only through the registry's own lookup.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn prebuilt_many(
+        prebuilt: Vec<Arc<HostSession>>,
+        store: Arc<dyn StorePort>,
+        clock: Arc<dyn Clock>,
+        node_uuid: String,
+    ) -> Arc<Self> {
+        let deps = SessionDeps::detached(store, clock, node_uuid);
+        let factory = HostFactory {
+            build: Arc::new(|_, _| unreachable!("a prebuilt registry attaches nothing")),
+            probe: Arc::new(|_, _| unreachable!("a prebuilt registry attaches nothing")),
+            exists: Arc::new(|_| false),
+        };
+        let sessions = Self::new(Arc::new(HostIndex::new()), factory, deps);
+        {
+            let mut map = sessions.sessions.write().unwrap_or_else(|e| e.into_inner());
+            for session in prebuilt {
+                map.insert(session.host_id, session);
+            }
+        }
+        Arc::new(sessions)
+    }
+
     /// A registry over one prebuilt session, for fixtures: every locator
     /// resolves to it and nothing attaches. The node-wide pieces are inert
     /// (no workers, no remembered rows, nothing reachable to attach).
