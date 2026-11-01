@@ -75,3 +75,52 @@ fn readonly_flag_only_rises_and_is_per_binding() {
     bindings::set_readonly(&fx.conn, &binding_of(&fx, &claim_b2())).unwrap();
     assert!(bindings::is_readonly(&fx.conn, &binding_of(&fx, &claim_b2())).unwrap());
 }
+
+// A reopened session's binding is its own row, so it keeps the marker (ht-kqrt.181: continuity
+// reattach needs no new stamp; a successor rises on its next check-in).
+#[test]
+fn reopened_binding_keeps_readonly() {
+    use crate::protocol::time::UtcMillis;
+    let fx = fx("ro-reopen");
+    mark_readonly(&fx, &claim_b2());
+    let id = binding_of(&fx, &claim_b2());
+    bindings::end_open_bindings(
+        &fx.conn,
+        &SeatId::new("b"),
+        bindings::DisconnectReason::SeatUnresolved,
+        UtcMillis(20),
+    )
+    .unwrap();
+    let place = bindings::BindingPlacement {
+        generation: 1,
+        target_generation: 1,
+        target: "pb".into(),
+        terminal: "term-pb".into(),
+        incarnation: "inc".into(),
+        host_boot: "b".into(),
+        host_epoch: 1,
+        execution: EXEC_B2.into(),
+        provenance: "cooperative_top_level".into(),
+        observed_at: UtcMillis(5),
+        registered_at: Some(UtcMillis(5)),
+    };
+    let mut claim = claim_b2();
+    claim.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 8, start: 9 });
+    let resolved = bindings::resolve_claim(
+        &fx.conn,
+        &bindings::ResolveRequest {
+            claim: &claim,
+            lifecycle: true,
+            fork: false,
+            placement: &place,
+            lineage: None,
+        },
+        UtcMillis(50),
+    )
+    .unwrap();
+    assert!(
+        matches!(&resolved, bindings::Resolution::Reopened(b) if b.binding_id == id),
+        "{resolved:?}"
+    );
+    assert!(bindings::is_readonly(&fx.conn, &id).unwrap());
+}

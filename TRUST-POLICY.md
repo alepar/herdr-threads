@@ -1949,8 +1949,10 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
   and an explicit `ack` is unchanged.
   ACK obligations belong to the role and the first writable display discharges them, so a headless
   `claude -p` or `codex exec` session that must not discharge them sets the variable. The marker is a
-  cooperative same-user claim like the rest of the caller context; a session that never checks in (hook,
-  bridge or `check-in`), or omits the variable, is writable.
+  cooperative same-user claim like the rest of the caller context; a plain seat-acting call (and the mod's
+  `watch`) under the variable first sends that check-in, so every enrollment path records it, and a
+  refused check-in refuses the call (a readonly caller never falls back to writable); a session that omits
+  the variable is writable. A subagent, a person and a retry replay send no such check-in.
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
 mail is seat-level, not per binding (A8). A seat-pending row is settled for the
