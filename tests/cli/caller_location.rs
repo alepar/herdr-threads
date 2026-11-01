@@ -263,3 +263,20 @@ fn a_named_caller_has_no_pane() {
             .is_none()
     );
 }
+
+#[test]
+fn readonly_marker_is_exactly_one() {
+    assert!(env(&[("HERDR_THREADS_SEAT_READONLY", "1")]).readonly());
+    assert!(!env(&[("HERDR_THREADS_SEAT_READONLY", "0")]).readonly());
+    assert!(!env(&[("HERDR_THREADS_SEAT_READONLY", "true")]).readonly());
+    assert!(!env(&[]).readonly());
+    // It never changes where the caller is: a pane site stays a pane site.
+    let both = env(&[
+        ("HERDR_THREADS_SEAT_READONLY", "1"),
+        ("HERDR_PANE_ID", "w1:p1"),
+    ]);
+    assert_eq!(
+        both.locate(EnvMode::Cli),
+        Ok(Some(Located::One(pane("w1:p1"))))
+    );
+}

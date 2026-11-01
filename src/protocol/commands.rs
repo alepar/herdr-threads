@@ -781,6 +781,10 @@ pub struct CheckIn {
     /// top-level binding, same process fingerprint) before it links lineage; otherwise ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage_parent: Option<NativeSessionId>,
+    /// The caller's environment carried `HERDR_THREADS_SEAT_READONLY=1` (D3): the daemon records
+    /// the resolved binding as read-only, so its display never settles receipt-bearing rows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub readonly: bool,
 }
 /// Lifecycle requests deliberately rotate using a fixed expected generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1866,6 +1870,7 @@ mod host_locator_tests {
             mode: CheckInMode::Current,
             operation: op(),
             lineage_parent: None,
+            readonly: false,
         });
         assert_eq!(check_in.host_locator(), Some(&host("/claim.sock")));
         let archive = Command::Archive(ThreadMutation {

@@ -1014,6 +1014,9 @@ pub fn register_available(
             // resolves to its subagent row); the transaction rolls back on Err.
             super::control::require_top_level_binding(resolution.binding())?;
             let binding_id = resolution.binding().binding_id.clone();
+            if command.readonly {
+                bindings::set_readonly(tx, &binding_id)?;
+            }
             // Spec §2: a new binding's first response carries its history stats (once: only the
             // check-in that enrolls it); a resumed or reconnected one whose unread backlog
             // exceeds one page is fast-forwarded. Never on a plain touch, and never for the
@@ -1407,7 +1410,12 @@ fn mod_seat_view_mode(
         }
     }
     .filter(|row| &row.seat == seat);
+    let readonly = match &row {
+        Some(row) => super::bindings::is_readonly(db, &row.binding_id)?,
+        None => false,
+    };
     let binding = row.map(|row| ModBindingView {
+        readonly,
         generation: row.generation,
         provenance: row.provenance,
         harness: row.harness,

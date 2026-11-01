@@ -1406,6 +1406,7 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
     )
     .unwrap();
     let command = CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Lifecycle {
             expected_binding_generation: 1,
@@ -1488,6 +1489,7 @@ fn lifecycle_check_in_resets_only_its_own_offer() {
         claim.execution = ExecutionId::new(execution);
         claim.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 });
         let command = CheckIn {
+            readonly: false,
             mode: crate::protocol::commands::CheckInMode::Lifecycle {
                 expected_binding_generation: 1,
             },

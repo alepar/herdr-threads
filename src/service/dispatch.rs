@@ -2038,6 +2038,7 @@ mod operator_tests {
         for command in [
             Command::CheckIn(CheckIn {
                 lineage_parent: None,
+                readonly: false,
                 mode: CheckInMode::Current,
                 claim: claim.clone(),
                 operation: OperationId::new("op"),

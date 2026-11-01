@@ -1819,6 +1819,17 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
   (A2); the name is a cooperative same-user claim, not evidence. An unused typo seat is retired by the
   operator.
 
+- Read-only bindings (D3, SA7). A caller whose environment carries `HERDR_THREADS_SEAT_READONLY=1` has its
+  binding recorded `occupant_bindings.readonly = 1` by its check-in (the flag only rises; the CLI sends it,
+  the daemon decides). A read-only binding reads, advances its own cursors and sends like any other, but a
+  display-like settlement (inbox display ACK, mod or hook delivery confirmation) made under it settles
+  nothing, and its turn-hook pull offers no receipt-bearing row: they stay pending for a writable binding,
+  and an explicit `ack` is unchanged.
+  ACK obligations belong to the role and the first writable display discharges them, so a headless
+  `claude -p` or `codex exec` session that must not discharge them sets the variable. The marker is a
+  cooperative same-user claim like the rest of the caller context; a session that never checks in (hook,
+  bridge or `check-in`), or omits the variable, is writable.
+
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
 mail is seat-level, not per binding (A8). A seat-pending row is settled for the
 seat by the first top-level binding that displays it; a sibling top-level binding gets no copy, and a subagent

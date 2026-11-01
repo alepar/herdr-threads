@@ -254,6 +254,7 @@ impl Matrix {
     fn check_in_again(&self, claim: &CallerClaim) -> CallerClaim {
         let n = self.executions.fetch_add(1, Ordering::SeqCst);
         self.handle(Command::CheckIn(CheckIn {
+            readonly: false,
             lineage_parent: None,
             mode: CheckInMode::Current,
             claim: claim.clone(),
@@ -278,6 +279,7 @@ impl Matrix {
         claim.binding_generation = current as u64;
         match self
             .handle(Command::CheckIn(CheckIn {
+                readonly: false,
                 lineage_parent: None,
                 mode: CheckInMode::Lifecycle {
                     expected_binding_generation: claim.binding_generation,

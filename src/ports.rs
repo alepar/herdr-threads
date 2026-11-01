@@ -2866,6 +2866,8 @@ pub struct ModBindingView {
     pub ended_at: Option<UtcMillis>,
     /// Why the binding is disconnected (`superseded`, `migrated`, ...); `None` while connected.
     pub disconnect_reason: Option<String>,
+    /// The binding is read-only (D3): its hooks offer no receipt-bearing rows.
+    pub readonly: bool,
 }
 
 impl ModBindingView {

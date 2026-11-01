@@ -796,6 +796,7 @@ fn rerunning_receipt_timer_producer_does_not_reenqueue() {
     };
     let fx = cooperative_fx("producer-receipt", &["s1"], false);
     let command = CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Lifecycle {
             expected_binding_generation: 1,

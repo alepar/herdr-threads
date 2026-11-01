@@ -7538,6 +7538,7 @@ impl OrdinaryHumanRetryFixture {
         let result = client
             .call(
                 Command::CheckIn(CheckIn {
+                    readonly: false,
                     lineage_parent: None,
                     claim: original,
                     operation: OperationId::new("human-initial"),
@@ -7623,6 +7624,7 @@ impl OrdinaryHumanRetryFixture {
         let result = client
             .call(
                 Command::CheckIn(CheckIn {
+                    readonly: false,
                     lineage_parent: None,
                     claim: agent,
                     operation: OperationId::new("agent-successor"),

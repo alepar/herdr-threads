@@ -1916,6 +1916,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
     };
     let check_in = Command::CheckIn(CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 0,

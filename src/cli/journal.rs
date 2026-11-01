@@ -134,6 +134,9 @@ pub enum SemanticMutation {
         /// Hermes `parent_session_id` hint, frozen with the claim (see `CheckIn::lineage_parent`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lineage_parent: Option<NativeSessionId>,
+        /// The caller's environment marks the binding read-only (D3); frozen with the claim.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        readonly: bool,
     },
     ResolveSeat {
         target: HostTargetId,
@@ -421,6 +424,7 @@ impl SemanticMutation {
                 event_id,
                 operator,
                 lineage_parent,
+                readonly,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -442,6 +446,7 @@ impl SemanticMutation {
                     mode: *mode,
                     operation: OperationId::new("validation"),
                     lineage_parent: lineage_parent.clone(),
+                    readonly: *readonly,
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -636,6 +641,7 @@ impl SemanticMutation {
                 mode,
                 operator,
                 lineage_parent,
+                readonly,
                 ..
             } => {
                 let check = CheckIn {
@@ -643,6 +649,7 @@ impl SemanticMutation {
                     mode: *mode,
                     operation,
                     lineage_parent: lineage_parent.clone(),
+                    readonly: *readonly,
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -676,6 +683,7 @@ impl SemanticMutation {
             }),
             Self::CheckIn => Command::CheckIn(CheckIn {
                 lineage_parent: None,
+                readonly: super::caller_location::CallerEnv::from_process().readonly(),
                 mode: crate::protocol::commands::CheckInMode::Current,
                 operation,
                 claim: native()?,
@@ -1494,6 +1502,8 @@ impl Journal {
             event_id: event_id.into(),
             operator,
             lineage_parent,
+            // The recording process is the caller's own: its environment decides (D3).
+            readonly: super::caller_location::CallerEnv::from_process().readonly(),
         };
         if !scope_matches(&scope, &semantic) {
             return Err(invalid("intent authority scope mismatch"));

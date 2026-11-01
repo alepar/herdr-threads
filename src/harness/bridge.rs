@@ -1358,6 +1358,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     }
     let command = Command::CheckIn(crate::protocol::commands::CheckIn {
         lineage_parent: None,
+        readonly: crate::cli::caller_location::CallerEnv::from_process().readonly(),
         mode: WireMode::Current,
         claim,
         operation: OperationId::new(Uuid::new_v4().to_string()),

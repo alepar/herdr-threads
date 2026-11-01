@@ -598,6 +598,11 @@ impl DomainService {
                         DrainEvent::Item(item) => item,
                         _ => return Ok(Stop::Continue),
                     };
+                    // A read-only binding (D3) is never offered a receipt-bearing row: it stays
+                    // pending for a writable sibling.
+                    if binding.readonly && item.message.ack_required {
+                        return Ok(Stop::Continue);
+                    }
                     pending.insert(item.id.clone());
                     let offered = known.get(&item.id);
                     let due = offered.is_some_and(|offer| offer.is_due(now));
