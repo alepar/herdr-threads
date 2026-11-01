@@ -1,0 +1,14 @@
+### wire-compat: scripts/check-wire-compat
+### wire-compat exit=0
+### harness-neutral: scripts/check-harness-neutral
+### harness-neutral exit=0
+### host-neutral-scan: /var/home/alepar/.cache/herdr-threads-heavy/heavy cargo test --locked --all-features --test combined host_neutral_scan
+### host-neutral-scan exit=0
+### default-features: /var/home/alepar/.cache/herdr-threads-heavy/heavy nice scripts/check-default-features
+### default-features exit=0
+### wake-selftest: python3 scripts/wake-e2e.py --self-test
+### wake-selftest exit=0
+### release-smoke: /var/home/alepar/.cache/herdr-threads-heavy/heavy nice scripts/herdr-release-smoke --versions 0.9.5
+### release-smoke exit=0
+ALLDONE
+FINALDONE

@@ -1,0 +1,12 @@
+heavy: slot 1 acquired 07:57:39
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+=== herdr 0.9.5 (herdr-linux-x86_64): PASS in 132.9s {'herdr_release_smoke': 'PASS', 'herdr_release_busy': 'PASS', 'herdr_release_launch_and_handoff': 'PASS', 'herdr_release_wake': 'PASS', 'herdr_release_move': 'PASS'}
+no leaked test temp files (no ledger for this run)
+no leaked test processes
+Herdr release matrix at 4d86d123f on herdr-linux-x86_64
+
+| Herdr | Result | Time | core | launch/handoff | wake | busy | move | Detail |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.9.5 | PASS | 132.9s | PASS | PASS | PASS | PASS | PASS |  |
+
+Leak check: clean
