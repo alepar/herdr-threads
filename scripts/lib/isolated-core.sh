@@ -3,7 +3,8 @@
 # starts lives under one private root /tmp/ic.XXXXXX with `env -i`, its own
 # HC_SESSION=ht-test-<uuid> and scratch XDG dirs, is started only through
 # `hc run --bg` and is stopped with `server.stop` over the private socket. Never
-# `hc server status`: it autostarts a core. Policy: no `hc` on PATH makes
+# `hc server status`: it autostarts a core. IC_SESSION_PREFIX (default ht-test) names
+# the session prefix; scripts/hc-smoke sets ht-smoke. Policy: no `hc` on PATH makes
 # ic_start a no-op that prints "skipped: no hc: <case>" and returns 2.
 IC_HC=$(command -v hc 2>/dev/null || true)
 
@@ -26,7 +27,7 @@ ic_start() { # CASE -> prints the root on success; 2 (skip) when hc is absent
     ic_require_hc "$1"; rc=$?
     [ "$rc" = 0 ] || return "$rc"
     root=$(mktemp -d /tmp/ic.XXXXXX) || return 1
-    session="ht-test-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s)"
+    session="${IC_SESSION_PREFIX:-ht-test}-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s)"
     mkdir -p "$root/st" "$root/rt" "$root/cfg" && chmod 700 "$root/st" "$root/rt" "$root/cfg"
     printf '%s\n' "$session" > "$root/session"
     if ! env -i HOME="${HOME:-/}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" SHELL="${SHELL:-/bin/sh}" \

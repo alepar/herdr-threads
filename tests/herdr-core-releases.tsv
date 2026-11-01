@@ -1,0 +1,7 @@
+# Official herdr-core releases scripts/hc-smoke runs against (Linux assets only).
+# One row per release asset: version, asset name (<asset>.tar.gz under
+# https://releases.herdr.dev/core/<version>/), SHA-256 of the tarball. Each value is
+# the one in that release's manifest.json, cross-checked by downloading the tarball.
+# 0.1.15 is the version of the vendored schema (tests/fixtures/hc/hc-0.1.15.openrpc.json).
+0.1.15	herdr-core-linux-aarch64	e4939faa57cd1597eb2a07ea34b84cc8f861992c943a08f5e685b41d4d0bfa4f
+0.1.15	herdr-core-linux-x86_64	efbb1382da3d5053cb20c60c166a62ec34e73d8299977fb1f5abed28ddec8d66

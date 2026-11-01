@@ -1,0 +1,489 @@
+#!/bin/sh
+# Real-core smoke (ht-kqrt.52): the herdr-core behaviour herdr-threads' HcHost relies on,
+# against the official pinned herdr-core release. Opt-in, local, never in the default suite.
+#
+#   scripts/hc-smoke [--version V] [--cache DIR] [--herdr-threads BIN]
+#
+# The release tarball for this host comes from tests/herdr-core-releases.tsv (version, asset,
+# sha256), is downloaded once into DIR (default ~/.cache/herdr-threads/herdr-core-releases/<V>/)
+# and its SHA-256 is checked on every run. Every core runs under `env -i` with its own
+# HC_SESSION=ht-smoke-<uuid> and scratch XDG dirs (scripts/lib/isolated-core.sh), is started only
+# through `hc run --bg`, and is stopped with `server.stop`; `hc server status` is never run.
+# Checks: probe + attach (the real daemon's HcHost reaches the core), observation (events),
+# labels, the finish-reason rows (D10), the K5 scrub (a daemon autostarted inside a terminal
+# survives the terminal's kill), L2 (exec keeps terminal.pid) and L3 (outlive_parent + no_notify
+# type no `<hc>` note into a parent agent). Exit 0 only when every check passed and no
+# `herdr-core serve`/`hold` of a smoke session remains.
+set -eu
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+LIST="$ROOT/tests/herdr-core-releases.tsv"
+VERSION=
+CACHE=
+HT_BIN=
+
+usage() { sed -n '2,3p;5,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version) [ $# -ge 2 ] || usage; VERSION=$2; shift 2 ;;
+        --cache) [ $# -ge 2 ] || usage; CACHE=$2; shift 2 ;;
+        --herdr-threads) [ $# -ge 2 ] || usage; HT_BIN=$2; shift 2 ;;
+        *) usage ;;
+    esac
+done
+
+die() { echo "hc-smoke: $*" >&2; exit 2; }
+
+case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) ASSET=herdr-core-linux-x86_64 ;;
+    Linux-aarch64|Linux-arm64) ASSET=herdr-core-linux-aarch64 ;;
+    *) die "no pinned herdr-core asset for $(uname -s) $(uname -m)" ;;
+esac
+[ -n "$VERSION" ] || VERSION=$(awk -F'\t' '$0 !~ /^#/ && NF == 3 { v = $1 } END { print v }' "$LIST")
+[ -n "$VERSION" ] || die "no release in $LIST"
+SHA=$(awk -F'\t' -v v="$VERSION" -v a="$ASSET" '$1 == v && $2 == a { print $3 }' "$LIST")
+[ -n "$SHA" ] || die "$LIST has no row for $VERSION $ASSET"
+[ -n "$CACHE" ] || CACHE="${HOME:?}/.cache/herdr-threads/herdr-core-releases/$VERSION"
+if [ -z "$HT_BIN" ]; then
+    for candidate in "$ROOT/bin/herdr-threads" "$ROOT/target/debug/herdr-threads"; do
+        [ -x "$candidate" ] && { HT_BIN=$candidate; break; }
+    done
+fi
+[ -x "$HT_BIN" ] || die "no herdr-threads binary (nice scripts/build.sh, or --herdr-threads BIN)"
+command -v python3 >/dev/null || die "python3 is required"
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{ print $1 }'
+    else shasum -a 256 "$1" | awk '{ print $1 }'; fi
+}
+
+mkdir -p "$CACHE"
+TARBALL="$CACHE/$ASSET.tar.gz"
+if [ ! -f "$TARBALL" ]; then
+    curl -fsSL --retry 3 --max-time 300 -o "$TARBALL.part" \
+        "https://releases.herdr.dev/core/$VERSION/$ASSET.tar.gz" || { rm -f "$TARBALL.part"; die "download of $ASSET failed"; }
+    mv "$TARBALL.part" "$TARBALL"
+fi
+[ "$(sha256_of "$TARBALL")" = "$SHA" ] || die "$TARBALL does not match the pinned sha256 $SHA"
+if [ ! -x "$CACHE/$ASSET/herdr-core" ]; then
+    mkdir -p "$CACHE/$ASSET.part"
+    tar xzf "$TARBALL" -C "$CACHE/$ASSET.part"
+    rm -rf "${CACHE:?}/$ASSET"
+    mv "$CACHE/$ASSET.part" "$CACHE/$ASSET"
+fi
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/hc-smoke.XXXXXX")
+mkdir -p "$WORK/bin"
+ln -s "$CACHE/$ASSET/herdr-core" "$WORK/bin/hc"
+ln -s "$CACHE/$ASSET/herdr-core" "$WORK/bin/herdr-core"
+PATH="$WORK/bin:$PATH"
+export PATH
+IC_SESSION_PREFIX=ht-smoke
+export IC_SESSION_PREFIX
+# shellcheck source=/dev/null
+. "$ROOT/scripts/lib/isolated-core.sh"
+[ -n "$IC_HC" ] || die "hc did not resolve from $WORK/bin"
+
+ROOTS=
+FAILED=0
+RESULTS=
+
+# shellcheck disable=SC2329 # invoked by the EXIT trap
+cleanup() {
+    status=$?
+    for r in $ROOTS; do
+        [ -d "$r" ] || continue
+        if [ -d "$r/ht" ]; then
+            "$HT_BIN" --state-dir "$r/ht" daemon stop >/dev/null 2>&1 || true
+            leftover=$(daemon_pids "$r/ht")
+            # shellcheck disable=SC2086
+            [ -z "$leftover" ] || kill $leftover 2>/dev/null || true
+        fi
+        ic_stop "$r" || FAILED=1
+    done
+    rm -rf "$WORK"
+    if [ "$status" -eq 0 ] && [ "$FAILED" -ne 0 ]; then status=1; fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# The python half: JSON-RPC over the private core socket and the assertions. Each check prints one
+# line "ok: ..." or "FAIL: ..." and exits 0 or 1.
+cat > "$WORK/smoke.py" <<'PY_SMOKE'
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+
+VERSION = os.environ["HC_SMOKE_VERSION"]
+
+
+def connect(sock):
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(10)
+    s.connect(sock)
+    return s, s.makefile("rb")
+
+
+def call(sock, method, params=None):
+    s, f = connect(sock)
+    try:
+        s.sendall((json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}) + "\n").encode())
+        while True:
+            line = f.readline()
+            if not line:
+                raise RuntimeError(f"{method}: connection closed")
+            message = json.loads(line)
+            if message.get("id") == 1:
+                if "error" in message:
+                    raise RuntimeError(f"{method}: {message['error']}")
+                return message["result"]
+    finally:
+        s.close()
+
+
+def wait_for(predicate, seconds=15):
+    end = time.time() + seconds
+    while time.time() < end:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.1)
+    return None
+
+
+def ok(detail):
+    print(f"ok: {detail}")
+
+
+def fail(detail):
+    print(f"FAIL: {detail}")
+    sys.exit(1)
+
+
+def expect(condition, detail):
+    if not condition:
+        fail(detail)
+
+
+def terminal(sock, address):
+    return call(sock, "terminal.get", {"terminal": address})
+
+
+def run(sock, argv, **params):
+    params.setdefault("no_parent", True)
+    return call(sock, "terminal.run", {"argv": argv, **params})
+
+
+def check_probe(sock):
+    hello = call(sock, "hello")
+    expect(hello["version"] == VERSION, f"hello version {hello['version']} != {VERSION}")
+    expect(hello["core"]["id"], "hello carries no core id")
+    for feature in ("attach", "events"):
+        expect(feature in hello["features"], f"hello features lack {feature}: {hello['features']}")
+    needed = ("terminal.run", "terminal.get", "terminal.list", "terminal.label", "terminal.kill",
+              "events.subscribe", "server.stop", "doc.get")
+    missing = [m for m in needed if m not in hello["methods"]]
+    expect(not missing, f"hello methods lack {missing}")
+    ok(f"hello version {hello['version']}, core {hello['core']['id'][:8]}, features {','.join(hello['features'])}")
+
+
+def check_observation(sock):
+    s, f = connect(sock)
+    s.sendall(b'{"jsonrpc":"2.0","id":1,"method":"events.subscribe","params":{}}\n')
+    snapshot = json.loads(f.readline())["result"]
+    expect(isinstance(snapshot["seq"], int) and snapshot["terminals"], f"snapshot has no seq or terminals: {snapshot}")
+    base = snapshot["seq"]
+    run(sock, ["sh", "-c", "exit 2"], labels={"smoke": "obs"})
+    seen = {}
+    end = time.time() + 10
+    while time.time() < end and "finished" not in seen:
+        try:
+            message = json.loads(f.readline())
+        except (socket.timeout, ValueError):
+            break
+        params = message.get("params", {})
+        seen[params.get("type")] = params
+    s.close()
+    expect({"created", "finished"} <= set(seen), f"events after subscribe: {sorted(seen)}")
+    finished = seen["finished"]
+    expect(finished["seq"] > base, f"finished seq {finished['seq']} not after snapshot seq {base}")
+    expect(finished["data"]["reason"] == "exited" and finished["data"]["exit_code"] == 2, f"finished event {finished['data']}")
+    ok(f"snapshot seq {base}, events {sorted(seen)}, finished seq {finished['seq']}")
+
+
+def check_labels(sock):
+    made = run(sock, ["sleep", "300"], labels={"herdr.space": "s1", "ht.label": "a"})
+    address = made["address"]
+    expect(made["labels"] == {"herdr.space": "s1", "ht.label": "a"}, f"run labels {made['labels']}")
+    call(sock, "terminal.label", {"terminal": address, "labels": {"herdr.tab": "t9"}})
+    got = terminal(sock, address)["labels"]
+    expect(got == {"herdr.space": "s1", "ht.label": "a", "herdr.tab": "t9"}, f"labels after terminal.label {got}")
+    listed = [t for t in call(sock, "terminal.list", {})["terminals"] if t["address"] == address]
+    expect(listed and listed[0]["labels"] == got, f"terminal.list labels {listed}")
+    call(sock, "terminal.kill", {"terminal": address})
+    ok(f"{address} labels set at run and by terminal.label, listed")
+
+
+def check_finish_seed(sock, state):
+    exited = run(sock, ["sh", "-c", "exit 3"], keep=False)["address"]
+    kept = run(sock, ["sleep", "300"], keep=True, outlive_parent=True, labels={"smoke": "kept"})["address"]
+    record = wait_for(lambda: (lambda t: t if t["state"] == "finished" else None)(terminal(sock, exited)))
+    expect(record, f"{exited} (keep false, exit 3) never finished")
+    expect(record["reason"] == "exited" and record["exit_code"] == 3, f"keep:false exit record {record['reason']} {record['exit_code']}")
+    live = terminal(sock, kept)
+    expect(live["state"] == "live" and live["keep"] and live["pid"], f"kept terminal before stop: {live['state']} pid {live['pid']}")
+    with open(state, "w") as out:
+        json.dump({"kept": kept, "exited": exited, "core": call(sock, "hello")["core"]["id"]}, out)
+    ok(f"{exited} keep:false exited -> finished/exited (final); {kept} keep:true live pid {live['pid']}")
+
+
+def check_finish_after(sock, state):
+    seed = json.load(open(state))
+    core = call(sock, "hello")["core"]["id"]
+    kept = terminal(sock, seed["kept"])
+    expect(kept["state"] == "live" and kept["keep"] and kept["pid"] is None and kept["reason"] == "stopped_by_restart",
+           f"kept after restart: {kept['state']} keep={kept['keep']} pid={kept['pid']} reason={kept['reason']}")
+    expect(kept["labels"].get("smoke") == "kept", f"kept labels lost: {kept['labels']}")
+    gone = terminal(sock, seed["exited"])
+    expect(gone["state"] == "finished" and gone["reason"] == "exited", f"{seed['exited']} after restart: {gone['state']}/{gone['reason']}")
+    ok(f"{seed['kept']} keep:true -> live/stopped_by_restart/no pid (pending restart, same address); {seed['exited']} stays final")
+
+
+def check_l2(sock, scratch):
+    pidfile = os.path.join(scratch, "l2.pid")
+    made = run(sock, ["sh", "-c", f'echo $$ > "{pidfile}"; exec sleep 300'])
+    address = made["address"]
+    shell_pid = wait_for(lambda: open(pidfile).read().strip() if os.path.exists(pidfile) else None)
+    expect(shell_pid, "the shim shell never wrote its pid")
+    now = terminal(sock, address)
+    comm = wait_for(lambda: (lambda c: c if c == "sleep" else None)(open(f"/proc/{shell_pid}/comm").read().strip()))
+    expect(comm == "sleep", f"pid {shell_pid} did not exec into sleep (comm {comm})")
+    expect(str(now["pid"]) == shell_pid and now["pid"] == made["pid"],
+           f"terminal.pid {made['pid']} -> {now['pid']} but the exec'd process is {shell_pid}")
+    expect(now["state"] == "live", f"terminal not live after exec: {now['state']}")
+    call(sock, "terminal.kill", {"terminal": address})
+    ok(f"{address} terminal.pid {now['pid']} unchanged across exec (comm sleep), still live")
+
+
+def read(sock, address):
+    return call(sock, "terminal.read", {"terminal": address})["text"]
+
+
+def check_l3(sock):
+    osc = "printf '\\033]7501;state=idle\\033\\\\'; exec cat"
+    parent = run(sock, ["sh", "-c", osc])["address"]
+    reported = wait_for(lambda: terminal(sock, parent)["reported"])
+    expect(reported, f"{parent} never reported a status (a note needs a reporting agent parent)")
+    quick = ["sh", "-c", "sleep 0.5; exit 0"]
+    control = run(sock, quick, parent=parent)["address"]
+    noted = wait_for(lambda: "<hc>" in read(sock, parent))
+    expect(noted, f"control: a default child {control} typed no <hc> note into {parent}; the check has no teeth")
+    time.sleep(2)
+    before = read(sock, parent)
+    flagged = run(sock, quick, parent=parent, outlive_parent=True, no_notify=True)
+    expect(flagged["notify"] is False and flagged["die_with_parent"] is False,
+           f"record notify={flagged['notify']} die_with_parent={flagged['die_with_parent']}")
+    done = wait_for(lambda: terminal(sock, flagged["address"])["state"] == "finished")
+    expect(done, f"{flagged['address']} never finished")
+    time.sleep(3)
+    after = read(sock, parent)
+    expect(f"<hc>{flagged['address']} " not in after, f"outlive_parent+no_notify child {flagged['address']} typed into the parent: {after[len(before):]!r}")
+    call(sock, "terminal.kill", {"terminal": parent})
+    ok(f"control {control} typed an <hc> note into {parent}; {flagged['address']} (outlive_parent, no_notify) typed nothing")
+
+
+def check_run(sock, argv_json):
+    spec = json.loads(argv_json)
+    made = run(sock, spec.pop("argv"), **spec)
+    print(made["address"], made["pid"])
+
+
+def check_stop(sock):
+    call(sock, "terminal.kill", {"terminal": sys.argv[3]})
+
+
+def main():
+    name, sock = sys.argv[1], sys.argv[2]
+    args = sys.argv[3:]
+    checks = {
+        "probe": lambda: check_probe(sock),
+        "observation": lambda: check_observation(sock),
+        "labels": lambda: check_labels(sock),
+        "finish-seed": lambda: check_finish_seed(sock, args[0]),
+        "finish-after": lambda: check_finish_after(sock, args[0]),
+        "l2": lambda: check_l2(sock, args[0]),
+        "l3": lambda: check_l3(sock),
+        "run": lambda: check_run(sock, args[0]),
+        "state": lambda: print(terminal(sock, args[0])["state"]),
+        "kill": lambda: call(sock, "terminal.kill", {"terminal": args[0]}),
+    }
+    try:
+        checks[name]()
+    except SystemExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - one FAIL line per check, whatever broke
+        fail(f"{name}: {type(error).__name__}: {error}")
+
+
+main()
+PY_SMOKE
+
+HC_SMOKE_VERSION=$VERSION
+export HC_SMOKE_VERSION
+
+py() { python3 "$WORK/smoke.py" "$@"; }
+
+core_socket() { ic_sockets "$1" | grep -v '\.holder\.' | head -n 1; }
+
+new_core() { # CASE -> sets CORE_ROOT and CORE_SOCK
+    CORE_ROOT=$(ic_start "$1") || return 1
+    ROOTS="$ROOTS $CORE_ROOT"
+    CORE_SOCK=$(core_socket "$CORE_ROOT")
+    [ -n "$CORE_SOCK" ]
+}
+
+daemon_pids() { # STATE_DIR -> pids of `daemon run --state-dir STATE_DIR`
+    ps axww -o pid= -o args= 2>/dev/null | awk -v want="daemon run --state-dir $1 " '
+        index($0 " ", want) { print $1 }'
+}
+
+record() { # NAME STATUS DETAIL
+    printf '%-14s %-5s %s\n' "$1" "$2" "$3"
+    RESULTS="$RESULTS$1 $2
+"
+    [ "$2" = ok ] || FAILED=1
+}
+
+check() { # NAME ARGS... -> runs the python check against CORE_SOCK
+    name=$1; shift
+    if out=$(py "$name" "$CORE_SOCK" "$@" 2>&1); then
+        record "$name" ok "${out#ok: }"
+    else
+        record "$name" FAIL "${out#FAIL: }"
+    fi
+}
+
+echo "hc-smoke: herdr-core $VERSION ($ASSET, sha256 verified), herdr-threads $HT_BIN"
+
+# probe, observation, labels, L2, L3 share one core.
+if new_core core; then
+    check probe
+    check observation
+    check labels
+    check l2 "$WORK"
+    check l3
+else
+    record core FAIL "isolated core did not start"
+fi
+
+# D10 finish-reason rows: keep:false exited is final; keep:true stopped_by_restart survives server.stop + restart.
+if new_core finish; then
+    session=$(cat "$CORE_ROOT/session")
+    if check finish-seed "$WORK/finish.json" && ic_server_stop "$CORE_SOCK"; then
+        i=0
+        while [ $i -lt 100 ] && [ -n "$(ic_pids "$session")" ]; do sleep 0.1; i=$((i + 1)); done
+        env -i HOME="${HOME:-/}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" SHELL="${SHELL:-/bin/sh}" \
+            TMPDIR="${TMPDIR:-/tmp}" PATH="$PATH" HC_SESSION="$session" XDG_STATE_HOME="$CORE_ROOT/st" \
+            XDG_RUNTIME_DIR="$CORE_ROOT/rt" XDG_CONFIG_HOME="$CORE_ROOT/cfg" \
+            "$IC_HC" run --bg </dev/null >"$CORE_ROOT/hc-restart.out" 2>&1 || true
+        i=0
+        while [ $i -lt 100 ] && [ -z "$(core_socket "$CORE_ROOT")" ]; do sleep 0.1; i=$((i + 1)); done
+        CORE_SOCK=$(core_socket "$CORE_ROOT")
+        check finish-after "$WORK/finish.json"
+    else
+        record finish-after FAIL "seed or server.stop failed"
+    fi
+else
+    record finish FAIL "isolated core did not start"
+fi
+
+# K5 + attach/probe through the real daemon: `daemon ensure` inside a terminal autostarts a
+# daemon that attaches the core (HcHost), carries no HC_* variable, is no descendant of the terminal,
+# and outlives the terminal's kill, while a plain background child of the same terminal dies.
+k5() {
+    new_core k5 || { record k5 FAIL "isolated core did not start"; return; }
+    state="$CORE_ROOT/ht"
+    mkdir -p "$state" "$CORE_ROOT/home"
+    nap=$((300 + $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 1000))
+    spec=$(python3 - "$HT_BIN" "$state" "$CORE_SOCK" "$CORE_ROOT/home" "$nap" <<'PY_SPEC'
+import json, sys
+ht, state, sock, home, nap = sys.argv[1:]
+script = 'sleep "$HT_NAP" & "$HT_BIN" --state-dir "$HT_STATE" --host-endpoint "$HT_SOCK" daemon ensure >"$HT_STATE/ensure.out" 2>&1; touch "$HT_STATE/ensured"; wait'
+print(json.dumps({"argv": ["sh", "-c", script], "env": {"HT_BIN": ht, "HT_STATE": state, "HT_SOCK": sock, "HT_NAP": nap, "HOME": home}}))
+PY_SPEC
+)
+    # shellcheck disable=SC2046 # "ADDRESS PID", split on purpose
+    set -- $(py run "$CORE_SOCK" "$spec")
+    address=$1
+    terminal_pid=$2
+    i=0
+    while [ $i -lt 300 ] && [ ! -e "$state/ensured" ]; do sleep 0.1; i=$((i + 1)); done
+    [ -e "$state/ensured" ] || { record k5 FAIL "daemon ensure never returned: $(head -c 300 "$state/ensure.out" 2>/dev/null)"; return; }
+    dpid=$(daemon_pids "$state" | head -n 1)
+    [ -n "$dpid" ] || { record k5 FAIL "no daemon of $state after ensure: $(head -c 300 "$state/ensure.out")"; return; }
+    # attach + probe: the daemon's HcHost reached the core (health lists the host reachable).
+    attached=
+    i=0
+    while [ $i -lt 100 ]; do
+        health=$("$HT_BIN" --state-dir "$state" --host-endpoint "$CORE_SOCK" daemon health 2>&1 || true)
+        case $health in *'"reachability":"ready"'*'"coherent_enumeration":"supported"'*|*'"coherent_enumeration":"supported"'*'"reachability":"ready"'*) attached=1; break ;; esac
+        sleep 0.1; i=$((i + 1))
+    done
+    if [ -n "$attached" ]; then
+        record attach ok "the daemon (pid $dpid) attached $CORE_SOCK through HcHost: reachability ready, coherent_enumeration supported"
+    else
+        record attach FAIL "daemon health shows no ready hc host: $(printf '%s' "$health" | grep '^hosts:' | head -c 300)"
+    fi
+    # K5: no HC_* in the daemon's environment, and no ancestor is the terminal.
+    leaked=$(tr '\0' '\n' < "/proc/$dpid/environ" 2>/dev/null | grep '^HC_' || true)
+    chain=; p=$dpid
+    while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+        chain="$chain $p"
+        p=$(awk '{ print $4 }' "/proc/$p/stat" 2>/dev/null || true)
+    done
+    case " $chain " in *" $terminal_pid "*) descendant=1 ;; *) descendant= ;; esac
+    nap_pid=$(ps axww -o pid= -o args= | awk -v want="sleep $nap" '$0 ~ "^ *[0-9]+ " want "$" { print $1 }' | head -n 1)
+    [ -n "$nap_pid" ] || { record k5 FAIL "the terminal's plain background child (sleep $nap) is not running"; return; }
+    py kill "$CORE_SOCK" "$address" >/dev/null
+    i=0
+    while [ $i -lt 100 ] && [ "$(py state "$CORE_SOCK" "$address" 2>/dev/null)" != finished ]; do sleep 0.1; i=$((i + 1)); done
+    sleep 1
+    daemon_alive=; nap_alive=
+    kill -0 "$dpid" 2>/dev/null && daemon_alive=1
+    kill -0 "$nap_pid" 2>/dev/null && nap_alive=1
+    if [ -z "$leaked" ] && [ -z "$descendant" ] && [ -n "$daemon_alive" ] && [ -z "$nap_alive" ]; then
+        record k5 ok "daemon $dpid has no HC_* variable, is no descendant of terminal $address (pid $terminal_pid), survived its kill; the plain child $nap_pid did not"
+    else
+        record k5 FAIL "HC_* in daemon env: '${leaked:-none}'; descendant of terminal: '${descendant:-no}'; daemon survived kill: '${daemon_alive:-no}'; plain child survived (control): '${nap_alive:-no}'"
+    fi
+    "$HT_BIN" --state-dir "$state" daemon stop >/dev/null 2>&1 || true
+    i=0
+    while [ $i -lt 100 ] && [ -n "$(daemon_pids "$state")" ]; do sleep 0.1; i=$((i + 1)); done
+}
+k5
+
+# Cleanup runs in the EXIT trap (daemons, server.stop, no-process verification); report here too.
+for r in $ROOTS; do
+    session=$(cat "$r/session" 2>/dev/null || true)
+    [ -n "$session" ] || continue
+    ic_server_stop "$(core_socket "$r")" 2>/dev/null || true
+done
+sleep 1
+for r in $ROOTS; do
+    session=$(cat "$r/session" 2>/dev/null || true)
+    [ -n "$session" ] || continue
+    i=0
+    while [ $i -lt 100 ] && [ -n "$(ic_pids "$session")" ]; do sleep 0.1; i=$((i + 1)); done
+    left=$(ic_pids "$session")
+    if [ -n "$left" ]; then record "stop:$session" FAIL "herdr-core still running after server.stop: $left"; fi
+done
+if [ "$FAILED" -eq 0 ]; then
+    echo "hc-smoke: PASS (every core stopped with server.stop; no herdr-core serve/hold of a smoke session remains)"
+else
+    echo "hc-smoke: FAIL"
+fi
+exit "$FAILED"

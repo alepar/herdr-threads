@@ -96,3 +96,27 @@ need a real core or the desktop app.
 Open seam point for the next hc leaf: `CreatedTarget::validate` (ports.rs) accepts an hc witness only with
 `Placement::NewTerminal`; `HcHost::create_target` returns a `NewTab` result with the hc witness but does not call
 `validate()` on it, because the seam test `created_target_validate_per_witness_kind` pins `HcCore` + `NewTab` as invalid.
+
+## hc-smoke (ht-kqrt.52)
+
+Branch ran: the real-core smoke ships. `https://releases.herdr.dev/core/0.1.15/manifest.json` was fetched; both Linux
+tarballs were downloaded and match the manifest sha256 (x86_64 `efbb1382...8d66`, aarch64 `e4939faa...a4f`); both rows are
+in `tests/herdr-core-releases.tsv`, no macOS or Windows rows. `scripts/hc-smoke` (cache
+`~/.cache/herdr-threads/herdr-core-releases/0.1.15/`, sha256 checked every run) passed locally against private cores
+(`ht-smoke-<uuid>`, `env -i`, scratch XDG, `hc run --bg` only, `server.stop` at the end; no core process left,
+`scripts/check-no-leaked-processes` shows none of this task's). Output: `evidence/ht-kqrt.52/hc-smoke.out`.
+
+Live results: probe (hello 0.1.15, features, methods); observation (snapshot seq, `created`/`finished` events with a
+higher seq); labels (at run and by `terminal.label`); D10 rows (`keep:false` exit 3 is `finished/exited`; `keep:true`
+across `server.stop` + restart is `live`, no pid, `stopped_by_restart`, same `tN`); attach and probe through the real
+daemon (`daemon ensure` with `--host-endpoint` the core socket: `daemon health` shows the hc host reachability ready,
+coherent_enumeration supported); K5 (a daemon autostarted inside a terminal has no `HC_*` variable, is no descendant of
+the terminal and survives `terminal.kill`, while a plain background child dies); L2 (`sh -c 'echo $$; exec sleep'`:
+`terminal.pid` equals the exec'd process, still live); L3 (control child with default flags typed an `<hc>` note into a
+reporting parent; an `outlive_parent` + `no_notify` child typed nothing). L2 and L3 are live here, which settles the
+fallbacks above for those two rows.
+
+Not driven live: HcHost is exercised through the daemon (attach, probe) and the wire the daemon reads, not by Rust unit
+calls; the shell revival of a `stopped_by_restart` terminal through `hc attach` (a pty attach did not revive it within
+3 s; only the unchanged address and record are asserted); L1 stays macOS-only remaining evidence. Core id rotation
+across restart was seen in one probe but not in the smoke run, so it is not asserted.
