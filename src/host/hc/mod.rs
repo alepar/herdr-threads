@@ -614,6 +614,10 @@ impl HostPort for HcHost {
         HostKind::Hc
     }
 
+    fn creates_targets_itself(&self) -> bool {
+        true
+    }
+
     fn wake_capability(&self) -> WakeCapability {
         WakeCapability::None
     }

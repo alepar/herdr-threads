@@ -207,7 +207,7 @@ pub(crate) fn target_hosts(sessions: &HostSessions) -> Vec<Arc<HostSession>> {
         sessions
             .attached()
             .into_iter()
-            .filter(|session| session.port().kind() == crate::ports::HostKind::Hc),
+            .filter(|session| session.port().creates_targets_itself()),
     );
     hosts
 }
@@ -296,7 +296,7 @@ impl PeerLaunchService {
             // A terminal lives on a herdr-core, which has no panes to read.
             let mut cores: Vec<_> = sessions
                 .into_iter()
-                .filter(|s| s.port().kind() == crate::ports::HostKind::Hc)
+                .filter(|s| s.port().creates_targets_itself())
                 .collect();
             return match cores.len() {
                 1 => Ok(Placement {
@@ -569,7 +569,7 @@ impl PeerLaunchService {
             clock: Arc::clone(&self.clock),
             state_dir: self.state_dir.clone(),
             endpoint: placement.session.locator().as_path().to_path_buf(),
-            hc: placement.session.port().kind() == crate::ports::HostKind::Hc,
+            hc: placement.session.port().creates_targets_itself(),
             log: Arc::clone(&self.log),
         };
         let request = request.clone();
