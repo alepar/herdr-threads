@@ -115,8 +115,10 @@ pub struct Snapshot {
 struct SnapshotResult {
     #[serde(default)]
     seq: u64,
+    /// Absent is a decode failure, never an empty core: an empty list would read as
+    /// "every terminal is gone".
     #[serde(default)]
-    terminals: Vec<HcTerminal>,
+    terminals: Option<Vec<HcTerminal>>,
 }
 
 #[derive(Debug, Clone)]
@@ -193,9 +195,12 @@ impl HcClient {
     fn snapshot_of(result: &Value, prelude: &[Value]) -> Result<Snapshot, HcError> {
         let body =
             SnapshotResult::deserialize(result).map_err(|e| HcError::Decode(e.to_string()))?;
+        let terminals = body
+            .terminals
+            .ok_or_else(|| HcError::Decode("events.subscribe result has no terminals".into()))?;
         let mut snapshot = Snapshot {
             seq: body.seq,
-            terminals: body.terminals,
+            terminals,
             ..Snapshot::default()
         };
         for message in prelude {

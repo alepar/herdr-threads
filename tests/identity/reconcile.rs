@@ -2689,6 +2689,49 @@ mod fake_port {
         assert_eq!(store.state.lock().unwrap().calls, ["admit", "admit"]);
     }
 
+    /// A herdr-core whose socket is gone (the fake dropped) is unavailability, not an
+    /// unverified-but-readable capture: the real `HcHost` through `observe_and_publish`
+    /// freezes, ends no binding, invalidates nothing and marks nothing. Kills: reading a
+    /// failed `hello` as `CompleteUnverified`, which invalidates and marks seats unresolved.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn refused_hc_socket_freezes_and_ends_no_binding() {
+        let socket = {
+            let fake = crate::test_support::fake_hc::FakeHc::start();
+            fake.socket().to_path_buf()
+        };
+        let host = crate::host::hc::HcHost::new(crate::host::hc::rpc::HcClient::new(socket));
+        let store = Arc::new(FakeStore::new());
+        store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
+        let mut lane = ObservationLane::default();
+        let outcome = observe_and_publish(
+            &host,
+            store.as_ref(),
+            &mut lane,
+            "instance-a",
+            crate::test_support::test_host_id(),
+            &context(),
+            &budget(),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                ObservationOutcome::Frozen {
+                    reason: HostInvalidationReason::HostUnavailable,
+                    cause: Some(_)
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert!(!lane.is_available());
+        assert_eq!(invalidations(&store), 0);
+        let state = store.state.lock().unwrap();
+        assert!(state.invalidated_seats.is_empty());
+        assert!(state.actions.is_empty());
+        assert_eq!(state.calls, ["admit"]);
+    }
+
     #[test]
     fn repeat_failure_with_same_reason_after_completed_marking_writes_no_invalidation() {
         let store = Arc::new(FakeStore::new());
@@ -4030,10 +4073,12 @@ mod hc_closure {
         let mut env = env(false, true);
         assert!(env.settle().is_empty());
         let dead = HcHost::with_clock(HcClient::new("/nonexistent/hc.sock"), Arc::new(FixedClock));
-        let snapshot = dead.enumerate_targets(&call_context()).unwrap();
-        assert!(!snapshot.authorizes_absence_closure());
-        assert!(snapshot.targets.is_empty());
-        // The unverified outcome is never staged as a coherent publication;
+        let error = dead.enumerate_targets(&call_context()).unwrap_err();
+        assert_eq!(
+            error.code,
+            crate::protocol::results::ErrorCode::HostUnavailable
+        );
+        // A failed capture is never staged as a coherent publication;
         // the seat is untouched.
         assert_eq!(env.seat().0, "resolved");
         assert_eq!(env.open_bindings(), 1);

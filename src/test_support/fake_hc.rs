@@ -158,6 +158,7 @@ struct Inner {
     unknown_fields: bool,
     unknown_events: bool,
     stream_before_result: bool,
+    omit_terminals: bool,
     run_failure: Option<RunFailure>,
     close_after_reply: bool,
     /// When set, `terminal.run` starts its argv for real.
@@ -195,6 +196,7 @@ impl FakeHcState {
             unknown_fields: false,
             unknown_events: false,
             stream_before_result: false,
+            omit_terminals: false,
             run_failure: None,
             close_after_reply: false,
             exec: None,
@@ -349,6 +351,11 @@ impl FakeHcState {
     /// an unknown method (`set_unknown_events` governs the last two).
     pub fn set_stream_before_result(&self, on: bool) {
         self.lock().stream_before_result = on;
+    }
+
+    /// The `events.subscribe` result carries no `terminals` field.
+    pub fn set_omit_terminals(&self, on: bool) {
+        self.lock().omit_terminals = on;
     }
 
     pub fn set_unknown_events(&self, on: bool) {
@@ -587,7 +594,13 @@ impl Inner {
             })
             .map(|t| t.to_json(self.unknown_fields))
             .collect();
-        let snapshot = json!({"seq": self.seq, "terminals": terminals});
+        let mut snapshot = json!({"seq": self.seq, "terminals": terminals});
+        if self.omit_terminals {
+            snapshot
+                .as_object_mut()
+                .expect("object")
+                .remove("terminals");
+        }
         let mut lines = Vec::new();
         if self.stream_before_result {
             lines.push(notification("heartbeat", json!({"seq": self.seq})));
