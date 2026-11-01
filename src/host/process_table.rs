@@ -8,7 +8,7 @@
 //! The start stamp is opaque and only compared with another stamp from this same reader on this
 //! host (see `LivenessFingerprint`). macOS: microseconds since the Unix epoch from
 //! `proc_pidinfo(PROC_PIDTBSDINFO)`. Linux: `/proc/<pid>/stat` field 22 (clock ticks since boot).
-use crate::ports::{ProcessInfo, ProcessRecord};
+use crate::ports::{ProcessInfo, ProcessRecord, TerminalSession};
 
 pub struct HostProcessTable;
 
@@ -16,6 +16,56 @@ impl ProcessInfo for HostProcessTable {
     fn process(&self, pid: u32) -> Option<ProcessRecord> {
         read_process(pid)
     }
+    fn terminal_session(&self, pid: u32) -> Option<TerminalSession> {
+        read_terminal_session(pid)
+    }
+}
+
+/// Session id and controlling terminal from a `/proc/<pid>/stat` line: fields 6 (`session`) and
+/// 7 (`tty_nr`, 0 for none), counted after the parenthesised command name. Only the Linux reader
+/// calls it; tests exercise it on every platform.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn parse_stat_terminal_session(stat: &str) -> Option<TerminalSession> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    let mut fields = rest.split_ascii_whitespace();
+    // state, ppid, pgrp, session, tty_nr
+    let session: u32 = fields.nth(3)?.parse().ok()?;
+    let tty: i64 = fields.next()?.parse().ok()?;
+    Some(TerminalSession {
+        session,
+        tty: u64::try_from(tty).ok().filter(|tty| *tty != 0),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn read_terminal_session(pid: u32) -> Option<TerminalSession> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return None;
+    }
+    // Only this user's processes, as every other reader here.
+    if !host_owner(pid).is_some_and(|uid| same_user(uid, my_uid())) {
+        return None;
+    }
+    parse_stat_terminal_session(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+#[cfg(target_os = "macos")]
+fn read_terminal_session(pid: u32) -> Option<TerminalSession> {
+    let info = macos_bsdinfo(pid)?;
+    if !same_user(info.pbi_ruid, my_uid()) {
+        return None;
+    }
+    // SAFETY: `getsid` takes a pid and touches no memory; -1 is its error value.
+    let session = unsafe { libc::getsid(pid as libc::pid_t) };
+    let session = u32::try_from(session).ok()?;
+    // `e_tdev` is NODEV (all ones) for a process without a controlling terminal.
+    let tty = Some(u64::from(info.e_tdev)).filter(|tty| *tty != u64::from(u32::MAX));
+    Some(TerminalSession { session, tty })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_terminal_session(_pid: u32) -> Option<TerminalSession> {
+    None
 }
 
 /// The argv of a `KERN_PROCARGS2` buffer: `i32 argc`, the exec path, NUL padding, then `argc`
@@ -328,6 +378,43 @@ fn read_process(_pid: u32) -> Option<ProcessRecord> {
 mod tests {
     use super::*;
     use crate::host::continuity::parse_proc_stat;
+
+    /// Kills: reading another field as the session or terminal, keeping tty 0 as a terminal, or
+    /// being confused by spaces and parentheses inside the command name.
+    #[test]
+    fn stat_terminal_session_reads_session_and_controlling_terminal() {
+        let stat = "4242 (co (de) x) S 4200 4242 4100 34817 4242 4194560 0 0 0 0 1 2 0 0 20 0 1 0 98765 0 0";
+        assert_eq!(
+            parse_stat_terminal_session(stat),
+            Some(TerminalSession {
+                session: 4100,
+                tty: Some(34817)
+            })
+        );
+        let detached = "77 (d) S 1 77 77 0 -1 4194560 0 0 0 0 1 2 0 0 20 0 1 0 5 0 0";
+        assert_eq!(
+            parse_stat_terminal_session(detached),
+            Some(TerminalSession {
+                session: 77,
+                tty: None
+            })
+        );
+        assert_eq!(parse_stat_terminal_session("garbage"), None);
+        assert_eq!(parse_stat_terminal_session("1 (x) S 1"), None);
+    }
+
+    /// This test process's own session is readable and matches `getsid`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn own_terminal_session_matches_getsid() {
+        let me = std::process::id();
+        let found = HostProcessTable
+            .terminal_session(me)
+            .expect("own process readable");
+        // SAFETY: `getsid(0)` asks for this process's session.
+        let sid = unsafe { libc::getsid(0) };
+        assert_eq!(i64::from(found.session), i64::from(sid));
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]

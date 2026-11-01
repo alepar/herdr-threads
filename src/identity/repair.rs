@@ -94,7 +94,17 @@ pub struct OrdinaryIdentity {
     /// The observation lane's Pacer: its backoff gates retries after a failed
     /// capture. Unset (tests, in-process services) means no gate.
     observation_pacer: Option<Arc<Pacer>>,
+    /// C1 process continuity candidates the facts ruled out (ht-hsyg), by binding, seat
+    /// generation and fingerprint: none of those facts can turn into a match, so they are not
+    /// read again. Bounded; cleared when full.
+    process_declined: std::sync::Mutex<std::collections::HashSet<ProcessDeclineKey>>,
 }
+
+/// (binding id, seat generation, fingerprint pid, fingerprint start).
+type ProcessDeclineKey = (String, u64, u32, u64);
+/// Most C1 process continuity declines remembered before the set is cleared.
+const PROCESS_DECLINED_CAP: usize = 1024;
+
 impl OrdinaryIdentity {
     pub fn new(
         instance: String,
@@ -116,6 +126,7 @@ impl OrdinaryIdentity {
             lane_captured: std::sync::Condvar::new(),
             service: Cancellation::default(),
             observation_pacer: None,
+            process_declined: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -352,7 +363,12 @@ impl OrdinaryIdentity {
         if let Some(result) = replay {
             return Ok(result);
         }
-        let (result, not_ready) = self.decide_continuity_now(command.clone(), budget, false);
+        let (result, not_ready) = self.decide_continuity_now(
+            command.clone(),
+            budget,
+            false,
+            crate::ports::ContinuityEvidence::Cooperative,
+        );
         // ht-dtx0: a claim refused only because the host evidence is not ready
         // (reconciliation lag, a failed host read) is kept for the observation
         // worker to decide once the epoch has reconciled; a decided claim
@@ -404,7 +420,14 @@ impl OrdinaryIdentity {
                     self.store.replay_continuity(command.clone(), &budget)
                 };
                 replay_settles(&replayed).unwrap_or_else(|| {
-                    !self.decide_continuity_now(command.clone(), &budget, true).1
+                    !self
+                        .decide_continuity_now(
+                            command.clone(),
+                            &budget,
+                            true,
+                            crate::ports::ContinuityEvidence::Cooperative,
+                        )
+                        .1
                 })
             };
             if settled {
@@ -414,6 +437,132 @@ impl OrdinaryIdentity {
             }
         }
         Ok(())
+    }
+
+    /// TRUST-POLICY C1 process continuity (ht-hsyg): after a completed reconciliation pass, on
+    /// the observation lane (after the kept claims, which are the sessions' own), reattach each
+    /// unresolved seat whose top-level harness binding's own process Herdr's pane at the seat's
+    /// saved target still hosts (see [`crate::identity::process_continuity`]). The saved target
+    /// only selects the pane to ask; one quiet `pane process-info` read per candidate. A pane
+    /// two seats' processes point to decides nothing. The decision is the ordinary C1
+    /// transaction, under a daemon operation key per (seat, binding, seat generation), recorded
+    /// `structural_process_continuity`. A candidate the facts rule out is remembered for its seat
+    /// generation and fingerprint, so it costs no further reads; one whose facts were unreadable
+    /// is retried next pass.
+    pub fn decide_process_continuity(&self) -> Result<(), ApiError> {
+        use crate::identity::process_continuity::{Verdict, judge};
+        let budget = self.maintenance_budget();
+        let candidates = {
+            let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
+            self.store
+                .process_continuity_candidates(self.host_id, &budget)?
+        };
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let processes = crate::host::process_table::HostProcessTable;
+        let declined_key = |c: &crate::ports::ProcessContinuityCandidate| {
+            (
+                c.binding_id.clone(),
+                c.seat_generation,
+                c.liveness.pid,
+                c.liveness.start,
+            )
+        };
+        let mut matched: std::collections::BTreeMap<
+            HostTargetId,
+            Vec<crate::ports::ProcessContinuityCandidate>,
+        > = std::collections::BTreeMap::new();
+        for candidate in candidates {
+            if budget.is_exhausted(self.clock.as_ref()) {
+                break;
+            }
+            let key = declined_key(&candidate);
+            if self
+                .process_declined
+                .lock()
+                .is_ok_and(|declined| declined.contains(&key))
+            {
+                continue;
+            }
+            let verdict = if candidate.liveness.is_alive(&processes) {
+                let context = HostCallContext {
+                    budget: CallBudget {
+                        deadline: budget.deadline.min(MonoInstant(
+                            self.clock
+                                .monotonic_now()
+                                .0
+                                .saturating_add(DIAGNOSTIC_READ_MILLIS),
+                        )),
+                        cancellation: budget.cancellation.clone(),
+                    },
+                    expected_boot: None,
+                    expected_epoch: None,
+                };
+                match self.host.pane_shell_pid(&candidate.target, &context) {
+                    Ok(Some(shell)) => judge(&processes, candidate.liveness, shell),
+                    _ => Verdict::Unknown,
+                }
+            } else {
+                Verdict::NotContinuous
+            };
+            match verdict {
+                Verdict::Continuous => matched
+                    .entry(candidate.target.clone())
+                    .or_default()
+                    .push(candidate),
+                Verdict::NotContinuous => self.decline_process_candidate(key),
+                Verdict::Unknown => {}
+            }
+        }
+        for (_, at_target) in matched {
+            if budget.is_exhausted(self.clock.as_ref()) {
+                break;
+            }
+            let seat = &at_target[0].seat;
+            if at_target.iter().any(|other| &other.seat != seat) {
+                continue;
+            }
+            // The store lists a seat's bindings newest first.
+            let candidate = &at_target[0];
+            let Ok(operation) = crate::protocol::ids::OperationId::parse(format!(
+                "process-continuity:{}:{}:{}",
+                candidate.seat.as_str(),
+                candidate.binding_id,
+                candidate.seat_generation
+            )) else {
+                continue;
+            };
+            let command = ContinuityCheckIn {
+                target: candidate.target.clone(),
+                host: candidate.host.clone(),
+                harness: candidate.harness,
+                native_session: candidate.native_session.clone(),
+                source: ContinuityCheckIn::SAME_SESSION_SOURCE.to_owned(),
+                operation,
+                execution: candidate.execution.clone(),
+                liveness: Some(candidate.liveness),
+            };
+            let (result, not_ready) = self.decide_continuity_now(
+                command,
+                &budget,
+                true,
+                crate::ports::ContinuityEvidence::Process,
+            );
+            if result.is_err() && !not_ready {
+                self.decline_process_candidate(declined_key(candidate));
+            }
+        }
+        Ok(())
+    }
+
+    fn decline_process_candidate(&self, key: ProcessDeclineKey) {
+        if let Ok(mut declined) = self.process_declined.lock() {
+            if declined.len() >= PROCESS_DECLINED_CAP {
+                declined.clear();
+            }
+            declined.insert(key);
+        }
     }
 
     /// The daemon's own short budget for kept-claim bookkeeping and decisions,
@@ -443,6 +592,7 @@ impl OrdinaryIdentity {
         command: ContinuityCheckIn,
         budget: &CallBudget,
         quiet: bool,
+        evidence: crate::ports::ContinuityEvidence,
     ) -> (Result<CommandResult, ApiError>, bool) {
         let target = command.target.clone();
         let diagnostic = self.agent_session_diagnostic(&target, &command, budget);
@@ -465,6 +615,7 @@ impl OrdinaryIdentity {
                         command,
                         guard,
                         diagnostic,
+                        evidence,
                     },
                     budget,
                 )

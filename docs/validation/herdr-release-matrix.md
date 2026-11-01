@@ -14,9 +14,11 @@ Wall time: one release is about 130 s, dominated by the per-seat wake spacing of
 
 Herdr behaviour the move test pins, identical on 0.9.1 through 0.9.5: renames never change ids; a move inside a workspace keeps the pane id; a move to another workspace gives a new pane id with the same terminal id, the running processes keep the old `HERDR_PANE_ID`, and `pane.get`/`pane.current` answer the old id (through any chain of moves) with the pane's current record; ids are never reused within a server. There is no tab-move command.
 
+Herdr behaviour the live-handoff test pins on 0.9.1 through 0.9.5: `server live-handoff` keeps pane ids, the pane processes and the pane's shell pid (`pane.process_info`), and gives every terminal a new id under a new server process. On 0.9.2 and 0.9.3 the agent's status reads `unknown` after the handoff until the agent redraws; 0.9.1, 0.9.4 and 0.9.5 keep it.
+
 ## Coverage
 
-The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column names the matrix test that covers the row: core (`herdr_release_smoke`), handoff (`herdr_release_launch_and_handoff`), wake (`herdr_release_wake`), busy (`herdr_release_busy`), move (`herdr_release_move`).
+The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column names the matrix test that covers the row: core (`herdr_release_smoke`), handoff (`herdr_release_launch_and_handoff`), wake (`herdr_release_wake`), busy (`herdr_release_busy`), move (`herdr_release_move`), live handoff (`herdr_release_live_handoff`).
 
 | Feature | Commands | 1.0.1 | 1.0.2 |
 | --- | --- | --- | --- |
@@ -43,6 +45,7 @@ The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column
 | Pane and tab renames, workspace rename | `herdr tab/pane/workspace rename` with live seats: labels follow, identity, delivery and wake unchanged | no | move |
 | Moves with a live seated agent and person | `herdr pane move --new-tab` (same id), `--workspace`, `--new-workspace` and a chain of moves (new id, same terminal; the processes keep their old `HERDR_PANE_ID`): seats follow, in-turn delivery, the agent's `inbox`/`send`, the person's inbox and the p0 wake keep working, and `seat resolve` of a just-moved pane never allocates a second seat | no | move |
 | Herdr old-pane-id alias (the client heal's premise) | after a cross-workspace move and after a double move, `herdr pane get <old id>` returns the current record (same terminal id, new pane id, through the chain) and an unknown id returns `pane_not_found`; a failure reads `Herdr old-pane-id alias dropped: client heal in ht <version> degrades` | no | move |
+| Live handoff | `herdr server live-handoff` (new server, new terminal ids, same pane processes): the agent seat reattaches by C1 process continuity with no turn of its own, an idle p0 wakes it (held while Herdr reports the agent `unknown`), a person seat stays unresolved; after a cold restart a seat stays unresolved | no | live handoff |
 | Herdr's own Codex integration alongside the owned hooks | `herdr integration install codex` | no | every test |
 | Local recovery and warnings listings | `pending-ops`, `warnings` | no | core |
 

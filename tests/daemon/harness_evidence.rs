@@ -2145,6 +2145,13 @@ mod publication_order {
         ) -> Result<bool, ApiError> {
             self.inner.keep_continuity_claim(host, command, budget)
         }
+        fn process_continuity_candidates(
+            &self,
+            host: crate::ports::HostId,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::ports::ProcessContinuityCandidate>, ApiError> {
+            self.inner.process_continuity_candidates(host, budget)
+        }
         fn kept_continuity_claims(
             &self,
             host: crate::ports::HostId,

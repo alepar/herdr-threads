@@ -4299,6 +4299,116 @@ pub(crate) fn continuity_candidates(
         .collect())
 }
 
+/// Schema delta 12 (ht-hsyg): copy every seat-history decision into the table that admits the
+/// `structural_process_continuity` kind. Ordinals are kept, so the AUTOINCREMENT sequence follows.
+pub(crate) fn copy_allocation_decisions(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute(
+        "INSERT INTO allocation_decisions_new(ordinal,host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) \
+         SELECT ordinal,host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic FROM allocation_decisions ORDER BY ordinal",
+        [],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// Candidates checked per pass by C1 process continuity (ht-hsyg); the rest wait a pass.
+pub const PROCESS_CONTINUITY_CANDIDATES_PER_PASS: usize = 32;
+
+/// TRUST-POLICY C1 process continuity (ht-hsyg): the unresolved local seats of `host` that a
+/// new incarnation left at a saved target, each with the top-level harness bindings the unresolve
+/// ended while open (`seat_unresolved`) and that carry a liveness fingerprint. The same binding
+/// filter as [`continuity_candidates`]: never human, `managed_launch`, a subagent or a
+/// `plugin_context:` session. Bounded, seat order.
+pub fn process_continuity_candidates(
+    context: &StoreContext,
+    instance: &str,
+    host: crate::ports::HostId,
+    budget: &CallBudget,
+) -> Result<Vec<crate::ports::ProcessContinuityCandidate>, ApiError> {
+    let db = context.open_query(budget.clone())?;
+    let mut statement = db
+        .prepare(&format!(
+            "SELECT s.id,s.generation,b.binding_id,s.target_id,h.endpoint,b.harness,b.native_session,b.execution_id,b.liveness_pid,b.liveness_start \
+             FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id JOIN herdr_hosts h ON h.host_id=s.host_id \
+             WHERE s.instance_id=?1 AND s.host_id=?2 AND s.{LOCAL_SEAT} AND s.state='unresolved' AND s.unresolved_reason='other' AND s.target_id IS NOT NULL \
+             AND b.disconnect_reason='seat_unresolved' AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' \
+             AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' AND b.liveness_pid IS NOT NULL AND b.liveness_start IS NOT NULL \
+             ORDER BY s.id, b.ordinal DESC LIMIT ?3",
+        ))
+        .map_err(|e| db.map_error(e))?;
+    let limit = i64::try_from(PROCESS_CONTINUITY_CANDIDATES_PER_PASS).unwrap_or(i64::MAX);
+    let rows = statement
+        .query_map(
+            params![instance, host.get(), limit],
+            |r| -> rusqlite::Result<ProcessContinuityRow> {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(9)?,
+                ))
+            },
+        )
+        .map_err(|e| db.map_error(e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| db.map_error(e))?;
+    let mut candidates = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let Some(candidate) = process_continuity_candidate(row)? {
+            candidates.push(candidate);
+        }
+    }
+    Ok(candidates)
+}
+
+type ProcessContinuityRow = (
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+);
+
+/// One candidate row; `None` for a harness this build does not know (it cannot be reattached
+/// as one).
+fn process_continuity_candidate(
+    (seat, generation, binding, target, endpoint, harness, session, execution, pid, start): ProcessContinuityRow,
+) -> Result<Option<crate::ports::ProcessContinuityCandidate>, ApiError> {
+    let corrupt = |what: &str| api_error(ErrorCode::StoreCorrupt, format!("invalid {what}"));
+    let Ok(harness) = serde_json::from_value::<crate::protocol::authority::Harness>(
+        serde_json::Value::String(harness),
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(crate::ports::ProcessContinuityCandidate {
+        seat: SeatId::parse(seat).map_err(|_| corrupt("seat id"))?,
+        seat_generation: u64::try_from(generation).map_err(|_| corrupt("seat generation"))?,
+        binding_id: binding,
+        target: HostTargetId::parse(target).map_err(|_| corrupt("target id"))?,
+        host: crate::protocol::ids::HostLocator::parse(endpoint)
+            .map_err(|_| corrupt("host endpoint"))?,
+        harness,
+        native_session: crate::protocol::ids::NativeSessionId::parse(session)
+            .map_err(|_| corrupt("native session"))?,
+        execution: ExecutionId::parse(execution).map_err(|_| corrupt("execution id"))?,
+        liveness: crate::protocol::authority::LivenessFingerprint {
+            pid: u32::try_from(pid).map_err(|_| corrupt("liveness pid"))?,
+            start: u64::try_from(start).map_err(|_| corrupt("liveness start"))?,
+        },
+    }))
+}
+
 pub fn continuity_digest(
     instance: &str,
     command: &crate::protocol::commands::ContinuityCheckIn,
@@ -4399,6 +4509,14 @@ pub fn decide_continuity(
 ) -> Result<CommandResult, ApiError> {
     let command = request.command.clone();
     let diagnostic = request.diagnostic;
+    let decision_kind = match request.evidence {
+        crate::ports::ContinuityEvidence::Cooperative => {
+            crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE
+        }
+        crate::ports::ContinuityEvidence::Process => {
+            crate::protocol::authority::STRUCTURAL_PROCESS_CONTINUITY_PROVENANCE
+        }
+    };
     let instance = request.guard.instance().to_owned();
     if instance != elected_instance {
         return Err(api_error(
@@ -4702,7 +4820,7 @@ pub fn decide_continuity(
             )
             .map_err(store_error)?;
             tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9)",
-                params![host.get(),target.as_str(),seat.as_str(),crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,diagnostic]).map_err(store_error)?;
+                params![host.get(),target.as_str(),seat.as_str(),decision_kind,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,diagnostic]).map_err(store_error)?;
             release_claimed_target(tx, &instance, host, target.as_str(), at.utc)?;
             lift_baseline_hold_if_clear(tx, &instance, host, at.utc)?;
             Ok(CommandResult::ContinuityReattached(
