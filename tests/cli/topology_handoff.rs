@@ -1882,6 +1882,61 @@ mod live {
         )
     }
 
+    /// Counts the `CreateTargetPort` calls and forwards each to the Herdr tab delegate.
+    struct CountingTarget {
+        inner: Arc<Peer>,
+        calls: std::sync::atomic::AtomicUsize,
+        placements: Mutex<Vec<crate::ports::Placement>>,
+    }
+    impl crate::ports::CreateTargetPort for CountingTarget {
+        fn create_target(
+            &self,
+            request: &crate::ports::CreateTargetRequest,
+            context: &HostCallContext,
+        ) -> crate::ports::CreateTargetOutcome {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.placements
+                .lock()
+                .unwrap()
+                .push(request.placement.clone());
+            self.inner.create_target(request, context)
+        }
+    }
+
+    // Kills: a handoff that still calls `create_tab` directly (the port sees no call), or one
+    // that creates through the port but loses the Herdr tab (no V1 creation evidence).
+    #[test]
+    fn herdr_new_tab_handoff_goes_through_create_target_port() {
+        let f = Fixture::new(Fault::None);
+        let port = CountingTarget {
+            inner: Arc::clone(&f.peer),
+            calls: Default::default(),
+            placements: Default::default(),
+        };
+        let result = resume_to_attachment(
+            &f.journal,
+            &f.peer.reference,
+            &f.peer.identity.payload.handoff.namespace,
+            f.peer.as_ref(),
+            &port,
+            &f.clock,
+            BootstrapSubmissionInputs {
+                witness: &f.witness,
+                context: &f.context,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.state, BootstrapState::Attached);
+        assert_eq!(port.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+        assert_eq!(
+            *port.placements.lock().unwrap(),
+            [crate::ports::Placement::NewTab {
+                space: f.peer.identity.payload.workspace.clone()
+            }]
+        );
+    }
+
     #[test]
     fn profile_directory_frozen_retry_retains_canonical_paths_and_exact_child() {
         use std::os::unix::fs::symlink;

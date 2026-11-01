@@ -15,6 +15,7 @@ pub mod help;
 pub mod hook;
 pub mod hook_evidence;
 pub mod hook_inbox;
+pub mod host_client;
 pub mod human;
 pub mod input;
 pub mod installer;
@@ -4086,7 +4087,8 @@ fn run_launch<W: Write>(
     env.host_endpoint = Some(claim_host.clone());
     let (instance, _, client) = connect(paths, clock)?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
-    let host = crate::host::native::NativeCli::new(claim_host, Arc::clone(clock));
+    let handle = host_client::LaunchHandle::herdr(claim_host, Arc::clone(clock));
+    let host = handle.host();
     // Without `--name`, the agent is named after the pane's Herdr label. Best
     // effort: an unreadable snapshot leaves the short-seat-id fallback.
     if request.name.is_none() {
@@ -4111,7 +4113,7 @@ fn run_launch<W: Write>(
         &request,
         &launch::LaunchParts {
             env: &env,
-            host: &host,
+            host,
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),

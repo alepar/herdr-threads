@@ -21,6 +21,11 @@ pub struct TargetCreator {
     pub kind: HostKind,
 }
 
+/// The Herdr adapter on `endpoint`, with no probe: the launch handle's Herdr constructor.
+pub fn herdr_host(endpoint: std::path::PathBuf, clock: Arc<dyn Clock>) -> super::native::NativeCli {
+    super::native::NativeCli::new(endpoint, clock)
+}
+
 /// The creation port of the server on `endpoint`. `gate_argv` is what a herdr-core terminal
 /// starts (ignored for a Herdr socket, whose tab is started by a later `launch --pane`).
 pub fn connect(

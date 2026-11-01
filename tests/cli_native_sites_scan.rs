@@ -1,6 +1,7 @@
 //! `NativeCli::new` in `src/cli` appears only at the kept sites of the F
-//! table: pane observation of the caller's own Herdr host, and launch and
-//! handoff. Labels come from the daemon (`Command::HostTopologies`). Sites are
+//! table: pane observation of the caller's own Herdr host. Launch and handoff
+//! obtain their host through `host_client::LaunchHandle` (H3d1). Labels come
+//! from the daemon (`Command::HostTopologies`). Sites are
 //! keyed by file and enclosing fn with an occurrence count, never a line.
 
 use std::fs;
@@ -13,10 +14,7 @@ const KEPT: &[(&str, &str, usize, &str)] = &[
     ("hook.rs", "locate_seat_for", 1, "pane observation"),
     // Lazy claim-host adapter for pane selectors (topology, current_pane); no label read (spec F6 amended, ht-kqrt.9).
     ("mod.rs", "run_parsed_in_pane", 1, "pane observation"),
-    ("mod.rs", "run_launch", 1, "launch"),
-    ("handoff.rs", "run", 1, "handoff"),
-    ("topology_runtime.rs", "run", 1, "handoff"),
-    ("topology_runtime.rs", "run_operator", 2, "handoff"),
+    ("topology_runtime.rs", "run_operator", 2, "pane observation"),
 ];
 
 /// `(enclosing fn, line)` of every `NativeCli::new` in `source`.
@@ -110,8 +108,10 @@ fn scan_flags_an_unlisted_site() {
     assert_eq!(sites(extra), ["labels"]);
     let v = violations(&[("follow.rs".into(), extra.into())]);
     assert_eq!(v.len(), 1, "{v:?}");
-    let twice = "fn run_launch() {\n NativeCli::new(a);\n NativeCli::new(b);\n}\n";
+    let twice = "fn pane_agent() {\n NativeCli::new(a);\n NativeCli::new(b);\n}\n";
     assert_eq!(violations(&[("mod.rs".into(), twice.into())]).len(), 1);
-    let kept = "fn run_launch() {\n NativeCli::new(a);\n}\n";
+    let kept = "fn pane_agent() {\n NativeCli::new(a);\n}\n";
     assert!(violations(&[("mod.rs".into(), kept.into())]).is_empty());
+    let launch = "fn run_launch() {\n NativeCli::new(a);\n}\n";
+    assert_eq!(violations(&[("mod.rs".into(), launch.into())]).len(), 1);
 }

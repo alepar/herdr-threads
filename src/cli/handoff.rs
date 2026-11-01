@@ -2361,7 +2361,8 @@ pub(crate) fn run<W: Write>(
         state_dir: runtime.state_dir.clone(),
         host_endpoint: claim_host.clone(),
     };
-    let host = crate::host::native::NativeCli::new(claim_host, Arc::clone(&clock));
+    let handle = super::host_client::LaunchHandle::herdr(claim_host, Arc::clone(&clock));
+    let host = handle.host();
     let seats = super::launch::DaemonSeatResolver::new(
         &client,
         journal,
@@ -2374,7 +2375,7 @@ pub(crate) fn run<W: Write>(
         registry: crate::harness::registry::builtins(),
         parts: super::launch::LaunchParts {
             env: &env,
-            host: &host,
+            host,
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),

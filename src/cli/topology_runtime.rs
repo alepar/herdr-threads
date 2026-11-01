@@ -295,7 +295,7 @@ pub(crate) fn try_run_automatic_new_with_ports(
     journal: &Journal,
     namespace: &HandoffNamespace,
     client: &dyn LocalClient,
-    native: &dyn crate::ports::CreateTabPort,
+    native: &dyn crate::ports::CreateTargetPort,
     launcher: &mut dyn super::handoff::HandoffLauncher,
     clock: &dyn Clock,
     invocation_cwd: &std::path::Path,
@@ -385,7 +385,11 @@ pub(crate) fn run(
     {
         require_capability(&client, clock.as_ref())?;
     }
-    let host = NativeCli::new(selected.require_host()?.to_path_buf(), clock.clone());
+    let handle = super::host_client::LaunchHandle::herdr(
+        selected.require_host()?.to_path_buf(),
+        clock.clone(),
+    );
+    let host = handle.host();
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(selected.state_dir.to_string_lossy().into_owned());
     output.context.host = Some(selected.require_host()?.to_string_lossy().into_owned());
@@ -416,7 +420,7 @@ pub(crate) fn run(
                 registry,
                 parts: super::launch::LaunchParts {
                     env: &env,
-                    host: &host,
+                    host,
                     seats: &seats,
                     handoff: &client,
                     clock: clock.as_ref(),
@@ -430,7 +434,7 @@ pub(crate) fn run(
                 journal,
                 &ns,
                 &client,
-                &host,
+                handle.create_port(),
                 &mut launcher,
                 clock.as_ref(),
                 &cwd,
@@ -449,7 +453,7 @@ pub(crate) fn run(
                         &effective,
                         &super::launch::LaunchParts {
                             env: &env,
-                            host: &host,
+                            host,
                             seats: &seats,
                             handoff: &client,
                             clock: clock.as_ref(),
@@ -595,7 +599,7 @@ pub(crate) fn run(
                 &effective,
                 &super::launch::LaunchParts {
                     env: &env,
-                    host: &host,
+                    host,
                     seats: &seats,
                     handoff: &client,
                     clock: clock.as_ref(),
@@ -695,7 +699,7 @@ pub(crate) fn run(
                     registry,
                     parts: super::launch::LaunchParts {
                         env: &env,
-                        host: &host,
+                        host,
                         seats: &seats,
                         handoff: &client,
                         clock: clock.as_ref(),
@@ -709,7 +713,7 @@ pub(crate) fn run(
                     parsed.actor,
                     &ns,
                     &client,
-                    &host,
+                    handle.create_port(),
                     &mut launcher,
                     clock.as_ref(),
                     super::topology_handoff::BootstrapSubmissionInputs {
@@ -901,7 +905,7 @@ pub(crate) fn run(
         registry: crate::harness::registry::builtins(),
         parts: super::launch::LaunchParts {
             env: &env,
-            host: &host,
+            host,
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),
@@ -915,7 +919,7 @@ pub(crate) fn run(
         parsed.actor,
         &ns,
         &client,
-        &host,
+        handle.create_port(),
         &mut launcher,
         clock.as_ref(),
         super::topology_handoff::BootstrapSubmissionInputs {

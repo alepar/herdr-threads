@@ -766,7 +766,7 @@ pub fn publish_automatic(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resume_automatic_to_writer<
     C: crate::ports::LocalClient + ?Sized,
-    N: crate::ports::CreateTabPort + ?Sized,
+    N: crate::ports::CreateTargetPort + ?Sized,
     W: std::io::Write,
 >(
     journal: &super::journal::Journal,
@@ -805,7 +805,7 @@ pub struct BootstrapSubmissionInputs<'a> {
 #[allow(clippy::too_many_arguments)]
 pub fn resume_to_attachment<
     C: crate::ports::LocalClient + ?Sized,
-    N: crate::ports::CreateTabPort + ?Sized,
+    N: crate::ports::CreateTargetPort + ?Sized,
 >(
     journal: &super::journal::Journal,
     reference: &super::journal::IntentRef,
@@ -1044,7 +1044,7 @@ pub fn resume_to_attachment<
         &identity.payload.cwd,
         identity.payload.directory_context.as_ref(),
     ) {
-        Ok(()) => native.create_tab(&request, submission.context),
+        Ok(()) => crate::ports::create_tab_through(native, &request, submission.context),
         Err(error) => CreateTabOutcome::NotSubmitted(
             crate::protocol::results::ApiError::invalid_request(error.to_string()),
         ),
@@ -1927,7 +1927,7 @@ fn save_terminal(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resume_to_writer<
     C: crate::ports::LocalClient + ?Sized,
-    N: crate::ports::CreateTabPort + ?Sized,
+    N: crate::ports::CreateTargetPort + ?Sized,
     W: std::io::Write,
 >(
     journal: &super::journal::Journal,
