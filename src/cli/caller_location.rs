@@ -8,23 +8,21 @@
 //! precedence between families (one family, then `Ambiguous`, then refusal),
 //! and the per-site answers (`moved_target`, `relative_pane`,
 //! `person_origin_allowed`, `enrolls_on_first_use`, `attempts_continuity`,
-//! `host_scoped_lookup`, `cache_key`, `env_assignments`) as one closed match.
+//! `host_scoped_lookup`, `claim_host_locator`, `cache_key`, `env_assignments`) as one closed match.
 //!
 //! Hides: which env family located the caller, from `mod.rs`, `hook.rs`,
 //! the handoff recovery hints and instance discovery.
 //!
 //! Does not: verify anything (that is the daemon's call against the canonical
 //! view, A2), or rank one family above another. `Ambiguous` is passed on
-//! as is; a caller that cannot yet verify uses the pane candidate unverified,
-//! exactly as before a second family existed.
+//! as is; until it is verified (`caller_guard`), the pane candidate serves a
+//! pane-relative lookup unverified, exactly as before a second family existed.
 //!
 //! Where new behaviour goes: a new site kind is a `CallerLocator` variant plus
 //! an arm in each `CallerSite` method and in `CallerEnv::locate`. No other
 //! `src/cli` file reads these variables; `tests/cli_env_read_scan.rs` enforces
-//! it. F lands `Pane` and a recognition-only `Terminal` (so a second family
-//! is visible to the phase guard); N lands `Named` (precedence rule 1: a valid
-//! seat name replaces only the target, so it is never part of an `Ambiguous`
-//! pair); the verified `Terminal` comes with H1.
+//! it. `Pane`, `Terminal` (a herdr-core terminal) and `Named` (precedence rule 1: a valid
+//! seat name replaces only the target, so it is never part of an `Ambiguous` pair).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -46,8 +44,8 @@ pub enum CallerLocator {
     Pane {
         id: String,
     },
-    /// Recognition only in F: it makes a second family visible, nothing
-    /// consumes its values yet.
+    /// A herdr-core terminal (`HC_TERMINAL_ID` with `HC_TERMINAL_SOCKET`); beside a pane it is
+    /// one of two families the daemon's `LocateCaller` tells apart.
     Terminal {
         socket: String,
         id: String,
@@ -97,12 +95,11 @@ pub enum LocatorError {
 }
 
 impl LocatorError {
-    /// The one-line CLI refusal for this error, when it has one (`TerminalWithoutSocket` is
-    /// reported as no caller, as before).
+    /// The one-line CLI refusal for this error.
     pub fn refusal(&self) -> Option<&'static str> {
         match self {
             Self::InvalidName => Some(M16),
-            Self::TerminalWithoutSocket => None,
+            Self::TerminalWithoutSocket => Some(M17),
         }
     }
 }
@@ -122,6 +119,10 @@ pub const M15: &str =
 /// M16 (92 bytes): `HERDR_THREADS_SEAT_NAME` is set and is not a valid seat name.
 pub const M16: &str =
     "herdr-threads: HERDR_THREADS_SEAT_NAME is not a valid seat name (1-64 bytes of A-Za-z0-9._-)";
+
+/// M17 (91 bytes): `HC_TERMINAL_ID` is the only evidence and names no core to ask.
+pub const M17: &str =
+    "herdr-threads: HC_TERMINAL_ID is set without HC_TERMINAL_SOCKET; cannot locate the terminal";
 
 /// The caller-location variables of one process, empty values already dropped.
 #[derive(Debug, Clone, Default)]
@@ -201,6 +202,17 @@ impl CallerEnv {
         })
     }
 
+    /// The caller is a lone non-Pane site (a named seat or a herdr-core terminal): it has no
+    /// Herdr pane to ask Herdr about, so instance discovery treats it alike (SA1).
+    pub fn non_pane_site(&self) -> bool {
+        matches!(
+            self.locate(EnvMode::Cli),
+            Ok(Some(Located::One(
+                CallerLocator::Named(_) | CallerLocator::Terminal { .. }
+            )))
+        )
+    }
+
     /// The pane the caller runs in, or `None` when the environment locates no
     /// pane (including a refusal, which F reports as no caller).
     pub fn pane(&self, mode: EnvMode) -> Option<String> {
@@ -277,11 +289,30 @@ impl<'a> CallerSite<'a> {
         }
     }
 
-    /// The terminal's id as the guard lines print it (`tN`); `None` for other sites.
-    pub fn terminal_id(self) -> Option<&'a str> {
+    /// The terminal as the refusal line prints it, `<session>:<tN>`; the session is the core
+    /// socket's file stem (herdr-core names its socket `<session>.sock`), omitted when the
+    /// socket has none. `None` for other sites.
+    pub fn terminal_address(self) -> Option<String> {
         match self.0 {
-            CallerLocator::Terminal { id, .. } => Some(id),
+            CallerLocator::Terminal { socket, id } => {
+                let session = std::path::Path::new(socket)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .filter(|stem| !stem.is_empty());
+                Some(session.map_or_else(|| id.clone(), |session| format!("{session}:{id}")))
+            }
             CallerLocator::Pane { .. } | CallerLocator::Named(_) => None,
+        }
+    }
+
+    /// The claim host a hook from this site uses in place of the installed argv's
+    /// `--host-endpoint` (a Herdr server): a named seat's reserved host, a terminal's core
+    /// socket. A Pane site has none (its own `HERDR_SOCKET_PATH` decides).
+    pub fn claim_host_locator(self) -> Option<&'a str> {
+        match self.0 {
+            CallerLocator::Named(_) => Some(NAMED_HOST_LOCATOR),
+            CallerLocator::Terminal { socket, .. } => Some(socket),
+            CallerLocator::Pane { .. } => None,
         }
     }
 

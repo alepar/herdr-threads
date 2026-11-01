@@ -4,7 +4,7 @@
 //! - Owns: the walk from the subject (the claim's liveness pid, else the
 //!   transport peer pid) up `ProcessInfo` parents against each candidate's
 //!   `HostPort::target_root_process`, the herdr-core terminal-root wall (a
-//!   process whose argv[0] basename is in `host::foreign_terminal_process_names`
+//!   process whose argv[0] basename is in `host::hc::foreign_terminal_process_names`
 //!   ends the walk: a root above it does not verify; unreadable argv is not a
 //!   wall, an accepted F/N limit), and its cache keyed on (candidates, subject
 //!   pid, subject start stamp, host set epoch) with unstamped subjects
@@ -17,19 +17,20 @@
 //!   on an unreadable server environ (`server_process() == None` skips that
 //!   check).
 //! - Relationships: delegates to `HostPort::target_root_process` of the
-//!   sessions `HostSessions::all_for_reads` returns; it knows no host kind and
-//!   matches only on the candidate's family. A candidate family no host
-//!   answers for (a herdr-core terminal, until H1) is `Unsupported`.
+//!   sessions `HostSessions::all_for_reads` returns. A terminal candidate asks the
+//!   hosts that answer terminal ids (`answers_terminal_ids`), a pane candidate the
+//!   others; a terminal no attached host answers for is `Unsupported`. With both
+//!   families the nearest ancestor wins, whichever family owns it.
 //! - Where new behaviour goes: a new host candidate verifies through its host's
 //!   `target_root_process` answer, with one arm in `candidate_root`.
 //! - Lifecycle: one per daemon; the cache is its only mutable state, behind a
-//!   mutex. The per-binding guard memory (`guard_key`) is its second.
+//!   mutex.
 //! - Errors: `Verified { index, root }` vs `Unverified { per_candidate }`; an
 //!   unreachable host counts as unverified (and is not cached).
 //! - Role: domain service (stateless apart from a bounded verdict cache).
 
 use crate::{
-    host::foreign_terminal_process_names,
+    host::hc::foreign_terminal_process_names,
     ports::{HostCallContext, HostPort, ProcessInfo},
     protocol::{
         ids::HostTargetId,
@@ -38,7 +39,7 @@ use crate::{
     },
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
@@ -58,8 +59,6 @@ struct Ancestor {
 pub struct LocateCallerService {
     processes: Arc<dyn ProcessInfo>,
     cache: Mutex<HashMap<CacheKey, LocateReply>>,
-    /// Guard keys already answered `Unverified` (the per-binding M3 memory).
-    guarded: Mutex<HashSet<String>>,
 }
 
 /// What asking the hosts about one candidate gave.
@@ -73,7 +72,6 @@ impl LocateCallerService {
         Self {
             processes,
             cache: Mutex::default(),
-            guarded: Mutex::default(),
         }
     }
 
@@ -89,26 +87,7 @@ impl LocateCallerService {
         epoch: u64,
         budget: &CallBudget,
     ) -> LocateReply {
-        let reply = self.verdict(request, peer_pid, hosts, epoch, budget);
-        match (reply, &request.guard_key) {
-            (LocateReply::Unverified { per_candidate, .. }, Some(key)) => LocateReply::Unverified {
-                per_candidate,
-                first_guard: self.first_guard(key),
-            },
-            (reply, _) => reply,
-        }
-    }
-
-    /// Remembers `key`; true the first time this daemon sees it (memory only, so a
-    /// restart arms it again; bounded, past it the set starts over).
-    fn first_guard(&self, key: &str) -> bool {
-        let Ok(mut seen) = self.guarded.lock() else {
-            return false;
-        };
-        if seen.len() >= MAX_CACHED * 16 {
-            seen.clear();
-        }
-        seen.insert(key.to_owned())
+        self.verdict(request, peer_pid, hosts, epoch, budget)
     }
 
     fn verdict(
@@ -121,7 +100,6 @@ impl LocateCallerService {
     ) -> LocateReply {
         let unverified = |verdict| LocateReply::Unverified {
             per_candidate: vec![verdict; request.candidates.len()],
-            first_guard: false,
         };
         let Some(subject) = request.subject.map(|f| f.pid).or(peer_pid) else {
             return unverified(CandidateVerdict::NotAncestor);
@@ -213,7 +191,6 @@ fn verify(ancestors: &[Ancestor], roots: &[Root]) -> LocateReply {
                 Root::Verdict(verdict) => *verdict,
             })
             .collect(),
-        first_guard: false,
     }
 }
 
@@ -222,24 +199,32 @@ fn candidate_root(
     hosts: &[Arc<dyn HostPort>],
     context: &HostCallContext,
 ) -> Root {
-    match candidate {
-        LocateCandidate::Pane { id } => {
-            let Ok(target) = HostTargetId::parse(id.clone()) else {
-                return Root::Verdict(CandidateVerdict::NoRoot);
-            };
-            let mut verdict = CandidateVerdict::Unreachable;
-            for host in hosts {
-                match host.target_root_process(&target, context) {
-                    Ok(Some(pid)) => return Root::Pid(pid),
-                    Ok(None) => verdict = CandidateVerdict::NoRoot,
-                    Err(_) => {}
-                }
-            }
-            Root::Verdict(verdict)
+    let (target, terminal_family) = match candidate {
+        LocateCandidate::Pane { id } => (id, false),
+        LocateCandidate::Terminal { id, .. } => (id, true),
+    };
+    let Ok(target) = HostTargetId::parse(target.clone()) else {
+        return Root::Verdict(CandidateVerdict::NoRoot);
+    };
+    // A family asks only the hosts of its own kind: a pane id means nothing to a core, nor a
+    // terminal id to a Herdr server.
+    let mut asked = false;
+    let mut verdict = CandidateVerdict::Unreachable;
+    for host in hosts
+        .iter()
+        .filter(|host| host.answers_terminal_ids() == terminal_family)
+    {
+        asked = true;
+        match host.target_root_process(&target, context) {
+            Ok(Some(pid)) => return Root::Pid(pid),
+            Ok(None) => verdict = CandidateVerdict::NoRoot,
+            Err(_) => {}
         }
-        // No host answers for a terminal until H1 builds one.
-        LocateCandidate::Terminal { .. } => Root::Verdict(CandidateVerdict::Unsupported),
     }
+    if !asked && terminal_family {
+        return Root::Verdict(CandidateVerdict::Unsupported);
+    }
+    Root::Verdict(verdict)
 }
 
 #[cfg(test)]

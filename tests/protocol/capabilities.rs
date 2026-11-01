@@ -552,7 +552,6 @@ fn every_advertised_capability_has_a_handler() {
                         id: "p".into(),
                     }],
                     subject: None,
-                    guard_key: None,
                 });
                 assert!(command.validate().is_ok());
                 assert_eq!(

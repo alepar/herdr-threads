@@ -1,17 +1,16 @@
-//! The two-family caller guard (F): a caller whose environment names both a Herdr pane
-//! and a herdr-core terminal is verified by the daemon (`LocateCaller`) before anything
-//! binds to the pane.
+//! The two-family caller guard: a caller whose environment names both a Herdr pane and a
+//! herdr-core terminal is verified by the daemon (`LocateCaller`) before anything binds.
 //!
 //! Owns: sending `LocateCaller` for an `Ambiguous` caller (never for a `One` caller:
-//! verifying those would be adversarial, TRUST-POLICY A1), turning the reply into a
-//! pane or a refusal, and the exact text of the refusal lines M1 (CLI and hook stderr)
-//! and M3 (hook context). Does not own: reading the environment (`caller_location`), the
-//! walk itself (`service::locate`), or when a hook injects M3 (`hook.rs`).
-//! H1 removes this file with M1 and M3: a two-family caller then goes to the hc candidate.
+//! verifying those would be adversarial, TRUST-POLICY A1), turning the reply into the
+//! verified family or a refusal, and the exact text of the refusal line M4 (CLI stderr and
+//! hook stderr). Does not own: reading the environment (`caller_location`) or the walk
+//! itself (`service::locate`).
+//! Where new behaviour goes: a verified family is a `Guard` variant; what a family may do
+//! once verified is that family's `CallerSite` answers.
 
 use super::caller_location::{CallerEnv, CallerLocator, EnvMode, Located};
 use crate::{
-    host::named,
     ports::LocalClient,
     protocol::{
         capabilities::LOCATE_CALLER_V1,
@@ -25,45 +24,29 @@ use crate::{
 /// What the daemon made of an `Ambiguous` caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Guard {
-    /// The Herdr pane is an ancestor of this process: it wins.
+    /// The Herdr pane is the nearest ancestor root: it wins.
     Pane(String),
-    /// Nothing verified: no seat binds. `first` is the daemon's "first time for this
-    /// guard key" answer.
+    /// The herdr-core terminal is the nearest ancestor root: it wins. It names no pane, so
+    /// nothing binds to the pane the environment also named.
+    Terminal,
+    /// Nothing verified: no seat binds.
     Refused(Refusal),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    /// The terminal id (`tN`).
+    /// The terminal as `<session>:<tN>`.
     pub terminal: String,
     /// The Herdr pane the environment also named.
     pub pane: String,
-    pub first: bool,
-}
-
-/// M2: the 29-byte suffix on M1 and M3 that names the way out (a named seat). H1 removes it
-/// with them.
-pub fn m2() -> String {
-    format!("; set {}", named::ENV_SEAT_NAME)
 }
 
 impl Refusal {
-    /// M1 + M2: 62 + 29 bytes + the terminal id. CLI stderr and hook stderr.
-    pub fn m1(&self) -> String {
+    /// M4: 106 bytes + the pane and the terminal address. CLI stderr and hook stderr.
+    pub fn m4(&self) -> String {
         format!(
-            "herdr-threads: runs in herdr-core terminal {}; not supported yet{}",
-            self.terminal,
-            m2()
-        )
-    }
-
-    /// M3 + M2: 88 + 29 bytes + terminal id + pane id. Hook context (check-ins only).
-    pub fn m3(&self) -> String {
-        format!(
-            "[herdr-threads] guard: runs in herdr-core terminal {}, not Herdr pane {}; no seat bound here{}",
-            self.terminal,
-            self.pane,
-            m2()
+            "herdr-threads: env names pane {} and terminal {}; neither is an ancestor of this process; unset the stale one",
+            self.pane, self.terminal
         )
     }
 }
@@ -73,28 +56,11 @@ impl Refusal {
 pub fn verify(
     client: &dyn LocalClient,
     candidates: &[CallerLocator],
-    guard_key: Option<String>,
     budget: &CallBudget,
 ) -> Guard {
-    let pane = candidates
-        .iter()
-        .find_map(|c| c.site().relative_pane())
-        .unwrap_or_default()
-        .to_owned();
-    let terminal = candidates
-        .iter()
-        .find_map(|c| c.site().terminal_id())
-        .unwrap_or_default()
-        .to_owned();
-    let refused = |first| {
-        Guard::Refused(Refusal {
-            terminal: terminal.clone(),
-            pane: pane.clone(),
-            first,
-        })
-    };
+    let refused = || refusal(candidates);
     if !client.supports_capability(LOCATE_CALLER_V1, budget) {
-        return refused(false);
+        return refused();
     }
     let request = LocateCaller {
         candidates: candidates
@@ -102,23 +68,23 @@ pub fn verify(
             .filter_map(|c| c.site().locate_candidate())
             .collect(),
         subject: None,
-        guard_key,
     };
     match client.call(Command::LocateCaller(request), budget) {
-        Ok(CommandResult::Located(LocateReply::Verified { index, .. })) => candidates
-            .get(index)
-            .and_then(|c| c.site().relative_pane())
-            .map_or_else(|| refused(false), |pane| Guard::Pane(pane.to_owned())),
-        Ok(CommandResult::Located(LocateReply::Unverified { first_guard, .. })) => {
-            refused(first_guard)
+        Ok(CommandResult::Located(LocateReply::Verified { index, .. })) => {
+            match candidates.get(index) {
+                Some(CallerLocator::Pane { id }) => Guard::Pane(id.clone()),
+                Some(CallerLocator::Terminal { .. }) => Guard::Terminal,
+                Some(CallerLocator::Named(_)) | None => refused(),
+            }
         }
-        _ => refused(false),
+        _ => refused(),
     }
 }
 
 /// The pane a CLI call acts from. One family (or none) is used as is and the daemon is
-/// never asked; an `Ambiguous` caller goes through `verify_with`, and when nothing verifies
-/// `report` receives M1 and no pane is returned (nothing binds).
+/// never asked; an `Ambiguous` caller goes through `verify_with`. When nothing verifies
+/// `report` receives M4 and no pane is returned (nothing binds); a verified terminal names no
+/// pane either.
 pub fn cli_pane(
     env: &CallerEnv,
     verify_with: impl FnOnce(&[CallerLocator]) -> Guard,
@@ -129,8 +95,9 @@ pub fn cli_pane(
     };
     match verify_with(&candidates) {
         Guard::Pane(pane) => Some(pane),
+        Guard::Terminal => None,
         Guard::Refused(refusal) => {
-            report(&refusal.m1());
+            report(&refusal.m4());
             None
         }
     }
@@ -145,14 +112,16 @@ pub fn hook_candidates(env: &CallerEnv) -> Option<Vec<CallerLocator>> {
 }
 
 /// A refusal for a caller the guard could not even ask about (no daemon to connect to).
-pub fn unasked(candidates: &[CallerLocator], pane: &str) -> Guard {
+pub fn unasked(candidates: &[CallerLocator]) -> Guard {
+    refusal(candidates)
+}
+
+fn refusal(candidates: &[CallerLocator]) -> Guard {
+    let find = |pick: fn(&CallerLocator) -> Option<String>| {
+        candidates.iter().find_map(pick).unwrap_or_default()
+    };
     Guard::Refused(Refusal {
-        terminal: candidates
-            .iter()
-            .find_map(|c| c.site().terminal_id())
-            .unwrap_or_default()
-            .to_owned(),
-        pane: pane.to_owned(),
-        first: false,
+        pane: find(|c| c.site().relative_pane().map(str::to_owned)),
+        terminal: find(|c| c.site().terminal_address()),
     })
 }

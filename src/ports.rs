@@ -4081,6 +4081,12 @@ pub trait HostPort: Send + Sync {
     ) -> Result<Option<u32>, ApiError> {
         Ok(None)
     }
+    /// Whether `target_root_process` answers for a herdr-core terminal id (`tN`) rather than a
+    /// Herdr pane id: `LocateCaller` asks a terminal candidate only these hosts, and a pane
+    /// candidate only the others. Default: no.
+    fn answers_terminal_ids(&self) -> bool {
+        false
+    }
     /// The host server's own process, when it has one this system can name.
     fn server_process(&self) -> Option<u32> {
         None

@@ -85,6 +85,14 @@ pub(crate) const HC_TERMINAL_ID_ENV: &str = "HC_TERMINAL_ID";
 /// The core socket herdr-core sets for a terminal's processes.
 pub(crate) const HC_TERMINAL_SOCKET_ENV: &str = "HC_TERMINAL_SOCKET";
 
+/// Basenames of herdr-core terminal processes (the `hc` client, the core). `LocateCaller`
+/// treats one on the walk as a wall: a candidate root above it does not verify. The hc
+/// candidate's own root sits below the wall and is found first, so the wall changes no
+/// outcome for an hc caller.
+pub fn foreign_terminal_process_names() -> &'static [&'static str] {
+    &["herdr-core", "hc"]
+}
+
 /// The `NewTerminal` parent of a creation with no caller terminal (a peer-requested
 /// launch: the daemon is the caller): `create_target` sends no `parent`.
 pub const NO_PARENT: &str = "-";
@@ -628,6 +636,10 @@ impl HostPort for HcHost {
 
     fn archival_evidence(&self) -> ArchivalEvidence {
         ArchivalEvidence::NoEvidence
+    }
+
+    fn answers_terminal_ids(&self) -> bool {
+        true
     }
 
     fn target_root_process(

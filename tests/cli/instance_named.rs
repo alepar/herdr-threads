@@ -5,7 +5,7 @@
 use super::*;
 use std::{fs, os::unix::fs::PermissionsExt};
 
-fn scratch(tag: &str) -> PathBuf {
+pub(super) fn scratch(tag: &str) -> PathBuf {
     let dir =
         crate::test_support::scratch::temp_path(format!("ht-inn-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -34,7 +34,7 @@ fn calls(dir: &Path) -> String {
     fs::read_to_string(dir.join("herdr.calls")).unwrap_or_default()
 }
 
-const DEFAULT: &str = ".local/state/herdr/plugins/herdr-threads";
+pub(super) const DEFAULT: &str = ".local/state/herdr/plugins/herdr-threads";
 
 /// Kills: a named site that finds no state dir without Herdr, a dir created with the umask's
 /// mode, and a host endpoint that is invented rather than absent.
@@ -43,7 +43,7 @@ fn default_dir_created_without_herdr() {
     let root = scratch("create");
     let inputs = InstanceInputs {
         home: Some(root.clone()),
-        named_site: true,
+        non_pane_site: true,
         ..InstanceInputs::default()
     };
     let (context, source, ..) = resolve_context_with_selected_paths(&inputs).unwrap();
@@ -67,7 +67,7 @@ fn default_dir_not_created_with_stub_herdr_on_path() {
     let inputs = InstanceInputs {
         home: Some(root.join("home")),
         herdr: Some(stub_herdr(&root)),
-        named_site: true,
+        non_pane_site: true,
         ..InstanceInputs::default()
     };
     assert_eq!(default_state_dir_to_create(&inputs), Ok(None));
@@ -93,7 +93,7 @@ fn named_caller_with_herdr_env_uses_command_group_store() {
         herdr: Some(stub_herdr(&root)),
         herdr_env: true,
         non_default_server: true,
-        named_site: true,
+        non_pane_site: true,
         ..InstanceInputs::default()
     };
     assert_eq!(default_state_dir_to_create(&inputs), Ok(None));
