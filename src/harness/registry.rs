@@ -2975,6 +2975,7 @@ mod tests {
                 &crate::cli::hook::HookEnv {
                     herdr_env: true,
                     pane: Some("w1:p1".into()),
+                    ambiguous: None,
                 },
                 std::time::Instant::now() + std::time::Duration::from_secs(1),
                 std::sync::Arc::new(crate::app::SystemClock::new()),
@@ -3006,6 +3007,7 @@ mod tests {
             &crate::cli::hook::HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
+                ambiguous: None,
             },
             std::time::Instant::now() + std::time::Duration::from_secs(1),
             std::sync::Arc::new(crate::app::SystemClock::new()),
@@ -3069,6 +3071,7 @@ mod tests {
             &crate::cli::hook::HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
+                ambiguous: None,
             },
             std::time::Instant::now() + std::time::Duration::from_secs(1),
             std::sync::Arc::new(crate::app::SystemClock::new()),

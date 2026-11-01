@@ -6,6 +6,7 @@ pub mod commands;
 pub mod delivery;
 pub mod handoff;
 pub mod ids;
+pub mod locate;
 pub mod output;
 pub mod pagination;
 pub mod priority;

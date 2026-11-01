@@ -4474,3 +4474,13 @@ async fn automatic_submission_check_and_resolve_pass_their_own_result_families()
         assert_eq!(error.code, ErrorCode::UnknownOutcome);
     }
 }
+
+// Kills: a transport that drops the kernel's peer pid (None, or any pid other than the
+// connecting process), which `LocateCaller` needs as its walk start.
+#[tokio::test]
+async fn connection_exposes_peer_pid() {
+    let (server, client) = UnixStream::pair().unwrap();
+    let peer = peer_identity(&server).unwrap();
+    assert_eq!(peer.pid(), Some(std::process::id()));
+    assert_eq!(peer.effective_uid(), client.peer_cred().unwrap().uid());
+}

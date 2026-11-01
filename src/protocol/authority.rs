@@ -171,10 +171,24 @@ pub const AGENT_BINDING_PROVENANCES: [&str; 4] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerIdentity {
     effective_uid: u32,
+    /// The connection's peer pid (`SO_PEERCRED`), when the kernel gave one.
+    pid: Option<u32>,
 }
 impl PeerIdentity {
+    /// A peer with no pid (fixtures; the transport always supplies one).
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn from_kernel(effective_uid: u32) -> Self {
-        Self { effective_uid }
+        Self {
+            effective_uid,
+            pid: None,
+        }
+    }
+    pub(crate) fn from_kernel_with_pid(effective_uid: u32, pid: Option<u32>) -> Self {
+        Self { effective_uid, pid }
+    }
+    /// The calling process, as the transport saw it at connect time.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
     pub fn effective_uid(&self) -> u32 {
         self.effective_uid

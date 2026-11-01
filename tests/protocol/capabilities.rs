@@ -340,7 +340,8 @@ fn capability_constants_are_stable() {
             "turn_end.due_v1",
             "seat.wake_status_v1",
             "peer.prune_v1",
-            "peer.events_v1"
+            "peer.events_v1",
+            "caller.locate_v1"
         ]
     );
 }
@@ -538,6 +539,46 @@ fn every_advertised_capability_has_a_handler() {
                     before: None,
                     limit: 1,
                 }])
+            }
+            LOCATE_CALLER_V1 => {
+                let command = Command::LocateCaller(crate::protocol::locate::LocateCaller {
+                    candidates: vec![crate::protocol::locate::LocateCandidate::Pane {
+                        id: "p".into(),
+                    }],
+                    subject: None,
+                    guard_key: None,
+                });
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                let iso = crate::test_support::isolation::TestIsolation::new("cap-locate-caller");
+                let clock: Arc<dyn crate::protocol::time::Clock> = Arc::new(FixedClock);
+                let store = Arc::new(
+                    crate::store::SqliteStore::new(
+                        crate::store::connection::StoreContext::new(
+                            iso.state_root().join("store.db"),
+                            Arc::clone(&clock),
+                        )
+                        .with_test_host(),
+                        "34750f98bd59fcfc946da45aaabe933b",
+                        crate::store::StoreSettings::default(),
+                    )
+                    .unwrap(),
+                );
+                let result = crate::service::dispatch::DomainService::new(
+                    "34750f98bd59fcfc946da45aaabe933b".into(),
+                    store,
+                    clock,
+                )
+                .handle(command, PeerIdentity::from_kernel(501), &budget())
+                .unwrap();
+                assert!(matches!(
+                    result,
+                    CommandResult::Located(crate::protocol::locate::LocateReply::Unverified { .. })
+                ));
             }
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
@@ -1138,6 +1179,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.wake_status_v1",
             "peer.prune_v1",
             "peer.events_v1",
+            "caller.locate_v1",
             "invitation.confirmation_v1",
             "handoff.summary_prompt_v1"
         ]

@@ -193,6 +193,26 @@ impl<'a> CallerSite<'a> {
         matches!(self.0, CallerLocator::Pane { .. })
     }
 
+    /// This site as the daemon's `LocateCaller` candidate.
+    pub fn locate_candidate(self) -> crate::protocol::locate::LocateCandidate {
+        use crate::protocol::locate::LocateCandidate;
+        match self.0 {
+            CallerLocator::Pane { id } => LocateCandidate::Pane { id: id.clone() },
+            CallerLocator::Terminal { socket, id } => LocateCandidate::Terminal {
+                socket: socket.clone(),
+                id: id.clone(),
+            },
+        }
+    }
+
+    /// The terminal's id as the guard lines print it (`tN`); `None` for other sites.
+    pub fn terminal_id(self) -> Option<&'a str> {
+        match self.0 {
+            CallerLocator::Terminal { id, .. } => Some(id),
+            CallerLocator::Pane { .. } => None,
+        }
+    }
+
     /// A stable key for a per-site cache.
     pub fn cache_key(self) -> String {
         match self.0 {

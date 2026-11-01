@@ -119,6 +119,8 @@ pub struct DomainService {
     /// per seat while the seat stays `no_wake` (`Command::WakeStatus`). In memory, so a daemon
     /// restart reports each again.
     wake_reports: std::sync::Mutex<WakeReports>,
+    /// `Command::LocateCaller`: nearest-ancestor verification of a two-family caller.
+    locator: super::locate::LocateCallerService,
 }
 
 type WakeReports =
@@ -144,7 +146,38 @@ impl DomainService {
             delivery_pull: Default::default(),
             presentation: Default::default(),
             wake_reports: Default::default(),
+            locator: super::locate::LocateCallerService::new(Arc::new(
+                crate::host::process_table::HostProcessTable,
+            )),
         }
+    }
+    /// The process table `LocateCaller` walks (fixtures supply a fake tree).
+    pub fn with_processes(mut self, processes: Arc<dyn crate::ports::ProcessInfo>) -> Self {
+        self.locator = super::locate::LocateCallerService::new(processes);
+        self
+    }
+    /// `Command::LocateCaller`: the sessions a read may consult, asked through their ports.
+    fn locate_caller(
+        &self,
+        request: &crate::protocol::locate::LocateCaller,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> CommandResult {
+        use std::hash::{Hash, Hasher};
+        let sessions = self
+            .hosts
+            .as_ref()
+            .map_or_else(Vec::new, |hosts| hosts.all_for_reads());
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        sessions.iter().for_each(|s| s.host_id().hash(&mut hasher));
+        let ports: Vec<_> = sessions.iter().map(|s| Arc::clone(s.port())).collect();
+        CommandResult::Located(self.locator.locate(
+            request,
+            peer.pid(),
+            &ports,
+            hasher.finish(),
+            budget,
+        ))
     }
     /// Share the offered ledger with the wake lane (the same instance the wake worker reads).
     pub fn with_delivery_pull(
@@ -1813,6 +1846,7 @@ impl LocalService for DomainService {
                     .run(sync, actor.as_ref(), budget)
                     .map(CommandResult::Sync)
             }
+            Command::LocateCaller(request) => Ok(self.locate_caller(&request, peer, budget)),
             Command::DeliveryPullV2(pull) => self.presentation_pull(&pull, peer, budget),
             Command::DeliveryPresentationConfirmV2(confirm) => {
                 self.presentation_confirm(&confirm, peer, budget)
