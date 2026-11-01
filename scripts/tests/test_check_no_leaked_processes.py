@@ -2,8 +2,12 @@
 import importlib.machinery
 import importlib.util
 import os
+import signal
+import subprocess
 import sys
+import time
 import unittest
+import uuid
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "..", "check-no-leaked-processes")
 loader = importlib.machinery.SourceFileLoader("leakcheck", SCRIPT)
@@ -145,6 +149,78 @@ class ClassifyTests(unittest.TestCase):
             [(p.pid, rule) for p, rule in run(procs, run_id="r1", exclude=exclude)],
             [(50, "run-id")],
         )
+
+
+def core_proc(command, session=None, xdg=None, home="/home/u", pid=300, ppid=1):
+    env = {"HOME": home}
+    if session:
+        env["HC_SESSION"] = session
+    if xdg:
+        env["XDG_STATE_HOME"] = xdg
+        env["XDG_RUNTIME_DIR"] = xdg
+    return proc(pid=pid, ppid=ppid, argv0=command.split(" ")[0], command=command, env=env)
+
+
+class CoreTests(unittest.TestCase):
+    def test_planted_herdr_core_serve_is_a_leak(self):
+        p = core_proc("herdr-core serve", f"ht-test-{uuid.uuid4()}", "/tmp/ic.ab12/st")
+        self.assertEqual(rules(run([p])), ["core-test"])
+
+    def test_planted_herdr_core_hold_is_a_leak(self):
+        p = core_proc("herdr-core hold", f"ht-test-{uuid.uuid4()}", "/tmp/ic.ab12/st")
+        self.assertEqual(rules(run([p])), ["core-test"])
+
+    def test_smoke_session_or_temp_xdg_alone_is_a_leak(self):
+        smoke = core_proc("herdr-core serve", "ht-smoke-1")
+        xdg = core_proc("herdr-core hold", None, "/tmp/ic.ab12/rt")
+        self.assertEqual(rules(run([smoke, xdg])), ["core-test", "core-test"])
+
+    def test_live_owner_is_not_a_leak(self):
+        live = core_proc("herdr-core serve", "ht-test-1", ppid=77)
+        live.env["HT_TEST_OWNER"] = "4242"
+        self.assertEqual(run([live], alive={4242: True}), [])
+        self.assertEqual(rules(run([live], alive={4242: False})), ["dead-owner"])
+
+    def test_real_user_core_never_matches(self):
+        for session in (None, "default", "mine-ht-test-x"):
+            p = core_proc("/home/u/.local/bin/herdr-core serve", session, "/run/user/1000")
+            self.assertEqual(run([p]), [])
+            self.assertEqual(run([p], run_id="r1"), [])
+        hold = core_proc("herdr-core hold", None, "/home/u/.local/state")
+        self.assertEqual(run([hold]), [])
+
+    def test_run_id_scope_ignores_foreign_core(self):
+        p = core_proc("herdr-core serve", "ht-test-1", "/tmp/ic.ab12/st")
+        self.assertEqual(run([p], run_id="r1"), [])
+
+
+class CoreEndToEndTests(unittest.TestCase):
+    def setUp(self):
+        self.child = None
+
+    def tearDown(self):
+        if self.child and self.child.poll() is None:
+            self.child.send_signal(signal.SIGKILL)
+            self.child.wait()
+
+    def test_renamed_stand_in_is_listed_by_collect_and_classify(self):
+        env = {"PATH": os.environ.get("PATH", ""), "HC_SESSION": f"ht-test-{uuid.uuid4()}"}
+        self.child = subprocess.Popen(
+            ["bash", "-c", "exec -a 'herdr-core serve' sleep 60"], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        pid = self.child.pid
+        found = []
+        for _ in range(50):
+            procs = leakcheck.collect()
+            found = [(p, r) for p, r in leakcheck.classify(
+                procs, root=None, run_id=None, alive=leakcheck.pid_alive,
+                exclude=leakcheck.ancestors(procs, os.getpid()),
+                temp_prefixes=PREFIXES) if p.pid == pid]
+            if found:
+                break
+            time.sleep(0.1)
+        self.assertEqual([(p.pid, r) for p, r in found], [(pid, "core-test")])
 
 
 if __name__ == "__main__":

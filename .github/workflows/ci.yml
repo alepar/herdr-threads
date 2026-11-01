@@ -392,6 +392,7 @@ jobs:
             python3 -m unittest discover -s scripts/canary -p "$(basename "$f")"
           done
           python3 -m unittest discover -s scripts/tests -p 'test_check_no_leaked_processes.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_isolated_core.py'
           python3 -m unittest discover -s scripts/tests -p 'test_herdr_release_smoke.py'
           python3 -m unittest discover -s scripts/tests -p 'test_release_qualify.py'
           python3 -m unittest discover -s scripts/tests -p 'test_ci_changed_paths.py'
