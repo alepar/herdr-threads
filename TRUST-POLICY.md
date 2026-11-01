@@ -770,6 +770,15 @@ model open work, and summary closure never changes receipt state or installs glo
   (implemented, best effort, client-side).
 - *Second agent*: `launch` refuses to start an agent for a seat whose bound agent (`cooperative_top_level`
   or `managed_launch`) Herdr reports live in another pane (implemented).
+- *No composer wake (named seats; hc seats until upstream wake)*: a named seat's host answers wake `None`, so
+  nothing types into its composer and delivery-contract rules 5 and 6 are degraded: p0 ACK requests,
+  invitations and warnings arrive on the seat's next turn, and nobody wakes it unless a live, unstalled mod
+  channel does. Rules 1-4 hold (a seat with no wake is never nudged). The nudge threshold is inert there: `nudge-threshold N`
+  still records the value and prints `herdr-threads: SEAT has no idle wake; threshold has no effect` (M12). Soft pokes
+  and recipient-side deadline reminders are not sent (the host has no wake lane, and a named seat none of
+  whose bindings is open is never a poke candidate); a deadline yields only the sender's overdue line, which reads `wake=no_wake`, plus ` offline` once
+  the seat's bindings ended (M19). The degradation is stated once in SKILL.md (K2) and a host-side tripwire test
+  fails when any implemented host kind answers `None` while SKILL.md does not explain `no_wake`.
 - *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
   (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
   provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys.

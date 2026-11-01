@@ -334,8 +334,13 @@ fn wake_text(report: &Value, debug: bool) -> String {
         .iter()
         .filter(|row| row["wake"].is_string())
         .map(|row| {
+            let offline = if row["offline"].as_bool() == Some(true) {
+                " offline"
+            } else {
+                ""
+            };
             format!(
-                "wake: {} {} wake={}\n",
+                "wake: {} {} wake={}{offline}\n",
                 scalar(&row["seat"]),
                 scalar(&row["harness"]),
                 scalar(&row["wake"])

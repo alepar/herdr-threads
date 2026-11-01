@@ -214,6 +214,8 @@ mod priority_config_smoke;
 mod hc_contract;
 #[path = "host/hc_schema_conformance.rs"]
 mod hc_schema_conformance;
+#[path = "host_no_wake_tripwire.rs"]
+mod host_no_wake_tripwire;
 #[path = "integration/priority_sweep.rs"]
 mod priority_sweep;
 #[path = "update/update_cli.rs"]

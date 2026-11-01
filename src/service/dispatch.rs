@@ -2576,6 +2576,10 @@ enum WakeEpisode {
 mod no_wake_reports_tests;
 
 #[cfg(test)]
+#[path = "../../tests/service/no_wake_rest.rs"]
+mod no_wake_rest_tests;
+
+#[cfg(test)]
 #[path = "../../tests/service/wake_status_hosts.rs"]
 mod wake_status_hosts_tests;
 
