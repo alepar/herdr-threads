@@ -11,6 +11,7 @@ src/host/mod.rs # host registration and construction
 src/ports.rs # HostKind, its implemented set and the HostPort trait with the permitted kind() readers
 src/cli/caller_location.rs # the only caller-location env reader in the CLI (F7)
 src/service/host_sessions.rs::any_reachable # peer-discovery gate asks about Herdr; the one permitted kind() reader outside the host adapters
+src/service/peer_launcher.rs::gate_argv # permitted reader: the gate argv is by construction what a herdr-core terminal starts, so it asks the adapter for the hc launch argv (H3e)
 src/harness/codex.rs::host_launch_argv # permitted reader: the adapter's launch argv per host kind (H3)
 src/store/hosts.rs::attachable # permitted reader: the G4 reattach check; the built-in named host is implemented but never dialled
 src/store/seats/operator.rs::refuse_cross_kind_rebind # permitted reader: the G4 rebind check refuses a named to pane or terminal rebind
