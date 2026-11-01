@@ -716,16 +716,20 @@ pub(crate) fn named_seat_apply(
             "a named seat lives on the named host",
         ));
     }
-    let live: Option<String> = tx
+    let live: Option<(String, String)> = tx
         .query_row(
-            &format!("SELECT id FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND name=?2 AND state<>'retired'"),
+            &format!("SELECT id,state FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND name=?2 AND state<>'retired'"),
             params![host.get(), name.as_str()],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .map_err(store_error)?;
-    if let Some(seat) = live {
-        return Ok((SeatId::new(seat), false));
+    if let Some((seat, state)) = live {
+        let seat = SeatId::new(seat);
+        if state == "unresolved" {
+            reattach_named_seat(tx, at, instance, host, &seat, name)?;
+        }
+        return Ok((seat, false));
     }
     let seat = SeatId::new(crate::store::public_ids::fresh(
         tx,
@@ -741,6 +745,46 @@ pub(crate) fn named_seat_apply(
     schema::bump_host_lifecycle_revision(tx, host)?;
     schema::bump_filter_revision(tx, instance, "directory", "all")?;
     Ok((seat, true))
+}
+
+/// TRUST-POLICY C1 "named continuity": the resolve of a name whose live seat is `unresolved`
+/// reattaches that seat (same id, history and obligations) instead of splitting the role. The
+/// decision is recorded in seat history as `cooperative_named_seat`. Retire ends continuity: a
+/// retired seat is not live, so its name mints a new seat.
+fn reattach_named_seat(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    instance: &str,
+    host: HostId,
+    seat: &SeatId,
+    name: &SeatName,
+) -> Result<(), ApiError> {
+    rebind_unresolved_seat(tx, instance, host, seat, name.as_str(), 1, at.utc)?;
+    let (boot, epoch): (Option<String>, i64) = tx
+        .query_row(
+            "SELECT host_boot,host_epoch FROM herdr_hosts WHERE host_id=?1",
+            [host.get()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(store_error)?;
+    tx.execute(
+        "INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,?4,?5,?6,?7,1,?8)",
+        params![
+            host.get(),
+            name.as_str(),
+            seat.as_str(),
+            crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,
+            at.utc.0,
+            boot.unwrap_or_default(),
+            epoch,
+            crate::protocol::authority::COOPERATIVE_NAMED_SEAT_PROVENANCE,
+        ],
+    )
+    .map_err(store_error)?;
+    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+    schema::bump_host_lifecycle_revision(tx, host)?;
+    schema::bump_filter_revision(tx, instance, "directory", "all")?;
+    Ok(())
 }
 
 /// A seat-acting resolve under a name on the named host: [`named_seat_apply`] in one idempotent

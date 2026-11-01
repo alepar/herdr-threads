@@ -4107,3 +4107,227 @@ fn non_closing_host_absence_yields_no_retirement_or_unresolve() {
             .is_empty()
     );
 }
+
+// S1 (named host): allocation racing an enumeration under the lifecycle fence, and a restart.
+// The enumeration is a store read, so one taken before an allocation simply lacks the new seat;
+// the allocation's lifecycle-revision bump is what lets the next publication supersede it, and a
+// `NonClosing` plan over the stale publication must not unresolve or retire the new seat. After a
+// restart (a higher host epoch) the same seat is carried forward, not unresolved.
+// Kills: reconcile treating a missing row as absence on the named host, and a restart that
+// unresolves named seats instead of carrying their binding to the new epoch.
+#[test]
+fn s1_named_allocation_race_and_carry_forward() {
+    use crate::host::named::NamedHost;
+    use crate::ports::{
+        ClosureAuthority, DurableStructuralProof, HostCallContext, HostId, HostKind, HostPort,
+        PublishedSnapshot, SeatState, SnapshotGenerationId, SnapshotSavedSeat, SnapshotSeatPage,
+        SnapshotTargetMatch,
+    };
+    use crate::protocol::{
+        commands::ResolveSeat,
+        ids::{HostLocator, NAMED_HOST_LOCATOR, OperationId, SeatName},
+        results::{ApiError, CommandResult},
+        time::{CallBudget, Cancellation, Clock},
+    };
+    use crate::store::{connection::StoreContext, named_seats::NamedSeatSource, seats};
+    use crate::test_support::fake_hosts::FakeHostWorld;
+    use std::sync::Arc;
+
+    struct FixedClock;
+    impl Clock for FixedClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(100)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(100)
+        }
+    }
+    /// The production read (`store::named_seats::live_named`) over a fresh connection per call,
+    /// so it sees each allocation the moment it commits.
+    struct DbSource(std::path::PathBuf);
+    impl NamedSeatSource for DbSource {
+        fn live_named(
+            &self,
+            host: &HostId,
+            _: &CallBudget,
+        ) -> Result<Vec<(SeatId, SeatName)>, ApiError> {
+            let db = rusqlite::Connection::open(&self.0).unwrap();
+            crate::store::named_seats::live_named(&db, host)
+        }
+    }
+
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-named-s1-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
+    let mut conn = context.open_writer().unwrap();
+    let locator = HostLocator::parse(NAMED_HOST_LOCATOR).unwrap();
+    let (host_id, _) =
+        crate::store::hosts::attach_host(&mut conn, &locator, 0, HostKind::Named).unwrap();
+    let budget = CallBudget {
+        deadline: MonoInstant(10_000),
+        cancellation: Cancellation::default(),
+    };
+    let call = HostCallContext {
+        budget: budget.clone(),
+        expected_boot: None,
+        expected_epoch: None,
+    };
+    let node = "0123456789abcdef0123456789abcdef";
+    let named = |source: &Arc<DbSource>| -> Arc<dyn HostPort> {
+        Arc::new(NamedHost::new(
+            node,
+            host_id,
+            source.clone(),
+            Arc::new(FixedClock),
+        ))
+    };
+    let source = Arc::new(DbSource(path.clone()));
+    let world = FakeHostWorld::new();
+    let first_host = named(&source);
+    world.add(&locator, first_host.clone());
+    assert_eq!(first_host.closure_authority(), ClosureAuthority::NonClosing);
+
+    let revision = |conn: &rusqlite::Connection| -> i64 {
+        conn.query_row(
+            "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=?1",
+            [host_id.get()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    // The enumeration that raced the allocation: taken first, so it lacks the seat.
+    let stale = first_host.enumerate_targets(&call).unwrap();
+    assert!(stale.targets.is_empty());
+    let before = revision(&conn);
+    let request = ResolveSeat {
+        target: HostTargetId::new("worker"),
+        host: locator.clone(),
+        operation: OperationId::new("s1-op"),
+    };
+    let seat = match seats::resolve_named_seat(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        host_id,
+        &request,
+        &budget,
+    )
+    .unwrap()
+    {
+        CommandResult::NamedSeatResolved { seat, created, .. } => {
+            assert!(created);
+            seat
+        }
+        other => panic!("unexpected result {other:?}"),
+    };
+    assert!(
+        revision(&conn) > before,
+        "the allocation moves the lifecycle fence a stale enumeration was taken under"
+    );
+    let publication = |snapshot: &crate::ports::HostSnapshot| PublishedSnapshot {
+        id: SnapshotGenerationId::store_issued(format!("s1-{}", snapshot.epoch)),
+        instance: "instance-a".into(),
+        host_id,
+        boot: snapshot.boot.clone(),
+        epoch: snapshot.epoch,
+        observation_sequence: snapshot.observation_sequence,
+        incarnation: snapshot.boot.as_str().to_owned(),
+        target_count: snapshot.targets.len() as u64,
+        invalidation_revision: 0,
+    };
+    let saved = |snapshot: &crate::ports::HostSnapshot, proof: Option<DurableStructuralProof>| {
+        SnapshotSavedSeat {
+            restored_pane: Default::default(),
+            ordinal: 1,
+            seat: seat.clone(),
+            state: SeatState::Resolved,
+            unresolved_reason: None,
+            prior_published_observation: None,
+            structural_proof: proof,
+            target: Some(HostTargetId::new("worker")),
+            terminal: Some(TerminalId::new("named:worker")),
+            binding_generation: 1,
+            binding_execution: None,
+            active_binding_execution: Some(ExecutionId::new("exec-a")),
+            bound_epoch: Some(1),
+            bound_boot: Some(snapshot.boot.clone()),
+            bound_incarnation: Some(snapshot.boot.as_str().to_owned()),
+            latest_binding_evidence: None,
+            observed_match: snapshot.targets.iter().find_map(|t| {
+                (t.target.as_str() == "worker").then(|| SnapshotTargetMatch {
+                    target: t.target.clone(),
+                    terminal: t.terminal.clone(),
+                    structural_generation: t.generation,
+                    observation_sequence: t.observation_sequence,
+                    connection_epoch: Some(t.connection_epoch),
+                    incarnation_source: Some(EvidenceKind::NativeCurrentTarget),
+                    occupancy: StructuralOccupancy::Unknown,
+                    verified_execution: None,
+                    top_level_occupant: false,
+                })
+            }),
+        }
+    };
+    let page = |snapshot: &crate::ports::HostSnapshot, seat: SnapshotSavedSeat| SnapshotSeatPage {
+        publication: publication(snapshot),
+        high_water_ordinal: 1,
+        after_ordinal: 0,
+        visited: 1,
+        has_more: false,
+        seats: vec![seat],
+    };
+
+    // The stale publication does not show the new seat. A closing host would unresolve it; the
+    // named host plans nothing.
+    let stale_page = page(&stale, saved(&stale, None));
+    assert!(
+        plan_page_for(&stale_page, ClosureAuthority::NonClosing)
+            .unwrap()
+            .is_empty(),
+        "a missing row on the named host is not absence"
+    );
+    assert!(
+        matches!(
+            plan_page_for(&stale_page, ClosureAuthority::Closing).unwrap()[0].action,
+            ReconciliationAction::MarkUnresolved
+        ),
+        "the same page does unresolve on a closing host: the guard is the authority"
+    );
+    // The next enumeration shows it.
+    let fresh = first_host.enumerate_targets(&call).unwrap();
+    let names: Vec<_> = fresh.targets.iter().map(|t| t.target.as_str()).collect();
+    assert_eq!(names, ["worker"]);
+
+    // Restart: a new host over the same store resumes after the persisted epoch.
+    let restarted = named(&source);
+    restarted.resume_after_epoch(fresh.epoch);
+    let after = restarted.enumerate_targets(&call).unwrap();
+    assert!(after.epoch > fresh.epoch);
+    let proof = DurableStructuralProof::from_persisted(
+        HostTargetId::new("worker"),
+        TerminalId::new("named:worker"),
+        after.boot.as_str().to_owned(),
+        EvidenceKind::NativeCurrentTarget,
+        after.boot.clone(),
+        fresh.epoch,
+        fresh.epoch,
+        1,
+        1,
+    )
+    .unwrap();
+    let restart_page = page(&after, saved(&after, Some(proof)));
+    let plan = plan_page_for(&restart_page, ClosureAuthority::NonClosing).unwrap();
+    assert_eq!(plan.len(), 1);
+    assert!(
+        matches!(
+            &plan[0].action,
+            ReconciliationAction::CarryForward { target, terminal }
+                if target.as_str() == "worker" && terminal.as_str() == "named:worker"
+        ),
+        "{:?}",
+        plan[0].action
+    );
+    drop(world);
+}

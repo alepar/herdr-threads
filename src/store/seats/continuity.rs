@@ -18,7 +18,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::*;
 
-/// TRUST-POLICY C1 candidates: nonretired unresolved **local** seats of the instance, whatever
+/// TRUST-POLICY C1 candidates: nonretired unresolved **local** unnamed seats (a named seat's
+/// continuity is its name, `named_seat_apply`, and it never rebinds onto a pane) of the instance, whatever
 /// Herdr server they last sat on (a remote seat is never a candidate, so C1 never moves a seat
 /// between nodes), whose bindings include this harness's session `native_session` (any
 /// top-level row, open or ended, not only the newest: a one-shot or `/clear`
@@ -41,7 +42,7 @@ pub(crate) fn continuity_candidates(
 ) -> Result<Vec<SeatId>, ApiError> {
     let mut statement = tx
         .prepare(&format!(
-            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.{LOCAL_SEAT} AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' GROUP BY s.id ORDER BY s.id",
+            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.{LOCAL_SEAT} AND s.state='unresolved' AND s.name IS NULL AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' GROUP BY s.id ORDER BY s.id",
         ))
         .map_err(store_error)?;
     let rows: Vec<(String, bool)> = statement
@@ -482,3 +483,7 @@ pub fn decide_continuity(
     validate_continuity_result(&result)?;
     Ok(result)
 }
+
+#[cfg(test)]
+#[path = "../../../tests/store/named_continuity.rs"]
+mod named_continuity_tests;

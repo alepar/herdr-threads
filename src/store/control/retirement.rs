@@ -137,6 +137,23 @@ pub(crate) fn begin_retirement_authored(
     target: &str,
     generation: i64,
 ) -> Result<RetirementJob, ApiError> {
+    // TRUST-POLICY N (SA3): the named host never closes by absence, so a `Closed` retirement of
+    // a seat on it is refused whatever path asks. Only an operator or the seat itself retires it.
+    if reason == RetireReason::Closed {
+        let named: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND h.kind='named')",
+                [seat.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if named {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "a named seat is never retired as closed",
+            ));
+        }
+    }
     let job = begin_retirement_fence(
         tx,
         at.utc,

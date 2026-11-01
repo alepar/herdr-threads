@@ -1,7 +1,7 @@
 //! Operator repair: `mutate_operator`, rebinding an unresolved seat and operator retirement.
 
 use crate::{
-    ports::{HostId, OperatorRequest},
+    ports::{HostId, HostKind, OperatorRequest},
     protocol::{
         authority::{DecisionFence, OperatorActor},
         ids::{HostBootId, SeatId, prefix},
@@ -313,6 +313,48 @@ pub fn mutate_operator(
     Ok(result)
 }
 
+/// TRUST-POLICY N (cross-kind rebind refusal): a named seat never rebinds onto a pane or terminal
+/// target, and a pane or terminal seat never rebinds onto the named host. A seat whose host kind,
+/// or a destination whose kind, is outside [`HostKind::IMPLEMENTED`] is skipped: reattach and
+/// rebind never dial a kind this build cannot construct.
+fn refuse_cross_kind_rebind(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    destination: HostId,
+) -> Result<(), ApiError> {
+    let kind_of = |sql: &str, key: rusqlite::types::Value| -> Result<Option<HostKind>, ApiError> {
+        Ok(tx
+            .query_row(sql, [key], |r| r.get::<_, String>(0))
+            .optional()
+            .map_err(store_error)?
+            .map(|stored| HostKind::from_stored(&stored)))
+    };
+    let source = kind_of(
+        "SELECT h.kind FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
+        seat.as_str().to_owned().into(),
+    )?;
+    let target = kind_of(
+        "SELECT kind FROM herdr_hosts WHERE host_id=?1",
+        destination.get().into(),
+    )?;
+    let (Some(source), Some(target)) = (source, target) else {
+        return Err(api_error(ErrorCode::TargetUnresolved, "source changed"));
+    };
+    if !source.is_implemented() || !target.is_implemented() {
+        return Err(api_error(
+            ErrorCode::HostUnavailable,
+            "rebind skips a host kind this build does not implement",
+        ));
+    }
+    if (source == HostKind::Named) != (target == HostKind::Named) {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "a named seat and a pane or terminal seat never rebind onto each other's host",
+        ));
+    }
+    Ok(())
+}
+
 /// The seat-side half of a rebind of an unresolved seat onto `target` on `host`
 /// (a seat's host changes only together with its target, here): one
 /// generation step, the open binding ended, its warning offer dropped and an
@@ -328,6 +370,7 @@ pub(super) fn rebind_unresolved_seat(
     target_generation: i64,
     at: UtcMillis,
 ) -> Result<(), ApiError> {
+    refuse_cross_kind_rebind(tx, seat, host)?;
     let changed = tx.execute("UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,host_id=?5,generation=generation+1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND is_local=1 AND state='unresolved'",
         params![target,target_generation,seat.as_str(),instance,host.get()]).map_err(store_error)?;
     if changed != 1 {

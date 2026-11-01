@@ -983,7 +983,7 @@ fn next_ready_head(tx: &Transaction<'_>, only_self_log: bool) -> Result<Option<i
 /// waits for a host and `herdr_hosts` holds a row (the materializer's own
 /// condition, so a re-attempt never re-parks on the host).
 const PARKED_READY: &str = "(EXISTS(SELECT 1 FROM journal c WHERE c.creates=p.parked_on AND c.apply_state='applied') \
-     OR (p.parked_on='wait:host' AND EXISTS(SELECT 1 FROM herdr_hosts)))";
+     OR (p.parked_on='wait:host' AND EXISTS(SELECT 1 FROM herdr_hosts WHERE kind<>'named')))";
 
 /// The `parked_dep` entry with the smallest `ingest_seq` that may be
 /// re-attempted ([`PARKED_READY`]).
