@@ -380,3 +380,16 @@ Remaining evidence (not run here): live macOS `KERN_PROCARGS2` (E1), live real-c
 `--no-daemon` (H-C1, L4), L1 on the macOS herdr-app, and a full-suite run on a host with zsh.
 
 Test hygiene: `check-no-leaked-processes --run-id` clean after the suite and after the release smoke.
+
+### Final-tree rerun (fix pass)
+
+Tree 80dbe59539a4b2579241fd5f34405958fe7bfe3e (HEAD 3151ad9ae, all fixes included), one unfiltered
+`nice cargo nextest run --locked --all-targets --all-features --no-fail-fast` with HT_LEAK_RUN_ID exported
+(`evidence/ht-kqrt.64/nextest-final.log`): 8664 run, 8661 passed, 3 failed, 53 skipped; test time 248.2 s, under the
+5 minute budget (the earlier 308 s was under concurrent load). `scripts/check-no-leaked-processes --run-id`: clean
+(`leak-final.log`). The earlier host_neutral_scan, loop_inventory and restore-from-backup failures did not recur.
+
+The only failures are the three zsh round-trip tests; `zsh` is not installed on this immutable host (no root, no
+package route), so they cannot be run here. They exercise only output formatting that this run does not touch
+(`protocol/output`, `view`); they need a host with zsh or explicit coordinator acceptance, which is requested in the
+task report.
