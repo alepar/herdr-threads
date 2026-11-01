@@ -16,7 +16,10 @@ use crate::{
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 /// A fake process table: `(pid, parent)` pairs.
 pub(crate) struct Tree(Vec<(u32, Option<u32>)>);
@@ -357,4 +360,181 @@ fn guard_memory_is_once_per_key_and_per_daemon() {
         LocateReply::Verified { .. }
     ));
     assert!(ask(&service, "hermes:s3"));
+}
+
+/// A fake process table with start stamps and argv, replaceable between calls.
+struct Table(Mutex<Vec<ProcessRecord>>);
+
+impl Table {
+    fn new(rows: &[(u32, Option<u32>, u64, &str)]) -> Arc<Self> {
+        let table = Arc::new(Self(Mutex::default()));
+        table.set(rows);
+        table
+    }
+    fn set(&self, rows: &[(u32, Option<u32>, u64, &str)]) {
+        *self.0.lock().unwrap() = rows
+            .iter()
+            .map(|(pid, parent, start, argv0)| ProcessRecord {
+                pid: *pid,
+                parent: *parent,
+                start: *start,
+                argv: if argv0.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![(*argv0).to_owned(), "x".to_owned()]
+                },
+            })
+            .collect();
+    }
+}
+
+impl ProcessInfo for Table {
+    fn process(&self, pid: u32) -> Option<ProcessRecord> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.pid == pid)
+            .cloned()
+    }
+}
+
+fn herdr_pane_at(shell: u32) -> Arc<dyn HostPort> {
+    Roots::port(vec![("w1:p1", Ok(Some(shell)))])
+}
+
+fn herdr_verdict(table: Arc<Table>, subject: u32, shell: u32) -> LocateReply {
+    LocateCallerService::new(table).locate(
+        &request(vec![pane("w1:p1")], Some(subject)),
+        None,
+        &[herdr_pane_at(shell)],
+        0,
+        &budget(),
+    )
+}
+
+fn walled() -> LocateReply {
+    LocateReply::Unverified {
+        per_candidate: vec![CandidateVerdict::NotAncestor],
+        first_guard: false,
+    }
+}
+
+// Kills: a walk that verifies the pane shell above a living `hc` client and its core.
+#[test]
+fn living_hc_client_is_a_wall() {
+    let table = Table::new(&[
+        (50, Some(40), 5, "/usr/bin/claude"),
+        (40, Some(30), 5, "herdr-core"),
+        (30, Some(20), 5, "/home/u/.cargo/bin/hc"),
+        (20, Some(10), 5, "-bash"),
+        (10, None, 5, "herdr"),
+    ]);
+    assert_eq!(herdr_verdict(table, 50, 20), walled());
+}
+
+// Kills: a wall that is only the `hc` client name (a core reparented to init has no client).
+#[test]
+fn reparented_core_is_a_wall() {
+    let table = Table::new(&[
+        (50, Some(40), 5, "claude"),
+        (40, Some(1), 5, "/opt/herdr-core"),
+        (1, None, 5, "init"),
+    ]);
+    // Even a root that is init itself, above the core, does not verify.
+    assert_eq!(herdr_verdict(table, 50, 1), walled());
+}
+
+// Kills: a wall that rejects ordinary trees, or one that fires on unreadable argv.
+#[test]
+fn plain_pane_tree_verifies() {
+    let plain = Table::new(&[
+        (30, Some(20), 5, "claude"),
+        (20, Some(10), 5, "node"),
+        (10, Some(1), 5, "-bash"),
+        (1, None, 5, "init"),
+    ]);
+    assert_eq!(
+        herdr_verdict(plain, 30, 10),
+        LocateReply::Verified { index: 0, root: 10 }
+    );
+    let unreadable = Table::new(&[
+        (30, Some(20), 5, ""),
+        (20, Some(10), 5, ""),
+        (10, None, 5, ""),
+    ]);
+    assert_eq!(
+        herdr_verdict(unreadable, 30, 10),
+        LocateReply::Verified { index: 0, root: 10 }
+    );
+}
+
+// Kills: a wall that hides a root nearer than itself (the hc candidate's own root, H1).
+#[test]
+fn root_below_the_wall_still_verifies() {
+    let table = Table::new(&[
+        (50, Some(40), 5, "claude"),
+        (40, Some(30), 5, "herdr-core"),
+        (30, None, 5, "hc"),
+    ]);
+    assert_eq!(
+        herdr_verdict(table, 50, 40),
+        LocateReply::Verified { index: 0, root: 40 }
+    );
+}
+
+// Kills: a cache keyed on the pid alone (a reused pid hit another process's verdict).
+#[test]
+fn reused_pid_with_new_start_misses_cache() {
+    let table = Table::new(&[(30, Some(10), 100, "a"), (10, None, 1, "sh")]);
+    let service = LocateCallerService::new(table.clone());
+    let host = Arc::new(Roots {
+        answers: vec![("w1:p1", Ok(Some(10)))],
+        asked: AtomicUsize::new(0),
+    });
+    let port: Arc<dyn HostPort> = host.clone();
+    let ask = || {
+        service.locate(
+            &request(vec![pane("w1:p1")], Some(30)),
+            None,
+            std::slice::from_ref(&port),
+            0,
+            &budget(),
+        )
+    };
+    let first = ask();
+    assert_eq!(first, LocateReply::Verified { index: 0, root: 10 });
+    assert_eq!(ask(), first);
+    assert_eq!(host.asked.load(Ordering::SeqCst), 1);
+    // The pid is reused by a process outside the pane.
+    table.set(&[(30, None, 200, "b"), (10, None, 1, "sh")]);
+    assert_eq!(ask(), walled());
+    assert_eq!(host.asked.load(Ordering::SeqCst), 2);
+}
+
+// Kills: caching a subject with no readable record (no start stamp to tell it from a reuse).
+#[test]
+fn unstamped_subject_never_cached() {
+    let table = Table::new(&[]);
+    let service = LocateCallerService::new(table.clone());
+    let host = Arc::new(Roots {
+        answers: vec![("w1:p1", Ok(Some(10)))],
+        asked: AtomicUsize::new(0),
+    });
+    let port: Arc<dyn HostPort> = host.clone();
+    let ask = || {
+        service.locate(
+            &request(vec![pane("w1:p1")], Some(30)),
+            None,
+            std::slice::from_ref(&port),
+            0,
+            &budget(),
+        )
+    };
+    assert_eq!(ask(), walled());
+    assert_eq!(ask(), walled());
+    assert_eq!(host.asked.load(Ordering::SeqCst), 2, "walked both times");
+    // Once the process is readable the walk sees it, not a cached miss.
+    table.set(&[(30, Some(10), 7, "a"), (10, None, 1, "sh")]);
+    assert_eq!(ask(), LocateReply::Verified { index: 0, root: 10 });
 }
