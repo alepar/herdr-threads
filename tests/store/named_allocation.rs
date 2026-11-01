@@ -235,6 +235,7 @@ fn m8_golden_prints_once_on_creation() {
                 seat: seat.clone(),
                 name: name.clone(),
                 created,
+                second_locator: None,
             },
             &OutputSpec::default(),
         )

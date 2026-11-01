@@ -101,6 +101,7 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
             seat,
             name,
             created,
+            second_locator,
         } => {
             // M8 (31 bytes + fields): printed by the call that allocated the seat, once.
             if *created {
@@ -111,6 +112,13 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
                 ));
             } else {
                 out.push_str(&format!("You are seat {}.\n", seat.as_str()));
+            }
+            // M9 (41 bytes + fields): the first binding from a second locator, once.
+            if let Some((earlier, new)) = second_locator {
+                out.push_str(&format!(
+                    "herdr-threads: seat {} now bound from {earlier} and {new}\n",
+                    name.as_str()
+                ));
             }
         }
         CommandResult::ThreadCreated(thread) => {

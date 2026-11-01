@@ -1334,8 +1334,9 @@ fn seat_inspect(
             Option<i64>,
             Option<i64>,
             String,
+            Option<String>,
         );
-        let binding:Option<BindingRow>=db.query_row("SELECT ordinal,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,native_session,execution_id,observed_at,registered_at,ended_at,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![q.seat.as_str(),last as i64,binding_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?))).optional().map_err(|e|db.map_error(e))?;
+        let binding:Option<BindingRow>=db.query_row("SELECT ordinal,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,native_session,execution_id,observed_at,registered_at,ended_at,observation_provenance,locator_hint FROM occupant_bindings WHERE seat_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![q.seat.as_str(),last as i64,binding_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?))).optional().map_err(|e|db.map_error(e))?;
         type RepairRow = (
             i64,
             String,
@@ -1371,6 +1372,7 @@ fn seat_inspect(
                 registered,
                 ended,
                 provenance,
+                locator_hint,
             ) = binding.unwrap();
             (
                 ordinal as u64,
@@ -1389,6 +1391,7 @@ fn seat_inspect(
                     registered_at: registered.map(UtcMillis),
                     ended_at: ended.map(UtcMillis),
                     provenance,
+                    locator_hint,
                 }),
             )
         } else {

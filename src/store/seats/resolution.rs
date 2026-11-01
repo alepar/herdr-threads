@@ -788,6 +788,65 @@ fn reattach_named_seat(
     Ok(())
 }
 
+/// Longest `locator_hint` recorded (a pane id or `<core>:<tN>` is far shorter).
+const LOCATOR_HINT_MAX_BYTES: usize = 128;
+
+/// N4-hint: record the locator a named seat is addressed from on the seat's open top-level
+/// binding that carries none yet, and return M9's `(earlier, new)` pair when `hint` is on no
+/// earlier row of the seat (ended rows included) while another distinct hint is. The decision
+/// reads the persisted rows, so it fires once per (seat, locator) across daemon restarts. A
+/// hint is a hint, never authority: nothing but M9 and `seat inspect` reads it. When the seat
+/// has no such binding yet (its first check-in has not enrolled one), nothing is recorded and a
+/// later command's resolve records it.
+fn record_locator_hint(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    hint: &str,
+) -> Result<Option<(String, String)>, ApiError> {
+    if hint.is_empty() || hint.len() > LOCATOR_HINT_MAX_BYTES || hint.chars().any(char::is_control)
+    {
+        return Ok(None);
+    }
+    let known: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND locator_hint=?2)",
+            params![seat.as_str(), hint],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let unmarked: Option<i64> = tx
+        .query_row(
+            "SELECT ordinal FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL \
+             AND role='top_level' AND locator_hint IS NULL ORDER BY ordinal DESC LIMIT 1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(ordinal) = unmarked else {
+        return Ok(None);
+    };
+    // A known locator is no second locator (no M9), but a session restarted from it still
+    // records it on its own binding, so `seat inspect` labels it and the next hint skips it.
+    let earlier: Option<String> = tx
+        .query_row(
+            "SELECT locator_hint FROM occupant_bindings WHERE seat_id=?1 \
+             AND locator_hint IS NOT NULL ORDER BY ordinal LIMIT 1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    tx.execute(
+        "UPDATE occupant_bindings SET locator_hint=?1 WHERE ordinal=?2",
+        params![hint, ordinal],
+    )
+    .map_err(store_error)?;
+    Ok(earlier
+        .filter(|_| !known)
+        .map(|earlier| (earlier, hint.to_owned())))
+}
+
 /// A seat-acting resolve under a name on the named host: [`named_seat_apply`] in one idempotent
 /// transaction keyed by the request's operation, so a retried call replays its original result.
 pub fn resolve_named_seat(
@@ -818,10 +877,15 @@ pub fn resolve_named_seat(
         |tx, at| {
             snapshot_budget(context, budget)?;
             let (seat, created) = named_seat_apply(tx, at, instance, host, &name)?;
+            let second_locator = match request.locator_hint.as_deref() {
+                Some(hint) => record_locator_hint(tx, &seat, hint)?,
+                None => None,
+            };
             Ok(CommandResult::NamedSeatResolved {
                 seat,
                 name: name.clone(),
                 created,
+                second_locator,
             })
         },
     )
@@ -878,3 +942,7 @@ pub fn check_resolved_target(
 #[cfg(test)]
 #[path = "../../../tests/store/named_allocation.rs"]
 mod named_allocation_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/store/locator_hint.rs"]
+mod locator_hint_tests;
