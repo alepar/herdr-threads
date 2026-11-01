@@ -1755,6 +1755,10 @@ impl LocalService for DomainService {
             Command::WakeStatus(query) => self.wake_status(&query, &read, budget),
             Command::ResolveSeat(request) => {
                 let preparation = self.attached_host(&request.host, budget)?;
+                // A name at the reserved named-host locator is a seat-acting allocation by name.
+                if request.host.is_named_host() {
+                    return preparation.identity().resolve_named(request, budget);
+                }
                 preparation
                     .identity()
                     .resolve(request, budget)

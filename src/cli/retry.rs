@@ -531,7 +531,7 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
         (request, result),
         (
             SemanticMutation::ResolveSeat { .. },
-            CommandResult::SeatResolved(_)
+            CommandResult::SeatResolved(_) | CommandResult::NamedSeatResolved { .. }
         ) | (
             SemanticMutation::ContinuityCheckIn { .. },
             CommandResult::ContinuityReattached(_)

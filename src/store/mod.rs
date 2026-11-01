@@ -2230,6 +2230,22 @@ impl StorePort for SqliteStore {
             budget,
         )
     }
+    fn resolve_named_seat(
+        &self,
+        request: ResolveSeat,
+        host: crate::ports::HostId,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::resolve_named_seat(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            host,
+            &request,
+            budget,
+        )
+    }
     fn check_resolved_target(
         &self,
         check: crate::ports::ResolvedTargetCheck,

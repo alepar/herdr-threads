@@ -80,6 +80,14 @@ pub enum CommandResult {
     OperationStatus(OperationStatus),
     RetirementJobs(Page<RetirementStatus>),
     SeatResolved(SeatId),
+    /// A seat-acting resolve under a name on the named host: the seat of that name and whether
+    /// this call allocated it (the CLI prints M8 once, on `created`).
+    NamedSeatResolved {
+        seat: SeatId,
+        name: crate::protocol::ids::SeatName,
+        #[serde(default)]
+        created: bool,
+    },
     ContinuityReattached(ContinuityReattachment),
     /// The seat's open binding after a `RecordManagedLaunch` decision.
     ManagedLaunchRecorded(ManagedLaunchRecord),
