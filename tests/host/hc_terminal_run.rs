@@ -286,3 +286,21 @@ fn request_gate_argv_wins_over_the_constructor() {
         json!(["other", "--bootstrap", "op:2"])
     );
 }
+
+/// Kills: composing the incarnation with `HostBootId::new`, which panics once a core id the
+/// boot admits (120 bytes) plus the peer suffix passes the 128-byte id bound.
+#[test]
+fn long_core_id_outcome_unknown_not_panic() {
+    let fake = FakeHc::start();
+    fake.rotate_core_id(&"c".repeat(120));
+    let client = HcClient::new(fake.socket());
+    let witness = HostWitnessProbe::hello(&client);
+    let host = HcHost::new(client)
+        .with_gate_argv(gate())
+        .with_run_deadline(std::time::Duration::from_millis(400));
+    let outcome = host.create_target(&new_tab(witness), &context());
+    assert!(
+        matches!(outcome, CreateTargetOutcome::OutcomeUnknown(_)),
+        "{outcome:?}"
+    );
+}
