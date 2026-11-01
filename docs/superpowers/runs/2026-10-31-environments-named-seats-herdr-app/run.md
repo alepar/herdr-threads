@@ -182,3 +182,46 @@ retry) are `run_target`; a retried V3 record rebuilds its host from the frozen n
   `config.toml`, else `<runtime dir>/<prefix><session>.sock`; `HcDiscovery` derives the same path. Codex `--no-daemon`
   for `HostKind::Hc` is `host_launch_argv` (ht-kqrt.54); the live Codex run stays remaining evidence.
 
+## N phase gate (ht-kqrt.34)
+
+Tested source: task branch `task-ht-kqrt.34` on the stack base `f1ae3da79` (integration tip plus ht-kqrt.135); source tree
+`f19dc4c28b27ade8b5566a830702901c1e690c28`. Suite: `tests/named_seats.rs` (own `[[test]]`, nextest group `named-seats`).
+
+Commands and results (heavy wrapper, `nice`, `TMPDIR=/tmp/sp-503081fe/ht-kqrt.34`, Herdr 0.9.5 isolated sessions):
+
+- `cargo test --locked --all-features --test named_seats`: 7 passed.
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`: clean. `scripts/check-harness-neutral`: ok, no new entry.
+  `scripts/check-wire-compat`: ok, no baseline line. `nice scripts/check-default-features`: exit 0.
+- `git diff f1ae3da79 -- tests/golden_surfaces.rs tests/fixtures/golden`: empty (Herdr-pane surfaces unchanged).
+- Unfiltered `cargo nextest run --locked --all-targets --all-features` with `HT_LEAK_RUN_ID` exported: 8613 run, 8567 passed, 46 failed,
+  53 skipped. 333 s of test time, 454 s wall including the build, on a CPU shared with ML training: over the 300 s budget, which
+  release-not-blocked-on-suite-time covers. All seven `named_seats` tests, `host_neutral_scan` (ht-kqrt.65) and the multinode named
+  tests passed. `scripts/check-no-leaked-processes --run-id` after the run: no leaked processes (no temp ledger).
+- The 46 failures were rerun at the base commit `f1ae3da79` (throwaway worktree, removed): the same 46 fail there (0 passed), so none
+  is introduced by this task. Causes seen: no `zsh` on this host (`*_through_zsh`, `rendered_actions_execute_as_shell_commands`,
+  `action_formatter_round_trips_unicode_separators_through_bash_and_zsh`), Herdr restart/restore tests timing out at 31 s
+  (`trust_policy::*`, `*_restart_keeps_seats_in_restore_hold`), and others listed in `evidence/ht-kqrt.34/failed.txt`.
+
+Defect found and fixed by the recovery round trip: a named caller's `retry` of a completed automatic handoff built its namespace from
+the reserved named locator instead of the Herdr endpoint the handoff was recorded under (`automatic current namespace mismatch`).
+`topology_runtime::namespace` now resolves the Herdr endpoint lazily for a named caller, as the handoff does.
+
+### Spikes (named half) and E1
+
+- S1 allocation vs enumeration race and restart `CarryForward`: `identity::reconcile::s1_named_allocation_race_and_carry_forward`
+  (tests/identity/reconcile.rs).
+- S2 first empty named publication clears holds: `store::named_presence::s2_first_empty_named_publication_clears_holds`.
+- S3 `watch` never stops on `no_pane` for a Named site: `cli::watch::named_site_watch_never_stops_on_no_pane`; the mod's spawn env
+  half is `integrations/claude/mod/tests/named_watch_env.test.ts` (node test, not run by nextest).
+- S4 self-retire replay scope: `daemon::self_retire::s4_replay_returns_stored_result`.
+- S5 restore vs a newer live seat of the name (named half): `store::named_restore::collision_with_resolved_inserts_nameless`,
+  `collision_with_unresolved_inserts_nameless`, `operator_retire_hands_name_to_oldest_held_row`, `retiring_held_row_leaves_existing_alone`.
+- S6 `doctor` over never-settled `wake_work` of named seats: `service::no_wake_rest::s6_doctor_on_never_settled_wake_work`.
+- E1 Linux environ reader against a spawned child with a known env: `service::environ_reader::linux_reader_reads_known_env`
+  (`tests/service/environ_reader.rs`); the live isolated-Herdr half is `tests/integration/named_handoff.rs`
+  `name_in_the_server_environ_is_refused_with_m6_on_the_cli_path` (passed in the run).
+
+### End-to-end tests (tests/named_seats.rs)
+
+`first_inbox_prints_m8_once_then_same_seat`, `named_to_named_send_inbox_ack_hook`, `named_to_pane_in_isolated_herdr`,
+`named_join_accept_backlog`, `named_pair_with_pane_auto_join_opener`, `recovery_hint_round_trip`, `idle_exit_with_only_named_host`.
