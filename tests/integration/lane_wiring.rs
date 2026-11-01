@@ -64,6 +64,8 @@ impl Session {
         let herdr = IsolatedHerdr::new(case)?;
         let guard = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
         herdr.start();
+        // Health lines are compared exactly here; a child daemon's bound is scaled, this one's not.
+        herdr_threads::app::stretch_health_summary_limit_for_test();
         let state = herdr.root().join("plugin-state");
         fs::create_dir_all(&state).unwrap();
         let context = RuntimeContext::explicit(state.clone(), herdr.socket_path(), None).unwrap();

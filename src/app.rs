@@ -72,6 +72,34 @@ impl Clock for SystemClock {
 /// Upper bound on the retirement-summary read inside one Health request.
 pub(crate) const HEALTH_SUMMARY_LIMIT_MS: u64 = 100;
 
+/// Set by a test that runs an elected daemon in its own process, where no
+/// `HT_TEST_TIMEOUT_SCALE` reaches it: the summary limit is at least this.
+#[cfg(feature = "test-support")]
+static TEST_HEALTH_SUMMARY_FLOOR_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Gives this process's in-process daemons the summary limit a test child gets from
+/// `external_bound`: on a loaded host the 100 ms read can lose the CPU for longer and report
+/// `retirement status unavailable`, a line about the host and not about what such a test
+/// compares. The bound itself stays pinned by the tests that run without this call.
+#[cfg(feature = "test-support")]
+pub fn stretch_health_summary_limit_for_test() {
+    let scale: u64 = crate::test_support::spawn::TIMEOUT_SCALE.parse().unwrap();
+    TEST_HEALTH_SUMMARY_FLOOR_MS.store(
+        HEALTH_SUMMARY_LIMIT_MS * scale,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn health_summary_limit_ms() -> u64 {
+    let limit =
+        crate::protocol::time::external_bound(Duration::from_millis(HEALTH_SUMMARY_LIMIT_MS))
+            .as_millis() as u64;
+    #[cfg(feature = "test-support")]
+    let limit = limit.max(TEST_HEALTH_SUMMARY_FLOOR_MS.load(std::sync::atomic::Ordering::Relaxed));
+    limit
+}
+
 /// The retirement-summary budget for one Health request: the request's own
 /// cancellation, and the earlier of the request deadline and
 /// `now + HEALTH_SUMMARY_LIMIT_MS`. Client disconnect, request expiry and
@@ -80,7 +108,7 @@ pub(crate) fn health_summary_budget(request: &CallBudget, clock: &dyn Clock) -> 
     let cap = clock
         .monotonic_now()
         .0
-        .saturating_add(HEALTH_SUMMARY_LIMIT_MS);
+        .saturating_add(health_summary_limit_ms());
     CallBudget {
         deadline: MonoInstant(request.deadline.0.min(cap)),
         cancellation: request.cancellation.clone(),
