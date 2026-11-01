@@ -73,6 +73,11 @@ harnesses get their credentials:
   driver reads a Hermes recipient's state from its screen (hermes_idle): idle only while the composer's top rule
   carries no live status. Hermes 0.22 hosts its sessions in the gateway, so the native wake matches the
   binding's own pane rather than its process (ht-f0xn; TRUST-POLICY, Hermes composer reader).
+- tmux-named (opt-in only, `--cases tmux-named/send-p0,tmux-named/send-p1`, never in the default matrix and gated on no
+  version): a named seat (`HERDR_THREADS_SEAT_NAME`, no Herdr pane) runs real Claude (hooks-only installation) and Codex,
+  each in its own private `tmux -L ht-test-<uuid>` server, and a person seat sends one direct item. At T=0 the p0 must
+  wake the idle seat by a content-free wake typed into the tmux composer; the p1 control must stay silent and arrive
+  on the next turn. Cleanup kills every private tmux server and verifies it gone, as part of the completeness check.
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
 The senders are two owned coordinator shell panes recorded as person seats (`human me init`, which keeps its agent
 guard: the driver strips every registered agent marker from their commands and the panes run only a shell), not
@@ -173,6 +178,18 @@ WAKE_BLOCK_HOLD_S = 30
 PICKER_ROW = re.compile(r"^\u203a 1\. ")
 WAKE_BLOCK_WAIT_S = 90
 SIDE_DEADLINE_S = 45
+# Opt-in cases (ht-kqrt.61, N2-e2e), never in the default matrix and gated on no version: a named seat
+# (`HERDR_THREADS_SEAT_NAME`, no Herdr pane) runs real Claude (hooks-only installation: the mod's channel would wake it
+# instead) and Codex inside its own private `tmux -L ht-test-<uuid>` server at T=0. A person seat sends one direct item;
+# the daemon must type the content-free wake into the tmux composer iff the priority is <= T (p0 wakes, the p1 control
+# stays silent and arrives on the next turn). The tmux server is the run's: cleanup kills it and verifies it is gone.
+TMUX_CASES = ("tmux-named/send-p0", "tmux-named/send-p1")
+# A running turn's status line (Claude "esc to interrupt", Codex "Esc to interrupt"); the tmux recipient has no Herdr
+# agent status, so its idle/busy comes from the screen.
+TMUX_HARNESSES = ("claude", "codex")
+TMUX_RUNNING = re.compile(r"esc to interrupt", re.I)
+# The composer's prompt glyph at a line start (Claude `❯`, Codex `›`), possibly inside a box border.
+COMPOSER_UP = re.compile(r"^[\s│]*[❯›]", re.M)
 SIDE_DRAFT = "draft-kept-by-wake-e2e"
 # The sibling-displayed side turn: long enough that the p0 is sent while it is busy (a wake then is refused), then the
 # side's own `inbox` displays it to the side binding.
@@ -780,6 +797,8 @@ class Run:
         elif "hermes" in self.args.harness and self.hermes_gateways():
             problems.append(f"a Hermes gateway from {self.hermes_home} is already running (pids "
                             f"{self.hermes_gateways()}): stop it first (`hermes gateway stop` with HOME={self.hermes_home})")
+        if getattr(self, "tmux_cases", False) and not shutil.which("tmux"):
+            problems.append("the tmux-named cases need tmux on PATH")
         for tool in ("herdr", *(h for h in self.args.harness if h != "hermes")):
             if not shutil.which(tool):
                 problems.append(f"{tool} not on PATH")
@@ -883,7 +902,7 @@ class Run:
         # Each call is logged (pane, argv, 0x1f-separated) for the extra-inbox check (inbox_calls), as one append per
         # record so concurrent recipients never interleave a line.
         shim.write_text("#!/bin/sh\n"
-                        "rec=$(printf '%s\\037' \"${HERDR_PANE_ID:-}\" \"$@\")\n"
+                        "rec=$(printf '%s\\037' \"${HERDR_PANE_ID:-${HERDR_THREADS_SEAT_NAME:-}}\" \"$@\")\n"
                         f"printf '%s\\n' \"$rec\" >> {q(str(self.calls_log))}\n"
                         "pin_state=1 pin_host=1\nfor word in \"$@\"; do\n  case \"$word\" in\n"
                         "    --state-dir|--state-dir=*) pin_state=0 ;;\n    --host-endpoint|--host-endpoint=*) pin_host=0 ;;\n"
@@ -903,7 +922,7 @@ class Run:
                      "CLAUDE_CODE_PLUGIN_DIRS": ""}  # never copy a real installed mod into the scratch layer
         # cl-hooks first: `--hooks-only` removes the mod files of the shared state dir, which the full Claude setup
         # below then reinstalls for the other Claude recipients.
-        if getattr(self, "hooks_cases", False):
+        if getattr(self, "hooks_cases", False) or (getattr(self, "tmux_cases", False) and "claude" in self.args.harness):
             self.claude_hooks_cfg.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.ht("setup", "claude", "--hooks-only", "--with-permissions", tag="setup:claude:hooks-only",
                     env=dict(setup_env, CLAUDE_CONFIG_DIR=str(self.claude_hooks_cfg)), timeout=120)
@@ -983,8 +1002,12 @@ class Run:
         if "claude" in self.args.harness and getattr(self, "hooks_cases", False):
             pane = self.tab("cl-hooks")
             self.recipients.append(Recipient(self, "cl-hooks", "claude", 0, pane, self.seat(pane), hooks_only=True))
+        if getattr(self, "tmux_cases", False):
+            for h in self.args.harness:
+                if h in TMUX_HARNESSES:  # no Herdr tab: the recipient lives in its own private tmux server
+                    self.recipients.append(TmuxRecipient(self, f"{h[:2]}-tmux", h, f"tmux-{h}-{self.run_id}"))
         print(f"  workspace {self.workspace}: coordinators {self.coord_seats()}; " +
-              ", ".join(f"{r.name}={r.seat}" for r in self.recipients), flush=True)
+              ", ".join(f"{r.name}={r.seat or r.pane}" for r in self.recipients), flush=True)
 
     def launch_line(self, harness, plain=False, hooks_only=False):
         q = shlex.quote
@@ -1073,6 +1096,7 @@ class Run:
                     problems.append(f"workspace {self.workspace} still open after close")
             except Exception as e:
                 problems.append(f"workspace {self.workspace}: closure not verified: {clip(e, 200, getattr(self, 'secrets', None))}")
+        self.cleanup_tmux(problems, steps)
         if getattr(self, "hermes_home", None):
             # A recipient's pane (whichever started first) spawned Hermes' gateway (`gateway run --idle-exit`), which outlives the pane.
             try:
@@ -1145,6 +1169,58 @@ class Run:
                 problems.append(f"scratch root removal failed: {clip(e, 200, getattr(self, 'secrets', None))}")
         self.cleanup_report = {"steps": steps, "problems": problems}
         return problems
+
+    def tmux_env(self):
+        """The environment of a private tmux server (and so of the panes in it): no Herdr pane, no enclosing tmux
+        and no agent session of whatever runs this script, so the recipient is a pane-less named caller."""
+        return {k: v for k, v in os.environ.items()
+                if not k.startswith("HERDR_") and k not in ("TMUX", "TMUX_PANE", *CALLER_SESSION_ENV)}
+
+    def tmux_start(self):
+        """Start one private `tmux -L ht-test-<uuid>` server with a shell window in the checkout; returns its socket
+        name. The name is recorded before the start, so an uncertain start is still killed at cleanup."""
+        name = "ht-test-" + uuid.uuid4().hex
+        with self.lock:
+            self.tmux_servers = [*getattr(self, "tmux_servers", []), name]
+        rc, out, err = self.run(["tmux", "-L", name, "-f", "/dev/null", "new-session", "-d", "-x", "200", "-y", "50",
+                                 "-c", self.cwd, "sh"], env=self.tmux_env(), tag="tmux:start")
+        if rc != 0:
+            raise RuntimeError(f"tmux new-session: rc={rc} {clip((err or out).strip(), 300, getattr(self, "secrets", None))}")
+        return name
+
+    def tmux(self, server, *argv, timeout=30):
+        """`tmux -L server argv`: (rc, stdout)."""
+        rc, out, _err = self.run(["tmux", "-L", server, *argv], env=self.tmux_env(), tag="tmux:" + argv[0],
+                                 timeout=timeout)
+        return rc, out
+
+    def tmux_server_gone(self, name):
+        """Whether the private server `name` no longer answers and no process still carries its socket name."""
+        rc = self.run(["tmux", "-L", name, "display", "-p", "x"], env=self.tmux_env(), tag="cleanup:tmux-verify",
+                      timeout=10, cleanup=True)[0]
+        left = self.run(["pgrep", "-f", "--", f"-L {name}"], tag="cleanup:tmux-processes", timeout=10, cleanup=True)[0]
+        return rc != 0 and rc != "timeout" and left == 1
+
+    def cleanup_tmux(self, problems, steps):
+        """Kill every private tmux server this run started (the agents in it end with it) and verify each is gone."""
+        for name in getattr(self, "tmux_servers", []):
+            try:
+                rc = self.run(["tmux", "-L", name, "kill-server"], env=self.tmux_env(), tag="cleanup:tmux-kill",
+                              timeout=15, cleanup=True)[0]
+                steps.append({"tmux_kill_rc": rc, "server": name})
+            except Exception as e:  # keep going: the verification below decides
+                steps.append({"tmux_kill_error": clip(e, 200, getattr(self, 'secrets', None)), "server": name})
+            end = time.time() + self.process_grace_s
+            try:
+                gone = self.tmux_server_gone(name)
+                while not gone and time.time() < end:
+                    time.sleep(0.2)
+                    gone = self.tmux_server_gone(name)
+            except Exception as e:  # a failed probe is unknown, never "gone"
+                problems.append(f"tmux server {name}: removal not verified: {clip(e, 200, getattr(self, 'secrets', None))}")
+                continue
+            if not gone:
+                problems.append(f"tmux server {name} still running after kill-server")
 
     def drain(self):
         """Stop admitting helpers, terminate the in-flight ones (each in its own process group), then join the
@@ -2558,6 +2634,155 @@ class Recipient:
                 pass  # interrupted: no pane capture, the summary marks unfinished cases missing
 
 
+class TmuxRecipient(Recipient):
+    """A named seat (`HERDR_THREADS_SEAT_NAME`, no Herdr pane) running a real agent in its own private tmux server
+    (TMUX_CASES). Herdr knows nothing of it, so every pane primitive of Recipient is replaced by its tmux form and
+    its busy/idle state is read from the screen (TMUX_RUNNING). The shim logs the seat name where a pane id would
+    be, so `calls` attributes its herdr-threads calls; `seat` is the seat id, known once the standing turn has
+    enrolled the name. Claude runs the hooks-only installation: the delivery mod's channel would otherwise wake it
+    instead of the tmux composer."""
+    tmux = True
+
+    def __init__(self, run, name, harness, seat_name):
+        super().__init__(run, name, harness, 0, seat_name, None, hooks_only=harness == "claude")
+        self.seat_name = seat_name
+        self.server = None  # the private tmux server's -L name, once started
+        self.target = None  # its pane
+
+    # ---------- observation ----------
+    def capture(self, *extra):
+        if self.server is None:
+            return ""
+        rc, out = self.run.tmux(self.server, "capture-pane", "-p", *extra, "-t", self.target)
+        return out if rc == 0 else ""
+
+    def visible(self):
+        return self.capture()
+
+    def screen(self, lines=400):
+        return self.capture("-J", "-S", f"-{lines}")
+
+    def status(self):
+        text = self.visible()
+        if DIALOG.search(text):
+            return "blocked"
+        return "working" if TMUX_RUNNING.search(text) else "idle"
+
+    def keys(self, *keys):
+        self.run.tmux(self.server, "send-keys", "-t", self.target, *keys)
+
+    def dismiss_notice(self):
+        if self.harness != "claude" or not HARNESS_NOTICE.search(self.visible()):
+            return False
+        self.keys("Escape")
+        time.sleep(1.0)
+        return True
+
+    # ---------- lifecycle ----------
+    def start(self):
+        self.server = self.run.tmux_start()
+        self.target = self.run.tmux(self.server, "display", "-p", "#{pane_id}")[1].strip()
+        if not self.target.startswith("%"):
+            raise RuntimeError(f"{self.name}: no tmux pane in {self.server}")
+        lock = {"codex": "codex_start"}.get(self.harness)
+        with (getattr(self.run, lock) if lock else contextlib.nullcontext()):
+            # The name rides the pane's environment alone; the launch line adds nothing Herdr-shaped.
+            line = (f"export HERDR_THREADS_SEAT_NAME={shlex.quote(self.seat_name)}; "
+                    + self.run.launch_line(self.harness, hooks_only=self.hooks_only))
+            self.keys("-l", line)
+            self.keys("Enter")
+            end = time.time() + 180
+            while time.time() < end:
+                text = self.visible()
+                if AUTH_REJECTED.search(text) or LINUX_LOGIN.search(text):
+                    raise RuntimeError(f"{self.name}: {self.harness} is not logged in or its auth was rejected: {self.tail()}")
+                if DIALOG.search(text):
+                    raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
+                if COMPOSER_UP.search(text) and self.status() == "idle":
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError(f"{self.name}: {self.harness} composer not up in {self.server}: {self.tail()}")
+        reported = setup_done(self.threshold)
+        for _attempt in range(2):  # one retry: a transient model/capacity error ends the first turn early
+            self.prompt(STANDING.format(coord=self.run.coord_seats(), threshold=self.threshold), expect=reported)
+            if self.shows(reported):
+                break
+        else:
+            raise RuntimeError(f"{self.name}: agent did not report nudge-threshold {self.threshold}: {self.tail()}")
+        # The turn's first herdr-threads call enrolled the name: its seat id is the sender's target.
+        end = time.time() + 30
+        while self.seat is None and time.time() < end:
+            rows = self.store_rows("SELECT id FROM seats WHERE name=?", (self.seat_name,))
+            self.seat = rows[0][0] if rows else None
+            time.sleep(1)
+        if self.seat is None:
+            raise RuntimeError(f"{self.name}: no seat named {self.seat_name} after the standing turn")
+
+    def prompt(self, text, expect=None):
+        self.keys("-l", text)
+        time.sleep(0.5)
+        self.keys("Enter")
+        end = time.time() + 15  # the turn starts within seconds (or is already over, its report on screen)
+        while time.time() < end and self.status() in IDLE and not (expect and self.shows(expect)):
+            time.sleep(0.5)
+        if expect:
+            end = time.time() + 120
+            while not self.shows(expect) and time.time() < end:
+                time.sleep(1)
+        self.wait_idle()
+        self.settled()
+
+    def ensure_channel(self, channel):
+        """The cases send direct: the first send auto-joins the pair, there is nothing to set up."""
+
+    # ---------- cases ----------
+    def case(self, case):
+        """tmux-named/send-p0 | send-p1: one direct item to the idle named seat at T=0. An idle seat wakes (the
+        content-free wake typed into its tmux composer, no `inbox` round trip) iff the priority is <= T; the silent
+        control stays idle, never shows a wake line, and gets the item on its next turn."""
+        action = case.split("/")[1]
+        expect = expect_wake(action, "1:1", self.threshold)
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)
+        self.wait_idle()
+        calls_before = self.inbox_calls()
+        mid = self.send(action.split("-")[1], f"{case} {self.run.run_id}", direct=True)
+        t_wake = self.watch_for_wake(WAKE_WINDOW_S)
+        woke = t_wake is not None
+        checks = {}
+        hello = False
+        if woke:
+            self.last_wake = time.time()
+        else:
+            checks["late_wake_s"] = self.watch_for_wake(20) if expect else None
+            if checks["late_wake_s"] is None:
+                hello = True
+                self.prompt("hello")
+                self.last_wake = time.time()
+        self.wait_idle()
+        self.settled()
+        checks["delivered"] = self.on_screen(mid)
+        wake_lines = wake_count(self.screen(1000))
+        checks["wake_lines"] = wake_lines
+        if woke:
+            checks["inbox_calls"] = self.inbox_calls() - calls_before
+            checks["no_extra_inbox"] = checks["inbox_calls"] == 0
+        checks["trailing_wake_s"] = self.watch_quiet(max(0.0, SPACING_S - (time.time() - self.last_wake)))
+        if checks["trailing_wake_s"] is not None:
+            self.wait_idle()
+            self.settled()
+        verified = all(v is True for k, v in checks.items() if k in ("delivered", "no_extra_inbox"))
+        # The wake line is on screen iff the daemon typed one: exactly one for the p0, none for the control.
+        typed = wake_lines == (1 if expect else 0)
+        passed = woke == expect and verified and typed and checks["trailing_wake_s"] is None
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": expect, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
+                         "checks": checks, "ref": {"message": mid}, "result": "PASS" if passed else "FAIL",
+                         "utc": utc()})
+
+
 def record(self, row):
     row = json.loads(redact(json.dumps(row), getattr(self, "secrets", ())))  # error tails may quote a screen
     with self.lock:
@@ -2574,6 +2799,8 @@ def applies(recipient, case):
     """Side cases run on Codex recipients only; the plain-hooks Codex runs nothing else. Hooks cases run only on the
     hooks-only Claude, which runs nothing else. End-of-turn and busy-tool cases run on hooked Codex recipients
     (Claude's mod delivers at every tool already); Claude cases on the mod Claude recipients."""
+    if getattr(recipient, "tmux", False) or case in TMUX_CASES:
+        return getattr(recipient, "tmux", False) and case in TMUX_CASES
     if case in SIDE_CASES:
         return recipient.harness == "codex"
     if getattr(recipient, "hooks_only", False) or case in HOOKS_CASES:
@@ -2684,7 +2911,8 @@ def main(argv=None):
                          "(--hermes-home)" % AGY_CREDENTIAL_ENV)
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
                     + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES)
-                    + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES))
+                    + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES)
+                    + "; opt-in, a named seat in a private tmux server (claude, codex): " + ", ".join(TMUX_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
     ap.add_argument("--claude-model", help="passed as --model (default: the account default)")
@@ -2721,7 +2949,8 @@ def main(argv=None):
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
     unknown = ([c for c in cases
-                if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES]
+                if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
+                                 + TMUX_CASES]
                + [h for h in args.harness if h not in HARNESSES])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
@@ -2736,6 +2965,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, terminate)  # SIGTERM takes the same cleanup path as Ctrl-C
     run.side_cases = any(c in SIDE_CASES for c in cases)
     run.hooks_cases = any(c in HOOKS_CASES for c in cases)
+    run.tmux_cases = any(c in TMUX_CASES for c in cases)
     rc = EXIT_FAIL
     try:
         run.preflight()
