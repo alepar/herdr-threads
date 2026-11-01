@@ -906,7 +906,7 @@ OUT_LINKED=$registered
 if [ "$setup" = no ]; then
     OUT_SETUP=skipped
     say "skipping hook setup (--no-setup)"
-elif [ "$registered" = 0 ]; then
+elif [ "$registered" = 0 ] && [ -n "$herdr" ]; then
     OUT_SETUP=not_registered
     say "skipping hook setup: the plugin is not registered with Herdr"
 elif ! user_level_setup; then

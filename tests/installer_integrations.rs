@@ -1300,3 +1300,227 @@ fn installer_lets_the_real_roots_edited_record_veto_a_linked_profiles_record() {
     assert_eq!(fs::read(&real_rules).unwrap(), rules);
     assert_eq!(fs::read(f.skill("codex")).unwrap(), skill);
 }
+
+/// A scratch install of `scripts/install.sh` from an offline release mirror holding the real
+/// executable, into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME, with fake claude and codex.
+struct Site {
+    fixture: Fixture,
+}
+impl Site {
+    fn new() -> Self {
+        let fixture = Fixture::new();
+        let root = &fixture.0;
+        let (os, arch) = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => ("macos", "aarch64"),
+            ("macos", _) => ("macos", "x86_64"),
+            (_, "aarch64") => ("linux", "aarch64"),
+            _ => ("linux", "x86_64"),
+        };
+        let asset = format!("herdr-threads-{os}-{arch}.tar.gz");
+        let version = env!("CARGO_PKG_VERSION");
+        let package = root.join("pkg/herdr-threads");
+        fs::create_dir_all(package.join("bin")).unwrap();
+        fs::create_dir_all(package.join("scripts")).unwrap();
+        fs::copy(
+            env!("CARGO_BIN_EXE_herdr-threads"),
+            package.join("bin/herdr-threads"),
+        )
+        .unwrap();
+        for (name, body) in [
+            ("herdr-plugin.toml", "id=\"herdr-threads\"\n"),
+            ("scripts/view.sh", "#!/bin/sh\n"),
+            ("scripts/build.sh", "#!/bin/sh\n"),
+            ("VERSION", version),
+            ("PREBUILT", "1"),
+        ] {
+            fs::write(package.join(name), body).unwrap();
+        }
+        for exec in ["bin/herdr-threads", "scripts/view.sh", "scripts/build.sh"] {
+            fs::set_permissions(package.join(exec), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let folder = root.join(format!("release/download/v{version}"));
+        fs::create_dir_all(&folder).unwrap();
+        let tar = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(folder.join(&asset))
+            .arg("-C")
+            .arg(root.join("pkg"))
+            .arg("herdr-threads")
+            .status()
+            .unwrap();
+        assert!(tar.success());
+        let sum = std::process::Command::new("sha256sum")
+            .arg(&asset)
+            .current_dir(&folder)
+            .output()
+            .unwrap();
+        fs::write(folder.join("SHA256SUMS"), sum.stdout).unwrap();
+        fs::create_dir_all(root.join("home")).unwrap();
+        Self { fixture }
+    }
+    fn root(&self) -> &std::path::Path {
+        &self.fixture.0
+    }
+    /// A stub `herdr` that lists the plugin as linked from the installer's prefix and refuses
+    /// everything else (no running server).
+    fn stub_herdr(&self) {
+        let path = self.root().join("bin/herdr");
+        let prefix = self.root().join("prefix");
+        let body = format!(
+            "#!/bin/sh\ncase \"$1 $2\" in\n\
+             'plugin list') case \"$3\" in\n\
+               --json) printf '%s' '{{\"result\":{{\"plugins\":[{{\"plugin_id\":\"herdr-threads\",\"enabled\":true}}]}}}}';;\n\
+               *) echo '- herdr-threads (Threads) enabled [local:{}]';;\n\
+             esac;;\n\
+             'plugin link') ;;\n\
+             'status server') printf '%s' '{{\"running\":true,\"socket\":\"{}\"}}';;\n\
+             *) exit 3;;\nesac\n",
+            prefix.display(),
+            self.root().join("herdr.sock").display()
+        );
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    /// Run the installer; PATH holds only the fake harnesses (and a stub herdr when asked) plus
+    /// the system tools. Returns the combined, root-normalized output and the exit code.
+    fn install_sh(&self) -> (String, Option<i32>) {
+        let root = self.root();
+        let mut command = herdr_threads::test_support::spawn::command("/bin/bash");
+        herdr_threads::test_support::isolation::scrub_env(&mut command);
+        let out = command
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/install.sh"))
+            .args(["--prefix"])
+            .arg(root.join("prefix"))
+            .arg("--bin-dir")
+            .arg(root.join("ubin"))
+            .arg("--release-url")
+            .arg(format!("file://{}", root.join("release").display()))
+            .args(["--version", env!("CARGO_PKG_VERSION"), "--setup"])
+            .current_dir(root)
+            .env("HOME", root.join("home"))
+            .env("CODEX_HOME", root.join("codex"))
+            .env("CLAUDE_CONFIG_DIR", root.join("claude"))
+            .env("TMPDIR", root)
+            .env("NO_COLOR", "1")
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", root.join("bin").display()),
+            )
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = text.replace(root.to_str().unwrap(), "<root>");
+        // The archive checksum varies with the executable.
+        let hex = |c: char| c.is_ascii_hexdigit();
+        let mut normalized = String::new();
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find(hex) {
+            let run = rest[at..].find(|c| !hex(c)).unwrap_or(rest.len() - at);
+            normalized.push_str(&rest[..at]);
+            normalized.push_str(if run == 64 {
+                "<sha256>"
+            } else {
+                &rest[at..at + run]
+            });
+            rest = &rest[at + run..];
+        }
+        normalized.push_str(rest);
+        // Version, platform and the experimental-Linux notices vary by build host.
+        let normalized = normalized
+            .replace(env!("CARGO_PKG_VERSION"), "<version>")
+            .lines()
+            .filter(|line| !line.contains("Linux"))
+            .map(|line| {
+                let mut line = line.to_owned();
+                for platform in ["linux", "macos"] {
+                    for arch in ["aarch64", "x86_64"] {
+                        line = line.replace(
+                            &format!("herdr-threads-{platform}-{arch}.tar.gz"),
+                            "<asset>",
+                        );
+                    }
+                }
+                line + "\n"
+            })
+            .collect::<String>();
+        (normalized, out.status.code())
+    }
+    fn standalone_state(&self) -> PathBuf {
+        self.root()
+            .join("home/.local/state/herdr/plugins/herdr-threads")
+    }
+}
+impl Drop for Site {
+    fn drop(&mut self) {
+        // The installer's daemon check may have started a daemon in the scratch state.
+        let state = self.standalone_state();
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
+            .arg("--state-dir")
+            .arg(&state)
+            .args(["daemon", "stop"])
+            .env("HOME", self.root().join("home"))
+            .output();
+    }
+}
+
+// Kills an installer that skips hook setup without Herdr, hooks without a baked state dir, a
+// missing install.json marker, and a leftover report for the standalone state dir.
+#[test]
+fn install_sh_runs_setup_without_herdr() {
+    let site = Site::new();
+    let (output, code) = site.install_sh();
+    assert!(matches!(code, Some(0 | 3)), "{code:?}\n{output}");
+    assert!(!output.contains("not registered"), "{output}");
+    let state = site.standalone_state();
+    let claude = fs::read_to_string(site.root().join("claude/settings.json")).unwrap();
+    assert!(
+        claude.contains(&format!("'--state-dir' '{}'", state.display())),
+        "{claude}"
+    );
+    let codex = fs::read_to_string(site.root().join("codex/hooks.json")).unwrap();
+    assert!(codex.contains("--state-dir"), "{codex}");
+    assert_eq!(
+        fs::read_to_string(state.join("node/install.json")).unwrap(),
+        r#"{"mode":"standalone"}"#
+    );
+    let doctor =
+        herdr_threads::test_support::spawn::command(site.root().join("prefix/bin/herdr-threads"))
+            .args(["--state-dir"])
+            .arg(&state)
+            .args(["doctor", "--json"])
+            .env("HOME", site.root().join("home"))
+            .env("PATH", site.root().join("bin"))
+            .output()
+            .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&doctor.stdout).contains("leftover"),
+        "{}",
+        String::from_utf8_lossy(&doctor.stdout)
+    );
+    assert!(!output.contains("leftover"), "{output}");
+}
+
+// Kills a changed installer transcript or hook file when a `herdr` is on PATH (golden).
+#[test]
+fn install_sh_with_stub_herdr_byte_identical() {
+    let site = Site::new();
+    site.stub_herdr();
+    let (output, code) = site.install_sh();
+    let claude = fs::read_to_string(site.root().join("claude/settings.json")).unwrap_or_default();
+    let got = format!(
+        "exit={code:?}\n{output}\n--- claude settings.json\n{}\n",
+        claude.replace(site.root().to_str().unwrap(), "<root>")
+    );
+    let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/golden/setup/install_sh_stub_herdr.txt");
+    if std::env::var_os("HT_BLESS_GOLDEN").is_some() {
+        fs::write(&golden, &got).unwrap();
+    }
+    assert_eq!(got, fs::read_to_string(golden).unwrap());
+    assert!(!site.standalone_state().join("node/install.json").exists());
+}

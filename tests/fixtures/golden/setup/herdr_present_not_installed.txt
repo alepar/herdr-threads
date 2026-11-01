@@ -1,0 +1,1 @@
+herdr-threads: state directory unknown: the herdr-threads Herdr plugin is not installed (`herdr plugin list`); install or link it, or pass --state-dir; use --state-dir or HERDR_PLUGIN_STATE_DIR (invalid_request)

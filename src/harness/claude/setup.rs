@@ -1118,7 +1118,7 @@ const CHANNEL_STATUS_UNAVAILABLE: &str = "channel status unavailable";
 fn mod_daemon_status(env: &SetupEnv) -> Value {
     use crate::cli::doctor::{Daemon, observation_budget, probe_daemon};
     let unavailable = |why: &str| json!({"status": CHANNEL_STATUS_UNAVAILABLE, "reason": why});
-    let (Ok(state), Ok(host)) = (env.state_dir(), env.host_endpoint()) else {
+    let (Ok(state), Ok(host)) = (env.state_dir(), env.host_endpoint_optional()) else {
         return unavailable("the Herdr instance could not be resolved");
     };
     let Ok(context) =
