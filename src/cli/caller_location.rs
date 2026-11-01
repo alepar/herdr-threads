@@ -174,14 +174,6 @@ impl CallerEnv {
         SeatName::parse(self.text(named::ENV_SEAT_NAME)?).ok()
     }
 
-    /// The environment names a herdr-core terminal (id and socket) and no Herdr pane: a
-    /// non-Pane site, which discovers the standalone default state dir like a Named one.
-    pub fn terminal_site(&self) -> bool {
-        self.vars.contains_key(HC_TERMINAL_ID_ENV)
-            && self.vars.contains_key(HC_TERMINAL_SOCKET_ENV)
-            && !self.vars.contains_key(native::ENV_PANE_ID)
-    }
-
     pub fn locate(&self, mode: EnvMode) -> Result<Option<Located>, LocatorError> {
         // Precedence rule 1: a valid name replaces only the target, in either mode and with no
         // Herdr environment; an invalid one is a hard error.
