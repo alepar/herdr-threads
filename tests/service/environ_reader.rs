@@ -21,12 +21,19 @@ use crate::{
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 
+/// No core can be had for any socket.
+fn no_core(_: &str) -> Result<Arc<dyn HostPort>, ApiError> {
+    Err(ApiError::unsupported("no core"))
+}
+
 const NAME_VAR: &str = crate::host::named::ENV_SEAT_NAME;
 
 /// A refusing host that owns one pane and serves from a settable server pid (0 = no pid).
 pub(crate) struct EnvHost {
     pane: &'static str,
     server: AtomicU32,
+    /// A herdr-core stand-in: `pane` is its terminal id and it answers terminal ids.
+    core: bool,
 }
 
 impl EnvHost {
@@ -34,6 +41,15 @@ impl EnvHost {
         Arc::new(Self {
             pane,
             server: AtomicU32::new(server.unwrap_or(0)),
+            core: false,
+        })
+    }
+    /// A herdr-core stand-in owning terminal `terminal`, served from `server`.
+    pub(crate) fn core(terminal: &'static str, server: Option<u32>) -> Arc<Self> {
+        Arc::new(Self {
+            pane: terminal,
+            server: AtomicU32::new(server.unwrap_or(0)),
+            core: true,
         })
     }
     /// The server restarted as `pid`.
@@ -43,6 +59,16 @@ impl EnvHost {
 }
 
 impl HostPort for EnvHost {
+    fn kind(&self) -> crate::ports::HostKind {
+        if self.core {
+            crate::ports::HostKind::Hc
+        } else {
+            crate::ports::HostKind::Herdr
+        }
+    }
+    fn answers_terminal_ids(&self) -> bool {
+        self.core
+    }
     fn target_root_process(
         &self,
         target: &HostTargetId,
@@ -238,28 +264,36 @@ fn unreadable_env_skips_check() {
         "x",
         "w1:p1",
         &hosts,
+        &no_core,
         &ctx,
         reads(carries("x"))
     ));
     assert!(
-        !inherited_name("x", "w1:p1", &hosts, &ctx, reads(carries("y"))),
+        !inherited_name("x", "w1:p1", &hosts, &no_core, &ctx, reads(carries("y"))),
         "a different name is honoured"
     );
     assert!(
-        !inherited_name("x", "w1:p1", &hosts, &ctx, reads(None)),
+        !inherited_name("x", "w1:p1", &hosts, &no_core, &ctx, reads(None)),
         "an unreadable environment skips the check"
     );
     assert!(
-        !inherited_name("x", "w1:p1", &hosts, &ctx, reads(Some(Vec::new()))),
+        !inherited_name(
+            "x",
+            "w1:p1",
+            &hosts,
+            &no_core,
+            &ctx,
+            reads(Some(Vec::new()))
+        ),
         "an environment without the variable"
     );
     assert!(
-        !inherited_name("x", "w9:p9", &hosts, &ctx, reads(carries("x"))),
+        !inherited_name("x", "w9:p9", &hosts, &no_core, &ctx, reads(carries("x"))),
         "no host owns the pane"
     );
     let no_pid: Arc<dyn HostPort> = EnvHost::new("w1:p1", None);
     assert!(
-        !inherited_name("x", "w1:p1", &[no_pid], &ctx, reads(carries("x"))),
+        !inherited_name("x", "w1:p1", &[no_pid], &no_core, &ctx, reads(carries("x"))),
         "a server with no pid skips the check"
     );
     // The real reader on a pid that cannot exist.

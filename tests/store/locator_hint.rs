@@ -322,3 +322,37 @@ fn seat_inspect_lists_bindings_by_locator() {
         ]
     );
 }
+
+// Kills: the wire hint stored raw (a newline fails the control-character check, a long socket
+// path the length check, so M9 and `seat inspect` would lose the hint), a terminal stored with
+// its socket path instead of the `<stem>:<tN>` display form, and a later candidate stored.
+#[test]
+fn stored_hint_is_the_display_form_of_the_first_candidate() {
+    let mut f = fixture();
+    let (seat, _) = f.resolve(None, "op-0");
+    f.bind(&seat, "s1");
+    f.resolve(Some("/run/hc/alpha.sock:t1"), "op-1");
+    assert_eq!(f.hints(), vec![Some("alpha:t1".to_owned())]);
+    // A pane beside a terminal stores the pane, its first candidate.
+    f.bind(&seat, "s2");
+    let (_, second) = f.resolve(Some("w1:p1\n/run/hc/alpha.sock:t1"), "op-2");
+    assert_eq!(second, pair("alpha:t1", "w1:p1"));
+    assert_eq!(
+        f.hints(),
+        vec![Some("alpha:t1".to_owned()), Some("w1:p1".to_owned())]
+    );
+    // A repeat of either form is no M9.
+    assert_eq!(f.resolve(Some("/run/hc/alpha.sock:t1"), "op-3").1, None);
+    assert_eq!(
+        f.resolve(Some("w1:p1\n/run/hc/alpha.sock:t1"), "op-4").1,
+        None
+    );
+    // A socket path past the stored-hint bound still stores its short display form.
+    f.bind(&seat, "s3");
+    let long = format!("/run/{}/beta.sock:t2", "d".repeat(200));
+    f.resolve(Some(&long), "op-5");
+    assert_eq!(
+        f.hints().last().cloned().flatten().as_deref(),
+        Some("beta:t2")
+    );
+}

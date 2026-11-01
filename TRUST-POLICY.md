@@ -405,7 +405,7 @@ in-contract (see Accepted limits).
 from the connection's peer pid (or the claim's liveness pid) and verifies a candidate only when its
 host-reported root process (`target_root_process`: a Herdr pane's shell, an hc terminal's pid) is an ancestor;
 the nearest ancestor root wins, whichever family owns it. A pane candidate asks only the Herdr hosts and a
-terminal candidate only the hc hosts. If nothing verifies (not an ancestor, host unreachable, daemon too old
+terminal candidate only the core its socket names, attached on a miss. If nothing verifies (not an ancestor, host unreachable, daemon too old
 to know the command), no seat binds and nothing falls back to a candidate: the CLI prints M4 (naming both
 candidates and asking to unset the stale one) and hooks exit 0 with M4 on stderr and inject nothing. A
 verified terminal binds nothing to the pane the environment also named. `HC_TERMINAL_ID` without
@@ -420,9 +420,7 @@ subject with no readable start stamp is never cached. Accepted limits: (1) a pro
 is not a wall; (2) a double-forked process, and a Codex in daemon mode (its process reparented away from the
 terminal), has no ancestor root, so with two families it is unverifiable and refused, and with one family it
 is accepted unverified; (3) a single-family stale environment (a `HERDR_PANE_ID` left in an hc terminal with
-no `HC_TERMINAL_ID`, or the reverse) is accepted as that family, as A1 always did; (4) the terminal candidate
-matches an attached hc host by terminal id, not by core socket, so with several cores attached a `tN` of
-another core whose root is an ancestor would verify. The live run of Codex in a real core, with and without
+no `HC_TERMINAL_ID`, or the reverse) is accepted as that family, as A1 always did. The live run of Codex in a real core, with and without
 `--no-daemon` (spike H-C1), is remaining evidence: only the fallback over fake process trees is tested.
 
 **Invocation spelling.** Ordinary root commands act as agents. Person and local-operator
@@ -637,9 +635,10 @@ model open work, and summary closure never changes receipt state or installs glo
   only a different name, or a server restarted without the variable, binds); a server with no pid, an
   unreadable environment (another user, a gone pid, an unsupported platform) or a pane no host answers
   for skips the check, which leaves only observability (D1 limit); and the hint is the caller's
-  claim, not verification, so a caller that omits it is not checked (cooperative model). A herdr-core
-  terminal caller sends `<session>:<tN>` (the core socket's file stem and `HC_TERMINAL_ID`) when it has
-  no pane; the hc host answers `server_process()` with the peer pid of its core socket (the
+  claim, not verification, so a caller that omits it is not checked (cooperative model). A named
+  caller sends every candidate it has, the pane id and `<core socket>:<tN>`; each is checked, and the
+  core a terminal candidate names is attached for the check (one that cannot be attached skips it).
+  The hc host answers `server_process()` with the peer pid of its core socket (the
   `herdr-core serve` process, from the connection's `LocalEndpointWitness`), the same environ read
   applies, and M6 then names `herdr-core` in place of `Herdr` (same 129 bytes plus name and label).
 - *Second-locator notice (named seats, N4-hint, M9)*: a named resolve that carries `ResolveSeat.locator_hint`

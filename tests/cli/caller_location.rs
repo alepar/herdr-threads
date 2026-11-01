@@ -393,6 +393,32 @@ fn tmux_hint_needs_a_named_caller_in_a_tmux_pane() {
     ));
 }
 
+// Kills: a locator hint that drops the core socket (two cores sharing `tN` look alike) or sends
+// only one of the candidates a named caller has.
+#[test]
+fn locator_hint_carries_socket_and_every_candidate() {
+    let named = [("HERDR_THREADS_SEAT_NAME", "reviewer")];
+    let terminal = [
+        ("HC_TERMINAL_ID", "t4"),
+        ("HC_TERMINAL_SOCKET", "/run/hc/core-a.sock"),
+    ];
+    let hint = |pairs: &[&[(&str, &str)]]| env(&pairs.concat()).locator_hint();
+    assert_eq!(
+        hint(&[&named, &terminal]).as_deref(),
+        Some("/run/hc/core-a.sock:t4")
+    );
+    assert_eq!(
+        hint(&[&named, &terminal, &[("HERDR_PANE_ID", "w1:p2")]]).as_deref(),
+        Some("w1:p2\n/run/hc/core-a.sock:t4")
+    );
+    assert_eq!(
+        hint(&[&named, &[("HC_TERMINAL_ID", "t4")]]),
+        None,
+        "an id with no socket names no core"
+    );
+    assert_eq!(hint(&[&terminal]), None, "no name, no hint");
+}
+
 // Kills: a caller-location variable (`HC_TERMINAL_ID`, `TMUX`, ...) missing from the test scrub, so
 // the suite's result depends on whether the runner sits in a herdr-core terminal or a tmux pane.
 #[test]

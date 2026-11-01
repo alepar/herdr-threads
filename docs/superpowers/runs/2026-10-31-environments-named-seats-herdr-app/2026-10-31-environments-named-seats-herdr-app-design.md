@@ -373,7 +373,9 @@ grammar validation. An invalid value is stored as NULL and never rejected.
 
 **`locator_hint`, `readonly`, `no_wake_reports`.** Recommended:
 
-- `locator_hint` holds a pane id or `<core>:<tN>`. It is a hint, never authority; only the second-locator notice,
+- `locator_hint` is, on the wire, every host candidate the caller has, newline-joined: the pane id and/or
+  `<core socket>:<tN>`, socket included, so the daemon selects the core by socket. A binding stores only the first
+  candidate, a terminal as `<core>:<tN>` (the socket's file stem). It is a hint, never authority; only the second-locator notice,
   `seat inspect` and the pane-form refusal read it.
 - `readonly=1` is set when the binding's env has `HERDR_THREADS_SEAT_READONLY=1` (D3). That binding's display never
   ACKs receipt-bearing rows, and its turn hooks skip them, but it reads and sends normally.

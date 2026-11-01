@@ -11383,6 +11383,15 @@ mod two_family_guard {
                     request,
                     Some(30),
                     &hosts,
+                    &|_| {
+                        hosts
+                            .iter()
+                            .find(|host| host.answers_terminal_ids())
+                            .cloned()
+                            .ok_or_else(|| {
+                                crate::protocol::results::ApiError::unsupported("no core")
+                            })
+                    },
                     0,
                     &budget(),
                 ))),
@@ -11592,6 +11601,15 @@ mod two_family_guard {
                     &request,
                     Some(30),
                     &self.hosts,
+                    &|_| {
+                        self.hosts
+                            .iter()
+                            .find(|host| host.answers_terminal_ids())
+                            .cloned()
+                            .ok_or_else(|| {
+                                crate::protocol::results::ApiError::unsupported("no core")
+                            })
+                    },
                     0,
                     b,
                 ))),
