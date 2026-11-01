@@ -347,6 +347,102 @@ fn retiring_held_row_leaves_existing_alone() {
     assert_eq!((resolved.as_str(), created), (existing.as_str(), false));
 }
 
+// Kills: a parked named restore released by any non-named host row (the old `PARKED_READY`), which
+// re-parks it on every pass, and one never released by the `kind='named'` row it waits on.
+#[test]
+fn named_restore_parked_for_the_named_row_releases_on_it() {
+    let mut f = fixture();
+    let seat = f.restore(Some("w")).unwrap();
+    // The node lost its named row and the seat: park the seat's own `seat.created` on the host.
+    f.conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+    f.conn
+        .execute("DELETE FROM seats WHERE id=?1", [seat.as_str()])
+        .unwrap();
+    f.conn
+        .execute(
+            "DELETE FROM seat_archival WHERE seat_id=?1",
+            [seat.as_str()],
+        )
+        .unwrap();
+    f.conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    f.conn
+        .execute("UPDATE herdr_hosts SET kind='hc' WHERE kind='named'", [])
+        .unwrap();
+    // Applied is terminal by trigger; this test builds the parked state a wipe-and-pull would.
+    f.conn
+        .execute_batch("DROP TRIGGER journal_applied_terminal")
+        .unwrap();
+    let parked = f
+        .conn
+        .execute(
+            "UPDATE journal SET apply_state='parked_dep',parked_on='wait:host',applied_seq=NULL \
+             WHERE kind='seat.created'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(parked, 1);
+    let replay = |f: &mut Fx| {
+        let context = &f.context;
+        context
+            .execute_decision(
+                &mut f.conn,
+                |_| Ok(()),
+                |tx, at, ()| {
+                    crate::store::apply::replay(
+                        tx,
+                        context,
+                        at,
+                        crate::store::apply::ReplayScope::Startup,
+                        crate::store::apply::ApplyLimits::default(),
+                    )
+                },
+            )
+            .unwrap()
+    };
+    let state = |f: &Fx| -> String {
+        f.conn
+            .query_row(
+                "SELECT apply_state FROM journal WHERE kind='seat.created'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
+    // The fixture's Herdr row and a non-named row alone do not release a named park.
+    let progress = replay(&mut f);
+    assert_eq!((progress.replayed, progress.parked), (0, 0), "{progress:?}");
+    assert_eq!(state(&f), "parked_dep");
+
+    // A Herdr row and a second kind: still no named row.
+    let progress = replay(&mut f);
+    assert_eq!((progress.replayed, progress.parked), (0, 0), "{progress:?}");
+
+    let named = f.named;
+    f.conn
+        .execute(
+            "UPDATE herdr_hosts SET kind='named' WHERE host_id=?1",
+            [named.get()],
+        )
+        .unwrap();
+    let progress = replay(&mut f);
+    let error: Option<String> = f
+        .conn
+        .query_row(
+            "SELECT apply_error FROM journal WHERE kind='seat.created'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(progress.applied, 1, "{progress:?} {error:?}");
+    assert_eq!(state(&f), "applied");
+    let row = f.row(&seat);
+    assert_eq!(
+        (row.0.as_str(), row.1, row.2.as_deref()),
+        ("unresolved", named.get(), Some("w"))
+    );
+}
+
 // Kills: placing an unnamed restore on the latest host of a mixed-kind node (the old
 // `ORDER BY last_attached_at`), and refusing it on a single-kind node.
 #[test]
