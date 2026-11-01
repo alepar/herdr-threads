@@ -6137,6 +6137,8 @@ struct PokeStore {
     log: Mutex<Vec<String>>,
     held: Mutex<HashMap<String, SeatId>>,
     wake: Mutex<Vec<WakeCandidate>>,
+    /// Overrides the authority of a wake reservation.
+    wake_authority: Mutex<Option<ReservedWakeAuthority>>,
     seq: AtomicU64,
     /// The largest `limit` `poke_candidates` was asked for.
     asked_limit: AtomicU64,
@@ -6152,6 +6154,7 @@ impl PokeStore {
             log: Mutex::new(Vec::new()),
             held: Mutex::new(HashMap::new()),
             wake: Mutex::new(Vec::new()),
+            wake_authority: Mutex::new(None),
             seq: AtomicU64::new(0),
             asked_limit: AtomicU64::new(0),
             rechecked: Mutex::new(Vec::new()),
@@ -6232,9 +6235,16 @@ impl WakePort for PokeStore {
             return Ok(None);
         };
         self.log.lock().unwrap().push("reserve_wake".into());
+        let base = poke_reservation(candidate.seat.as_str(), attempt.as_str());
         Ok(Some(WakeReservation {
             attention_witness: candidate.attention_witness.clone().unwrap(),
-            ..poke_reservation(candidate.seat.as_str(), attempt.as_str())
+            authority: self
+                .wake_authority
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| base.authority.clone()),
+            ..base
         }))
     }
     fn complete_wake(
@@ -6350,6 +6360,13 @@ impl PokeHost {
     }
 }
 impl HostPort for PokeHost {
+    fn foreground_pids(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Vec<u32>, ApiError> {
+        Ok(vec![9999])
+    }
     fn live_topology(
         &self,
         _: &crate::protocol::time::CallBudget,
@@ -6395,6 +6412,15 @@ impl HostPort for PokeHost {
         seat: &SeatId,
         observation: &HostObservation,
     ) -> Option<SafeWakeTarget> {
+        // A cooperative read names no occupant.
+        if observation.occupant.is_none() {
+            return CooperativeRecordingHost {
+                observation: observation.clone(),
+                prompted: std::sync::Mutex::new(vec![]),
+                foreground: Vec::new(),
+            }
+            .safe_wake_target(seat, observation);
+        }
         FakeNativeHost {
             observation: observation.clone(),
             submitted: AtomicU64::new(0),
@@ -7038,6 +7064,49 @@ fn poke_and_wake_due_send_one_prompt_with_poke_text() {
         ["reserve_wake", "complete_poke:Submitted:3"],
         "the wake's own settlement carried the poke's receipts"
     );
+}
+
+/// Kills: a due soft-deadline poke riding a wake to a dormant target: its text names threads, and
+/// the grant is an ordinary wake prompt only (TRUST-POLICY A4 *Wake*).
+#[test]
+fn a_due_poke_does_not_ride_a_wake_to_a_dormant_target() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = wake_and_poke_store(clock);
+    *store.wake_authority.lock().unwrap() = Some(ReservedWakeAuthority::Cooperative {
+        targets: vec![crate::ports::WakeTarget {
+            provenance: "cooperative_top_level".into(),
+            binding: crate::protocol::ids::BindingId::parse(
+                "dff8c3cecb26d58f0d3b496e750b7b1c".to_string(),
+            )
+            .unwrap(),
+            harness: "codex".into(),
+            fingerprint_pid: Some(4242),
+            dormant: true,
+        }],
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation: Some(1),
+        harness: Some("codex".into()),
+    });
+    let host = PokeHost::new(HostUiState::Idle, false);
+    {
+        let mut observation = host.observation.lock().unwrap();
+        observation.occupant = None;
+        observation.occupancy = StructuralOccupancy::Unknown;
+        observation.execution = ExecutionEvidence::Unknown;
+    }
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            assert_eq!(scheduler.drive_wakes(&poke_budget()).unwrap().attempted, 1);
+        },
+    );
+    // The ordinary wake text: this store double has no hook evidence, so the marker.
+    assert_eq!(host.prompts(), [crate::notification::policy::MARKER]);
+    assert!(store.marked.lock().unwrap().is_empty(), "no soft_poked_at");
+    assert_eq!(store.log(), ["reserve_wake", "complete_wake:Submitted"]);
 }
 
 #[test]

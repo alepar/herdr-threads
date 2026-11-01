@@ -802,6 +802,25 @@ fn a_delivery_row_alone_makes_a_dormant_binding_a_wake_target() {
     assert!(targets[0].dormant);
 }
 
+/// A seat left in a shell under silent mail costs a bounded walk per discovery pass, and an urgent
+/// row is found only inside that window (TRUST-POLICY A4 *Wake*, accepted limit).
+#[test]
+fn a_dormant_walk_reads_only_the_newest_pending_rows() {
+    let t0 = NudgeThreshold::new(0).unwrap();
+    let mut db = placed_db();
+    let a = enroll_binding(&db, "sess-A", None);
+    disconnect(&db, &a, DisconnectReason::ProcessExit);
+    publish_p0(&mut db, 3);
+    for n in 4..(3 + super::wake::DORMANT_WINDOW) {
+        publish(&mut db, n);
+    }
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), Some(3), "last in");
+    assert!(has_wake_rows(&db, "s").unwrap());
+    publish(&mut db, 3 + super::wake::DORMANT_WINDOW);
+    assert_eq!(wake_frontier(&db, "s", t0).unwrap(), None, "buried");
+    assert!(!has_wake_rows(&db, "s").unwrap());
+}
+
 #[test]
 fn a_binding_the_seats_mapping_moved_past_is_not_dormant() {
     let mut db = placed_db();

@@ -127,9 +127,9 @@ pub(crate) use seat_unread_sql;
 /// which reconnects on its next call). A binding disconnected as superseded, by an end event,
 /// retirement, unresolve, replacement or migration owes nothing, so it neither keeps the seat-wide
 /// `state` `pending` nor (through `seat_unread_sql!`, which counts connected bindings only) holds the
-/// wake frontier open. Decides only the seat-wide `state` (`MARK_DISPLAYED_SQL`), which the only
-/// delivery or wake decision to read is a dormant binding's walk (`DORMANT_PENDING_SQL`, a candidate
-/// set for the binding's own unread predicate).
+/// wake frontier open. Decides only the seat-wide `state` (`MARK_DISPLAYED_SQL`). No delivery or wake
+/// decision reads that state, except that a dormant binding's walk (`DORMANT_ROWS`) takes its
+/// candidates from it and decides each by the binding's own unread predicate.
 macro_rules! seat_owes_display_sql {
     () => {
         concat!(
@@ -267,7 +267,7 @@ mod completion;
 mod direct;
 mod inbox;
 mod staging;
-mod wake;
+pub(crate) mod wake;
 
 pub(in crate::store) use self::direct::*;
 pub use self::{completion::*, inbox::*, staging::*, wake::*};

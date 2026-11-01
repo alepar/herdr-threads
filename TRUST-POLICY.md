@@ -746,7 +746,8 @@ model open work, and summary closure never changes receipt state or installs glo
   prompt (never a soft-deadline poke, whose text names threads): no binding, seat, cursor, receipt or availability
   changes, and the session reconnects only through its own later check-in. A session that connects voids a wake
   still reserved for the dormant target, and a refused one retries at up to 5 minutes, since nothing else clears a
-  pane that stays in a shell. Its pid is stale, so the composer wake takes it on any Herdr-reported foreground
+  pane that stays in a shell. Only the seat's newest 4096 pending rows are read for it, an accepted limit: an admitted
+  item buried under that many silent ones no longer wakes the seat, and still arrives on its next turn. Its pid is stale, so the composer wake takes it on any Herdr-reported foreground
   process of its own pane (no foreground report, no wake) and the native recheck requires Herdr's agent kind there
   to be its harness and awaiting input. An accepted limit: another session of that harness in the pane, which the
   seat would enroll anyway, gets the wake. An end event never leaves a dormant binding. A target whose mod channel is live and not stalled is woken through that channel
