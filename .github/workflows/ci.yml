@@ -70,6 +70,8 @@ jobs:
       HT_SWEEP_PANIC_FILE: ${{ github.workspace }}/sweep-panics.log
       # The frozen wire-copy test compares against the v2.1.1 tag: fail, not skip, without it.
       HT_REQUIRE_TAGS: '1'
+      # The daemon-level tmux wake test needs tmux (installed below): fail, not skip, without it.
+      HT_REQUIRE_TMUX: '1'
     steps:
       - name: Validate changed-path detector
         if: always()
@@ -92,11 +94,11 @@ jobs:
         with:
           python-version: '3.11.9'
 
-      - name: zsh for shell round-trip tests
+      - name: shell and tmux for round-trip tests
         if: needs.changes.outputs.heavy == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends zsh
+          sudo apt-get install -y --no-install-recommends zsh tmux
 
       - name: Rust toolchain
         if: needs.changes.outputs.heavy == 'true'
@@ -182,17 +184,17 @@ jobs:
             exit 1
           fi
 
-      - name: Skipped Herdr tests (job summary)
+      - name: Skipped Herdr and tmux tests (job summary)
         if: always() && needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
           {
-            echo "### Isolated-Herdr tests (shard ${{ matrix.shard }}/${{ strategy.job-total }})"
+            echo "### Isolated-Herdr and tmux tests (shard ${{ matrix.shard }}/${{ strategy.job-total }})"
             echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS=${HT_SKIP_HERDR_TESTS:-unset}."
             echo 'Skipped by name (empty means none skipped):'
             echo '```'
-            grep -ho 'skipped: no herdr[^<&]*' test.log target/nextest/ci/junit.xml 2>/dev/null | sort -u || true
+            grep -ho 'skipped: no \(herdr\|tmux\)[^<&]*' test.log target/nextest/ci/junit.xml 2>/dev/null | sort -u || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
