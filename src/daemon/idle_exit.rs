@@ -1,5 +1,5 @@
 //! Idle exit for a store-only daemon with nothing to serve (peer-link spec
-//! §15 Idle exit). No other idle exit exists: a daemon with a host, a peer
+//! §15 Idle exit). No other idle exit exists: a daemon with a seated host, a peer
 //! link, an enabled dial target or a local client stays up.
 
 use crate::daemon::transport::ConnectionGauge;
@@ -14,7 +14,7 @@ pub const IDLE_EXIT_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often the monitor samples the probe in production.
 pub const CHECK_EVERY: Duration = Duration::from_secs(30);
 
-/// What keeps the daemon alive: attached hosts, wake-armed named bindings, peer links, enabled
+/// What keeps the daemon alive: dialled hosts holding a resolved seat, wake-armed named bindings, peer links, enabled
 /// dial targets and local client connections.
 ///
 /// Responsibility (ActivityProbe)
@@ -31,11 +31,11 @@ pub struct ActivityProbe {
     pub gauge: ConnectionGauge,
 }
 
-/// Whether a dialled host keeps the daemon up (07 §5.3). A dialled session
-/// exists only for a remembered host holding seats; the built-in host is never
-/// dialled and never counts, so a daemon with only it exits when idle.
+/// Whether a dialled host keeps the daemon up (07 §5.3): one that holds a resolved local seat.
+/// An attached host without one (a seatless core, a startup hint nobody claimed on) does not;
+/// the built-in host is never dialled and never counts, so a daemon with only it exits when idle.
 pub(crate) fn dialled_hosts_active(hosts: &HostSessions) -> bool {
-    hosts.attached_count() != 0
+    hosts.any_seated()
 }
 
 /// The host half of the liveness inputs: a dialled host, or a named binding whose tmux wake the
@@ -45,7 +45,7 @@ pub(crate) fn host_inputs_active(hosts: &HostSessions) -> bool {
 }
 
 impl ActivityProbe {
-    /// True while any host is attached, any named binding holds a verified tmux wake hint on a
+    /// True while any dialled host holds a resolved local seat, any named binding holds a verified tmux wake hint on a
     /// live process (the daemon could still wake it), any peer link is established or
     /// handshaking (inbound or dialed), any dial target is enabled, or any
     /// local client connection is open.

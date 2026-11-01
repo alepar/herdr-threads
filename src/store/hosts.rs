@@ -194,6 +194,27 @@ pub fn host_row(conn: &Connection, id: HostId) -> Result<Option<HostRow>, ApiErr
     Ok(found.flatten())
 }
 
+/// The hosts holding a resolved local seat: the idle-exit input of a dialled host (07 §5.3). A
+/// host with only unresolved, retired or remote seats, or none, is absent.
+pub fn hosts_with_resolved_seat(
+    conn: &Connection,
+) -> Result<std::collections::BTreeSet<HostId>, ApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT host_id FROM seats \
+             WHERE is_local=1 AND state='resolved' AND host_id IS NOT NULL",
+        )
+        .map_err(store_error)?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, i64>(0))
+        .map_err(store_error)?;
+    let mut out = std::collections::BTreeSet::new();
+    for row in rows {
+        out.insert(HostId::from_row(row.map_err(store_error)?));
+    }
+    Ok(out)
+}
+
 /// The hosts this node has attached before, most recently attached first, at
 /// most `limit`. Rows whose endpoint is not a canonical locator are skipped.
 pub fn remembered(conn: &Connection, limit: usize) -> Result<Vec<HostRow>, ApiError> {

@@ -86,11 +86,24 @@ impl FakeHostWorld {
     pub fn plan(self: &Arc<Self>, hint: Option<HostLocator>) -> HostAttachPlan {
         let building = Arc::clone(self);
         let existing = Arc::clone(self);
+        let probing = Arc::clone(self);
         HostAttachPlan {
             hint,
             factory: HostFactory {
-                // A fixture world holds Herdr-shaped fakes only.
-                probe: Arc::new(|_, _| Ok(crate::ports::HostKind::Herdr)),
+                // A fixture is Herdr-shaped unless it reports being a herdr-core.
+                probe: Arc::new(move |locator, _| {
+                    let core = probing
+                        .hosts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(locator.as_str())
+                        .is_some_and(|(port, _)| port.kind() == crate::ports::HostKind::Hc);
+                    Ok(if core {
+                        crate::ports::HostKind::Hc
+                    } else {
+                        crate::ports::HostKind::Herdr
+                    })
+                }),
                 build: Arc::new(move |_, locator| {
                     building
                         .hosts

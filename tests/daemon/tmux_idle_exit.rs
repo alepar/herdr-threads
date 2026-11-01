@@ -69,9 +69,8 @@ fn named(seats: &Arc<GenSeats>) -> Arc<NamedHost> {
 }
 
 // Kills: any cell of dialled x named where the daemon's stay-up answer is not exactly "a dialled
-// host holds a seat, or a live wake-armed binding exists". A dialled host without a resolved local
-// seat is never attached (a session exists only for a remembered host holding seats), so that cell
-// is the no-session one.
+// host holds a resolved seat, or a live wake-armed binding exists". A dialled host without a
+// resolved local seat (a seatless core) is attached but does not count.
 #[test]
 fn combined_idle_exit_predicate_matrix() {
     let Some(tmux) = PrivateTmux::start("tmux_idle_exit_matrix") else {
@@ -100,7 +99,7 @@ fn combined_idle_exit_predicate_matrix() {
         live_pane.pid,
         "tmux:/nonexistent/sock:1:%99"
     ));
-    for dialled in ["none", "no resolved seat", "resolved seat"] {
+    for dialled in ["none", "seatless core", "resolved seat"] {
         for (name, host, armed) in [
             ("none", None, false),
             ("unhinted", Some(Arc::clone(&unhinted)), false),
@@ -108,8 +107,15 @@ fn combined_idle_exit_predicate_matrix() {
             ("dead wake-armed", Some(Arc::clone(&dead)), false),
         ] {
             let rig = Rig::new("tmux-matrix");
-            if dialled == "resolved seat" {
-                rig.dial("/herdr/a.sock", AuditHost::HERDR);
+            match dialled {
+                "resolved seat" => {
+                    rig.dial("/herdr/a.sock", AuditHost::HERDR);
+                }
+                // Attached (a startup hint, a first claim) but holding no resolved seat.
+                "seatless core" => {
+                    rig.dial_seatless("/hc/core.sock", AuditHost::HC);
+                }
+                _ => {}
             }
             if let Some(host) = host {
                 // Make sure the dead host's process is gone before it is counted.

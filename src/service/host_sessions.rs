@@ -29,7 +29,7 @@ use crate::service::{
 };
 use crate::store::hosts::{HostIndex, HostRow};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, RwLock, TryLockError,
@@ -57,6 +57,8 @@ type ProbeHost = Arc<dyn Fn(&HostLocator, Duration) -> Result<HostKind, ApiError
 type SocketExists = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 /// The `herdr_hosts` rows this node attached before, most recent first.
 pub type RememberedHosts = Arc<dyn Fn(&CallBudget) -> Result<Vec<HostRow>, ApiError> + Send + Sync>;
+/// The hosts that hold a resolved local seat, read through the store.
+pub type SeatedHosts = Arc<dyn Fn(&CallBudget) -> Result<BTreeSet<HostId>, ApiError> + Send + Sync>;
 type LogLine = Arc<dyn Fn(&str) + Send + Sync>;
 /// Runs once with the first attached session.
 pub type FirstAttachHook = Box<dyn FnOnce(&Arc<HostSession>) + Send>;
@@ -127,6 +129,8 @@ pub struct SessionDeps {
     pub lane_log: Option<Arc<dyn LaneErrorLog>>,
     /// The remembered `herdr_hosts` rows, read through the store.
     pub remembered: RememberedHosts,
+    /// The hosts holding a resolved local seat: what keeps a dialled host from idling out.
+    pub seated: SeatedHosts,
     pub sweep_interval: Duration,
     /// Each session's wake-lane safety tick and observation capture cadence
     /// (production: `WAKE_SAFETY_TICK_MILLIS` and `OBSERVATION_CADENCE`; see
@@ -161,6 +165,7 @@ impl SessionDeps {
             log: Arc::new(|_: &str| {}),
             lane_log: None,
             remembered: Arc::new(|_: &CallBudget| Ok(Vec::new())),
+            seated: Arc::new(|_: &CallBudget| Ok(BTreeSet::new())),
             sweep_interval: DEFAULT_SWEEP_INTERVAL,
             wake_safety_tick: Duration::from_millis(
                 crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
@@ -562,6 +567,31 @@ impl HostSessions {
         let mut all = self.attached();
         all.extend(self.builtin.get().cloned());
         all
+    }
+
+    /// Whether any dialled session's host holds a resolved local seat (07 §5.3 idle exit). A
+    /// store that cannot answer counts as holding one, so a read failure never ends the daemon.
+    pub fn any_seated(&self) -> bool {
+        let attached = self.attached();
+        if attached.is_empty() {
+            return false;
+        }
+        match (self.deps.seated)(&self.background_budget()) {
+            Ok(seated) => attached
+                .iter()
+                .any(|session| seated.contains(&session.host_id)),
+            Err(_) => true,
+        }
+    }
+
+    /// The first dialled session's Pacer for a host lane, among the sessions that run the lane
+    /// (a host with no wake capability has no wake lane, so it is not "first" for `Wakes`).
+    pub fn first_pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
+        self.attached().into_iter().find_map(|session| match lane {
+            Lane::Observation => Some(Arc::clone(session.observation().pacer())),
+            Lane::Wakes => session.wake().map(|wake| Arc::clone(wake.pacer())),
+            _ => None,
+        })
     }
 
     pub fn attached_count(&self) -> usize {
@@ -1398,6 +1428,7 @@ mod tests {
                     let db = remembered_store.context().open_query(budget.clone())?;
                     crate::store::hosts::remembered(&db, usize::MAX)
                 }),
+                seated: Arc::new(|_| Ok(BTreeSet::new())),
                 sweep_interval: sweep,
                 wake_safety_tick: Duration::from_millis(
                     crate::service::workers::WAKE_SAFETY_TICK_MILLIS,

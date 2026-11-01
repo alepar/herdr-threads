@@ -213,10 +213,10 @@ pub(crate) fn target_hosts(sessions: &HostSessions) -> Vec<Arc<HostSession>> {
 }
 
 /// Where one accepted request launches.
-struct Placement {
-    session: Arc<HostSession>,
+pub(crate) struct Placement {
+    pub(crate) session: Arc<HostSession>,
     /// The pane for `Pane`, the workspace for `NewTab`.
-    target: String,
+    pub(crate) target: String,
 }
 
 fn now_ms(clock: &dyn Clock) -> i64 {
@@ -282,7 +282,7 @@ impl PeerLaunchService {
     }
 
     /// The one attached host and pane (or workspace) the plan names.
-    fn place(&self, target: &LaunchTarget) -> Result<Placement, LaunchState> {
+    pub(crate) fn place(&self, target: &LaunchTarget) -> Result<Placement, LaunchState> {
         let budget = self.budget();
         let mut found: Vec<Placement> = Vec::new();
         let mut failed = false;
