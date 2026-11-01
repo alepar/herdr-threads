@@ -73,6 +73,8 @@ mod handoff_topology_cli;
 mod handoff_v3;
 #[path = "host_adapter.rs"]
 mod host_adapter;
+#[path = "host_neutral_scan.rs"]
+mod host_neutral_scan;
 #[path = "cli/inbox_continuation_context.rs"]
 mod inbox_continuation_context;
 #[path = "sync/incarnations_scenarios.rs"]
