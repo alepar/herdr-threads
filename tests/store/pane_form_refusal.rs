@@ -63,6 +63,7 @@ impl Fixture {
             host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
             operation: OperationId::new("op-named"),
             locator_hint: Some(pane.to_owned()),
+            tmux_hint: None,
         };
         let CommandResult::NamedSeatResolved { seat, .. } = resolve_named_seat(
             &self.context,
