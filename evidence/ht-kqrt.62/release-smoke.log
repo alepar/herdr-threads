@@ -1,12 +1,13 @@
-heavy: slot 1 acquired 06:41:38
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
-=== herdr 0.9.5 (herdr-linux-x86_64): PASS in 126.8s {'herdr_release_smoke': 'PASS', 'herdr_release_busy': 'PASS', 'herdr_release_launch_and_handoff': 'PASS', 'herdr_release_wake': 'PASS', 'herdr_release_move': 'PASS'}
+heavy: slot 1 acquired 07:45:31
+   Compiling herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.62)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 55.62s
+=== herdr 0.9.5 (herdr-linux-x86_64): PASS in 122.6s {'herdr_release_smoke': 'PASS', 'herdr_release_busy': 'PASS', 'herdr_release_launch_and_handoff': 'PASS', 'herdr_release_wake': 'PASS', 'herdr_release_move': 'PASS'}
 no leaked test temp files (no ledger for this run)
 no leaked test processes
-Herdr release matrix at 471447f2d on herdr-linux-x86_64
+Herdr release matrix at a5f9c3a09 on herdr-linux-x86_64
 
 | Herdr | Result | Time | core | launch/handoff | wake | busy | move | Detail |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0.9.5 | PASS | 126.8s | PASS | PASS | PASS | PASS | PASS |  |
+| 0.9.5 | PASS | 122.6s | PASS | PASS | PASS | PASS | PASS |  |
 
 Leak check: clean

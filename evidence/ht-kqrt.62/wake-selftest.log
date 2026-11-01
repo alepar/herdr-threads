@@ -43,7 +43,7 @@ test_failed_cleanup_retains_root (wake_e2e_selftest.Cleanup.test_failed_cleanup_
 test_failed_process_scan_is_unknown_not_clean (wake_e2e_selftest.Cleanup.test_failed_process_scan_is_unknown_not_clean) ... ok
 test_keep_skips_cleanup_without_failing (wake_e2e_selftest.Cleanup.test_keep_skips_cleanup_without_failing) ... ok
 test_leftover_owned_process_fails (wake_e2e_selftest.Cleanup.test_leftover_owned_process_fails) ... ok
-test_refreshed_auth_copy_is_kept_and_reported (wake_e2e_selftest.Cleanup.test_refreshed_auth_copy_is_kept_and_reported) ... wake-e2e: Codex refreshed its tokens during the run; the refreshed credentials are kept at /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.c6ak9qf7/ht-wake-auth.000000-test/auth.json (mode 0600). The source profile's refresh token may have been rotated: copy this file back or log in again, then delete it.
+test_refreshed_auth_copy_is_kept_and_reported (wake_e2e_selftest.Cleanup.test_refreshed_auth_copy_is_kept_and_reported) ... wake-e2e: Codex refreshed its tokens during the run; the refreshed credentials are kept at /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.9huptjjz/ht-wake-auth.000000-test/auth.json (mode 0600). The source profile's refresh token may have been rotated: copy this file back or log in again, then delete it.
 ok
 test_root_removal_failure_fails_cleanup (wake_e2e_selftest.Cleanup.test_root_removal_failure_fails_cleanup) ... ok
 test_root_still_present_after_removal_fails_cleanup (wake_e2e_selftest.Cleanup.test_root_still_present_after_removal_fails_cleanup) ... ok
@@ -152,12 +152,12 @@ ok
 test_malformed_existing_claude_json_is_a_clear_error (wake_e2e_selftest.HarnessMode.test_malformed_existing_claude_json_is_a_clear_error) ... ok
 test_padded_api_key_is_approved_without_its_whitespace (wake_e2e_selftest.HarnessMode.test_padded_api_key_is_approved_without_its_whitespace) ... ok
 test_shim_logs_each_call_for_the_extra_inbox_check (wake_e2e_selftest.HarnessMode.test_shim_logs_each_call_for_the_extra_inbox_check) ...   isolated daemon up; hooks installed by setup for claude, codex
-/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.fn2d0psc/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
-/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.fn2d0psc/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
-/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.fn2d0psc/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
-/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.fn2d0psc/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
-/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.fn2d0psc/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
-/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.fn2d0psc/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
 ok
 test_already_listed_writes_nothing (wake_e2e_selftest.HermesSetup.test_already_listed_writes_nothing) ... ok
 test_default_empty_list_gets_both_names (wake_e2e_selftest.HermesSetup.test_default_empty_list_gets_both_names)
@@ -194,7 +194,7 @@ test_clean_all_pass_run_exits_zero (wake_e2e_selftest.MainExitCode.test_clean_al
 | invite/group | 0 | claude | None | None | {} | PASS |
 
 1/1 expected rows passed (1 collected)
-evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.wi4dlfpc/ev (exit 0)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.5hrog673/ev (exit 0)
 ok
 test_cleanup_problem_fails_an_all_pass_run (wake_e2e_selftest.MainExitCode.test_cleanup_problem_fails_an_all_pass_run) ... [PASS   ] cl-nudge  invite/group      T=0  expect=None  woke=None  t=None {}
 
@@ -204,7 +204,7 @@ test_cleanup_problem_fails_an_all_pass_run (wake_e2e_selftest.MainExitCode.test_
 
 1/1 expected rows passed (1 collected)
 wake-e2e: cleanup incomplete: daemon alive
-evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.k1oza2dj/ev (exit 1)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.kk33l4zc/ev (exit 1)
 ok
 test_cleanup_raising_fails (wake_e2e_selftest.MainExitCode.test_cleanup_raising_fails) ... [PASS   ] cl-nudge  invite/group      T=0  expect=None  woke=None  t=None {}
 
@@ -214,13 +214,13 @@ test_cleanup_raising_fails (wake_e2e_selftest.MainExitCode.test_cleanup_raising_
 
 1/1 expected rows passed (1 collected)
 wake-e2e: cleanup incomplete: cleanup raised: RuntimeError('herdr gone')
-evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.tx3cwwus/ev (exit 1)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.kq3oso2e/ev (exit 1)
 ok
 test_interrupt_still_cleans_up_and_fails (wake_e2e_selftest.MainExitCode.test_interrupt_still_cleans_up_and_fails) ... wake-e2e: aborted: KeyboardInterrupt('signal 15')
-evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.u8gztr3l/ev (exit 1)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.6bf0bxom/ev (exit 1)
 ok
 test_sigterm_while_joining_a_blocked_worker_drains_it (wake_e2e_selftest.MainExitCode.test_sigterm_while_joining_a_blocked_worker_drains_it) ... wake-e2e: aborted: KeyboardInterrupt('signal 15')
-evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.__rih13c/ev (exit 1)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.hqmzj5xi/ev (exit 1)
 ok
 test_ack_with_deadline_then_p0_then_p1_then_p5 (wake_e2e_selftest.MixedOrder.test_ack_with_deadline_then_p0_then_p1_then_p5) ... ok
 test_earlier_deadline_first_and_priority_beats_deadline (wake_e2e_selftest.MixedOrder.test_earlier_deadline_first_and_priority_beats_deadline) ... ok
@@ -244,19 +244,19 @@ test_a_channel_harness_is_never_judged (wake_e2e_selftest.MixedOrderJudged.test_
 test_order_is_judged_only_where_p5_and_p1_stay_silent (wake_e2e_selftest.MixedOrderJudged.test_order_is_judged_only_where_p5_and_p1_stay_silent) ... ok
 test_a_drain_error_does_not_skip_owned_resources (wake_e2e_selftest.PartialStartAndDrainErrors.test_a_drain_error_does_not_skip_owned_resources) ... wake-e2e: aborted: KeyboardInterrupt('signal 2')
 wake-e2e: cleanup incomplete: drain raised: RuntimeError('drain exploded')
-evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.9f_w4yuc/ev (exit 1)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.eacbk5g4/ev (exit 1)
 ok
 test_a_worker_interrupted_mid_start_is_still_joined (wake_e2e_selftest.PartialStartAndDrainErrors.test_a_worker_interrupted_mid_start_is_still_joined)
 Thread.start launched the thread, then the interrupt arrived before start() returned. ... wake-e2e: aborted: KeyboardInterrupt('signal 15 inside start()')
-evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.9p4qljt3/ev (exit 1)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.fbi0oiic/ev (exit 1)
 ok
 test_drain_joins_a_thread_that_finishes_starting_late (wake_e2e_selftest.PartialStartAndDrainErrors.test_drain_joins_a_thread_that_finishes_starting_late)
 The join retries while start() has not completed (the mid-start window), then joins the thread. ... ok
 test_failed_second_thread_start (wake_e2e_selftest.PartialStartAndDrainErrors.test_failed_second_thread_start) ... wake-e2e: aborted: RuntimeError("can't start new thread")
-evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.y5a1kbh8/ev (exit 1)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.wjn98amk/ev (exit 1)
 ok
 test_interrupt_between_thread_starts (wake_e2e_selftest.PartialStartAndDrainErrors.test_interrupt_between_thread_starts) ... wake-e2e: aborted: KeyboardInterrupt('signal 15')
-evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.bnctk7mt/ev (exit 1)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.78ilva1z/ev (exit 1)
 ok
 test_no_or_unreadable_log_is_not_throttling (wake_e2e_selftest.ProviderThrottle.test_no_or_unreadable_log_is_not_throttling) ... ok
 test_only_codex_recipients_probe_the_codex_log (wake_e2e_selftest.ProviderThrottle.test_only_codex_recipients_probe_the_codex_log) ... ok
@@ -324,6 +324,6 @@ test_the_seat_name_is_a_valid_seat_name (wake_e2e_selftest.TmuxNamedCases.test_t
 test_tmux_env_names_no_herdr_pane_enclosing_tmux_or_agent_session (wake_e2e_selftest.TmuxNamedCases.test_tmux_env_names_no_herdr_pane_enclosing_tmux_or_agent_session) ... ok
 
 ----------------------------------------------------------------------
-Ran 214 tests in 101.600s
+Ran 214 tests in 100.798s
 
 OK (skipped=1)
