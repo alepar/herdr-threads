@@ -16,7 +16,7 @@ use std::{collections::BTreeMap, sync::RwLock};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::connection::{api_error, store_error};
-use crate::ports::HostId;
+use crate::ports::{HostId, HostKind};
 use crate::protocol::{
     ids::HostLocator,
     results::{ApiError, ErrorCode},
@@ -30,11 +30,32 @@ pub struct HostRow {
     pub created_at: i64,
     pub last_attached_at: Option<i64>,
     pub host_epoch: i64,
+    /// The stored `herdr_hosts.kind` text, as written (possibly a kind this
+    /// build does not know; see [`HostRow::host_kind`]).
+    pub kind: String,
+    /// When a Herdr attach last stamped the kind; `None` while it is the
+    /// column default.
+    pub kind_probed_at: Option<i64>,
+}
+
+impl HostRow {
+    /// The row's kind as this build reads it; `Unknown` for foreign text.
+    pub fn host_kind(&self) -> HostKind {
+        HostKind::from_stored(&self.kind)
+    }
+
+    /// Whether this build may attach the row (G4: its kind is implemented).
+    pub fn attachable(&self) -> bool {
+        self.host_kind().is_implemented()
+    }
 }
 
 /// Upserts the host row of `locator` for this node, stamping `last_attached_at`
 /// to `now`, and returns its id with the persisted host epoch (0 for a new
-/// row). One `BEGIN IMMEDIATE`; a second call returns the same id.
+/// row). A Herdr attach also writes `kind='herdr'` and `kind_probed_at=now`. A
+/// row whose stored kind this build does not implement is refused with
+/// `HostUnavailable` and left untouched (G4: never dialled as Herdr). One
+/// `BEGIN IMMEDIATE`; a second call returns the same id.
 pub fn attach_host(
     conn: &mut Connection,
     locator: &HostLocator,
@@ -43,11 +64,31 @@ pub fn attach_host(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(store_error)?;
+    let stored: Option<String> = tx
+        .query_row(
+            "SELECT kind FROM herdr_hosts WHERE endpoint=?1",
+            [locator.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if let Some(kind) = stored
+        && !HostKind::from_stored(&kind).is_implemented()
+    {
+        return Err(api_error(
+            ErrorCode::HostUnavailable,
+            format!(
+                "host {} has kind '{kind}', which this build does not implement",
+                locator.as_str()
+            ),
+        ));
+    }
     let (host_id, epoch): (i64, i64) = tx
         .query_row(
-            "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at) \
-             VALUES ((SELECT id FROM local_node),?1,?2,?2) \
-             ON CONFLICT(endpoint) DO UPDATE SET last_attached_at=excluded.last_attached_at \
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at,kind,kind_probed_at) \
+             VALUES ((SELECT id FROM local_node),?1,?2,?2,'herdr',?2) \
+             ON CONFLICT(endpoint) DO UPDATE SET last_attached_at=excluded.last_attached_at, \
+                 kind='herdr', kind_probed_at=excluded.kind_probed_at \
              RETURNING host_id,host_epoch",
             params![locator.as_str(), now],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -57,7 +98,8 @@ pub fn attach_host(
     Ok((HostId::from_row(host_id), epoch))
 }
 
-const ROW_COLUMNS: &str = "host_id,endpoint,created_at,last_attached_at,host_epoch";
+const ROW_COLUMNS: &str =
+    "host_id,endpoint,created_at,last_attached_at,host_epoch,kind,kind_probed_at";
 
 /// Reads one row; a legacy endpoint that is not a [`HostLocator`] (the interim
 /// unnamed host) yields `None` for its locator.
@@ -65,12 +107,15 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<HostRow>> {
     let endpoint: String = row.get(1)?;
     let id = HostId::from_row(row.get(0)?);
     let (created_at, last_attached_at, host_epoch) = (row.get(2)?, row.get(3)?, row.get(4)?);
+    let (kind, kind_probed_at) = (row.get(5)?, row.get(6)?);
     Ok(HostLocator::parse(endpoint).ok().map(|locator| HostRow {
         id,
         locator,
         created_at,
         last_attached_at,
         host_epoch,
+        kind,
+        kind_probed_at,
     }))
 }
 
@@ -104,6 +149,41 @@ pub fn remembered(conn: &Connection, limit: usize) -> Result<Vec<HostRow>, ApiEr
             break;
         }
         if let Some(row) = row.map_err(store_error)? {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
+/// A host row this build never attaches: its stored kind is outside
+/// [`HostKind::IMPLEMENTED`]. Raw endpoint text, since a foreign kind need not
+/// use a Herdr locator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnattachableHost {
+    pub id: HostId,
+    pub endpoint: String,
+    pub kind: String,
+}
+
+/// The rows whose kind this build does not implement, by `host_id`. This is
+/// what `doctor` names; reattach skips the same rows.
+pub fn unattachable(conn: &Connection) -> Result<Vec<UnattachableHost>, ApiError> {
+    let mut stmt = conn
+        .prepare("SELECT host_id,endpoint,kind FROM herdr_hosts ORDER BY host_id")
+        .map_err(store_error)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(UnattachableHost {
+                id: HostId::from_row(row.get(0)?),
+                endpoint: row.get(1)?,
+                kind: row.get(2)?,
+            })
+        })
+        .map_err(store_error)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let row = row.map_err(store_error)?;
+        if !HostKind::from_stored(&row.kind).is_implemented() {
             out.push(row);
         }
     }

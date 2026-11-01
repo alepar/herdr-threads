@@ -869,6 +869,9 @@ impl HostSessions {
             if self.attached_count() >= MAX_ATTACHED_HOSTS {
                 break;
             }
+            if !row.attachable() {
+                continue;
+            }
             if let Some(session) = self.by_locator(&row.locator) {
                 first.get_or_insert(session.host_id);
                 continue;
@@ -917,7 +920,7 @@ impl HostSessions {
         let mut rows: Vec<HostRow> = self
             .remembered_rows()
             .into_iter()
-            .filter(|row| !attached.contains(&row.locator))
+            .filter(|row| row.attachable() && !attached.contains(&row.locator))
             .collect();
         rows.sort_by_key(|row| row.id);
         let cursor = self
@@ -1473,6 +1476,59 @@ mod tests {
             .collect();
         assert_eq!(attached, vec!["/herdr/live.sock"]);
         assert!(rig.sessions.by_locator(&loc("/herdr/dead.sock")).is_none());
+    }
+
+    // Kills: a remembered row of a kind outside the implemented set dialled as
+    // Herdr (startup, sweep, or an explicit resolve); a Herdr row left
+    // un-stamped by its reattach.
+    #[test]
+    fn reattach_skips_rows_of_an_unimplemented_kind_and_stamps_herdr_rows() {
+        let rig = Rig::new("hs-unknown-kind", false, Duration::from_millis(20));
+        rig.remember("/herdr/live.sock");
+        rig.remember("/herdr/future.sock");
+        let db = rusqlite::Connection::open(rig._isolation.path("store.db")).unwrap();
+        db.execute(
+            "UPDATE herdr_hosts SET kind='future', kind_probed_at=NULL WHERE endpoint='/herdr/future.sock'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE herdr_hosts SET kind_probed_at=NULL WHERE endpoint='/herdr/live.sock'",
+            [],
+        )
+        .unwrap();
+        rig.world.set_live("/herdr/live.sock", true);
+        rig.world.set_live("/herdr/future.sock", true);
+        rig.sessions.attach_startup(None).unwrap();
+        // Let several sweep ticks pass: the sweep must not pick the row up either.
+        Cancellation::default().wait_blocking(Duration::from_millis(100));
+        let attached: Vec<String> = rig
+            .sessions
+            .attached()
+            .iter()
+            .map(|s| s.locator().as_str().to_owned())
+            .collect();
+        assert_eq!(attached, vec!["/herdr/live.sock"]);
+        assert_eq!(rig.world.built.load(Ordering::SeqCst), 1);
+        let explicit = rig
+            .sessions
+            .resolve(&loc("/herdr/future.sock"), &rig.budget(5_000))
+            .err()
+            .expect("an explicit locator of an unimplemented kind is refused");
+        assert_eq!(explicit.code, ErrorCode::HostUnavailable);
+        assert_eq!(rig.world.built.load(Ordering::SeqCst), 1);
+        let stamped = |endpoint: &str| -> (String, Option<i64>) {
+            db.query_row(
+                "SELECT kind,kind_probed_at FROM herdr_hosts WHERE endpoint=?1",
+                [endpoint],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        let (kind, probed) = stamped("/herdr/live.sock");
+        assert_eq!(kind, "herdr");
+        assert!(probed.is_some(), "the Herdr reattach stamps kind_probed_at");
+        assert_eq!(stamped("/herdr/future.sock"), ("future".to_owned(), None));
     }
 
     // Kills: a primary picked by lowest id when the hint (or the most recently

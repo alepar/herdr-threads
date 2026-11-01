@@ -219,6 +219,25 @@ pub(crate) fn probe_daemon(
     }
 }
 
+/// The `herdr_hosts` rows whose kind this build does not implement (G4): reattach
+/// skips them, so doctor names each as `{host_id, endpoint, kind}`. Read straight
+/// from the store file, read-only; no store, an older schema or an unreadable file
+/// names nothing.
+fn unattachable_hosts_report(node_dir: &std::path::Path) -> Vec<Value> {
+    let path = node_dir.join(crate::daemon::paths::DATABASE_FILE);
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+    crate::store::hosts::unattachable(&conn)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|host| json!({"host_id": host.id.get(), "endpoint": host.endpoint, "kind": host.kind}))
+        .collect()
+}
+
 /// Per-seat wake blocks of the local seats with open bindings (`Command::WakeStatus`):
 /// `{"seats": [...]}` with every listed seat, or `{"error": ...}` when the daemon has none.
 fn wake_report(
@@ -978,6 +997,7 @@ fn report_captured(
     let mut states: Result<HarnessStatesReport, String> =
         Err("the daemon's instance could not be resolved".into());
     let mut daemon_limitations: Vec<String> = Vec::new();
+    let mut unattachable_hosts: Vec<Value> = Vec::new();
     match resolved {
         Err(error) => {
             report["daemon"] = json!({"state": "unavailable", "error": error.to_string()});
@@ -988,6 +1008,7 @@ fn report_captured(
         }
         Ok(paths) => {
             report["node_dir"] = json!(paths.node_dir.display().to_string());
+            unattachable_hosts = unattachable_hosts_report(&paths.node_dir);
             report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
             report["harness_manifest"] = harness_manifest_report(
                 &paths.node_dir,
@@ -1095,6 +1116,13 @@ fn report_captured(
             }
         }
     }
+    for host in &unattachable_hosts {
+        limitations.push(format!(
+            "host {} {} kind '{}': not attached (this build does not implement the kind)",
+            host["host_id"], host["endpoint"], host["kind"]
+        ));
+    }
+    report["hosts"] = json!({"unattachable": unattachable_hosts});
     if !limitations.is_empty() && result == "ok" {
         result = "degraded";
     }
