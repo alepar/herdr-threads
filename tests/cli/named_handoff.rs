@@ -168,3 +168,25 @@ fn handoff_from_named_seat_resolves_herdr_endpoint_lazily() {
     }
     assert_eq!(calls.get(), 2);
 }
+
+// Kills: the topology runtime (`handoff --existing`, recover, retry) taking a named caller's
+// selected host, the reserved locator, as the Herdr server it dials, and a pane caller's
+// endpoint changed by the lazy lookup.
+#[test]
+fn named_existing_handoff_uses_the_lazy_endpoint() {
+    use crate::{cli::topology_runtime::herdr_endpoint, daemon::paths::RuntimeContext};
+    // Nothing is created: the directories only have to exist for the context to canonicalize.
+    let base = std::env::temp_dir().canonicalize().unwrap();
+    let context = |host: std::path::PathBuf| {
+        RuntimeContext::explicit(base.join("state"), host, None).unwrap()
+    };
+    let mut output = spec();
+    output.context.host = Some("/run/herdr-test/herdr.sock".into());
+    let pane = herdr_endpoint(&context(base.join("herdr.sock")), &output).unwrap();
+    assert_eq!(pane, base.join("herdr.sock"));
+    // The named caller's locator is never the endpoint: it is resolved from the environment (or
+    // reported as unresolvable), as `handoff::run` does.
+    if let Ok(endpoint) = herdr_endpoint(&context(NAMED_HOST_LOCATOR.into()), &output) {
+        assert_ne!(endpoint, std::path::Path::new(NAMED_HOST_LOCATOR));
+    }
+}

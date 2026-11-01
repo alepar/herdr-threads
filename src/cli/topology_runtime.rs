@@ -52,29 +52,37 @@ fn namespace(
     instance: crate::node::NodeUuid,
     output: &OutputSpec,
 ) -> Result<HandoffNamespace, RunError> {
-    let host_endpoint = super::handoff::herdr_endpoint(selected.require_host().ok(), || {
+    Ok(HandoffNamespace {
+        instance: instance.to_string(),
+        state_dir: selected.state_dir.clone(),
+        host_endpoint: herdr_endpoint(selected, output)?,
+    })
+}
+/// The Herdr server this invocation talks to: the selected host, or for a named caller (whose
+/// selected host is the reserved locator) the lazily resolved endpoint.
+pub(super) fn herdr_endpoint(
+    selected: &RuntimeContext,
+    output: &OutputSpec,
+) -> Result<std::path::PathBuf, RunError> {
+    super::handoff::herdr_endpoint(selected.require_host().ok(), || {
         super::instance::InstanceInputs::from_process(
             None,
             output.context.host.as_ref().map(std::path::PathBuf::from),
         )
         .lazy_host_endpoint()
     })
-    .map_err(super::context_error)?;
-    Ok(HandoffNamespace {
-        instance: instance.to_string(),
-        state_dir: selected.state_dir.clone(),
-        host_endpoint,
-    })
+    .map_err(super::context_error)
 }
 fn recovery_origin_host_matches(
     semantic: &SemanticMutation,
     selected: &RuntimeContext,
+    output: &OutputSpec,
 ) -> Result<(), RunError> {
     let frozen = semantic
         .namespace()
         .ok_or_else(|| super::invalid_request("recovery lacks frozen namespace"))?;
     if frozen.state_dir.as_os_str() != selected.state_dir.as_os_str()
-        || frozen.host_endpoint.as_os_str() != selected.require_host()?.as_os_str()
+        || frozen.host_endpoint.as_os_str() != herdr_endpoint(selected, output)?.as_os_str()
     {
         return Err(super::invalid_request(
             "recovery selected namespace differs from original",
@@ -604,14 +612,11 @@ pub(crate) fn run(
     {
         require_capability(&client, clock.as_ref())?;
     }
-    let handle = super::host_client::LaunchHandle::herdr(
-        selected.require_host()?.to_path_buf(),
-        clock.clone(),
-    );
+    let handle = super::host_client::LaunchHandle::herdr(ns.host_endpoint.clone(), clock.clone());
     let host = handle.host()?;
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(selected.state_dir.to_string_lossy().into_owned());
-    output.context.host = Some(selected.require_host()?.to_string_lossy().into_owned());
+    output.context.host = Some(ns.host_endpoint.to_string_lossy().into_owned());
     let reference = match &parsed.action {
         CliAction::TopologyHandoff(request) if request.automatic && !request.existing => {
             let cwd = std::env::current_dir()?;
@@ -626,7 +631,7 @@ pub(crate) fn run(
             let mut env = super::setup::SetupEnv::from_process(&output)?;
             env.cwd = request.cwd.clone().unwrap_or_else(|| cwd.clone());
             env.state_dir = Some(selected.state_dir.clone());
-            env.host_endpoint = Some(selected.require_host()?.to_path_buf());
+            env.host_endpoint = Some(ns.host_endpoint.clone());
             let seats = super::launch::DaemonSeatResolver::new(
                 &client,
                 journal,
@@ -799,7 +804,7 @@ pub(crate) fn run(
             let mut env = super::setup::SetupEnv::from_process(&output)?;
             env.cwd = identity.payload.cwd.clone();
             env.state_dir = Some(selected.state_dir.clone());
-            env.host_endpoint = Some(selected.require_host()?.to_path_buf());
+            env.host_endpoint = Some(ns.host_endpoint.clone());
             let seats = super::launch::DaemonSeatResolver::new(
                 &client,
                 journal,
@@ -915,7 +920,7 @@ pub(crate) fn run(
                 let mut env = super::setup::SetupEnv::from_process(&output)?;
                 env.cwd = identity.plan.payload.cwd.clone();
                 env.state_dir = Some(selected.state_dir.clone());
-                env.host_endpoint = Some(selected.require_host()?.to_path_buf());
+                env.host_endpoint = Some(ns.host_endpoint.clone());
                 let registry = crate::harness::registry::builtins();
                 let seats = super::launch::DaemonSeatResolver::new(
                     &client,
@@ -1119,7 +1124,7 @@ pub(crate) fn run(
             return Err(error);
         }
     };
-    env.host_endpoint = Some(selected.require_host()?.to_path_buf());
+    env.host_endpoint = Some(ns.host_endpoint.clone());
     env.cwd = identity.payload.cwd.clone();
     let claim_host = selected.claim_host()?;
     env.state_dir = Some(selected.state_dir);
@@ -1188,7 +1193,7 @@ pub(crate) fn run_operator(
     let mut automatic_observe =
         |target: &crate::protocol::ids::HostTargetId,
          saved_request: Option<&crate::ports::CreateTabRequest>| {
-            let host = NativeCli::new(selected.require_host()?.to_path_buf(), clock.clone());
+            let host = NativeCli::new(herdr_endpoint(selected, &parsed.output)?, clock.clone());
             let context = HostCallContext {
                 budget: super::cooperative_budget(clock.as_ref()),
                 expected_boot: None,
@@ -1281,7 +1286,7 @@ pub(crate) fn run_operator(
         };
         let disposition = match &request.disposition {
             super::topology_recover::Assertion::CreatedPane(target) => {
-                let host = NativeCli::new(selected.require_host()?.to_path_buf(), clock.clone());
+                let host = NativeCli::new(ns.host_endpoint.clone(), clock.clone());
                 let context = HostCallContext {
                     budget: super::cooperative_budget(clock.as_ref()),
                     expected_boot: None,
@@ -1401,7 +1406,7 @@ pub(crate) fn try_run_automatic_operator_with_ports<'a>(
                 SemanticMutation::AutomaticBootstrap(_)
             );
             if automatic {
-                recovery_origin_host_matches(&source.semantic, selected)?;
+                recovery_origin_host_matches(&source.semantic, selected, &parsed.output)?;
             }
             automatic
         }
@@ -1412,7 +1417,7 @@ pub(crate) fn try_run_automatic_operator_with_ports<'a>(
                 SemanticMutation::OperatorRecoverAutomaticBootstrap(_)
             );
             if automatic {
-                recovery_origin_host_matches(&original.semantic, selected)?;
+                recovery_origin_host_matches(&original.semantic, selected, &parsed.output)?;
             }
             automatic
         }
