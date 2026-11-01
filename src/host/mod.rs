@@ -41,6 +41,18 @@ pub fn child_env_scrub_list() -> Vec<&'static str> {
     names
 }
 
+/// What the H3 launch-gate shim removes from its own env before it `exec`s the harness: the K5
+/// list minus [`hc::ENV_VARS`]. The exec'd worker finds its herdr-core terminal seat through
+/// `HC_TERMINAL_ID`/`HC_TERMINAL_SOCKET` and hc's `HC_SCOPE` sweep set keeps it, so those stay;
+/// `spawn_detached` and handoff spawns use the full [`child_env_scrub_list`]. No second copy of
+/// the names.
+pub fn gate_shim_scrub_list() -> Vec<&'static str> {
+    child_env_scrub_list()
+        .into_iter()
+        .filter(|name| !hc::ENV_VARS.contains(name))
+        .collect()
+}
+
 pub mod compatibility;
 pub mod hc;
 pub mod named;

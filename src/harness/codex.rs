@@ -1482,6 +1482,14 @@ impl HarnessAdapter for CodexAdapter {
             }),
         })
     }
+    /// Under herdr-core a Codex daemon would reparent its hooks out of the terminal's process
+    /// tree (L4), so the gate starts it as a plain foreground process.
+    fn host_launch_argv(&self, kind: crate::ports::HostKind) -> Vec<String> {
+        match kind {
+            crate::ports::HostKind::Hc => vec!["--no-daemon".to_owned()],
+            _ => Vec::new(),
+        }
+    }
     fn required_hook_events(&self) -> Vec<&'static str> {
         DECLARATION
             .owned_hooks

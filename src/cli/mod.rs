@@ -25,6 +25,7 @@ pub mod internal;
 pub mod irc;
 pub mod journal;
 pub mod launch;
+pub mod launch_gate;
 pub mod lazy_display;
 pub(crate) mod legacy;
 pub mod me;
@@ -730,6 +731,15 @@ fn run_parsed_in_pane<W: Write>(
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
         cancellation: Cancellation::default(),
     };
+    if let CliAction::InternalLaunchGate {
+        bootstrap,
+        config_roots,
+        argv,
+    } = &parsed.action
+    {
+        let (_, _, client) = connect(&paths, &clock)?;
+        return launch_gate::run(&client, &clock, bootstrap, config_roots, argv);
+    }
     if topology_runtime::run_operator(&parsed, &context, &paths, &clock, writer)? {
         return Ok(());
     }
@@ -1255,7 +1265,8 @@ fn run_parsed_in_pane<W: Write>(
         | CliAction::Update(_)
         | CliAction::InternalStoreCheck
         | CliAction::InternalPeerTargetCreate { .. }
-        | CliAction::InternalDaemonDetach { .. } => {
+        | CliAction::InternalDaemonDetach { .. }
+        | CliAction::InternalLaunchGate { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
         CliAction::Launch(_)

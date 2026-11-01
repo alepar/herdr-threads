@@ -121,3 +121,17 @@ Not driven live: HcHost is exercised through the daemon (attach, probe) and the 
 calls; the shell revival of a `stopped_by_restart` terminal through `hc attach` (a pty attach did not revive it within
 3 s; only the unchanged address and record are asserted); L1 stays macOS-only remaining evidence. Core id rotation
 across restart was seen in one probe but not in the smoke run, so it is not asserted.
+
+## L2 (ht-kqrt.54)
+
+Read-only reading of herdr-core (`/var/home/alepar/AleCode/herdr-core/crates/herdr-core`, no live core run):
+
+- `src/holder.rs` `spawn`: the holder starts the terminal's argv through `platform::spawn_pty` and records `pid = child.id()`
+  of that one spawned child; it reports it as `SPAWNED{pid}`. `src/runtime.rs` stores it as the record's `t.pid = Some(pid)`.
+  `src/api/run.rs` `start` hands `argv` (the gate shim) to that spawn and records nothing else about the process.
+- An `exec` replaces the process image and keeps its pid, so `terminal.pid` is the pid of the harness after the shim `exec`s.
+  Nothing in `run.rs` or the holder spawns a second process for the argv or re-reads the pid.
+- Test (fallback, no real core): `exec_keeps_pid` in `tests/cli/launch_gate.rs` records the shim's pid before `run_with`
+  and the exec'd stand-in's `$$`; they are equal.
+- Live L2 (a real core's `terminal.pid` before and after the shim) stays remaining evidence.
+- The shim keeps `HC_SESSION` too: the spec's rule is the K5 list minus `host::hc::ENV_VARS`, which includes it.

@@ -219,6 +219,8 @@ trait ErasedAdapter: Send + Sync {
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy;
     fn enrollment_policy(&self) -> EnrollmentPolicy;
     fn caller_env(&self) -> Option<CallerEnvShape>;
+    fn child_scrub_vars(&self) -> &'static [&'static str];
+    fn host_launch_argv(&self, kind: crate::ports::HostKind) -> Vec<String>;
     fn binding_policy(&self) -> BindingPolicy;
     fn required_hook_events(&self) -> Vec<&'static str>;
     fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>>;
@@ -350,6 +352,12 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn caller_env(&self) -> Option<CallerEnvShape> {
         self.0.caller_env()
+    }
+    fn child_scrub_vars(&self) -> &'static [&'static str] {
+        self.0.child_scrub_vars()
+    }
+    fn host_launch_argv(&self, kind: crate::ports::HostKind) -> Vec<String> {
+        self.0.host_launch_argv(kind)
     }
     fn binding_policy(&self) -> BindingPolicy {
         self.0.binding_policy()
@@ -660,6 +668,12 @@ impl Registration {
     }
     pub fn caller_env(&self) -> Option<CallerEnvShape> {
         self.adapter.caller_env()
+    }
+    pub fn child_scrub_vars(&self) -> &'static [&'static str] {
+        self.adapter.child_scrub_vars()
+    }
+    pub fn host_launch_argv(&self, kind: crate::ports::HostKind) -> Vec<String> {
+        self.adapter.host_launch_argv(kind)
     }
     pub fn binding_policy(&self) -> BindingPolicy {
         self.adapter.binding_policy()
