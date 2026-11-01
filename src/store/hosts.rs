@@ -45,8 +45,10 @@ impl HostRow {
     }
 
     /// Whether this build may attach the row (G4: its kind is implemented).
+    /// The built-in named host is implemented but never dialled, so it is not
+    /// attachable through reattach.
     pub fn attachable(&self) -> bool {
-        self.host_kind().is_implemented()
+        self.host_kind().is_implemented() && self.host_kind() != HostKind::Named
     }
 }
 

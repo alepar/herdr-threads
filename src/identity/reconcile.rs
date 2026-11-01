@@ -210,6 +210,17 @@ fn never_registered_structural_bridge(
 /// Decide from the store's indexed matches for one fenced saved-seat page.
 /// The size of the published namespace does not affect this pass.
 pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, ApiError> {
+    plan_page_for(page, crate::ports::ClosureAuthority::Closing)
+}
+
+/// [`plan_page`] for a host with the given closure authority. A `NonClosing`
+/// host (the named host) has no absence authority: a saved seat its
+/// publication does not show stays as it is, with no `BeginRetirement` and no
+/// `MarkUnresolved`.
+pub fn plan_page_for(
+    page: &SnapshotSeatPage,
+    closure: crate::ports::ClosureAuthority,
+) -> Result<Vec<GuardedSeatTransition>, ApiError> {
     if page.seats.len() > MAX_SAVED_SEATS_PER_PLAN
         || usize::from(page.visited) > MAX_SAVED_SEATS_PER_PLAN
         || page.seats.len() > usize::from(page.visited)
@@ -262,7 +273,9 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
         } else if publication_before_proof {
             None
         } else if !same_incarnation {
-            Some(ReconciliationAction::MarkUnresolved)
+            // A non-closing host never unresolves a seat for want of proof.
+            (closure != crate::ports::ClosureAuthority::NonClosing)
+                .then_some(ReconciliationAction::MarkUnresolved)
         } else if let Some(observed) = saved.observed_match.as_ref() {
             if observed.observation_sequence == 0
                 || observed.observation_sequence > page.publication.observation_sequence
@@ -337,6 +350,9 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
             } else {
                 None
             }
+        } else if closure == crate::ports::ClosureAuthority::NonClosing {
+            // No absence closure for a non-closing host.
+            None
         } else if let Some(target) = saved.target.as_ref() {
             Some(ReconciliationAction::BeginRetirement {
                 absent_target: target.clone(),
@@ -408,6 +424,25 @@ pub fn reconcile_published_page(
     high_water_ordinal: Option<u64>,
     budget: &CallBudget,
 ) -> Result<ReconcilePageProgress, ApiError> {
+    reconcile_published_page_for(
+        store,
+        published,
+        after_ordinal,
+        high_water_ordinal,
+        budget,
+        crate::ports::ClosureAuthority::Closing,
+    )
+}
+
+/// [`reconcile_published_page`] for a host with the given closure authority.
+pub fn reconcile_published_page_for(
+    store: &(impl observation_store::ObservationStore + ?Sized),
+    published: &PublishedSnapshot,
+    after_ordinal: u64,
+    high_water_ordinal: Option<u64>,
+    budget: &CallBudget,
+    closure: crate::ports::ClosureAuthority,
+) -> Result<ReconcilePageProgress, ApiError> {
     let page = store.saved_seats_page(
         &published.id,
         after_ordinal,
@@ -427,7 +462,7 @@ pub fn reconcile_published_page(
     let mut transitions = 0u8;
     let mut retirements = 0u8;
     let mut refused = 0u8;
-    for transition in plan_page(&page)? {
+    for transition in plan_page_for(&page, closure)? {
         let result = store.apply_reconciliation_transition(transition, budget)?;
         match result {
             // A refused transition is that seat's alone (D2): its guarded
@@ -535,6 +570,12 @@ pub fn observe_and_publish(
     context: &HostCallContext,
     maintenance_budget: &CallBudget,
 ) -> Result<ObservationOutcome, ApiError> {
+    // A non-closing host (the named host) has no enumeration to publish: its
+    // presence is a store read, so no capture could carry absence authority
+    // and none may invalidate (and so unresolve) its seats.
+    if host.closure_authority() == crate::ports::ClosureAuthority::NonClosing {
+        return Ok(ObservationOutcome::Superseded);
+    }
     let ticket = lane.begin_observation()?;
     let admission = match store.begin_host_observation(instance, host_id, &context.budget) {
         Ok(admission) => admission,

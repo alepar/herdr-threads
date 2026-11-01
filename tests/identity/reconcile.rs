@@ -4037,3 +4037,73 @@ mod hc_closure {
         assert_eq!(env.open_bindings(), 1);
     }
 }
+
+/// Kills: absence closure applied to a `NonClosing` host, which would retire or
+/// unresolve a live named seat that one enumeration happened not to show.
+#[test]
+fn non_closing_host_absence_yields_no_retirement_or_unresolve() {
+    use crate::ports::{
+        ClosureAuthority, PublishedSnapshot, SeatState, SnapshotGenerationId, SnapshotSavedSeat,
+        SnapshotSeatPage,
+    };
+    let seat =
+        |ordinal: u64, state: SeatState, target: Option<&str>, proof: bool| SnapshotSavedSeat {
+            restored_pane: Default::default(),
+            ordinal,
+            seat: SeatId::new(format!("seat-{ordinal}")),
+            state,
+            unresolved_reason: None,
+            prior_published_observation: None,
+            structural_proof: proof.then(|| structural_proof("old-address", "terminal-a", 1)),
+            target: target.map(HostTargetId::new),
+            terminal: target.map(|_| TerminalId::new("terminal-a")),
+            binding_generation: 1,
+            binding_execution: None,
+            active_binding_execution: None,
+            bound_epoch: None,
+            bound_boot: None,
+            bound_incarnation: None,
+            latest_binding_evidence: None,
+            observed_match: None,
+        };
+    let page = SnapshotSeatPage {
+        publication: PublishedSnapshot {
+            id: SnapshotGenerationId::store_issued("named".into()),
+            instance: "instance-a".into(),
+            host_id: crate::test_support::test_host_id(),
+            boot: HostBootId::new("boot-a"),
+            epoch: 1,
+            observation_sequence: 3,
+            incarnation: "inc-a".into(),
+            target_count: 0,
+            invalidation_revision: 0,
+        },
+        high_water_ordinal: 2,
+        after_ordinal: 2,
+        visited: 2,
+        has_more: false,
+        // Seat 1: a proven target the enumeration does not show. Seat 2: no
+        // proof at all.
+        seats: vec![
+            seat(1, SeatState::Resolved, Some("old-address"), true),
+            seat(2, SeatState::Resolved, None, false),
+        ],
+    };
+    // The same page on a closing host does close: the assertion has teeth.
+    let closing = plan_page_for(&page, ClosureAuthority::Closing).unwrap();
+    assert!(
+        closing
+            .iter()
+            .any(|t| matches!(t.action, ReconciliationAction::BeginRetirement { .. }))
+    );
+    assert!(
+        closing
+            .iter()
+            .any(|t| matches!(t.action, ReconciliationAction::MarkUnresolved))
+    );
+    assert!(
+        plan_page_for(&page, ClosureAuthority::NonClosing)
+            .unwrap()
+            .is_empty()
+    );
+}

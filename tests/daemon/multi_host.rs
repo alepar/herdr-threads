@@ -808,6 +808,28 @@ impl Rig {
     }
 }
 
+// Kills: a daemon that dials the named host (it would appear in `attached()`
+// and Health) or never installs it in the built-in slot.
+#[test]
+fn named_host_is_built_in_and_never_attached() {
+    let rig = Rig::start("mh-named-builtin", false);
+    assert_eq!(rig.sessions().attached_count(), 0);
+    assert!(rig.sessions().attached().is_empty());
+    let all = rig.sessions().all_for_reads();
+    assert_eq!(all.len(), 1, "only the built-in session");
+    assert!(all[0].locator().is_named_host());
+    assert!(rig.health().hosts.is_empty(), "Health lists dialled hosts");
+    let kind: String = rig
+        .db()
+        .query_row(
+            "SELECT kind FROM herdr_hosts WHERE endpoint=?1",
+            [herdr_threads::protocol::ids::NAMED_HOST_LOCATOR],
+            |r| r.get(0),
+        )
+        .expect("the built-in host has a row");
+    assert_eq!(kind, "named");
+}
+
 // Kills: a daemon that attaches only its startup hint (or nothing without
 // one): with no hint and no remembered row nothing is attached, and the
 // first claim from fake host A attaches A, and only A, with its two workers.

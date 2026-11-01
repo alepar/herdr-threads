@@ -21,10 +21,6 @@ pub const PANE_SCOPED_ENV_VARS: &[&str] = &[
     "HERDR_PLUGIN_LINK_HANDLER_ID",
 ];
 
-/// Named-seat caller env (moves to `host::named::ENV_VARS` in N). Scrub-only in F.
-pub(crate) const NAMED_SCRUB_ENV_VARS: &[&str] =
-    &["HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY"];
-
 pub(crate) use hc::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV};
 
 /// Basenames of herdr-core terminal processes (the `hc` client, the core). `LocateCaller`
@@ -42,7 +38,7 @@ pub fn child_env_scrub_list() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = Vec::new();
     for name in PANE_SCOPED_ENV_VARS
         .iter()
-        .chain(NAMED_SCRUB_ENV_VARS)
+        .chain(named::ENV_VARS)
         .chain(hc::ENV_VARS)
     {
         if !names.contains(name) {
@@ -54,6 +50,7 @@ pub fn child_env_scrub_list() -> Vec<&'static str> {
 
 pub mod compatibility;
 pub mod hc;
+pub mod named;
 pub mod native;
 pub mod observation;
 pub mod probe;
