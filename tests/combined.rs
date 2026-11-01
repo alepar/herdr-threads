@@ -23,6 +23,8 @@ mod canary_manifest_writer;
 mod channel_archival;
 #[path = "cli_env_read_scan.rs"]
 mod cli_env_read_scan;
+#[path = "cli_native_sites_scan.rs"]
+mod cli_native_sites_scan;
 #[path = "contracts.rs"]
 mod contracts;
 #[path = "store/deadline_scope.rs"]

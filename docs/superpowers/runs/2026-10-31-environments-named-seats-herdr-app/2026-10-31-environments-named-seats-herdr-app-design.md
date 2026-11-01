@@ -1102,8 +1102,8 @@ Scope:
 
   | Site | Use | F |
   |---|---|---|
-  | src/cli/mod.rs:706, :986, :995 (`run_parsed_in_pane`), src/cli/follow.rs:230 | label reads | removed; labels come from `HostTopologies` |
-  | src/cli/mod.rs:398 (`pane_agent`), :3784 (`located_pane_seat`), src/cli/hook.rs:1631 (`locate_seat_for`) | Pane-site observation of the caller's own Herdr host (moved pane, agent probe) | kept, Herdr-only, reached only from `CallerSite::Pane` |
+  | src/cli/mod.rs:986, :995, src/cli/follow.rs:230 | label reads | removed; labels come from `HostTopologies` |
+  | src/cli/mod.rs:706 (`run_parsed_in_pane`, amended in ht-kqrt.9: the lazy claim-host adapter now serves only pane-selector topology and the caller's `current_pane`, no label read), :398 (`pane_agent`), :3784 (`located_pane_seat`), src/cli/hook.rs:1631 (`locate_seat_for`) | Pane-site observation of the caller's own Herdr host (moved pane, agent probe) | kept, Herdr-only, reached only from `CallerSite::Pane` |
   | src/cli/handoff.rs:2264, src/cli/peer_launch.rs:48, src/cli/mod.rs:3990 (`run_launch`), src/cli/topology_runtime.rs:388, :954, :1047 | launch and handoff | kept in F; made generic over `CreateTargetPort` in H3 |
 
 - src/cli/caller_location.rs: `CallerEnv`, `Located`, `CallerSite` (Pane variant, hc recognition for the guard),

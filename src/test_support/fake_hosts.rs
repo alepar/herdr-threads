@@ -216,3 +216,75 @@ impl HostPort for RefusingHost {
         refused()
     }
 }
+
+/// A [`RefusingHost`] that also reports `labels` as its panes' workspace,
+/// tab and pane labels (`HostPort::seat_labels`). Two of these may own the
+/// same target id with different labels, as two real Herdr servers do.
+pub struct LabelledHost(pub Vec<crate::host::observation::SeatHostLabels>);
+
+impl HostPort for LabelledHost {
+    fn seat_labels(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
+        Ok(self.0.clone())
+    }
+    fn live_topology(
+        &self,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, ApiError> {
+        RefusingHost.live_topology(budget)
+    }
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        NativeLaunchCapability::Unsupported
+    }
+    fn observe_current_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        RefusingHost.observe_current_target(target, context)
+    }
+    fn observe_current_target_for_archival(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<ComposerObservation, ApiError> {
+        RefusingHost.observe_current_target_for_archival(target, context)
+    }
+    fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        RefusingHost.enumerate_targets(context)
+    }
+    fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
+        None
+    }
+    fn submit_prompt(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        RefusingHost.submit_prompt(target, text, context)
+    }
+    fn launch_native(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        RefusingHost.launch_native(request, context)
+    }
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<AgentComposerState, ApiError> {
+        RefusingHost.pane_agent_state(target, context)
+    }
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        RefusingHost.send_submit_key(target, context)
+    }
+}

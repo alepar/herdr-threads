@@ -227,6 +227,37 @@ pub(crate) fn read_labels(
     out
 }
 
+/// Every readable host's pane labels with the host that reported them
+/// (`Command::HostTopologies`). A host that does not answer is absent.
+pub(crate) fn host_topologies(
+    sessions: &HostSessions,
+    budget: &CallBudget,
+) -> Vec<crate::protocol::results::HostPaneLabels> {
+    let mut out = Vec::new();
+    for session in sessions.all_for_reads() {
+        let Ok(found) = session.port().seat_labels(budget) else {
+            continue;
+        };
+        let host = session.host_id().get().to_string();
+        out.extend(
+            found
+                .into_iter()
+                .map(|label| crate::protocol::results::HostPaneLabels {
+                    host: host.clone(),
+                    target: label.target,
+                    terminal: label.terminal,
+                    incarnation: label.incarnation,
+                    workspace_id: label.workspace_id,
+                    workspace_label: label.workspace_label,
+                    tab_id: label.tab_id,
+                    tab_label: label.tab_label,
+                    pane_label: label.pane_label,
+                }),
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

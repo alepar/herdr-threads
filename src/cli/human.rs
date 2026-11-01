@@ -11,9 +11,8 @@
 //! control character, C1 control, line separator and bidi override is shown
 //! as a visible escape so it cannot drive the terminal.
 
-use crate::host::observation::SeatHostLabels;
 use crate::protocol::{
-    ids::{HostTargetId, ThreadId},
+    ids::ThreadId,
     output::{OutputSpec, detail_argv, format_command_argv, selected_result},
     pagination::Page,
     results::{
@@ -45,23 +44,6 @@ type InboxTopics = HashMap<ThreadId, (String, bool)>;
 
 thread_local! {
     static INBOX_TOPICS: RefCell<Option<InboxTopics>> = const { RefCell::new(None) };
-    static SEAT_LABELS: RefCell<Option<HashMap<HostTargetId, SeatHostLabels>>> = const { RefCell::new(None) };
-}
-
-/// Make one advisory host snapshot available while rendering a seat list.
-pub fn with_seat_labels<T>(labels: Vec<SeatHostLabels>, f: impl FnOnce() -> T) -> T {
-    struct Restore(Option<HashMap<HostTargetId, SeatHostLabels>>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            SEAT_LABELS.with(|cell| *cell.borrow_mut() = self.0.take());
-        }
-    }
-    let map = labels
-        .into_iter()
-        .map(|label| (label.target.clone(), label))
-        .collect();
-    let _restore = Restore(SEAT_LABELS.with(|cell| cell.borrow_mut().replace(map)));
-    f()
 }
 
 /// Run `f` with `topics` available to the human inbox renderer, which then
@@ -214,25 +196,23 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
     out.push_str(
         "Current host labels are advisory; unavailable labels do not change seat identity.\n",
     );
-    let rows = SEAT_LABELS.with(|cell| {
-        let labels = cell.borrow();
+    // Labels come from the daemon's per-host read (`SeatSummary.directory`);
+    // a daemon without it, or a seat without a current pane, shows `-`.
+    let rows = {
         page.items
             .iter()
             .map(|seat| {
                 let target = seat.target.as_ref();
+                let label = |text: &Option<String>| {
+                    text.as_deref()
+                        .map_or_else(|| "-".to_owned(), |t| one_line(t, false, 40))
+                };
                 let current =
                     if seat.continuity == crate::protocol::results::ContinuityStatus::Resolved {
-                        target.and_then(|target| labels.as_ref()?.get(target))
+                        seat.directory.as_deref().filter(|d| d.has_labels())
                     } else {
                         None
                     };
-                let labeled = |id: &str, name: Option<&str>| {
-                    format!(
-                        "{} ({})",
-                        escape_for_terminal(id, Context::SingleLine),
-                        name.map_or_else(|| "unnamed".to_owned(), |name| one_line(name, false, 40))
-                    )
-                };
                 let state = match seat.continuity {
                     crate::protocol::results::ContinuityStatus::Resolved => "resolved",
                     crate::protocol::results::ContinuityStatus::Unresolved => "unresolved",
@@ -247,10 +227,6 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                 if seat.continuity == crate::protocol::results::ContinuityStatus::Remote
                     && let Some(d) = &seat.directory
                 {
-                    let label = |text: &Option<String>| {
-                        text.as_deref()
-                            .map_or_else(|| "-".to_owned(), |t| one_line(t, false, 40))
-                    };
                     let presence = match (d.state.as_str(), d.since) {
                         ("unreachable", Some(since)) => {
                             format!("unreachable since {}", timestamp(since))
@@ -280,26 +256,21 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                         availability_suffix(seat.availability)
                     ),
                     timestamp(seat.created_at),
-                    current.map_or_else(
-                        || "-".to_owned(),
-                        |name| labeled(&name.workspace_id, name.workspace_label.as_deref()),
-                    ),
-                    current.map_or_else(
-                        || "-".to_owned(),
-                        |name| labeled(&name.tab_id, name.tab_label.as_deref()),
-                    ),
+                    current.map_or_else(|| "-".to_owned(), |d| label(&d.workspace)),
+                    current.map_or_else(|| "-".to_owned(), |d| label(&d.tab)),
                     match (target, current) {
-                        (Some(_), Some(name)) => {
-                            labeled(name.target.as_str(), name.pane_label.as_deref())
-                        }
+                        (Some(target), Some(d)) => format!(
+                            "{} ({})",
+                            escape_for_terminal(target.as_str(), Context::SingleLine),
+                            label(&d.pane)
+                        ),
                         (Some(target), None) => format!("{} (unavailable)", target.as_str()),
-                        (None, None) => "-".to_owned(),
-                        (None, Some(_)) => unreachable!(),
+                        (None, _) => "-".to_owned(),
                     },
                 ]
             })
             .collect::<Vec<_>>()
-    });
+    };
     table(
         &[
             "SEAT", "NODE", "STATE", "PRESENCE", "CREATED", "SPACE", "TAB", "PANE",
@@ -320,6 +291,7 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
 #[cfg(test)]
 mod seat_list_tests {
     use super::*;
+    use crate::protocol::ids::HostTargetId;
     use crate::protocol::{
         ids::SeatId,
         pagination::{Consistency, StopReason},
@@ -327,7 +299,7 @@ mod seat_list_tests {
     };
 
     #[test]
-    fn labels_only_describe_resolved_targets_present_in_current_snapshot() {
+    fn labels_only_describe_resolved_targets_with_a_daemon_label_entry() {
         let mut rows: Vec<_> = [
             ContinuityStatus::Resolved,
             ContinuityStatus::Unresolved,
@@ -345,7 +317,19 @@ mod seat_list_tests {
             active: false,
             bindings: Vec::new(),
             availability: None,
-            directory: None,
+            directory: Some(Box::new(crate::protocol::results::SeatDirectory {
+                node: "n".into(),
+                machine: None,
+                state: "idle".into(),
+                since: None,
+                harness: None,
+                activity_at: None,
+                seen_at: None,
+                workspace: Some("Space".into()),
+                tab: Some("Tab".into()),
+                pane: Some("Pane\nForged".into()),
+                name: None,
+            })),
         })
         .collect();
         rows.push(SeatSummary {
@@ -370,25 +354,14 @@ mod seat_list_tests {
             stop_reason: StopReason::Complete,
             consistency: Consistency::BoundedLive,
         };
-        let labels = vec![SeatHostLabels {
-            terminal: "term-test".into(),
-            incarnation: None,
-            target: HostTargetId::new("w4:p1"),
-            workspace_id: "w4".into(),
-            workspace_label: Some("Space".into()),
-            tab_id: "w4:t1".into(),
-            tab_label: Some("Tab".into()),
-            pane_label: Some("Pane\nForged".into()),
-        }];
-        let text = with_seat_labels(labels, || {
+        let text = {
             let mut out = String::new();
             seats(&page, &mut out);
             out
-        });
-        assert!(text.contains("w4 (Space)"));
-        assert!(text.contains("w4:t1 (Tab)"));
+        };
+        assert!(text.contains("Space") && text.contains("Tab"));
         assert!(text.contains("w4:p1 (Pane\\nForged)"));
-        assert_eq!(text.matches("w4 (Space)").count(), 1);
+        assert_eq!(text.matches("Space").count(), 1);
         assert_eq!(text.matches("w4:p1 (unavailable)").count(), 2);
         assert!(text.contains("w4:p2 (unavailable)"));
     }

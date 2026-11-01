@@ -57,6 +57,7 @@ pub enum CommandResult {
     Participants(Page<Participant>),
     ParticipantLocations(Vec<ParticipantLocation>),
     WakeStatus(Vec<SeatWakeStatus>),
+    HostTopologies(Vec<HostPaneLabels>),
     Recipients(Page<Recipient>),
     /// Warning recipients have no receipt or ACK obligation.
     WarningRecipients(Page<WarningRecipient>),
@@ -1107,6 +1108,26 @@ pub struct SeatSummary {
     pub directory: Option<Box<SeatDirectory>>,
 }
 
+/// One pane's current host labels, with the host that reported them: the
+/// same target id can exist on two hosts, so labels are keyed
+/// `(host, target)`. Display data only (TRUST-POLICY N13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostPaneLabels {
+    pub host: String,
+    pub target: HostTargetId,
+    pub terminal: String,
+    #[serde(default)]
+    pub incarnation: Option<String>,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub workspace_label: Option<String>,
+    pub tab_id: String,
+    #[serde(default)]
+    pub tab_label: Option<String>,
+    #[serde(default)]
+    pub pane_label: Option<String>,
+}
+
 /// One seat's directory entry (ht-xg88). Every value is a display hint: a
 /// remote seat's comes from its home node's `seat_status` and is shown only
 /// as fresh as that node's status allows (`remote_seat_status::presence_of`).
@@ -1139,6 +1160,10 @@ pub struct SeatDirectory {
     pub tab: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
+    /// The seat's name, for a named seat; unset until named seats land. An
+    /// older daemon's reply decodes with `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl SeatDirectory {

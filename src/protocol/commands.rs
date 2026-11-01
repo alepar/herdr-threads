@@ -61,6 +61,9 @@ pub enum Command {
     /// Why a local seat's idle session cannot be woken (`WAKE_STATUS_V1`). Reads only, except the
     /// observer's report bookkeeping (`WakeStatusQuery.observer`).
     WakeStatus(WakeStatusQuery),
+    /// Every readable host's current labels (`HOST_TOPOLOGIES_V1`). Display
+    /// data only; a host that does not answer is absent.
+    HostTopologies,
     Recipients(RecipientsQuery),
     DeliveryInspect(DeliveryInspectQuery),
     PendingReceipts(PendingReceiptsQuery),

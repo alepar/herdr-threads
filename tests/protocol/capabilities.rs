@@ -294,6 +294,7 @@ fn capability_constants_are_stable() {
     assert_eq!(WAKE_STATUS_V1, "seat.wake_status_v1");
     assert_eq!(PEER_PRUNE_V1, "peer.prune_v1");
     assert_eq!(PEER_EVENTS_V1, "peer.events_v1");
+    assert_eq!(HOST_TOPOLOGIES_V1, "topology.host_topologies_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -341,7 +342,8 @@ fn capability_constants_are_stable() {
             "seat.wake_status_v1",
             "peer.prune_v1",
             "peer.events_v1",
-            "caller.locate_v1"
+            "caller.locate_v1",
+            "topology.host_topologies_v1"
         ]
     );
 }
@@ -521,6 +523,7 @@ fn every_advertised_capability_has_a_handler() {
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
             SEATS_DIRECTORY_V1 => probe_seats_directory(),
             WAKE_STATUS_V1 => probe_wake_status(),
+            HOST_TOPOLOGIES_V1 => probe_host_topologies(),
             PEER_PRUNE_V1 => probe_sync_commands(&[
                 crate::protocol::sync_admin::SyncCommand::PeerPrune {
                     host: None,
@@ -1180,6 +1183,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "peer.prune_v1",
             "peer.events_v1",
             "caller.locate_v1",
+            "topology.host_topologies_v1",
             "invitation.confirmation_v1",
             "handoff.summary_prompt_v1"
         ]
@@ -1854,6 +1858,23 @@ fn probe_wake_status() {
         message: Some(MessageId::new("m1")),
         observer: Some(SeatId::new("s2")),
     });
+    assert!(command.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    assert_eq!(
+        handler
+            .handle(command, PeerIdentity::from_kernel(501), &budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
+fn probe_host_topologies() {
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+    let command = Command::HostTopologies;
     assert!(command.validate().is_ok());
     assert_eq!(
         serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),

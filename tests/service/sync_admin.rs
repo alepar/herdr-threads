@@ -1961,6 +1961,7 @@ fn directory_rows_render_compactly() {
         workspace: Some("office".into()),
         tab: Some("main".into()),
         pane: Some("claude".into()),
+        name: None,
     };
     let summary = |seat: &str, d: SeatDirectory| SeatSummary {
         seat: crate::protocol::ids::SeatId::new(seat),
@@ -2045,6 +2046,7 @@ fn seat_filter_matches_each_criterion() {
         workspace: Some("Office".into()),
         tab: None,
         pane: None,
+        name: None,
     };
     let f = |filter: SeatFilter| matches(&filter, Some(&entry), false, None);
     assert!(f(SeatFilter::default()));
@@ -2140,6 +2142,7 @@ fn local_rows_participant_suffix_and_location_hint() {
         workspace: None,
         tab: None,
         pane: None,
+        name: None,
     };
     let summary = |continuity, d: SeatDirectory| SeatSummary {
         seat: crate::protocol::ids::SeatId::new("snSGbl096JZZ"),

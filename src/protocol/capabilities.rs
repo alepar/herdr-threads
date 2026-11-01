@@ -33,6 +33,10 @@ pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 pub const SEATS_DIRECTORY_V1: &str = "seats.directory_v1";
 /// `Command::WakeStatus`: per-seat wake blocks for the send warning and doctor.
 pub const WAKE_STATUS_V1: &str = "seat.wake_status_v1";
+/// `Command::HostTopologies`: every readable host's workspace, tab and pane
+/// labels, keyed by host. A CLI sends it only to a daemon that advertises
+/// this and renders labels as `-` otherwise.
+pub const HOST_TOPOLOGIES_V1: &str = "topology.host_topologies_v1";
 /// `SyncCommand::PeerPrune` and `SyncCommand::PeerUnforget` (TRUST-POLICY
 /// N16). The CLI sends them only to a daemon that advertises this, so an
 /// older daemon gets one clear refusal instead of an unknown-variant error.
@@ -197,6 +201,7 @@ pub const ADVERTISED: &[&str] = &[
     PEER_PRUNE_V1,
     PEER_EVENTS_V1,
     LOCATE_CALLER_V1,
+    HOST_TOPOLOGIES_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set
