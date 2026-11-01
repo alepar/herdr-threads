@@ -1,7 +1,7 @@
 name: CI
 
 # Deterministic checks on Linux x86_64 (Ubuntu 24.04, Herdr 0.9.1): the test
-# suite in six parallel shards, plus format, packaging, installer and Python
+# suite in eight parallel shards, plus format, packaging, installer and Python
 # suites; clippy on macOS and Linux; release-target build checks (macOS and
 # Linux musl) and workflow lint. macOS arm64 runs the same suite locally
 # before a merge. herdr-plugin.toml declares platforms ["macos", "linux"].
@@ -61,8 +61,9 @@ jobs:
       matrix:
         # The one place the slice count is set: the steps read it back as
         # strategy.job-total (ht-v9v1: five slices; ht-i4tm: six, because runner
-        # speed varies ~1.6x between jobs and a slow runner took a fifth to 297 s).
-        shard: [1, 2, 3, 4, 5, 6]
+        # speed varies ~1.6x between jobs and a slow runner took a fifth to 297 s;
+        # ht-b4rn: eight, the suite outgrew six, docs/dev/build-speed.md).
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       # ht-p03.131: every process a step starts carries this id, so the final
       # leak check can tell this run's leftovers from anyone else's.

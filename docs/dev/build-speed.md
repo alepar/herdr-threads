@@ -472,3 +472,24 @@ already carry equal tests; the runner each lands on is chance. CI therefore runs
 slices. On the slowest observed runner (1994 test-seconds, 297 s for 1612 tests), a sixth
 of the suite projects to about 250 s. The step prints the runner's CPU model beside the
 timer, so a slow slice can be told from a slow test.
+
+## Eight CI slices: the suite outgrew six (ht-b4rn)
+
+Six slices went over the 300 s guard twice in three runs (slice 6/6 at 321 s, run 41268997150;
+slice 1/6 at 309 s, run 41272157131), every test passing. Wall time stays throughput-bound, as
+above: run 41272157131 did 6.3-6.85 test-seconds per wall second on the seven slots, and the suite
+is now 10,548 test-seconds across 8,152 passing rows, so an average slice of 1,758 test-seconds
+leaves no room for the slice that draws a slow runner.
+
+Replaying that run's rows by the method in "CI shard budget" reproduces its six slices exactly
+(1960 / 1719 / 1692 / 1864 / 1763 / 1550 test-seconds). Projected at its slowest ratio (6.3):
+
+| Slices | Worst slice (test-seconds) | Projected wall | With every duration +20% |
+| ---: | ---: | ---: | ---: |
+| 6 | 1960 | 311 s | 373 s |
+| 7 | 1560 | 248 s | 297 s |
+| 8 | 1429 | 227 s | 272 s |
+
+Seven has no margin against a 20% slower run, so CI runs eight. This costs two more runners and
+prewarms. These are projections from recorded durations, not a CI run; the slot count and
+every serialized group are unchanged.
