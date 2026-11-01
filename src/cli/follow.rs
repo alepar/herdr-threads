@@ -183,6 +183,9 @@ pub(crate) trait PaneNameSource {
     fn seat_labels(&self, _budget: &CallBudget) -> Result<Option<Vec<SeatHostLabels>>, ApiError> {
         Ok(None)
     }
+    /// The daemon's capabilities the caller already asked for, so a source holding its own
+    /// connection does not ask again.
+    fn known_capabilities(&self, _capabilities: &crate::protocol::capabilities::Capabilities) {}
 }
 
 /// The production [`PaneNameSource`]: every host's labels from the daemon
@@ -222,6 +225,11 @@ impl DaemonPanes {
 }
 
 impl PaneNameSource for DaemonPanes {
+    fn known_capabilities(&self, capabilities: &crate::protocol::capabilities::Capabilities) {
+        if let Some(client) = &self.client {
+            client.seed_capabilities(capabilities.clone());
+        }
+    }
     fn current_pane(&self, caller: &str, budget: &CallBudget) -> Result<HostTargetId, ApiError> {
         match &self.resolver {
             Some(resolve) => resolve(caller, budget),
@@ -754,9 +762,9 @@ pub(crate) fn render_history(
     cache: &mut NickCache,
     writer: &mut dyn Write,
 ) -> Result<(), RunError> {
-    let full_bodies = client
-        .capabilities(&budget(cache.clock.as_ref(), 5_000, &cache.cancel))
-        .supports(HISTORY_FULL_BODIES);
+    let capabilities = client.capabilities(&budget(cache.clock.as_ref(), 5_000, &cache.cancel));
+    cache.host.known_capabilities(&capabilities);
+    let full_bodies = capabilities.supports(HISTORY_FULL_BODIES);
     render_history_with(
         client,
         full_bodies,

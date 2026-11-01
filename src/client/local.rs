@@ -60,6 +60,12 @@ impl LocalSocketClient {
             .clone()
     }
 
+    /// Records capabilities another connection to the same daemon already fetched, so this
+    /// one does not ask again. A no-op once this client has its own answer.
+    pub fn seed_capabilities(&self, capabilities: Capabilities) {
+        let _ = self.capabilities.set(capabilities);
+    }
+
     fn error(code: ErrorCode, detail: &str) -> ApiError {
         ApiError::new(code, detail)
     }
