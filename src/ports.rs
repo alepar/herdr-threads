@@ -5063,6 +5063,7 @@ mod allocation_tests {
             host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("resolve"),
+            locator_hint: None,
         };
         let admission = HostObservationAdmission {
             instance: "i".into(),
@@ -5367,6 +5368,7 @@ mod allocation_tests {
             host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
+            locator_hint: None,
         };
         let observation = HostObservation {
             focused: false,
@@ -5674,6 +5676,7 @@ mod contract_adapter_tests {
             host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
+            locator_hint: None,
         };
         let observation = adapter
             .observe_current_target(&request.target, &context)

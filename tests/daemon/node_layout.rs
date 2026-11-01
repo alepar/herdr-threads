@@ -329,6 +329,7 @@ fn second_claim_host_attaches_lazily() {
             host: HostLocator::parse(second.to_string_lossy().into_owned()).unwrap(),
             target: HostTargetId::new("p"),
             operation: OperationId::new("op"),
+            locator_hint: None,
         }),
         &budget,
     );
@@ -421,6 +422,7 @@ fn host_needing_request_on_store_only_is_host_unavailable() {
                 host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
+                locator_hint: None,
             }),
             &budget(),
         )

@@ -1,0 +1,1 @@
+herdr-threads: HERDR_THREADS_SEAT_NAME=reviewer inherited from the Herdr server; use another name per command or restart the server without it

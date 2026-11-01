@@ -693,6 +693,12 @@ pub struct ResolveSeat {
     pub target: HostTargetId,
     pub host: HostLocator,
     pub operation: OperationId,
+    /// N4-inherit: the host candidate that sits beside a named target (a Herdr pane id), sent
+    /// only by a caller whose environment carries both. The daemon reads the server environ of
+    /// the host that owns it and refuses a name equal to the server's own (M6). Absent
+    /// everywhere else, so those requests' bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator_hint: Option<String>,
 }
 /// TRUST-POLICY C1. A resumed top-level session asks the daemon to reattach
 /// the one unresolved seat whose last binding carries its session id onto the
@@ -1899,6 +1905,7 @@ mod host_locator_tests {
                 target: target(),
                 host: explicit.clone(),
                 operation: op(),
+                locator_hint: None,
             }),
             Command::ContinuityCheckIn(ContinuityCheckIn {
                 target: target(),

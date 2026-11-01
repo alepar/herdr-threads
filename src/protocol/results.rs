@@ -453,6 +453,10 @@ pub enum ErrorCode {
     /// A named seat's name is held by another live, unrelated top-level process (M7, SA16): pick
     /// another name, or wait for the holder to exit.
     SeatNameInUse,
+    /// A per-command seat name equals the one the host server's own environment carries (M6,
+    /// SA2): the server's role owns that name, so it never binds. Use another name per command,
+    /// or restart the server without the variable.
+    InheritedSeatName,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2292,6 +2296,7 @@ impl ErrorCode {
         ErrorCode::SubagentReadOnly,
         ErrorCode::ManagedDaemonRefused,
         ErrorCode::SeatNameInUse,
+        ErrorCode::InheritedSeatName,
     ];
 
     /// The failure class this code defaults to, or `None` for codes that
@@ -2344,6 +2349,7 @@ impl ErrorCode {
             ErrorCode::SubagentReadOnly => None,
             ErrorCode::ManagedDaemonRefused => None,
             ErrorCode::SeatNameInUse => None,
+            ErrorCode::InheritedSeatName => None,
             // The daemon restarted between the caller's view and the request
             // (B5, protocol 2): retry against the new boot.
             ErrorCode::DaemonBootChanged => Some(ErrorClass::Transient),
@@ -2422,6 +2428,7 @@ api_error_constructors! {
     subagent_read_only => SubagentReadOnly,
     managed_daemon_refused => ManagedDaemonRefused,
     seat_name_in_use => SeatNameInUse,
+    inherited_seat_name => InheritedSeatName,
 }
 
 #[cfg(test)]

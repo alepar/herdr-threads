@@ -174,6 +174,15 @@ impl CallerEnv {
         SeatName::parse(self.text(named::ENV_SEAT_NAME)?).ok()
     }
 
+    /// The host candidate that sits beside the seat name (N4-inherit): the Herdr pane id the
+    /// environment carries, sent as `ResolveSeat.locator_hint` so the daemon can check the
+    /// pane's server for an inherited name. `None` without a name or without a pane. A
+    /// herdr-core terminal hint arrives with H1.
+    pub fn locator_hint(&self) -> Option<String> {
+        self.named()?;
+        self.text(native::ENV_PANE_ID)
+    }
+
     pub fn locate(&self, mode: EnvMode) -> Result<Option<Located>, LocatorError> {
         // Precedence rule 1: a valid name replaces only the target, in either mode and with no
         // Herdr environment; an invalid one is a hard error.
@@ -338,6 +347,14 @@ impl<'a> CallerSite<'a> {
             }
         }
     }
+}
+
+/// `ResolveSeat.locator_hint` for a request to `host`: only a resolve on the named host carries
+/// one, from this process's environment.
+pub fn resolve_hint(host: &HostLocator) -> Option<String> {
+    host.is_named_host()
+        .then(|| CallerEnv::from_process().locator_hint())
+        .flatten()
 }
 
 /// The `NAME=value` words a handoff recovery command carries to act from the

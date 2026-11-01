@@ -110,6 +110,7 @@ fn attachment_fixture_clocked(
         host: crate::test_support::test_host_locator(),
         target: created.root_pane.clone(),
         operation: id.payload.resolve_key.clone(),
+        locator_hint: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     let guard = OrdinaryResolutionGuard::try_new(&request, current, &admission).unwrap();
@@ -203,6 +204,7 @@ fn attachment_guard(
             host: crate::test_support::test_host_locator(),
             target: current.target.clone(),
             operation: operation.clone(),
+            locator_hint: None,
         },
         pane,
         &admission,
@@ -240,6 +242,7 @@ fn explicit_attachment_directories(directories: bool) {
             host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: a.resolve_operation.clone(),
+            locator_hint: None,
         },
         pane,
         &admission,
@@ -379,6 +382,7 @@ fn topology_attachment_refuses_stale_or_held_evidence_and_missing_or_changed_res
                         host: crate::test_support::test_host_locator(),
                         target: current.target.clone(),
                         operation: a.resolve_operation.clone(),
+                        locator_hint: None,
                     },
                     pane,
                     &admission,
@@ -2027,7 +2031,8 @@ fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current
                 ResolveSeat {
                     host: crate::test_support::test_host_locator(),
                     target: a.created.root_pane,
-                    operation: id.plan.payload.keys.resolve.clone()
+                    operation: id.plan.payload.keys.resolve.clone(),
+                    locator_hint: None,
                 },
                 OrdinaryResolutionAttempt::ReplayOnly,
                 &budget

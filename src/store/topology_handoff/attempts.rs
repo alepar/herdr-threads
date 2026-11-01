@@ -586,6 +586,7 @@ mod tests {
                 host: crate::test_support::test_host_locator(),
                 target: observation.target.clone(),
                 operation: id.payload.resolve_key.clone(),
+                locator_hint: None,
             },
             BootstrapPaneObservation::try_new(
                 observation,

@@ -661,6 +661,7 @@ impl SemanticMutation {
                 target: target.clone(),
                 host: host.clone(),
                 operation,
+                locator_hint: crate::cli::caller_location::resolve_hint(host),
             }),
             Self::ContinuityCheckIn {
                 target,

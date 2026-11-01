@@ -138,6 +138,7 @@ impl Rig {
                 target: HostTargetId::new(name),
                 host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
                 operation: OperationId::new(format!("resolve-{name}")),
+                locator_hint: None,
             }))
         else {
             panic!("named resolve")

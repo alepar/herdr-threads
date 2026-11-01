@@ -61,6 +61,7 @@ const EXPECTED: &[(ErrorCode, Option<ErrorClass>)] = &[
     (ErrorCode::SubagentReadOnly, None),
     (ErrorCode::ManagedDaemonRefused, None),
     (ErrorCode::SeatNameInUse, None),
+    (ErrorCode::InheritedSeatName, None),
 ];
 
 #[test]

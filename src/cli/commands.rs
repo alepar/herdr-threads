@@ -774,11 +774,15 @@ impl MutationSpec {
         };
         let target_host = || host.clone().ok_or_else(|| invalid("host locator required"));
         let command = match self {
-            Self::Resolve(target) => WireCommand::ResolveSeat(ResolveSeat {
-                target,
-                host: target_host()?,
-                operation,
-            }),
+            Self::Resolve(target) => {
+                let host = target_host()?;
+                WireCommand::ResolveSeat(ResolveSeat {
+                    target,
+                    locator_hint: super::caller_location::resolve_hint(&host),
+                    host,
+                    operation,
+                })
+            }
             Self::Create { name, topic, goal } => WireCommand::CreateThread(CreateThread {
                 name,
                 topic,
