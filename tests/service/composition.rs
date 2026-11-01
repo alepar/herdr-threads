@@ -1571,6 +1571,7 @@ fn store_only_daemon_serves_without_host_workers() {
             host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("p"),
             operation: OperationId::new("op"),
+            locator_hint: None,
         }),
         &budget(),
     )
@@ -2116,6 +2117,7 @@ impl ActualNativeFixture {
                 host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new(pane),
                 operation: herdr_threads::protocol::ids::OperationId::new(operation),
+                locator_hint: None,
             }),
             &self.budget(),
         )
@@ -2575,6 +2577,7 @@ fn request_with_previous_boot_after_restart_is_daemon_boot_changed() {
             host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("w4:p1"),
             operation: herdr_threads::protocol::ids::OperationId::new("stale-boot"),
+            locator_hint: None,
         })
     };
     let definite = stale

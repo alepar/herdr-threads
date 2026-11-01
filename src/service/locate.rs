@@ -8,8 +8,10 @@
 //!   ends the walk: a root above it does not verify; unreadable argv is not a
 //!   wall, an accepted F/N limit), and its cache keyed on (candidates, subject
 //!   pid, subject start stamp, host set epoch) with unstamped subjects
-//!   uncached; the server-environ read for the inherited-name refusal (M6)
-//!   lands with the named-seat phase.
+//!   uncached; the server-environ read for the inherited-name refusal (M6):
+//!   [`read_server_environ`] (a plain function with a Linux `/proc` body and a
+//!   macOS `KERN_PROCARGS2` body, `None` on any failure) and
+//!   [`inherited_name`], which asks the host that owns the hinted pane.
 //! - Hides: how a pid maps to a host target.
 //! - Must not: run for a `One` caller (that would be adversarial verification,
 //!   which TRUST-POLICY forbids; the CLI sends this command only for
@@ -40,8 +42,152 @@ use crate::{
 };
 use std::{
     collections::HashMap,
+    ffi::OsString,
     sync::{Arc, Mutex},
 };
+
+/// One process environment: `(name, value)` pairs in the order the process holds them.
+pub type Environ = Vec<(OsString, OsString)>;
+
+/// The environment of process `pid`, when this user may read it; `None` on any failure (another
+/// user's process, a gone pid, an unsupported platform). The caller skips its check on `None`.
+pub fn read_server_environ(pid: u32) -> Option<Environ> {
+    platform_environ(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn platform_environ(pid: u32) -> Option<Environ> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    Some(parse_environ_block(&raw))
+}
+
+/// `KERN_PROCARGS2` of `pid`: argc, the executable path, argv, then the environment.
+#[cfg(target_os = "macos")]
+fn platform_environ(pid: u32) -> Option<Environ> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    // SAFETY: a size query with a null buffer, then a read into a buffer of the size reported.
+    unsafe {
+        let mut size: libc::size_t = 0;
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+            || size == 0
+        {
+            return None;
+        }
+        let mut buffer = vec![0_u8; size];
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+        {
+            return None;
+        }
+        buffer.truncate(size);
+        parse_procargs2(&buffer)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn platform_environ(_pid: u32) -> Option<Environ> {
+    None
+}
+
+/// A NUL-separated `NAME=value` block (Linux `/proc/<pid>/environ`); an entry with no `=` is
+/// dropped.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn parse_environ_block(raw: &[u8]) -> Environ {
+    raw.split(|b| *b == 0)
+        .filter_map(|entry| {
+            let eq = entry.iter().position(|b| *b == b'=')?;
+            Some((bytes_to_os(&entry[..eq]), bytes_to_os(&entry[eq + 1..])))
+        })
+        .collect()
+}
+
+/// The macOS `KERN_PROCARGS2` buffer: a native-endian `int` argc, the executable path and its NUL
+/// padding, argc argv strings, then the environment strings up to the first empty one. Plain Rust
+/// on every OS so a captured buffer is testable anywhere; `None` when it is truncated or malformed.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn parse_procargs2(buffer: &[u8]) -> Option<Environ> {
+    let argc = i32::from_ne_bytes(buffer.get(..4)?.try_into().ok()?);
+    let argc = usize::try_from(argc).ok()?;
+    let mut rest = buffer.get(4..)?;
+    // The executable path, then the NUL padding that follows it.
+    let path_end = rest.iter().position(|b| *b == 0)?;
+    rest = &rest[path_end..];
+    let pad = rest.iter().position(|b| *b != 0)?;
+    rest = &rest[pad..];
+    // argv: argc NUL-terminated strings.
+    for _ in 0..argc {
+        let end = rest.iter().position(|b| *b == 0)?;
+        rest = &rest[end + 1..];
+    }
+    let mut environ = Environ::new();
+    while let Some(end) = rest.iter().position(|b| *b == 0) {
+        let entry = &rest[..end];
+        if entry.is_empty() {
+            break;
+        }
+        if let Some(eq) = entry.iter().position(|b| *b == b'=') {
+            environ.push((bytes_to_os(&entry[..eq]), bytes_to_os(&entry[eq + 1..])));
+        }
+        rest = &rest[end + 1..];
+    }
+    Some(environ)
+}
+
+fn bytes_to_os(bytes: &[u8]) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(bytes.to_vec())
+}
+
+/// M6 (129 bytes + the name and the host label), after the CLI's `herdr-threads: ` prefix.
+pub fn inherited_name_detail(name: &str, host: &str) -> String {
+    format!(
+        "{}={name} inherited from the {host} server; use another name per command or restart the server without it",
+        crate::host::named::ENV_SEAT_NAME
+    )
+}
+
+/// The inherited-name check (SA2, D1): whether the server that owns the hinted pane carries
+/// `name` in its own environment, read through `read`. Only a host that answers for the pane is
+/// asked; a server with no pid, or one whose environment is unreadable, skips the check (D1
+/// limit): it never refuses on a read that failed. The comparison is on the name alone, so a
+/// per-command name equal to the server's own is refused too (an accepted limit).
+pub fn inherited_name(
+    name: &str,
+    hint: &str,
+    hosts: &[Arc<dyn HostPort>],
+    context: &HostCallContext,
+    read: impl Fn(u32) -> Option<Environ>,
+) -> bool {
+    let Ok(pane) = HostTargetId::parse(hint.to_owned()) else {
+        return false;
+    };
+    hosts.iter().any(|host| {
+        matches!(host.target_root_process(&pane, context), Ok(Some(_)))
+            && host
+                .server_process()
+                .and_then(&read)
+                .is_some_and(|environ| {
+                    environ.iter().any(|(key, value)| {
+                        key.as_os_str() == crate::host::named::ENV_SEAT_NAME
+                            && value.as_os_str() == name
+                    })
+                })
+    })
+}
 
 /// Longest ancestry the walk follows (a loop or a pathological tree ends it).
 const MAX_WALK: usize = 128;
@@ -230,3 +376,7 @@ fn candidate_root(
 #[cfg(test)]
 #[path = "../../tests/service/locate.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/environ_reader.rs"]
+pub(crate) mod environ_reader_tests;

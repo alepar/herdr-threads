@@ -542,6 +542,7 @@ impl Fixture {
                 host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new(operation),
+                locator_hint: None,
             }),
             &self.budget(),
         )
@@ -658,6 +659,7 @@ fn first_contact_read_waits_for_the_lane_capture_it_needs() {
                     host: herdr_threads::test_support::test_host_locator(),
                     target: HostTargetId::new("w1:p1"),
                     operation: OperationId::new("first-contact"),
+                    locator_hint: None,
                 }),
                 &budget,
             )
@@ -1030,6 +1032,7 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
                 host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new("late-read"),
+                locator_hint: None,
             }),
             &budget,
         )
@@ -1203,6 +1206,7 @@ fn real_ipc_reused_resolution_key_for_different_target_rejects_before_host_read(
             host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("same-key"),
+            locator_hint: None,
         }),
         &fixture.budget(),
     );
@@ -1757,6 +1761,7 @@ fn disconnected_short_budget_cannot_commit_queued_resolution_after_writer_unlock
         host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("expired-queued-resolution"),
+        locator_hint: None,
     });
     #[cfg(feature = "test-support")]
     let completion = ServerCompletion::resolution("expired-queued-resolution");
@@ -2094,6 +2099,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
         host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("historical-resolve"),
+        locator_hint: None,
     };
     let CommandResult::SeatResolved(seat) = fixture.resolve(request.operation.as_str()).unwrap()
     else {
@@ -2342,6 +2348,7 @@ fn elected_snapshot_and_target_captures_share_one_lane_and_dirty_refresh() {
                     host: herdr_threads::test_support::test_host_locator(),
                     target: HostTargetId::new("w1:p1"),
                     operation: OperationId::new("ordered"),
+                    locator_hint: None,
                 }),
                 &budget,
             )
@@ -2531,6 +2538,7 @@ fn queued_incoherent_compensation<'w>(
                 host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation,
+                locator_hint: None,
             },
             &budget,
         ));
@@ -2683,6 +2691,7 @@ fn elected_shutdown_is_not_held_by_invalidation_compensation() {
                 host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new("elected-shutdown-read"),
+                locator_hint: None,
             }),
             &budget,
         ));

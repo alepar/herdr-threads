@@ -606,6 +606,19 @@ model open work, and summary closure never changes receipt state or installs glo
   already-connected binding is a touch, never judged. The refusal rolls the transaction back, so two
   concurrent unrelated enrolls of one name yield one binding (SA7). The guard is cooperative same-user
   consistency, not verification (see Accepted limits).
+- *Inherited-name refusal (named seats, D1, SA2, N4-inherit)*: a named resolve whose caller also carries
+  a Herdr pane (`ResolveSeat.locator_hint`, the pane id beside `HERDR_THREADS_SEAT_NAME`) is checked
+  against the environment of the server that owns the pane: the daemon reads the pid the host answers
+  as `server_process()` (NativeCli: the Herdr socket's kernel peer pid; `/proc/<pid>/environ` on Linux,
+  `KERN_PROCARGS2` on macOS, same user only), and when that environment carries the same name it refuses
+  with `inherited_seat_name` (M6, `herdr-threads: HERDR_THREADS_SEAT_NAME=<name> inherited from the Herdr
+  server; use another name per command or restart the server without it`) before anything is allocated
+  or bound, and never falls back to the pane. Accepted limits: the check compares the name only, so a
+  caller that sets the server's own name per command is refused too (the name is the server's role;
+  only a different name, or a server restarted without the variable, binds); a server with no pid, an
+  unreadable environment (another user, a gone pid, an unsupported platform) or a pane no host answers
+  for skips the check, which leaves only observability (D1 limit); and the hint is the caller's
+  claim, not verification, so a caller that omits it is not checked (cooperative model).
 - *Independent lifecycle forks (ht-i9a7)*: neutral `EventKind::Fork` maps to a
   journaled `CheckInMode::Fork` with the same expected-generation and exact execution
   checks as an ordinary lifecycle. The adapter maps only its native independent-start

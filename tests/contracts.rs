@@ -1956,6 +1956,7 @@ fn ordinary_seat_resolve_cannot_enter_native_permit_mutation_route() {
         host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("p1"),
         operation: herdr_threads::protocol::ids::OperationId::new("o1"),
+        locator_hint: None,
     });
     assert!(PermitMutation::try_from(ordinary).is_err());
 }

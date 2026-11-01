@@ -4444,6 +4444,8 @@ mod continuity_gate {
                 | ErrorCode::LivenessFingerprintRequired
                 // M7: the live holder keeps the name until it exits; an identical retry repeats it.
                 | ErrorCode::SeatNameInUse
+                // M6: the server's own name stays refused until it is restarted without it.
+                | ErrorCode::InheritedSeatName
                 // A deterministic rejection on this branch's retry path
                 // (ht-p03): identical retry repeats it.
                 | ErrorCode::StaleRequirementAcceptance => true,

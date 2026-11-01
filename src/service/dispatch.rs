@@ -186,6 +186,43 @@ impl DomainService {
             budget,
         ))
     }
+    /// SA2, D1 (M6): a named resolve that carries a host candidate is refused when the server
+    /// owning it holds the same name in its own environment, before anything is allocated or
+    /// bound. No candidate, an unreadable environment or a server with no pid skips the check.
+    fn refuse_inherited_name(
+        &self,
+        request: &crate::protocol::commands::ResolveSeat,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let Some(hint) = request.locator_hint.as_deref() else {
+            return Ok(());
+        };
+        let ports: Vec<_> = self
+            .hosts
+            .as_ref()
+            .map_or_else(Vec::new, |hosts| hosts.all_for_reads())
+            .iter()
+            .map(|session| Arc::clone(session.port()))
+            .collect();
+        let context = crate::ports::HostCallContext {
+            budget: budget.clone(),
+            expected_boot: None,
+            expected_epoch: None,
+        };
+        if super::locate::inherited_name(
+            request.target.as_str(),
+            hint,
+            &ports,
+            &context,
+            super::locate::read_server_environ,
+        ) {
+            return Err(error(
+                ErrorCode::InheritedSeatName,
+                &super::locate::inherited_name_detail(request.target.as_str(), "Herdr"),
+            ));
+        }
+        Ok(())
+    }
     /// Share the offered ledger with the wake lane (the same instance the wake worker reads).
     pub fn with_delivery_pull(
         mut self,
@@ -540,6 +577,7 @@ impl DomainService {
                     target: evidence.root_pane.clone(),
                     host: request.identity.claim.host.clone(),
                     operation: request.identity.plan.payload.keys.resolve.clone(),
+                    locator_hint: None,
                 };
                 return runtime.identity.with_bootstrap_observation(
                     &*runtime.observer,
@@ -602,6 +640,7 @@ impl DomainService {
                 target: creation.root_pane,
                 host: request.identity.claim.host.clone(),
                 operation: request.identity.plan.payload.keys.resolve.clone(),
+                locator_hint: None,
             };
             return runtime.identity.with_bootstrap_observation(
                 &*runtime.observer,
@@ -897,6 +936,7 @@ impl DomainService {
                     target: evidence.root_pane.clone(),
                     host: request.identity.claim.host.clone(),
                     operation: request.identity.payload.resolve_key.clone(),
+                    locator_hint: None,
                 };
                 return runtime.identity.with_bootstrap_observation(
                     &*runtime.observer,
@@ -970,6 +1010,7 @@ impl DomainService {
                 target: creation.root_pane,
                 host: identity.claim.host.clone(),
                 operation: identity.payload.resolve_key.clone(),
+                locator_hint: None,
             };
             return runtime.identity.with_bootstrap_observation(
                 &*runtime.observer,
@@ -1842,6 +1883,7 @@ impl LocalService for DomainService {
                 let preparation = self.attached_host(&request.host, budget)?;
                 // A name at the reserved named-host locator is a seat-acting allocation by name.
                 if request.host.is_named_host() {
+                    self.refuse_inherited_name(&request, budget)?;
                     return preparation.identity().resolve_named(request, budget);
                 }
                 preparation
@@ -2209,6 +2251,7 @@ mod operator_tests {
                 host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
+                locator_hint: None,
             }),
             Command::OperatorFreshSeat(OperatorFreshSeat {
                 host: crate::test_support::test_host_locator(),
@@ -2395,6 +2438,10 @@ mod cooperative_tests;
 #[cfg(test)]
 #[path = "../../tests/daemon/self_retire.rs"]
 mod self_retire_tests;
+
+#[cfg(test)]
+#[path = "../../tests/daemon/inherited_name.rs"]
+mod inherited_name_tests;
 
 #[cfg(test)]
 mod topology_contract_dispatch_tests {

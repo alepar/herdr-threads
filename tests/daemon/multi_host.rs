@@ -593,6 +593,7 @@ impl Rig {
                 target: HostTargetId::new(pane),
                 host: host.clone(),
                 operation: self.op("resolve"),
+                locator_hint: None,
             }))
             .unwrap_or_else(|error| panic!("resolve {pane} on {}: {error:?}", host.as_str()));
         let CommandResult::SeatResolved(seat) = resolved else {

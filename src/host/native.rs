@@ -1254,6 +1254,57 @@ impl NativeCli {
     }
 }
 
+/// The pid of the process serving the unix socket at `socket`, from the kernel's peer
+/// credentials of a fresh connection (the same source the incarnation witness records); `None`
+/// when the connection or the credentials are unavailable.
+fn socket_peer_pid(socket: &std::path::Path) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    let fd = stream.as_raw_fd();
+    #[cfg(target_os = "linux")]
+    let pid = {
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: `cred` and `len` are valid for the size `len` states.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&raw mut cred).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0).then_some(cred.pid)?
+    };
+    #[cfg(target_os = "macos")]
+    let pid = {
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        // SAFETY: `pid` and `len` are valid for the size `len` states.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&raw mut pid).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0).then_some(pid)?
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let pid = {
+        let _ = fd;
+        return None;
+    };
+    u32::try_from(pid).ok().filter(|pid| *pid != 0)
+}
+
 impl HostPort for NativeCli {
     fn seat_labels(
         &self,
@@ -1289,6 +1340,10 @@ impl HostPort for NativeCli {
             })
             .and_then(|pid| u32::try_from(pid).ok())
             .filter(|pid| *pid != 0))
+    }
+
+    fn server_process(&self) -> Option<u32> {
+        socket_peer_pid(&self.socket)
     }
 
     fn native_launch_capability(&self) -> NativeLaunchCapability {

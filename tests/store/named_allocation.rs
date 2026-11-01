@@ -52,6 +52,7 @@ fn request(name: &str, operation: &str) -> ResolveSeat {
         target: HostTargetId::new(name),
         host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
         operation: OperationId::new(operation),
+        locator_hint: None,
     }
 }
 

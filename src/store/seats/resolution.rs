@@ -524,6 +524,7 @@ fn resolve_bootstrap_seat_impl(
         target: created.root_pane,
         host: request.identity.claim.host.clone(),
         operation: request.operation.clone(),
+        locator_hint: None,
     };
     let digest = ordinary_resolution_digest(&canonical.instance, &ordinary)?;
     let own_allocation = std::cell::Cell::new(false);

@@ -1891,6 +1891,7 @@ impl Matrix {
                     host: crate::test_support::test_host_locator(),
                     target: HostTargetId::new(pane),
                     operation: OperationId::new(format!("resolve-{pane}")),
+                    locator_hint: None,
                 }))
                 .unwrap()
             else {
@@ -2507,6 +2508,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
             host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("pane-u"),
             operation: OperationId::new("resolve-pane-u"),
+            locator_hint: None,
         }))
         .unwrap()
     else {
