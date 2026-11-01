@@ -225,3 +225,50 @@ the reserved named locator instead of the Herdr endpoint the handoff was recorde
 
 `first_inbox_prints_m8_once_then_same_seat`, `named_to_named_send_inbox_ack_hook`, `named_to_pane_in_isolated_herdr`,
 `named_join_accept_backlog`, `named_pair_with_pane_auto_join_opener`, `recovery_hint_round_trip`, `idle_exit_with_only_named_host`.
+
+## N2 phase gate (ht-kqrt.62)
+
+RESULT: RED. The unfiltered suite fails 47 of 8617 tests; every other gate check passes. No code change in this task; the regressions are filed (see "Regressions") for the owners.
+
+Tree: task branch `task-ht-kqrt.62` at `471447f2df24f71fde7f4ed491ed9057205c89c0` (tree `68bf34c7c13141d19d7955d55fc08dfdf974aef5`) = run branch tip `8c190d732` (all N2 leaves .35, .37, .38, .69, .70 and the refactors .141, .142, .65 merged) plus the unmerged stack parent ht-kqrt.61 (a `scripts/wake-e2e.py` change only, so the Rust suite result is the run branch's). `HT_LEAK_RUN_ID=f0e438f9-7143-49a5-ae4f-5b34048c5aaf`. Scratch under `/tmp/sp-503081fe/ht-kqrt.62`; no agents, no shared Herdr server. Evidence: `evidence/ht-kqrt.62/` in the task worktree (logs, `suite.clean.log`).
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `heavy nice cargo nextest run --locked --all-targets --all-features` | 100 | 8617 run, 8570 passed, 47 FAILED, 53 skipped; nextest summary 310.7 s, wall 428 s including the build (under the 5 min budget by the nextest figure) |
+| `scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID"` | 0 | no leaked temp files, no leaked processes |
+| `heavy nice scripts/check-default-features` | 0 | pass |
+| `scripts/check-wire-compat` | 0 | pass, baseline untouched |
+| `scripts/check-harness-neutral` | 0 | pass, allowlist untouched |
+| `heavy cargo test --locked --all-features --test combined host_neutral_scan` (ht-kqrt.65) | 0 | 9 passed |
+| `heavy nice scripts/herdr-release-smoke --versions 0.9.5` (newest in `tests/herdr-releases.tsv`) | 0 | 0.9.5 PASS in 126.8 s, leak check clean |
+| `python3 scripts/wake-e2e.py --self-test` | 0 | 214 tests OK (skipped=1), covers the tmux-named cleanup |
+
+### Golden surfaces against the F gate (`bb1d43430`)
+
+`git diff bb1d43430 -- tests/golden_surfaces.rs tests/fixtures/golden` is not only the Claude registration, because N-phase and refactor leaves also touched the goldens. By commit: b6decf629 (ht-kqrt.70) is the Claude `Stop` and `StopFailure` registration (setup/setup-status text and JSON, hook golden, `events:` line, the new report-only hook test, the Claude contract id); 69176ebcc (ht-kqrt.19) adds the standalone install goldens (`install_sh_stub_herdr.txt`, `herdr_present_not_installed.txt`); aaa04f3af (ht-kqrt.137) lets the fake Herdr answer the pre-attach `hello`; a5c02dcf9 (ht-kqrt.138) regenerates the doctor JSON for `doctor.hosts` and `doctor.other_stores`; d66680975 (ht-kqrt.141) makes the install golden temp-root independent. The Herdr-pane Claude/Codex/Hermes/agy hook outputs are unchanged apart from (a) above. The acceptance wording "only the Claude Stop registration" is therefore met for the N2 leaves; the other differences belong to N-phase leaves already accepted there.
+
+### T1-T5 (tests pass in the gated run)
+
+- T1 `capture_pane_vs_herdr_detection_fixtures` (ht-kqrt.69): captured claude idle/approval/draft and agy idle screens replayed into a private tmux pane; `capture-pane` gives the same `ComposerRead`, `screen_blocked` and `screen_turn_running` as the Herdr detection text. Answer: yes, identical.
+- T2 (ht-kqrt.70): `claude_stop_failure_clears_busy` (tests/service/turn_state.rs) and the `screen_turn_running` fixture tests (tests/fixtures/screen_turn_running/, e.g. `screen_turn_running_recognizes_the_interrupt_footer`): `StopFailure` clears busy; an interrupt with no `Stop` clears busy only through the two-read, 60 s screen rule; a `None` recognizer (Hermes) never wakes.
+- T3 `draft_present_no_typing`, `readback_mismatch_clears_no_submit` (ht-kqrt.69): a draft means nothing typed (`TargetUnsafe`); an agy composer holding exactly the wake is read back and cleared with `C-u`; wake plus other text is left alone; Claude does not opt in.
+- T4 `stale_tmux_pane_wrong_server_pid_disables_wake_and_never_moves_seat`, `stale_tmux_pane_nested_in_isolated_herdr` (tests/host/named_tmux.rs, ht-kqrt.38): a stale or non-ancestor `TMUX_PANE` fails verification, wake is disabled, the seat is not moved.
+- T5 `osc_7501_passthrough_recorded` (ht-kqrt.69): tmux consumes OSC 7501; it reaches neither `capture-pane` nor any pane variable and `allow-passthrough` is off, so no self-reported status exists.
+
+### Regressions (47 failing tests, all reproduced in the run; each rerun alone with `--no-capture`)
+
+1. No `zsh` on this host (3): `protocol::output::tests::emitted_command_round_trips_exact_argv_through_zsh`, `combined contracts::action_formatter_round_trips_unicode_separators_through_bash_and_zsh`, `combined view::rendered_actions_execute_as_shell_commands`. Environment-dependent (`which zsh` finds none); not run at base, so unproven as pre-existing.
+2. Hook event contract not updated for the Claude Stop registration (3): `cli::hook::tests::installed_argv_and_hook_parser_are_one_contract` (tests/cli/hook.rs:182, 7 != 5), `unknown_payload_and_non_herdr_process_are_quiet` (hook.rs:2072 `None` unwrap), `cli::hook_evidence::tests::malformed_is_sent_once_per_session_and_event`. Introduced by b6decf629 (ht-kqrt.70).
+3. `store::commit_kicks_tests::every_table_is_classified`: table `no_wake_reports` (migration 0012) not classified in `service::kicks`.
+4. `integration no_leaks::every_test_spawn_site_is_owned`: unowned spawns at `tests/host/named_tmux.rs:96` (bd8065901, ht-kqrt.38) and `tests/installer_integrations.rs:1462` (69176ebcc, ht-kqrt.19).
+5. Host-count and host-id expectations broken by the built-in named host (host 1 or 2 is now taken; the Herdr host attaches as host 3) (about 8): `multinode config_two_hosts::one_node_with_two_hosts_reaches_seats_on_both` (3 != 2), `integration node_layout::second_claim_host_attaches_lazily` (1 != 2), `multinode config_restore::starting_node_after_store_only_peer_attaches_its_host` (1 != 0), `integration pane_close_retirement::isolated_herdr_restart_keeps_seats_in_restore_hold` (`host_id=1` row), `session_bindings_smoke::config7_herdr_restart_keeps_seats_in_restore_hold`, `multinode config_store_only::store_only_node_relays`, `remote_addresses::*` (2), `peer_launch_terminal::capable_peer_new_terminal_creates_on_fake_hc`, `config_wipe::wipe_with_the_key_intact_suppresses_settled_history`.
+6. Daemon composition (5): `service composition::store_only_daemon_serves_without_host_workers`, `daemon_restart_keeps_joined_cooperative_seat_available_without_warning`, `daemon_restart_keeps_joined_human_seat_available`, `elected_shutdown_joins_idle_monitor_before_releasing_native_host` (idle-exit thread panics `Disconnected`, composition.rs:2700), `actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_and_owner_release` (30 s).
+7. Wake lane never fires in Herdr-pane tests (about 17, 20-38 s timeouts): all `integration trust_policy::*` listed in the suite log (`timed out waiting for the reconciliation marker`), `mod_delivery::{clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace, daemon_setting_off_refuses_registration_disabled, no_mod_or_env_off_keeps_native_wake_and_exits_3, agy_sweep::wake_on_all_wakes_a_native_hook_pull_seat_for_a_lazy_row_and_nudge_never}` (`timed out waiting for a native wake prompt`), `lanes_latency::{deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms, settled_setup_invitations_do_not_require_a_sender_wake}` (daemon log: `lane wakes: refused ...: no unique composer binding`, attempts 0 != 2). This is the Herdr TUI wake path the N2 gate must prove unchanged; it is the most serious group and suggests the built-in named wake lane (ht-kqrt.69) shadows or replaces the Herdr host's lane in these configurations.
+8. `wire_compat::cli_against_this_daemon_sends_full_bodies_and_makes_one_history_call`: the CLI now issues a second `capabilities` call (2 != 1; calls: resolve_thread, capabilities, history, message_delivery_modes, capabilities, host_topologies, participants, seats).
+9. `daemon::tests::detached_output_survives_ensure_parent_and_loser_does_not_touch_logs`: one of two concurrent ensure callers exits 101 (tests/daemon/detached_diagnostics.rs:786).
+
+Groups 2-9 are in the shared run branch tip (this task's only extra commit, ht-kqrt.61, edits `scripts/wake-e2e.py` and its self-test). Blocker bead ht-vl4u filed for the owners; the gate stays open until the suite is green and is re-run on the fixed tree.
+
+### Test hygiene
+
+`scripts/check-no-leaked-processes` clean after the suite; `stop-run-processes --check` reported only root-owned uninspectable pids (`unknown:` lines, not run-owned) and no `match:` line. No process was left to stop.
