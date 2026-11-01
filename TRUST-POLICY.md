@@ -824,9 +824,12 @@ model open work, and summary closure never changes receipt state or installs glo
   has no name). Accepted limit: a verified terminal in a two-family environment still binds nothing (`LocateCaller`
   picks it, the CLI and hooks act as no seat); only a lone terminal environment is a seat.
 - *tmux wake hint (named seats, N2-hint)*: a named caller inside a tmux pane sends `tmux:<socket>:<server_pid>:<pane>`
-  (from `TMUX` and `TMUX_PANE`) in `ResolveSeat.tmux_hint`, never in `CallerClaim` and never as `locator_hint`. The
+  (from `TMUX` and `TMUX_PANE`) in `ResolveSeat.tmux_hint` or `TurnStateReport.tmux_hint` (every hook that reports a turn
+  edge), never in `CallerClaim` and never as `locator_hint`. The
   daemon accepts it for a binding only when `tmux -S <socket> display -p -t <pane> '#{pane_pid} #{pid} #{pane_in_mode} #{pane_input_off} #{synchronize-panes} #{pane_width}'` (2 s deadline)
-  answers the hint's server pid and the pane's process is the caller's process or an ancestor of it; the verified
+  answers the hint's server pid and the pane's process is the subject's process or an ancestor of it (the subject is the
+  claim's harness fingerprint when the report has one, else the calling process, so the binding anchors on the harness
+  and not on a short-lived hook); the verified
   binding is held in daemon memory only (lost on restart, pruned when its process exits) and the host's per-target wake
   answer is `Composer` while any live verified binding of the seat exists, else `None`. A failed check (a reused pane
   id, a stale `TMUX_PANE` inherited into a nested Herdr session, a missing server) records nothing: it only leaves that
@@ -849,7 +852,7 @@ model open work, and summary closure never changes receipt state or installs glo
   clear; a harness with no running-turn recognizer (`screen_turn_running` is `None`) stays unwoken after a user
   interrupt until its next hook, and one with no `screen_blocked` recognizer is never typed into; the hint, the turn
   state and the keep-alive live in daemon memory, so after a crash, upgrade or explicit stop there is no wake until that
-  binding's next hook; the sibling set is the seat's connected top-level bindings, so a sibling in another pane
+  binding's next turn edge (a tool hook restores nothing, and that turn is not idle anyway); the sibling set is the seat's connected top-level bindings, so a sibling in another pane
   also holds the wake (conservative); tmux drops OSC 7501, so no self-reported status exists (T5).
 - *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
   (implemented). Recognized aliases do not change the binding or merge seats. A missing composer

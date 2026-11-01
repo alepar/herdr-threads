@@ -1084,6 +1084,11 @@ pub struct TurnEndDue {
 pub struct TurnStateReport {
     pub claim: CallerClaim,
     pub edge: crate::harness::adapter::TurnEdge,
+    /// The named caller's tmux wake hint (`ResolveSeat.tmux_hint`'s form), re-established on every
+    /// turn edge so a restarted daemon regains the binding's wake. The claim's liveness
+    /// fingerprint is the harness process the hint is verified for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_hint: Option<String>,
 }
 
 /// Advance the caller binding's cursors over messages it fully displayed (spec §2). Allowed for
