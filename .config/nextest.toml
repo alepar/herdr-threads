@@ -34,6 +34,9 @@ session-bindings-smoke = { max-threads = 1 }
 # The named-seats end-to-end suite (ht-kqrt.34): each test runs a real daemon, several beside an
 # isolated Herdr server; one at a time they stay inside their own bounds.
 named-seats = { max-threads = 1 }
+# The configuration smoke (ht-kqrt.59): each test starts a daemon beside an isolated Herdr server,
+# a private tmux server or a fake core, and enrolls several seats through real hooks.
+config-smoke = { max-threads = 1 }
 # The real-daemon sync suites (ht-5fr.23): each test runs several real daemons and
 # `peer --stdio` pumps through `sync.dial_command` and waits in real time. Two at a time
 # keep them from starving each other and the latency-asserting chains beside them.
@@ -223,6 +226,11 @@ test-group = "hermes-smoke"
 filter = "binary(named_seats)"
 priority = 60
 test-group = "named-seats"
+
+[[profile.default.overrides]]
+filter = "binary(config_smoke)"
+priority = 60
+test-group = "config-smoke"
 
 [[profile.default.overrides]]
 filter = "binary(integration) & test(/(session_bindings_(smoke|e2e)|pending_hint)::/)"
