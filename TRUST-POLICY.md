@@ -63,6 +63,11 @@ gate-only record on the `peer_requests` row and is released by its recorded crea
 allocates the seat with `managed_launch` provenance before the gate opens (N15, the launch gate paragraph in H3, an
 accepted limit); no new provenance or wire value.
 
+Amended 2026-11-01 for local plain launch onto a herdr-core (ht-kqrt.186): a second gate-only record, on
+`local_launch_gates`; the daemon allocates the seat with `managed_launch` provenance before the gate opens
+(the launch gate paragraph in H3, an accepted limit); no new provenance. New local capability
+`launch.local_gate_v1`; no peer wire change.
+
 Amended 2026-10-27 for remote addresses (`SEAT@MACHINE`, phase 1): a seat name qualified by a machine is resolved
 by that machine's daemon over an authenticated direct link, as a read (N14, the cross-node accepted limit "A
 linked node answers remote resolution"); N13 unchanged; no new provenance value.
@@ -2619,6 +2624,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   recorded creation, not on a Send (N15), so the agent may start idle and receive the task by normal delivery once
   the sender's node authors it, or never, if that node goes away first. The same holds for a Herdr peer launch. The
   seat and a live terminal remain; `keep: false` retires the seat when the worker exits.
+- **A plain launch onto a herdr-core starts idle, with no hook preflight.** The gate releases on the recorded
+  creation, so the agent starts with nothing to read, as a Herdr launch does, and a missing hook shows only as a
+  seat that never checks in. A launcher that dies between the creation and its record leaves a terminal whose shim
+  is refused at the gate's deadline; `keep: false` finishes it and starts no harness.
 - **Any linked node can launch agents here.** A node with a direct link and `peer.launch.v1` can make this node
   open a tab and start an agent in a workspace of this node's Herdr, with any registered harness, profile and
   argv and any existing directory as `cwd`: what `ssh <this node> herdr-threads launch` could do as the same
@@ -2902,7 +2911,7 @@ a label, never a path the client names) and authorizes only when the attempt is 
 creation's witness is that core and `tN`, a fresh same-response `terminal.get` through an attached host session
 shows that terminal on that core and serving process, and the bootstrap Send is already published. The Send is staged
 before the reply, so a harness never runs before its first message exists (C4: the recipient's receipt keeps its
-honest availability and deadline). One exception, a peer-requested launch onto a herdr-core (N15): there is no bootstrap here and no local Send, because the request carries no task and the sender's home node authors it after `Launched{seat}`. Its gate reads a gate-only record on the `peer_requests` row (attempt and `CreatedTarget`, behind the same view), and a recorded creation, written in one update with the launcher's seat, releases it, so that harness can start before its first message exists, as a Herdr peer launch does (Accepted limits). A local handoff into a herdr-core always needs its staged Send; a peer row never stands in for it. The wait polls the view with one short read per poll, holding no store turn and no
+honest availability and deadline). One exception, a peer-requested launch onto a herdr-core (N15): there is no bootstrap here and no local Send, because the request carries no task and the sender's home node authors it after `Launched{seat}`. Its gate reads a gate-only record on the `peer_requests` row (attempt and `CreatedTarget`, behind the same view), and a recorded creation, written in one update with the launcher's seat, releases it, so that harness can start before its first message exists, as a Herdr peer launch does (Accepted limits). A local handoff into a herdr-core always needs its staged Send; a peer row never stands in for it. A second exception, a plain local `launch --new-tab` or `--new-terminal` onto a herdr-core: `launch` has no first message by design, as on Herdr. Its gate reads a gate-only record of its own (`local_launch_gates`, behind the same view, never a `peer_requests` row): the CLI opens it before the terminal exists, and after the creation the daemon allocates the seat for that `(core, tN)`, writes the `managed_launch` binding on the shim's process, and records the `CreatedTarget` with the seat in one update, which releases the gate. The decision stays the daemon's alone: the client names only a record id and a creation, and the witness comparison and the same-response `terminal.get` decide. A handoff always keeps its staged Send: a bootstrap's compound is read first, and a gate-only record never stands in for it. The wait polls the view with one short read per poll, holding no store turn and no
 writer lane, and is bounded by the request's `timeout_ms` (at most 30 s) and the call budget; a mismatch, a stale or
 unknown bootstrap, a cancelled bootstrap or the deadline is a refusal and the shim exits without `exec`. A refusal
 authorizes nothing and records nothing. `handoff --new-tab --space`, `--new-terminal` and a plain-shell handoff

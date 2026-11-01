@@ -3016,7 +3016,7 @@ pub struct LaunchGateView {
     pub current_attempt: bool,
     pub cancelled: bool,
     /// The bootstrap Send is published (`handoff::automatic::published_send`), or for a peer
-    /// launch's gate-only record the creation is recorded (N15).
+    /// launch's or a plain launch's gate-only record the creation is recorded (N15, H3).
     pub send_staged: bool,
 }
 
@@ -3072,6 +3072,25 @@ pub trait BootstrapStorePort: Send + Sync {
         _budget: &CallBudget,
     ) -> Result<Option<LaunchGateView>, ApiError> {
         Err(ApiError::unsupported("launch gate view unavailable"))
+    }
+    /// Opens a plain local launch's gate-only record before its terminal exists (H3).
+    fn local_launch_gate_open(
+        &self,
+        _id: &crate::protocol::ids::OperationId,
+        _budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        Err(ApiError::unsupported("local launch gate unavailable"))
+    }
+    /// Records the creation and seat of an open gate-only record in one write; false for no
+    /// open record.
+    fn local_launch_gate_record(
+        &self,
+        _id: &crate::protocol::ids::OperationId,
+        _created: &CreatedTarget,
+        _seat: &crate::protocol::ids::SeatId,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Err(ApiError::unsupported("local launch gate unavailable"))
     }
     fn automatic_bootstrap_recovery_replay(
         &self,

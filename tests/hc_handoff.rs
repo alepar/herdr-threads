@@ -116,7 +116,7 @@ fn no_env(_: &str) -> Option<OsString> {
 /// Create the target a selection names on the fake core and return it.
 fn create(fake: &FakeHc, selection: &TargetSelection) -> CreatedTarget {
     let clock = clock();
-    let handle = LaunchHandle::hc(
+    let handle = LaunchHandle::probed(
         fake.socket(),
         clock.clone(),
         &budget(clock.as_ref(), 10_000),
@@ -207,6 +207,67 @@ fn new_terminal_no_app_labels_parent_caller() {
     let labels = params["labels"].as_object().expect("labels");
     assert!(!labels.contains_key("herdr.space") && !labels.contains_key("herdr.tab"));
     assert_eq!(params["parent"], "t1", "parent is the caller");
+}
+
+#[test]
+fn launch_selects_its_core_as_handoff_does() {
+    let fake = FakeHc::start();
+    fake.add_terminal(FakeTerminal::live("t1"));
+    let terminal = terminal_site(&fake, "t1");
+    let pane = CallerLocator::pane("w1:p1");
+    let wanted =
+        |new_tab: bool, new_terminal: bool, space: Option<&'static str>| hc_target::Wanted {
+            new_tab,
+            new_terminal,
+            space,
+            narrowed: false,
+            automatic: true,
+        };
+    // A Terminal site gives its own core: a terminal parented on the caller, or a tab in the space.
+    let selected =
+        hc_target::select_wanted(&wanted(false, true, None), Some(&terminal), false, &no_env)
+            .unwrap()
+            .expect("a core");
+    assert_eq!(selected.endpoint, fake.socket());
+    assert_eq!(
+        selected.placement,
+        Placement::NewTerminal {
+            parent: HostTargetId::new("t1")
+        }
+    );
+    let selected = hc_target::select_wanted(
+        &wanted(true, false, Some("w1")),
+        Some(&terminal),
+        false,
+        &no_env,
+    )
+    .unwrap()
+    .expect("a core");
+    assert_eq!(
+        selected.placement,
+        Placement::NewTab {
+            space: HostTargetId::new("w1")
+        }
+    );
+    // A Herdr pane keeps the Herdr path for a tab, and has no terminal to parent a new one.
+    assert!(
+        hc_target::select_wanted(
+            &wanted(true, false, Some("w1")),
+            Some(&pane),
+            false,
+            &no_env
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        hc_target::select_wanted(&wanted(false, true, None), Some(&pane), false, &no_env).is_err()
+    );
+    // A tab with no space on a core is the existing refusal.
+    let error =
+        hc_target::select_wanted(&wanted(true, false, None), Some(&terminal), false, &no_env)
+            .expect_err("refused");
+    assert!(error.to_string().contains("--space"), "{error}");
 }
 
 #[test]
@@ -1038,5 +1099,336 @@ mod launched_finality {
         assert_eq!(open, 0);
         drop(conn);
         let _ = std::fs::remove_file(path);
+    }
+}
+
+// ---- launch --new-terminal / --new-tab end to end (H3, ht-kqrt.186) ----
+
+mod launch_new {
+    use herdr_threads::test_support::{
+        isolation::TestIsolation,
+        resolve_seeded,
+        spawn::{OwnedChild, SpawnOwned},
+        spawn_node_daemon,
+    };
+    use std::{path::PathBuf, process::Stdio};
+
+    use super::*;
+
+    const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+
+    /// What one CLI process printed and how it ended.
+    struct Ran {
+        code: Option<i32>,
+        stdout: String,
+        stderr: String,
+    }
+
+    /// One real daemon over one fake core whose `terminal.run` really starts its argv, and a
+    /// stand-in `claude` that records `<pid> <terminal>` in the marker file and sleeps.
+    struct LaunchRig {
+        // Drop order: the daemon stops before the core and the isolation under it go.
+        daemon: Option<OwnedChild>,
+        fake: FakeHc,
+        isolation: TestIsolation,
+        state: PathBuf,
+        path: String,
+        marker: PathBuf,
+    }
+
+    impl LaunchRig {
+        fn start(label: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let isolation = TestIsolation::new(label);
+            let fake = FakeHc::start();
+            fake.add_terminal(FakeTerminal::live("t1"));
+            let dir = temp_path(format!("ht-standin-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let exe = dir.join("claude");
+            std::fs::write(
+                &exe,
+                "#!/bin/sh\necho \"$$ $HC_TERMINAL_ID\" > \"$HT_STANDIN_MARKER\"\nexec sleep 300\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let marker = dir.join("marker");
+            fake.exec_runs(&[("HT_STANDIN_MARKER", marker.to_str().unwrap())]);
+            let path = format!(
+                "{}:{}",
+                dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            );
+            let state =
+                std::fs::canonicalize(isolation.state_root()).expect("the state root exists");
+            resolve_seeded(&state);
+            let daemon = spawn_node_daemon(
+                &isolation,
+                BIN,
+                &state,
+                None,
+                &isolation.path("daemon.stderr"),
+            )
+            .expect("spawn the daemon");
+            let rig = Self {
+                daemon: Some(daemon),
+                fake,
+                isolation,
+                state,
+                path,
+                marker,
+            };
+            rig.wait_for_daemon();
+            rig
+        }
+
+        fn wait_for_daemon(&self) {
+            let until = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < until {
+                if self.plain(&["daemon", "health"]).code == Some(0) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            panic!(
+                "the daemon did not come up: {}",
+                std::fs::read_to_string(self.isolation.path("daemon.stderr")).unwrap_or_default()
+            );
+        }
+
+        fn finish(&self, mut command: std::process::Command) -> Ran {
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let child: OwnedChild = command.spawn_owned().expect("spawn the process");
+            let output = child.wait_with_output().expect("process output");
+            Ran {
+                code: output.status.code(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            }
+        }
+
+        fn command(&self, args: &[&str]) -> std::process::Command {
+            let mut command = self.isolation.command(BIN);
+            command
+                .arg("--state-dir")
+                .arg(&self.state)
+                .args(args)
+                .env("PATH", &self.path);
+            command
+        }
+
+        fn plain(&self, args: &[&str]) -> Ran {
+            self.finish(self.command(args))
+        }
+
+        /// `args` as a process in the fake core's terminal `t1`.
+        fn run(&self, args: &[&str]) -> Ran {
+            let mut command = self.command(args);
+            command
+                .env("HC_TERMINAL_ID", "t1")
+                .env("HC_TERMINAL_SOCKET", self.fake.socket());
+            self.finish(command)
+        }
+
+        /// The stand-in's `<pid> <terminal>` once the gate let it start.
+        fn marker(&self) -> (u32, String) {
+            let until = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < until {
+                if let Ok(text) = std::fs::read_to_string(&self.marker)
+                    && let Some((pid, terminal)) = text.trim().split_once(' ')
+                {
+                    return (pid.parse().unwrap(), terminal.to_owned());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            panic!(
+                "the stand-in never started; daemon: {}",
+                std::fs::read_to_string(self.isolation.path("daemon.stderr")).unwrap_or_default()
+            );
+        }
+
+        fn db(&self) -> rusqlite::Connection {
+            let paths = resolve_seeded(&self.state);
+            let db = rusqlite::Connection::open(paths.database_path).unwrap();
+            db.busy_timeout(Duration::from_secs(5)).unwrap();
+            db
+        }
+
+        /// The one gate-only record: its id, creation and seat.
+        fn gate_row(&self) -> (String, Option<String>, Option<String>) {
+            self.db()
+                .query_row(
+                    "SELECT id, created, seat FROM local_launch_gates",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .expect("one gate-only record")
+        }
+    }
+
+    impl Drop for LaunchRig {
+        fn drop(&mut self) {
+            let _ = self.plain(&["daemon", "stop"]);
+            self.daemon.take();
+        }
+    }
+
+    /// The `launch` object of a successful `--json` run.
+    fn launched(ran: &Ran) -> serde_json::Value {
+        assert_eq!(
+            ran.code,
+            Some(0),
+            "stdout {} stderr {}",
+            ran.stdout,
+            ran.stderr
+        );
+        let value: serde_json::Value = serde_json::from_str(ran.stdout.trim()).unwrap();
+        value["launch"].clone()
+    }
+
+    /// The seat's open binding provenance, and the number of messages, after a launch.
+    fn assert_gate_recorded_and_idle(rig: &LaunchRig, report: &serde_json::Value) {
+        let (_, created, seat) = rig.gate_row();
+        assert!(created.is_some(), "the creation is recorded");
+        assert_eq!(seat.as_deref(), report["seat"].as_str(), "the same seat");
+        let provenance: String = rig
+            .db()
+            .query_row(
+                "SELECT observation_provenance FROM occupant_bindings WHERE seat_id=?1",
+                [seat.as_deref().unwrap()],
+                |r| r.get(0),
+            )
+            .expect("the launched seat has a binding");
+        assert_eq!(provenance, "managed_launch");
+        let messages: i64 = rig
+            .db()
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(messages, 0, "a plain launch stages no first message");
+    }
+
+    #[test]
+    fn launch_new_terminal_runs_the_harness_through_the_gate() {
+        let rig = LaunchRig::start("launch-new-terminal");
+        let ran = rig.run(&["--json", "launch", "--new-terminal", "--kind", "claude"]);
+        let report = launched(&ran);
+        assert!(report["seat"].as_str().is_some_and(|seat| !seat.is_empty()));
+        assert_eq!(report["target"], "t2");
+        let (pid, terminal) = rig.marker();
+        assert_eq!(terminal, "t2", "the harness runs in the created terminal");
+        assert_eq!(
+            rig.fake.terminal("t2").and_then(|t| t.pid),
+            Some(pid),
+            "exec kept the terminal's process"
+        );
+        let params = run_params(&rig.fake);
+        assert_eq!(params["parent"], "t1");
+        let labels = params["labels"].as_object().expect("labels");
+        assert!(!labels.contains_key("herdr.space"), "{labels:?}");
+        let argv = params["argv"].to_string();
+        assert!(
+            argv.contains("--state-dir") && argv.contains("--bootstrap"),
+            "{argv}"
+        );
+        assert_gate_recorded_and_idle(&rig, &report);
+    }
+
+    #[test]
+    fn launch_new_tab_runs_the_harness_through_the_gate() {
+        let rig = LaunchRig::start("launch-new-tab");
+        rig.fake
+            .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
+        let ran = rig.run(&[
+            "--json",
+            "launch",
+            "--new-tab",
+            "worker",
+            "--space",
+            "w1",
+            "--kind",
+            "claude",
+        ]);
+        let report = launched(&ran);
+        let (_, terminal) = rig.marker();
+        assert_eq!(terminal, report["target"].as_str().unwrap());
+        let params = run_params(&rig.fake);
+        let labels = params["labels"].as_object().expect("labels");
+        assert_eq!(labels["herdr.space"], "w1");
+        assert!(!labels["herdr.tab"].as_str().unwrap().is_empty());
+        assert_eq!(labels["ht.label"], "worker");
+        assert_gate_recorded_and_idle(&rig, &report);
+    }
+
+    #[test]
+    fn gate_without_a_record_refuses_and_starts_nothing() {
+        let rig = LaunchRig::start("launch-no-record");
+        let bootstrap = format!("{}:1", uuid::Uuid::new_v4());
+        let ran = rig.run(&[
+            "internal",
+            "launch-gate",
+            "--bootstrap",
+            &bootstrap,
+            "--",
+            "claude",
+        ]);
+        assert_ne!(ran.code, Some(0));
+        assert!(
+            ran.stderr
+                .contains("launch gate refused: unknown bootstrap"),
+            "{}",
+            ran.stderr
+        );
+        assert!(!rig.marker.exists(), "no harness started");
+    }
+
+    #[test]
+    fn gate_of_a_foreign_terminal_refuses() {
+        let rig = LaunchRig::start("launch-foreign");
+        let report =
+            launched(&rig.run(&["--json", "launch", "--new-terminal", "--kind", "claude"]));
+        let (before, _) = rig.marker();
+        let (id, _, _) = rig.gate_row();
+        let bootstrap = format!("{id}:1");
+        let mut command = rig.command(&[
+            "internal",
+            "launch-gate",
+            "--bootstrap",
+            &bootstrap,
+            "--",
+            "claude",
+        ]);
+        command
+            .env("HC_TERMINAL_ID", "t99")
+            .env("HC_TERMINAL_SOCKET", rig.fake.socket());
+        let ran = rig.finish(command);
+        assert_ne!(ran.code, Some(0), "{report}");
+        assert!(
+            ran.stderr
+                .contains("terminal is not the bootstrap's recipient"),
+            "{}",
+            ran.stderr
+        );
+        assert_eq!(rig.marker().0, before, "the marker is unchanged");
+    }
+
+    #[test]
+    fn launch_onto_a_core_refuses_binary_and_name() {
+        let rig = LaunchRig::start("launch-refuse");
+        for extra in [["--name", "n"], ["--harness-binary", "/bin/sh"]] {
+            let mut args = vec!["launch", "--new-terminal", "--kind", "claude"];
+            args.extend(extra);
+            let ran = rig.run(&args);
+            assert_ne!(ran.code, Some(0));
+            assert!(
+                ran.stderr.contains(
+                    "--harness-binary and --name are not supported for a launch onto a herdr-core"
+                ),
+                "{}",
+                ran.stderr
+            );
+        }
+        assert!(rig.fake.calls_to("terminal.run").is_empty());
     }
 }

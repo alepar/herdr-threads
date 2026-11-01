@@ -1624,3 +1624,14 @@ Digest:
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+### 2026-11-01: H3, `launch --new-tab` and `launch --new-terminal` (ht-kqrt.186)
+
+`launch --new-tab LABEL [--space SPACE]` and `launch --new-terminal` shipped. `--space` alone keeps selecting a
+pane's workspace, as on `handoff`, so the spec's `launch --space` is `launch --new-tab LABEL --space S`. On a Herdr
+host the tab is created through `CreateTargetPort` and the unchanged `launch` starts the harness in its root pane. A
+plain launch onto a core uses a gate-only record (`local_launch_gates`, behind the same launch-gate view): the seat
+is allocated and bound `managed_launch` before the gate opens, and the agent starts idle with no first message, so
+"the bootstrap Send is staged before the harness runs" holds for a handoff only. `--harness-binary` and `--name` are
+refused on a core, and there is no hook preflight there. This supersedes the narrowing recorded in run.md:220, which
+stays as history.

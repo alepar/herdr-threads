@@ -5,10 +5,15 @@
 //!   shim's `(core, tN)` must equal the bootstrap's `CreatedTarget` witness, a fresh
 //!   `terminal.get` through the host's observer must confirm it, and the bootstrap Send must
 //!   be published (the harness never runs before its first message is staged; a peer
-//!   launch's gate-only record releases on its recorded creation instead, N15).
+//!   launch's or a plain local launch's gate-only record releases on its recorded creation
+//!   instead, N15 and H3).
+//!   A plain local launch's gate-only record (`local_launch_gates`, H3) releases the same way.
+//! - Also owns: `allocate_seat`, the seat of a gate-only launch (peer or local), allocated
+//!   before its gate opens.
 //! - Hides: the polling of the canonical view; the wait holds no store turn and no writer
 //!   lane (each poll is one short read).
-//! - Must not: write, authorize on a label or a client-supplied path (A2: the canonical view
+//! - Must not: write in the decision (`allocate_seat` is the launchers' shared write, and that
+//!   function alone enters the writer), authorize on a label or a client-supplied path (A2: the canonical view
 //!   and a same-response read decide; the shim's socket only orders the observers, creation
 //!   core first, and the witness comparison still decides), or wait past the request's
 //!   `timeout_ms`. A host that is unavailable is retried until the deadline and then `TimedOut`,
@@ -17,14 +22,29 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::harness::registry::OccupantHarness;
+use crate::service::{fair_writer::FairWriter, host_sessions::HostSession};
+
 use crate::{
-    ports::{BootstrapObserver, CreatedTarget, HostCallContext, HostWitness, LaunchGateView},
+    ports::{
+        BootstrapObserver, CreatedTarget, HostCallContext, HostWitness, IncarnationEvidence,
+        LaunchGateView, ProcessInfo, StorePort,
+    },
     protocol::{
+        authority::LivenessFingerprint,
+        commands::{RecordManagedLaunch, ResolveSeat},
         handoff::{AuthorizeLaunchGate, LaunchGateRefusal, LaunchGateReply},
+        ids::{OperationId, SeatId},
         results::{ApiError, ErrorCode},
-        time::{CallBudget, Clock, MonoInstant},
+        time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
 };
+
+/// Budget of the seat allocation of a gate-only launch (ms), under the gate shim's own wait
+/// (`launch_gate::GATE_TIMEOUT_MS`) so the shim is still waiting when the gate opens.
+const GATE_SEAT_BUDGET_MS: u64 = 6_000;
+/// How often a stale host observation is retried within that budget.
+const GATE_SEAT_RETRY: Duration = Duration::from_millis(100);
 
 /// Time between two reads of the canonical view while the gate waits.
 const POLL: Duration = Duration::from_millis(20);
@@ -137,5 +157,86 @@ pub fn authorize(
             return Ok(refused(LaunchGateRefusal::TimedOut));
         }
         std::thread::sleep(POLL);
+    }
+}
+
+/// What a gate-only launch's seat is allocated from.
+pub struct GateSeat<'a> {
+    pub session: &'a HostSession,
+    pub store: &'a dyn StorePort,
+    pub writer: &'a FairWriter,
+    pub clock: &'a dyn Clock,
+    pub harness: OccupantHarness,
+    pub operation: OperationId,
+}
+
+/// The seat of a gate-only launch, allocated before its gate opens: the target's ordinary
+/// guarded resolution (no caller, as `Command::ResolveSeat` runs it), then the
+/// `managed_launch` binding on the process the gate shim is, which `exec` keeps (L2). No
+/// pid or process record is an error: the gate never opens without its placeholder.
+pub fn allocate_seat(seat: &GateSeat<'_>, created: &CreatedTarget) -> Result<SeatId, ApiError> {
+    let budget = CallBudget {
+        deadline: MonoInstant(seat.clock.monotonic_now().0 + GATE_SEAT_BUDGET_MS),
+        cancellation: Cancellation::default(),
+    };
+    let allocated = seat.session.identity().resolve(
+        ResolveSeat {
+            target: created.target.clone(),
+            host: seat.session.locator().clone(),
+            operation: seat.operation.clone(),
+            locator_hint: None,
+            tmux_hint: None,
+        },
+        &budget,
+    )?;
+    let context = crate::ports::HostCallContext {
+        budget: budget.clone(),
+        expected_boot: None,
+        expected_epoch: None,
+    };
+    let port = seat.session.port();
+    let observation = port.observe_current_target(&created.target, &context)?;
+    let evidence = |detail: &'static str| ApiError::new(ErrorCode::InvalidRequest, detail);
+    let terminal = observation
+        .terminal
+        .clone()
+        .ok_or_else(|| evidence("the launched terminal reports no terminal id"))?;
+    let IncarnationEvidence::Verified { identity, .. } = &observation.incarnation else {
+        return Err(evidence(
+            "the launched terminal has no verified incarnation",
+        ));
+    };
+    let pid = port
+        .target_root_process(&created.target, &context)?
+        .ok_or_else(|| evidence("the launched terminal reports no process"))?;
+    let record = crate::host::process_table::HostProcessTable
+        .process(pid)
+        .ok_or_else(|| evidence("the launched terminal's process is not observable"))?;
+    let command = RecordManagedLaunch {
+        seat: allocated.clone(),
+        target: created.target.clone(),
+        harness: seat.harness,
+        terminal,
+        incarnation: identity.clone(),
+        host_boot: observation.host_boot.clone(),
+        target_generation: observation.generation,
+        fingerprint: LivenessFingerprint::of(&record),
+    };
+    loop {
+        let attempt = seat
+            .writer
+            .enter_background(&budget, seat.clock)
+            .and_then(|_turn| seat.store.record_managed_launch(command.clone(), &budget));
+        match attempt {
+            Ok(_) => return Ok(allocated),
+            // The store decides on its effective observation, which can lag the fresh read.
+            Err(error)
+                if error.code == ErrorCode::StaleHostObservation
+                    && seat.clock.monotonic_now() < budget.deadline =>
+            {
+                std::thread::sleep(GATE_SEAT_RETRY);
+            }
+            Err(error) => return Err(error),
+        }
     }
 }

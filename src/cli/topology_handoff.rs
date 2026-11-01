@@ -94,7 +94,7 @@ pub(crate) fn require_target_capability<C: crate::ports::LocalClient + ?Sized>(
 }
 
 /// The exact id of the space `value` names in `topology`: an exact id, else a unique label.
-fn select_space(
+pub(crate) fn select_space(
     topology: &crate::host::observation::HostTopology,
     value: &str,
 ) -> Result<crate::protocol::ids::HostTargetId, RunError> {

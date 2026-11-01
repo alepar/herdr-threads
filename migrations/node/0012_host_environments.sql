@@ -57,3 +57,13 @@ ALTER TABLE peer_requests ADD COLUMN gate_attempt INTEGER
     CHECK(gate_attempt IS NULL OR gate_attempt >= 1);
 ALTER TABLE peer_requests ADD COLUMN gate_created TEXT
     CHECK(gate_created IS NULL OR length(CAST(gate_created AS BLOB)) <= 4096);
+
+-- A plain local `launch` onto a herdr-core: its gate-only record (TRUST-POLICY H3). The row
+-- exists before the terminal does; `created` and `seat` arrive in one update, which is what
+-- releases the gate.
+CREATE TABLE local_launch_gates (
+    id TEXT PRIMARY KEY CHECK(length(CAST(id AS BLOB)) BETWEEN 1 AND 128),
+    created TEXT CHECK(created IS NULL OR length(CAST(created AS BLOB)) <= 4096),
+    seat TEXT,
+    opened_at INTEGER NOT NULL
+) STRICT;

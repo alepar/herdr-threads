@@ -701,6 +701,48 @@ fn mutation_is_not_submitted_without_durable_operation_key() {
 }
 
 #[test]
+fn launch_new_flags_parse_and_conflict() {
+    let launch = |extra: &[&str]| {
+        let mut argv = vec!["herdr-threads", "launch", "--kind", "claude"];
+        argv.extend_from_slice(extra);
+        parse_argv(argv)
+    };
+    let CliAction::LaunchNew(tab) = launch(&["--new-tab", "x"]).unwrap().action else {
+        panic!("--new-tab parses to LaunchNew")
+    };
+    assert_eq!(tab.new_tab.as_deref(), Some("x"));
+    assert!(!tab.new_terminal && tab.space.is_none());
+    let CliAction::LaunchNew(terminal) = launch(&["--new-terminal"]).unwrap().action else {
+        panic!("--new-terminal parses to LaunchNew")
+    };
+    assert!(terminal.new_terminal && terminal.new_tab.is_none());
+    let CliAction::LaunchNew(spaced) = launch(&["--new-tab", "x", "--space", "w1"])
+        .unwrap()
+        .action
+    else {
+        panic!("--new-tab with --space parses to LaunchNew")
+    };
+    assert_eq!(spaced.space.as_deref(), Some("w1"));
+    for extra in [
+        vec!["--new-tab", "x", "--pane", "p"],
+        vec!["--new-tab", "x", "--tab", "t"],
+        vec!["--new-terminal", "--space", "s"],
+        vec!["--new-terminal", "--new-tab", "x"],
+        vec!["--new-tab", " "],
+        vec!["--new-tab", "x", "--space", "w1@m"],
+    ] {
+        assert!(launch(&extra).is_err(), "{extra:?}");
+    }
+    let Err(error) = launch(&["--space", "w1"]) else {
+        panic!("--space alone is refused")
+    };
+    assert!(
+        format!("{error:?}").contains("require --pane PANE"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn parser_rejects_operator_and_source_conflicts() {
     for argv in [
         vec!["herdr-threads", "ack", "m1", "--operator"],

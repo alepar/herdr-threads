@@ -229,7 +229,7 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "one peer-requested launch's worker retrying its outcome write, three times (RECORD_RETRIES, 6.2 s in all); not a periodic daemon loop",
     ),
     (
-        "src/service/peer_launcher.rs",
+        "src/service/launch_gate.rs",
         "std::thread::sleep(GATE_SEAT_RETRY)",
         "one gate-seat record write retrying a stale host observation until the launch budget deadline; not a periodic daemon loop",
     ),

@@ -167,6 +167,9 @@ pub enum Command {
     RecoverBootstrap(Box<crate::protocol::handoff::RecoverBootstrap>),
     /// Launch-gate authorization (`capabilities::LAUNCH_GATE_V1`).
     AuthorizeLaunchGate(Box<crate::protocol::handoff::AuthorizeLaunchGate>),
+    /// A plain `launch` onto a herdr-core records its gate-only record
+    /// (`capabilities::LOCAL_LAUNCH_GATE_V1`).
+    LocalLaunchGate(Box<crate::protocol::handoff::LocalLaunchGate>),
     /// Verify an `Ambiguous` caller by nearest ancestor (`capabilities::LOCATE_CALLER_V1`).
     LocateCaller(crate::protocol::locate::LocateCaller),
     /// Operator and status commands for cross-node sync (ht-5fr.8). The mutating
@@ -1623,6 +1626,7 @@ impl Command {
             }
             Self::ContinuityCheckIn(continuity) => continuity.validate(),
             Self::RecordManagedLaunch(launch) => launch.validate(),
+            Self::LocalLaunchGate(gate) => gate.validate(),
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }

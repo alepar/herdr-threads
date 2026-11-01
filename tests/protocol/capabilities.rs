@@ -301,6 +301,7 @@ fn capability_constants_are_stable() {
     assert_eq!(TERMINAL_SITES_V1, "seat.terminal_sites_v1");
     assert_eq!(AUTOMATIC_TARGET_V1, "handoff.automatic_target_v1");
     assert_eq!(LAUNCH_GATE_V1, "launch.gate_v1");
+    assert_eq!(LOCAL_LAUNCH_GATE_V1, "launch.local_gate_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -355,7 +356,8 @@ fn capability_constants_are_stable() {
             "turn_state.edge_v1",
             "seat.terminal_sites_v1",
             "handoff.automatic_target_v1",
-            "launch.gate_v1"
+            "launch.gate_v1",
+            "launch.local_gate_v1"
         ]
     );
 }
@@ -570,6 +572,71 @@ fn every_advertised_capability_has_a_handler() {
                 );
                 // The control service's domain stub answers like the other probes; the decision
                 // itself is driven by `tests/hc_handoff.rs` through `service::launch_gate`.
+                assert_eq!(
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            LOCAL_LAUNCH_GATE_V1 => {
+                use crate::protocol::handoff::{LocalLaunchGate, LocalLaunchGateAction};
+                let open = LocalLaunchGate {
+                    id: crate::protocol::ids::OperationId::new("capability-probe"),
+                    host: crate::protocol::ids::HostLocator::parse("/core.sock").unwrap(),
+                    action: LocalLaunchGateAction::Open,
+                };
+                let command = Command::LocalLaunchGate(Box::new(open.clone()));
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                // A record names an agent: a person is refused at validation.
+                let placement = crate::ports::Placement::NewTerminal {
+                    parent: crate::protocol::ids::HostTargetId::new("t1"),
+                };
+                let created = crate::ports::CreatedTarget {
+                    correlation: crate::protocol::ids::HostCallId::new("c"),
+                    placement,
+                    target: crate::protocol::ids::HostTargetId::new("t2"),
+                    root_pane: None,
+                    terminal: crate::protocol::ids::TerminalId::new("t2"),
+                    host_incarnation: crate::protocol::ids::HostBootId::new(
+                        "hc-core:core-a:pid=42:start=7:uid=501",
+                    ),
+                    witness: crate::ports::HostWitness::HcCore {
+                        core_id: "core-a".into(),
+                        peer: crate::ports::HcPeer {
+                            pid: 42,
+                            start_seconds: 7,
+                            uid: 501,
+                        },
+                    },
+                };
+                let record = |harness| {
+                    Command::LocalLaunchGate(Box::new(LocalLaunchGate {
+                        action: LocalLaunchGateAction::Record {
+                            harness,
+                            created: Box::new(created.clone()),
+                        },
+                        ..open.clone()
+                    }))
+                };
+                assert!(
+                    record(crate::protocol::authority::Harness::Claude)
+                        .validate()
+                        .is_ok()
+                );
+                assert!(
+                    record(crate::protocol::authority::Harness::Human)
+                        .validate()
+                        .is_err()
+                );
+                // The control service's domain stub answers like the other probes; the
+                // handler is driven end to end by `tests/hc_handoff.rs`.
                 assert_eq!(
                     daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
                         .handle(command, PeerIdentity::from_kernel(501), &budget())
@@ -1261,6 +1328,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.terminal_sites_v1",
             "handoff.automatic_target_v1",
             "launch.gate_v1",
+            "launch.local_gate_v1",
             "invitation.confirmation_v1",
             "handoff.summary_prompt_v1"
         ]

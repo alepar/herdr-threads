@@ -471,6 +471,8 @@ pub enum CliAction {
     InternalStoreCheck,
     /// A launch (and, with `then`, a handoff) on another machine (remote launch).
     RemoteLaunch(Box<super::peer_launch::RemoteLaunch>),
+    /// `launch --new-tab` or `--new-terminal`: the target is created, then the harness started.
+    LaunchNew(Box<super::launch_new::LaunchNew>),
     InternalPeerTargetCreate {
         spec: super::peer_launch::TargetSpec,
         label: String,
@@ -648,6 +650,7 @@ pub fn dispatch<B: CliBackend>(
         CliAction::Setup(_)
         | CliAction::SetupAll(..)
         | CliAction::Launch(_)
+        | CliAction::LaunchNew(_)
         | CliAction::RemoteLaunch(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
@@ -1190,8 +1193,8 @@ enum Top {
     Retry { recovery_ref: String },
     /// Show a local attention view of threads and actions.
     View(ViewArgs),
-    /// Start a registered agent harness in one explicit existing empty shell pane with
-    /// the owned hooks, after resolving the pane's seat. Launch never
+    /// Start a registered agent harness in an existing empty shell pane, a new tab or a new
+    /// terminal, with the owned hooks, after resolving the seat. Launch never
     /// registers, accepts or ACKs: the handoff is read through the hooks.
     #[command(after_help = super::help::launch_help())]
     Launch(LaunchArgs),
@@ -2048,6 +2051,13 @@ struct LaunchArgs {
     /// Herdr's `[a-z][a-z0-9_-]{0,31}`.
     #[arg(long, value_name = "NAME")]
     name: Option<String>,
+    /// A new tab labelled LABEL to launch in: in --space, else the caller's workspace on Herdr;
+    /// a herdr-core needs --space.
+    #[arg(long, value_name = "LABEL", conflicts_with_all = ["new_terminal", "tab", "pane"])]
+    new_tab: Option<String>,
+    /// A new terminal on a herdr-core host, parented on the calling terminal (no app labels).
+    #[arg(long, conflicts_with_all = ["new_tab", "space", "tab", "pane"])]
+    new_terminal: bool,
     /// Native agent arguments, kept byte for byte and in order after `--`.
     #[arg(last = true, allow_hyphen_values = true, value_name = "AGENT_ARG")]
     agent_args: Vec<String>,
@@ -2986,6 +2996,7 @@ fn parse_cli_in_registry(
             }
             Some(selector.clone())
         }
+        Top::Launch(args) if args.new_tab.is_some() || args.new_terminal => None,
         Top::Launch(LaunchArgs { selector, .. }) if remote_machine(selector).is_some() => {
             if selector.pane.is_none() {
                 return Err(invalid("launch, handoff and rebind require --pane PANE"));
@@ -3626,6 +3637,45 @@ fn parse_cli_in_registry(
         Top::Me {
             command: MeSub::Init { operator },
         } => CliAction::MeInit { operator },
+        Top::Launch(args) if args.new_tab.is_some() || args.new_terminal => {
+            if remote_machine(&args.selector).is_some() {
+                return Err(invalid(
+                    "--new-tab and --new-terminal create here; a launch on another machine takes --pane",
+                ));
+            }
+            if args
+                .new_tab
+                .as_deref()
+                .is_some_and(|label| label.trim().is_empty())
+            {
+                return Err(invalid("--new-tab needs a nonblank label"));
+            }
+            let harness = harness_arg(&args.kind, registry)?;
+            if let Some(name) = &args.name
+                && crate::ports::sanitize_agent_name(name).is_none()
+            {
+                return Err(invalid(format!(
+                    "--name `{name}` has no letter to start a Herdr agent name \
+                     ([a-z][a-z0-9_-]{{0,31}})"
+                )));
+            }
+            CliAction::LaunchNew(Box::new(super::launch_new::LaunchNew {
+                launch: super::launch::LaunchRequest {
+                    directory_context: None,
+                    // Unset here: the Herdr path fills in the root pane, the core path never
+                    // reads it.
+                    target: HostTargetId::new("new-target"),
+                    harness,
+                    harness_binary: args.harness_binary,
+                    argv: args.agent_args,
+                    name: args.name,
+                    pane_label: None,
+                },
+                new_tab: args.new_tab,
+                new_terminal: args.new_terminal,
+                space: args.selector.space,
+            }))
+        }
         Top::Launch(args) if remote_machine(&args.selector).is_some() => {
             harness_arg(&args.kind, registry)?;
             if args.harness_binary.is_some() || args.name.is_some() {
