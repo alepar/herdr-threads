@@ -231,6 +231,9 @@ pub fn materialize_seat_created(
 ///   cannot be violated: a named-host seat with a NULL name is the held marker and its held name
 ///   is its own `seat.created.display_name` (see [`held_name`]). No merge and no pick: the name
 ///   keeps resolving to the existing seat until [`hand_back_name`] runs in its retirement.
+/// - Own-log order is `created`, `retired`, `created`: the replayed `seat.retired` of an
+///   earlier incarnation retires its restored row ([`materialize_seat_retired`]) before a later
+///   `seat.created` of the same name is restored, so the successor finds the name free.
 /// - No name: the `herdr_hosts` row with the greatest `last_attached_at`, only when every
 ///   non-named host row of the node has one kind (a mixed node would send the seat to the wrong
 ///   environment). Otherwise, and with no such row, `HostUnavailable`, which the handler maps to
@@ -424,10 +427,12 @@ pub(crate) fn hand_back_name(
 /// Materializes `seat.retired` (fact-kinds design section 4), shared by the
 /// handler for both the authoring node and every other node.
 ///
-/// - Local origin: a no-op. The authoring node's retirement fence already
-///   retired the row, and its job writes the audit; an own old incarnation or
-///   a re-issued copy changes nothing, and a local-origin fact never retires a
-///   remote seat (it is not the seat's home).
+/// - Local seat: the authoring node's retirement fence already retired the
+///   row and its job wrote the audit, so a live echo finds `state = 'retired'`
+///   and changes nothing. A local row restored by own-log replay is not yet
+///   retired and takes the same transition, then [`hand_back_name`] gives its
+///   name to a held row, as the live retire does. A remote-origin fact never
+///   retires a local seat (`require_author` refuses it).
 /// - Remote seat, not yet retired: `state = 'retired'`, `retired_at` from the
 ///   payload, `retired_seq = decision_seq`; the send-eligibility and directory
 ///   revisions move and a `retirements` row with `origin = 'replicated'` lets
@@ -440,23 +445,22 @@ pub fn materialize_seat_retired(
     m: &MaterializeInput<'_>,
     payload: &SeatRetiredPayload,
 ) -> Result<(), ApiError> {
-    if m.local_origin {
-        return Ok(());
-    }
     let id = payload.seat.as_str();
     let row: Option<bool> = tx
         .query_row("SELECT is_local FROM seats WHERE id=?1", [id], |r| r.get(0))
         .optional()
         .map_err(store_error)?;
-    match row {
+    let local_row = match row {
+        // An own fact for a seat that never had a row here: nothing to retire.
+        None if m.local_origin => return Ok(()),
         None => {
             return Err(api_error(ErrorCode::InvalidRequest, "unknown seat"));
         }
-        // `require_author` already refused a non-home origin; a local seat is
-        // retired by its own fence.
-        Some(true) => return Ok(()),
-        Some(false) => {}
-    }
+        // `require_author` already refused a non-home origin; a remote fact
+        // never retires a local seat, which its own fence retires.
+        Some(true) if !m.local_origin => return Ok(()),
+        Some(local) => local,
+    };
     let instance: String = tx
         .query_row("SELECT id FROM local_node", [], |r| r.get(0))
         .map_err(store_error)?;
@@ -465,7 +469,7 @@ pub fn materialize_seat_retired(
     let changed = schema::apply_eligibility_transition(tx, &instance, |tx| {
         let changed = tx
             .execute(
-                "UPDATE seats SET state='retired',retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
+                "UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
                 params![payload.retired_at, retired_seq, id],
             )
             .map_err(store_error)?;
@@ -491,6 +495,9 @@ pub fn materialize_seat_retired(
         params![job.as_str(), id, payload.retired_at],
     )
     .map_err(store_error)?;
+    if local_row {
+        hand_back_name(tx, &instance, &payload.seat)?;
+    }
     Ok(())
 }
 
