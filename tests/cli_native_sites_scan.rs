@@ -11,7 +11,7 @@ const KEPT: &[(&str, &str, usize, &str)] = &[
     ("mod.rs", "pane_agent", 1, "pane observation"),
     ("mod.rs", "located_pane_seat", 1, "pane observation"),
     ("hook.rs", "locate_seat_for", 1, "pane observation"),
-    // The lazy claim-host adapter for pane selectors (topology, moved pane).
+    // Lazy claim-host adapter for pane selectors (topology, current_pane); no label read (spec F6 amended, ht-kqrt.9).
     ("mod.rs", "run_parsed_in_pane", 1, "pane observation"),
     ("mod.rs", "run_launch", 1, "launch"),
     ("handoff.rs", "run", 1, "handoff"),
