@@ -2020,10 +2020,8 @@ fn report_core(
     declaration: Result<Option<&'static str>, ApiError>,
 ) -> serde_json::Value {
     let prefix = super::hook::cli_prefix(&plan.context);
-    let mut retry = vec![
-        "env".into(),
-        format!("HERDR_PANE_ID={}", claim.target.as_str()),
-    ];
+    let mut retry = vec!["env".to_owned()];
+    retry.extend(super::caller_location::recovery_env(claim.target.as_str()));
     retry.extend(prefix.clone());
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let mut inspect = prefix.clone();

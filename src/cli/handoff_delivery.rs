@@ -1396,10 +1396,10 @@ fn write_pending<W: Write>(
         host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
     };
     let prefix = super::hook::cli_prefix(&context);
-    let mut retry = vec![
-        "env".into(),
-        format!("HERDR_PANE_ID={}", observed.caller_target.as_str()),
-    ];
+    let mut retry = vec!["env".to_owned()];
+    retry.extend(super::caller_location::recovery_env(
+        observed.caller_target.as_str(),
+    ));
     retry.extend(prefix.clone());
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let mut inspect = prefix;
@@ -1815,13 +1815,10 @@ fn write_automatic_pending<W: Write>(
         state_dir: Some(namespace.state_dir.to_string_lossy().into_owned()),
         host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
     };
-    let mut retry = vec![
-        "env".into(),
-        format!(
-            "HERDR_PANE_ID={}",
-            pending.semantic.frozen_claim().unwrap().target.as_str()
-        ),
-    ];
+    let mut retry = vec!["env".to_owned()];
+    retry.extend(super::caller_location::recovery_env(
+        pending.semantic.frozen_claim().unwrap().target.as_str(),
+    ));
     retry.extend(super::hook::cli_prefix(&context));
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let phase = if progress.thread.is_none() {

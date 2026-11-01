@@ -25,10 +25,14 @@ pub const PANE_SCOPED_ENV_VARS: &[&str] = &[
 pub(crate) const NAMED_SCRUB_ENV_VARS: &[&str] =
     &["HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY"];
 
+/// herdr-core terminal id and socket (recognition-only reads in F).
+pub(crate) const HC_TERMINAL_ID_ENV: &str = "HC_TERMINAL_ID";
+pub(crate) const HC_TERMINAL_SOCKET_ENV: &str = "HC_TERMINAL_SOCKET";
+
 /// herdr-core terminal env (moves to `host::hc::ENV_VARS` in H1). Scrub-only in F.
 pub(crate) const HC_SCRUB_ENV_VARS: &[&str] = &[
-    "HC_TERMINAL_ID",
-    "HC_TERMINAL_SOCKET",
+    HC_TERMINAL_ID_ENV,
+    HC_TERMINAL_SOCKET_ENV,
     "HC_SCOPE",
     "HC_SESSION",
 ];

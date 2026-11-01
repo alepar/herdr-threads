@@ -2,6 +2,7 @@
 pub mod accept_delivery;
 pub mod actor_route;
 pub mod caller;
+pub mod caller_location;
 pub mod commands;
 pub mod direct_send;
 pub mod doctor;
@@ -309,7 +310,7 @@ where
     T: Into<OsString> + Clone,
     W: Write,
 {
-    let pane = std::env::var("HERDR_PANE_ID").ok();
+    let pane = caller_location::CallerEnv::from_process().pane(caller_location::EnvMode::Cli);
     run_in_pane(argv, pane.as_deref(), writer)
 }
 

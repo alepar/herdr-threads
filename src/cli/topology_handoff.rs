@@ -2325,10 +2325,10 @@ pub(crate) fn write_pending_observed<W: std::io::Write>(
         host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
     };
     let prefix = super::hook::cli_prefix(&context);
-    let mut retry = vec![
-        "env".into(),
-        format!("HERDR_PANE_ID={}", identity.claim.target.as_str()),
-    ];
+    let mut retry = vec!["env".to_owned()];
+    retry.extend(super::caller_location::recovery_env(
+        identity.claim.target.as_str(),
+    ));
     retry.extend(prefix.clone());
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let mut inspect = prefix.clone();

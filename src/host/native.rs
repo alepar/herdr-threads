@@ -30,6 +30,13 @@ use std::{
 };
 
 static CALL_ID: AtomicU64 = AtomicU64::new(1);
+/// Herdr's marker that the process runs inside one of its panes.
+pub const ENV_HERDR: &str = "HERDR_ENV";
+/// The caller's own pane id.
+pub const ENV_PANE_ID: &str = "HERDR_PANE_ID";
+/// The pane family's caller-location variables, as read by `cli::caller_location`.
+pub const ENV_VARS: &[&str] = &[ENV_HERDR, ENV_PANE_ID];
+
 /// Herdr `agent.start` errors that are checked before anything is typed.
 const CONFIRMED_PRESTART_REFUSALS: [&str; 3] = [
     "agent_pane_busy",

@@ -112,7 +112,7 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 ## Vocabulary
 
 - **Seat**: a durable plugin identity for one role. Threads, invitations and receipts belong to seats.
-- **Target**: a Herdr pane address the seat is currently mapped to. A locator, not an identity.
+- **Target**: a host target the seat is currently mapped to (a Herdr pane today; a name or a terminal as those hosts land). A locator, not an identity.
 - **Binding**: one occupant record of a seat, keyed by (seat, harness, native session, agent id) with the
   agent id empty for a top-level session. A seat holds many bindings, each with its own `binding_id`, role
   (`top_level` or `subagent`, a subagent pointing at its parent binding), execution, the mapping generation,
@@ -120,8 +120,11 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
   disconnected, with a process fingerprint) is a separate property from identity: a disconnected binding is
   still that session's binding. `seats.generation` is the seat's *mapping* generation, bumped only by rebind,
   unresolve and retire, never by a check-in.
-- **Herdr boot / incarnation**: one Herdr server process. A Herdr restart is a new incarnation; terminal ids
+- **Host boot / incarnation** (per host): one Herdr server process. A Herdr restart is a new incarnation; terminal ids
   and pane addresses from the old one prove nothing about the new one.
+  For Herdr it is one server process; other hosts define theirs when they land (a herdr-core terminal host: the
+  core id, a new id being a new boot). The CLI reads caller-location environment in one place
+  (`src/cli/caller_location.rs`); that reading is a hint, never authority.
 - **Daemon boot**: one herdr-threads daemon process. A daemon restart does not change the Herdr incarnation.
 - **Operator**: a request made with `--operator`, accepted when the kernel peer UID matches the daemon owner.
   This is the local account, not proof of a person.

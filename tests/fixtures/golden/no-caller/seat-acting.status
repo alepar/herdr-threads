@@ -1,0 +1,3 @@
+exit: 2
+stderr:
+herdr-threads: this command acts as a seat: run it inside the agent's own Herdr pane (HERDR_PANE_ID) after that seat's lifecycle check-in (a person runs `herdr-threads human me init` once in their own pane), or pass --cooperative-seat SEAT --cooperative-target PANE --cooperative-harness HARNESS --cooperative-role top-level; choose a registered agent harness. Operator repair uses the explicit --operator forms and cannot send, accept, ACK or check in (invalid_request)
