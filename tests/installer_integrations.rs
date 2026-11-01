@@ -1459,7 +1459,7 @@ impl Drop for Site {
     fn drop(&mut self) {
         // The installer's daemon check may have started a daemon in the scratch state.
         let state = self.standalone_state();
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
+        let _ = herdr_threads::test_support::spawn::command(env!("CARGO_BIN_EXE_herdr-threads"))
             .arg("--state-dir")
             .arg(&state)
             .args(["daemon", "stop"])
