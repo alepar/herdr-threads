@@ -27,6 +27,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 
+use crate::host::named::tmux;
 use crate::host::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV, named, native};
 use crate::protocol::ids::{HostLocator, HostTargetId, NAMED_HOST_LOCATOR, SeatName};
 
@@ -185,6 +186,18 @@ impl CallerEnv {
             let socket = self.text(HC_TERMINAL_SOCKET_ENV)?;
             Some(terminal_address(&socket, &id))
         })
+    }
+
+    /// The tmux wake hint `tmux:<socket>:<server_pid>:<pane>` of a named caller that runs inside
+    /// a tmux pane (N2-hint). `None` without a name or without a well-formed `TMUX` and
+    /// `TMUX_PANE`. The daemon verifies it; it is never a locator and never reaches `CallerClaim`.
+    pub fn tmux_hint(&self) -> Option<String> {
+        self.named()?;
+        let hint = tmux::TmuxHint::from_env(
+            &self.text(tmux::ENV_TMUX).filter(|v| !v.is_empty())?,
+            &self.text(tmux::ENV_TMUX_PANE).filter(|v| !v.is_empty())?,
+        )?;
+        Some(hint.encode())
     }
 
     pub fn locate(&self, mode: EnvMode) -> Result<Option<Located>, LocatorError> {
@@ -390,6 +403,14 @@ fn terminal_address(socket: &str, id: &str) -> String {
 pub fn resolve_hint(host: &HostLocator) -> Option<String> {
     host.is_named_host()
         .then(|| CallerEnv::from_process().locator_hint())
+        .flatten()
+}
+
+/// `ResolveSeat.tmux_hint` for a request to `host`: only a resolve on the named host carries
+/// one, from this process's environment.
+pub fn resolve_tmux_hint(host: &HostLocator) -> Option<String> {
+    host.is_named_host()
+        .then(|| CallerEnv::from_process().tmux_hint())
         .flatten()
 }
 

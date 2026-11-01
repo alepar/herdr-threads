@@ -1,19 +1,24 @@
 //! The built-in named host: seats that live in a plain or tmux process started
 //! with `HERDR_THREADS_SEAT_NAME=<name>`.
 
+use std::collections::HashMap;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
+
+pub mod tmux;
 
 use crate::host::observation::{HostTopology, SeatHostLabels};
 use crate::ports::{
     AgentComposerState, ArchivalEvidence, BootstrapObserver, BootstrapPaneObservation,
-    ClosureAuthority, ComposerObservation, EnumerationEvidence, EvidenceKind, ExecutionEvidence,
-    HostCallContext, HostId, HostKind, HostObservation, HostPort, HostSnapshot, HostUiState,
-    IncarnationEvidence, NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest,
-    ObservationProvenance, PromptOutcome, SafeWakeTarget, StructuralOccupancy, WakeCapability,
+    ClosureAuthority, ComposerObservation, ComposerTraits, EnumerationEvidence, EvidenceKind,
+    ExecutionEvidence, HostCallContext, HostId, HostKind, HostObservation, HostPort, HostSnapshot,
+    HostUiState, IncarnationEvidence, NativeLaunchCapability, NativeLaunchOutcome,
+    NativeLaunchRequest, ObservationProvenance, ProcessInfo, PromptOutcome, SafeWakeTarget,
+    StructuralOccupancy, WakeCapability,
 };
+use crate::protocol::authority::LivenessFingerprint;
 use crate::protocol::{
     ids::{HostBootId, HostCallId, HostTargetId, SeatId, SeatName, TerminalId},
     results::{ApiError, ErrorCode},
@@ -21,9 +26,15 @@ use crate::protocol::{
 };
 use crate::store::named_seats::NamedSeatSource;
 
-/// Caller env of a named seat: the seat's name and its read-only marker. The
-/// daemon and every child it spawns scrub these (`host::child_env_scrub_list`).
-pub const ENV_VARS: &[&str] = &[ENV_SEAT_NAME, ENV_SEAT_READONLY];
+/// Caller env of a named seat: the seat's name, its read-only marker and the tmux client's pane
+/// variables (the wake hint). The daemon and every child it spawns scrub these
+/// (`host::child_env_scrub_list`).
+pub const ENV_VARS: &[&str] = &[
+    ENV_SEAT_NAME,
+    ENV_SEAT_READONLY,
+    tmux::ENV_TMUX,
+    tmux::ENV_TMUX_PANE,
+];
 
 /// The variable that names a named seat (precedence rule 1 of the caller site).
 pub const ENV_SEAT_NAME: &str = "HERDR_THREADS_SEAT_NAME";
@@ -67,7 +78,14 @@ pub struct NamedHost {
     epoch: AtomicU64,
     sequence: AtomicU64,
     calls: AtomicU64,
+    processes: Arc<dyn ProcessInfo>,
+    /// Verified tmux bindings by target (seat name), in daemon memory only: lost on restart,
+    /// refreshed by every seat-acting call, pruned when the anchor process is gone.
+    tmux: Mutex<HashMap<String, Vec<LivenessFingerprint>>>,
 }
+
+/// Most verified bindings held per seat (SA16 admits several in one pane).
+const MAX_TMUX_BINDINGS: usize = 16;
 
 impl NamedHost {
     /// `host_id` is the host row the daemon attached for the reserved locator.
@@ -85,7 +103,45 @@ impl NamedHost {
             epoch: AtomicU64::new(1),
             sequence: AtomicU64::new(0),
             calls: AtomicU64::new(0),
+            processes: Arc::new(crate::host::process_table::HostProcessTable),
+            tmux: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Verify a caller's tmux hint for `target` and, when it holds, remember the binding. A hint
+    /// that does not verify records nothing and never touches the seat: that binding simply has
+    /// no wake path. Returns whether the binding is verified.
+    pub fn record_tmux_hint(&self, target: &HostTargetId, subject_pid: u32, hint: &str) -> bool {
+        let Some(anchor) = tmux::TmuxHint::parse(hint)
+            .and_then(|hint| tmux::verify(&hint, subject_pid, self.processes.as_ref()))
+        else {
+            return false;
+        };
+        let Ok(mut map) = self.tmux.lock() else {
+            return false;
+        };
+        let bindings = map.entry(target.as_str().to_owned()).or_default();
+        bindings.retain(|held| held.is_alive(self.processes.as_ref()));
+        if !bindings.contains(&anchor) && bindings.len() < MAX_TMUX_BINDINGS {
+            bindings.push(anchor);
+        }
+        bindings.contains(&anchor)
+    }
+
+    /// True while some verified binding of `target` is alive.
+    fn has_live_tmux_binding(&self, target: &HostTargetId) -> bool {
+        let Ok(mut map) = self.tmux.lock() else {
+            return false;
+        };
+        let Some(bindings) = map.get_mut(target.as_str()) else {
+            return false;
+        };
+        bindings.retain(|held| held.is_alive(self.processes.as_ref()));
+        if bindings.is_empty() {
+            map.remove(target.as_str());
+            return false;
+        }
+        true
     }
 
     fn observation(&self, name: &SeatName) -> HostObservation {
@@ -160,6 +216,18 @@ impl HostPort for NamedHost {
     }
     fn wake_capability(&self) -> WakeCapability {
         WakeCapability::None
+    }
+    /// `Composer` only for a target with a live binding whose tmux hint verified; any other named
+    /// seat has no wake path.
+    fn target_wake_capability(&self, target: &HostTargetId) -> WakeCapability {
+        if self.has_live_tmux_binding(target) {
+            WakeCapability::Composer(ComposerTraits::TMUX)
+        } else {
+            WakeCapability::None
+        }
+    }
+    fn note_wake_hint(&self, target: &HostTargetId, subject_pid: u32, hint: &str) {
+        self.record_tmux_hint(target, subject_pid, hint);
     }
     fn archival_evidence(&self) -> ArchivalEvidence {
         ArchivalEvidence::NoEvidence
@@ -270,3 +338,7 @@ impl HostPort for NamedHost {
 #[cfg(test)]
 #[path = "../../tests/host/named_host.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/host/named_tmux.rs"]
+mod tmux_tests;

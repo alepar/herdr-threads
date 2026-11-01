@@ -297,6 +297,7 @@ fn self_retire_retires_and_lists_abandoned() {
             host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
             operation: OperationId::new("resolve-again"),
             locator_hint: None,
+            tmux_hint: None,
         },
         &budget(),
     )
@@ -472,6 +473,7 @@ fn operator_retire_of_named_seat_then_new_seat() {
                 host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
                 operation: OperationId::new("resolve-again"),
                 locator_hint: None,
+                tmux_hint: None,
             },
             &budget(),
         )

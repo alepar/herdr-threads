@@ -53,6 +53,7 @@ fn request(name: &str, operation: &str) -> ResolveSeat {
         host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
         operation: OperationId::new(operation),
         locator_hint: None,
+        tmux_hint: None,
     }
 }
 

@@ -804,6 +804,15 @@ model open work, and summary closure never changes receipt state or installs glo
   (`no_wake_reports`, N6); a live mod channel reports none. `seat retire --self` from it is refused (M20: it
   has no name). Accepted limit: a verified terminal in a two-family environment still binds nothing (`LocateCaller`
   picks it, the CLI and hooks act as no seat); only a lone terminal environment is a seat.
+- *tmux wake hint (named seats, N2-hint)*: a named caller inside a tmux pane sends `tmux:<socket>:<server_pid>:<pane>`
+  (from `TMUX` and `TMUX_PANE`) in `ResolveSeat.tmux_hint`, never in `CallerClaim` and never as `locator_hint`. The
+  daemon accepts it for a binding only when `tmux -S <socket> display -p -t <pane> '#{pane_pid} #{pid}'` (2 s deadline)
+  answers the hint's server pid and the pane's process is the caller's process or an ancestor of it; the verified
+  binding is held in daemon memory only (lost on restart, pruned when its process exits) and the host's per-target wake
+  answer is `Composer` while any live verified binding of the seat exists, else `None`. A failed check (a reused pane
+  id, a stale `TMUX_PANE` inherited into a nested Herdr session, a missing server) records nothing: it only leaves that
+  binding without a wake path and never moves, rebinds or ends a seat. The hint is the caller's claim, checked against
+  the process table and tmux itself (A2); anything that can run as the seat's process in that pane can obtain wake.
 - *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
   (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
   provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys.

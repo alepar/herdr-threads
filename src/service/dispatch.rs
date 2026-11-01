@@ -578,6 +578,7 @@ impl DomainService {
                     host: request.identity.claim.host.clone(),
                     operation: request.identity.plan.payload.keys.resolve.clone(),
                     locator_hint: None,
+                    tmux_hint: None,
                 };
                 return runtime.identity.with_bootstrap_observation(
                     &*runtime.observer,
@@ -641,6 +642,7 @@ impl DomainService {
                 host: request.identity.claim.host.clone(),
                 operation: request.identity.plan.payload.keys.resolve.clone(),
                 locator_hint: None,
+                tmux_hint: None,
             };
             return runtime.identity.with_bootstrap_observation(
                 &*runtime.observer,
@@ -937,6 +939,7 @@ impl DomainService {
                     host: request.identity.claim.host.clone(),
                     operation: request.identity.payload.resolve_key.clone(),
                     locator_hint: None,
+                    tmux_hint: None,
                 };
                 return runtime.identity.with_bootstrap_observation(
                     &*runtime.observer,
@@ -1011,6 +1014,7 @@ impl DomainService {
                 host: identity.claim.host.clone(),
                 operation: identity.payload.resolve_key.clone(),
                 locator_hint: None,
+                tmux_hint: None,
             };
             return runtime.identity.with_bootstrap_observation(
                 &*runtime.observer,
@@ -1884,7 +1888,17 @@ impl LocalService for DomainService {
                 // A name at the reserved named-host locator is a seat-acting allocation by name.
                 if request.host.is_named_host() {
                     self.refuse_inherited_name(&request, budget)?;
-                    return preparation.identity().resolve_named(request, budget);
+                    let wake_hint = request.tmux_hint.clone();
+                    let target = request.target.clone();
+                    let resolved = preparation.identity().resolve_named(request, budget)?;
+                    // The wake hint is verified and held per binding in host memory; it is never
+                    // stored with the seat and a hint that fails only costs that binding its wake.
+                    if let (Some(hint), Some(pid)) = (wake_hint, peer.pid()) {
+                        for session in self.hosts.iter().flat_map(|h| h.all_for_reads()) {
+                            session.port().note_wake_hint(&target, pid, &hint);
+                        }
+                    }
+                    return Ok(resolved);
                 }
                 preparation
                     .identity()
@@ -2252,6 +2266,7 @@ mod operator_tests {
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
                 locator_hint: None,
+                tmux_hint: None,
             }),
             Command::OperatorFreshSeat(OperatorFreshSeat {
                 host: crate::test_support::test_host_locator(),

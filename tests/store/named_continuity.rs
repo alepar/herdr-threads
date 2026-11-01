@@ -67,6 +67,7 @@ fn resolve(
         host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
         operation: OperationId::new(operation),
         locator_hint: None,
+        tmux_hint: None,
     };
     match resolve_named_seat(context, conn, INSTANCE, host, &request, &budget()).unwrap() {
         CommandResult::NamedSeatResolved { seat, created, .. } => (seat, created),

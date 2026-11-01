@@ -1369,6 +1369,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         target: fresh.target.clone(),
         operation: OperationId::new("allocate-shell"),
         locator_hint: None,
+        tmux_hint: None,
     };
     let guard = || OrdinaryResolutionGuard::try_new(&request, fresh.clone(), &admission).unwrap();
     let OrdinaryResolutionOutcome::Resolved(seat) = seats::resolve_seat(
@@ -4207,6 +4208,7 @@ fn s1_named_allocation_race_and_carry_forward() {
         host: locator.clone(),
         operation: OperationId::new("s1-op"),
         locator_hint: None,
+        tmux_hint: None,
     };
     let seat = match seats::resolve_named_seat(
         &context,

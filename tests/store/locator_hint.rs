@@ -66,11 +66,21 @@ impl Fixture {
         hint: Option<&str>,
         operation: &str,
     ) -> (SeatId, Option<(String, String)>) {
+        self.resolve_with(hint, None, operation)
+    }
+
+    fn resolve_with(
+        &mut self,
+        hint: Option<&str>,
+        tmux_hint: Option<&str>,
+        operation: &str,
+    ) -> (SeatId, Option<(String, String)>) {
         let request = ResolveSeat {
             target: HostTargetId::new("reviewer"),
             host: HostLocator::parse(NAMED_HOST_LOCATOR).unwrap(),
             operation: OperationId::new(operation),
             locator_hint: hint.map(str::to_owned),
+            tmux_hint: tmux_hint.map(str::to_owned),
         };
         match resolve_named_seat(
             &self.context,
@@ -164,6 +174,36 @@ fn m9_on_first_binding_from_second_locator() {
         "herdr-threads: seat  now bound from  and ".len(),
         41,
         "the fixed bytes of M9"
+    );
+}
+
+// Kills: a tmux wake hint recorded as the binding's `locator_hint` (it is not a locator), and a
+// tmux-hinted resolve counting as a second locator (M9) next to an already recorded Herdr pane.
+#[test]
+fn tmux_hint_records_no_locator_hint_and_no_m9() {
+    let mut f = fixture();
+    let tmux = "tmux:/tmp/tmux-1000/default:4242:%3";
+    let (seat, _) = f.resolve_with(None, Some(tmux), "op-0");
+    f.bind(&seat, "s1");
+    assert_eq!(f.resolve_with(None, Some(tmux), "op-1").1, None);
+    assert_eq!(
+        f.hints(),
+        vec![None],
+        "no locator_hint from a tmux hint alone"
+    );
+    // Next to a recorded pane locator: a second binding whose resolve carries both.
+    assert_eq!(f.resolve_with(Some("w1:p1"), Some(tmux), "op-2").1, None);
+    f.bind(&seat, "s2");
+    assert_eq!(
+        f.resolve_with(None, Some(tmux), "op-3").1,
+        None,
+        "no M9 from the tmux hint"
+    );
+    assert_eq!(f.hints(), vec![Some("w1:p1".to_owned()), None]);
+    assert!(
+        f.hints().iter().flatten().all(|h| !h.contains("tmux")),
+        "{:?}",
+        f.hints()
     );
 }
 

@@ -2,6 +2,7 @@
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -221,6 +222,56 @@ class CoreEndToEndTests(unittest.TestCase):
                 break
             time.sleep(0.1)
         self.assertEqual([(p.pid, r) for p, r in found], [(pid, "core-test")])
+
+
+class TmuxTests(unittest.TestCase):
+    CMD = "tmux -L ht-test-{id} -f /dev/null new-session -d sleep 60"
+
+    def test_planted_ht_test_tmux_server_is_a_leak(self):
+        p = proc(ppid=1, argv0="tmux", command=self.CMD.format(id=uuid.uuid4()))
+        self.assertEqual(rules(run([p])), ["tmux-test"])
+
+    def test_live_owner_is_not_a_leak(self):
+        p = proc(ppid=1, argv0="tmux", command=self.CMD.format(id="x"),
+                 env={"HT_TEST_OWNER": "4242"})
+        self.assertEqual(run([p], alive={4242: True}), [])
+
+    def test_users_own_tmux_never_matches(self):
+        for command in (
+            "tmux", "tmux new-session -d", "tmux -L default new-session -d",
+            "tmux -L mine-ht-test-x new-session -d", "vim tmux -L ht-test-x",
+            "tmux -S /tmp/tmux-1000/ht-test-x attach",
+        ):
+            self.assertEqual(run([proc(ppid=1, argv0="tmux", command=command)]), [], command)
+
+    def test_run_id_scope_ignores_foreign_tmux(self):
+        p = proc(ppid=1, argv0="tmux", command=self.CMD.format(id="x"))
+        self.assertEqual(run([p], run_id="r1"), [])
+
+
+@unittest.skipUnless(shutil.which("tmux"), "tmux is not installed")
+class TmuxEndToEndTests(unittest.TestCase):
+    def test_flags_planted_ht_test_tmux_server(self):
+        socket = f"ht-test-{uuid.uuid4()}"
+        env = {k: v for k, v in os.environ.items() if k not in leakcheck.OWNER_KEYS}
+        subprocess.run(
+            ["tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d", "sleep 60"],
+            env=env, check=True,
+        )
+        try:
+            pid = int(subprocess.run(
+                ["tmux", "-L", socket, "display", "-p", "#{pid}"],
+                capture_output=True, text=True, check=True, env=env,
+            ).stdout)
+            procs = leakcheck.collect()
+            found = [(p.pid, r) for p, r in leakcheck.classify(
+                procs, root=None, run_id=None, alive=leakcheck.pid_alive,
+                exclude=leakcheck.ancestors(procs, os.getpid()),
+                temp_prefixes=PREFIXES) if p.pid == pid]
+            self.assertEqual(found, [(pid, "tmux-test")])
+        finally:
+            subprocess.run(["tmux", "-L", socket, "kill-server"], check=False,
+                           capture_output=True)
 
 
 if __name__ == "__main__":

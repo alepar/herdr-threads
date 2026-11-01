@@ -363,3 +363,47 @@ fn terminal_without_socket_m17() {
     );
     assert_eq!(refusal(&[]), None);
 }
+
+// Kills: a hint without a seat name (a plain tmux shell sends none), a hint built from a garbled
+// or empty TMUX/TMUX_PANE, a hint that is the Herdr pane locator, and a hint that changes the
+// site or the Herdr locator hint.
+#[test]
+fn tmux_hint_needs_a_named_caller_in_a_tmux_pane() {
+    let tmux = [
+        ("TMUX", "/tmp/tmux-1000/default,4242,0"),
+        ("TMUX_PANE", "%3"),
+    ];
+    let named = [("HERDR_THREADS_SEAT_NAME", "reviewer")];
+    let hint = |pairs: &[&[(&str, &str)]]| env(&pairs.concat()).tmux_hint();
+    assert_eq!(
+        hint(&[&named, &tmux]).as_deref(),
+        Some("tmux:/tmp/tmux-1000/default:4242:%3")
+    );
+    assert_eq!(hint(&[&tmux]), None, "no seat name");
+    assert_eq!(hint(&[&named]), None, "not in tmux");
+    assert_eq!(
+        hint(&[&named, &[("TMUX", "/tmp/s,4242,0")]]),
+        None,
+        "no pane"
+    );
+    assert_eq!(
+        hint(&[&named, &[("TMUX", ""), ("TMUX_PANE", "%3")]]),
+        None,
+        "empty TMUX"
+    );
+    assert_eq!(
+        hint(&[&named, &[("TMUX", "/tmp/s,x,0"), ("TMUX_PANE", "%3")]]),
+        None
+    );
+    // Beside a Herdr pane the tmux hint is separate from the locator hint and the site.
+    let both = env(&[&named[..], &tmux[..], &[("HERDR_PANE_ID", "w1:p1")]].concat());
+    assert_eq!(both.locator_hint().as_deref(), Some("w1:p1"));
+    assert_eq!(
+        both.tmux_hint().as_deref(),
+        Some("tmux:/tmp/tmux-1000/default:4242:%3")
+    );
+    assert!(matches!(
+        both.locate(EnvMode::Cli).unwrap(),
+        Some(Located::One(CallerLocator::Named(_)))
+    ));
+}
