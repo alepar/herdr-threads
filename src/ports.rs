@@ -13,8 +13,8 @@ use serde::Serialize;
 use crate::protocol::ids::ServiceAuthorId;
 use crate::protocol::{
     authority::{
-        CallerClaim, DecisionFence, Harness, MAX_PERMIT_MILLIS, MutationPermit, ObligationRef,
-        OperatorActor,
+        CallerClaim, DecisionFence, Harness, MutationPermit, ObligationRef, OperatorActor,
+        permit_lifetime_millis,
     },
     commands::{
         CheckIn, Command, ContinuityCheckIn, OperatorCommand, OperatorFreshSeat,
@@ -1640,7 +1640,8 @@ impl OperatorTargetGuard {
         {
             return Err("operator target changed");
         }
-        if fence.now.0 < self.observed_at.0 || fence.now.0 - self.observed_at.0 > MAX_PERMIT_MILLIS
+        if fence.now.0 < self.observed_at.0
+            || fence.now.0 - self.observed_at.0 > permit_lifetime_millis()
         {
             return Err("operator target observation expired");
         }
@@ -1766,7 +1767,8 @@ impl ContinuityTargetGuard {
         {
             return Err("continuity target changed");
         }
-        if fence.now.0 < self.observed_at.0 || fence.now.0 - self.observed_at.0 > MAX_PERMIT_MILLIS
+        if fence.now.0 < self.observed_at.0
+            || fence.now.0 - self.observed_at.0 > permit_lifetime_millis()
         {
             return Err("continuity target observation expired");
         }

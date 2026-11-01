@@ -221,6 +221,17 @@ pub enum ObligationRef {
 
 pub const MAX_PERMIT_MILLIS: u64 = 250;
 
+/// [`MAX_PERMIT_MILLIS`] in force in this process: production's value, stretched in a test child
+/// of a loaded suite like every bound that races the scheduler ([`external_bound`]), where a CLI
+/// or daemon losing the CPU between issue and decision otherwise fails an ordinary send.
+/// In-process tests get the production value, so the expiry itself stays pinned.
+///
+/// [`external_bound`]: crate::protocol::time::external_bound
+pub fn permit_lifetime_millis() -> u64 {
+    let bound = std::time::Duration::from_millis(MAX_PERMIT_MILLIS);
+    crate::protocol::time::external_bound(bound).as_millis() as u64
+}
+
 /// Current host state sampled at the transaction decision. A known invalidation
 /// forbids committing even if a preceding observation was fresh.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,7 +397,8 @@ impl MutationPermit {
         {
             return Err("cooperative context changed");
         }
-        if fence.now.0 < self.observed_at.0 || fence.now.0 - self.observed_at.0 > MAX_PERMIT_MILLIS
+        if fence.now.0 < self.observed_at.0
+            || fence.now.0 - self.observed_at.0 > permit_lifetime_millis()
         {
             return Err("permit expired");
         }
