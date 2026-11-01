@@ -54,6 +54,10 @@ Amended 2026-10-27 for restored-pane retirement (ht-wpq4): a seat a new Herdr in
 when the pane watched at its target closes within that incarnation and no claim names it for an observed grace
 (C2); the retirement records `closure_evidence = restored_pane_closed`, two accepted limits; no new wire value.
 
+Amended 2026-10-31 for persistently refused seats (ht-wp7n): a reconciliation pass records its marker past a
+transition refused on 3 consecutive passes unless that transition is `MarkUnresolved` (C2), one accepted limit; no new
+provenance or wire value.
+
 Amended 2026-10-27 for remote addresses (`SEAT@MACHINE`, phase 1): a seat name qualified by a machine is resolved
 by that machine's daemon over an authenticated direct link, as a read (N14, the cross-node accepted limit "A
 linked node answers remote resolution"); N13 unchanged; no new provenance value.
@@ -260,6 +264,18 @@ transaction, so a cold host's first continuity decision can establish a no-match
 a worker iteration. Hosts with saved seats or a hold still require their ordinary reconciliation pass;
 this grants no enrollment around pending recovery and adds no non-resume hook retry.
 
+The reconciliation marker means this pass can no longer change a C1 answer or the unresolved set; it does not mean
+every planned transition applied (ht-wp7n). A pass records it past a refused transition only if the refusal is
+non-transient, repeated for the same seat, seat generation and reason on 3 consecutive passes of the recovery boot and
+epoch, and its action is anything but `MarkUnresolved`. Any other action means the seat is already unresolved, where it
+keeps blocking the hold lift, or proven in the current incarnation, so the pass would not have unresolved it: it adds
+no C1 candidate and no seat to protect. The refused seat is replanned on every pass and stays named in the daemon log
+and Health; an unapplied carry ends in the ordinary unavailable path (C4). The run is daemon memory: a restart proves
+it again. Refused transitions are never evidence, so no seat moves or is unresolved because of them. Accepted limit: a
+resolved seat whose `MarkUnresolved` keeps being refused still holds its server's marker back, and with it the hold
+lift, kept and process continuity and the restored-pane grace: it looks resolved on a dead incarnation, so lifting
+holds or finalizing a no-match past it could seat a session twice. The operator repairs that seat.
+
 **Pane-close retirement (ht-54r.14).** A pane absent from a coherent snapshot of the *same* Herdr
 incarnation retires its seat, however many session bindings the seat holds. The retirement fence disconnects
 every connected binding with reason `seat_retired` through the one `store::bindings::disconnect` transition
@@ -302,8 +318,8 @@ is structural, same-incarnation evidence about the pane the current incarnation 
   keeps T, see Moved panes, and is not a close).
 - *No claim.* No kept continuity claim (C1) on that server, of any age, names the harness and native session of
   any of the seat's top-level bindings, and no other seat's structural proof or binding names T. Expired kept
-  claims are pruned only after a refusal-free pass, so while passes are refused an old row may be a live
-  session's only claim; it blocks. A decided claim rebinds the seat and bumps its generation, which voids the
+  claims are pruned only after a pass that records the marker, so while a refusal holds it back an old row may be
+  a live session's only claim; it blocks. A decided claim rebinds the seat and bumps its generation, which voids the
   watch.
 - *Observed grace.* The daemon has observed the closure for 10 minutes of its own running time while the
   server's reconciliation marker names the current recovery boot and epoch (C1 claims are being decided): each
@@ -335,6 +351,8 @@ binding that matches the C1 candidate predicate for the claim's harness and nati
 reconfirms, moves, carries or retires seats, but adds no binding, so a session no seat's binding names is a confirmed
 no-match even while the marker lags (ht-kaw9): one seat whose transition the store keeps refusing must not keep every
 new pane on the host unseated. Restore holds still apply to its ordinary enrollment.
+A pass that completes past a persistently refused seat (C2) ends the lag: by then the pass cannot unresolve that seat,
+so it adds no candidate for its sessions.
 Resolution and check-in retain their separate durable operation journals: concurrent/replayed startup
 and response loss cannot split a pane's role; an uncertain resolution remains explicitly retryable.
 A historical resolution result is revalidated against the current pane mapping before check-in.

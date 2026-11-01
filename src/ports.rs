@@ -1303,7 +1303,8 @@ pub enum ReconciliationOutcome {
     Applied,
     Unchanged,
     /// The guarded decision changed nothing; the reason names the check that
-    /// refused it (diagnostics only, never a decision input).
+    /// refused it (diagnostics, and the key that recognizes a repeated refusal;
+    /// no seat is ever decided on it).
     Stale(StaleReason),
     RetirementStarted(RetirementJob),
 }

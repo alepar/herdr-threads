@@ -60,6 +60,7 @@ struct LaneHost {
     sequence: AtomicU64,
     down: AtomicBool,
     snapshots: AtomicU64,
+    shell_reads: AtomicU64,
 }
 impl LaneHost {
     fn observation(&self, sequence: u64) -> HostObservation {
@@ -143,6 +144,14 @@ impl HostPort for LaneHost {
             targets: vec![self.observation(sequence)],
         })
     }
+    fn pane_shell_pid(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        self.shell_reads.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
     fn pane_agent_state(
         &self,
         _target: &SafeWakeTarget,
@@ -186,6 +195,7 @@ struct Rig {
     evidence: Arc<HostEvidenceStatus>,
     reachability: Arc<HostReachability>,
     identity: Arc<OrdinaryIdentity>,
+    instance: String,
     cancel: Cancellation,
     kicked: Kicked,
     worker: Option<thread::JoinHandle<()>>,
@@ -217,11 +227,12 @@ impl Rig {
             sequence: AtomicU64::new(1),
             down: AtomicBool::new(false),
             snapshots: AtomicU64::new(0),
+            shell_reads: AtomicU64::new(0),
         });
         let writer = Arc::new(FairWriter::new(32));
         let identity = Arc::new(
             OrdinaryIdentity::new(
-                instance,
+                instance.clone(),
                 crate::test_support::test_host_id(),
                 store.clone(),
                 host.clone(),
@@ -241,6 +252,7 @@ impl Rig {
             evidence: Arc::new(HostEvidenceStatus::default()),
             reachability: Arc::new(HostReachability::default()),
             identity,
+            instance,
             cancel,
             kicked,
             worker: None,
@@ -249,6 +261,13 @@ impl Rig {
 
     fn start(&mut self) {
         let port = ScheduledStore::new(self.store.clone(), Arc::new(FairWriter::new(32)));
+        self.start_on(port);
+    }
+
+    fn start_on<S>(&mut self, port: S)
+    where
+        S: crate::identity::reconcile::observation_store::ObservationStore + 'static,
+    {
         self.worker = Some(
             spawn_observation_loop(
                 self.identity.clone(),
@@ -513,4 +532,290 @@ fn unchanged_host_cycle_commits_touch_no_wakes_mapped_table() {
         kicked.iter().all(|(lanes, _)| !lanes.contains(Lane::Wakes)),
         "an unchanged-host observation cycle kicked the wake lane: {kicked:?}"
     );
+}
+
+/// The real scheduled store, except that it refuses every transition of `seat`.
+struct RefusingPort {
+    inner: ScheduledStore,
+    seat: SeatId,
+    refused: Arc<AtomicU64>,
+}
+impl crate::identity::reconcile::observation_store::ObservationStore for RefusingPort {
+    fn clock(&self) -> &dyn Clock {
+        crate::identity::reconcile::observation_store::ObservationStore::clock(&self.inner)
+    }
+    fn begin_host_observation(
+        &self,
+        instance: &str,
+        host: HostId,
+        budget: &CallBudget,
+    ) -> Result<HostObservationAdmission, ApiError> {
+        self.inner.begin_host_observation(instance, host, budget)
+    }
+    fn invalidate_host_observation(
+        &self,
+        admission: &HostObservationAdmission,
+        reason: HostInvalidationReason,
+        budget: &CallBudget,
+    ) -> Result<Option<HostInvalidationFence>, ApiError> {
+        self.inner
+            .invalidate_host_observation(admission, reason, budget)
+    }
+    fn mark_unresolved_from_invalidation(
+        &self,
+        transition: GuardedInvalidationTransition,
+        budget: &CallBudget,
+    ) -> Result<ReconciliationOutcome, ApiError> {
+        self.inner
+            .mark_unresolved_from_invalidation(transition, budget)
+    }
+    fn saved_seats_page_for_invalidation(
+        &self,
+        fence: &HostInvalidationFence,
+        after_ordinal: u64,
+        high_water_ordinal: Option<u64>,
+        limit: u8,
+        budget: &CallBudget,
+    ) -> Result<InvalidationSeatPage, ApiError> {
+        self.inner.saved_seats_page_for_invalidation(
+            fence,
+            after_ordinal,
+            high_water_ordinal,
+            limit,
+            budget,
+        )
+    }
+    fn begin_snapshot_stage(
+        &self,
+        header: SnapshotHeader,
+        budget: &CallBudget,
+    ) -> Result<SnapshotStage, ApiError> {
+        self.inner.begin_snapshot_stage(header, budget)
+    }
+    fn stage_snapshot_targets(
+        &self,
+        stage: &SnapshotGenerationId,
+        offset: u64,
+        targets: &[HostObservation],
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<SnapshotStageProgress, ApiError> {
+        self.inner
+            .stage_snapshot_targets(stage, offset, targets, admission, budget)
+    }
+    fn seal_snapshot_stage(
+        &self,
+        stage: &SnapshotGenerationId,
+        budget: &CallBudget,
+    ) -> Result<SnapshotStage, ApiError> {
+        self.inner.seal_snapshot_stage(stage, budget)
+    }
+    fn publish_snapshot_stage(
+        &self,
+        stage: &SnapshotGenerationId,
+        budget: &CallBudget,
+    ) -> Result<PublishedSnapshot, ApiError> {
+        self.inner.publish_snapshot_stage(stage, budget)
+    }
+    fn discard_snapshot_stage(
+        &self,
+        stage: &SnapshotGenerationId,
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<SnapshotCleanupProgress, ApiError> {
+        self.inner.discard_snapshot_stage(stage, admission, budget)
+    }
+    fn saved_seats_page(
+        &self,
+        published: &SnapshotGenerationId,
+        after_ordinal: u64,
+        high_water_ordinal: Option<u64>,
+        limit: u8,
+        budget: &CallBudget,
+    ) -> Result<SnapshotSeatPage, ApiError> {
+        self.inner
+            .saved_seats_page(published, after_ordinal, high_water_ordinal, limit, budget)
+    }
+    fn apply_reconciliation_transition(
+        &self,
+        transition: GuardedSeatTransition,
+        budget: &CallBudget,
+    ) -> Result<ReconciliationOutcome, ApiError> {
+        if transition.seat == self.seat {
+            self.refused.fetch_add(1, Ordering::SeqCst);
+            return Ok(ReconciliationOutcome::Stale(StaleReason::new(
+                "forced_refusal",
+            )));
+        }
+        self.inner
+            .apply_reconciliation_transition(transition, budget)
+    }
+    fn record_reconciliation_pass(
+        &self,
+        published: &PublishedSnapshot,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.inner.record_reconciliation_pass(published, budget)
+    }
+}
+
+/// ht-wp7n: one seat refused on every pass, on a real store and the real lane.
+struct RefusedPass {
+    rig: Rig,
+    db: rusqlite::Connection,
+    refused: Arc<AtomicU64>,
+}
+impl RefusedPass {
+    /// Seeds seat `culprit`, resolved under `incarnation`, at an absent target.
+    /// Under the published incarnation the pass plans a retirement; under any
+    /// other it plans `MarkUnresolved`. `seed` adds to the seeded store.
+    fn start(incarnation: &str, seed: impl FnOnce(&rusqlite::Connection, &str)) -> Self {
+        let mut rig = Rig::new();
+        let db = rusqlite::Connection::open(&rig.db).unwrap();
+        db.execute(
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence) \
+             VALUES ('culprit',?1,'resolved','native','gone',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts),'term-gone',?2,'coherent_enumeration','host',1,1,1)",
+            rusqlite::params![rig.instance, incarnation],
+        )
+        .unwrap();
+        seed(&db, &rig.instance);
+        let refused = Arc::new(AtomicU64::new(0));
+        rig.start_on(RefusingPort {
+            inner: ScheduledStore::new(rig.store.clone(), Arc::new(FairWriter::new(32))),
+            seat: SeatId::new("culprit"),
+            refused: refused.clone(),
+        });
+        rig.wait_idle(1);
+        Self { rig, db, refused }
+    }
+
+    /// Runs passes until `count` have refused the seat, each finished.
+    fn run_to(&self, count: u64) {
+        assert_eq!(self.refused.load(Ordering::SeqCst) + 1, count);
+        let idle = self.rig.pacer.idle_events();
+        self.rig.advance(5_000);
+        self.rig.wait_idle(idle + 1);
+        assert_eq!(self.refused.load(Ordering::SeqCst), count, "one pass");
+    }
+
+    fn scalar(&self, sql: &str) -> i64 {
+        self.db.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+    fn marked(&self) -> bool {
+        self.scalar("SELECT reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch FROM herdr_hosts WHERE host_id=(SELECT min(host_id) FROM herdr_hosts)") == 1
+    }
+    fn hold_flag(&self) -> i64 {
+        self.scalar("SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE host_id=(SELECT min(host_id) FROM herdr_hosts)")
+    }
+    fn raise_hold(&self) {
+        self.db
+            .execute("UPDATE herdr_hosts SET baseline_hold_unclaimed=1", [])
+            .unwrap();
+    }
+    fn kept_claims(&self) -> i64 {
+        self.scalar("SELECT count(*) FROM kept_continuity_claims")
+    }
+    fn shell_reads(&self) -> u64 {
+        self.rig.host.shell_reads.load(Ordering::SeqCst)
+    }
+    fn seat_state(&self, seat: &str) -> String {
+        self.db
+            .query_row("SELECT state FROM seats WHERE id=?1", [seat], |r| r.get(0))
+            .unwrap()
+    }
+}
+
+/// `other`, a seat a past incarnation left unresolved at `pane`: its binding's
+/// process is this test process, so it is a live C1 process candidate. And a
+/// kept claim whose process is gone, which any decision round drops.
+fn seed_other_seat_and_claim(db: &rusqlite::Connection, instance: &str) {
+    use crate::ports::ProcessInfo;
+    let pid = std::process::id();
+    let start = crate::host::process_table::HostProcessTable
+        .process(pid)
+        .expect("this process")
+        .start;
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) \
+         VALUES ('other',?1,'unresolved','other','native','pane',2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+        [instance],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start) \
+         VALUES ('other',1,'pane','term-old','inc-old','boot-old',1,1,'claude','SA','execution-1','cooperative_top_level',50,60,'disconnected',60,'seat_unresolved',?1,?2)",
+        rusqlite::params![pid, start as i64],
+    )
+    .unwrap();
+    let claim = crate::protocol::commands::ContinuityCheckIn {
+        host: crate::test_support::test_host_locator(),
+        target: HostTargetId::new("pane"),
+        harness: crate::protocol::authority::Harness::Claude,
+        native_session: NativeSessionId::new("kept"),
+        source: crate::protocol::commands::ContinuityCheckIn::RESUME_SOURCE.into(),
+        operation: OperationId::new("op-kept"),
+        execution: ExecutionId::new("execution-kept"),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint {
+            pid: u32::MAX,
+            start: 1,
+        }),
+    };
+    db.execute(
+        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) \
+         VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane','claude','kept',?1,100)",
+        [serde_json::to_string(&claim).unwrap()],
+    )
+    .unwrap();
+}
+
+/// Kills: a marker that waits for a refusal-free pass (the stall ht-wp7n fixes)
+/// or moves before the third pass; kept claims and process continuity that stay
+/// gated on it; and an excluded unresolved seat treated as nothing left to hold.
+#[test]
+fn a_persistently_refused_seat_lets_kept_claims_and_process_continuity_proceed() {
+    let pass = RefusedPass::start("incarnation", seed_other_seat_and_claim);
+    pass.raise_hold();
+    for count in 2..=3 {
+        assert!(!pass.marked(), "before pass {count}");
+        assert_eq!(pass.kept_claims(), 1, "claims wait for the marker");
+        assert_eq!(pass.shell_reads(), 0, "process continuity waits for it");
+        pass.run_to(count);
+    }
+    assert!(pass.marked(), "the third pass records the marker");
+    assert_eq!(pass.kept_claims(), 0, "the kept claim was decided");
+    assert!(pass.shell_reads() > 0, "process continuity read the pane");
+    assert_eq!(pass.seat_state("culprit"), "resolved", "nothing moved it");
+    assert_eq!(pass.seat_state("other"), "unresolved");
+    assert_eq!(pass.hold_flag(), 1, "an unresolved seat keeps the hold");
+    pass.run_to(4);
+    assert!(pass.marked(), "the refused seat is still replanned");
+}
+
+/// Kills: a hold lift still gated on a refusal-free pass.
+#[test]
+fn a_persistently_refused_resolved_seat_lets_the_hold_lift() {
+    let pass = RefusedPass::start("incarnation", |_, _| {});
+    pass.raise_hold();
+    pass.run_to(2);
+    assert_eq!(pass.hold_flag(), 1, "no marker, no lift");
+    pass.run_to(3);
+    assert!(pass.marked());
+    assert_eq!(pass.hold_flag(), 0, "nothing is left to protect");
+}
+
+/// A resolved seat a pass would unresolve looks resolved on a dead incarnation:
+/// the accepted limit in C2. Kills: exclusion that ignores the action, which
+/// would lift holds and finalize no-matches past it.
+#[test]
+fn a_refused_mark_unresolved_holds_the_marker_however_long_it_lasts() {
+    let pass = RefusedPass::start("dead-incarnation", seed_other_seat_and_claim);
+    pass.raise_hold();
+    for count in 2..=crate::identity::reconcile::PERSISTENT_REFUSAL_PASSES as u64 + 2 {
+        pass.run_to(count);
+    }
+    assert!(!pass.marked());
+    assert_eq!(pass.hold_flag(), 1);
+    assert_eq!(pass.kept_claims(), 1);
+    assert_eq!(pass.shell_reads(), 0);
+    assert_eq!(pass.seat_state("culprit"), "resolved", "nothing moved it");
 }

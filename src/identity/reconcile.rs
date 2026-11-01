@@ -358,8 +358,72 @@ pub struct ReconcilePageProgress {
     /// Guarded per-seat transitions the store refused on this page. They are
     /// skipped, never allowed to abort the other seats' reconciliation.
     pub transitions_refused: u8,
-    /// Each refused transition's seat and the store's reason, in page order.
-    pub refusals: Vec<(crate::protocol::ids::SeatId, crate::ports::StaleReason)>,
+    /// Each refused transition, in page order.
+    pub refusals: Vec<RefusedTransition>,
+}
+
+/// One guarded transition the store refused (ht-kaw9, ht-wp7n).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedTransition {
+    pub seat: crate::protocol::ids::SeatId,
+    /// The seat generation the transition was planned against.
+    pub generation: u64,
+    pub reason: crate::ports::StaleReason,
+    /// Whether a pass may complete past this refusal once it persists: its
+    /// action was not `MarkUnresolved`, so the seat is already unresolved or
+    /// proven in the current incarnation, and applying it could neither add a
+    /// C1 candidate nor a seat to protect (TRUST-POLICY C2).
+    pub excludable: bool,
+}
+
+/// Consecutive passes that must refuse the same seat, generation and reason
+/// before a pass completes past it: one pass is a race, a run of them is not.
+pub const PERSISTENT_REFUSAL_PASSES: u32 = 3;
+
+/// In how many consecutive passes of one recovery boot and epoch each refusal
+/// has repeated. Daemon memory, like the C1 process declines: a restart forgets
+/// it and the run is proven again. Holds only the latest pass's refusals.
+#[derive(Debug, Default)]
+pub struct RefusalStreaks {
+    recovery: Option<(crate::protocol::ids::HostBootId, u64)>,
+    streaks: std::collections::HashMap<
+        (crate::protocol::ids::SeatId, u64, crate::ports::StaleReason),
+        u32,
+    >,
+}
+
+impl RefusalStreaks {
+    /// Feed one finished pass of `published` and its refusals. Returns whether
+    /// the pass counts as complete for the reconciliation marker (TRUST-POLICY
+    /// C2): every refusal is excludable, not transient, and persistent.
+    pub fn pass_finished(
+        &mut self,
+        published: &PublishedSnapshot,
+        refusals: &[RefusedTransition],
+    ) -> bool {
+        let recovery = (published.boot.clone(), published.epoch);
+        if self.recovery.as_ref() != Some(&recovery) {
+            self.recovery = Some(recovery);
+            self.streaks.clear();
+        }
+        let mut complete = true;
+        let mut streaks = std::collections::HashMap::with_capacity(refusals.len());
+        for refusal in refusals {
+            let key = (refusal.seat.clone(), refusal.generation, refusal.reason);
+            let passes = self
+                .streaks
+                .get(&key)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(1);
+            complete &= refusal.excludable
+                && !refusal.reason.is_transient()
+                && passes >= PERSISTENT_REFUSAL_PASSES;
+            streaks.insert(key, passes);
+        }
+        self.streaks = streaks;
+        complete
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +487,8 @@ pub fn reconcile_published_page(
     let mut refusals = Vec::new();
     for transition in plan_page(&page)? {
         let seat = transition.seat.clone();
+        let generation = transition.expected_binding_generation;
+        let excludable = !matches!(transition.action, ReconciliationAction::MarkUnresolved);
         let result = store.apply_reconciliation_transition(transition, budget)?;
         match result {
             // A refused transition is that seat's alone (D2): its guarded
@@ -431,7 +497,12 @@ pub fn reconcile_published_page(
             // publication reassesses the refused seat from fresh evidence.
             ReconciliationOutcome::Stale(reason) => {
                 refused = refused.saturating_add(1);
-                refusals.push((seat, reason));
+                refusals.push(RefusedTransition {
+                    seat,
+                    generation,
+                    reason,
+                    excludable,
+                });
                 continue;
             }
             ReconciliationOutcome::RetirementStarted(_) => {

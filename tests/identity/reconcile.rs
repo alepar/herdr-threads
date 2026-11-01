@@ -3010,6 +3010,9 @@ mod fake_port {
         );
         let progress = result.expect("a refused seat must not abort the page");
         assert_eq!(progress.transitions_refused, 1);
+        let refused = &progress.refusals[0];
+        assert_eq!(refused.seat, SeatId::new("seat-b"));
+        assert!(refused.excludable, "a refused Move is excludable");
         assert_eq!(progress.transition_count, 1);
         assert_eq!(progress.next_after_ordinal, None);
         assert_eq!(
@@ -3564,5 +3567,114 @@ mod carry_forward {
             ),
             1
         );
+    }
+}
+
+/// ht-wp7n: which passes complete past a refusal (TRUST-POLICY C2).
+mod refusal_streaks {
+    use super::*;
+    use crate::ports::StaleReason;
+    use crate::protocol::ids::SeatId;
+
+    fn publication(epoch: u64) -> PublishedSnapshot {
+        PublishedSnapshot {
+            id: SnapshotGenerationId::store_issued("generation".into()),
+            instance: "instance-a".into(),
+            host_id: crate::test_support::test_host_id(),
+            boot: HostBootId::new("boot"),
+            epoch,
+            observation_sequence: 1,
+            incarnation: "incarnation".into(),
+            target_count: 0,
+            invalidation_revision: 0,
+        }
+    }
+
+    fn refusal(seat: &str, generation: u64, reason: StaleReason) -> RefusedTransition {
+        RefusedTransition {
+            seat: SeatId::new(seat),
+            generation,
+            reason,
+            excludable: true,
+        }
+    }
+
+    const REASON: StaleReason = StaleReason::new("structure_target_owned");
+
+    #[test]
+    fn a_refusal_free_pass_completes_at_once() {
+        assert!(RefusalStreaks::default().pass_finished(&publication(1), &[]));
+    }
+
+    /// Kills: a threshold off by one, in either direction.
+    #[test]
+    fn an_excludable_refusal_completes_on_its_third_consecutive_pass() {
+        let mut streaks = RefusalStreaks::default();
+        let refused = [refusal("s", 1, REASON)];
+        for pass in 1..PERSISTENT_REFUSAL_PASSES {
+            assert!(!streaks.pass_finished(&publication(1), &refused), "{pass}");
+        }
+        assert!(streaks.pass_finished(&publication(1), &refused));
+        assert!(streaks.pass_finished(&publication(1), &refused));
+    }
+
+    /// Kills: exclusion that ignores the action, however long the run.
+    #[test]
+    fn mark_unresolved_never_completes() {
+        let mut streaks = RefusalStreaks::default();
+        let refused = [RefusedTransition {
+            excludable: false,
+            ..refusal("s", 1, REASON)
+        }];
+        for _ in 0..PERSISTENT_REFUSAL_PASSES * 3 {
+            assert!(!streaks.pass_finished(&publication(1), &refused));
+        }
+    }
+
+    /// Kills: exclusion of a superseded pass's refusals.
+    #[test]
+    fn a_transient_reason_never_completes() {
+        let mut streaks = RefusalStreaks::default();
+        let refused = [refusal("s", 1, StaleReason::PUBLICATION_SUPERSEDED)];
+        for _ in 0..PERSISTENT_REFUSAL_PASSES * 3 {
+            assert!(!streaks.pass_finished(&publication(1), &refused));
+        }
+    }
+
+    /// One persistent refusal does not excuse a fresh one in the same pass.
+    #[test]
+    fn a_fresh_refusal_beside_a_persistent_one_blocks() {
+        let mut streaks = RefusalStreaks::default();
+        let old = refusal("old", 1, REASON);
+        for _ in 0..PERSISTENT_REFUSAL_PASSES {
+            streaks.pass_finished(&publication(1), std::slice::from_ref(&old));
+        }
+        assert!(!streaks.pass_finished(&publication(1), &[old, refusal("new", 1, REASON)]));
+    }
+
+    /// Kills: a key that drops the generation or reason, a run that survives a
+    /// clean pass, and a run carried into a new recovery epoch.
+    #[test]
+    fn the_run_restarts_on_any_change() {
+        let refused = refusal("s", 1, REASON);
+        let run_to_threshold = |streaks: &mut RefusalStreaks| {
+            for _ in 0..PERSISTENT_REFUSAL_PASSES - 1 {
+                streaks.pass_finished(&publication(1), std::slice::from_ref(&refused));
+            }
+        };
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        assert!(!streaks.pass_finished(&publication(1), &[refusal("s", 2, REASON)]));
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        let other = refusal("s", 1, StaleReason::new("move_target_owned"));
+        assert!(!streaks.pass_finished(&publication(1), &[other]));
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        assert!(streaks.pass_finished(&publication(1), &[]));
+        assert!(!streaks.pass_finished(&publication(1), std::slice::from_ref(&refused)));
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        assert!(!streaks.pass_finished(&publication(2), std::slice::from_ref(&refused)));
     }
 }

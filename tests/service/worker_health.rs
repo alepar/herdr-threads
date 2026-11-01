@@ -1646,29 +1646,18 @@ fn transitions_refused_reaches_health() {
 #[test]
 fn an_every_pass_refuser_is_named_after_an_early_burst() {
     use crate::ports::StaleReason;
-    use crate::protocol::ids::SeatId;
     use crate::service::host_evidence::{HostEvidenceStatus, MAX_REFUSED_SEATS};
     let evidence = HostEvidenceStatus::default();
     let superseded: Vec<_> = (0..12)
-        .map(|n| {
-            (
-                SeatId::new(format!("early-{n}")),
-                StaleReason::PUBLICATION_SUPERSEDED,
-            )
-        })
+        .map(|n| refusal(format!("early-{n}"), StaleReason::PUBLICATION_SUPERSEDED))
         .collect();
     evidence.record_reconcile_page(&superseded, false, UtcMillis(1));
     let one_off: Vec<_> = (0..MAX_REFUSED_SEATS)
-        .map(|n| {
-            (
-                SeatId::new(format!("once-{n}")),
-                StaleReason::new("seat_cas_failed"),
-            )
-        })
+        .map(|n| refusal(format!("once-{n}"), StaleReason::new("seat_cas_failed")))
         .collect();
     evidence.record_reconcile_page(&one_off, false, UtcMillis(2));
-    let culprit = (
-        SeatId::new("sQ0VU3wP88WZ"),
+    let culprit = refusal(
+        "sQ0VU3wP88WZ",
         StaleReason::new("structure_binding_evidence_mismatch"),
     );
     for pass in 0..3 {
@@ -1682,7 +1671,7 @@ fn an_every_pass_refuser_is_named_after_an_early_burst() {
     );
     assert_eq!(
         (pairs[0].seat.as_str(), pairs[0].reason, pairs[0].count),
-        ("sQ0VU3wP88WZ", culprit.1, 3)
+        ("sQ0VU3wP88WZ", culprit.reason, 3)
     );
     let mut inputs = crate::daemon::health::HealthInputs::unknown(
         crate::node::NodeUuid::new_v4(),
@@ -1747,15 +1736,22 @@ fn refusal_note_fits_its_line_bound_with_real_ids() {
 }
 
 /// One refusal per seat, all with the same reason.
-fn refused(seats: &[&str]) -> Vec<(crate::protocol::ids::SeatId, crate::ports::StaleReason)> {
+fn refusal(
+    seat: impl Into<String>,
+    reason: crate::ports::StaleReason,
+) -> crate::identity::reconcile::RefusedTransition {
+    crate::identity::reconcile::RefusedTransition {
+        seat: crate::protocol::ids::SeatId::new(seat.into()),
+        generation: 1,
+        reason,
+        excludable: false,
+    }
+}
+
+fn refused(seats: &[&str]) -> Vec<crate::identity::reconcile::RefusedTransition> {
     seats
         .iter()
-        .map(|seat| {
-            (
-                crate::protocol::ids::SeatId::new(*seat),
-                crate::ports::StaleReason::new("test_reason"),
-            )
-        })
+        .map(|seat| refusal(*seat, crate::ports::StaleReason::new("test_reason")))
         .collect()
 }
 
@@ -2091,40 +2087,6 @@ fn three_failed_lanes_fold_in_production_health() {
             "scheduler degraded: 3 lanes degraded (deadline, wake, observation): see /l/daemon.log"
         ]
     );
-}
-
-fn page_progress(
-    next: Option<u64>,
-    refused: u8,
-) -> crate::identity::reconcile::ReconcilePageProgress {
-    crate::identity::reconcile::ReconcilePageProgress {
-        next_after_ordinal: next,
-        high_water_ordinal: 9,
-        transition_count: 1,
-        retirements_started: 0,
-        transitions_refused: refused,
-        refusals: Vec::new(),
-    }
-}
-
-// B5 (ht-rzi.1): the marker is recorded only by a refusal-free full pass.
-// Kills: a pass_complete that forgets a refusal from an earlier page (the
-// last clean page would then record the marker), or that reports done while a
-// next page remains.
-#[test]
-fn pass_with_refused_transition_leaves_marker_behind() {
-    assert_eq!(
-        pass_complete(false, &page_progress(Some(4), 0)),
-        (false, false)
-    );
-    assert_eq!(
-        pass_complete(false, &page_progress(Some(4), 1)),
-        (false, true)
-    );
-    // The refusal on an earlier page survives a clean final page.
-    assert_eq!(pass_complete(true, &page_progress(None, 0)), (true, true));
-    assert_eq!(pass_complete(false, &page_progress(None, 2)), (true, true));
-    assert_eq!(pass_complete(false, &page_progress(None, 0)), (true, false));
 }
 
 // Kills: a worker loop that never calls record_reconciliation_pass, or calls
