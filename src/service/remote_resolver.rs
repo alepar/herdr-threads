@@ -146,7 +146,7 @@ impl RemoteResolver {
             // The built-in named host has no pane topology to read: its seats are addressed
             // by their replicated names (`remote_named_seat`), so it holds no pane match and
             // its refusal is no unreadable host.
-            if session.port().kind() == crate::ports::HostKind::Named {
+            if !session.port().reads_live_topology() {
                 continue;
             }
             match session.port().live_topology(&budget) {
