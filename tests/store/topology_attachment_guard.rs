@@ -1213,6 +1213,103 @@ fn automatic_linked_selected_resolve_attach_and_exact_pair_share_canonical_paren
     let _ = std::fs::remove_file(path);
 }
 
+/// Bytes a V2 (Herdr) automatic bootstrap wrote before V3 records existed; never re-blessed.
+fn pinned_v2(name: &str, actual: &[u8]) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/handoff-journal")
+        .join(name);
+    if std::env::var_os("HT_BLESS").is_some() {
+        std::fs::write(&path, actual).unwrap();
+    }
+    let expected = std::fs::read(&path).unwrap_or_else(|e| panic!("{name}: {e}; HT_BLESS=1"));
+    assert_eq!(
+        String::from_utf8_lossy(actual),
+        String::from_utf8_lossy(&expected),
+        "{name}"
+    );
+}
+
+#[test]
+fn automatic_v2_bytes_match_the_pre_v3_capture() {
+    let (_context, db, path, store, observation, budget, old, a) =
+        attachment_fixture_inner(false, false);
+    let id = automatic_parent(&old);
+    pinned_v2(
+        "automatic-v2-plan.json",
+        &serde_json::to_vec(&id.plan).unwrap(),
+    );
+    pinned_v2("automatic-v2-digest.txt", id.digest.as_bytes());
+    automatic_parent_created(&store, &id, &budget);
+    let creation: Vec<u8> = db
+        .query_row(
+            "SELECT creation_json FROM automatic_bootstrap_attempts",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    pinned_v2("automatic-v2-creation.json", &creation);
+    let derived = AutomaticBootstrapAttachment::derive(
+        &id,
+        BootstrapAttempt::first(),
+        a.created.clone(),
+        SeatId::new("fixture-recipient"),
+    )
+    .unwrap();
+    pinned_v2(
+        "automatic-v2-attachment.json",
+        &serde_json::to_vec(&derived).unwrap(),
+    );
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        5,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Resolve {
+            attempt: BootstrapAttempt::first(),
+        },
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    let attachment = AutomaticBootstrapAttachment::derive(
+        &id,
+        BootstrapAttempt::first(),
+        a.created.clone(),
+        a.resolved_seat.clone(),
+    )
+    .unwrap();
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        6,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Attach(Box::new(attachment.clone())),
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    let row: Vec<u8> = db
+        .query_row(
+            "SELECT attachment_json FROM automatic_bootstrap_attachments",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(row, serde_json::to_vec(&attachment).unwrap());
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
 fn automatic_status(
     store: &crate::store::SqliteStore,
     id: &AutomaticBootstrapIdentity,
