@@ -282,7 +282,7 @@ jobs:
         if: needs.changes.outputs.heavy == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends zsh
+          sudo apt-get install -y --no-install-recommends zsh shellcheck
 
       - name: Rust toolchain
         if: needs.changes.outputs.heavy == 'true'

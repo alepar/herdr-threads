@@ -8,12 +8,27 @@ import unittest
 HELPER = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "lib", "isolated-core.sh"))
 
 
+def shellcheck_or_skip(which=shutil.which, env=os.environ):
+    """The shellcheck path; skips when absent locally, raises when absent under CI."""
+    found = which("shellcheck")
+    if found:
+        return found
+    if env.get("CI"):
+        raise RuntimeError("shellcheck is required when CI is set")
+    raise unittest.SkipTest("shellcheck not installed")
+
+
 class IsolatedCoreTests(unittest.TestCase):
     def test_shellcheck_clean(self):
-        if not shutil.which("shellcheck"):
-            self.skipTest("shellcheck not installed")
-        done = subprocess.run(["shellcheck", HELPER], capture_output=True, text=True, check=False)
+        done = subprocess.run([shellcheck_or_skip(), HELPER], capture_output=True, text=True, check=False)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_shellcheck_required_in_ci(self):
+        with self.assertRaises(RuntimeError):
+            shellcheck_or_skip(which=lambda _name: None, env={"CI": "true"})
+        with self.assertRaises(unittest.SkipTest):
+            shellcheck_or_skip(which=lambda _name: None, env={})
+        self.assertEqual(shellcheck_or_skip(which=lambda _name: "/x/shellcheck", env={"CI": "true"}), "/x/shellcheck")
 
     def test_never_calls_hc_server_status(self):
         with open(HELPER, encoding="utf-8") as fh:
