@@ -6,7 +6,8 @@
 //! is then an ordinary `launch --pane` child, on a herdr-core the terminal starts the
 //! gate argv. It creates one target through the `--host-endpoint` host's
 //! `CreateTargetPort` (witnessed by that host, never focused) and prints
-//! `{"pane":..,"tab":..}` for a tab or `{"terminal":..}` for a terminal. It reads and
+//! `{"pane":..,"tab":..}` for a Herdr tab or `{"terminal":..,"created":<CreatedTarget>}` for a
+//! herdr-core terminal. It reads and
 //! writes no seat, binding or journal and claims no caller.
 
 use std::{io::Write, path::Path, sync::Arc, time::Duration};
@@ -105,7 +106,12 @@ pub fn create_with<P: CreateTargetPort + ?Sized, W: Write>(
                     "pane": pane.as_str(),
                     "tab": created.target.as_str(),
                 }),
-                None => serde_json::json!({ "terminal": created.target.as_str() }),
+                // The terminal's full creation record: the daemon's worker records it for
+                // the launch gate (N15).
+                None => serde_json::json!({
+                    "terminal": created.target.as_str(),
+                    "created": &created,
+                }),
             };
             writeln!(out, "{line}")?;
             Ok(())

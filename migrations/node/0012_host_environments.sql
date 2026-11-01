@@ -33,3 +33,11 @@ CREATE TABLE no_wake_reports (
     seat_id TEXT NOT NULL,
     PRIMARY KEY (observer, seat_id)
 ) STRICT;
+
+-- Peer launch onto a herdr-core: the gate-only record of a `peer_requests` row
+-- (TRUST-POLICY N15). `gate_attempt` set makes the row one; `gate_created` is the
+-- recorded `CreatedTarget`, written once the seat exists.
+ALTER TABLE peer_requests ADD COLUMN gate_attempt INTEGER
+    CHECK(gate_attempt IS NULL OR gate_attempt >= 1);
+ALTER TABLE peer_requests ADD COLUMN gate_created TEXT
+    CHECK(gate_created IS NULL OR length(CAST(gate_created AS BLOB)) <= 4096);

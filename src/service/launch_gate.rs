@@ -4,7 +4,8 @@
 //! - Owns: deciding whether the terminal a gate shim runs in may `exec` its harness: the
 //!   shim's `(core, tN)` must equal the bootstrap's `CreatedTarget` witness, a fresh
 //!   `terminal.get` through the host's observer must confirm it, and the bootstrap Send must
-//!   be published (the harness never runs before its first message is staged).
+//!   be published (the harness never runs before its first message is staged; a peer
+//!   launch's gate-only record releases on its recorded creation instead, N15).
 //! - Hides: the polling of the canonical view; the wait holds no store turn and no writer
 //!   lane (each poll is one short read).
 //! - Must not: write, authorize on a label or a client-supplied path (A2: the canonical view

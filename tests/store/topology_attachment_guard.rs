@@ -3250,3 +3250,122 @@ fn launch_gate_view_answers() {
     drop(db);
     let _ = std::fs::remove_file(path);
 }
+
+fn peer_row(id: &str) -> crate::store::peer_requests::PeerRequest {
+    crate::store::peer_requests::PeerRequest {
+        id: id.to_owned(),
+        node_uuid: "0123456789abcdef0123456789abcdef".into(),
+        requester_seat: None,
+        kind: "new_tab".into(),
+        plan: "{}".into(),
+        state: "running".into(),
+        pane: None,
+        seat: None,
+        detail: None,
+        created_at: 1,
+        updated_at: 0,
+    }
+}
+
+// Kills: a peer launch's gate opening before its creation and seat are recorded (the harness
+// would start with no placeholder), a stale attempt or a failed request still released, and a
+// row that never opened a gate read as one.
+#[test]
+fn peer_gate_view_opens_only_on_a_recorded_creation() {
+    use crate::store::peer_requests as rows;
+    let [_, placement] = v3_placements();
+    let fx = v3_fixture();
+    let created = v3_created(&placement);
+    let text = serde_json::to_string(&created).unwrap();
+    let first = BootstrapAttempt::first();
+    let id = "7a3c0a4e-0000-4000-8000-000000000001";
+    assert_eq!(gate_view(&fx.store, id, first, &fx.budget), None, "no row");
+    rows::insert_or_get(&fx.db, &peer_row(id)).unwrap();
+    assert_eq!(
+        gate_view(&fx.store, id, first, &fx.budget),
+        None,
+        "a row with no gate"
+    );
+    rows::open_gate(&fx.db, id).unwrap();
+    assert_eq!(
+        gate_view(&fx.store, id, first, &fx.budget),
+        Some(crate::ports::LaunchGateView {
+            created: None,
+            current_attempt: true,
+            cancelled: false,
+            send_staged: false,
+        }),
+        "an open gate waits for the creation"
+    );
+    assert!(rows::record_gate_launch(&fx.db, id, &text, "t2", "snSGseat0001", 5).unwrap());
+    assert_eq!(
+        gate_view(&fx.store, id, first, &fx.budget),
+        Some(crate::ports::LaunchGateView {
+            created: Some(created),
+            current_attempt: true,
+            cancelled: false,
+            send_staged: true,
+        })
+    );
+    let stale = gate_view(&fx.store, id, BootstrapAttempt::new(2).unwrap(), &fx.budget).unwrap();
+    assert!(!stale.current_attempt);
+    let row = rows::get(&fx.db, id).unwrap().unwrap();
+    assert_eq!(
+        (row.state.as_str(), row.pane.as_deref(), row.seat.as_deref()),
+        ("launched", Some("t2"), Some("snSGseat0001"))
+    );
+
+    // A request that failed (its seat allocation, or a daemon restart) is cancelled.
+    let failed = "7a3c0a4e-0000-4000-8000-000000000002";
+    rows::insert_or_get(&fx.db, &peer_row(failed)).unwrap();
+    rows::open_gate(&fx.db, failed).unwrap();
+    assert!(rows::record(&fx.db, failed, "failed", Some("t2"), None, Some("x"), 6).unwrap());
+    let view = gate_view(&fx.store, failed, first, &fx.budget).unwrap();
+    assert!(view.cancelled && !view.send_staged);
+    // A failed row takes no late creation.
+    assert!(!rows::record_gate_launch(&fx.db, failed, &text, "t2", "s", 7).unwrap());
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+}
+
+// Kills: a peer row standing in for a local handoff's staged Send (the exception is scoped to
+// peer launches): the bootstrap record wins and its Send is still unpublished.
+#[test]
+fn a_peer_row_never_stands_in_for_a_staged_send() {
+    use crate::store::peer_requests as rows;
+    let [_, placement] = v3_placements();
+    let fx = v3_fixture();
+    let mut id = v3_identity(&fx.old, &placement);
+    // A peer request id is a uuid: give the bootstrap the same spelling of compound.
+    id.plan.payload.keys =
+        AutomaticBootstrapKeys::new(OperationId::new("7a3c0a4e-0000-4000-8000-0000000000aa"));
+    id.digest = id.semantic_digest().unwrap();
+    let created = v3_created(&placement);
+    v3_record_created(&fx, &id, &created);
+    let compound = id.plan.payload.keys.compound.as_str().to_owned();
+    rows::insert_or_get(&fx.db, &peer_row(&compound)).unwrap();
+    rows::open_gate(&fx.db, &compound).unwrap();
+    // The peer row would answer `send_staged` once recorded; the bootstrap must still decide.
+    let text = serde_json::to_string(&created).unwrap();
+    assert!(rows::record_gate_launch(&fx.db, &compound, &text, "t2", "s", 5).unwrap());
+    let view = gate_view(&fx.store, &compound, BootstrapAttempt::first(), &fx.budget).unwrap();
+    assert!(!view.send_staged, "{view:?}");
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+}
+
+// Kills: a Herdr peer launch (a pane request, no gate) answering the launch gate.
+#[test]
+fn a_pane_peer_request_is_no_gate_record() {
+    use crate::store::peer_requests as rows;
+    let fx = v3_fixture();
+    let id = "7a3c0a4e-0000-4000-8000-000000000003";
+    rows::insert_or_get(&fx.db, &peer_row(id)).unwrap();
+    assert!(rows::record(&fx.db, id, "launched", Some("w1:p2"), Some("s"), None, 5).unwrap());
+    assert_eq!(
+        gate_view(&fx.store, id, BootstrapAttempt::first(), &fx.budget),
+        None
+    );
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+}

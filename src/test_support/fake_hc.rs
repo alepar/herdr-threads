@@ -15,6 +15,8 @@
 //!   under its `Registry::finish` rule; record pruning (the `removed` event);
 //!   core id rotation (a wipe) and seq reset (a restart); a socket rebind
 //!   (the peer witness changes); unknown reply fields and unknown events.
+//!   [`FakeHc::exec_runs`] makes `terminal.run` really start its argv (as the child a
+//!   herdr-core terminal would run, with `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET`).
 //! - Must not: model `terminal.read`, templates, `wait` or any send; they are
 //!   not served and answer `method_not_found` (or are ignored).
 //! - Role: test fixture for `host::hc`.
@@ -158,6 +160,16 @@ struct Inner {
     stream_before_result: bool,
     run_failure: Option<RunFailure>,
     close_after_reply: bool,
+    /// When set, `terminal.run` starts its argv for real.
+    exec: Option<ExecRuns>,
+    /// The programs `terminal.run` started, stopped when the fake drops.
+    children: Vec<crate::test_support::spawn::OwnedChild>,
+}
+
+/// How `terminal.run` really starts a terminal's program.
+struct ExecRuns {
+    socket: PathBuf,
+    env: Vec<(String, String)>,
 }
 
 /// The scripted world and call record behind a fake hc socket.
@@ -185,6 +197,8 @@ impl FakeHcState {
             stream_before_result: false,
             run_failure: None,
             close_after_reply: false,
+            exec: None,
+            children: Vec::new(),
         }))
     }
 
@@ -198,6 +212,15 @@ impl FakeHcState {
         let address = terminal.address.clone();
         s.terminals.push(terminal);
         s.emit("created", &address, json!({}));
+    }
+
+    /// The record of terminal `address`, if any.
+    pub fn terminal(&self, address: &str) -> Option<FakeTerminal> {
+        self.lock()
+            .terminals
+            .iter()
+            .find(|t| t.address == address)
+            .cloned()
     }
 
     /// Edits a terminal in place; the caller names the event it implies.
@@ -485,6 +508,31 @@ impl Inner {
         let address = format!("t{next}");
         let mut t = FakeTerminal::live(&address);
         t.pid = Some(5000 + next as u32);
+        if let Some(exec) = &self.exec {
+            use crate::test_support::spawn::SpawnOwned;
+            let Some((program, args)) = argv.split_first() else {
+                return vec![error_line(id, -32000, "spawn_failed", "empty argv")];
+            };
+            let mut command = crate::test_support::spawn::command(program);
+            command
+                .args(args)
+                .env("HC_TERMINAL_ID", &address)
+                .env("HC_TERMINAL_SOCKET", &exec.socket)
+                .envs(exec.env.iter().map(|(k, v)| (k, v)))
+                .current_dir(text("cwd").unwrap_or_else(|| "/".into()))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            match command.spawn_owned() {
+                Ok(child) => {
+                    t.pid = Some(child.id());
+                    self.children.push(child);
+                }
+                Err(e) => {
+                    return vec![error_line(id, -32000, "spawn_failed", &e.to_string())];
+                }
+            }
+        }
         t.argv = argv;
         t.cwd = text("cwd").unwrap_or_else(|| "/".into());
         t.keep = params["keep"].as_bool().unwrap_or(false);
@@ -678,6 +726,20 @@ impl FakeHc {
 
     pub fn socket(&self) -> &Path {
         &self.socket
+    }
+
+    /// From now on `terminal.run` really starts its argv (through `test_support::spawn`, in
+    /// its own group, stopped with this fake), with `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`
+    /// and `env`; the terminal's `pid` is the child's. The mutex is held across the spawn,
+    /// so the shim's own `hello` waits for the reply.
+    pub fn exec_runs(&self, env: &[(&str, &str)]) {
+        self.state.lock().exec = Some(ExecRuns {
+            socket: self.socket.clone(),
+            env: env
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+        });
     }
 
     pub fn state(&self) -> Arc<FakeHcState> {
