@@ -30,15 +30,13 @@ use super::{
     output,
 };
 use crate::{
+    client::local::LocalSocketClient,
     daemon::paths::{NodePaths, RuntimeContext},
     harness::context::ContextJournal,
-    host::{
-        native::NativeCli,
-        observation::{PaneName, SeatHostLabels},
-    },
+    host::observation::{PaneName, SeatHostLabels},
     ports::LocalClient,
     protocol::{
-        capabilities::HISTORY_FULL_BODIES,
+        capabilities::{HISTORY_FULL_BODIES, HOST_TOPOLOGIES_V1},
         commands::{
             BodyReadRequest, Command, FULL_BODY_FETCH_BYTES, HistoryQuery, HistoryRange,
             MessageQuery, ParticipantsQuery, SeatInspectQuery, SeatsQuery, ThreadQuery,
@@ -166,8 +164,14 @@ pub(crate) fn live_style() -> Style {
     }
 }
 
-/// A seat's host target (when mapped) and binding generation.
-type SeatBinding = (Option<HostTargetId>, u64);
+/// A seat's host target (when mapped), binding generation and the daemon's
+/// workspace and pane labels for it (`SeatSummary.directory`, keyed by the
+/// seat's own host).
+type SeatBinding = (Option<HostTargetId>, u64, Option<(String, String)>);
+
+/// Resolves the invoking pane at the claim host (moves included), supplied
+/// by the one CLI site that observes the claim host's panes.
+pub(crate) type CallerResolver = Arc<dyn Fn(&str, &CallBudget) -> Result<HostTargetId, ApiError>>;
 
 /// Where a [`NickCache`] reads host pane names from.
 pub(crate) trait PaneNameSource {
@@ -181,15 +185,62 @@ pub(crate) trait PaneNameSource {
     }
 }
 
-impl PaneNameSource for NativeCli {
+/// The production [`PaneNameSource`]: every host's labels from the daemon
+/// (`Command::HostTopologies`), `-` (none) from a daemon that predates it;
+/// the invoking pane resolves through `resolver`.
+struct DaemonPanes {
+    client: Option<LocalSocketClient>,
+    resolver: Option<CallerResolver>,
+}
+
+impl DaemonPanes {
+    fn labels(&self, budget: &CallBudget) -> Result<Vec<SeatHostLabels>, ApiError> {
+        let Some(client) = &self.client else {
+            return Ok(Vec::new());
+        };
+        if !client.supports_capability(HOST_TOPOLOGIES_V1, budget) {
+            return Ok(Vec::new());
+        }
+        match client.call(Command::HostTopologies, budget)? {
+            CommandResult::HostTopologies(rows) => Ok(rows
+                .into_iter()
+                .map(|row| SeatHostLabels {
+                    terminal: row.terminal,
+                    incarnation: row.incarnation,
+                    target: row.target,
+                    workspace_id: row.workspace_id,
+                    workspace_label: row.workspace_label,
+                    tab_id: row.tab_id,
+                    tab_label: row.tab_label,
+                    pane_label: row.pane_label,
+                })
+                .collect()),
+            _ => Ok(Vec::new()),
+        }
+    }
+}
+
+impl PaneNameSource for DaemonPanes {
     fn current_pane(&self, caller: &str, budget: &CallBudget) -> Result<HostTargetId, ApiError> {
-        NativeCli::current_pane(self, caller, budget)
+        match &self.resolver {
+            Some(resolve) => resolve(caller, budget),
+            None => Ok(HostTargetId::new(caller)),
+        }
     }
     fn seat_labels(&self, budget: &CallBudget) -> Result<Option<Vec<SeatHostLabels>>, ApiError> {
-        NativeCli::seat_labels(self, budget).map(Some)
+        self.labels(budget).map(Some)
     }
     fn pane_names(&self, budget: &CallBudget) -> Result<Vec<PaneName>, ApiError> {
-        NativeCli::pane_names(self, budget)
+        Ok(self
+            .labels(budget)?
+            .into_iter()
+            .map(|pane| PaneName {
+                target: pane.target,
+                label: pane.pane_label,
+                tab_label: pane.tab_label,
+                tab_pane_count: 0,
+            })
+            .collect())
     }
 }
 
@@ -225,13 +276,16 @@ impl NickCache {
         paths: &NodePaths,
         instance: crate::node::NodeUuid,
         clock: &Arc<dyn Clock>,
+        resolver: Option<CallerResolver>,
     ) -> io::Result<Self> {
+        // Pane nicknames come from the daemon's host reads. The claim host
+        // is still required: without one there is no pane to name.
+        context.require_host()?;
         Ok(Self::with_pane_source(
-            Box::new(NativeCli::new(
-                // Pane nicknames come from the claim host's Herdr server.
-                context.require_host()?.to_path_buf(),
-                Arc::clone(clock),
-            )),
+            Box::new(DaemonPanes {
+                client: connect(paths, clock).ok().map(|(_, _, client)| client),
+                resolver,
+            }),
             paths,
             instance,
             clock,
@@ -401,6 +455,7 @@ impl NickCache {
         seat: &SeatId,
         target: Option<&HostTargetId>,
         generation: u64,
+        directory_pane: Option<&(String, String)>,
     ) -> Nick {
         let mut nick = Nick::seat(seat);
         nick.harness = self.harness(seat, generation).map(str::to_owned);
@@ -411,13 +466,20 @@ impl NickCache {
                     &budget(self.clock.as_ref(), 2_000, &self.cancel),
                 );
             }
-            let pane = target.and_then(|target| {
-                self.labels
-                    .as_ref()?
-                    .iter()
-                    .find(|pane| pane.target == *target)
-            });
-            nick.name = irc::agent_seat_nick(seat, pane);
+            // The daemon's labels for the seat's own host win: the same target
+            // id can exist on two hosts, the pooled topology cannot tell.
+            nick.name = match directory_pane {
+                Some((workspace, pane)) => irc::agent_seat_nick_named(seat, workspace, pane),
+                None => {
+                    let pane = target.and_then(|target| {
+                        self.labels
+                            .as_ref()?
+                            .iter()
+                            .find(|pane| pane.target == *target)
+                    });
+                    irc::agent_seat_nick(seat, pane)
+                }
+            };
         } else if let Some(target) = target
             && let Some(label) = self.pane_label(
                 target.as_str(),
@@ -521,28 +583,33 @@ impl NickCache {
                 seats
                     .items
                     .into_iter()
-                    .map(|row| (row.seat, (row.target, row.generation)))
+                    .map(|row| {
+                        let pane = row
+                            .directory
+                            .as_deref()
+                            .and_then(|d| Some((d.workspace.clone()?, d.pane.clone()?)));
+                        (row.seat, (row.target, row.generation, pane))
+                    })
                     .collect(),
             ));
         }
         let Some((_, map)) = &self.mapped else {
             return;
         };
-        let bound: Vec<(SeatId, Option<HostTargetId>, u64)> = known
+        let bound: Vec<(SeatId, SeatBinding)> = known
             .into_iter()
-            .filter_map(|seat| {
-                let (target, generation) = map.get(&seat)?.clone();
-                Some((seat, target, generation))
-            })
+            .filter_map(|seat| Some((seat.clone(), map.get(&seat)?.clone())))
             .collect();
         let targets: Vec<String> = bound
             .iter()
-            .filter_map(|(_, target, _)| target.as_ref().map(|target| target.as_str().to_owned()))
+            .filter_map(|(_, (target, _, _))| {
+                target.as_ref().map(|target| target.as_str().to_owned())
+            })
             .collect();
         let snapshot_budget = budget(self.clock.as_ref(), 2_000, &self.cancel);
         self.refresh_panes(targets.iter().map(String::as_str), &snapshot_budget);
-        for (seat, target, generation) in bound {
-            self.build_nick(&seat, target.as_ref(), generation);
+        for (seat, (target, generation, pane)) in bound {
+            self.build_nick(&seat, target.as_ref(), generation, pane.as_ref());
         }
     }
 
@@ -571,6 +638,7 @@ impl NickCache {
                 seat,
                 inspection.summary.target.as_ref(),
                 inspection.summary.generation,
+                None,
             );
         }
         let nick = Nick::seat(seat);
@@ -1058,6 +1126,7 @@ fn write_result(result: io::Result<()>) -> Result<bool, RunError> {
 
 /// Run `read THREAD --follow` until Ctrl-C, a closed output, or the thread
 /// disappearing.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     request: &super::commands::FollowRequest,
     caller_pane: Option<&str>,
@@ -1065,6 +1134,7 @@ pub(crate) fn run(
     context: &RuntimeContext,
     paths: &NodePaths,
     clock: &Arc<dyn Clock>,
+    resolver: Option<CallerResolver>,
     writer: &mut dyn Write,
 ) -> Result<(), RunError> {
     let cancel = install_interrupt();
@@ -1076,7 +1146,7 @@ pub(crate) fn run(
         Form::Lines
     };
     let (instance, _, mut client) = connect(paths, clock)?;
-    let mut cache = NickCache::new(context, paths, instance, clock)?
+    let mut cache = NickCache::new(context, paths, instance, clock, resolver)?
         .with_caller(if form == Form::Human {
             caller_pane
         } else {

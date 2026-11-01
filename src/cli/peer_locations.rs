@@ -1,18 +1,22 @@
 //! Advisory, batched participant locations for local text presentation.
+//! Labels come from the daemon's per-host read, keyed `(host, target)`
+//! (`ParticipantLocation.remote`, F6); the CLI reads no host itself.
 use crate::{
-    host::{native::NativeCli, observation::SeatHostLabels},
     ports::LocalClient,
     protocol::{
         commands::{Command, ParticipantLocationsQuery},
         ids::{SeatId, ThreadId},
-        results::{ApiError, CommandResult, ContinuityStatus, ParticipantLocation},
+        results::{CommandResult, ContinuityStatus, ParticipantLocation},
         time::CallBudget,
     },
 };
-use std::{cell::RefCell, collections::HashMap};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+};
 
 thread_local! {
-    static SOURCE: RefCell<Option<NativeCli>> = const { RefCell::new(None) };
+    static ACTIVE: Cell<bool> = const { Cell::new(false) };
     static HINTS: RefCell<HashMap<SeatId,String>> = RefCell::new(HashMap::new());
 }
 #[derive(Default)]
@@ -20,31 +24,20 @@ pub(crate) struct Prepared {
     pub rows: Vec<(SeatId, String)>,
     pub unavailable: bool,
 }
-pub(crate) fn with_source<T>(source: NativeCli, run: impl FnOnce() -> T) -> T {
-    struct Restore(Option<NativeCli>);
+/// Run `run` with location hints enabled: the claim has a host, so labels
+/// can exist.
+pub(crate) fn with_active<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
-            SOURCE.with(|cell| *cell.borrow_mut() = self.0.take());
+            ACTIVE.with(|cell| cell.set(self.0));
         }
     }
-    let _restore = Restore(SOURCE.with(|cell| cell.borrow_mut().replace(source)));
+    let _restore = Restore(ACTIVE.with(|cell| cell.replace(true)));
     run()
 }
 pub(crate) fn active() -> bool {
-    SOURCE.with(|cell| cell.borrow().is_some())
-}
-pub(crate) fn snapshot(budget: &CallBudget) -> Result<Vec<SeatHostLabels>, ApiError> {
-    SOURCE.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .ok_or_else(|| {
-                ApiError::new(
-                    crate::protocol::results::ErrorCode::HostUnavailable,
-                    "host label source unavailable",
-                )
-            })?
-            .participant_labels(budget)
-    })
+    ACTIVE.with(Cell::get)
 }
 pub(crate) fn with_hints<T>(ready: &Prepared, run: impl FnOnce() -> T) -> T {
     struct Restore(HashMap<SeatId, String>);
@@ -66,7 +59,6 @@ pub(crate) fn prepare<C: LocalClient + ?Sized>(
     thread: Option<ThreadId>,
     client: &C,
     budget: &CallBudget,
-    read_snapshot: impl FnOnce() -> Result<Vec<SeatHostLabels>, ApiError>,
 ) -> Prepared {
     let participants = match result {
         CommandResult::Participants(page) => &page.items,
@@ -105,11 +97,6 @@ pub(crate) fn prepare<C: LocalClient + ?Sized>(
             };
         }
     };
-    let labels = read_snapshot().unwrap_or_default();
-    let labels: HashMap<_, _> = labels
-        .into_iter()
-        .map(|label| (label.target.clone(), label))
-        .collect();
     let mut mappings: HashMap<_, _> = mappings
         .into_iter()
         .map(|mapping| (mapping.seat.clone(), mapping))
@@ -119,20 +106,16 @@ pub(crate) fn prepare<C: LocalClient + ?Sized>(
             .iter()
             .map(|participant| {
                 let location = mappings.remove(&participant.seat);
-                let hint = location.as_ref().map_or_else(
-                    || "location unavailable".into(),
-                    |location| format_location(location, &labels),
-                );
+                let hint = location
+                    .as_ref()
+                    .map_or_else(|| "location unavailable".into(), format_location);
                 (participant.seat.clone(), hint)
             })
             .collect(),
         unavailable: false,
     }
 }
-fn format_location(
-    location: &ParticipantLocation,
-    labels: &HashMap<crate::protocol::ids::HostTargetId, SeatHostLabels>,
-) -> String {
+fn format_location(location: &ParticipantLocation) -> String {
     let target = location.target.as_ref();
     let target_text = target.map_or_else(
         || "target unavailable".into(),
@@ -165,22 +148,25 @@ fn format_location(
         }
         ContinuityStatus::Resolved => {}
     }
-    let current = target
-        .and_then(|target| labels.get(target))
-        .filter(|label| {
-            location.terminal.as_deref() == Some(label.terminal.as_str())
-                && location.incarnation.as_ref().is_some()
-                && location.incarnation == label.incarnation
-        });
-    match current {
-        Some(current) => format!(
-            "{} / {} / {} ({}) [advisory]",
-            super::human::one_line(&current.workspace_id, false, 64),
-            super::human::one_line(&current.tab_id, false, 64),
-            target_text,
-            super::irc::relative_pane_nick(current, None)
+    // A local seat: the daemon's labels for its own host, only while the
+    // seat still holds the pane (the daemon applies the terminal and
+    // incarnation match). Without them every label is `-`.
+    let shown = |part: &Option<String>| {
+        part.as_deref().map_or_else(
+            || "-".to_owned(),
+            |part| super::human::one_line(part, false, 64),
+        )
+    };
+    match location.remote.as_ref().filter(|d| d.has_labels()) {
+        Some(d) => format!(
+            "{} / {} / {target_text} ({}/{}/{}) [advisory]",
+            shown(&d.workspace),
+            shown(&d.tab),
+            shown(&d.workspace),
+            shown(&d.tab),
+            shown(&d.pane),
         ),
-        None => format!("{target_text} resolved; labels unavailable"),
+        None => format!("- / - / {target_text} (-) [advisory]"),
     }
 }
 

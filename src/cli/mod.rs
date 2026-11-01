@@ -961,6 +961,12 @@ fn run_parsed_in_pane<W: Write>(
         };
         parsed.action = request.selected(thread);
     }
+    // The invoking pane's live target, for caller-relative nicks (pane
+    // observation of the claim host, the one site here that reads it).
+    let caller_resolver = host().ok().map(|host| {
+        Arc::new(move |pane: &str, budget: &CallBudget| host.current_pane(pane, budget))
+            as follow::CallerResolver
+    });
     if let CliAction::Follow(request) = &parsed.action {
         return follow::run(
             request,
@@ -969,6 +975,7 @@ fn run_parsed_in_pane<W: Write>(
             &context,
             &paths,
             &clock,
+            caller_resolver,
             writer,
         );
     }
@@ -978,7 +985,7 @@ fn run_parsed_in_pane<W: Write>(
         && output::human_active()
     {
         let (instance, _, client) = connect(&paths, &clock)?;
-        let mut cache = follow::NickCache::new(&context, &paths, instance, &clock)
+        let mut cache = follow::NickCache::new(&context, &paths, instance, &clock, caller_resolver)
             .map_err(context_error)?
             .with_caller(caller_pane);
         return follow::render_history(&client, query.clone(), &parsed.output, &mut cache, writer);
@@ -1009,22 +1016,6 @@ fn run_parsed_in_pane<W: Write>(
             operator_semantic(mutation, &context).expect("operator mutation selected above")?;
         return run_operator(semantic, &parsed, &paths, &clock, writer);
     }
-    // Labels and peer locations are host data: with no host they are absent.
-    let seat_labels = match &context.host_endpoint {
-        Some(endpoint)
-            if matches!(&parsed.action, CliAction::Wire(Command::Seats(_)))
-                && output::human_active() =>
-        {
-            crate::host::native::NativeCli::new(endpoint.clone(), Arc::clone(&clock))
-                .seat_labels(&budget())
-                .unwrap_or_default()
-        }
-        _ => Vec::new(),
-    };
-    let peer_source = context
-        .host_endpoint
-        .as_ref()
-        .map(|endpoint| crate::host::native::NativeCli::new(endpoint.clone(), Arc::clone(&clock)));
     // Retain the requested read bound if caller derivation substitutes a
     // recovery Health report for an unmapped pane's diagnostics.
     let max_bytes = match &parsed.action {
@@ -1037,23 +1028,24 @@ fn run_parsed_in_pane<W: Write>(
         _ => crate::protocol::pagination::MAX_PAGE_BYTES,
     };
     let run = || {
-        human::with_seat_labels(seat_labels, || {
-            run_caller_scoped_deferred(
-                parsed,
-                deferred,
-                caller_pane,
-                &context,
-                &paths,
-                &connection,
-                &clock,
-                &budget,
-                writer,
-            )
-        })
+        run_caller_scoped_deferred(
+            parsed,
+            deferred,
+            caller_pane,
+            &context,
+            &paths,
+            &connection,
+            &clock,
+            &budget,
+            writer,
+        )
     };
-    let outcome = match peer_source {
-        Some(source) => peer_locations::with_source(source, run),
-        None => run(),
+    // Labels and peer locations are host data, read by the daemon: with no
+    // host they are absent.
+    let outcome = if context.host_endpoint.is_some() {
+        peer_locations::with_active(run)
+    } else {
+        run()
     }?;
     let Some(parsed) = outcome else {
         return Ok(());
@@ -1735,13 +1727,7 @@ fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
     let (result, modes) = fit_annotated_read(command, result, output_spec, client, budget)?;
     let peer_hints = if output_spec.format == OutputFormat::Text && peer_locations::active() {
         let location_budget = budget();
-        peer_locations::prepare(
-            &result,
-            participant_thread,
-            client,
-            &location_budget,
-            || peer_locations::snapshot(&location_budget),
-        )
+        peer_locations::prepare(&result, participant_thread, client, &location_budget)
     } else {
         peer_locations::Prepared::default()
     };

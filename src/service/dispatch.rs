@@ -278,6 +278,30 @@ impl DomainService {
         Ok(self)
     }
 
+    /// `budget` capped to [`LABEL_READ_MS`] from now.
+    fn label_budget(&self, budget: &CallBudget) -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(
+                budget
+                    .deadline
+                    .0
+                    .min(self.clock.monotonic_now().0.saturating_add(LABEL_READ_MS)),
+            ),
+            cancellation: budget.cancellation.clone(),
+        }
+    }
+
+    /// Every readable host's labels by `(host, target)`; empty with no host.
+    fn host_labels(&self, budget: &CallBudget) -> crate::store::local_seat_status::LabelMap {
+        self.hosts.as_ref().map_or_else(Default::default, |hosts| {
+            crate::service::seat_publisher::read_labels(
+                hosts,
+                &self.label_budget(budget),
+                &Default::default(),
+            )
+        })
+    }
+
     /// `Command::WakeStatus`: the store names the seats, their harnesses and their own hosts.
     /// A known harness with no idle-wake path on its seat's host (`idle_wake_on`) is `no_wake`;
     /// otherwise that host reports the block its last wake attempt for the seat met (never
@@ -1594,29 +1618,29 @@ impl LocalService for DomainService {
             | Command::BootstrapStatus(_)
             | Command::ResolveBootstrapSeat(_)
             | Command::RecoverBootstrap(_)) => self.bootstrap_command(command, peer, budget),
-            // `--label` on a listing also matches this node's own seats by
-            // the hosts' current labels (ht-hldp), read only when asked and
-            // within at most a second of the call's budget, so a slow host
-            // leaves the listing its time (its seats then match no label).
-            Command::Seats(q) if q.filter.label.is_some() && q.target.is_none() => {
-                let labels =
-                    self.hosts.as_ref().map_or_else(Default::default, |hosts| {
-                        let read_budget =
-                            CallBudget {
-                                deadline: MonoInstant(budget.deadline.0.min(
-                                    self.clock.monotonic_now().0.saturating_add(LABEL_READ_MS),
-                                )),
-                                cancellation: budget.cancellation.clone(),
-                            };
-                        crate::service::seat_publisher::read_labels(
-                            hosts,
-                            &read_budget,
-                            &Default::default(),
-                        )
-                    });
+            // A listing (not a pane lookup) and participant locations show this
+            // node's own seats with the hosts' current labels, keyed
+            // `(host, target)` (F6), and `--label` matches them. Read within at
+            // most a second of the call's budget, so a slow host leaves the
+            // read its time (its seats then show no labels).
+            Command::Seats(q) if q.target.is_none() => {
+                let labels = self.host_labels(budget);
                 self.store
                     .seats_read(&Command::Seats(q), &labels, &read, budget)
             }
+            Command::ParticipantLocations(q) => {
+                let labels = self.host_labels(budget);
+                self.store
+                    .seats_read(&Command::ParticipantLocations(q), &labels, &read, budget)
+            }
+            Command::HostTopologies => Ok(CommandResult::HostTopologies(
+                self.hosts.as_ref().map_or_else(Vec::new, |hosts| {
+                    crate::service::seat_publisher::host_topologies(
+                        hosts,
+                        &self.label_budget(budget),
+                    )
+                }),
+            )),
             Command::Directory(_)
             | Command::PickerDirectory(_)
             | Command::Seats(_)
@@ -1635,7 +1659,6 @@ impl LocalService for DomainService {
             | Command::ThreadName(_)
             | Command::History(_)
             | Command::Participants(_)
-            | Command::ParticipantLocations(_)
             | Command::Recipients(_)
             | Command::DeliveryInspect(_)
             | Command::PendingReceipts(_)

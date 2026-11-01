@@ -384,15 +384,8 @@ fn participant_json_with_active_host_source_makes_no_enrichment_calls() {
                 caller: None,
             })
         };
-        let source = crate::host::native::NativeCli::new(
-            crate::test_support::scratch::temp_path(format!(
-                "absent-participant-json-{}",
-                uuid::Uuid::new_v4()
-            )),
-            Arc::new(SystemClock::default()),
-        );
         let mut output = Vec::new();
-        crate::cli::peer_locations::with_source(source, || {
+        crate::cli::peer_locations::with_active(|| {
             crate::cli::run_wire(
                 command,
                 &OutputSpec::default(),

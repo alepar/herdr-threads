@@ -214,3 +214,74 @@ fn watch_register_attaches_the_claim_host() {
     assert_ne!(refused, WatchRefusalReason::Busy, "{refused:?}");
     assert!(rig.sessions.by_locator(&rig.server).is_some());
 }
+
+fn pane_labels(workspace: &str, pane: &str) -> Vec<crate::host::observation::SeatHostLabels> {
+    vec![crate::host::observation::SeatHostLabels {
+        terminal: "term-t1".into(),
+        incarnation: None,
+        target: HostTargetId::new("t1"),
+        workspace_id: format!("ws-{workspace}"),
+        workspace_label: Some(workspace.into()),
+        tab_id: format!("tab-{workspace}"),
+        tab_label: None,
+        pane_label: Some(pane.into()),
+    }]
+}
+
+// Kills (F6): topology rows and label maps keyed by target alone. Two
+// servers both own target `t1`; the daemon reports both, each under its own
+// host, and a server that cannot be read is simply absent.
+#[test]
+fn host_topologies_keep_two_hosts_owning_the_same_target_apart() {
+    let rig = Rig::new("hr-topologies");
+    let second =
+        HostLocator::parse(rig._isolation.socket_path("second.sock").to_string_lossy()).unwrap();
+    let third =
+        HostLocator::parse(rig._isolation.socket_path("third.sock").to_string_lossy()).unwrap();
+    rig.world.add(
+        &rig.server,
+        Arc::new(crate::test_support::LabelledHost(pane_labels(
+            "alpha", "one",
+        ))),
+    );
+    rig.world.add(
+        &second,
+        Arc::new(crate::test_support::LabelledHost(pane_labels(
+            "beta", "two",
+        ))),
+    );
+    rig.world.add(&third, Arc::new(RefusingHost));
+    for locator in [&rig.server, &second, &third] {
+        rig.sessions.resolve(locator, &rig.budget()).unwrap();
+    }
+    let result = rig
+        .service
+        .handle(
+            Command::HostTopologies,
+            PeerIdentity::from_kernel(501),
+            &rig.budget(),
+        )
+        .unwrap();
+    let CommandResult::HostTopologies(rows) = result else {
+        panic!("wrong result")
+    };
+    assert_eq!(rows.len(), 2, "the unreadable server is absent: {rows:?}");
+    assert!(rows.iter().all(|row| row.target.as_str() == "t1"));
+    assert_ne!(rows[0].host, rows[1].host);
+    let mut workspaces: Vec<_> = rows
+        .iter()
+        .map(|row| row.workspace_label.clone().unwrap())
+        .collect();
+    workspaces.sort();
+    assert_eq!(workspaces, ["alpha", "beta"]);
+    // The label map the seat reads use is keyed `(host, target)`: two entries.
+    let map = crate::service::seat_publisher::read_labels(
+        &rig.sessions,
+        &rig.budget(),
+        &Default::default(),
+    );
+    assert_eq!(map.len(), 2);
+    let mut panes: Vec<_> = map.values().map(|l| l.pane.clone()).collect();
+    panes.sort();
+    assert_eq!(panes, ["one", "two"]);
+}

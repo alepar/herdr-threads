@@ -402,7 +402,7 @@ fn query_inner(
         }
         Command::Participants(q) => participants(&db, instance, q, store.clock().utc_now(), output),
         Command::ParticipantLocations(q) => {
-            participant_locations(&db, instance, q, store.clock().utc_now())
+            participant_locations(&db, instance, q, store.clock().utc_now(), local_labels)
         }
         Command::WakeStatus(q) => wake_status_seats(&db, instance, q),
         Command::Seats(q) => seats(
@@ -1624,17 +1624,20 @@ fn seats(
             last = ordinal as u64;
             continue;
         }
-        let directory = if q.target.is_none() && !(q.filter.local && !local) {
+        let mut directory = if q.target.is_none() && !(q.filter.local && !local) {
             super::seat_directory::directory(db, &id, now)?
         } else {
             None
         };
         let host_labels = match local_labels {
-            Some(labels) if local && q.filter.label.is_some() => {
-                super::local_seat_status::labels_of(db, &id, labels)?
-            }
+            Some(labels) if local => super::local_seat_status::labels_of(db, &id, labels)?,
             _ => None,
         };
+        // A local seat's entry carries its target's current labels, read
+        // from its own host (F6).
+        if let (Some(entry), Some(labels)) = (directory.as_mut(), host_labels) {
+            super::seat_directory::set_labels(entry, labels);
+        }
         if !super::seat_directory::matches(&q.filter, directory.as_deref(), local, host_labels) {
             last = ordinal as u64;
             continue;
@@ -6617,12 +6620,14 @@ fn wake_status_seats(
     Ok(CommandResult::WakeStatus(rows))
 }
 
-/// One bounded query under the canonical read transaction; no host labels or client hints.
+/// One bounded query under the canonical read transaction. `local_labels`
+/// (the daemon's host read) fill a local resolved seat's `remote` entry.
 fn participant_locations(
     db: &QueryConnection,
     instance: &str,
     q: &crate::protocol::commands::ParticipantLocationsQuery,
     now: UtcMillis,
+    local_labels: Option<&super::local_seat_status::LabelMap>,
 ) -> Result<CommandResult, ApiError> {
     if q.seats.is_empty() || q.seats.len() > crate::protocol::commands::MAX_BATCH_ITEMS {
         return Err(api_error(
@@ -6670,6 +6675,14 @@ fn participant_locations(
             super::seat_directory::directory(db, &seat, now)?
                 .filter(|d| d.has_labels())
                 .map(|d| *d)
+        } else if continuity == crate::protocol::results::ContinuityStatus::Resolved
+            && let Some(labels) = local_labels
+            && let Some(current) = super::local_seat_status::labels_of(db, &seat, labels)?
+        {
+            super::seat_directory::directory(db, &seat, now)?.map(|mut entry| {
+                super::seat_directory::set_labels(&mut entry, current);
+                *entry
+            })
         } else {
             None
         };

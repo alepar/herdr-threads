@@ -9,9 +9,9 @@
 //!   node's snapshot through the one freshness rule
 //!   (`remote_seat_status::presence_of`).
 //! - Must not: feed any decision. Every value is a display hint (TRUST-POLICY
-//!   C1, N13). A local seat's entry carries no labels (the CLI shows its own
-//!   host read); `--label` matches it by the daemon's host read, the one the
-//!   seat publisher makes (ht-hldp).
+//!   C1, N13). A local seat's entry carries no labels from here: the daemon
+//!   adds its host read, keyed `(host, target)` ([`set_labels`], F6), and
+//!   `--label` matches it by that read (ht-hldp).
 //! - Role: read by `store::queries`.
 
 use rusqlite::{Connection, OptionalExtension};
@@ -72,6 +72,7 @@ pub fn directory(
             workspace: None,
             tab: None,
             pane: None,
+            name: None,
         })));
     }
     let now_ms = u64::try_from(now.0).unwrap_or(0);
@@ -104,7 +105,15 @@ pub fn directory(
         workspace: stored.as_ref().and_then(|row| row.seat.workspace.clone()),
         tab: stored.as_ref().and_then(|row| row.seat.tab.clone()),
         pane: stored.as_ref().and_then(|row| row.seat.pane.clone()),
+        name: None,
     })))
+}
+
+/// Show `labels` as `entry`'s workspace, tab and pane.
+pub fn set_labels(entry: &mut SeatDirectory, labels: &TargetLabels) {
+    entry.workspace = Some(labels.workspace.clone());
+    entry.tab = Some(labels.tab.clone());
+    entry.pane = Some(labels.pane.clone());
 }
 
 /// Whether `entry` (of a local seat when `local`, whose current host labels

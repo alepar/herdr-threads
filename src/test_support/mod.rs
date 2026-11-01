@@ -34,8 +34,8 @@ pub mod sync_node;
 pub mod write_guard;
 
 pub use fake_hosts::{
-    FakeHostWorld, RefusingHost, fake_host_plan, single_host_plan, single_host_plan_at,
-    single_host_plan_with_observer,
+    FakeHostWorld, LabelledHost, RefusingHost, fake_host_plan, single_host_plan,
+    single_host_plan_at, single_host_plan_with_observer,
 };
 
 use crate::{
