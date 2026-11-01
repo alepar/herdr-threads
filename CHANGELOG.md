@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.8.4
+
+No schema or peer wire change (node schema stays 12). No setup re-run is needed.
+
+### Fixed
+
+- **A resumed idle agent wakes again.** When an agent's process exits and is resumed (for example `codex resume`), the resumed session runs no hooks until its first turn, so its seat had no connected binding and urgent messages never woke it. The seat's last binding, if it was ended by a process exit, now receives the ordinary content-free wake for items at or under the seat's threshold, only while Herdr reports that pane's agent as the same harness and idle (TRUST-POLICY A4/A8, wake prompt only: no seat, binding or receipt change, and no soft-deadline pokes).
+- **One persistently refused reconciliation step no longer stalls a host.** A pass now completes past a transition refused for the same seat, action and reason on 3 consecutive passes, unless it is an unresolve. Held panes lift, kept claims decide and live-handoff recovery runs for the other seats (TRUST-POLICY C2).
+
 ## v2.8.3
 
 No schema or peer wire change (node schema stays 12). No setup re-run is needed.
