@@ -705,6 +705,26 @@ fn contract_id_output() {
     }
 }
 
+/// With no caller location at all (no pane, no family, no name) a seat-acting
+/// command and a seat-defaulting read keep their exact refusal text.
+#[test]
+fn no_caller_error_text() {
+    let s = Scratch::new(false);
+    for (name, args) in [
+        ("seat-defaulting-read", &["inbox"][..]),
+        ("seat-acting", &["ack", "x"][..]),
+    ] {
+        let out = s.run(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(
+            text(&out.stderr).contains("pane"),
+            "the refusal must be the caller one: {}",
+            text(&out.stderr)
+        );
+        record(&s.norm(), &format!("no-caller/{name}"), &out);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // env markers
 // ---------------------------------------------------------------------------
