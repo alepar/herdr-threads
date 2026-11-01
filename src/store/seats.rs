@@ -4316,32 +4316,39 @@ pub const PROCESS_CONTINUITY_CANDIDATES_PER_PASS: usize = 32;
 
 /// TRUST-POLICY C1 process continuity (ht-hsyg): the unresolved local seats of `host` that a
 /// new incarnation left at a saved target, each with the top-level harness bindings its latest
-/// unresolve ended while open (`seat_unresolved` at the latest such `disconnected_at`) and that
-/// carry a liveness fingerprint. The same binding filter as [`continuity_candidates`]: never
-/// human, `managed_launch`, a subagent or a `plugin_context:` session. Seat order (each seat's
-/// newest binding first), after `page.after`, only seats saved at `page.target` when given;
-/// bounded by [`PROCESS_CONTINUITY_CANDIDATES_PER_PASS`] rows, so a caller pages on.
+/// unresolve ended while open (`seat_unresolved`, placed at the generation the unresolve bumped
+/// from) under another Herdr incarnation than the host's published one, carrying a liveness
+/// fingerprint. The same binding filter as [`continuity_candidates`]: never human,
+/// `managed_launch`, a subagent or a `plugin_context:` session. Seat order (each seat's newest
+/// binding first), after `page.after`; bounded by [`PROCESS_CONTINUITY_CANDIDATES_PER_PASS`]
+/// rows, so a caller pages on, except a listing of the seats saved at `page.target`, which is
+/// complete.
 pub fn process_continuity_candidates(
     context: &StoreContext,
     instance: &str,
     host: crate::ports::HostId,
     page: &crate::ports::ProcessContinuityPage,
     budget: &CallBudget,
-) -> Result<Vec<crate::ports::ProcessContinuityCandidate>, ApiError> {
+) -> Result<crate::ports::ProcessContinuityListing, ApiError> {
     let db = context.open_query(budget.clone())?;
+    // A target listing (the rivals at one pane) is complete: one target's rows, never cut.
+    let limit = match page.target {
+        Some(_) => -1,
+        None => i64::try_from(PROCESS_CONTINUITY_CANDIDATES_PER_PASS).unwrap_or(i64::MAX),
+    };
     let mut statement = db
         .prepare(&format!(
             "SELECT s.id,s.generation,b.binding_id,s.target_id,h.endpoint,b.harness,b.native_session,b.execution_id,b.liveness_pid,b.liveness_start \
              FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id JOIN herdr_hosts h ON h.host_id=s.host_id \
+             JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' \
              WHERE s.instance_id=?1 AND s.host_id=?2 AND s.{LOCAL_SEAT} AND s.state='unresolved' AND s.unresolved_reason='other' AND s.target_id IS NOT NULL \
-             AND b.disconnect_reason='seat_unresolved' AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' \
+             AND b.disconnect_reason='seat_unresolved' AND b.generation=s.generation-1 AND b.incarnation IS NOT NULL AND b.incarnation<>g.incarnation \
+             AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' \
              AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' AND b.liveness_pid IS NOT NULL AND b.liveness_start IS NOT NULL \
-             AND b.disconnected_at=(SELECT max(e.disconnected_at) FROM occupant_bindings e WHERE e.seat_id=s.id AND e.disconnect_reason='seat_unresolved') \
              AND (?4 IS NULL OR s.id>?4) AND (?5 IS NULL OR s.target_id=?5) \
              ORDER BY s.id, b.ordinal DESC LIMIT ?3",
         ))
         .map_err(|e| db.map_error(e))?;
-    let limit = i64::try_from(PROCESS_CONTINUITY_CANDIDATES_PER_PASS).unwrap_or(i64::MAX);
     let rows = statement
         .query_map(
             params![
@@ -4369,13 +4376,14 @@ pub fn process_continuity_candidates(
         .map_err(|e| db.map_error(e))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| db.map_error(e))?;
+    let full = page.target.is_none() && rows.len() >= PROCESS_CONTINUITY_CANDIDATES_PER_PASS;
     let mut candidates = Vec::with_capacity(rows.len());
     for row in rows {
         if let Some(candidate) = process_continuity_candidate(row)? {
             candidates.push(candidate);
         }
     }
-    Ok(candidates)
+    Ok(crate::ports::ProcessContinuityListing { candidates, full })
 }
 
 type ProcessContinuityRow = (

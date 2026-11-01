@@ -94,10 +94,12 @@ pub struct OrdinaryIdentity {
     /// The observation lane's Pacer: its backoff gates retries after a failed
     /// capture. Unset (tests, in-process services) means no gate.
     observation_pacer: Option<Arc<Pacer>>,
-    /// C1 process continuity candidates the facts ruled out (ht-hsyg), by binding, seat
-    /// generation and fingerprint: none of those facts can turn into a match, so they are not
-    /// read again. Bounded; cleared when full.
-    process_declined: std::sync::Mutex<std::collections::HashSet<ProcessDeclineKey>>,
+    /// C1 process continuity candidates the facts or a definitive C1 refusal ruled out
+    /// (ht-hsyg), by binding, seat generation and fingerprint, with when (monotonic ms): not read
+    /// again for [`PROCESS_DECLINE_TTL_MS`], so a transient answer does not stick for the whole
+    /// generation. In-process only (a daemon restart forgets them); bounded, expired entries
+    /// dropped first, cleared when still full.
+    process_declined: std::sync::Mutex<std::collections::HashMap<ProcessDeclineKey, u64>>,
     /// The last seat C1 process continuity walked this round; `None` starts over.
     process_cursor: std::sync::Mutex<Option<SeatId>>,
 }
@@ -105,6 +107,8 @@ pub struct OrdinaryIdentity {
 use crate::identity::process_continuity::DeclineKey as ProcessDeclineKey;
 /// Most C1 process continuity declines remembered before the set is cleared.
 const PROCESS_DECLINED_CAP: usize = 1024;
+/// How long a C1 process continuity decline stands before the candidate is read again.
+const PROCESS_DECLINE_TTL_MS: u64 = 10 * 60 * 1000;
 
 impl OrdinaryIdentity {
     pub fn new(
@@ -127,7 +131,7 @@ impl OrdinaryIdentity {
             lane_captured: std::sync::Condvar::new(),
             service: Cancellation::default(),
             observation_pacer: None,
-            process_declined: std::sync::Mutex::new(std::collections::HashSet::new()),
+            process_declined: std::sync::Mutex::new(std::collections::HashMap::new()),
             process_cursor: std::sync::Mutex::new(None),
         }
     }
@@ -473,13 +477,15 @@ impl OrdinaryIdentity {
                 &budget,
             )?
         };
-        let full = rows.len() >= crate::store::seats::PROCESS_CONTINUITY_CANDIDATES_PER_PASS;
-        let (groups, last_page) = page_groups(rows, full);
+        let (groups, last_page) = page_groups(rows.candidates, rows.full);
         let processes = crate::host::process_table::HostProcessTable;
+        let now = self.clock.monotonic_now().0;
         let declined = |key: &ProcessDeclineKey| {
-            self.process_declined
-                .lock()
-                .is_ok_and(|declined| declined.contains(key))
+            self.process_declined.lock().is_ok_and(|declined| {
+                declined
+                    .get(key)
+                    .is_some_and(|at| now.saturating_sub(*at) < PROCESS_DECLINE_TTL_MS)
+            })
         };
         let mut walked_all = true;
         for group in &groups {
@@ -500,8 +506,8 @@ impl OrdinaryIdentity {
                 for key in judged.declines {
                     self.decline_process_candidate(key);
                 }
-                if let Some(candidate) = judged.matched {
-                    self.decide_process_match(candidate, &processes, &budget)?;
+                if let (Some(candidate), Some(shell)) = (judged.matched, shell) {
+                    self.decide_process_match(candidate, &processes, shell, &budget)?;
                 }
             }
             if let Ok(mut cursor) = self.process_cursor.lock() {
@@ -523,6 +529,7 @@ impl OrdinaryIdentity {
         &self,
         candidate: &crate::ports::ProcessContinuityCandidate,
         processes: &dyn crate::ports::ProcessInfo,
+        shell: u32,
         budget: &CallBudget,
     ) -> Result<(), ApiError> {
         let at_target = {
@@ -536,10 +543,11 @@ impl OrdinaryIdentity {
                 budget,
             )?
         };
-        if crate::identity::process_continuity::has_live_rival(
-            &at_target,
+        if crate::identity::process_continuity::has_rival_in_pane(
+            &at_target.candidates,
             &candidate.seat,
             processes,
+            shell,
         ) {
             return Ok(());
         }
@@ -596,11 +604,15 @@ impl OrdinaryIdentity {
     }
 
     fn decline_process_candidate(&self, key: ProcessDeclineKey) {
+        let now = self.clock.monotonic_now().0;
         if let Ok(mut declined) = self.process_declined.lock() {
             if declined.len() >= PROCESS_DECLINED_CAP {
-                declined.clear();
+                declined.retain(|_, at| now.saturating_sub(*at) < PROCESS_DECLINE_TTL_MS);
+                if declined.len() >= PROCESS_DECLINED_CAP {
+                    declined.clear();
+                }
             }
-            declined.insert(key);
+            declined.insert(key, now);
         }
     }
 

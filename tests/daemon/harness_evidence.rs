@@ -2150,7 +2150,7 @@ mod publication_order {
             host: crate::ports::HostId,
             page: crate::ports::ProcessContinuityPage,
             budget: &CallBudget,
-        ) -> Result<Vec<crate::ports::ProcessContinuityCandidate>, ApiError> {
+        ) -> Result<crate::ports::ProcessContinuityListing, ApiError> {
             self.inner.process_continuity_candidates(host, page, budget)
         }
         fn kept_continuity_claims(

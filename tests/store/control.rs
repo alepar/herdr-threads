@@ -9349,18 +9349,34 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
         cancellation: Cancellation::default(),
     };
     conn.execute(
-        "UPDATE seats SET state='unresolved',unresolved_reason='other',target_id='held-pane' WHERE id='s1'",
+        "UPDATE seats SET state='unresolved',unresolved_reason='other',target_id='held-pane',generation=5 WHERE id='s1'",
         [],
     )
     .unwrap();
+    let seat_generation: i64 = conn
+        .query_row("SELECT generation FROM seats WHERE id='s1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    // The bindings the latest unresolve ended: placed at the generation it bumped from, under
+    // the old incarnation (the published one is another).
+    let current: String = conn
+        .query_row(
+            "SELECT g.incarnation FROM herdr_hosts h JOIN snapshot_generations g ON g.id=h.active_snapshot_id WHERE h.host_id=(SELECT min(host_id) FROM herdr_hosts)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(current, "before-handoff");
     conn.execute(
-        "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',disconnected_at=50,liveness_pid=4242,liveness_start=7 WHERE seat_id='s1'",
-        [],
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',disconnected_at=50,liveness_pid=4242,liveness_start=7,generation=?1,incarnation='before-handoff' WHERE seat_id='s1'",
+        [seat_generation - 1],
     )
     .unwrap();
-    // Excluded: no fingerprint, a human binding, a managed launch, another end reason, and a
-    // binding an earlier unresolve ended (never reopened since).
-    for (generation, harness, session, provenance, reason, pid, at) in [
+    // Excluded: no fingerprint, a human binding, a managed launch, another end reason, a binding
+    // an earlier unresolve ended (an older generation), and one placed in the current incarnation
+    // (a same-incarnation unresolve is not this path's).
+    for (n, harness, session, provenance, reason, pid, generation, incarnation) in [
         (
             2,
             "claude",
@@ -9368,7 +9384,8 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             "cooperative_top_level",
             "seat_unresolved",
             None,
-            50,
+            1,
+            "before-handoff",
         ),
         (
             3,
@@ -9377,7 +9394,8 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             "cooperative_top_level",
             "seat_unresolved",
             Some(1),
-            50,
+            1,
+            "before-handoff",
         ),
         (
             4,
@@ -9386,7 +9404,8 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             "managed_launch",
             "seat_unresolved",
             Some(1),
-            50,
+            1,
+            "before-handoff",
         ),
         (
             5,
@@ -9395,7 +9414,8 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             "cooperative_top_level",
             "superseded",
             Some(1),
-            50,
+            1,
+            "before-handoff",
         ),
         (
             6,
@@ -9404,13 +9424,24 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             "cooperative_top_level",
             "seat_unresolved",
             Some(1),
-            20,
+            2,
+            "before-handoff",
+        ),
+        (
+            7,
+            "claude",
+            "same-inc",
+            "cooperative_top_level",
+            "seat_unresolved",
+            Some(1),
+            1,
+            current.as_str(),
         ),
     ] {
-        c1_bind(&conn, "s1", generation, harness, session);
+        c1_bind(&conn, "s1", n, harness, session);
         conn.execute(
-            "UPDATE occupant_bindings SET observation_provenance=?2,liveness='disconnected',disconnect_reason=?3,liveness_pid=?4,liveness_start=?4,disconnected_at=?5 WHERE seat_id='s1' AND native_session=?1",
-            rusqlite::params![session, provenance, reason, pid, at],
+            "UPDATE occupant_bindings SET observation_provenance=?2,liveness='disconnected',disconnect_reason=?3,liveness_pid=?4,liveness_start=?4,disconnected_at=50,generation=?5,incarnation=?6 WHERE seat_id='s1' AND native_session=?1",
+            rusqlite::params![session, provenance, reason, pid, seat_generation - generation, incarnation],
         )
         .unwrap();
     }
@@ -9428,7 +9459,10 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
         after: after.map(SeatId::new),
         target: target.map(HostTargetId::new),
     };
-    let listed: Vec<_> = list(page(None, None))
+    let listing = list(page(None, None));
+    assert!(!listing.full);
+    let listed: Vec<_> = listing
+        .candidates
         .iter()
         .map(|c| {
             (
@@ -9444,13 +9478,16 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
         listed,
         vec![("s1".into(), "held-pane".into(), "sess-1".into(), 4242, 7)]
     );
-    assert_eq!(list(page(Some("s0"), Some("held-pane"))).len(), 1);
+    assert_eq!(
+        list(page(Some("s0"), Some("held-pane"))).candidates.len(),
+        1
+    );
     assert!(
-        list(page(Some("s1"), None)).is_empty(),
+        list(page(Some("s1"), None)).candidates.is_empty(),
         "the page starts after the cursor"
     );
     assert!(
-        list(page(None, Some("other-pane"))).is_empty(),
+        list(page(None, Some("other-pane"))).candidates.is_empty(),
         "only the given target"
     );
     // A seat unresolved for host invalidation is the structural bridge's, not this path's.
@@ -9459,9 +9496,38 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
         [],
     )
     .unwrap();
-    assert!(list(page(None, None)).is_empty());
+    assert!(list(page(None, None)).candidates.is_empty());
     conn.execute(
         "UPDATE seats SET unresolved_reason='other' WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    // 33 stale seats saved at the same pane sort before s1: a page is bounded and says so, but
+    // the target listing (the rivals of a match) is complete.
+    for n in 0..33 {
+        let seat = format!("r{n:02}");
+        conn.execute("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','other','native','held-pane',2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&seat]).unwrap();
+        c1_bind(&conn, &seat, 1, "claude", &format!("old-{n}"));
+        conn.execute(
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',disconnected_at=50,liveness_pid=9,liveness_start=9,incarnation='before-handoff' WHERE seat_id=?1",
+            [&seat],
+        )
+        .unwrap();
+    }
+    let first = list(page(None, None));
+    assert!(first.full);
+    assert_eq!(first.candidates.len(), 32);
+    assert!(first.candidates.iter().all(|c| c.seat.as_str() != "s1"));
+    let rivals = list(page(None, Some("held-pane")));
+    assert!(!rivals.full);
+    assert_eq!(
+        rivals.candidates.len(),
+        34,
+        "the target listing is never cut"
+    );
+    assert!(rivals.candidates.iter().any(|c| c.seat.as_str() == "s1"));
+    conn.execute(
+        "UPDATE seats SET state='retired',unresolved_reason=NULL,retired_at=1 WHERE id LIKE 'r%'",
         [],
     )
     .unwrap();
@@ -9589,6 +9655,7 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
             &budget,
         )
         .unwrap()
+        .candidates
         .is_empty(),
         "a resolved seat is no candidate"
     );

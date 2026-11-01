@@ -112,16 +112,24 @@ pub fn judge_seat<'a>(
     judgment
 }
 
-/// Whether another seat saved at the same target (`rows`: every candidate there) still has a
-/// live fingerprinted process: then the pane's process could be either seat's, so nothing is
-/// decided (seats are never chosen between on evidence that fits two).
-pub fn has_live_rival(
+/// Whether another seat saved at the same target (`rows`: every candidate there) has a process
+/// that the pane whose process Herdr reports as `shell_pid` hosts, or one whose facts cannot be
+/// read: then the pane's process could be either seat's, so nothing is decided (seats are never
+/// chosen between on evidence that fits two). A rival whose process is gone or lives elsewhere
+/// does not block.
+pub fn has_rival_in_pane(
     rows: &[ProcessContinuityCandidate],
     seat: &SeatId,
     processes: &dyn ProcessInfo,
+    shell_pid: u32,
 ) -> bool {
-    rows.iter()
-        .any(|row| &row.seat != seat && row.liveness.is_alive(processes))
+    rows.iter().any(|row| {
+        &row.seat != seat
+            && matches!(
+                judge(processes, row.liveness, shell_pid),
+                Verdict::Continuous | Verdict::Unknown
+            )
+    })
 }
 
 /// Split one listed page (seat order) into per-seat groups. A full page (`full`) may have cut its
@@ -329,17 +337,34 @@ mod tests {
         );
     }
 
-    /// Kills: ignoring another seat's live process at the same target, or counting the seat's own
-    /// or a dead rival.
+    /// Kills: ignoring another seat's process in the pane, counting the seat's own, a dead rival
+    /// or one alive outside the pane (a cold-restart survivor), or deciding past an unreadable one.
     #[test]
-    fn only_another_seats_live_process_is_a_rival() {
-        let t = table((7, SHELL, Some(TTY)));
+    fn only_another_seats_process_in_the_pane_is_a_rival() {
+        let mut t = table((7, SHELL, Some(TTY)));
+        t.rows.insert(400, (3, 4000, None)); // a nohup survivor: alive, no terminal
+        t.rows.insert(401, (3, SHELL, Some(TTY))); // another seat's process in this pane
         let own = candidate("s1", "a", AGENT, 7);
         let dead = candidate("s2", "b", 999, 1);
-        let live = candidate("s2", "c", SHELL, 1);
+        let elsewhere = candidate("s2", "c", 400, 3);
         let seat = own.seat.clone();
-        assert!(!has_live_rival(&[own.clone(), dead.clone()], &seat, &t));
-        assert!(has_live_rival(&[own, dead, live], &seat, &t));
+        let quiet = [own.clone(), dead.clone(), elsewhere.clone()];
+        assert!(!has_rival_in_pane(&quiet, &seat, &t, SHELL));
+        let in_pane = candidate("s3", "d", 401, 3);
+        assert!(has_rival_in_pane(
+            &[own.clone(), dead, elsewhere, in_pane],
+            &seat,
+            &t,
+            SHELL
+        ));
+        let mut unreadable = table((7, SHELL, Some(TTY)));
+        unreadable.rows.insert(402, (3, SHELL, Some(TTY)));
+        unreadable.rows.remove(&SHELL);
+        let maybe = candidate("s4", "e", 402, 3);
+        assert!(
+            has_rival_in_pane(&[own, maybe], &seat, &unreadable, SHELL),
+            "an unreadable rival blocks"
+        );
     }
 
     /// Kills: dropping a seat whose rows a full page may have cut short when other seats share the

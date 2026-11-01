@@ -1744,6 +1744,15 @@ pub enum ContinuityEvidence {
     Process { seat: SeatId, seat_generation: u64 },
 }
 
+/// One C1 process continuity listing. `full`: the bounded page filled up (counted before rows of
+/// a harness this build does not know are skipped), so more may follow; a target listing is
+/// never bounded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessContinuityListing {
+    pub candidates: Vec<ProcessContinuityCandidate>,
+    pub full: bool,
+}
+
 /// Which C1 process continuity candidates to list: the page after a seat (seat order), and/or
 /// only the seats saved at one target (the rivals of a match).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -3359,7 +3368,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         host: HostId,
         page: ProcessContinuityPage,
         budget: &CallBudget,
-    ) -> Result<Vec<ProcessContinuityCandidate>, ApiError>;
+    ) -> Result<ProcessContinuityListing, ApiError>;
     /// The host's kept claims due for another decision, oldest first and
     /// bounded per pass; expired rows are dropped first.
     fn kept_continuity_claims(
