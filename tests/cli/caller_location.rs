@@ -23,6 +23,10 @@ fn pane(id: &str) -> CallerLocator {
     CallerLocator::pane(id)
 }
 
+fn named(name: &str) -> CallerLocator {
+    CallerLocator::Named(herdr_threads::protocol::ids::SeatName::parse(name).unwrap())
+}
+
 fn terminal(socket: &str, id: &str) -> CallerLocator {
     CallerLocator::Terminal {
         socket: socket.into(),
@@ -124,6 +128,48 @@ fn precedence_matrix() {
                 terminal("/s", "t1"),
             ]))),
         ),
+        // precedence rule 1: a valid name replaces only the target, in either mode, with no
+        // Herdr environment, and over every other family
+        (
+            &[("HERDR_THREADS_SEAT_NAME", "worker-1")],
+            Hook,
+            Ok(Some(Located::One(named("worker-1")))),
+        ),
+        (
+            &[("HERDR_THREADS_SEAT_NAME", "worker-1")],
+            Cli,
+            Ok(Some(Located::One(named("worker-1")))),
+        ),
+        (
+            &[
+                ("HERDR_THREADS_SEAT_NAME", "w.1_x"),
+                ("HERDR_PANE_ID", "w1:p1"),
+                ("HERDR_ENV", "1"),
+                ("HC_TERMINAL_ID", "t1"),
+                ("HC_TERMINAL_SOCKET", "/s"),
+            ],
+            Hook,
+            Ok(Some(Located::One(named("w.1_x")))),
+        ),
+        // an empty name is filtered like any other value
+        (&[("HERDR_THREADS_SEAT_NAME", "")], Cli, Ok(None)),
+        // an invalid name is a hard error, even beside a pane
+        (
+            &[("HERDR_THREADS_SEAT_NAME", "-bad")],
+            Cli,
+            Err(LocatorError::InvalidName),
+        ),
+        (
+            &[
+                ("HERDR_THREADS_SEAT_NAME", "has space"),
+                ("HERDR_PANE_ID", "w1:p1"),
+                ("HERDR_ENV", "1"),
+            ],
+            Hook,
+            Err(LocatorError::InvalidName),
+        ),
+        // the read-only marker alone is not a name
+        (&[("HERDR_THREADS_SEAT_READONLY", "1")], Cli, Ok(None)),
     ];
     for (vars, mode, expected) in cells {
         assert_eq!(env(vars).locate(mode), expected, "{vars:?} {mode:?}");
@@ -177,4 +223,43 @@ fn recognition_only_terminal_site_is_not_a_pane() {
     assert_eq!(site.relative_pane(), None);
     assert!(!site.person_origin_allowed());
     assert!(!site.enrolls_on_first_use());
+}
+
+#[test]
+fn named_site_answers() {
+    let locator = named("worker-1");
+    let site = locator.site();
+    assert_eq!(site.moved_target(), Some("worker-1"));
+    assert_eq!(site.relative_pane(), None);
+    assert!(!site.person_origin_allowed());
+    assert!(site.enrolls_on_first_use());
+    assert!(!site.attempts_continuity());
+    assert!(site.host_scoped_lookup());
+    assert_eq!(site.locate_candidate(), None);
+    assert_eq!(site.terminal_id(), None);
+    assert_eq!(site.cache_key(), "named:worker-1");
+}
+
+#[test]
+fn named_env_assignments_hint() {
+    let locator = named("worker-1");
+    assert_eq!(
+        locator.site().env_assignments(),
+        vec!["HERDR_THREADS_SEAT_NAME=worker-1".to_owned()]
+    );
+}
+
+#[test]
+fn a_named_caller_has_no_pane() {
+    let e = env(&[
+        ("HERDR_THREADS_SEAT_NAME", "worker-1"),
+        ("HERDR_PANE_ID", "w1:p1"),
+    ]);
+    assert_eq!(e.pane(EnvMode::Cli), None);
+    assert_eq!(e.named().unwrap().as_str(), "worker-1");
+    assert!(
+        env(&[("HERDR_THREADS_SEAT_NAME", "-bad")])
+            .named()
+            .is_none()
+    );
 }

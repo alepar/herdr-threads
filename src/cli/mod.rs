@@ -335,8 +335,10 @@ where
     T: Into<OsString> + Clone,
     W: Write,
 {
-    let pane = cli_caller_pane(&caller_location::CallerEnv::from_process());
-    run_in_pane(argv, pane.as_deref(), writer)
+    let env = caller_location::CallerEnv::from_process();
+    let site = env.named().map(caller_location::CallerLocator::Named);
+    let pane = cli_caller_pane(&env);
+    run_in_site(argv, pane.as_deref(), site.as_ref(), writer)
 }
 
 /// Process entrypoint: like [`run`], recording whether stdout is a terminal so
@@ -455,6 +457,22 @@ where
     T: Into<OsString> + Clone,
     W: Write,
 {
+    run_in_site(argv, caller_pane, None, writer)
+}
+
+/// [`run_in_pane`] with the caller's located site: a `Named` site (no pane) sends its host
+/// scope with thread resolution, behind the daemon's `seat.host_sites_v1` (M13).
+pub fn run_in_site<I, T, W>(
+    argv: I,
+    caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
+    writer: &mut W,
+) -> Result<(), RunError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+    W: Write,
+{
     let parsed = match commands::parse_argv_or_informational(argv) {
         Ok(parsed) => parsed,
         Err(commands::ParseFailure::Informational(text)) => {
@@ -468,7 +486,7 @@ where
     let _namespace = human::invocation_scope(parsed.actor);
     let retry = matches!(parsed.action, CliAction::Retry(_));
     let watch = matches!(parsed.action, CliAction::Watch(_));
-    run_parsed_in_pane(parsed, caller_pane, writer).map_err(|mut error| {
+    run_parsed_in_pane(parsed, caller_pane, site, writer).map_err(|mut error| {
         if !retry && let RunError::Api(api) = &mut error {
             crate::protocol::output::namespace_error(api);
         }
@@ -494,6 +512,7 @@ pub(crate) fn resolve_automatic_new_selectors<C: LocalClient + ?Sized>(
 fn run_parsed_in_pane<W: Write>(
     mut parsed: commands::ParsedCli,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     writer: &mut W,
 ) -> Result<(), RunError> {
     let _presentation = output::PresentationGuard::enter(parsed.presentation, &parsed.output);
@@ -868,19 +887,21 @@ fn run_parsed_in_pane<W: Write>(
             writer,
         );
     }
+    // A cooperative selection names its own target; a Named site scopes the lookup otherwise.
+    let named_site = site.filter(|_| parsed.cooperative.is_none());
     threads::resolve_cli_threads(&mut parsed, |selector| {
         let (_, client) = connection.get()?;
+        let query = site_capability::resolve_thread_query(
+            named_site.map(caller_location::CallerLocator::site),
+            selector,
+            thread_caller.clone(),
+            thread_caller_target.clone(),
+            client,
+            &budget(),
+        )
+        .map_err(|error| threads::selector_error(error, selector))?;
         let result = client
-            .call(
-                Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
-                    selector: selector.to_owned(),
-                    caller: thread_caller.clone(),
-                    caller_target: thread_caller_target.clone(),
-
-                    caller_host: None,
-                }),
-                &budget(),
-            )
+            .call(Command::ResolveThread(query), &budget())
             .map_err(|error| threads::selector_error(error, selector))?;
         match result {
             CommandResult::ThreadResolved(thread) => Ok(thread),

@@ -103,6 +103,8 @@ mod local_endpoint;
 mod multi_host;
 #[path = "store/multi_host_wake.rs"]
 mod multi_host_wake;
+#[path = "cli/named_site.rs"]
+mod named_site;
 #[path = "sync/opaque_relay.rs"]
 mod opaque_relay;
 #[path = "sync/opaque_wire.rs"]

@@ -253,8 +253,24 @@ pub struct HookEnv {
     /// Set when the environment names both a Herdr pane and a herdr-core terminal: the
     /// daemon must verify the pane before the hook binds to it (`caller_guard`).
     pub ambiguous: Option<Vec<super::caller_location::CallerLocator>>,
+    /// A valid `HERDR_THREADS_SEAT_NAME`: the Named site. It replaces only the target and needs
+    /// no Herdr environment (`herdr_env` and `pane` are then unused for the target).
+    pub named: Option<crate::protocol::ids::SeatName>,
 }
 impl HookEnv {
+    /// The hook is admitted: a Herdr pane the environment marks, or a named seat.
+    pub fn located(&self) -> bool {
+        self.named.is_some() || (self.herdr_env && self.pane.is_some())
+    }
+
+    /// The host target the hook acts for: the seat name, else the pane id.
+    pub fn target(&self) -> Option<&str> {
+        self.named
+            .as_ref()
+            .map(crate::protocol::ids::SeatName::as_str)
+            .or(self.pane.as_deref())
+    }
+
     pub fn from_process() -> Self {
         use super::caller_location::{CallerEnv, EnvMode};
         let env = CallerEnv::from_process();
@@ -262,6 +278,7 @@ impl HookEnv {
             herdr_env: env.herdr_env(),
             pane: env.pane(EnvMode::Hook),
             ambiguous: super::caller_guard::hook_candidates(&env),
+            named: env.named(),
         }
     }
 }
@@ -1632,6 +1649,10 @@ fn locate_seat_for(
     let Ok(endpoint) = context.require_host() else {
         return Ok(seat);
     };
+    // The reserved named host is never dialled; a named target does not move.
+    if endpoint == Path::new(crate::protocol::ids::NAMED_HOST_LOCATOR) {
+        return Ok(seat);
+    }
     let host = crate::host::native::NativeCli::new(endpoint.to_path_buf(), Arc::clone(clock));
     let Some(now) = super::moved_pane(target, |stale| {
         host.current_pane(stale, &budget(deadline, clock.as_ref()))
@@ -1791,14 +1812,13 @@ fn connect_pane(
     clock: &Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> Result<Connected, Failure> {
-    if !env.herdr_env {
+    if env.named.is_none() && !env.herdr_env {
         return Err(Failure::Quiet("not running inside a Herdr pane".into()));
     }
     let pane = env
-        .pane
-        .as_ref()
+        .target()
         .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
-    let target = HostTargetId::parse(pane.clone())
+    let target = HostTargetId::parse(pane)
         .map_err(|_| Failure::Quiet("HERDR_PANE_ID is not a valid target".into()))?;
     let context =
         hook_runtime_context(args).map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
@@ -1929,8 +1949,7 @@ fn check_in(
         &clock,
     )?;
     let pane = env
-        .pane
-        .as_ref()
+        .target()
         .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
     let stamp = |mut done: CheckedIn| {
         if done.lazy.is_some() {
@@ -3486,7 +3505,7 @@ pub(crate) fn run_hook_registered(
     clock: Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> HookOutcome {
-    if registration.callback_admission() && (!env.herdr_env || env.pane.is_none()) {
+    if registration.callback_admission() && !env.located() {
         return HookOutcome::default();
     }
     let input = HookInput {
@@ -3787,7 +3806,7 @@ fn pane_context_journal(
     deadline: Instant,
     clock: &dyn Clock,
 ) -> Option<(crate::harness::context::ContextJournal, OccupantContext)> {
-    let target = env.pane.as_deref()?;
+    let target = env.target()?;
     let context = hook_runtime_context(args).ok()?;
     let paths = NodePaths::resolve_read_only(&context.state_dir).ok()?;
     let instance = read_node_uuid_hint(&paths).ok()??;
@@ -3841,7 +3860,7 @@ fn record_observer_reset(
     let EventIntent::DeclaredReset(reset) = &decoded.intent else {
         return;
     };
-    let Some(target) = env.pane.as_deref() else {
+    let Some(target) = env.target() else {
         return;
     };
     if let Some((journal, _)) = pane_context_journal(args, env, args.harness, deadline, clock) {
@@ -3873,8 +3892,7 @@ fn report_binding_event(
         ..
     } = connect_pane(args, env, deadline, clock, None)?;
     let pane = env
-        .pane
-        .as_ref()
+        .target()
         .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
     let (seat, generation) = match locate_seat_for(
         args.harness,
@@ -4110,7 +4128,7 @@ fn run_admitted_hook_since(
     if deadline <= clock.instant_now() {
         return quiet_outcome("hook callback budget expired".into());
     }
-    if !env.herdr_env || env.pane.is_none() {
+    if !env.located() {
         return quiet_outcome("not running inside a Herdr pane".into());
     }
     if let Some(candidates) = &env.ambiguous
@@ -4471,9 +4489,17 @@ fn same_endpoint(a: &Path, b: &Path) -> bool {
 /// the calling pane (`HERDR_SOCKET_PATH`) before the installed argv's `--host-endpoint`
 /// ([`super::instance::claim_host`]).
 fn hook_runtime_context(args: &HookArgs) -> io::Result<RuntimeContext> {
-    let pane_host = std::env::var_os("HERDR_SOCKET_PATH")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
+    // A named seat's claim host is the reserved named host, never a Herdr server.
+    let pane_host = if super::caller_location::CallerEnv::from_process()
+        .named()
+        .is_some()
+    {
+        Some(PathBuf::from(crate::protocol::ids::NAMED_HOST_LOCATOR))
+    } else {
+        std::env::var_os("HERDR_SOCKET_PATH")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
     hook_runtime_context_with(args, pane_host)
 }
 
@@ -4499,6 +4525,9 @@ fn hook_runtime_context_with(
 /// per-session gate says so, one short best-effort call to a daemon that is
 /// already running.
 pub fn foreign_session(env: &HookEnv) -> Option<&'static str> {
+    if env.named.is_some() {
+        return None;
+    }
     if !env.herdr_env {
         return Some("not running inside a Herdr pane");
     }
@@ -4588,7 +4617,7 @@ pub fn run_process(parsed: Result<HookArgs, String>) -> i32 {
 pub fn parse_failure_outcome(detail: String, env: &HookEnv) -> HookOutcome {
     HookOutcome {
         stdout: Vec::new(),
-        diagnostic: (env.herdr_env && env.pane.is_some()).then_some(detail),
+        diagnostic: env.located().then_some(detail),
         attention: None,
         lazy: None,
         step_completion: None,

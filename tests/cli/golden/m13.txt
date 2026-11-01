@@ -1,0 +1,1 @@
+herdr-threads: daemon predates named/terminal seats; restart it

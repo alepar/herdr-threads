@@ -118,6 +118,7 @@ fn pane_env_wins_over_installed_host_and_not_foreign() {
             herdr_env: true,
             pane: None,
             ambiguous: None,
+            named: None,
         }),
         Some("HERDR_PANE_ID missing")
     );
@@ -126,6 +127,7 @@ fn pane_env_wins_over_installed_host_and_not_foreign() {
             herdr_env: false,
             pane: Some("w1:p1".into()),
             ambiguous: None,
+            named: None,
         }),
         Some("not running inside a Herdr pane")
     );
@@ -1995,6 +1997,7 @@ fn herdr() -> HookEnv {
         herdr_env: true,
         pane: Some("w9:p1".into()),
         ambiguous: None,
+        named: None,
     }
 }
 
@@ -2008,11 +2011,13 @@ fn hook_parse_error_outside_herdr_is_quiet() {
         herdr_env: false,
         pane: None,
         ambiguous: None,
+        named: None,
     };
     let no_pane = HookEnv {
         herdr_env: true,
         pane: None,
         ambiguous: None,
+        named: None,
     };
     for env in [&outside, &no_pane] {
         assert_eq!(
@@ -2074,6 +2079,7 @@ fn unknown_payload_and_non_herdr_process_are_quiet() {
             herdr_env: true,
             pane: None,
             ambiguous: None,
+            named: None,
         },
     ] {
         let outcome = run_hook(
@@ -3086,6 +3092,7 @@ mod parse_failure_report {
             herdr_env: true,
             pane: Some("w1:p1".into()),
             ambiguous: None,
+            named: None,
         };
         let outcome = run_hook(
             &args,
@@ -7416,6 +7423,7 @@ mod enum_callback {
                 herdr_env: true,
                 pane: None,
                 ambiguous: None,
+                named: None,
             },
             Instant::now() + TOOL_BUDGET,
             clock(),
@@ -9911,6 +9919,7 @@ mod registered_resume {
                         herdr_env: true,
                         pane: Some("w9:p2".into()),
                         ambiguous: None,
+                        named: None,
                     },
                     Instant::now() + LIFECYCLE_BUDGET,
                     Arc::new(SystemClock::new()),
@@ -10858,6 +10867,7 @@ mod registered_resume {
             herdr_env: false,
             pane: None,
             ambiguous: None,
+            named: None,
         };
         for input in [
             hermes_cli_start("cli-a", 1),
@@ -11399,7 +11409,9 @@ mod two_family_guard {
         assert_eq!(pane, None);
         assert_eq!(
             printed,
-            ["herdr-threads: runs in herdr-core terminal t3; not supported yet"]
+            [
+                "herdr-threads: runs in herdr-core terminal t3; not supported yet; set HERDR_THREADS_SEAT_NAME"
+            ]
         );
     }
 
@@ -11470,7 +11482,7 @@ mod two_family_guard {
         let _ = LocateCandidate::Pane { id: String::new() };
     }
 
-    // Golden: M1 is 62 bytes plus the terminal id, exactly this text.
+    // Golden: M1 is 62 bytes plus the terminal id and the 29-byte M2 suffix, exactly this text.
     #[test]
     fn m1_bytes() {
         let refusal = Refusal {
@@ -11480,12 +11492,12 @@ mod two_family_guard {
         };
         assert_eq!(
             refusal.m1(),
-            "herdr-threads: runs in herdr-core terminal t3; not supported yet"
+            "herdr-threads: runs in herdr-core terminal t3; not supported yet; set HERDR_THREADS_SEAT_NAME"
         );
-        assert_eq!(refusal.m1().len(), 62 + "t3".len());
+        assert_eq!(refusal.m1().len(), 62 + "t3".len() + 29);
     }
 
-    // Golden: M3 is 88 bytes plus the terminal and pane ids, exactly this text.
+    // Golden: M3 is 88 bytes plus the terminal and pane ids and the 29-byte M2 suffix, exactly this text.
     #[test]
     fn m3_bytes() {
         let refusal = Refusal {
@@ -11495,9 +11507,9 @@ mod two_family_guard {
         };
         assert_eq!(
             refusal.m3(),
-            "[herdr-threads] guard: runs in herdr-core terminal t3, not Herdr pane w1:p1; no seat bound here"
+            "[herdr-threads] guard: runs in herdr-core terminal t3, not Herdr pane w1:p1; no seat bound here; set HERDR_THREADS_SEAT_NAME"
         );
-        assert_eq!(refusal.m3().len(), 88 + "t3".len() + "w1:p1".len());
+        assert_eq!(refusal.m3().len(), 88 + "t3".len() + "w1:p1".len() + 29);
     }
 
     /// (guidance_every_turn, has a lifecycle check-in) of a registered harness, read from its
@@ -11770,6 +11782,7 @@ mod two_family_guard {
             herdr_env: true,
             pane: Some("w1:p1".into()),
             ambiguous: crate::cli::caller_guard::hook_candidates(&marked),
+            named: None,
         }
     }
 
@@ -11790,8 +11803,8 @@ mod two_family_guard {
         )
     }
 
-    const M1: &str = "herdr-threads: runs in herdr-core terminal t3; not supported yet";
-    const M3: &str = "[herdr-threads] guard: runs in herdr-core terminal t3, not Herdr pane w1:p1; no seat bound here";
+    const M1: &str = "herdr-threads: runs in herdr-core terminal t3; not supported yet; set HERDR_THREADS_SEAT_NAME";
+    const M3: &str = "[herdr-threads] guard: runs in herdr-core terminal t3, not Herdr pane w1:p1; no seat bound here; set HERDR_THREADS_SEAT_NAME";
 
     fn claude_payload(event: &str, source: Option<&str>) -> Vec<u8> {
         let mut value = serde_json::json!({

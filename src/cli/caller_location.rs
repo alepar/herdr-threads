@@ -22,13 +22,15 @@
 //! an arm in each `CallerSite` method and in `CallerEnv::locate`. No other
 //! `src/cli` file reads these variables; `tests/cli_env_read_scan.rs` enforces
 //! it. F lands `Pane` and a recognition-only `Terminal` (so a second family
-//! is visible to the phase guard); `Named` and the verified `Terminal` come
-//! with their phases.
+//! is visible to the phase guard); N lands `Named` (precedence rule 1: a valid
+//! seat name replaces only the target, so it is never part of an `Ambiguous`
+//! pair); the verified `Terminal` comes with H1.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 
-use crate::host::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV, native};
+use crate::host::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV, named, native};
+use crate::protocol::ids::{HostLocator, HostTargetId, NAMED_HOST_LOCATOR, SeatName};
 
 /// Which entry point is asking. A hook only trusts the pane family when Herdr
 /// itself marked the environment (`HERDR_ENV=1`); the CLI accepts a pane id.
@@ -50,6 +52,9 @@ pub enum CallerLocator {
         socket: String,
         id: String,
     },
+    /// A named seat (`HERDR_THREADS_SEAT_NAME`): the name is the target on the built-in named
+    /// host. It needs no Herdr environment.
+    Named(SeatName),
 }
 
 impl CallerLocator {
@@ -87,6 +92,8 @@ impl Located {
 pub enum LocatorError {
     /// A terminal id with no socket and no other family.
     TerminalWithoutSocket,
+    /// `HERDR_THREADS_SEAT_NAME` is set and is not a valid seat name.
+    InvalidName,
 }
 
 /// The caller-location variables of one process, empty values already dropped.
@@ -103,6 +110,7 @@ impl CallerEnv {
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Self {
         let names = native::ENV_VARS
             .iter()
+            .chain(named::ENV_VARS)
             .chain([&HC_TERMINAL_ID_ENV, &HC_TERMINAL_SOCKET_ENV]);
         let vars = names
             .filter_map(|&name| {
@@ -125,7 +133,21 @@ impl CallerEnv {
             .is_some_and(|value| value == "1")
     }
 
+    /// The valid seat name the environment carries; `None` when absent or invalid
+    /// ([`CallerEnv::locate`] tells those apart).
+    pub fn named(&self) -> Option<SeatName> {
+        SeatName::parse(self.text(named::ENV_SEAT_NAME)?).ok()
+    }
+
     pub fn locate(&self, mode: EnvMode) -> Result<Option<Located>, LocatorError> {
+        // Precedence rule 1: a valid name replaces only the target, in either mode and with no
+        // Herdr environment; an invalid one is a hard error.
+        if self.vars.contains_key(named::ENV_SEAT_NAME) {
+            return match self.named() {
+                Some(name) => Ok(Some(Located::One(CallerLocator::Named(name)))),
+                None => Err(LocatorError::InvalidName),
+            };
+        }
         let pane = self
             .text(native::ENV_PANE_ID)
             .filter(|_| mode == EnvMode::Cli || self.herdr_env())
@@ -162,6 +184,7 @@ impl<'a> CallerSite<'a> {
     pub fn moved_target(self) -> Option<&'a str> {
         match self.0 {
             CallerLocator::Pane { id } | CallerLocator::Terminal { id, .. } => Some(id),
+            CallerLocator::Named(name) => Some(name.as_str()),
         }
     }
 
@@ -169,7 +192,7 @@ impl<'a> CallerSite<'a> {
     pub fn relative_pane(self) -> Option<&'a str> {
         match self.0 {
             CallerLocator::Pane { id } => Some(id),
-            CallerLocator::Terminal { .. } => None,
+            CallerLocator::Terminal { .. } | CallerLocator::Named(_) => None,
         }
     }
 
@@ -180,7 +203,7 @@ impl<'a> CallerSite<'a> {
 
     /// A target with no seat yet is registered by its first hook or call.
     pub fn enrolls_on_first_use(self) -> bool {
-        matches!(self.0, CallerLocator::Pane { .. })
+        matches!(self.0, CallerLocator::Pane { .. } | CallerLocator::Named(_))
     }
 
     /// The daemon may re-attach a seat after the host restarted.
@@ -190,18 +213,33 @@ impl<'a> CallerSite<'a> {
 
     /// Seat lookup is scoped to this site's host.
     pub fn host_scoped_lookup(self) -> bool {
-        matches!(self.0, CallerLocator::Pane { .. })
+        matches!(self.0, CallerLocator::Pane { .. } | CallerLocator::Named(_))
     }
 
-    /// This site as the daemon's `LocateCaller` candidate.
-    pub fn locate_candidate(self) -> crate::protocol::locate::LocateCandidate {
+    /// The host and target a request from this site carries, only for a site that sends them:
+    /// a named seat is its name at the reserved named-host locator. A Pane site sends neither
+    /// (its request bytes are unchanged).
+    pub fn sent_scope(self) -> Option<(HostLocator, HostTargetId)> {
+        match self.0 {
+            CallerLocator::Named(name) => Some((
+                HostLocator::parse(NAMED_HOST_LOCATOR).expect("the reserved locator parses"),
+                HostTargetId::new(name.as_str()),
+            )),
+            CallerLocator::Pane { .. } | CallerLocator::Terminal { .. } => None,
+        }
+    }
+
+    /// This site as the daemon's `LocateCaller` candidate. A named site is never a candidate:
+    /// it is never one of several families.
+    pub fn locate_candidate(self) -> Option<crate::protocol::locate::LocateCandidate> {
         use crate::protocol::locate::LocateCandidate;
         match self.0 {
-            CallerLocator::Pane { id } => LocateCandidate::Pane { id: id.clone() },
-            CallerLocator::Terminal { socket, id } => LocateCandidate::Terminal {
+            CallerLocator::Pane { id } => Some(LocateCandidate::Pane { id: id.clone() }),
+            CallerLocator::Terminal { socket, id } => Some(LocateCandidate::Terminal {
                 socket: socket.clone(),
                 id: id.clone(),
-            },
+            }),
+            CallerLocator::Named(_) => None,
         }
     }
 
@@ -209,7 +247,7 @@ impl<'a> CallerSite<'a> {
     pub fn terminal_id(self) -> Option<&'a str> {
         match self.0 {
             CallerLocator::Terminal { id, .. } => Some(id),
-            CallerLocator::Pane { .. } => None,
+            CallerLocator::Pane { .. } | CallerLocator::Named(_) => None,
         }
     }
 
@@ -218,6 +256,7 @@ impl<'a> CallerSite<'a> {
         match self.0 {
             CallerLocator::Pane { id } => format!("pane:{id}"),
             CallerLocator::Terminal { socket, id } => format!("terminal:{socket}:{id}"),
+            CallerLocator::Named(name) => format!("named:{}", name.as_str()),
         }
     }
 
@@ -229,6 +268,9 @@ impl<'a> CallerSite<'a> {
                 format!("{HC_TERMINAL_ID_ENV}={id}"),
                 format!("{HC_TERMINAL_SOCKET_ENV}={socket}"),
             ],
+            CallerLocator::Named(name) => {
+                vec![format!("{}={}", named::ENV_SEAT_NAME, name.as_str())]
+            }
         }
     }
 }

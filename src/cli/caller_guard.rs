@@ -11,6 +11,7 @@
 
 use super::caller_location::{CallerEnv, CallerLocator, EnvMode, Located};
 use crate::{
+    host::named,
     ports::LocalClient,
     protocol::{
         capabilities::LOCATE_CALLER_V1,
@@ -40,20 +41,29 @@ pub struct Refusal {
     pub first: bool,
 }
 
+/// M2: the 29-byte suffix on M1 and M3 that names the way out (a named seat). H1 removes it
+/// with them.
+pub fn m2() -> String {
+    format!("; set {}", named::ENV_SEAT_NAME)
+}
+
 impl Refusal {
-    /// M1: 62 bytes + the terminal id. CLI stderr and hook stderr.
+    /// M1 + M2: 62 + 29 bytes + the terminal id. CLI stderr and hook stderr.
     pub fn m1(&self) -> String {
         format!(
-            "herdr-threads: runs in herdr-core terminal {}; not supported yet",
-            self.terminal
+            "herdr-threads: runs in herdr-core terminal {}; not supported yet{}",
+            self.terminal,
+            m2()
         )
     }
 
-    /// M3: 88 bytes + terminal id + pane id. Hook context (check-ins only).
+    /// M3 + M2: 88 + 29 bytes + terminal id + pane id. Hook context (check-ins only).
     pub fn m3(&self) -> String {
         format!(
-            "[herdr-threads] guard: runs in herdr-core terminal {}, not Herdr pane {}; no seat bound here",
-            self.terminal, self.pane
+            "[herdr-threads] guard: runs in herdr-core terminal {}, not Herdr pane {}; no seat bound here{}",
+            self.terminal,
+            self.pane,
+            m2()
         )
     }
 }
@@ -89,7 +99,7 @@ pub fn verify(
     let request = LocateCaller {
         candidates: candidates
             .iter()
-            .map(|c| c.site().locate_candidate())
+            .filter_map(|c| c.site().locate_candidate())
             .collect(),
         subject: None,
         guard_key,
