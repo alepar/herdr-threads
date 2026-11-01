@@ -1,0 +1,204 @@
+{
+ "inspected": [
+  {
+   "path": "AGENTS.md",
+   "hunks": [
+    "@@ -6,11 +6,13 @@",
+    "@@ -25,7 +27,7 @@ Every top-level agent working on this repository inside a Herdr pane joins the a",
+    "@@ -61,8 +63,8 @@ The goal is token efficiency. Sessions that are done and idle stay idle, spinnin",
+    "@@ -99,6 +101,10 @@ What we do today:"
+   ]
+  },
+  {
+   "path": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/2026-10-31-environments-named-seats-herdr-app-design.md",
+   "hunks": [
+    "@@ -0,0 +1,1623 @@"
+   ]
+  },
+  {
+   "path": "scripts/install.sh",
+   "hunks": [
+    "@@ -906,7 +906,7 @@ OUT_LINKED=$registered"
+   ]
+  },
+  {
+   "path": "src/cli/caller_guard.rs",
+   "hunks": [
+    "@@ -0,0 +1,127 @@"
+   ]
+  },
+  {
+   "path": "src/cli/caller_location.rs",
+   "hunks": [
+    "@@ -0,0 +1,421 @@"
+   ]
+  },
+  {
+   "path": "src/cli/internal.rs",
+   "hunks": [
+    "@@ -9,8 +9,37 @@"
+   ]
+  },
+  {
+   "path": "src/host/hc/mod.rs",
+   "hunks": [
+    "@@ -0,0 +1,882 @@"
+   ]
+  },
+  {
+   "path": "src/host/named.rs",
+   "hunks": [
+    "@@ -0,0 +1,344 @@"
+   ]
+  },
+  {
+   "path": "src/host/named/tmux.rs",
+   "hunks": [
+    "@@ -0,0 +1,218 @@"
+   ]
+  },
+  {
+   "path": "src/identity/reconcile.rs",
+   "hunks": [
+    "@@ -210,6 +210,17 @@ fn never_registered_structural_bridge(",
+    "@@ -262,23 +273,34 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>,",
+    "@@ -328,6 +350,9 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>,",
+    "@@ -398,6 +423,25 @@ pub fn reconcile_published_page(",
+    "@@ -418,7 +462,7 @@ pub fn reconcile_published_page(",
+    "@@ -526,6 +570,7 @@ pub fn observe_and_publish(",
+    "@@ -536,6 +581,17 @@ pub fn observe_and_publish(",
+    "@@ -569,7 +625,15 @@ pub fn observe_and_publish(",
+    "@@ -585,12 +649,28 @@ pub fn observe_and_publish(",
+    "@@ -601,11 +681,17 @@ fn invalidate_or_skip("
+   ]
+  },
+  {
+   "path": "src/identity/repair.rs",
+   "hunks": [
+    "@@ -221,12 +221,13 @@ impl OrdinaryIdentity {",
+    "@@ -281,6 +282,18 @@ impl OrdinaryIdentity {"
+   ]
+  },
+  {
+   "path": "src/service/locate.rs",
+   "hunks": [
+    "@@ -0,0 +1,408 @@"
+   ]
+  },
+  {
+   "path": "src/service/turn_state.rs",
+   "hunks": [
+    "@@ -0,0 +1,177 @@"
+   ]
+  },
+  {
+   "path": "src/store/poke.rs",
+   "hunks": [
+    "@@ -109,6 +109,10 @@ fn collect(",
+    "@@ -116,6 +120,7 @@ fn collect("
+   ]
+  },
+  {
+   "path": "tests/fixtures/golden/hook/claude.Stop.stdout.status",
+   "hunks": [
+    "@@ -1,3 +1,2 @@"
+   ]
+  },
+  {
+   "path": "src/cli/commands.rs",
+   "hunks": [
+    "@@ -762,11 +781,16 @@ impl MutationSpec {",
+    "@@ -3404,6 +3470,8 @@ fn parse_cli_in_registry("
+   ]
+  },
+  {
+   "path": "src/cli/hook.rs",
+   "hunks": [
+    "@@ -1547,7 +1576,18 @@ fn find_seat_for(",
+    "@@ -1628,6 +1668,15 @@ fn locate_seat_for(",
+    "@@ -1925,8 +1973,7 @@ fn check_in(",
+    "@@ -4362,9 +4567,32 @@ fn same_endpoint(a: &Path, b: &Path) -> bool {",
+    "@@ -4390,6 +4618,9 @@ fn hook_runtime_context_with("
+   ]
+  },
+  {
+   "path": "src/cli/human.rs",
+   "hunks": [
+    "@@ -115,6 +97,30 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {"
+   ]
+  },
+  {
+   "path": "src/cli/journal.rs",
+   "hunks": [
+    "@@ -654,6 +661,8 @@ impl SemanticMutation {"
+   ]
+  },
+  {
+   "path": "src/cli/mod.rs",
+   "hunks": [
+    "@@ -423,6 +467,23 @@ pub fn run_in_pane<I, T, W>(",
+    "@@ -441,7 +502,7 @@ where",
+    "@@ -467,6 +528,7 @@ pub(crate) fn resolve_automatic_new_selectors<C: LocalClient + ?Sized>(",
+    "@@ -475,6 +537,17 @@ fn run_parsed_in_pane<W: Write>(",
+    "@@ -497,7 +570,7 @@ fn run_parsed_in_pane<W: Write>(",
+    "@@ -835,17 +920,21 @@ fn run_parsed_in_pane<W: Write>(",
+    "@@ -3730,7 +3837,18 @@ fn pane_seat<C: LocalClient + ?Sized>(",
+    "@@ -3777,7 +3895,14 @@ fn located_pane_seat<C: LocalClient + ?Sized>("
+   ]
+  },
+  {
+   "path": "src/cli/retry.rs",
+   "hunks": [
+    "@@ -531,7 +531,7 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {"
+   ]
+  },
+  {
+   "path": "src/cli/seat_resolution.rs",
+   "hunks": [
+    "@@ -78,6 +81,48 @@ pub(crate) fn skip_first_freeze_for_test() -> impl Drop {",
+    "@@ -666,6 +718,47 @@ where",
+    "@@ -962,6 +1055,26 @@ where"
+   ]
+  },
+  {
+   "path": "src/daemon/idle_exit.rs",
+   "hunks": [
+    "@@ -31,12 +31,19 @@ pub struct ActivityProbe {"
+   ]
+  },
+  {
+   "path": "src/daemon/lifecycle.rs",
+   "hunks": [
+    "@@ -18,6 +18,7 @@ use crate::daemon::transport::{self, ServeOutcome};",
+    "@@ -318,12 +319,67 @@ enum StartupStderr {",
+    "@@ -353,14 +409,26 @@ fn pipe_reader(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, Re",
+    "@@ -369,7 +437,7 @@ fn spawn_detached(",
+    "@@ -387,9 +455,11 @@ fn spawn_detached(",
+    "@@ -409,7 +479,18 @@ fn spawn_detached(",
+    "@@ -547,34 +628,55 @@ pub async fn ensure_running_with_timeout("
+   ]
+  },
+  {
+   "path": "src/host/mod.rs",
+   "hunks": [
+    "@@ -1,9 +1,66 @@"
+   ]
+  },
+  {
+   "path": "src/service/dispatch.rs",
+   "hunks": [
+    "@@ -1691,6 +1885,21 @@ impl LocalService for DomainService {",
+    "@@ -2295,6 +2521,86 @@ mod topology_contract_dispatch_tests {"
+   ]
+  },
+  {
+   "path": "src/service/host_sessions.rs",
+   "hunks": [
+    "@@ -6,10 +6,11 @@",
+    "@@ -31,7 +32,7 @@ use std::{",
+    "@@ -49,8 +50,10 @@ const ATTACH_POLL: Duration = Duration::from_millis(10);",
+    "@@ -58,21 +61,25 @@ type LogLine = Arc<dyn Fn(&str) + Send + Sync>;"
+   ]
+  }
+ ]
+}

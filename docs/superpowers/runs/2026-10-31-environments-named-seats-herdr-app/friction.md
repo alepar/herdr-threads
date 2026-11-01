@@ -10,3 +10,5 @@
 - [2026-10-31] base drift: main v2.8.2 ships node schema 12; this branch's F3 (ht-kqrt.4) claimed NODE_DELTAS version 12 (0012_host_environments.sql). Renumber ours to 13 at base absorption (phase 5 exit, before the sweep), per the spec's NodeDelta re-check rule
 - [2026-10-31] user: "lets pause once the workflow finishes" → after inv-3 returns: settle bookkeeping, no relaunch, record resumeChange in run.md
 - [2026-11-01] /tmp tmpfs filled to 32 GB at least three times (shared, ENOSPC for other suites): a task implementer (ht-kqrt.16) seeded a target/ under its TMPDIR /tmp/sp-503081fe/ht-kqrt.16; rule added to epic + plan Global Constraints; super-code's per-task TMPDIR under /tmp invites this
+- [2026-11-01] session relaunched on aisw profile claude-2 (user request); coordinator inv-3 resumed with skillsRoot under claude-2 (same version 6.4.2-alepar6.6), resumeFromRunId wf_a0c7a8e1-89d
+- [2026-11-02] super-code inv-3 stopped stalled: ready set held only the three quarantined tasks (.30, .57, .69); a read-ledger:finish agent died on an API safeguards false positive, so the Finish metrics are unavailable
