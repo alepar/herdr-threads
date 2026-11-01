@@ -167,7 +167,10 @@ fn new_terminal_no_app_labels_parent_caller() {
     assert_eq!(p["parent"], "t1");
     let labels = p["labels"].as_object().unwrap();
     assert!(!labels.contains_key(LABEL_SPACE) && !labels.contains_key(LABEL_TAB));
-    assert_eq!(labels[LABEL_BOOTSTRAP], "corr-1");
+    assert!(
+        labels.is_empty(),
+        "NewTerminal sends no app labels: {labels:?}"
+    );
     // The new terminal is a child of t1 in the core and the witness validates.
     let t = HcHost::run(HcClient::new(fake.socket()).terminal_get(created.target.as_str()))
         .unwrap()

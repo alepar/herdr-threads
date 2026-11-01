@@ -313,15 +313,15 @@ impl ports::CreateTargetPort for HcHost {
                     labels::LABEL_TAB.to_owned(),
                     format!("ht-{}", uuid::Uuid::new_v4().simple()),
                 );
+                labels.insert(
+                    labels::LABEL_BOOTSTRAP.to_owned(),
+                    request.correlation.as_str().to_owned(),
+                );
+                labels.insert(labels::LABEL_HT.to_owned(), request.label.clone());
                 None
             }
             ports::Placement::NewTerminal { parent } => Some(parent.as_str().to_owned()),
         };
-        labels.insert(
-            labels::LABEL_BOOTSTRAP.to_owned(),
-            request.correlation.as_str().to_owned(),
-        );
-        labels.insert(labels::LABEL_HT.to_owned(), request.label.clone());
         let run = RunRequest {
             argv: self.gate_argv.clone(),
             cwd: cwd.to_owned(),
@@ -353,13 +353,7 @@ impl ports::CreateTargetPort for HcHost {
             witness: request.expected_witness.clone(),
         };
         // The record exists now: a result this host cannot vouch for stays unknown.
-        // A tab placement is not yet covered by `CreatedTarget::validate` (see the
-        // seam: hc witnesses validate for `NewTerminal` only).
-        let coherent = !created.target.as_str().is_empty()
-            && match &request.placement {
-                ports::Placement::NewTerminal { .. } => created.validate().is_ok(),
-                ports::Placement::NewTab { .. } => true,
-            };
+        let coherent = !created.target.as_str().is_empty() && created.validate().is_ok();
         if coherent {
             Created(Box::new(created))
         } else {

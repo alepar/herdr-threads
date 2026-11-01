@@ -5834,7 +5834,10 @@ impl CreatedTarget {
             (HostWitness::HerdrSocket(_), Placement::NewTab { .. }) => {
                 self.as_created_tab().ok_or(INVALID)?.validate()
             }
-            (HostWitness::HcCore { core_id, peer }, Placement::NewTerminal { parent }) => {
+            (
+                HostWitness::HcCore { core_id, peer },
+                Placement::NewTerminal { parent: anchor } | Placement::NewTab { space: anchor },
+            ) => {
                 let incarnation = format!(
                     "hc-core:{core_id}:pid={}:start={}:uid={}",
                     peer.pid, peer.start_seconds, peer.uid
@@ -5845,7 +5848,7 @@ impl CreatedTarget {
                     || self.host_incarnation.as_str() != incarnation
                     || self.root_pane.is_some()
                     || self.target.as_str().is_empty()
-                    || &self.target == parent
+                    || &self.target == anchor
                 {
                     return Err(INVALID);
                 }
