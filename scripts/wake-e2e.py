@@ -172,6 +172,10 @@ WAKE_BLOCK_CASES = ("modal-hold/group",)
 WAKE_BLOCK_HOLD_S = 30
 PICKER_ROW = re.compile(r"^\u203a 1\. ")
 WAKE_BLOCK_WAIT_S = 90
+# Opt-in, Codex at T=0 only (ht-unmk): Codex is killed and resumed in the same pane. A resumed Codex runs no hook until
+# its first turn, so its seat stays unavailable while it sits idle; a p1 still leaves it idle, and a p0 wakes it.
+RESUME_CASES = ("resume-idle/group",)
+RESUME_QUIET_S = 15
 SIDE_DEADLINE_S = 45
 SIDE_DRAFT = "draft-kept-by-wake-e2e"
 # The sibling-displayed side turn: long enough that the p0 is sent while it is busy (a wake then is refused), then the
@@ -2251,10 +2255,81 @@ class Recipient:
                          "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "checks": checks,
                          "ref": {"messages": mids}, "result": "PASS" if passed else "FAIL", "utc": utc()})
 
+    def seat_inspect(self):
+        out = self.run.ht("seat", "inspect", self.seat, pane=self.run.coords["main"]["pane"], human=True)
+        return (json.loads(out).get("result") or {}).get("data") or {}
+
+    def availability(self):
+        return (self.seat_inspect().get("summary") or {}).get("availability", "")
+
+    def resume_case(self, case):
+        """resume-idle: a killed and resumed Codex, idle and unknown to the daemon, wakes on p0 and only on p0."""
+        tag = f"{case} {self.run.run_id}"
+        checks = {}
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)
+        self.wait_idle()
+        bound = [i["data"] for i in self.seat_inspect()["history"]["items"]
+                 if i["kind"] == "binding" and i["data"]["ended_at"] is None]
+        session = max(bound, key=lambda b: b["ordinal"])["native_session"]
+        info = self.run.herdr("pane", "process-info", "--pane", self.pane)["result"]["process_info"]
+        pids = [p["pid"] for p in info["foreground_processes"] if any("codex" in a for a in (p.get("argv") or [])[:2])]
+        if not pids:
+            raise RuntimeError(f"{self.name}: no foreground codex process: {info}")
+        for pid in pids:  # no SessionEnd hook: a process exit, not an end event
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+        end = time.time() + 30
+        while time.time() < end and not self.availability().startswith("unavailable"):
+            time.sleep(0.5)
+        checks["unavailable_after_exit"] = self.availability().startswith("unavailable")
+        self.run.resumes = getattr(self.run, "resumes", 0) + 1
+        line = self.run.launch_line(self.harness) + " resume " + shlex.quote(session)
+        self.run.herdr("pane", "run", self.pane, line)
+        end = time.time() + 120
+        while time.time() < end:
+            agent = (self.run.herdr("agent", "get", self.pane, check=False).get("result") or {}).get("agent") or {}
+            if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE:
+                break
+            time.sleep(0.5)
+        self.wait_idle()
+        checks["unavailable_while_idle"] = self.availability().startswith("unavailable")
+        wakes_before = wake_count(self.screen(1000))
+        pane = self.run.coords["main"]["pane"]
+        def send(*flags):
+            out, _ = self.run.ht_err("send", self.group, "--body", f"{tag} {flags}", *flags, pane=pane, human=True)
+            return (json.loads(out).get("result") or {}).get("data")
+        silent = send()
+        self.run.stopping.wait(RESUME_QUIET_S)
+        checks["wakes_on_p1"] = wake_count(self.screen(1000)) - wakes_before
+        urgent = send("--nudge")
+        t0, t_wake = time.time(), None
+        while time.time() - t0 < WAKE_BLOCK_WAIT_S:
+            if wake_count(self.screen(1000)) > wakes_before:
+                t_wake = round(time.time() - t0, 2)
+                break
+            time.sleep(0.5)
+        woke = t_wake is not None
+        if woke:
+            self.last_wake = time.time()
+            self.wait_idle()
+        checks["delivered"] = all(self.on_screen(m) for m in (silent, urgent) if m)
+        checks["available_after"] = self.availability() == "available"
+        passed = (checks["unavailable_after_exit"] and checks["unavailable_while_idle"]
+                  and checks["wakes_on_p1"] == 0 and woke
+                  and checks["delivered"] and checks["available_after"])
+        self.settled()
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "checks": checks,
+                         "ref": {"messages": [silent, urgent]}, "result": "PASS" if passed else "FAIL", "utc": utc()})
+
     # ---------- one case ----------
     def case(self, case):
         if case in WAKE_BLOCK_CASES:
             return self.wake_block_case(case)
+        if case in RESUME_CASES:
+            return self.resume_case(case)
         if case.startswith("side-"):
             return self.side_case(case)
         if case.startswith("hooks-busy-"):
@@ -2580,7 +2655,7 @@ def applies(recipient, case):
         return getattr(recipient, "hooks_only", False) and case in HOOKS_CASES
     if case in EOT_CASES or case.startswith("busy-tool-"):
         return recipient.harness == "codex" and not getattr(recipient, "plain", False)
-    if case in WAKE_BLOCK_CASES or case in UNRECEIVED_CASES:
+    if case in WAKE_BLOCK_CASES or case in UNRECEIVED_CASES or case in RESUME_CASES:
         return recipient.harness == "codex" and recipient.threshold == 0 and not getattr(recipient, "plain", False)
     if case in CLAUDE_CASES:
         return recipient.harness == "claude"
@@ -2649,6 +2724,8 @@ def codex_hook_guidance(run):
         counts["rollouts"] += 1
         counts["guidance_contexts"] += guidance
         counts["over_allowance"] += max(0, guidance - 1 - compactions)
+    # A resume is a session start in the same rollout.
+    counts["over_allowance"] = max(0, counts["over_allowance"] - getattr(run, "resumes", 0))
     counts["pass"] = counts["guidance_contexts"] > 0 and counts["over_allowance"] == 0
     return counts
 
@@ -2683,7 +2760,8 @@ def main(argv=None):
                     help="comma-separated: claude,codex; opt-in: agy (credential from %s), hermes "
                          "(--hermes-home)" % AGY_CREDENTIAL_ENV)
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
-                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES)
+                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
+                                                      + RESUME_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
@@ -2721,7 +2799,8 @@ def main(argv=None):
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
     unknown = ([c for c in cases
-                if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES]
+                if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
+                + RESUME_CASES]
                + [h for h in args.harness if h not in HARNESSES])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")

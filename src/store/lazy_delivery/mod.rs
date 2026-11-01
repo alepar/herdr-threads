@@ -127,7 +127,9 @@ pub(crate) use seat_unread_sql;
 /// which reconnects on its next call). A binding disconnected as superseded, by an end event,
 /// retirement, unresolve, replacement or migration owes nothing, so it neither keeps the seat-wide
 /// `state` `pending` nor (through `seat_unread_sql!`, which counts connected bindings only) holds the
-/// wake frontier open. Decides only the seat-wide `state` (`MARK_DISPLAYED_SQL`), which no delivery or wake decision reads.
+/// wake frontier open. Decides only the seat-wide `state` (`MARK_DISPLAYED_SQL`). No delivery or wake
+/// decision reads that state, except that a dormant binding's walk (`DORMANT_ROWS`) takes its
+/// candidates from it and decides each by the binding's own unread predicate.
 macro_rules! seat_owes_display_sql {
     () => {
         concat!(
@@ -240,11 +242,32 @@ pub(crate) fn connected_top_level(conn: &Connection, seat: &str) -> Result<Vec<S
         .map_err(store_error)
 }
 
+/// The seat's dormant binding: with no top-level binding connected, its last disconnected top-level
+/// agent binding when a process exit ended it. A harness may run no hook until its first turn, so a
+/// resumed session sits idle in the pane unknown to the daemon, and this row is all that names it
+/// (TRUST-POLICY A4 *Wake*). It authorizes a wake prompt only; no view is held for it. An end event
+/// says the session is over and a fork (`concurrent_session`) has no successor of its own. A row the
+/// seat's mapping has moved past names no occupant of the seat's pane, so it is not dormant.
+pub(crate) fn dormant_top_level(conn: &Connection, seat: &str) -> Result<Option<String>, ApiError> {
+    conn.prepare_cached(
+        "SELECT CASE WHEN b.disconnect_reason='liveness_process_exit' THEN b.binding_id END FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
+         WHERE b.seat_id=?1 AND b.ended_at IS NULL AND b.role='top_level' AND b.harness<>'human' AND b.concurrent_session=0 AND b.liveness='disconnected' \
+         AND b.generation=s.generation AND b.target_generation=s.target_generation AND b.target_id=s.target_id \
+         AND NOT EXISTS(SELECT 1 FROM occupant_bindings c WHERE c.seat_id=?1 AND c.ended_at IS NULL AND c.role='top_level' AND c.liveness='connected') \
+         ORDER BY b.disconnected_at DESC,b.ordinal DESC LIMIT 1",
+    )
+    .map_err(store_error)?
+    .query_row([seat], |r| r.get(0))
+    .optional()
+    .map(Option::flatten)
+    .map_err(store_error)
+}
+
 mod completion;
 mod direct;
 mod inbox;
 mod staging;
-mod wake;
+pub(crate) mod wake;
 
 pub(in crate::store) use self::direct::*;
 pub use self::{completion::*, inbox::*, staging::*, wake::*};

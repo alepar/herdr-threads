@@ -5502,6 +5502,30 @@ pub(crate) mod tests {
         bound_harness_wake_refused("codex", None);
     }
 
+    /// A dormant target (TRUST-POLICY A4 *Wake*) has no pid to match, so this recheck alone keeps
+    /// the wake off a busy agent; another harness is `cooperative_wake_refuses_codex_bound_seat_with_claude_agent`.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn cooperative_wake_refuses_a_busy_agent_of_the_bound_harness() {
+        for status in ["working", "blocked", "unknown"] {
+            let (result, methods) = cooperative_wake_with(
+                vec![recheck_exchange(wake_agent(
+                    status,
+                    Some("codex"),
+                    "term_1",
+                ))],
+                None,
+                |target, _| target.bound_harness = Some("codex".into()),
+            );
+            assert_eq!(
+                result.unwrap_err().code,
+                ErrorCode::TargetUnsafe,
+                "{status}"
+            );
+            assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+        }
+    }
+
     /// A cooperative target with no bound harness is refused, never compared
     /// with the detected agent kind as "any recognized kind".
     #[cfg(any(target_os = "macos", target_os = "linux"))]

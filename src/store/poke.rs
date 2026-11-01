@@ -194,8 +194,10 @@ fn collect(
             });
             let seat = receipts[0].seat.clone();
             // A due receipt is seat-level attention: every connected top-level binding is a
-            // target, and the poke rides the same rule as the composer wake (ht-54r.13).
-            let targets = wake::wake_targets(conn, &seat, true)?;
+            // target, and the poke rides the same rule as the composer wake (ht-54r.13). A dormant
+            // binding is granted a wake prompt only, and a poke names threads (TRUST-POLICY A4).
+            let mut targets = wake::wake_targets(conn, &seat, true)?;
+            targets.retain(|target| !target.dormant);
             Ok(PokeDue {
                 seat,
                 receipts,

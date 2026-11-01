@@ -2280,6 +2280,11 @@ pub struct WakeTarget {
     /// Pid of the fingerprint the binding was enrolled with; the composer wake matches it
     /// against Herdr's pane foreground process.
     pub fingerprint_pid: Option<u32>,
+    /// The binding's process exited and the pane may hold its resumed successor, which has not
+    /// reached the daemon yet (`store::wake::wake_target_rows`). Its stale pid can match nothing,
+    /// so the composer wake takes it on the pane's own foreground, like a process spanning seats.
+    #[serde(skip)]
+    pub dormant: bool,
 }
 
 /// Who the pane-level composer wake (typing) may reach, from a reservation's targets and
@@ -2345,8 +2350,9 @@ impl ReservedWakeAuthority {
     /// is never the pane's foreground process: with no exact-pid match, those targets match any
     /// foreground process of their own pane (targets are the bindings placed on the observed
     /// terminal), and the native recheck still requires Herdr's agent kind there to be their
-    /// harness (ht-f0xn). An exact-pid match always wins, so a stale gateway binding never hides
-    /// the pane's live foreground binding.
+    /// harness (ht-f0xn). A dormant target's pid is stale, so it matches the same way. An
+    /// exact-pid match always wins, so a stale gateway binding never hides the pane's live
+    /// foreground binding.
     pub fn composer_choice(&self, foreground: &[u32]) -> ComposerChoice<'_> {
         match self.targets() {
             [] => ComposerChoice::Unspecified,
@@ -2360,7 +2366,9 @@ impl ReservedWakeAuthority {
                     .collect();
                 let matching = if exact.is_empty() && !foreground.is_empty() {
                     many.iter()
-                        .filter(|t| crate::store::bindings::process_spans_seats(&t.harness))
+                        .filter(|t| {
+                            t.dormant || crate::store::bindings::process_spans_seats(&t.harness)
+                        })
                         .collect()
                 } else {
                     exact

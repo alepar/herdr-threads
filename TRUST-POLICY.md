@@ -738,7 +738,19 @@ model open work, and summary closure never changes receipt state or installs glo
   non-human bindings placed on the observed terminal that have something to act on (seat-level attention
   such as an invitation, receipt or warning reaches every one of them; otherwise the binding's own unread
   mail). Subagent, disconnected, ended and human bindings are never targets, and a seat that holds a human
-  binding is never woken. A target whose mod channel is live and not stalled is woken through that channel
+  binding is never woken. One exception, the *dormant* binding (ht-unmk): a harness may run no hook until its first
+  turn, so a session resumed in the pane sits idle unknown to the daemon. With no top-level binding of the seat
+  connected, the last disconnected top-level agent binding (not a fork, `concurrent_session`) is a target when a
+  process exit disconnected it (`liveness_process_exit`) and it has something to act on at the seat's threshold,
+  placed on the observed terminal and seat generation like any target. It authorizes nothing but an ordinary wake
+  prompt (never a soft-deadline poke, whose text names threads): no binding, seat, cursor, receipt or availability
+  changes, and the session reconnects only through its own later check-in. A session that connects voids a wake
+  still reserved for the dormant target, and a refused one retries at up to 5 minutes, since nothing else clears a
+  pane that stays in a shell. Only the seat's newest 4096 pending rows are read for it, an accepted limit: an admitted
+  item buried under that many silent ones no longer wakes the seat, and still arrives on its next turn. Its pid is stale, so the composer wake takes it on any Herdr-reported foreground
+  process of its own pane (no foreground report, no wake) and the native recheck requires Herdr's agent kind there
+  to be its harness and awaiting input. An accepted limit: another session of that harness in the pane, which the
+  seat would enroll anyway, gets the wake. An end event never leaves a dormant binding. A target whose mod channel is live and not stalled is woken through that channel
   and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
   only to the one target whose fingerprint pid is among Herdr's pane foreground processes (the non-shell
   entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness
@@ -1253,7 +1265,8 @@ cursors, the one cursorless readable scope (a pending direct-pair invitation) an
 that lets a binding join a thread without a cursor must extend the seed in the same commit. No seat-level view reads a
 disconnected binding's view: the wake frontier and discovery, the seat inbox filter, the digest's pending
 count and the mod fingerprint, kick count and stall rule consider connected top-level bindings only (plus
-legacy seat-pending rows). The seat-wide `displayed` mark (set once no top-level binding that still owes the
+legacy seat-pending rows; the wake frontier and discovery also read a dormant binding's unread rows from the
+seat's pending rows, A4 *Wake*). The seat-wide `displayed` mark (set once no top-level binding that still owes the
 row, connected or disconnected by process exit, finds it unread) is kept only as the join frontier's "no
 completion has displayed" fact below and the binding-less completion state; no delivery or wake decision reads
 it (the served-in-turn recheck asks the woken binding's own cursor and marks). Accepted limit: a disconnected binding

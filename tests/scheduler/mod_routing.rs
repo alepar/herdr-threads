@@ -366,6 +366,7 @@ fn target(id: &str, pid: u32) -> crate::ports::WakeTarget {
         binding: crate::protocol::ids::BindingId::new(id),
         harness: "claude".into(),
         fingerprint_pid: Some(pid),
+        dormant: false,
     }
 }
 

@@ -88,11 +88,15 @@ impl Backoff {
     }
     /// Records a failure at `now` and returns the time of the next retry.
     pub fn on_failure(&mut self, now: MonoInstant) -> MonoInstant {
+        self.on_failure_capped(now, CAP_MS)
+    }
+    /// [`Self::on_failure`] with its own cap on the delay.
+    pub fn on_failure_capped(&mut self, now: MonoInstant, cap_ms: u64) -> MonoInstant {
         self.attempts = self.attempts.saturating_add(1);
         let shift = (self.attempts - 1).min(20);
-        let nominal = (BASE_MS << shift).min(CAP_MS) as f64;
+        let nominal = (BASE_MS << shift).min(cap_ms) as f64;
         let j = (self.next_unit() * 2.0 - 1.0) * JITTER;
-        let delay = ((nominal * (1.0 + j)).round() as u64).min(CAP_MS);
+        let delay = ((nominal * (1.0 + j)).round() as u64).min(cap_ms);
         let at = MonoInstant(now.0.saturating_add(delay));
         self.next_retry_at = Some(at);
         at

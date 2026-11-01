@@ -728,6 +728,17 @@ mod refusal_backoff {
     }
 
     #[test]
+    fn a_dormant_refusal_backs_off_past_the_ordinary_cap_up_to_five_minutes() {
+        let mut backoff = crate::service::pacer::Backoff::with_seed(7);
+        let now = MonoInstant(0);
+        let mut last = 0;
+        for _ in 0..30 {
+            last = backoff.on_failure_capped(now, 300_000).0;
+        }
+        assert!((240_000..=300_000).contains(&last), "{last}");
+    }
+
+    #[test]
     fn refusal_backoff_doubles_resets_on_submitted_and_ignores_unknown_outcomes() {
         let seat = SeatId::new("seat");
         let mut state = reserved_state(&seat, 0);
