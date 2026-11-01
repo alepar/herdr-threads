@@ -703,8 +703,13 @@ pub fn publish_snapshot_stage(
                 .map_err(store_error)?;
             let new_recovery = recovery_boot.as_deref() != Some(boot.as_str())
                 || recovery_epoch != Some(epoch);
-            let hold = unresolved || changed_or_unknown_incarnation && nonretired
-                || !new_recovery && old_hold != 0;
+            // SA17 (b): the named host never arms a hold, whatever it holds:
+            // an unresolved row or a first publication over live seats must
+            // not silence the liveness of its other bindings.
+            let named = host_is_named(tx, HostId::from_row(host_id))?;
+            let hold = !named
+                && (unresolved || changed_or_unknown_incarnation && nonretired
+                    || !new_recovery && old_hold != 0);
             let old_baseline = baseline.clone();
             let baseline = match baseline {
                 Some(baseline) if !new_recovery => baseline,
@@ -754,9 +759,9 @@ pub fn publish_snapshot_stage(
             // Nonempty passes still belong to the reconciliation worker.
             // New recovery already forces the eligibility bump below.
             let empty_recovery_complete = new_recovery && !nonretired && !hold;
-            Ok((instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, empty_recovery_complete, baseline, hold, !unchanged))
+            Ok((instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, empty_recovery_complete, baseline, hold, !unchanged || named && old_hold != 0, named))
         },
-        |tx, _, (instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, empty_recovery_complete, baseline, hold, eligibility_may_change)| {
+        |tx, at, (instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, empty_recovery_complete, baseline, hold, eligibility_may_change, named)| {
             let changed = tx
                 .execute(
                     "UPDATE snapshot_generations SET status='published',published_invalidation_revision=?1 WHERE id=?2 AND status='sealed' AND staged_targets=expected_targets",
@@ -771,6 +776,14 @@ pub fn publish_snapshot_stage(
                 params![boot,epoch,sequence,stage.as_str(),baseline,hold,admission_sequence,host_id,empty_recovery_complete],
             )
             .map_err(store_error)?;
+            if named {
+                // SA17: the publication of the named host is its presence
+                // read: it releases every hold a former state left open and
+                // gives its seats the fixed structural proof the C4 carry
+                // needs after a restart.
+                release_named_holds(tx, HostId::from_row(host_id), at.utc)?;
+                stamp_named_structure(tx, HostId::from_row(host_id), stage, &boot, epoch, &incarnation)?;
+            }
             schema::apply_eligibility_transition(tx, &instance, |_| Ok(eligibility_may_change))?;
             Ok(PublishedSnapshot {
                 id: stage.clone(),
@@ -785,6 +798,54 @@ pub fn publish_snapshot_stage(
             })
         },
     )
+}
+
+/// Whether `host` is the built-in named host (SA17: it never holds).
+fn host_is_named(conn: &Connection, host: HostId) -> Result<bool, ApiError> {
+    let kind: Option<String> = conn
+        .query_row(
+            "SELECT kind FROM herdr_hosts WHERE host_id=?1",
+            [host.get()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    Ok(kind.as_deref() == Some("named"))
+}
+
+/// Release the open recovery holds of the named host: it holds nothing.
+fn release_named_holds(tx: &Transaction<'_>, host: HostId, at: UtcMillis) -> Result<(), ApiError> {
+    tx.execute(
+        "UPDATE recovery_holds SET released_at=?1 WHERE host_id=?2 AND released_at IS NULL",
+        params![at.0, host.get()],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// SA17 (c): stamp the structural proof (the fixed boot and incarnation of the
+/// named host, the publication's terminal and connection epoch) on every
+/// resolved named seat the publication shows and that has none yet. The
+/// planner's `same_incarnation` rule then holds across a daemon restart, and
+/// the C4 carry moves the seat's open bindings to the new epoch.
+fn stamp_named_structure(
+    tx: &Transaction<'_>,
+    host: HostId,
+    stage: &SnapshotGenerationId,
+    boot: &str,
+    epoch: i64,
+    incarnation: &str,
+) -> Result<(), ApiError> {
+    tx.execute(
+        "UPDATE seats SET structural_terminal_id=t.terminal_id,structural_incarnation=?3,structural_incarnation_kind=t.incarnation_source_kind,structural_host_boot=?4,structural_host_epoch=?5,structural_connection_epoch=t.connection_epoch,structural_observation_sequence=t.observation_sequence \
+         FROM snapshot_targets t \
+         WHERE t.generation_id=?1 AND t.target_id=seats.target_id AND seats.host_id=?2 AND seats.is_local=1 AND seats.state='resolved' \
+           AND seats.structural_terminal_id IS NULL AND t.terminal_id IS NOT NULL AND t.connection_epoch IS NOT NULL \
+           AND t.incarnation_source_kind IS NOT NULL AND t.generation=seats.target_generation",
+        params![stage.as_str(), host.get(), incarnation, boot, epoch],
+    )
+    .map_err(store_error)?;
+    Ok(())
 }
 
 pub(crate) fn has_nonretired_seat(conn: &Connection, host: HostId) -> Result<bool, ApiError> {
@@ -2015,11 +2076,15 @@ fn mark_seat_unresolved(
     )
     .map_err(store_error)?;
     schema::ensure_unavailability_episode(tx, seat)?;
-    tx.execute(
-        "UPDATE herdr_hosts SET baseline_hold_unclaimed=1 WHERE host_id=?1 AND recovery_baseline_generation_id IS NOT NULL",
-        [host.get()],
-    )
-    .map_err(store_error)?;
+    // SA17 (b): the named host never holds, so one unresolved named row does
+    // not silence the liveness of the host's other bindings.
+    if !host_is_named(tx, host)? {
+        tx.execute(
+            "UPDATE herdr_hosts SET baseline_hold_unclaimed=1 WHERE host_id=?1 AND recovery_baseline_generation_id IS NOT NULL",
+            [host.get()],
+        )
+        .map_err(store_error)?;
+    }
     schema::bump_host_lifecycle_revision(tx, host)?;
     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
     Ok(ReconciliationOutcome::Applied)
@@ -2786,7 +2851,7 @@ pub fn record_snapshot(
             if attached != 1 {
                 return Err(api_error(ErrorCode::HostUnavailable, "no Herdr server attached"));
             }
-            let unresolved: bool = tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved')"), [host.get()], |r| r.get(0)).map_err(store_error)?;
+            let unresolved: bool = !host_is_named(tx, host)? && tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved')"), [host.get()], |r| r.get(0)).map_err(store_error)?;
             for target in &snapshot.targets {
                 let prior:Option<(String,i64,i64,i64,i64,String)>=tx.query_row(
                     "SELECT host_boot,epoch,generation,observation_sequence,observed_at,provenance FROM observed_targets WHERE host_id=?1 AND target_id=?2",
@@ -2854,3 +2919,7 @@ mod snapshot_eligibility_tests;
 #[cfg(test)]
 #[path = "../../../tests/store/restored_pane.rs"]
 mod restored_pane_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/store/named_presence.rs"]
+mod named_presence_tests;
