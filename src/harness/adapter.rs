@@ -48,6 +48,17 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn caller_env(&self) -> Option<CallerEnvShape> {
         None
     }
+    /// Environment variables of this harness (beyond its `CallerEnvShape` session and pid
+    /// variables) that the launch-gate shim removes before it `exec`s the harness, so a leaked
+    /// one cannot win over the launched caller's own. Default: none.
+    fn child_scrub_vars(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// Extra argv the harness takes when a host of `kind` launches it (the launch-gate shim
+    /// appends them after the harness argv). Default: none.
+    fn host_launch_argv(&self, _kind: crate::ports::HostKind) -> Vec<String> {
+        Vec::new()
+    }
     /// How the daemon and the client treat this harness's subagent and child sessions.
     fn binding_policy(&self) -> BindingPolicy {
         BindingPolicy::default()

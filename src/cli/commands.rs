@@ -481,6 +481,12 @@ pub enum CliAction {
         program: std::path::PathBuf,
         args: Vec<String>,
     },
+    /// `internal launch-gate`: authorize with the daemon, then `exec` the harness argv.
+    InternalLaunchGate {
+        bootstrap: String,
+        config_roots: Vec<String>,
+        argv: Vec<String>,
+    },
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
     Follow(FollowRequest),
@@ -661,6 +667,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::InternalStoreCheck
         | CliAction::InternalPeerTargetCreate { .. }
         | CliAction::InternalDaemonDetach { .. }
+        | CliAction::InternalLaunchGate { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
         | CliAction::Summary(_)
@@ -1423,6 +1430,18 @@ enum InternalSub {
         program: std::path::PathBuf,
         #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Run in a herdr-core terminal by `terminal.run`: blank the leaked environment, wait for
+    /// the daemon to authorize this terminal for the bootstrap, then `exec` ARGV (same pid).
+    LaunchGate {
+        /// `<compound>:<attempt>` of the bootstrap this terminal was created for.
+        #[arg(long, value_name = "COMPOUND:ATTEMPT")]
+        bootstrap: String,
+        /// The caller's config root for a harness (repeatable; DIR absolute).
+        #[arg(long = "config-root", value_name = "HARNESS=DIR")]
+        config_root: Vec<String>,
+        #[arg(num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        argv: Vec<String>,
     },
 }
 
@@ -4033,6 +4052,18 @@ fn parse_cli_in_registry(
         Top::Internal {
             command: InternalSub::DaemonDetach { program, args },
         } => CliAction::InternalDaemonDetach { program, args },
+        Top::Internal {
+            command:
+                InternalSub::LaunchGate {
+                    bootstrap,
+                    config_root,
+                    argv,
+                },
+        } => CliAction::InternalLaunchGate {
+            bootstrap,
+            config_roots: config_root,
+            argv,
+        },
         Top::Retry { recovery_ref } => CliAction::Retry(id(recovery_ref, LocalRecoveryRef::parse)?),
         Top::View(args) => CliAction::View {
             once: args.once,
