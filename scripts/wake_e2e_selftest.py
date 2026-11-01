@@ -255,15 +255,32 @@ class ProviderThrottle(TempDir):
             yield now
             now += 0.5
 
-    def test_split_after_a_resubmission_starts_at_the_second_prompt(self):
+    def test_split_follows_the_copy_of_the_prompt_the_held_turn_belongs_to(self):
         first = "Busy-turn test tag: print BUSY-DONE.\n\u2022 BUSY-DONE\n"
         second = "Busy-turn test tag: print BUSY-DONE.\n\u2022 tool output\n\u2022 BUSY-DONE\nafter\n"
-        in_turn, after, seen = W.busy_turn_split(first + second, "Busy-turn test tag", prompt_end_text="print BUSY-DONE.",
-                                                 resent=True)
+        split = lambda occurrence: W.busy_turn_split(first + second, "Busy-turn test tag", occurrence=occurrence,
+                                                     prompt_end_text="print BUSY-DONE.")
+        in_turn, after, seen = split(1)
         self.assertTrue(seen)
         self.assertIn("tool output", in_turn)
-        self.assertNotIn("tool output", first)
         self.assertEqual(after.strip(), "after")
+        self.assertNotIn("tool output", split(0)[0])
+        self.assertIsNone(W.busy_turn_split("nothing", "Busy-turn test tag", occurrence=1))
+
+    def test_late_or_resubmitted_setups_are_listed_and_explained_ones_are_not(self):
+        row = lambda **checks: {"recipient": "co-t0", "case": "busy-send-p0/group", "checks": checks}
+        self.assertEqual(W.late_busy_entries([row(), row(entered_after_s=90, provider_throttled="429"), {"recipient": "x"}]), [])
+        listed = W.late_busy_entries([row(entered_after_s=90.5), row(busy_prompt_resubmitted=True, provider_throttled="429")])
+        self.assertEqual(len(listed), 2)
+        self.assertIn('"entered_after_s": 90.5', listed[0])
+        self.assertIn("busy_prompt_resubmitted", listed[1])
+
+    def test_idle_takes_two_samples(self):
+        r = object.__new__(W.Recipient)
+        statuses = iter(["idle", "working"])
+        r.status = lambda: next(statuses)
+        with mock.patch.object(W.time, "sleep"):
+            self.assertFalse(r.idle_settled())
 
     def test_tool_that_never_enters_after_the_second_prompt_still_fails(self):
         with W.BusyBarrier(self.tmp) as hold:
