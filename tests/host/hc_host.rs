@@ -118,6 +118,37 @@ fn observation_sequence_is_its_own_counter() {
 }
 
 #[test]
+fn resume_after_epoch_reaches_through_the_port() {
+    let (_fake, host) = host_with_t1();
+    let port: Arc<dyn HostPort> = Arc::new(host);
+    port.resume_after_epoch(7);
+    assert_eq!(port.enumerate_targets(&context()).unwrap().epoch, 8);
+}
+
+#[test]
+fn sequence_is_taken_before_the_capture() {
+    // A capture that fails still consumed its sequence: it was taken before the request, so
+    // an older request can never carry a higher sequence than a newer one.
+    let dead = HcHost::new(HcClient::new("/nonexistent/hc.sock"));
+    assert!(dead.enumerate_targets(&context()).is_err());
+    assert_eq!(dead.next_observation_sequence(), 2, "enumerate_targets");
+    assert!(
+        dead.observe_current_target(&HostTargetId::new("t1"), &context())
+            .is_err()
+    );
+    assert_eq!(
+        dead.next_observation_sequence(),
+        4,
+        "observe_current_target"
+    );
+    assert!(
+        dead.observe_bootstrap(&HostTargetId::new("t1"), &context())
+            .is_err()
+    );
+    assert_eq!(dead.next_observation_sequence(), 6, "observe_bootstrap");
+}
+
+#[test]
 fn enumerate_targets_refused_socket_is_host_unavailable() {
     let dead = HcHost::new(HcClient::new("/nonexistent/hc.sock"));
     let error = dead.enumerate_targets(&context()).unwrap_err();

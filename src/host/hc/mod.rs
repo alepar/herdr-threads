@@ -316,14 +316,6 @@ impl HcHost {
         self
     }
 
-    /// A daemon restart opens an epoch above every epoch it persisted for this
-    /// host, so ordering against durable publications stays monotonic within
-    /// one boot. Never lowers the epoch.
-    pub fn resume_after_epoch(&self, persisted: u64) {
-        self.epoch
-            .fetch_max(persisted.saturating_add(1), Ordering::AcqRel);
-    }
-
     /// `hello` + `events.subscribe{}` on one connection. The boot is the core
     /// id `hello` names; a different id than a seat's is a new boot (C2).
     /// A transport or decode failure (including a snapshot with no `terminals`) is
@@ -507,6 +499,8 @@ impl HcHost {
         }
         let epoch = self.epoch.load(Ordering::Acquire);
         let started = self.clock.monotonic_now();
+        // Taken before the request: an older capture carries the lower sequence.
+        let sequence = self.next_observation_sequence();
         let hello = Self::run(self.client.hello())
             .map_err(|e| ApiError::host_unavailable(e.to_string()))?;
         let boot = HcBoot::from_hello(&hello.value)
@@ -541,7 +535,6 @@ impl HcHost {
             HcClosure::Present => TerminalId::new(record.address.clone()),
             _ => return Err(not_found()),
         };
-        let sequence = self.next_observation_sequence();
         let mut observation =
             self.target(&record, boot.id(), epoch, sequence, started, Some(terminal));
         observation.provenance = ObservationProvenance::FreshCurrentTarget;
@@ -705,6 +698,14 @@ impl HostPort for HcHost {
         HostKind::Hc
     }
 
+    /// A daemon restart opens an epoch above every epoch it persisted for this
+    /// host, so ordering against durable publications stays monotonic within
+    /// one boot. Never lowers the epoch.
+    fn resume_after_epoch(&self, persisted: u64) {
+        self.epoch
+            .fetch_max(persisted.saturating_add(1), Ordering::AcqRel);
+    }
+
     fn creates_targets_itself(&self) -> bool {
         true
     }
@@ -765,6 +766,8 @@ impl HostPort for HcHost {
         }
         let epoch = self.epoch.load(Ordering::Acquire);
         let started = self.clock.monotonic_now();
+        // Taken before the request: an older capture carries the lower sequence.
+        let sequence = self.next_observation_sequence();
         let capture = self
             .capture()?
             .ok_or_else(|| ApiError::host_unavailable("hc host: the core is not readable"))?;
@@ -785,7 +788,6 @@ impl HostPort for HcHost {
             HcClosure::PendingRestart => None,
             HcClosure::Final | HcClosure::Unreadable => return Err(not_found()),
         };
-        let sequence = self.next_observation_sequence();
         let mut observation = self.target(record, &boot, epoch, sequence, started, terminal);
         observation.provenance = ObservationProvenance::FreshCurrentTarget;
         Ok(observation)
@@ -880,6 +882,8 @@ impl HostPort for HcHost {
         }
         let epoch = self.epoch.load(Ordering::Acquire);
         let started = self.clock.monotonic_now();
+        // Taken before the request: an older capture carries the lower sequence.
+        let sequence = self.next_observation_sequence();
         let Some(capture) = self.capture()? else {
             return Ok(Self::unverified(Self::unknown_boot(), epoch));
         };
@@ -887,7 +891,6 @@ impl HostPort for HcHost {
         if !capture.is_readable() {
             return Ok(Self::unverified(boot, epoch));
         }
-        let sequence = self.next_observation_sequence();
         let targets = capture
             .records
             .iter()
