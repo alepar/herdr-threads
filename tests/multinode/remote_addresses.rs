@@ -418,12 +418,12 @@ fn remote_launch_runs_on_the_target_machine_once() {
         1,
         "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at,home_node,is_local,host_id) \
          SELECT 'sHELDfixture','' || (SELECT id FROM local_node),'unresolved','other','native',1,0,\
-         (SELECT id FROM local_node),1,host_id FROM herdr_hosts LIMIT 1",
+         (SELECT id FROM local_node),1,host_id FROM herdr_hosts WHERE kind='herdr' LIMIT 1",
     );
     cluster.write_sql(
         1,
         "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) \
-         SELECT host_id,'w1:p3','fixture',0,'fixture' FROM herdr_hosts LIMIT 1",
+         SELECT host_id,'w1:p3','fixture',0,'fixture' FROM herdr_hosts WHERE kind='herdr' LIMIT 1",
     );
     let (code, stdout, stderr) = launch(P3, "--held");
     assert_ne!(code, 0, "{stdout}");
@@ -532,7 +532,7 @@ fn remote_launch_runs_on_the_target_machine_once() {
     cluster.write_sql(
         1,
         "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) \
-         SELECT host_id,'w1:p1','fixture',0,'fixture' FROM herdr_hosts LIMIT 1",
+         SELECT host_id,'w1:p1','fixture',0,'fixture' FROM herdr_hosts WHERE kind='herdr' LIMIT 1",
     );
     let before = calls(&calls_dir).len();
     let refused_handoff = || {

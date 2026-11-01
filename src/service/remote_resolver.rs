@@ -143,6 +143,12 @@ impl RemoteResolver {
         let mut matches = Vec::new();
         let mut failed = sessions.is_empty();
         for session in sessions {
+            // The built-in named host has no pane topology to read: its seats are addressed
+            // by their replicated names (`remote_named_seat`), so it holds no pane match and
+            // its refusal is no unreadable host.
+            if !session.port().reads_live_topology() {
+                continue;
+            }
             match session.port().live_topology(&budget) {
                 Ok(topology) => matches.push(HostMatch {
                     host: session.host_id(),

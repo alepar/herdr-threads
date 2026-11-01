@@ -810,7 +810,7 @@ fn malformed_is_sent_once_per_session_and_event() {
     };
     assert_eq!(send(unknown, NOW + 2), Delivery::Sent(Some(false)));
     assert_eq!(send(unknown, NOW + 3), Delivery::Suppressed);
-    let other_event = br#"{"hook_event_name":"Stop","session_id":"s"}"#;
+    let other_event = br#"{"hook_event_name":"Notification","session_id":"s"}"#;
     assert_eq!(
         send(other_event, NOW + 4),
         Delivery::Sent(Some(false)),
@@ -818,7 +818,7 @@ fn malformed_is_sent_once_per_session_and_event() {
     );
     let last = fx.notes().pop().unwrap();
     assert_eq!(last.outcome, HarnessEvidenceOutcome::Malformed);
-    assert_eq!(last.event, "Stop");
+    assert_eq!(last.event, "Notification");
 }
 
 #[test]

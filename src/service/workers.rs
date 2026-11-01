@@ -617,6 +617,10 @@ impl WorkerStatus {
         }
     }
     fn report_to_error_log(&self, lane: Lane, error: &ApiError) {
+        // A cancelled pass is a shutdown reaching a running lane, not a failure to report.
+        if error.code == ErrorCode::Cancelled {
+            return;
+        }
         // Clone out so the hook never runs under the status lock.
         let log = self.error_log.lock().ok().and_then(|slot| slot.clone());
         let attempt = self.retry().map_or(0, |(attempts, _)| attempts);

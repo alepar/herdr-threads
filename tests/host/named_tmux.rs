@@ -90,10 +90,11 @@ fn composer() -> WakeCapability {
 }
 
 /// A process outside every tmux pane: a child of the test that nothing in tmux started.
-fn outsider() -> std::process::Child {
-    std::process::Command::new("sleep")
+fn outsider() -> crate::test_support::spawn::OwnedChild {
+    use crate::test_support::spawn::SpawnOwned;
+    crate::test_support::spawn::command("sleep")
         .arg("600")
-        .spawn()
+        .spawn_owned()
         .expect("spawn sleep")
 }
 

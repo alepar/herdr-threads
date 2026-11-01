@@ -1,0 +1,329 @@
+test_a_row_named_in_another_field_does_not_count (wake_e2e_selftest.AdmissionRow.test_a_row_named_in_another_field_does_not_count) ... ok
+test_finds_the_row_only_in_the_recipients_session (wake_e2e_selftest.AdmissionRow.test_finds_the_row_only_in_the_recipients_session) ... ok
+test_prefers_the_observation_with_a_row (wake_e2e_selftest.AdmissionRow.test_prefers_the_observation_with_a_row) ... ok
+test_a_google_api_key_fragment_is_redacted (wake_e2e_selftest.AgyOptIn.test_a_google_api_key_fragment_is_redacted) ... ok
+test_agy_is_accepted_but_not_in_the_default_matrix (wake_e2e_selftest.AgyOptIn.test_agy_is_accepted_but_not_in_the_default_matrix) ... ok
+test_agy_is_up_only_once_its_composer_is_drawn (wake_e2e_selftest.AgyOptIn.test_agy_is_up_only_once_its_composer_is_drawn) ... ok
+test_agy_wake_prompt_counts_as_a_wake (wake_e2e_selftest.AgyOptIn.test_agy_wake_prompt_counts_as_a_wake) ... ok
+test_cleanup_removes_the_credential_file_even_with_keep (wake_e2e_selftest.AgyOptIn.test_cleanup_removes_the_credential_file_even_with_keep) ... ok
+test_credential_is_redacted_from_evidence (wake_e2e_selftest.AgyOptIn.test_credential_is_redacted_from_evidence) ... ok
+test_env_file_and_settings_are_private_scratch_files (wake_e2e_selftest.AgyOptIn.test_env_file_and_settings_are_private_scratch_files) ... ok
+test_launch_line_never_carries_the_credential (wake_e2e_selftest.AgyOptIn.test_launch_line_never_carries_the_credential) ... ok
+test_no_credential_refuses_before_any_process (wake_e2e_selftest.AgyOptIn.test_no_credential_refuses_before_any_process) ... ok
+test_onboarding_keys (wake_e2e_selftest.AgyOptIn.test_onboarding_keys) ... ok
+test_with_a_credential_preflight_passes (wake_e2e_selftest.AgyOptIn.test_with_a_credential_preflight_passes) ... ok
+test_busy_case_holds_tool_until_delayed_send_commits (wake_e2e_selftest.BusyPublicationBarrier.test_busy_case_holds_tool_until_delayed_send_commits) ... ok
+test_busy_status_without_tool_entry_is_insufficient (wake_e2e_selftest.BusyPublicationBarrier.test_busy_status_without_tool_entry_is_insufficient) ... ok
+test_exited_tool_is_setup_failure_without_reading_its_pid (wake_e2e_selftest.BusyPublicationBarrier.test_exited_tool_is_setup_failure_without_reading_its_pid) ... ok
+test_tool_remains_held_across_delayed_publication (wake_e2e_selftest.BusyPublicationBarrier.test_tool_remains_held_across_delayed_publication) ... ok
+test_watchdog_expiry_is_setup_failure (wake_e2e_selftest.BusyPublicationBarrier.test_watchdog_expiry_is_setup_failure) ... ok
+test_post_turn_wake_is_seen_and_the_opener_is_not_in_turn (wake_e2e_selftest.BusyQuietWindow.test_post_turn_wake_is_seen_and_the_opener_is_not_in_turn) ... ok
+test_agent_end_line_shapes (wake_e2e_selftest.BusyTurnBoundary.test_agent_end_line_shapes) ... ok
+test_captured_post_turn_wake_is_after_the_turn_and_the_opener_is_not_in_it (wake_e2e_selftest.BusyTurnBoundary.test_captured_post_turn_wake_is_after_the_turn_and_the_opener_is_not_in_it) ... ok
+test_in_turn_delivery_and_claude_output_shape (wake_e2e_selftest.BusyTurnBoundary.test_in_turn_delivery_and_claude_output_shape) ... ok
+test_the_prompt_text_is_never_the_turn_end (wake_e2e_selftest.BusyTurnBoundary.test_the_prompt_text_is_never_the_turn_end) ... ok
+test_eot_end_line_matches_the_same_way (wake_e2e_selftest.BusyTurnEndGlued.test_eot_end_line_matches_the_same_way) ... ok
+test_glued_end_line_ends_the_turn (wake_e2e_selftest.BusyTurnEndGlued.test_glued_end_line_ends_the_turn) ... ok
+test_no_end_line_is_still_unseen (wake_e2e_selftest.BusyTurnEndGlued.test_no_end_line_is_still_unseen)
+Negative control: the same turn without its BUSY-DONE line never ended as far as the driver can tell. ... ok
+test_no_wrapping_of_a_prompt_ends_its_turn (wake_e2e_selftest.BusyTurnEndGlued.test_no_wrapping_of_a_prompt_ends_its_turn)
+Negative control: every prompt, wrapped at any width so a marker mention starts a line, followed by a ... ok
+test_a_woken_send_with_no_inbox_call_passes (wake_e2e_selftest.CaseSpacing.test_a_woken_send_with_no_inbox_call_passes) ... ok
+test_an_extra_inbox_call_after_a_delivered_wake_fails_the_row (wake_e2e_selftest.CaseSpacing.test_an_extra_inbox_call_after_a_delivered_wake_fails_the_row) ... ok
+test_opener_in_the_accept_turn_passes_both (wake_e2e_selftest.CaseSpacing.test_opener_in_the_accept_turn_passes_both) ... ok
+test_the_owed_follow_up_wake_fails_its_own_case_and_not_the_next (wake_e2e_selftest.CaseSpacing.test_the_owed_follow_up_wake_fails_its_own_case_and_not_the_next) ... ok
+test_a_prompt_mentioning_wake_up_is_not_a_channel_wake (wake_e2e_selftest.ChannelWakeMarkers.test_a_prompt_mentioning_wake_up_is_not_a_channel_wake) ... ok
+test_old_and_new_channel_wakes_count_once_each (wake_e2e_selftest.ChannelWakeMarkers.test_old_and_new_channel_wakes_count_once_each) ... ok
+test_clean_run_has_no_problems (wake_e2e_selftest.Cleanup.test_clean_run_has_no_problems) ... ok
+test_close_failure_still_stops_the_daemon_and_fails (wake_e2e_selftest.Cleanup.test_close_failure_still_stops_the_daemon_and_fails) ... ok
+test_close_raising_still_stops_the_daemon (wake_e2e_selftest.Cleanup.test_close_raising_still_stops_the_daemon) ... ok
+test_daemon_still_healthy_after_deadline_fails (wake_e2e_selftest.Cleanup.test_daemon_still_healthy_after_deadline_fails) ... ok
+test_exiting_process_inside_the_grace_period_passes (wake_e2e_selftest.Cleanup.test_exiting_process_inside_the_grace_period_passes) ... ok
+test_failed_cleanup_retains_root (wake_e2e_selftest.Cleanup.test_failed_cleanup_retains_root) ... ok
+test_failed_process_scan_is_unknown_not_clean (wake_e2e_selftest.Cleanup.test_failed_process_scan_is_unknown_not_clean) ... ok
+test_keep_skips_cleanup_without_failing (wake_e2e_selftest.Cleanup.test_keep_skips_cleanup_without_failing) ... ok
+test_leftover_owned_process_fails (wake_e2e_selftest.Cleanup.test_leftover_owned_process_fails) ... ok
+test_refreshed_auth_copy_is_kept_and_reported (wake_e2e_selftest.Cleanup.test_refreshed_auth_copy_is_kept_and_reported) ... wake-e2e: Codex refreshed its tokens during the run; the refreshed credentials are kept at /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.9huptjjz/ht-wake-auth.000000-test/auth.json (mode 0600). The source profile's refresh token may have been rotated: copy this file back or log in again, then delete it.
+ok
+test_root_removal_failure_fails_cleanup (wake_e2e_selftest.Cleanup.test_root_removal_failure_fails_cleanup) ... ok
+test_root_still_present_after_removal_fails_cleanup (wake_e2e_selftest.Cleanup.test_root_still_present_after_removal_fails_cleanup) ... ok
+test_timed_out_health_probe_is_not_stopped (wake_e2e_selftest.Cleanup.test_timed_out_health_probe_is_not_stopped) ... ok
+test_timed_out_process_scan_is_unknown_not_clean (wake_e2e_selftest.Cleanup.test_timed_out_process_scan_is_unknown_not_clean) ... ok
+test_uncertain_daemon_start_is_still_stopped (wake_e2e_selftest.Cleanup.test_uncertain_daemon_start_is_still_stopped) ... ok
+test_uncertain_workspace_create_is_found_by_label_and_closed (wake_e2e_selftest.Cleanup.test_uncertain_workspace_create_is_found_by_label_and_closed) ... ok
+test_unchanged_auth_copy_is_deleted (wake_e2e_selftest.Cleanup.test_unchanged_auth_copy_is_deleted) ... ok
+test_unverifiable_workspace_closure_fails (wake_e2e_selftest.Cleanup.test_unverifiable_workspace_closure_fails) ... ok
+test_verified_cleanup_removes_root_and_keeps_evidence (wake_e2e_selftest.Cleanup.test_verified_cleanup_removes_root_and_keeps_evidence) ... ok
+test_copy_is_a_private_regular_file (wake_e2e_selftest.CodexAuthCopy.test_copy_is_a_private_regular_file) ... ok
+test_native_refresh_never_writes_the_source (wake_e2e_selftest.CodexAuthCopy.test_native_refresh_never_writes_the_source) ... ok
+test_replaces_a_stale_symlink_without_following_it (wake_e2e_selftest.CodexAuthCopy.test_replaces_a_stale_symlink_without_following_it) ... ok
+test_a_codex_cell_runs_the_candidate (wake_e2e_selftest.CodexCandidateCli.test_a_codex_cell_runs_the_candidate) ... ok
+test_launch_line_turns_the_shell_snapshot_off (wake_e2e_selftest.CodexCandidateCli.test_launch_line_turns_the_shell_snapshot_off) ... ok
+test_without_the_fix_the_installed_cli_wins (wake_e2e_selftest.CodexCandidateCli.test_without_the_fix_the_installed_cli_wins) ... ok
+test_absent_without_codex_or_rollout (wake_e2e_selftest.CodexHookGuidance.test_absent_without_codex_or_rollout) ... ok
+test_compaction_allows_one_restatement (wake_e2e_selftest.CodexHookGuidance.test_compaction_allows_one_restatement) ... ok
+test_guidance_once_per_session_passes (wake_e2e_selftest.CodexHookGuidance.test_guidance_once_per_session_passes) ... ok
+test_guidance_repeated_on_a_delivering_hook_fails (wake_e2e_selftest.CodexHookGuidance.test_guidance_repeated_on_a_delivering_hook_fails) ... ok
+test_no_session_start_guidance_fails (wake_e2e_selftest.CodexHookGuidance.test_no_session_start_guidance_fails) ... ok
+test_linux_codex_starts_one_at_a_time (wake_e2e_selftest.CodexStartOrder.test_linux_codex_starts_one_at_a_time) ... ok
+test_macos_codex_starts_are_serial_too (wake_e2e_selftest.CodexStartOrder.test_macos_codex_starts_are_serial_too) ... ok
+test_blocked_fails (wake_e2e_selftest.Completeness.test_blocked_fails) ... 
+| case | T | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| busy-send-p0/group | 0 | claude | None | None | null | BLOCKED |
+
+0/1 expected rows passed (1 collected)
+ok
+test_complete_all_pass (wake_e2e_selftest.Completeness.test_complete_all_pass) ... 
+| case | T | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | 0 | claude | None | None | null | PASS |
+| send-p1/group | 0 | claude | None | None | null | PASS |
+
+2/2 expected rows passed (2 collected)
+ok
+test_duplicate_row_fails (wake_e2e_selftest.Completeness.test_duplicate_row_fails) ... 
+| case | T | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | 0 | claude | None | None | null | PASS |
+| invite/group | 0 | claude | None | None | null | PASS |
+
+2/1 expected rows passed (2 collected)
+unexpected or duplicated rows: [('cl-nudge', 'invite/group')]
+ok
+test_missing_recipient_fails (wake_e2e_selftest.Completeness.test_missing_recipient_fails) ... 
+| case | T | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | 0 | claude | None | None | null | PASS |
+
+1/2 expected rows passed (1 collected)
+missing rows: [('co-nudge', 'invite/group')]
+ok
+test_missing_row_fails (wake_e2e_selftest.Completeness.test_missing_row_fails) ... 
+| case | T | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | 0 | claude | None | None | null | PASS |
+
+1/2 expected rows passed (1 collected)
+missing rows: [('cl-nudge', 'send-p1/group')]
+ok
+test_no_rows_fails (wake_e2e_selftest.Completeness.test_no_rows_fails) ... 
+| case | T | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+
+0/0 expected rows passed (0 collected)
+ok
+test_coordinator_call_is_a_human_call_without_agent_identity (wake_e2e_selftest.CoordinatorCalls.test_coordinator_call_is_a_human_call_without_agent_identity) ... ok
+test_every_registered_agent_env_marker_is_stripped (wake_e2e_selftest.CoordinatorCalls.test_every_registered_agent_env_marker_is_stripped)
+Read from the adapters' source: a new harness marker must join CALLER_SESSION_ENV. ... ok
+test_layout_records_person_seats_with_the_guard_kept (wake_e2e_selftest.CoordinatorCalls.test_layout_records_person_seats_with_the_guard_kept)
+layout(): `human me init` without --operator in each coordinator pane, no check-in or cooperative claim. ...   workspace w1: coordinators sCCCCCCCCCCC and sDDDDDDDDDDD; 
+ok
+test_line_on_neither_read_is_not_delivered (wake_e2e_selftest.DeliveredScreenSources.test_line_on_neither_read_is_not_delivered)
+Negative control: a message that never reached the screen still fails, after every try. ... ok
+test_line_scrolled_out_of_the_viewport_but_in_the_deep_transcript_is_delivered (wake_e2e_selftest.DeliveredScreenSources.test_line_scrolled_out_of_the_viewport_but_in_the_deep_transcript_is_delivered) ... ok
+test_pattern_checks_read_both_sources (wake_e2e_selftest.DeliveredScreenSources.test_pattern_checks_read_both_sources)
+prompt(expect=...) and the SETUP-DONE check match a pattern the same way. ... ok
+test_stale_deep_transcript_with_the_line_in_the_viewport_is_delivered (wake_e2e_selftest.DeliveredScreenSources.test_stale_deep_transcript_with_the_line_in_the_viewport_is_delivered)
+The evidence's shape: the deep read misses the line, the viewport has it. ... ok
+test_cleanup_error_with_a_credential_never_reaches_a_sink (wake_e2e_selftest.EvidenceSinks.test_cleanup_error_with_a_credential_never_reaches_a_sink) ... ok
+test_boundaries_around_the_threshold (wake_e2e_selftest.ExpectationTable.test_boundaries_around_the_threshold) ... ok
+test_every_action_at_every_threshold (wake_e2e_selftest.ExpectationTable.test_every_action_at_every_threshold) ... ok
+test_item_priorities (wake_e2e_selftest.ExpectationTable.test_item_priorities) ... ok
+test_send_argv_per_action (wake_e2e_selftest.ExpectationTable.test_send_argv_per_action) ... ok
+test_the_case_list_is_the_priority_matrix (wake_e2e_selftest.ExpectationTable.test_the_case_list_is_the_priority_matrix) ... ok
+test_the_standing_prompt_sets_the_threshold (wake_e2e_selftest.ExpectationTable.test_the_standing_prompt_sets_the_threshold) ... ok
+test_unknown_action_is_refused (wake_e2e_selftest.ExpectationTable.test_unknown_action_is_refused) ... ok
+test_codex_sandbox_is_bypassed_only_in_linux_mode_inside_the_runner_container (wake_e2e_selftest.HarnessMode.test_codex_sandbox_is_bypassed_only_in_linux_mode_inside_the_runner_container) ... ok
+test_default_follows_the_platform (wake_e2e_selftest.HarnessMode.test_default_follows_the_platform) ... ok
+test_explicit_codex_args_win_in_both_modes (wake_e2e_selftest.HarnessMode.test_explicit_codex_args_win_in_both_modes) ... ok
+test_linux_api_key_is_approved_by_its_last_20_characters (wake_e2e_selftest.HarnessMode.test_linux_api_key_is_approved_by_its_last_20_characters) ... ok
+test_linux_claude_gets_its_credential_from_the_private_env_file (wake_e2e_selftest.HarnessMode.test_linux_claude_gets_its_credential_from_the_private_env_file)
+A bare Linux host: the panes' shells are the Herdr server's, so the token reaches Claude only through ... ok
+test_linux_launch_lines_use_the_scratch_config_and_bypass_the_codex_sandbox (wake_e2e_selftest.HarnessMode.test_linux_launch_lines_use_the_scratch_config_and_bypass_the_codex_sandbox) ... ok
+test_linux_refuses_a_real_claude_config_dir (wake_e2e_selftest.HarnessMode.test_linux_refuses_a_real_claude_config_dir) ... ok
+test_linux_scratch_seeds_exactly_the_first_run_keys (wake_e2e_selftest.HarnessMode.test_linux_scratch_seeds_exactly_the_first_run_keys) ...   isolated daemon up; hooks installed by setup for claude, codex
+ok
+test_linux_seed_merges_and_never_follows_a_link (wake_e2e_selftest.HarnessMode.test_linux_seed_merges_and_never_follows_a_link) ... ok
+test_linux_without_the_marker_keeps_the_codex_sandbox (wake_e2e_selftest.HarnessMode.test_linux_without_the_marker_keeps_the_codex_sandbox) ... ok
+test_macos_launch_lines_are_unchanged (wake_e2e_selftest.HarnessMode.test_macos_launch_lines_are_unchanged) ... ok
+test_macos_scratch_is_unchanged (wake_e2e_selftest.HarnessMode.test_macos_scratch_is_unchanged) ...   isolated daemon up; hooks installed by setup for claude, codex
+ok
+test_malformed_existing_claude_json_is_a_clear_error (wake_e2e_selftest.HarnessMode.test_malformed_existing_claude_json_is_a_clear_error) ... ok
+test_padded_api_key_is_approved_without_its_whitespace (wake_e2e_selftest.HarnessMode.test_padded_api_key_is_approved_without_its_whitespace) ... ok
+test_shim_logs_each_call_for_the_extra_inbox_check (wake_e2e_selftest.HarnessMode.test_shim_logs_each_call_for_the_extra_inbox_check) ...   isolated daemon up; hooks installed by setup for claude, codex
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+/tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.pjydy_st/root/bin/herdr-threads: line 13: /fake/ht: No such file or directory
+ok
+test_already_listed_writes_nothing (wake_e2e_selftest.HermesSetup.test_already_listed_writes_nothing) ... ok
+test_default_empty_list_gets_both_names (wake_e2e_selftest.HermesSetup.test_default_empty_list_gets_both_names)
+Hermes 0.22.5 defaults the key to [] and prints it. ... ok
+test_layout_seats_a_hermes_recipient_per_threshold (wake_e2e_selftest.HermesSetup.test_layout_seats_a_hermes_recipient_per_threshold) ...   workspace w1: coordinators sCCCCCCCCCCC and sDDDDDDDDDDD; he-t0=sEEEEEEEEEEE, he-t-1=sFFFFFFFFFFF, he-t3=sGGGGGGGGGGG
+ok
+test_listed_names_are_kept (wake_e2e_selftest.HermesSetup.test_listed_names_are_kept) ... ok
+test_setup_and_pane_ignore_an_inherited_hermes_root (wake_e2e_selftest.HermesSetup.test_setup_and_pane_ignore_an_inherited_hermes_root)
+`setup hermes` reads HERMES_HOME/HERMES_PROFILE (src/harness/hermes.rs): an inherited one would install ... ok
+test_unreadable_list_fails_setup (wake_e2e_selftest.HermesSetup.test_unreadable_list_fails_setup) ... ok
+test_unset_list_gets_both_names (wake_e2e_selftest.HermesSetup.test_unset_list_gets_both_names) ... ok
+test_a_pair_that_did_not_auto_join_fails (wake_e2e_selftest.IdleWakeOracle.test_a_pair_that_did_not_auto_join_fails) ... ok
+test_idle_matrix_follows_the_expectation_table (wake_e2e_selftest.IdleWakeOracle.test_idle_matrix_follows_the_expectation_table) ... ok
+test_missing_wake_fails (wake_e2e_selftest.IdleWakeOracle.test_missing_wake_fails) ... ok
+test_pair_open_is_silent_at_t0_and_needs_no_accept (wake_e2e_selftest.IdleWakeOracle.test_pair_open_is_silent_at_t0_and_needs_no_accept) ... ok
+test_pair_open_wakes_a_t3_seat_and_a_negative_one (wake_e2e_selftest.IdleWakeOracle.test_pair_open_wakes_a_t3_seat_and_a_negative_one) ... ok
+test_silent_pair_opener_still_requires_delivery (wake_e2e_selftest.IdleWakeOracle.test_silent_pair_opener_still_requires_delivery) ... ok
+test_unexpected_wake_fails (wake_e2e_selftest.IdleWakeOracle.test_unexpected_wake_fails) ... ok
+test_a_helper_ignoring_sigterm_is_killed (wake_e2e_selftest.Interruption.test_a_helper_ignoring_sigterm_is_killed) ... ok
+test_a_worker_that_does_not_stop_fails_cleanup (wake_e2e_selftest.Interruption.test_a_worker_that_does_not_stop_fails_cleanup) ... ok
+test_cleanup_terminates_the_helper_drains_the_worker_and_refuses_new_helpers (wake_e2e_selftest.Interruption.test_cleanup_terminates_the_helper_drains_the_worker_and_refuses_new_helpers) ... ok
+test_helper_cut_off_by_the_drain_reports_stopped_not_a_result (wake_e2e_selftest.Interruption.test_helper_cut_off_by_the_drain_reports_stopped_not_a_result) ... ok
+test_interrupt_in_the_calling_thread_kills_its_helper (wake_e2e_selftest.Interruption.test_interrupt_in_the_calling_thread_kills_its_helper)
+Ctrl-C/SIGTERM while the main thread waits on a helper (e.g. `workspace create`): no orphan. ... ok
+test_codex_only_needs_no_claude_credential (wake_e2e_selftest.LinuxPreflight.test_codex_only_needs_no_claude_credential) ... ok
+test_empty_credential_env_is_no_credential (wake_e2e_selftest.LinuxPreflight.test_empty_credential_env_is_no_credential) ... ok
+test_linux_with_either_credential_passes (wake_e2e_selftest.LinuxPreflight.test_linux_with_either_credential_passes) ... ok
+test_linux_without_credential_env_refuses_before_any_process (wake_e2e_selftest.LinuxPreflight.test_linux_without_credential_env_refuses_before_any_process) ... ok
+test_macos_does_not_ask_for_credential_env (wake_e2e_selftest.LinuxPreflight.test_macos_does_not_ask_for_credential_env) ... ok
+test_clean_all_pass_run_exits_zero (wake_e2e_selftest.MainExitCode.test_clean_all_pass_run_exits_zero) ... [PASS   ] cl-nudge  invite/group      T=0  expect=None  woke=None  t=None {}
+
+| case | T | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | 0 | claude | None | None | {} | PASS |
+
+1/1 expected rows passed (1 collected)
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.5hrog673/ev (exit 0)
+ok
+test_cleanup_problem_fails_an_all_pass_run (wake_e2e_selftest.MainExitCode.test_cleanup_problem_fails_an_all_pass_run) ... [PASS   ] cl-nudge  invite/group      T=0  expect=None  woke=None  t=None {}
+
+| case | T | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | 0 | claude | None | None | {} | PASS |
+
+1/1 expected rows passed (1 collected)
+wake-e2e: cleanup incomplete: daemon alive
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.kk33l4zc/ev (exit 1)
+ok
+test_cleanup_raising_fails (wake_e2e_selftest.MainExitCode.test_cleanup_raising_fails) ... [PASS   ] cl-nudge  invite/group      T=0  expect=None  woke=None  t=None {}
+
+| case | T | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | 0 | claude | None | None | {} | PASS |
+
+1/1 expected rows passed (1 collected)
+wake-e2e: cleanup incomplete: cleanup raised: RuntimeError('herdr gone')
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.kq3oso2e/ev (exit 1)
+ok
+test_interrupt_still_cleans_up_and_fails (wake_e2e_selftest.MainExitCode.test_interrupt_still_cleans_up_and_fails) ... wake-e2e: aborted: KeyboardInterrupt('signal 15')
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.6bf0bxom/ev (exit 1)
+ok
+test_sigterm_while_joining_a_blocked_worker_drains_it (wake_e2e_selftest.MainExitCode.test_sigterm_while_joining_a_blocked_worker_drains_it) ... wake-e2e: aborted: KeyboardInterrupt('signal 15')
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.hqmzj5xi/ev (exit 1)
+ok
+test_ack_with_deadline_then_p0_then_p1_then_p5 (wake_e2e_selftest.MixedOrder.test_ack_with_deadline_then_p0_then_p1_then_p5) ... ok
+test_earlier_deadline_first_and_priority_beats_deadline (wake_e2e_selftest.MixedOrder.test_earlier_deadline_first_and_priority_beats_deadline) ... ok
+test_header_priorities (wake_e2e_selftest.MixedOrder.test_header_priorities) ... ok
+test_markers_check (wake_e2e_selftest.MixedOrder.test_markers_check) ... ok
+test_markers_reason_names_the_case (wake_e2e_selftest.MixedOrder.test_markers_reason_names_the_case) ... ok
+test_screen_order_is_first_appearance (wake_e2e_selftest.MixedOrder.test_screen_order_is_first_appearance) ... ok
+test_ties_keep_arrival_order (wake_e2e_selftest.MixedOrder.test_ties_keep_arrival_order) ... ok
+test_a_misordered_page_fails_even_when_split (wake_e2e_selftest.MixedOrderCase.test_a_misordered_page_fails_even_when_split) ... ok
+test_ack_on_a_second_page_passes (wake_e2e_selftest.MixedOrderCase.test_ack_on_a_second_page_passes) ... ok
+test_arrival_order_on_screen_fails (wake_e2e_selftest.MixedOrderCase.test_arrival_order_on_screen_fails) ... ok
+test_busy_case_kinds_map_to_send_flags (wake_e2e_selftest.MixedOrderCase.test_busy_case_kinds_map_to_send_flags) ... ok
+test_channel_harness_order_is_unjudged (wake_e2e_selftest.MixedOrderCase.test_channel_harness_order_is_unjudged) ... ok
+test_correct_pn_headers_pass (wake_e2e_selftest.MixedOrderCase.test_correct_pn_headers_pass) ... ok
+test_no_header_on_screen_fails (wake_e2e_selftest.MixedOrderCase.test_no_header_on_screen_fails) ... ok
+test_p0_before_the_deadline_ack_fails (wake_e2e_selftest.MixedOrderCase.test_p0_before_the_deadline_ack_fails) ... ok
+test_presentation_order_passes (wake_e2e_selftest.MixedOrderCase.test_presentation_order_passes) ... ok
+test_runs_the_same_at_every_threshold (wake_e2e_selftest.MixedOrderCase.test_runs_the_same_at_every_threshold) ... ok
+test_wrong_marker_on_a_shown_header_fails (wake_e2e_selftest.MixedOrderCase.test_wrong_marker_on_a_shown_header_fails) ... ok
+test_a_channel_harness_is_never_judged (wake_e2e_selftest.MixedOrderJudged.test_a_channel_harness_is_never_judged) ... ok
+test_order_is_judged_only_where_p5_and_p1_stay_silent (wake_e2e_selftest.MixedOrderJudged.test_order_is_judged_only_where_p5_and_p1_stay_silent) ... ok
+test_a_drain_error_does_not_skip_owned_resources (wake_e2e_selftest.PartialStartAndDrainErrors.test_a_drain_error_does_not_skip_owned_resources) ... wake-e2e: aborted: KeyboardInterrupt('signal 2')
+wake-e2e: cleanup incomplete: drain raised: RuntimeError('drain exploded')
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.eacbk5g4/ev (exit 1)
+ok
+test_a_worker_interrupted_mid_start_is_still_joined (wake_e2e_selftest.PartialStartAndDrainErrors.test_a_worker_interrupted_mid_start_is_still_joined)
+Thread.start launched the thread, then the interrupt arrived before start() returned. ... wake-e2e: aborted: KeyboardInterrupt('signal 15 inside start()')
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.fbi0oiic/ev (exit 1)
+ok
+test_drain_joins_a_thread_that_finishes_starting_late (wake_e2e_selftest.PartialStartAndDrainErrors.test_drain_joins_a_thread_that_finishes_starting_late)
+The join retries while start() has not completed (the mid-start window), then joins the thread. ... ok
+test_failed_second_thread_start (wake_e2e_selftest.PartialStartAndDrainErrors.test_failed_second_thread_start) ... wake-e2e: aborted: RuntimeError("can't start new thread")
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.wjn98amk/ev (exit 1)
+ok
+test_interrupt_between_thread_starts (wake_e2e_selftest.PartialStartAndDrainErrors.test_interrupt_between_thread_starts) ... wake-e2e: aborted: KeyboardInterrupt('signal 15')
+evidence: /tmp/sp-503081fe/ht-kqrt.62/wake-e2e-selftest.78ilva1z/ev (exit 1)
+ok
+test_no_or_unreadable_log_is_not_throttling (wake_e2e_selftest.ProviderThrottle.test_no_or_unreadable_log_is_not_throttling) ... ok
+test_only_codex_recipients_probe_the_codex_log (wake_e2e_selftest.ProviderThrottle.test_only_codex_recipients_probe_the_codex_log) ... ok
+test_reads_the_latest_429_retry_since_the_prompt (wake_e2e_selftest.ProviderThrottle.test_reads_the_latest_429_retry_since_the_prompt) ... ok
+test_throttled_wait_runs_on_until_the_tool_enters (wake_e2e_selftest.ProviderThrottle.test_throttled_wait_runs_on_until_the_tool_enters) ... ok
+test_tool_that_never_enters_while_throttled_is_reported_as_such (wake_e2e_selftest.ProviderThrottle.test_tool_that_never_enters_while_throttled_is_reported_as_such) ... ok
+test_unthrottled_late_tool_keeps_the_plain_failure (wake_e2e_selftest.ProviderThrottle.test_unthrottled_late_tool_keeps_the_plain_failure) ... ok
+test_a_full_capture_masks_its_possibly_cut_first_line_only (wake_e2e_selftest.PythonFloorAndCaptureEdge.test_a_full_capture_masks_its_possibly_cut_first_line_only) ... ok
+test_scripts_parse_on_the_oldest_python_available (wake_e2e_selftest.PythonFloorAndCaptureEdge.test_scripts_parse_on_the_oldest_python_available)
+The driver supports Python 3.9+ (stock macOS /usr/bin/python3 is 3.9); f-string syntax newer than the ... skipped 'no Python older than 3.12 on this host'
+test_cleanup_scan_error_crop (wake_e2e_selftest.RedactBeforeCrop.test_cleanup_scan_error_crop) ... ok
+test_command_log_crop_at_4096 (wake_e2e_selftest.RedactBeforeCrop.test_command_log_crop_at_4096) ... ok
+test_helper_error_crops (wake_e2e_selftest.RedactBeforeCrop.test_helper_error_crops) ... ok
+test_result_row_crop_at_400 (wake_e2e_selftest.RedactBeforeCrop.test_result_row_crop_at_400) ... ok
+test_screen_tail_crop_at_400 (wake_e2e_selftest.RedactBeforeCrop.test_screen_tail_crop_at_400) ... ok
+test_command_log_and_rows_are_redacted (wake_e2e_selftest.Redaction.test_command_log_and_rows_are_redacted) ... ok
+test_fixture_key_tail_is_what_the_screen_shows (wake_e2e_selftest.Redaction.test_fixture_key_tail_is_what_the_screen_shows) ... ok
+test_redact_hides_tokens_values_and_tails (wake_e2e_selftest.Redaction.test_redact_hides_tokens_values_and_tails) ... ok
+test_abort_message_is_redacted (wake_e2e_selftest.ReviewMinors.test_abort_message_is_redacted) ... ok
+test_marker_without_dockerenv_is_reported_and_keeps_the_sandbox (wake_e2e_selftest.ReviewMinors.test_marker_without_dockerenv_is_reported_and_keeps_the_sandbox) ... ok
+test_a_run_creates_its_private_root_there (wake_e2e_selftest.RunRoot.test_a_run_creates_its_private_root_there) ... ok
+test_evidence_overlapping_scratch_is_refused_without_leaking_root (wake_e2e_selftest.RunRoot.test_evidence_overlapping_scratch_is_refused_without_leaking_root) ... ok
+test_main_refuses_overlap_without_changing_signal_handler (wake_e2e_selftest.RunRoot.test_main_refuses_overlap_without_changing_signal_handler) ... wake-e2e: refused: evidence directory must be separate from the scratch root and its parents
+ok
+test_platform_roots (wake_e2e_selftest.RunRoot.test_platform_roots) ... ok
+test_this_hosts_root_exists (wake_e2e_selftest.RunRoot.test_this_hosts_root_exists) ... ok
+test_another_value_does_not_match (wake_e2e_selftest.SetupDoneReport.test_another_value_does_not_match) ... ok
+test_value_matches_whatever_follows_it (wake_e2e_selftest.SetupDoneReport.test_value_matches_whatever_follows_it) ... ok
+test_hooks_cases_run_on_the_hooks_only_claude_only_and_it_runs_nothing_else (wake_e2e_selftest.SideCases.test_hooks_cases_run_on_the_hooks_only_claude_only_and_it_runs_nothing_else) ... ok
+test_hooks_only_claude_launch_loads_its_own_installation_and_no_mod (wake_e2e_selftest.SideCases.test_hooks_only_claude_launch_loads_its_own_installation_and_no_mod) ... ok
+test_plain_codex_launch_turns_its_hooks_off_and_only_then (wake_e2e_selftest.SideCases.test_plain_codex_launch_turns_its_hooks_off_and_only_then) ... ok
+test_received_in_wake_turn (wake_e2e_selftest.SideCases.test_received_in_wake_turn) ... ok
+test_side_cases_run_on_codex_only_and_co_plain_runs_nothing_else (wake_e2e_selftest.SideCases.test_side_cases_run_on_codex_only_and_co_plain_runs_nothing_else) ... ok
+test_side_nudge_counts_a_wake_that_landed_before_the_watch (wake_e2e_selftest.SideCases.test_side_nudge_counts_a_wake_that_landed_before_the_watch) ... ok
+test_side_nudge_sibling_phase_is_inconclusive_when_the_side_never_displayed_it (wake_e2e_selftest.SideCases.test_side_nudge_sibling_phase_is_inconclusive_when_the_side_never_displayed_it) ... ok
+test_side_nudge_wakes_main_after_a_sibling_displayed_the_p0 (wake_e2e_selftest.SideCases.test_side_nudge_wakes_main_after_a_sibling_displayed_the_p0)
+ht-yha.62: once the side binding displayed the sibling p0, main must still be woken and shown it. ... ok
+test_wake_turn_is_the_woken_turn_and_sees_a_tool_call_before_received (wake_e2e_selftest.SideCases.test_wake_turn_is_the_woken_turn_and_sees_a_tool_call_before_received) ... ok
+test_an_exited_agent_is_read_from_the_pane (wake_e2e_selftest.StartupScreens.test_an_exited_agent_is_read_from_the_pane)
+The error detail and the evidence capture (screen(1000)) come from `pane read` once `agent read` fails. ... ok
+test_auth_rejection_is_refused_after_detection_too (wake_e2e_selftest.StartupScreens.test_auth_rejection_is_refused_after_detection_too) ... ok
+test_claude_between_turn_notice_is_dismissed_not_refused (wake_e2e_selftest.StartupScreens.test_claude_between_turn_notice_is_dismissed_not_refused) ... ok
+test_claude_first_run_screens_are_refused (wake_e2e_selftest.StartupScreens.test_claude_first_run_screens_are_refused) ... ok
+test_codex_auth_rejection_fails_the_start_at_once (wake_e2e_selftest.StartupScreens.test_codex_auth_rejection_fails_the_start_at_once) ... ok
+test_composers_are_not_refused (wake_e2e_selftest.StartupScreens.test_composers_are_not_refused) ... ok
+test_login_hint_names_the_credential_env (wake_e2e_selftest.StartupScreens.test_login_hint_names_the_credential_env) ... ok
+test_macos_keeps_the_original_tail_check (wake_e2e_selftest.StartupScreens.test_macos_keeps_the_original_tail_check)
+macOS: only the last 400 characters and the original patterns, so a real config's banner text higher up ... ok
+test_macos_matches_the_raw_window_and_redacts_only_the_diagnostic (wake_e2e_selftest.StartupScreens.test_macos_matches_the_raw_window_and_redacts_only_the_diagnostic)
+Main review I3: a credential on screen between a stale "Not logged in" banner and the composer. The raw ... ok
+test_screens_are_refused_from_text_alone (wake_e2e_selftest.StartupScreens.test_screens_are_refused_from_text_alone) ... ok
+test_start_types_nothing_into_a_first_run_screen (wake_e2e_selftest.StartupScreens.test_start_types_nothing_into_a_first_run_screen) ... ok
+test_theme_picker_prompt_is_outside_the_last_400_characters (wake_e2e_selftest.StartupScreens.test_theme_picker_prompt_is_outside_the_last_400_characters) ... ok
+test_a_killed_tmux_server_passes_cleanup (wake_e2e_selftest.TmuxNamedCases.test_a_killed_tmux_server_passes_cleanup) ... ok
+test_a_missing_tmux_row_fails_the_completeness_check (wake_e2e_selftest.TmuxNamedCases.test_a_missing_tmux_row_fails_the_completeness_check) ... ok
+test_a_surviving_tmux_server_fails_cleanup (wake_e2e_selftest.TmuxNamedCases.test_a_surviving_tmux_server_fails_cleanup) ... ok
+test_a_tmux_server_with_a_process_left_fails_cleanup (wake_e2e_selftest.TmuxNamedCases.test_a_tmux_server_with_a_process_left_fails_cleanup) ... ok
+test_absent_from_the_default_matrix (wake_e2e_selftest.TmuxNamedCases.test_absent_from_the_default_matrix) ... ok
+test_cleanup_kills_a_private_tmux_server_and_leaves_no_process (wake_e2e_selftest.TmuxNamedCases.test_cleanup_kills_a_private_tmux_server_and_leaves_no_process) ... ok
+test_expected_wake_follows_the_threshold (wake_e2e_selftest.TmuxNamedCases.test_expected_wake_follows_the_threshold) ... ok
+test_keep_leaves_the_tmux_server (wake_e2e_selftest.TmuxNamedCases.test_keep_leaves_the_tmux_server) ... ok
+test_only_the_tmux_recipients_run_them_and_they_run_nothing_else (wake_e2e_selftest.TmuxNamedCases.test_only_the_tmux_recipients_run_them_and_they_run_nothing_else) ... ok
+test_the_screen_primitives_read_and_type_into_the_private_server (wake_e2e_selftest.TmuxNamedCases.test_the_screen_primitives_read_and_type_into_the_private_server) ... ok
+test_the_seat_name_is_a_valid_seat_name (wake_e2e_selftest.TmuxNamedCases.test_the_seat_name_is_a_valid_seat_name) ... ok
+test_tmux_env_names_no_herdr_pane_enclosing_tmux_or_agent_session (wake_e2e_selftest.TmuxNamedCases.test_tmux_env_names_no_herdr_pane_enclosing_tmux_or_agent_session) ... ok
+
+----------------------------------------------------------------------
+Ran 214 tests in 100.798s
+
+OK (skipped=1)

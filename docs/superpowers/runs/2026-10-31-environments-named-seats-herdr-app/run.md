@@ -225,3 +225,51 @@ the reserved named locator instead of the Herdr endpoint the handoff was recorde
 
 `first_inbox_prints_m8_once_then_same_seat`, `named_to_named_send_inbox_ack_hook`, `named_to_pane_in_isolated_herdr`,
 `named_join_accept_backlog`, `named_pair_with_pane_auto_join_opener`, `recovery_hint_round_trip`, `idle_exit_with_only_named_host`.
+
+## N2 phase gate (ht-kqrt.62)
+
+RESULT: GREEN except three known environmental failures (no `zsh` on this host; CI installs it). The first gate run on the N2 tip was red (47 failures, blocker ht-vl4u); this task fixed the regressions on its branch, one commit per group, and re-ran the gate.
+
+Tree: code SHA `4d86d123fd953fdf3fef7cd2437adc9003a141fe` (tree `d1fe8cf3b11eed8ad18e1ae2f19d7791bf1e2542`) = run branch tip `343ee7fc0` (all N2 leaves .35, .37, .38, .69, .70, the refactors .141, .142, .65, and .57, .61) plus this task's fix commits; the evidence/docs commit that follows changes only `docs/` and `evidence/`. `HT_LEAK_RUN_ID=a76adfc6-bbf6-4038-a429-9568d445c32e`. Scratch under `/tmp/sp-503081fe/ht-kqrt.62`; no agents, no shared Herdr server. Evidence: `evidence/ht-kqrt.62/final/` (logs, `suite.clean.log`); the first red run is `evidence/ht-kqrt.62/suite.clean.log`.
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `heavy nice cargo nextest run --locked --all-features --all-targets` | 100 | 8630 run, 8627 passed, 3 FAILED (the zsh trio), 53 skipped; nextest summary 243.2 s (under the 300 s budget), wall 341 s including the build |
+| `scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID"` | 0 | no leaked temp files, no leaked processes |
+| `heavy nice scripts/check-default-features` | 0 | pass |
+| `scripts/check-wire-compat` | 0 | pass, baseline untouched |
+| `scripts/check-harness-neutral` | 0 | pass, allowlist untouched |
+| `heavy cargo test --locked --all-features --test combined host_neutral_scan` (ht-kqrt.65) | 0 | pass, no allowlist entry added |
+| `heavy nice scripts/herdr-release-smoke --versions 0.9.5` (newest in `tests/herdr-releases.tsv`) | 0 | 0.9.5 PASS in 132.9 s, leak check clean |
+| `python3 scripts/wake-e2e.py --self-test` | 0 | pass (covers the tmux-named cleanup) |
+| `nice cargo clippy --locked --all-targets --all-features -- -D warnings` | 0 | pass on each fix commit's final form |
+
+Known environmental failures (the only permitted ones; not skipped, zsh not installed, `docs/release.md` records the same three on earlier full-suite runs): `protocol::output::tests::emitted_command_round_trips_exact_argv_through_zsh`, `combined contracts::action_formatter_round_trips_unicode_separators_through_bash_and_zsh`, `combined view::rendered_actions_execute_as_shell_commands`.
+
+### Golden surfaces against the F gate (`bb1d43430`)
+
+`tests/golden_surfaces.rs` passes in the gated run. `git diff bb1d43430 -- tests/golden_surfaces.rs tests/fixtures/golden` is not only the Claude registration, because N-phase and refactor leaves also touched the goldens. By commit: b6decf629 (ht-kqrt.70) is the Claude `Stop` and `StopFailure` registration (setup/setup-status text and JSON, hook golden, `events:` line, the new report-only hook test, the Claude contract id); 69176ebcc (ht-kqrt.19) adds the standalone install goldens; aaa04f3af (ht-kqrt.137) lets the fake Herdr answer the pre-attach `hello`; a5c02dcf9 (ht-kqrt.138) regenerates the doctor JSON for `doctor.hosts` and `doctor.other_stores`; d66680975 (ht-kqrt.141) makes the install golden temp-root independent; f41a9313c (ht-kqrt.57) updates the handoff help. The Herdr-pane Claude/Codex/Hermes/agy hook outputs are unchanged apart from the Claude registration. The acceptance wording "only the Claude Stop registration" is met for the N2 leaves; the other differences belong to N-phase leaves already accepted there.
+
+### T1-T5 (tests pass in the gated run)
+
+- T1 `capture_pane_vs_herdr_detection_fixtures` (ht-kqrt.69): captured claude idle/approval/draft and agy idle screens replayed into a private tmux pane; `capture-pane` gives the same `ComposerRead`, `screen_blocked` and `screen_turn_running` as the Herdr detection text. Answer: yes, identical.
+- T2 (ht-kqrt.70): `claude_stop_failure_clears_busy` (tests/service/turn_state.rs) and the `screen_turn_running` fixture tests (tests/fixtures/screen_turn_running/, e.g. `screen_turn_running_recognizes_the_interrupt_footer`): `StopFailure` clears busy; an interrupt with no `Stop` clears busy only through the two-read, 60 s screen rule; a `None` recognizer (Hermes) never wakes.
+- T3 `draft_present_no_typing`, `readback_mismatch_clears_no_submit` (ht-kqrt.69): a draft means nothing typed (`TargetUnsafe`); an agy composer holding exactly the wake is read back and cleared with `C-u`; wake plus other text is left alone; Claude does not opt in.
+- T4 `stale_tmux_pane_wrong_server_pid_disables_wake_and_never_moves_seat`, `stale_tmux_pane_nested_in_isolated_herdr` (tests/host/named_tmux.rs, ht-kqrt.38): a stale or non-ancestor `TMUX_PANE` fails verification, wake is disabled, the seat is not moved.
+- T5 `osc_7501_passthrough_recorded` (ht-kqrt.69): tmux consumes OSC 7501; it reaches neither `capture-pane` nor any pane variable and `allow-passthrough` is off, so no self-reported status exists.
+
+### Regressions found by the first run and their fixes (root cause, one commit per group)
+
+1. zsh (3): environmental, see above.
+2. Hook contract (3, ht-kqrt.70): production is right (7 installed Claude events, `Stop` and `StopFailure` decode). `installed_argv_and_hook_parser_are_one_contract` now expects 7; the two "unsupported payload" tests used `Stop` as their undeclared event and now use `Notification`. Commit 82ccaea4d.
+3. `no_wake_reports` (migration 0012) is a passive once-per-episode mark written by the sender-side `wake_status` read; classified in `KNOWN_UNMAPPED` of `service::kicks`. Commit 82ccaea4d.
+4. Unowned test spawns (`tests/host/named_tmux.rs`, `tests/installer_integrations.rs`) moved to `test_support::spawn`. Commit 82ccaea4d.
+5. Herdr-pane wake (about 17, the serious group): not a production wake regression. `LaneProbe::registered_idle_events`, `set_registered_idle_hook`, `set_registered_wake_hook` and `registered_attempts` followed `KickRegistry::pacer`, the first registered Pacer, which is the built-in named host's lane since ht-kqrt.69 (it attaches first); the rigs watched the wrong lane. They now follow a dialled host's lane through `registered_pacer` (matching `first_host_pacer`, dialled-only). All `trust_policy::*` also queried `herdr_hosts` with no kind filter and read the named row; scoped to `kind='herdr'`. Herdr-release-smoke 0.9.5 and `lanes_latency` agree the production path is intact. Commit 7c0999787.
+6. Host-count and host-id expectations (the named row is intended, design lines 352-354): `config_*`, `pane_close_retirement`, `session_bindings_smoke` and `remote_addresses` fixtures count or pick the Herdr row (`kind='herdr'`). `remote_addresses_resolve_on_their_home_node` was a real source defect: `RemoteResolver::answer` reads every host (G1) and the topology-less named host's refusal counted as an unreadable host, turning every name into `host_unavailable`; hosts with no pane topology now answer through the new defaulted `HostPort::reads_live_topology` (false for the named host) and are skipped (a host-kind name would trip the host-neutrality scan). `node_layout::second_claim_host_attaches_lazily`: since H1b (ht-kqrt.44) an unclassifiable server is refused before a row is written; the test's `SilentServer` now answers the kind probe's `ping`. `peer_launch_terminal`: a new terminal sends no labels (design: `--new-terminal` has no app labels; `new_terminal_no_app_labels_parent_caller` pins the host side), so the test asserts that instead of `ht.label`. Commit 75eddac3e, a5f9c3a09.
+7. Composition (5): the test binding insert and a join matched `herdr_hosts` on `node_id` (now two rows): joined on `host_id`. `elected_shutdown_joins_idle_monitor...` held every `idle-exit` clock sample; the monitor now samples more than once, so only the first is held. `store_only_daemon_serves_without_host_workers` asserts the built-in host's one wake and one observation lane and no archival lane; the built-in observation lane could log `lane observation: Cancelled` on shutdown, so the lane error log now skips a cancelled pass (4d86d123f). Commit 2e8104f2e.
+8. `wire_compat`: the pane-name source opened a second client and asked `capabilities` again; `render_history` now hands its answer over (`PaneNameSource::known_capabilities`, `LocalSocketClient::seed_capabilities`). Commit 109aa6f17.
+9. `detached_output_survives_ensure_parent...`: ht-kqrt.73 made `spawn_detached` run `internal daemon-detach`, whose stdout carries the pid; the test launcher exec'd the fixture as that hop, so libtest's header on the piped stdout hit EPIPE. The launcher now plays the hop (starts the fixture off its stdout, prints its pid). It failed identically on the .30 binary and passed on main. Commit ef6cdd2bd.
+
+### Test hygiene
+
+`scripts/check-no-leaked-processes` clean after each suite run; `stop-run-processes --check` matched nothing run-owned (only root-owned uninspectable `unknown:` pids). Nothing was left to stop.

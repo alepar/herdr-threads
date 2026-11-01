@@ -179,7 +179,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
                 settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
                 registered("PreToolUse")
             );
-            assert_eq!(plan.owned.len(), 5);
+            assert_eq!(plan.owned.len(), 7);
             plan.owned
         } else {
             let codex = crate::harness::codex::setup::plan_codex_for_version(
@@ -2054,7 +2054,7 @@ fn unknown_payload_and_non_herdr_process_are_quiet() {
     let deadline = Instant::now() + TOOL_BUDGET;
     for payload in [
         &b"not json"[..],
-        br#"{"hook_event_name":"Stop","session_id":"s"}"#,
+        br#"{"hook_event_name":"Notification","session_id":"s"}"#,
     ] {
         let outcome = run_hook(
             &args(&root),

@@ -4169,6 +4169,12 @@ pub trait HostPort: Send + Sync {
     fn creates_targets_itself(&self) -> bool {
         false
     }
+    /// Whether `live_topology` can answer for this host (workspaces, tabs and panes to read
+    /// addresses against). A host whose seats are addressed by replicated names alone holds no
+    /// pane match and is not an unreadable host. Default: yes.
+    fn reads_live_topology(&self) -> bool {
+        true
+    }
     /// Host-level wake capability. Default: Herdr's TUI composer.
     fn wake_capability(&self) -> WakeCapability {
         WakeCapability::Composer(ComposerTraits::HERDR_TUI)

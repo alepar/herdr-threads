@@ -16,7 +16,11 @@ fn one_node_with_two_hosts_reaches_seats_on_both() {
         support::wait_seats(&cluster, node, 3);
     }
     assert_eq!(
-        cluster.scalar(0, "SELECT count(*) FROM herdr_hosts", &[]),
+        cluster.scalar(
+            0,
+            "SELECT count(*) FROM herdr_hosts WHERE kind='herdr'",
+            &[]
+        ),
         Some("2".into()),
         "node 0 attached both servers"
     );

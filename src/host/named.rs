@@ -493,6 +493,9 @@ impl HostPort for NamedHost {
             })
             .collect())
     }
+    fn reads_live_topology(&self) -> bool {
+        false
+    }
     fn live_topology(&self, _budget: &CallBudget) -> Result<HostTopology, ApiError> {
         Err(unreachable_method("topology"))
     }
