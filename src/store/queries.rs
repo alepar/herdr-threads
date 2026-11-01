@@ -1223,6 +1223,26 @@ fn seat_inspect(
     } else {
         None
     };
+    // D12: a restored named seat that lost its name to a live seat shows the name it waits for.
+    let hold = match hold {
+        Some(hold) => Some(hold),
+        None => match (
+            crate::store::seats::held_name(db, q.seat.as_str())?,
+            &summary.target,
+        ) {
+            (Some(name), Some(target)) => Some(HoldSummary {
+                target: target.clone(),
+                reason_data: format!("held_name:{name}"),
+                detail_argv: vec![
+                    "herdr-threads".into(),
+                    "seat".into(),
+                    "inspect".into(),
+                    q.seat.as_str().into(),
+                ],
+            }),
+            _ => None,
+        },
+    };
     type Job = (String, i64, String, i64, String, Option<String>);
     let job:Option<Job>=db.query_row("SELECT id,cutover_at,phase,processed_units,status,last_error FROM retirements WHERE seat_id=?1",[q.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
     let retirement = job

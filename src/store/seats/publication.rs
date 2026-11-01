@@ -1,5 +1,6 @@
 //! Seat publication: the per-transaction queue and the `seat.created` / `seat.retired` materialization.
 
+use crate::store::seats::LOCAL_SEAT;
 use crate::{
     protocol::{
         ids::{SeatId, SeatName},
@@ -171,12 +172,10 @@ pub fn ensure_published(
 ///   value is never rejected, only not stored (the name is display and selector
 ///   text, never authority).
 /// - Row absent, origin is this node (an own old incarnation pulled back after
-///   a wipe): insert a local `unresolved` seat on the `herdr_hosts` row (never
-///   the named host) with the greatest `last_attached_at`; with no such row it is
-///   `HostUnavailable "own seat restore needs an attached host"`, which the
-///   handler maps to `FactError::Wait { on: Host }`: the entry parks on
-///   `wait:host` and is re-attempted at startup and when the first host
-///   attaches.
+///   a wipe): [`restore_own_seat`]. A seat with a `display_name` goes
+///   unresolved onto the named host at target = name, nameless (held) when a
+///   non-retired seat of that name exists; a seat without one goes onto the
+///   one host kind of the node, else the entry parks on `wait:host`.
 pub fn materialize_seat_created(
     tx: &Transaction<'_>,
     m: &MaterializeInput<'_>,
@@ -218,29 +217,207 @@ pub fn materialize_seat_created(
             )
             .map_err(store_error)?;
         }
-        None => {
-            let host: Option<i64> = tx
-                .query_row(
-                    "SELECT host_id FROM herdr_hosts WHERE kind<>'named' ORDER BY last_attached_at DESC, host_id DESC LIMIT 1",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(store_error)?;
-            let Some(host) = host else {
-                return Err(api_error(
-                    ErrorCode::HostUnavailable,
-                    "own seat restore needs an attached host",
-                ));
-            };
-            tx.execute(
-                "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at,home_node,is_local,host_id,published) \
-                 VALUES(?1,(SELECT id FROM local_node),'unresolved','other','native',1,?2,(SELECT id FROM local_node),1,?3,1)",
-                params![id, m.origin_ms, host],
+        None => restore_own_seat(tx, m, payload)?,
+    }
+    Ok(())
+}
+
+/// The local-origin restore of `seat.created` (TRUST-POLICY D12, SA4): an own old incarnation
+/// pulled back after a wipe, inserted as a local `unresolved` seat.
+///
+/// - `display_name` parses as a `SeatName`: the named host, unresolved, `target_id = name`. When
+///   a non-retired local seat of that name exists there (resolved or unresolved, the rows
+///   `seats_live_name` covers) the row is inserted with `name` NULL instead, so the unique index
+///   cannot be violated: a named-host seat with a NULL name is the held marker and its held name
+///   is its own `seat.created.display_name` (see [`held_name`]). No merge and no pick: the name
+///   keeps resolving to the existing seat until [`hand_back_name`] runs in its retirement.
+/// - No name: the `herdr_hosts` row with the greatest `last_attached_at`, only when every
+///   non-named host row of the node has one kind (a mixed node would send the seat to the wrong
+///   environment). Otherwise, and with no such row, `HostUnavailable`, which the handler maps to
+///   `FactError::Wait { on: Host }`: the entry parks on `wait:host` and is re-attempted at
+///   startup and when a host attaches.
+fn restore_own_seat(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &SeatCreatedPayload,
+) -> Result<(), ApiError> {
+    let id = payload.seat.as_str();
+    let name = payload
+        .display_name
+        .as_deref()
+        .and_then(|n| SeatName::parse(n).ok());
+    if let Some(name) = name {
+        let named: Option<i64> = tx
+            .query_row(
+                "SELECT host_id FROM herdr_hosts WHERE kind='named'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let Some(named) = named else {
+            return Err(api_error(
+                ErrorCode::HostUnavailable,
+                "own named seat restore needs the named host",
+            ));
+        };
+        let taken: bool = tx
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND name=?2 AND state<>'retired')"),
+                params![named, name.as_str()],
+                |r| r.get(0),
             )
             .map_err(store_error)?;
+        tx.execute(
+            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id,published,name) \
+             VALUES(?1,(SELECT id FROM local_node),'unresolved','other','native',?2,1,1,?3,(SELECT id FROM local_node),1,?4,1,?5)",
+            params![
+                id,
+                name.as_str(),
+                m.origin_ms,
+                named,
+                (!taken).then(|| name.as_str())
+            ],
+        )
+        .map_err(store_error)?;
+        return Ok(());
+    }
+    let single_kind: bool = tx
+        .query_row(
+            "SELECT count(DISTINCT kind)<=1 FROM herdr_hosts WHERE kind<>'named'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let host: Option<i64> = if single_kind {
+        tx.query_row(
+            "SELECT host_id FROM herdr_hosts WHERE kind<>'named' ORDER BY last_attached_at DESC, host_id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?
+    } else {
+        None
+    };
+    let Some(host) = host else {
+        return Err(api_error(
+            ErrorCode::HostUnavailable,
+            if single_kind {
+                "own seat restore needs an attached host"
+            } else {
+                "own seat restore is held: attached hosts are of more than one kind"
+            },
+        ));
+    };
+    tx.execute(
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at,home_node,is_local,host_id,published) \
+         VALUES(?1,(SELECT id FROM local_node),'unresolved','other','native',1,?2,(SELECT id FROM local_node),1,?3,1)",
+        params![id, m.origin_ms, host],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// The name a held seat waits for: the `display_name` of its own `seat.created` fact. `None` for
+/// a seat that is not held (a seat with a name, a seat off the named host, a remote or retired
+/// seat).
+pub(crate) fn held_name(
+    conn: &rusqlite::Connection,
+    seat: &str,
+) -> Result<Option<String>, ApiError> {
+    conn.query_row(
+        &format!("SELECT {HELD_NAME_SQL} FROM seats s WHERE s.id=?1 AND {HELD_ROW_SQL}"),
+        [seat],
+        |r| r.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(store_error)
+}
+
+/// One held seat and the live seat that keeps its name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldName {
+    pub seat: SeatId,
+    pub name: String,
+    pub holder: Option<SeatId>,
+}
+
+/// Every held seat (oldest first) with the non-retired seat that currently owns its name: what
+/// `doctor` lists for operator repair.
+pub fn held_names(conn: &rusqlite::Connection) -> Result<Vec<HeldName>, ApiError> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT s.id,{HELD_NAME_SQL},(SELECT o.id FROM seats o WHERE o.host_id=s.host_id AND o.is_local=1 AND o.state<>'retired' AND o.name={HELD_NAME_SQL}) \
+             FROM seats s WHERE {HELD_ROW_SQL} ORDER BY s.created_at,s.id"
+        ))
+        .map_err(store_error)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(store_error)?;
+    let mut held = Vec::new();
+    for row in rows {
+        let (seat, name, holder) = row.map_err(store_error)?;
+        if let Some(name) = name {
+            held.push(HeldName {
+                seat: SeatId::new(seat),
+                name,
+                holder: holder.map(SeatId::new),
+            });
         }
     }
+    Ok(held)
+}
+
+/// A held seat: local, off the name index (`name` NULL), live, on the named host.
+const HELD_ROW_SQL: &str = "s.is_local=1 AND s.name IS NULL AND s.state<>'retired' \
+     AND s.host_id IN (SELECT host_id FROM herdr_hosts WHERE kind='named')";
+
+/// The held name of the row `s`: its own `seat.created` fact's `display_name`.
+const HELD_NAME_SQL: &str = "(SELECT json_extract(CAST(j.payload AS TEXT),'$.display_name') FROM journal j WHERE j.kind='seat.created' AND j.creates=s.id LIMIT 1)";
+
+/// The retire-transaction hand-back (TRUST-POLICY D12): when the retired local `seat` owned a
+/// name, the oldest held seat of that name (by `created_at`, then id) takes it. The caller has
+/// already retired `seat`, so the unique index allows the update; named continuity reattaches the
+/// held seat on the next resolve of the name. Retiring a held seat (no name) changes nothing, and
+/// no name moves while two live candidates exist.
+pub(crate) fn hand_back_name(
+    tx: &Transaction<'_>,
+    instance: &str,
+    seat: &SeatId,
+) -> Result<(), ApiError> {
+    let owned: Option<(i64, String)> = tx
+        .query_row(
+            &format!("SELECT host_id,name FROM seats WHERE id=?1 AND {LOCAL_SEAT} AND name IS NOT NULL AND state='retired'"),
+            [seat.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((host, name)) = owned else {
+        return Ok(());
+    };
+    let heir: Option<String> = tx
+        .query_row(
+            &format!("SELECT s.id FROM seats s WHERE s.host_id=?1 AND {HELD_ROW_SQL} AND {HELD_NAME_SQL}=?2 ORDER BY s.created_at,s.id LIMIT 1"),
+            params![host, name],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(heir) = heir else {
+        return Ok(());
+    };
+    tx.execute("UPDATE seats SET name=?1 WHERE id=?2", params![name, heir])
+        .map_err(store_error)?;
+    schema::bump_filter_revision(tx, instance, "directory", "all")?;
     Ok(())
 }
 
@@ -316,3 +493,7 @@ pub fn materialize_seat_retired(
     .map_err(store_error)?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../../tests/store/named_restore.rs"]
+mod named_restore_tests;
