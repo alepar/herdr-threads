@@ -3003,6 +3003,8 @@ pub struct PulledNotice {
     pub notice: crate::protocol::results::WarningRef,
     pub topic: String,
     pub author: Option<SeatId>,
+    /// The author's header label when it is a named seat (`seat_directory::sender_label`).
+    pub author_label: Option<String>,
 }
 
 /// What the launch gate reads of one bootstrap. Daemon-side only; never on a wire.

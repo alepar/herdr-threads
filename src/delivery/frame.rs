@@ -26,6 +26,9 @@ pub struct FrameItem {
     pub sender: Option<String>,
     #[serde(default, rename = "senderName")]
     pub sender_name: Option<String>,
+    /// A named sender's name; when set it replaces the id and quoted name in the header.
+    #[serde(default, rename = "senderLabel")]
+    pub sender_label: Option<String>,
     #[serde(default)]
     pub author_role: Option<String>,
     #[serde(default)]
@@ -131,6 +134,14 @@ fn label(id: Option<&str>, name: Option<&str>) -> String {
     }
 }
 
+/// The header's sender token: a named sender's label, else the id with its differing name.
+fn sender_text(item: &FrameItem) -> String {
+    match item.sender_label.as_deref().filter(|s| !s.is_empty()) {
+        Some(l) => one_line(l),
+        None => label(item.sender.as_deref(), item.sender_name.as_deref()),
+    }
+}
+
 /// Frames peer text so a body can never pass for a header line (spec D4), with the thread and sender
 /// names (quoted, after their ids) and the source and intent markers after the
 /// service-generated fields; never starts with `/`. Body lines are indented
@@ -151,7 +162,7 @@ pub fn frame(items: &[FrameItem]) -> String {
                     one_line(&item.kind),
                     one_line(&item.id),
                     label(item.thread.as_deref(), item.thread_name.as_deref()),
-                    label(item.sender.as_deref(), item.sender_name.as_deref()),
+                    sender_text(item),
                     markers(item),
                     indent(&item.body)
                 )

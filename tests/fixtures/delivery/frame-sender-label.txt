@@ -1,0 +1,7 @@
+[herdr-threads] new messages:
+
+[herdr-threads] message m1 in T1 "plans" from reviewer:
+  body of m1
+
+[herdr-threads] message m2 in T1 "plans" from reviewer@Q0V:
+  body of m2

@@ -1459,6 +1459,7 @@ fn user_intent_output_markers_are_independent() {
             }
             let inbox = CommandResult::InboxBatch(page(vec![
                 crate::protocol::results::InboxBatchItem::Message {
+                    sender_label: None,
                     thread: ThreadId::new("t1"),
                     topic_data: "topic".into(),
                     message: MessageId::new("m7"),
@@ -1844,6 +1845,7 @@ fn v2_message(
     let len = body.len() as u64;
     if lazy {
         InboxBatchV2Item::LazyMessage {
+            sender_label: None,
             priority,
             thread,
             topic_data,
@@ -1862,6 +1864,7 @@ fn v2_message(
         }
     } else {
         InboxBatchV2Item::Message {
+            sender_label: None,
             priority,
             thread,
             topic_data,
@@ -1956,4 +1959,55 @@ fn inbox_v2_rows_carry_the_priority_marker_after_the_sender() {
     assert_eq!(items[1]["priority"], 1);
     assert_eq!(items[2]["priority"], 5);
     assert!(items[3].get("priority").is_none());
+}
+
+// Kills: a row that prints the seat id for a named sender, and a priority marker inserted at the
+// wrong token once the sender token is a name (it follows the first ` from `).
+#[test]
+fn inbox_row_shows_the_sender_label_with_its_priority_marker() {
+    let mut named = v2_message("m0", Some(0), false, None);
+    let mut remote = v2_message("m1", Some(3), true, None);
+    for (item, label) in [(&mut named, "reviewer"), (&mut remote, "reviewer@B")] {
+        match item {
+            crate::protocol::results::InboxBatchV2Item::Message { sender_label, .. }
+            | crate::protocol::results::InboxBatchV2Item::LazyMessage { sender_label, .. } => {
+                *sender_label = Some(label.to_owned());
+            }
+            _ => unreachable!(),
+        }
+    }
+    let page = Page {
+        items: vec![named, remote, v2_message("m2", Some(0), false, None)],
+        next_cursor: None,
+        next_argv: None,
+        high_water_ordinal: 3,
+        scope_revision: None,
+        has_more: false,
+        stop_reason: StopReason::Complete,
+        consistency: Consistency::BoundedLive,
+    };
+    let text = String::from_utf8(
+        encode_selected(
+            &CommandResult::InboxBatchV2(page),
+            &OutputSpec {
+                format: OutputFormat::Text,
+                context: ContinuationContext::default(),
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let rows: Vec<&str> = text.lines().filter(|l| l.starts_with("message ")).collect();
+    assert_eq!(rows.len(), 3, "{text}");
+    assert!(
+        rows[0].contains(" from reviewer [p0] bytes "),
+        "{}",
+        rows[0]
+    );
+    assert!(
+        rows[1].contains(" from reviewer@B [p3] bytes "),
+        "{}",
+        rows[1]
+    );
+    assert!(rows[2].contains(" from s1 [p0] bytes "), "{}", rows[2]);
 }

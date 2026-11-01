@@ -1766,8 +1766,11 @@ fn bump(db: &Connection, sequence: i64) {
     .unwrap();
 }
 fn ordinary_message(f: &Fixture, id: &str, body: &str) {
+    ordinary_message_from(f, id, body, None);
+}
+fn ordinary_message_from(f: &Fixture, id: &str, body: &str, actor: Option<&str>) {
     let sequence = next_sequence(&f.db);
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4)", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,actor_seat_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4,?5)", params![id, sequence, body, sequence + 2, actor]).unwrap();
     f.db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','s','pending',300000)", [id]).unwrap();
     bump(&f.db, sequence);
 }
@@ -6114,6 +6117,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
             let sender = Some(SeatId::parse("\"".repeat(128)).unwrap());
             let item = if lazy {
                 InboxBatchV2Item::LazyMessage {
+                    sender_label: None,
                     priority: None,
                     thread: ThreadId::parse("t").unwrap(),
                     topic_data: topic.clone(),
@@ -6132,6 +6136,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
                 }
             } else {
                 InboxBatchV2Item::Message {
+                    sender_label: None,
                     priority: None,
                     thread: ThreadId::parse("t").unwrap(),
                     topic_data: topic.clone(),
@@ -14453,4 +14458,47 @@ fn presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled() {
             .remaining
             .is_empty()
     );
+}
+
+// Kills: a pulled message header that shows the sender's seat id for a named sender, or one that
+// loses the id of an unnamed one.
+#[test]
+fn a_named_sender_reads_as_its_name_in_a_pulled_message_header() {
+    let f = fixture(0);
+    f.db.execute("UPDATE seats SET name='reviewer' WHERE id='x'", [])
+        .unwrap();
+    ordinary_message_from(&f, "m1", "named body", Some("x"));
+    ordinary_message_from(&f, "m2", "unnamed body", Some("c"));
+    let context = pull_seat(&f);
+    let page = page(pull(&f, &context, None));
+    assert!(
+        page.text
+            .contains("message m1 in t \"topic\" from reviewer [p0]:"),
+        "{}",
+        page.text
+    );
+    assert!(
+        page.text.contains("message m2 in t \"topic\" from c [p0]:"),
+        "{}",
+        page.text
+    );
+    assert!(!page.text.contains("from x"), "{}", page.text);
+}
+
+// Kills: a notice block whose author is shown by seat id although it is a named seat.
+#[test]
+fn a_named_author_reads_as_its_name_in_a_pulled_notice_header() {
+    let f = fixture(0);
+    f.db.execute("UPDATE seats SET name='reviewer' WHERE id='x'", [])
+        .unwrap();
+    let context = pull_seat(&f);
+    rejection_notice(&f, "w-r");
+    let page = page(pull(&f, &context, None));
+    let header = page
+        .text
+        .lines()
+        .find(|l| l.starts_with("[herdr-threads] notice w-r "))
+        .unwrap_or_else(|| panic!("{}", page.text));
+    assert!(header.contains(" from reviewer"), "{header}");
+    assert!(!page.text.contains("from x"), "{}", page.text);
 }

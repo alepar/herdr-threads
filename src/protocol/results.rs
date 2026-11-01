@@ -1450,6 +1450,9 @@ pub enum InboxBatchItem {
         message: MessageId,
         sequence: u64,
         sender: Option<SeatId>,
+        /// A named sender's name (`reviewer`, `reviewer@B`); absent for other seats and from an older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_label: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         author_role: Option<crate::protocol::summary::AuthorRole>,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -1501,6 +1504,9 @@ pub enum InboxBatchV2Item {
         message: MessageId,
         sequence: u64,
         sender: Option<SeatId>,
+        /// A named sender's name (`reviewer`, `reviewer@B`); absent for other seats and from an older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_label: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         author_role: Option<crate::protocol::summary::AuthorRole>,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -1528,6 +1534,9 @@ pub enum InboxBatchV2Item {
         message: MessageId,
         sequence: u64,
         sender: Option<SeatId>,
+        /// A named sender's name (`reviewer`, `reviewer@B`); absent for other seats and from an older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_label: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         author_role: Option<crate::protocol::summary::AuthorRole>,
         #[serde(default, skip_serializing_if = "is_false")]

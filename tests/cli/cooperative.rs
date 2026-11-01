@@ -1274,6 +1274,7 @@ fn inbox_empty_work_flush_before_ack(v2: bool, lazy: bool) {
                     }
                     Ok(result(Page {
                         items: vec![InboxBatchItem::Message {
+                            sender_label: None,
                             thread: ThreadId::new("thread-original"),
                             message: MessageId::new("message-original"),
                             sequence: 1,
@@ -2486,6 +2487,7 @@ mod scoped_runtime {
                         )),
                         Command::InboxBatch(_) => Ok(CommandResult::InboxBatch(Page {
                             items: vec![crate::protocol::results::InboxBatchItem::Message {
+                                sender_label: None,
                                 thread: ThreadId::new("t123"),
                                 topic_data: "topic".into(),
                                 message: MessageId::new("m123"),
@@ -6146,6 +6148,7 @@ fn inbox_empty_work_selection_preserves_bounds_and_continuations() {
     let mut partial = work("partial");
     partial.stop_reason = StopReason::Bytes;
     partial.items.push(InboxBatchItem::Message {
+        sender_label: None,
         thread: ThreadId::new("thread"),
         topic_data: "topic".into(),
         message: MessageId::new("message"),
@@ -6366,6 +6369,7 @@ fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
             };
             Ok(CommandResult::InboxBatchV2(Page {
                 items: vec![InboxBatchV2Item::LazyMessage {
+                    sender_label: None,
                     priority: None,
                     thread: ThreadId::new("thread"),
                     topic_data: "topic".into(),
@@ -8018,6 +8022,7 @@ fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries
                 })),
                 Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
                     items: vec![InboxBatchV2Item::Message {
+                        sender_label: None,
                         priority: None,
                         thread: ThreadId::new("thread"),
                         message: MessageId::new("message-1"),
@@ -8207,6 +8212,7 @@ fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
                 })),
                 Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
                     items: vec![InboxBatchV2Item::Message {
+                        sender_label: None,
                         priority: None,
                         thread: ThreadId::new("thread"),
                         message: MessageId::new("message-1"),

@@ -122,6 +122,7 @@ fn page() -> CommandResult {
     CommandResult::InboxBatchV2(Page {
         items: vec![
             InboxBatchV2Item::LazyMessage {
+                sender_label: None,
                 priority: None,
                 thread: ThreadId::new("thread"),
                 message: MessageId::new("lazy"),
@@ -139,6 +140,7 @@ fn page() -> CommandResult {
                 wakes: false,
             },
             InboxBatchV2Item::Message {
+                sender_label: None,
                 priority: None,
                 thread: ThreadId::new("thread"),
                 message: MessageId::new("ordinary"),

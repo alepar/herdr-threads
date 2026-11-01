@@ -22,6 +22,7 @@ fn claim() -> CallerClaim {
 }
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        sender_label: None,
         priority: Some(crate::protocol::priority::DeliveryPriority::new(2).unwrap()),
         thread: ThreadId::new("t"),
         topic_data: "topic".into(),
@@ -41,6 +42,7 @@ fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
 }
 fn ordinary(id: &str, body: &str, ack: bool) -> InboxBatchV2Item {
     InboxBatchV2Item::Message {
+        sender_label: None,
         priority: None,
         thread: ThreadId::new("t"),
         topic_data: "topic".into(),
@@ -260,6 +262,7 @@ fn resume_page() -> InboxOffer {
     };
     let (thread, owed, sequence, sender, body) = row("mXRKQlSoA", 6, "pending-owed");
     let receipt = InboxBatchV2Item::Message {
+        sender_label: None,
         priority: Some(crate::protocol::priority::DeliveryPriority::new(0).unwrap()),
         thread,
         topic_data: "smoke".into(),
@@ -279,6 +282,7 @@ fn resume_page() -> InboxOffer {
     };
     let (thread, message, sequence, sender, body) = row("mp12QRsZM", 5, "pending-lazy");
     let pending = InboxBatchV2Item::LazyMessage {
+        sender_label: None,
         priority: Some(crate::protocol::priority::DeliveryPriority::new(1).unwrap()),
         thread,
         topic_data: "smoke".into(),

@@ -722,10 +722,15 @@ fn direction(world: &World, from: &Caller, from_label: &str, to: &Caller) {
     );
     assert_eq!(sent.code, Some(0), "{sent:?}");
     let id = sent_message(&sent);
+    // A named sender reads as its name in every header, any other site as its seat id.
+    let token = match &from.loc {
+        Loc::Name(name) | Loc::Tmux(name, _) => name.clone(),
+        Loc::Pane(_) | Loc::Terminal(_) => sender.clone(),
+    };
     let context = context_of(&world.delivery(to, &body));
     let header = header_of(&context, &id);
     assert!(
-        header.contains(&format!("from {sender} ")),
+        header.contains(&format!("from {token} ")),
         "header for {} -> {}: {header}",
         from.session,
         to.session
@@ -762,7 +767,11 @@ fn direction(world: &World, from: &Caller, from_label: &str, to: &Caller) {
     let second_id = sent_message(&second);
     let inbox = world.run(to, &["inbox"], None);
     assert!(
-        inbox.stdout.contains(&again) && inbox.stdout.contains(&sender),
+        inbox.stdout.contains(&again)
+            && inbox
+                .stdout
+                .lines()
+                .any(|l| l.contains(&second_id) && l.contains(&format!(" from {token}"))),
         "{inbox:?}"
     );
     let ack = world.run(to, &["ack", &second_id], None);
