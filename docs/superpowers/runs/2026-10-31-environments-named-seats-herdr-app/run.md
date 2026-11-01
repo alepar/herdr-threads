@@ -143,3 +143,19 @@ Read-only reading of herdr-core (`/var/home/alepar/AleCode/herdr-core/crates/her
   and the exec'd stand-in's `$$`; they are equal.
 - Live L2 (a real core's `terminal.pid` before and after the shim) stays remaining evidence.
 - The shim keeps `HC_SESSION` too: the spec's rule is the K5 list minus `host::hc::ENV_VARS`, which includes it.
+
+## N2-e2e (ht-kqrt.61)
+
+Opt-in wake-e2e cases `tmux-named/send-p0` and `tmux-named/send-p1` (silent control) in `scripts/wake-e2e.py`: a named seat
+(`HERDR_THREADS_SEAT_NAME`, no Herdr pane) runs real Claude (hooks-only installation, so the mod channel does not preempt
+the tmux composer wake) and Codex, each in its own private `tmux -L ht-test-<uuid>` server; a person seat sends one direct
+item at T=0. Not in the default matrix, no version gate. Cleanup kills every private tmux server and verifies it gone
+(socket silent, no process naming it); a survivor fails the run.
+
+- Evidence run here: `python3 scripts/wake-e2e.py --self-test` (214 tests OK, 1 pre-existing skip: no Python older than
+  3.12), including the real private-server cleanup test, the survivor/keep/completeness paths and a screen-primitive smoke
+  against a real tmux server; `scripts/check-no-leaked-processes` clean afterwards.
+- Remaining evidence (run-final gate, top-level session): the real-agent run
+  `python3 scripts/wake-e2e.py --cases tmux-named/send-p0,tmux-named/send-p1 --codex-auth-home ~/.aisw/profiles/codex/codex-2`
+  (Claude needs `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` on Linux). No credential was used in this leaf, so the
+  agent half is unexercised; the running-turn recognizer (`esc to interrupt`) and composer glyph match are unverified live.
