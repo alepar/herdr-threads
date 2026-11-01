@@ -768,6 +768,37 @@ fn host_wait_parks_then_applies_once_a_host_row_exists() {
     assert_eq!(c.state(&a.log, 3), "applied");
 }
 
+// Kills: the built-in named host (a store row, never dialled) releasing a `wait:host` park, which
+// would restore an own seat onto a host that cannot hold a pane seat.
+#[test]
+fn named_host_never_satisfies_wait_host() {
+    let (a, mut c) = host_wait_fixture((64, 65));
+    c.pass();
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+    c.conn
+        .execute(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at,kind) \
+             SELECT id,'/.herdr-threads/named-host',0,0,'named' FROM local_node",
+            [],
+        )
+        .unwrap();
+    let progress = c.pass();
+    assert_eq!(progress.applied, 0, "{progress:?}");
+    assert_eq!(
+        c.state(&a.log, 2),
+        "parked_dep",
+        "a named host row is no host"
+    );
+    let progress = c.replay(ReplayScope::Startup);
+    assert_eq!(progress.applied, 0, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+
+    attach_fake_host(&c);
+    let progress = c.pass();
+    assert_eq!(progress.applied, 2, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "applied");
+}
+
 #[test]
 fn startup_replay_takes_host_waiting_entries_when_a_host_exists() {
     let (a, mut c) = host_wait_fixture((62, 63));

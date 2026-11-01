@@ -167,8 +167,8 @@ pub fn ensure_published(
 ///   even with another kind, keeps the first: the root accepted fork limit).
 /// - Row absent, origin is another node: insert the remote row.
 /// - Row absent, origin is this node (an own old incarnation pulled back after
-///   a wipe): insert a local `unresolved` seat on the `herdr_hosts` row with
-///   the greatest `last_attached_at`; with no such row it is
+///   a wipe): insert a local `unresolved` seat on the `herdr_hosts` row (never
+///   the named host) with the greatest `last_attached_at`; with no such row it is
 ///   `HostUnavailable "own seat restore needs an attached host"`, which the
 ///   handler maps to `FactError::Wait { on: Host }`: the entry parks on
 ///   `wait:host` and is re-attempted at startup and when the first host
@@ -207,7 +207,7 @@ pub fn materialize_seat_created(
         None => {
             let host: Option<i64> = tx
                 .query_row(
-                    "SELECT host_id FROM herdr_hosts ORDER BY last_attached_at DESC, host_id DESC LIMIT 1",
+                    "SELECT host_id FROM herdr_hosts WHERE kind<>'named' ORDER BY last_attached_at DESC, host_id DESC LIMIT 1",
                     [],
                     |r| r.get(0),
                 )

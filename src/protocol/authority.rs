@@ -146,6 +146,10 @@ pub const CARRIED_BINDING_PROVENANCES: [&str; 4] = [
 /// and never the provenance of a binding (the binding the reattached seat
 /// opens stays `cooperative_top_level`).
 pub const COOPERATIVE_CONTINUITY_PROVENANCE: &str = "cooperative_continuity";
+/// TRUST-POLICY A3/C1 "named continuity": an ordinary resolve of a name reattached the unresolved
+/// named seat of that name. Seat history only: it rides `allocation_decisions.operator_label` of
+/// a `cooperative_continuity` row (the `kind` CHECK is closed); never on receipts or bindings.
+pub const COOPERATIVE_NAMED_SEAT_PROVENANCE: &str = "cooperative_named_seat";
 /// TRUST-POLICY A3: Herdr's guarded `agent.start` in this pane was observed
 /// starting the harness and the agent has not checked in. Bindings only (an
 /// unregistered occupant binding the daemon opens after a correlated launch,
