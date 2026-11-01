@@ -1029,6 +1029,16 @@ impl Host {
                 let Ok(request) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
+                // The daemon's pre-attach `hello` probe: real Herdr answers it with the captured
+                // `invalid_request` error. It is not a recorded request.
+                if request["method"] == "hello" {
+                    let _ = writeln!(
+                        stream,
+                        "{}",
+                        include_str!("fixtures/herdr-hello/reply.txt").trim_end()
+                    );
+                    continue;
+                }
                 let mut state = shared.lock().unwrap();
                 state.requests.push(request.clone());
                 let method = request["method"].as_str().unwrap();
