@@ -426,6 +426,10 @@ pub struct SeatsQuery {
     /// seats only.
     #[serde(default, skip_serializing_if = "SeatFilter::is_empty")]
     pub filter: SeatFilter,
+    /// Host scope (F9): only seats on this host. Sent only by a caller whose site is host-scoped
+    /// (`host_scoped_lookup()`), never from a Pane site, so a Pane request's bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostLocator>,
 }
 
 /// See [`SeatsQuery::filter`].
@@ -1204,6 +1208,10 @@ pub struct ResolveThreadQuery {
     pub caller_target: Option<HostTargetId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<SeatId>,
+    /// The caller's host (F9): `caller_target` and `caller` resolve only on this host. Sent only
+    /// when the site is host-scoped (`host_scoped_lookup()`), never from a Pane site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_host: Option<HostLocator>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1896,5 +1904,55 @@ mod host_locator_tests {
         assert_eq!(orphan.host_locator(), None);
         // A host-free read.
         assert_eq!(Command::Health.host_locator(), None);
+    }
+
+    /// Kills: a host field serialized when unset (a Pane request's bytes would change and an old
+    /// `deny_unknown_fields` daemon would reject it).
+    #[test]
+    fn pane_site_seats_query_bytes_unchanged() {
+        let query = SeatsQuery {
+            page: PageRequest::default(),
+            target: Some(HostTargetId::new("p1")),
+            include_retired: false,
+            filter: SeatFilter::default(),
+            host: None,
+        };
+        let json = serde_json::to_string(&query).unwrap();
+        assert_eq!(
+            json,
+            r#"{"page":{"cursor":null,"limit":20,"max_bytes":16384},"target":"p1"}"#
+        );
+        let scoped = SeatsQuery {
+            host: Some(HostLocator::parse("/h/a").unwrap()),
+            ..query
+        };
+        assert!(
+            serde_json::to_string(&scoped)
+                .unwrap()
+                .ends_with(r#","host":"/h/a"}"#)
+        );
+    }
+
+    #[test]
+    fn pane_site_resolve_thread_query_bytes_unchanged() {
+        let query = ResolveThreadQuery {
+            selector: "team".into(),
+            caller_target: Some(HostTargetId::new("p1")),
+            caller: None,
+            caller_host: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&query).unwrap(),
+            r#"{"selector":"team","caller_target":"p1"}"#
+        );
+        let scoped = ResolveThreadQuery {
+            caller_host: Some(HostLocator::parse("/h/a").unwrap()),
+            ..query
+        };
+        assert!(
+            serde_json::to_string(&scoped)
+                .unwrap()
+                .ends_with(r#","caller_host":"/h/a"}"#)
+        );
     }
 }

@@ -2159,6 +2159,7 @@ fn probe_seats_directory() {
             local: true,
             ..SeatFilter::default()
         },
+        host: None,
     });
     assert_eq!(
         serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),

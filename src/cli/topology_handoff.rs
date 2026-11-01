@@ -472,6 +472,8 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
                 selector: selector.clone(),
                 caller: Some(inputs.claim.seat.clone()),
                 caller_target: Some(inputs.claim.target.clone()),
+
+                caller_host: None,
             }),
             &super::cooperative_budget(inputs.clock),
         )?;

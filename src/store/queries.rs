@@ -1502,19 +1502,25 @@ fn seats(
 ) -> Result<CommandResult, ApiError> {
     // The pre-directory digest when no directory filter is set, so a cursor
     // of an older CLI page stays valid.
-    let filter = if q.filter.is_empty() {
-        digest(&(
+    let filter = match (q.filter.is_empty(), &q.host) {
+        (true, None) => digest(&(
             "seats",
             q.target.as_ref().map(HostTargetId::as_str),
             q.include_retired,
-        ))?
-    } else {
-        digest(&(
+        ))?,
+        (false, None) => digest(&(
             "seats",
             q.target.as_ref().map(HostTargetId::as_str),
             q.include_retired,
             &q.filter,
-        ))?
+        ))?,
+        (_, Some(host)) => digest(&(
+            "seats",
+            q.target.as_ref().map(HostTargetId::as_str),
+            q.include_retired,
+            &q.filter,
+            host.as_str(),
+        ))?,
     };
     let target = q.target.as_ref().map(|t| t.as_str().to_owned());
     let cursor = decode_cursor(
@@ -1611,6 +1617,13 @@ fn seats(
                 r.get(0)
             })
             .map_err(|e| db.map_error(e))?;
+        // Host scope (F9): a seat on another host is skipped like a directory mismatch.
+        if let Some(host) = &q.host
+            && !seat_on_host(db, &id, host)?
+        {
+            last = ordinal as u64;
+            continue;
+        }
         let directory = if q.target.is_none() && !(q.filter.local && !local) {
             super::seat_directory::directory(db, &id, now)?
         } else {
@@ -2715,6 +2728,20 @@ fn literal_contains_bounded(
     Ok(false)
 }
 
+/// Whether `seat` sits on the Herdr host attached at `host` (F9).
+fn seat_on_host(
+    db: &QueryConnection,
+    seat: &str,
+    host: &crate::protocol::ids::HostLocator,
+) -> Result<bool, ApiError> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND h.endpoint=?2)",
+        params![seat, host.as_str()],
+        |r| r.get::<_, bool>(0),
+    )
+    .map_err(|e| db.map_error(e))
+}
+
 /// Exact IDs win, then the first nonempty joined/active/history name tier.
 /// Each indexed tier returns at most nine matches; the ninth proves omissions.
 fn resolve_thread(
@@ -2743,8 +2770,21 @@ fn resolve_thread(
             )
             .optional()
             .map_err(|e| db.map_error(e))?,
+        // Host-scoped (F9): target ids are per host, so the target resolves on the caller's host only.
+        (None, Some(target)) if q.caller_host.is_some() => db
+            .query_row(
+                "SELECT s.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.instance_id=?1 AND s.target_id=?2 AND s.state='resolved' AND h.endpoint=?3",
+                params![instance, target.as_str(), q.caller_host.as_ref().map(|h| h.as_str())],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| db.map_error(e))?,
         (None, Some(target)) => db.query_row("SELECT id FROM seats INDEXED BY seats_live_target WHERE instance_id=?1 AND target_id=?2 AND state='resolved' AND target_id IS NOT NULL", params![instance,target.as_str()], |r|r.get::<_,String>(0)).optional().map_err(|e|db.map_error(e))?,
         _ => None,
+    };
+    let caller = match (caller, &q.caller_host) {
+        (Some(id), Some(host)) if !seat_on_host(db, &id, host)? => None,
+        (caller, _) => caller,
     };
     for (tier, sql) in [
         (
