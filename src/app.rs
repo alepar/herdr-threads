@@ -2049,7 +2049,8 @@ where
                 crate::protocol::ids::NAMED_HOST_LOCATOR,
             )
             .and_then(|locator| {
-                let host_id = host_sessions.reserve_host_id(&locator, crate::ports::HostKind::Named)?;
+                let kind = crate::ports::HostKind::Named;
+                let host_id = host_sessions.reserve_host_id(&locator, kind)?;
                 let port = Arc::new(crate::host::named::NamedHost::new(
                     &instance.to_string(),
                     host_id,
@@ -2057,7 +2058,7 @@ where
                     Arc::clone(&factory_clock),
                 ));
                 port.set_turn_state(Arc::clone(&turn_state));
-                host_sessions.attach_builtin(port, Arc::new(crate::host::named::NoBootstrap), &locator)
+                host_sessions.attach_builtin(kind, port, Arc::new(crate::host::named::NoBootstrap), &locator)
             }) {
                 Ok(_) => {}
                 Err(error) => rate_limited_log.write_line(&format!(

@@ -739,6 +739,7 @@ impl HostSessions {
     /// an error.
     pub fn attach_builtin(
         &self,
+        kind: crate::ports::HostKind,
         port: Arc<dyn HostPort>,
         observer: Arc<dyn BootstrapObserver>,
         locator: &HostLocator,
@@ -761,7 +762,7 @@ impl HostSessions {
             self.deps.store.attach_host_of_kind(
                 locator,
                 self.deps.clock.utc_now().0,
-                port.kind(),
+                kind,
                 &budget,
             )?
         };
@@ -1904,7 +1905,7 @@ mod tests {
         let (port, observer) = builtin_parts(false);
         let session = rig
             .sessions
-            .attach_builtin(port, observer, &loc("/builtin/named"))
+            .attach_builtin(HostKind::Named, port, observer, &loc("/builtin/named"))
             .unwrap();
         assert!(rig.sessions.attached().is_empty());
         assert_eq!(rig.sessions.attached_count(), 0);
@@ -1915,7 +1916,7 @@ mod tests {
         let (port, observer) = builtin_parts(false);
         let error = rig
             .sessions
-            .attach_builtin(port, observer, &loc("/builtin/other"))
+            .attach_builtin(HostKind::Named, port, observer, &loc("/builtin/other"))
             .err()
             .unwrap();
         assert_eq!(error.code, ErrorCode::InvalidRequest);
@@ -1958,14 +1959,19 @@ mod tests {
         ));
         let (port, observer) = builtin_parts(false);
         sessions
-            .attach_builtin(port, observer, &loc("/builtin/not-on-disk"))
+            .attach_builtin(
+                HostKind::Named,
+                port,
+                observer,
+                &loc("/builtin/not-on-disk"),
+            )
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 0, "exists never consulted");
         sessions.stop_all();
         // The dialled registry is full, and the built-in slot still takes one.
         let (port, observer) = builtin_parts(false);
         rig.sessions
-            .attach_builtin(port, observer, &loc("/builtin/past-cap"))
+            .attach_builtin(HostKind::Herdr, port, observer, &loc("/builtin/past-cap"))
             .unwrap();
         assert_eq!(rig.sessions.attached_count(), MAX_ATTACHED_HOSTS);
         assert_eq!(rig.sessions.all_for_reads().len(), MAX_ATTACHED_HOSTS + 1);
@@ -1984,7 +1990,7 @@ mod tests {
         let (port, observer) = builtin_parts(false);
         let builtin = rig
             .sessions
-            .attach_builtin(port, observer, &loc("/builtin/named"))
+            .attach_builtin(HostKind::Named, port, observer, &loc("/builtin/named"))
             .unwrap();
         let named = loc("/builtin/named");
         assert!(Arc::ptr_eq(
@@ -2015,7 +2021,7 @@ mod tests {
         let (port, observer) = builtin_parts(true);
         let session = rig
             .sessions
-            .attach_builtin(port, observer, &loc("/builtin/named"))
+            .attach_builtin(HostKind::Named, port, observer, &loc("/builtin/named"))
             .unwrap();
         assert!(session.wake().is_none());
         assert!(!rig.kicks.registered(Lane::Wakes));
