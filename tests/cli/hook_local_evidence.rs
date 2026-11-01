@@ -170,6 +170,7 @@ fn herdr() -> HookEnv {
         herdr_env: true,
         pane: Some("w9:p1".into()),
         ambiguous: None,
+        named: None,
     }
 }
 

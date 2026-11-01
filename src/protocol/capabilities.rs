@@ -37,6 +37,11 @@ pub const WAKE_STATUS_V1: &str = "seat.wake_status_v1";
 /// labels, keyed by host. A CLI sends it only to a daemon that advertises
 /// this and renders labels as `-` otherwise.
 pub const HOST_TOPOLOGIES_V1: &str = "topology.host_topologies_v1";
+
+/// Named caller sites: `SeatsQuery.host` and `ResolveThreadQuery.caller_host` carry the reserved
+/// named-host locator with the seat name as target. A CLI sends a Named site only to a daemon that
+/// advertises this (`cli::site_capability`, M13).
+pub const HOST_SITES_V1: &str = "seat.host_sites_v1";
 /// `SyncCommand::PeerPrune` and `SyncCommand::PeerUnforget` (TRUST-POLICY
 /// N16). The CLI sends them only to a daemon that advertises this, so an
 /// older daemon gets one clear refusal instead of an unknown-variant error.
@@ -202,6 +207,7 @@ pub const ADVERTISED: &[&str] = &[
     PEER_EVENTS_V1,
     LOCATE_CALLER_V1,
     HOST_TOPOLOGIES_V1,
+    HOST_SITES_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

@@ -1,15 +1,22 @@
 //! The CLI's site-capability gate (F9): before a request that carries a non-Pane caller site is
 //! sent, the daemon must advertise the local capability that understands it. Without it the CLI
 //! refuses with a fixed line instead of sending a request an older daemon would reject as an
-//! unknown field. No capability is advertised yet: named sites (`seat.host_sites_v1`) and terminal
-//! sites (`seat.terminal_sites_v1`) each add theirs with the phase that builds the site, and pass
-//! their own refusal line. A Pane site never goes through this gate.
+//! unknown field. Named sites are gated on `seat.host_sites_v1` (M13); terminal sites
+//! (`seat.terminal_sites_v1`) add theirs with the phase that builds the site. A Pane site never
+//! goes through this gate.
 
+use super::caller_location::CallerSite;
 use crate::ports::LocalClient;
 use crate::protocol::{
+    capabilities::HOST_SITES_V1,
+    commands::ResolveThreadQuery,
+    ids::{HostLocator, HostTargetId, SeatId},
     results::{ApiError, ErrorCode},
     time::CallBudget,
 };
+
+/// M13 (63 bytes): the daemon does not advertise the capability a non-Pane site needs.
+pub const M13: &str = "herdr-threads: daemon predates named/terminal seats; restart it";
 
 /// Passes when the daemon advertises `capability`; otherwise refuses with `refusal_line` as an
 /// `Unsupported` error, before anything is sent.
@@ -24,6 +31,48 @@ pub fn require_site_capability(
     } else {
         Err(ApiError::new(ErrorCode::Unsupported, refusal_line))
     }
+}
+
+/// The host a seat lookup for `site` carries (`SeatsQuery.host`): a Named site passes the
+/// `seat.host_sites_v1` gate (M13) and sends its reserved named-host locator; any other site
+/// sends none, so its bytes are unchanged.
+pub fn seats_host(
+    site: Option<CallerSite<'_>>,
+    client: &dyn LocalClient,
+    budget: &CallBudget,
+) -> Result<Option<HostLocator>, ApiError> {
+    let Some((host, _)) = site.and_then(CallerSite::sent_scope) else {
+        return Ok(None);
+    };
+    require_site_capability(client, HOST_SITES_V1, M13, budget)?;
+    Ok(Some(host))
+}
+
+/// The thread-resolution request for the caller's site. A site that sends a host scope (Named)
+/// first passes the `seat.host_sites_v1` gate (M13) and then carries its host and target; any
+/// other caller keeps the pane target it was given and sends no host, so its bytes are unchanged.
+pub fn resolve_thread_query(
+    site: Option<CallerSite<'_>>,
+    selector: &str,
+    caller: Option<SeatId>,
+    caller_target: Option<HostTargetId>,
+    client: &dyn LocalClient,
+    budget: &CallBudget,
+) -> Result<ResolveThreadQuery, ApiError> {
+    let scope = site.and_then(CallerSite::sent_scope);
+    if scope.is_some() {
+        require_site_capability(client, HOST_SITES_V1, M13, budget)?;
+    }
+    let (caller_target, caller_host) = match scope {
+        Some((host, target)) => (Some(target), Some(host)),
+        None => (caller_target, None),
+    };
+    Ok(ResolveThreadQuery {
+        selector: selector.to_owned(),
+        caller,
+        caller_target,
+        caller_host,
+    })
 }
 
 #[cfg(test)]
@@ -74,5 +123,24 @@ mod tests {
     #[test]
     fn passes_with_capability() {
         require_site_capability(&Fake(&[TEST_CAP]), TEST_CAP, LINE, &budget()).unwrap();
+    }
+
+    #[test]
+    fn named_seat_lookup_sends_the_named_host_behind_the_gate() {
+        use super::super::caller_location::CallerLocator;
+        use crate::protocol::ids::{NAMED_HOST_LOCATOR, SeatName};
+        let named = CallerLocator::Named(SeatName::parse("alice").unwrap());
+        let host = seats_host(Some(named.site()), &Fake(&[HOST_SITES_V1]), &budget())
+            .unwrap()
+            .unwrap();
+        assert_eq!(host.as_str(), NAMED_HOST_LOCATOR);
+        let error = seats_host(Some(named.site()), &Fake(&[]), &budget()).unwrap_err();
+        assert_eq!(error.detail, M13);
+        let pane = CallerLocator::Pane { id: "p_1".into() };
+        assert!(
+            seats_host(Some(pane.site()), &Fake(&[]), &budget())
+                .unwrap()
+                .is_none()
+        );
     }
 }

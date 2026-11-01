@@ -295,6 +295,7 @@ fn capability_constants_are_stable() {
     assert_eq!(PEER_PRUNE_V1, "peer.prune_v1");
     assert_eq!(PEER_EVENTS_V1, "peer.events_v1");
     assert_eq!(HOST_TOPOLOGIES_V1, "topology.host_topologies_v1");
+    assert_eq!(HOST_SITES_V1, "seat.host_sites_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -343,7 +344,8 @@ fn capability_constants_are_stable() {
             "peer.prune_v1",
             "peer.events_v1",
             "caller.locate_v1",
-            "topology.host_topologies_v1"
+            "topology.host_topologies_v1",
+            "seat.host_sites_v1"
         ]
     );
 }
@@ -524,6 +526,7 @@ fn every_advertised_capability_has_a_handler() {
             SEATS_DIRECTORY_V1 => probe_seats_directory(),
             WAKE_STATUS_V1 => probe_wake_status(),
             HOST_TOPOLOGIES_V1 => probe_host_topologies(),
+            HOST_SITES_V1 => probe_host_sites(),
             PEER_PRUNE_V1 => probe_sync_commands(&[
                 crate::protocol::sync_admin::SyncCommand::PeerPrune {
                     host: None,
@@ -1184,6 +1187,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "peer.events_v1",
             "caller.locate_v1",
             "topology.host_topologies_v1",
+            "seat.host_sites_v1",
             "invitation.confirmation_v1",
             "handoff.summary_prompt_v1"
         ]
@@ -2224,6 +2228,58 @@ fn probe_seats_directory() {
         },
         host: None,
     });
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    let result = store
+        .query(
+            &command,
+            &ReadContext {
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+                output: OutputSpec::default(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::Seats(page) = result else {
+        panic!("wrong seats route")
+    };
+    assert!(page.items.is_empty());
+}
+
+/// A Named site's `SeatsQuery.host` (the reserved named-host locator) round-trips and the store
+/// answers it with a seat page.
+fn probe_host_sites() {
+    use crate::{
+        ports::{ReadContext, StorePort},
+        protocol::{
+            commands::SeatsQuery,
+            ids::{HostLocator, NAMED_HOST_LOCATOR},
+            output::OutputSpec,
+            pagination::PageRequest,
+        },
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let iso = TestIsolation::new("cap-host-sites");
+    let context =
+        StoreContext::new(iso.state_root().join("store.db"), Arc::new(FixedClock)).with_test_host();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    let command = Command::Seats(SeatsQuery {
+        page: PageRequest::default(),
+        target: Some(crate::protocol::ids::HostTargetId::new("worker-1")),
+        include_retired: false,
+        filter: Default::default(),
+        host: Some(HostLocator::parse(NAMED_HOST_LOCATOR).unwrap()),
+    });
+    assert!(command.validate().is_ok());
     assert_eq!(
         serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
         command

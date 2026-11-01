@@ -23,7 +23,12 @@ use crate::store::named_seats::NamedSeatSource;
 
 /// Caller env of a named seat: the seat's name and its read-only marker. The
 /// daemon and every child it spawns scrub these (`host::child_env_scrub_list`).
-pub const ENV_VARS: &[&str] = &["HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY"];
+pub const ENV_VARS: &[&str] = &[ENV_SEAT_NAME, ENV_SEAT_READONLY];
+
+/// The variable that names a named seat (precedence rule 1 of the caller site).
+pub const ENV_SEAT_NAME: &str = "HERDR_THREADS_SEAT_NAME";
+/// The read-only marker of a named seat.
+pub const ENV_SEAT_READONLY: &str = "HERDR_THREADS_SEAT_READONLY";
 
 /// NamedHost: the built-in, never-dialled host of named seats.
 ///

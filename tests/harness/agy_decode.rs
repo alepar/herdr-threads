@@ -578,11 +578,13 @@ fn hook_agy_prints_nothing_on_every_fixture_without_a_pane_or_daemon() {
                 herdr_env: false,
                 pane: None,
                 ambiguous: None,
+                named: None,
             },
             HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
                 ambiguous: None,
+                named: None,
             },
         ] {
             let outcome = run_hook(
