@@ -854,13 +854,21 @@ where
 
     /// The live remote seat named `location` on the node tagged `tag`, from this node's
     /// replicated state (`seat.created.display_name`, N7). `location` must read as a seat
-    /// name; the node's own pane readings were tried first, so a pane path wins over a name.
+    /// name or as a `<session>:tN` herdr-core label (the pane text its home node published,
+    /// H1-remote); the node's own pane readings were tried first, so a pane path wins.
     /// A name is display text: the daemon's `SeatDirectory.name` of an unretired seat on that
     /// node, never a lookup that creates or changes anything; two seats of one name refuse.
     fn remote_named_seat(&self, location: &str, tag: &str) -> Result<Option<SeatId>, RunError> {
-        let Ok(name) = crate::protocol::ids::SeatName::parse(location) else {
-            return Ok(None);
+        // A name, or the `<session>:tN` label of a herdr-core terminal seat (H1-remote): both
+        // are the pane text the seat's home node published.
+        let name = match crate::protocol::ids::SeatName::parse(location) {
+            Ok(name) => name.as_str().to_owned(),
+            Err(_) => match crate::host::hc::labels::HcAddress::parse(location) {
+                Some(address) if address.session.is_some() => address.to_string(),
+                _ => return Ok(None),
+            },
         };
+        let name = name.as_str();
         let (_, client) = self.connection.get()?;
         let clock = self.clock.as_ref();
         let mut cursor = None;
@@ -890,10 +898,10 @@ where
             };
             for seat in page.items {
                 let named = seat.retired_at.is_none()
-                    && seat
-                        .directory
-                        .as_ref()
-                        .is_some_and(|d| d.name.as_deref() == Some(name.as_str()));
+                    && seat.directory.as_ref().is_some_and(|d| {
+                        d.name.as_deref() == Some(name)
+                            || (name.contains(':') && d.pane.as_deref() == Some(name))
+                    });
                 if !named {
                     continue;
                 }
@@ -903,7 +911,7 @@ where
                         ErrorCode::Conflict,
                         format!(
                             "{name}@{tag} names more than one seat; pass an exact seat ID",
-                            name = name.as_str()
+                            name = name
                         ),
                     )));
                 }
