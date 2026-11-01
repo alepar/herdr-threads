@@ -6,10 +6,11 @@
 
 use crate::daemon::health::{ComponentStatus, HostHealthInput, LaneDegradation};
 use crate::daemon::logs::LaneErrorLog;
+use crate::host::probe::PROBE_BUDGET;
 use crate::identity::repair::OrdinaryIdentity;
 use crate::ports::{
-    BootstrapObserver, HookPullOutlook, HostId, HostPort, ModChannels, NativeLaunchCapability,
-    PokeCapabilitySource, StorePort, WakeCapability,
+    BootstrapObserver, HookPullOutlook, HostId, HostKind, HostPort, ModChannels,
+    NativeLaunchCapability, PokeCapabilitySource, StorePort, WakeCapability,
 };
 use crate::protocol::{
     handoff::HandoffNamespace,
@@ -49,8 +50,10 @@ const ATTACH_POLL: Duration = Duration::from_millis(10);
 /// The budget of a startup or sweep attach.
 const BACKGROUND_ATTACH_MS: u64 = 5_000;
 
-type BuildHost =
-    Arc<dyn Fn(&HostLocator) -> (Arc<dyn HostPort>, Arc<dyn BootstrapObserver>) + Send + Sync>;
+type BuildHost = Arc<
+    dyn Fn(HostKind, &HostLocator) -> (Arc<dyn HostPort>, Arc<dyn BootstrapObserver>) + Send + Sync,
+>;
+type ProbeHost = Arc<dyn Fn(&HostLocator, Duration) -> Result<HostKind, ApiError> + Send + Sync>;
 type SocketExists = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 /// The `herdr_hosts` rows this node attached before, most recent first.
 pub type RememberedHosts = Arc<dyn Fn(&CallBudget) -> Result<Vec<HostRow>, ApiError> + Send + Sync>;
@@ -58,21 +61,25 @@ type LogLine = Arc<dyn Fn(&str) + Send + Sync>;
 /// Runs once with the first attached session.
 pub type FirstAttachHook = Box<dyn FnOnce(&Arc<HostSession>) + Send>;
 
-/// HostFactory: how a Herdr server's port and observer are built and whether
-/// its socket exists.
+/// HostFactory: how a host's port and observer are built, which kind answers
+/// on a socket, and whether the socket exists.
 ///
-/// Owns: two closures, `build(locator) -> (port, observer)` and `exists(path)`.
-/// Hides: `NativeCli` construction and the socket test (production) versus the
-/// fake-locator map (tests).
+/// Owns: three closures, `exists(path)`, `probe(locator, budget) -> kind` and
+/// `build(kind, locator) -> (port, observer)`. `HostSessions` calls them in
+/// that order, `probe` under `attach_lock` and before the `herdr_hosts` row is
+/// written (H1b), so a crash never leaves a wrongly kinded row.
+/// Hides: `NativeCli` / `HcHost` construction, the `hello`-then-`ping` probe and
+/// the socket test (production) versus the fake-locator map (tests).
 /// Must not: attach, write the store or spawn workers (`HostSessions` does all
 /// three).
 /// Role: built in `main.rs` or a test, carried by [`HostAttachPlan`] and
-/// consumed by `HostSessions`. Two closures, not a trait: one production
+/// consumed by `HostSessions`. Closures, not a trait: one production
 /// implementation, and the fake is data. A new way to build a host is a new
-/// closure pair; nothing else constructs a `HostPort`.
+/// closure; nothing else constructs a `HostPort`.
 #[derive(Clone)]
 pub struct HostFactory {
     pub build: BuildHost,
+    pub probe: ProbeHost,
     pub exists: SocketExists,
 }
 
@@ -467,7 +474,8 @@ impl HostSessions {
     ) -> Arc<Self> {
         let deps = SessionDeps::detached(store, clock, node_uuid);
         let factory = HostFactory {
-            build: Arc::new(|_| unreachable!("a prebuilt registry attaches nothing")),
+            build: Arc::new(|_, _| unreachable!("a prebuilt registry attaches nothing")),
+            probe: Arc::new(|_, _| unreachable!("a prebuilt registry attaches nothing")),
             exists: Arc::new(|_| false),
         };
         let mut sessions = Self::new(Arc::new(HostIndex::new()), factory, deps);
@@ -620,16 +628,21 @@ impl HostSessions {
                 "too many Herdr servers attached ({MAX_ATTACHED_HOSTS})"
             )));
         }
+        // Probe before the row is written (H1b), still under `attach_lock`.
+        let kind = (self.factory.probe)(locator, PROBE_BUDGET)?;
         let (host_id, epoch) = {
             let _turn = self
                 .deps
                 .writer
                 .enter_foreground(budget, self.deps.clock.as_ref())?;
-            self.deps
-                .store
-                .attach_host(locator, self.deps.clock.utc_now().0, budget)?
+            self.deps.store.attach_host_of_kind(
+                locator,
+                self.deps.clock.utc_now().0,
+                kind,
+                budget,
+            )?
         };
-        let (port, observer) = (self.factory.build)(locator);
+        let (port, observer) = (self.factory.build)(kind, locator);
         port.resume_after_epoch(u64::try_from(epoch).unwrap_or(0));
 
         let session = self.start_session(host_id, locator, port, observer)?;
@@ -1171,6 +1184,13 @@ mod tests {
     struct World {
         live: Mutex<BTreeSet<String>>,
         built: AtomicUsize,
+        /// The kind each locator's probe answers (`None`: the peer is silent);
+        /// Herdr when absent.
+        kinds: Mutex<BTreeMap<String, Option<HostKind>>>,
+        /// The `herdr_hosts` rows that existed at each probe, in probe order.
+        rows_at_probe: Mutex<Vec<i64>>,
+        /// The kind each build was asked for, in build order.
+        built_kinds: Mutex<Vec<HostKind>>,
     }
 
     impl World {
@@ -1220,9 +1240,28 @@ mod tests {
             let factory = HostFactory {
                 build: {
                     let world = Arc::clone(&world);
-                    Arc::new(move |_| {
+                    Arc::new(move |kind, _| {
                         world.built.fetch_add(1, Ordering::SeqCst);
+                        world.built_kinds.lock().unwrap().push(kind);
                         (Arc::new(FakeHost { no_wake: false }), Arc::new(NoObserver))
+                    })
+                },
+                probe: {
+                    let world = Arc::clone(&world);
+                    let db_path = isolation.path("store.db");
+                    Arc::new(move |locator, _| {
+                        let rows = rusqlite::Connection::open(&db_path)
+                            .and_then(|db| {
+                                db.query_row("SELECT count(*) FROM herdr_hosts", [], |r| r.get(0))
+                            })
+                            .unwrap_or(0);
+                        world.rows_at_probe.lock().unwrap().push(rows);
+                        let kinds = world.kinds.lock().unwrap();
+                        kinds
+                            .get(locator.as_str())
+                            .copied()
+                            .unwrap_or(Some(HostKind::Herdr))
+                            .ok_or_else(|| ApiError::host_unavailable("silent peer"))
                     })
                 },
                 exists: {
@@ -1646,6 +1685,90 @@ mod tests {
         assert_ne!(fallback.locator(), &missing);
     }
 
+    // Kills: the probe running after (or without) the row write, so a crash or
+    // a refused probe leaves a wrongly kinded row; the probed kind not reaching
+    // the stored column or `build`.
+    #[test]
+    fn probe_runs_before_the_row_and_its_kind_is_stored_and_built() {
+        let rig = Rig::new("hs-probe-order", false, Duration::from_secs(60));
+        rig.world.set_live("/hc/core.sock", true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert("/hc/core.sock".into(), Some(HostKind::Hc));
+        rig.sessions
+            .resolve(&loc("/hc/core.sock"), &rig.budget(5_000))
+            .unwrap();
+        assert_eq!(*rig.world.rows_at_probe.lock().unwrap(), vec![0]);
+        assert_eq!(*rig.world.built_kinds.lock().unwrap(), vec![HostKind::Hc]);
+        let db = rusqlite::Connection::open(rig._isolation.path("store.db")).unwrap();
+        let (kind, probed): (String, Option<i64>) = db
+            .query_row(
+                "SELECT kind,kind_probed_at FROM herdr_hosts WHERE endpoint='/hc/core.sock'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "hc");
+        assert!(probed.is_some());
+    }
+
+    // Kills: a failed probe still writing a row.
+    #[test]
+    fn failed_probe_writes_no_row() {
+        let rig = Rig::new("hs-probe-fail", false, Duration::from_secs(60));
+        rig.world.set_live("/herdr/silent.sock", true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert("/herdr/silent.sock".into(), None);
+        let error = rig
+            .sessions
+            .resolve(&loc("/herdr/silent.sock"), &rig.budget(5_000))
+            .err()
+            .expect("a silent peer is not attached");
+        assert_eq!(error.code, ErrorCode::HostUnavailable);
+        let db = rusqlite::Connection::open(rig._isolation.path("store.db")).unwrap();
+        let rows: i64 = db
+            .query_row("SELECT count(*) FROM herdr_hosts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    // Kills: a stored kind overwritten by a probe that disagrees with it.
+    #[test]
+    fn a_kind_mismatch_refuses_the_attach() {
+        let rig = Rig::new("hs-probe-mismatch", false, Duration::from_secs(60));
+        rig.world.set_live("/herdr/a.sock", true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert("/herdr/a.sock".into(), Some(HostKind::Hc));
+        // Stored as Herdr, the socket now answers as hc.
+        rig.remember("/herdr/a.sock");
+        let error = rig
+            .sessions
+            .resolve(&loc("/herdr/a.sock"), &rig.budget(5_000))
+            .err()
+            .expect("a kind mismatch refuses the attach");
+        assert_eq!(error.code, ErrorCode::HostUnavailable);
+        assert!(error.detail.contains("stored as kind 'herdr'"), "{error:?}");
+        assert_eq!(rig.world.built.load(Ordering::SeqCst), 0);
+        assert_eq!(rig.sessions.attached_count(), 0);
+        let db = rusqlite::Connection::open(rig._isolation.path("store.db")).unwrap();
+        let kind: String = db
+            .query_row(
+                "SELECT kind FROM herdr_hosts WHERE endpoint='/herdr/a.sock'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "herdr", "the stored kind is not rewritten");
+    }
+
     fn builtin_parts(no_wake: bool) -> (Arc<dyn HostPort>, Arc<dyn BootstrapObserver>) {
         (Arc::new(FakeHost { no_wake }), Arc::new(NoObserver))
     }
@@ -1691,7 +1814,8 @@ mod tests {
         assert_eq!(rig.sessions.attached_count(), MAX_ATTACHED_HOSTS);
         let calls = Arc::new(AtomicUsize::new(0));
         let factory = HostFactory {
-            build: Arc::new(|_| unreachable!("the built-in port is given")),
+            build: Arc::new(|_, _| unreachable!("the built-in port is given")),
+            probe: Arc::new(|_, _| unreachable!("the built-in host is never probed")),
             exists: {
                 let calls = Arc::clone(&calls);
                 Arc::new(move |_| {

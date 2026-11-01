@@ -219,22 +219,54 @@ pub(crate) fn probe_daemon(
     }
 }
 
+/// The node's store file opened read-only; `None` when it is absent or unreadable.
+fn open_store_read_only(node_dir: &std::path::Path) -> Option<rusqlite::Connection> {
+    rusqlite::Connection::open_with_flags(
+        node_dir.join(crate::daemon::paths::DATABASE_FILE),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()
+}
+
 /// The `herdr_hosts` rows whose kind this build does not implement (G4): reattach
 /// skips them, so doctor names each as `{host_id, endpoint, kind}`. Read straight
 /// from the store file, read-only; no store, an older schema or an unreadable file
 /// names nothing.
 fn unattachable_hosts_report(node_dir: &std::path::Path) -> Vec<Value> {
-    let path = node_dir.join(crate::daemon::paths::DATABASE_FILE);
-    let Ok(conn) = rusqlite::Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) else {
+    let Some(conn) = open_store_read_only(node_dir) else {
         return Vec::new();
     };
     crate::store::hosts::unattachable(&conn)
         .unwrap_or_default()
         .into_iter()
         .map(|host| json!({"host_id": host.id.get(), "endpoint": host.endpoint, "kind": host.kind}))
+        .collect()
+}
+
+/// How long doctor waits for one stored host's socket to classify itself.
+const DOCTOR_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The implemented-kind rows whose socket now answers as another kind (H1b):
+/// the attach is refused for each, so doctor names `{host_id, endpoint, stored,
+/// probed}`. Read-only: it probes (`hello`, then `ping`) and writes nothing. A
+/// row whose socket is absent or silent names nothing; that is host
+/// reachability, not a kind mismatch.
+fn kind_mismatch_hosts_report(node_dir: &std::path::Path) -> Vec<Value> {
+    let Some(conn) = open_store_read_only(node_dir) else {
+        return Vec::new();
+    };
+    crate::store::hosts::remembered(&conn, usize::MAX)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| row.attachable())
+        .filter_map(|row| {
+            let probed =
+                crate::host::probe::probe_kind(row.locator.as_path(), DOCTOR_PROBE_BUDGET).ok()?;
+            (probed != row.host_kind()).then(|| {
+                json!({"host_id": row.id.get(), "endpoint": row.locator.as_str(),
+                       "stored": row.kind, "probed": probed.stored_name()})
+            })
+        })
         .collect()
 }
 
@@ -998,6 +1030,7 @@ fn report_captured(
         Err("the daemon's instance could not be resolved".into());
     let mut daemon_limitations: Vec<String> = Vec::new();
     let mut unattachable_hosts: Vec<Value> = Vec::new();
+    let mut mismatched_hosts: Vec<Value> = Vec::new();
     match resolved {
         Err(error) => {
             report["daemon"] = json!({"state": "unavailable", "error": error.to_string()});
@@ -1009,6 +1042,7 @@ fn report_captured(
         Ok(paths) => {
             report["node_dir"] = json!(paths.node_dir.display().to_string());
             unattachable_hosts = unattachable_hosts_report(&paths.node_dir);
+            mismatched_hosts = kind_mismatch_hosts_report(&paths.node_dir);
             report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
             report["harness_manifest"] = harness_manifest_report(
                 &paths.node_dir,
@@ -1122,7 +1156,17 @@ fn report_captured(
             host["host_id"], host["endpoint"], host["kind"]
         ));
     }
-    report["hosts"] = json!({"unattachable": unattachable_hosts});
+    for host in &mismatched_hosts {
+        limitations.push(format!(
+            "host {} {} kind mismatch: stored '{}' but answers as '{}': not attached",
+            host["host_id"],
+            host["endpoint"],
+            host["stored"].as_str().unwrap_or_default(),
+            host["probed"].as_str().unwrap_or_default()
+        ));
+    }
+    report["hosts"] =
+        json!({"unattachable": unattachable_hosts, "kind_mismatch": mismatched_hosts});
     if !limitations.is_empty() && result == "ok" {
         result = "degraded";
     }

@@ -2191,13 +2191,14 @@ mod publication_order {
         ) -> Result<CommandResult, ApiError> {
             self.inner.register_available(request, permit, budget)
         }
-        fn attach_host(
+        fn attach_host_of_kind(
             &self,
             locator: &crate::protocol::ids::HostLocator,
             now: i64,
+            kind: crate::ports::HostKind,
             budget: &CallBudget,
         ) -> Result<(crate::ports::HostId, i64), ApiError> {
-            self.inner.attach_host(locator, now, budget)
+            self.inner.attach_host_of_kind(locator, now, kind, budget)
         }
         fn begin_host_observation(
             &self,

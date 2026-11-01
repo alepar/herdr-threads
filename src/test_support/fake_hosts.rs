@@ -89,7 +89,9 @@ impl FakeHostWorld {
         HostAttachPlan {
             hint,
             factory: HostFactory {
-                build: Arc::new(move |locator| {
+                // A fixture world holds Herdr-shaped fakes only.
+                probe: Arc::new(|_, _| Ok(crate::ports::HostKind::Herdr)),
+                build: Arc::new(move |_, locator| {
                     building
                         .hosts
                         .lock()
