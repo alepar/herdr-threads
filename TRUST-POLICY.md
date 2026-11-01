@@ -122,8 +122,10 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
   unresolve and retire, never by a check-in.
 - **Host boot / incarnation** (per host): one Herdr server process. A Herdr restart is a new incarnation; terminal ids
   and pane addresses from the old one prove nothing about the new one.
-  For Herdr it is one server process; other hosts define theirs when they land (a herdr-core terminal host: the
-  core id, a new id being a new boot). The CLI reads caller-location environment in one place
+  For Herdr it is one server process; other hosts define theirs when they land. For a herdr-core (hc) host it is
+  `hc-core:<core.id>` read from `hello` (ASCII, at most 128 bytes): the socket is only a dial address, a core
+  restart, stop+start or update keeps the boot, and a different core id at a known locator is a new boot, so its
+  seats get C2 holds and are never matched by `tN` alone (a wiped or cloned core is the accepted limit). The CLI reads caller-location environment in one place
   (`src/cli/caller_location.rs`); that reading is a hint, never authority.
 - **Daemon boot**: one herdr-threads daemon process. A daemon restart does not change the Herdr incarnation.
 - **Operator**: a request made with `--operator`, accepted when the kernel peer UID matches the daemon owner.
@@ -155,7 +157,7 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 
 | Path | Trigger | Recorded as |
 |---|---|---|
-| Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
+| Structural reconfirm | Same terminal, same Herdr boot and incarnation; for an hc host the same `tN` under the same core id boot (ids are monotonic and never reused, so a finished `tN` never names another terminal) | automatic, no new provenance |
 | Cooperative continuity | A top-level lifecycle or turn event, or a push-channel harness's in-process watch for its own session (ht-dtx0), carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 

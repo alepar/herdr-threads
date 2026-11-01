@@ -1345,7 +1345,7 @@ fn child_env_scrub_list_is_the_union() {
     for name in crate::host::PANE_SCOPED_ENV_VARS
         .iter()
         .chain(crate::host::NAMED_SCRUB_ENV_VARS)
-        .chain(crate::host::HC_SCRUB_ENV_VARS)
+        .chain(crate::host::hc::ENV_VARS)
     {
         assert!(list.contains(name), "{name} missing");
     }

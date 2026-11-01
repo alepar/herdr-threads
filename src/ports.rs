@@ -3921,12 +3921,13 @@ pub struct RegisteredComposerEvidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostKind {
     Herdr,
+    Hc,
     Unknown,
 }
 
 impl HostKind {
     /// The kinds this build can construct. `Unknown` is never in it.
-    pub const IMPLEMENTED: &'static [HostKind] = &[HostKind::Herdr];
+    pub const IMPLEMENTED: &'static [HostKind] = &[HostKind::Herdr, HostKind::Hc];
 
     /// Whether this build can construct a host of this kind.
     pub fn is_implemented(self) -> bool {
@@ -3938,6 +3939,7 @@ impl HostKind {
     pub fn stored_name(self) -> Option<&'static str> {
         match self {
             HostKind::Herdr => Some("herdr"),
+            HostKind::Hc => Some("hc"),
             HostKind::Unknown => None,
         }
     }
@@ -3947,6 +3949,7 @@ impl HostKind {
     pub fn from_stored(text: &str) -> HostKind {
         match text {
             "herdr" => HostKind::Herdr,
+            "hc" => HostKind::Hc,
             _ => HostKind::Unknown,
         }
     }
