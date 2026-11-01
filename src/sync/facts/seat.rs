@@ -17,8 +17,9 @@ use crate::store::materialize::{AuthorRule, require_author};
 use crate::store::seats;
 use crate::sync::EntityKey;
 
-/// The `seat.created` v1 payload. `display_name` is reserved and always
-/// `null` in v1 (seats carry no name); the created time is the envelope HLC.
+/// The `seat.created` v1 payload. `display_name` is the seat's name (`seats.name`) for a
+/// named seat and `null` otherwise; a receiver keeps it only when it parses as a
+/// `SeatName`. The created time is the envelope HLC.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeatCreatedPayload {
     pub seat: SeatId,

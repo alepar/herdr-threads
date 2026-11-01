@@ -38,7 +38,7 @@ use crate::{
     ports::LocalClient,
     protocol::{
         capabilities::{HOST_SITES_V1, HOST_TOPOLOGIES_V1, INVITATION_CONFIRMATION_V1},
-        commands::{Command, SeatInspectQuery},
+        commands::{Command, SeatFilter, SeatInspectQuery, SeatsQuery},
         ids::{HostLocator, HostTargetId, NAMED_HOST_LOCATOR, SeatId},
         pagination::PageRequest,
         results::{
@@ -852,6 +852,70 @@ where
         )
     }
 
+    /// The live remote seat named `location` on the node tagged `tag`, from this node's
+    /// replicated state (`seat.created.display_name`, N7). `location` must read as a seat
+    /// name; the node's own pane readings were tried first, so a pane path wins over a name.
+    /// A name is display text: the daemon's `SeatDirectory.name` of an unretired seat on that
+    /// node, never a lookup that creates or changes anything; two seats of one name refuse.
+    fn remote_named_seat(&self, location: &str, tag: &str) -> Result<Option<SeatId>, RunError> {
+        let Ok(name) = crate::protocol::ids::SeatName::parse(location) else {
+            return Ok(None);
+        };
+        let (_, client) = self.connection.get()?;
+        let clock = self.clock.as_ref();
+        let mut cursor = None;
+        let mut found: Option<SeatId> = None;
+        for _ in 0..REMOTE_NAME_MAX_PAGES {
+            let result = client
+                .call(
+                    Command::Seats(SeatsQuery {
+                        page: PageRequest {
+                            cursor: cursor.take(),
+                            limit: REMOTE_NAME_PAGE_LIMIT,
+                            max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+                        },
+                        target: None,
+                        include_retired: false,
+                        filter: SeatFilter {
+                            node: Some(tag.to_owned()),
+                            ..Default::default()
+                        },
+                        host: None,
+                    }),
+                    &super::cooperative_budget(clock),
+                )
+                .map_err(run_error)?;
+            let CommandResult::Seats(page) = result else {
+                return Ok(None);
+            };
+            for seat in page.items {
+                let named = seat.retired_at.is_none()
+                    && seat
+                        .directory
+                        .as_ref()
+                        .is_some_and(|d| d.name.as_deref() == Some(name.as_str()));
+                if !named {
+                    continue;
+                }
+                // A peer names its own seats and may repeat a name: never guess between them.
+                if found.replace(seat.seat).is_some() {
+                    return Err(run_error(ApiError::new(
+                        ErrorCode::Conflict,
+                        format!(
+                            "{name}@{tag} names more than one seat; pass an exact seat ID",
+                            name = name.as_str()
+                        ),
+                    )));
+                }
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(found)
+    }
+
     /// `location@machine` (spec D2): `Ok(None)` when only the whole string's local reading can
     /// apply (the suffix names no known machine), else the one resolution or a refusal. A
     /// suffix naming a machine that cannot answer is refused, never resolved locally (D7).
@@ -986,6 +1050,16 @@ where
                 }
                 AddrOutcome::NoMatch if hit => return Ok(None),
                 AddrOutcome::NoMatch => {
+                    if let Some(seat) = self.remote_named_seat(location, &node.tag.to_string())? {
+                        write_resolved_text(
+                            self.stderr,
+                            &format!("{location}@{}", node.tag),
+                            location,
+                            &seat,
+                            "any",
+                        )?;
+                        return Ok(Some(Resolved::Seat(seat)));
+                    }
                     return Err(run_error(ApiError::not_found(format!(
                         "seat {location}@{}: neither an existing seat ID nor a live space/tab/pane \
                          name on {label}",
@@ -1011,6 +1085,21 @@ where
                     )));
                 }
                 AddrOutcome::HostUnavailable => {
+                    // The named host has no topology, so a node with one named seat
+                    // answers every name this way: the replicated name decides first.
+                    if !hit
+                        && let Some(seat) =
+                            self.remote_named_seat(location, &node.tag.to_string())?
+                    {
+                        write_resolved_text(
+                            self.stderr,
+                            &format!("{location}@{}", node.tag),
+                            location,
+                            &seat,
+                            "any",
+                        )?;
+                        return Ok(Some(Resolved::Seat(seat)));
+                    }
                     format!("{label}: seat names need its live Herdr topology")
                 }
                 AddrOutcome::Unavailable { reason } => {
@@ -1157,6 +1246,11 @@ fn same_resolution(a: &Resolved, b: &Resolved) -> bool {
 /// the seat to replicate, plus margin, so the daemon's typed answer arrives first (spec 4.3).
 pub(crate) const REMOTE_ADDRESS_BUDGET_MS: u64 =
     crate::service::sync_admin::REMOTE_ADDRESS_DAEMON_BOUND_MS + 3_000;
+
+/// The name lookup of a remote seat pages the node's seats this many at a time, at most this
+/// many pages.
+const REMOTE_NAME_PAGE_LIMIT: u16 = 64;
+const REMOTE_NAME_MAX_PAGES: usize = 16;
 
 /// Caller-visible refusals of remote addresses (spec 4.4).
 mod remote_error {

@@ -2,7 +2,7 @@
 
 use crate::{
     protocol::{
-        ids::SeatId,
+        ids::{SeatId, SeatName},
         results::{ApiError, ErrorCode},
     },
     store::{
@@ -108,7 +108,8 @@ pub(crate) fn queue_publication(seat: &SeatId) {
 ///
 /// Responsibility
 /// - Owns: the decision "this local seat is not yet published" (`is_local = 1`,
-///   `published = 0`), the published kind (`schema::open_binding_role`:
+///   `published = 0`), the published `display_name` (the seat's `seats.name`, `None`
+///   for an unnamed seat), the published kind (`schema::open_binding_role`:
 ///   `Some("human")` is `human`, anything else, no open binding included, is
 ///   `agent`) and the one `journal::author::<SeatCreated>` call; the handler
 ///   then sets `published = 1`.
@@ -131,17 +132,17 @@ pub fn ensure_published(
     decision: DecisionInstant,
     seat: &SeatId,
 ) -> Result<bool, ApiError> {
-    let row: Option<(bool, bool)> = tx
+    let row: Option<(bool, bool, Option<String>)> = tx
         .query_row(
-            "SELECT is_local, published FROM seats WHERE id=?1",
+            "SELECT is_local, published, name FROM seats WHERE id=?1",
             [seat.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(store_error)?;
-    if row != Some((true, false)) {
+    let Some((true, false, name)) = row else {
         return Ok(false);
-    }
+    };
     let kind = match schema::open_binding_role(tx, seat)? {
         Some("human") => SeatKind::Human,
         _ => SeatKind::Agent,
@@ -153,7 +154,7 @@ pub fn ensure_published(
         &SeatCreatedPayload {
             seat: seat.clone(),
             kind,
-            display_name: None,
+            display_name: name,
         },
     )?;
     Ok(true)
@@ -165,7 +166,10 @@ pub fn ensure_published(
 /// - Row exists and is local: `published = 1` (the authoring node).
 /// - Row exists and is remote: no-op (a second `seat.created` for one seat,
 ///   even with another kind, keeps the first: the root accepted fork limit).
-/// - Row absent, origin is another node: insert the remote row.
+/// - Row absent, origin is another node: insert the remote row. Its `name` is the
+///   payload's `display_name` when that parses as a `SeatName`, else NULL: a peer's
+///   value is never rejected, only not stored (the name is display and selector
+///   text, never authority).
 /// - Row absent, origin is this node (an own old incarnation pulled back after
 ///   a wipe): insert a local `unresolved` seat on the `herdr_hosts` row (never
 ///   the named host) with the greatest `last_attached_at`; with no such row it is
@@ -197,10 +201,20 @@ pub fn materialize_seat_created(
                 SeatKind::Agent => "agent",
                 SeatKind::Human => "human",
             };
+            let name = payload
+                .display_name
+                .as_deref()
+                .and_then(|n| SeatName::parse(n).ok());
             tx.execute(
-                "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
-                 VALUES(?1,(SELECT id FROM local_node),'remote','native',0,?2,?3,0,?4,1)",
-                params![id, m.origin_ms, m.origin_node.to_string(), kind],
+                "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published,name) \
+                 VALUES(?1,(SELECT id FROM local_node),'remote','native',0,?2,?3,0,?4,1,?5)",
+                params![
+                    id,
+                    m.origin_ms,
+                    m.origin_node.to_string(),
+                    kind,
+                    name.as_ref().map(SeatName::as_str)
+                ],
             )
             .map_err(store_error)?;
         }

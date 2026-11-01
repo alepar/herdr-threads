@@ -106,7 +106,8 @@ pub fn directory(
         workspace: stored.as_ref().and_then(|row| row.seat.workspace.clone()),
         tab: stored.as_ref().and_then(|row| row.seat.tab.clone()),
         pane: stored.as_ref().and_then(|row| row.seat.pane.clone()),
-        name: None,
+        // A remote named seat's replicated `display_name`.
+        name,
     })))
 }
 
