@@ -1,0 +1,10 @@
+    Starting 8613 tests across 14 binaries (53 tests skipped)
+        PASS [   6.329s] ( 310/8613) herdr-threads::named_seats first_inbox_prints_m8_once_then_same_seat
+        PASS [   4.356s] ( 555/8613) herdr-threads::named_seats idle_exit_with_only_named_host
+        PASS [  16.565s] (1425/8613) herdr-threads::named_seats named_join_accept_backlog
+        PASS [   7.525s] (1546/8613) herdr-threads::named_seats named_pair_with_pane_auto_join_opener
+        PASS [  11.895s] (1819/8613) herdr-threads::named_seats named_to_named_send_inbox_ack_hook
+        PASS [   7.954s] (3184/8613) herdr-threads::named_seats named_to_pane_in_isolated_herdr
+        PASS [  12.541s] (4171/8613) herdr-threads::named_seats recovery_hint_round_trip
+        PASS [   2.019s] (5192/8613) herdr-threads::multinode named_seats::reviewer_at_b_addresses_and_displays
+     Summary [ 333.443s] 8613 tests run: 8567 passed (1 slow), 46 failed, 53 skipped
