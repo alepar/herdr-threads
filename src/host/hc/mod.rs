@@ -642,6 +642,17 @@ impl HostPort for HcHost {
         true
     }
 
+    fn server_label(&self) -> &'static str {
+        "herdr-core"
+    }
+
+    /// The pid serving the core socket (the `herdr-core serve` process): the peer of a fresh
+    /// connection's `LocalEndpointWitness`. `None` when the core does not answer.
+    fn server_process(&self) -> Option<u32> {
+        let hello = Self::run(self.client.hello()).ok()?;
+        Some(hello.witness.peer_pid).filter(|pid| *pid != 0)
+    }
+
     fn target_root_process(
         &self,
         target: &HostTargetId,

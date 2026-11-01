@@ -4087,6 +4087,10 @@ pub trait HostPort: Send + Sync {
     fn answers_terminal_ids(&self) -> bool {
         false
     }
+    /// How M6 names this host's server.
+    fn server_label(&self) -> &'static str {
+        "Herdr"
+    }
     /// The host server's own process, when it has one this system can name.
     fn server_process(&self) -> Option<u32> {
         None
