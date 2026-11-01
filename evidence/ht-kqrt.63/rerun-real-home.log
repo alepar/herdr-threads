@@ -1,0 +1,10 @@
+heavy: slot 2 acquired 09:10:48
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+────────────
+ Nextest run ID 1634a285-df42-437d-aa6e-5b52b5a0fbc0 with nextest profile: default
+    Starting 3 tests across 16 binaries (8697 tests skipped)
+        PASS [   0.063s] (1/3) herdr-threads::package manifest::installed_herdr_semantically_accepts_only_valid_disabled_package
+        PASS [   4.979s] (2/3) herdr-threads::combined installer_integrations::install_sh_with_stub_herdr_byte_identical
+        PASS [   4.999s] (3/3) herdr-threads::combined installer_integrations::install_sh_runs_setup_without_herdr
+────────────
+     Summary [   5.052s] 3 tests run: 3 passed, 8697 skipped

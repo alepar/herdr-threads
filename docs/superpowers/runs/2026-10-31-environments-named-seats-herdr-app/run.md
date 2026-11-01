@@ -273,3 +273,45 @@ Known environmental failures (the only permitted ones; not skipped, zsh not inst
 ### Test hygiene
 
 `scripts/check-no-leaked-processes` clean after each suite run; `stop-run-processes --check` matched nothing run-owned (only root-owned uninspectable `unknown:` pids). Nothing was left to stop.
+
+## H1 phase gate (ht-kqrt.63)
+
+RESULT: GREEN except the three known environmental zsh failures. Two acceptance items need a note: the suite ran over the 5-minute budget on a CPU shared with ML training (below), and the golden file `tests/fixtures/golden/help/handoff.txt` changed in H3 (not H1; not a Herdr-pane surface).
+
+Tree: `git rev-parse HEAD` = `d9f6515212a60c2e65c17ebeac8cdb2b0eaa1773` (tree `e5d7c4159208ecba932ddf05481f2cc7f215bad7`), the run branch tip with every H1 leaf merged (.41, .43-.52, .60, .67 and the gate-precondition fixes .136-.139; .40 was split, its bead is closed and no commit carries its id). The gate's own commit changes only `docs/` and `evidence/`. `HT_LEAK_RUN_ID=$(cat)` of `/tmp/sp-503081fe/ht-kqrt.63/runid`; scratch HOME and TMPDIR under `/tmp/sp-503081fe/ht-kqrt.63`, `CARGO_INCREMENTAL=0`, heavy wrapper, no agents, no shared Herdr server. Evidence: `evidence/ht-kqrt.63/`.
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `heavy nice cargo nextest run --locked --all-targets --all-features` | 100 | 8647 run, 8641 passed, 6 failed, 53 skipped. Nextest summary 352.1 s, wall 8m13s including the build: OVER the 300 s budget (shared CPU; same class as the N gate's 333 s, release-not-blocked-on-suite-time applies). No test is listed as slow-timeout. |
+| `scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID"` | 0 | no leaked temp files, no leaked processes |
+| `heavy nice scripts/check-default-features` | 0 | pass |
+| `scripts/check-wire-compat` | 0 | ok, 0 violations, 0 stale, no baseline line |
+| `scripts/check-harness-neutral` | 0 | ok, 0 violations, 84 allowlisted (to-migrate 0), no new entry |
+| `heavy cargo test --locked --all-features --test combined host_neutral_scan` (ht-kqrt.65) | 0 | 9 passed, no allowlist entry added |
+
+The 6 failures:
+- Known environmental, no `zsh` on this host (3): `protocol::output::tests::emitted_command_round_trips_exact_argv_through_zsh`, `combined contracts::action_formatter_round_trips_unicode_separators_through_bash_and_zsh`, `combined view::rendered_actions_execute_as_shell_commands`.
+- Gate-run artifact (3): `package manifest::installed_herdr_semantically_accepts_only_valid_disabled_package` (needs the pinned Herdr 0.9.1 binary from the real `~/.cache/herdr-threads/herdr-releases`, which the scratch HOME hid), `combined installer_integrations::install_sh_with_stub_herdr_byte_identical` and `install_sh_runs_setup_without_herdr` (installer goldens depend on the real HOME). Rerun of exactly these three with the real HOME, same tree, same TMPDIR: 3 passed (`evidence/ht-kqrt.63/rerun-real-home.log`). No code is at fault; a future gate should export the real HOME for the full suite and keep only TMPDIR scratch.
+
+### Golden surfaces
+
+`git diff f1ae3da79 HEAD -- tests/golden_surfaces.rs tests/fixtures/golden` (N gate SHA) is one file: `tests/fixtures/golden/help/handoff.txt`, from f41a9313c (ht-kqrt.57, H3d2: clap reordered the options and added `--new-terminal`). It is the `handoff --help` text, not a Herdr-pane surface; it is an H3 change, not H1. `tests/golden_surfaces.rs` itself passes in the gated run. By commit over `bb1d43430..HEAD` (the N2 gate's range; .41 .43 .51 predate it): aaa04f3af (ht-kqrt.137, H1 gate fix) adds a `hello` branch to the golden file's private fake Herdr host, answering with the captured real reply; no golden fixture or Herdr-pane output changes. a5c02dcf9 (ht-kqrt.138, H1 gate fix) changes `doctor/all.json` and `doctor/hermes.json` for the new `doctor.hosts` and `doctor.other_stores` keys: doctor output, not a Herdr-pane surface (the hosts list is additive; pane lines are untouched). b6decf629 (.70, N2), 69176ebcc (.19, N), d66680975 (.141, N2) and f41a9313c (.57, H3) are not H1. Conclusion: H1 changes no Herdr-pane golden surface.
+
+### hc-smoke
+
+Shipped and ran live (ht-kqrt.52, entry "hc-smoke" above): herdr-core 0.1.15 manifest fetched, both Linux tarballs sha256-verified, `scripts/hc-smoke` passed against private cores; `evidence/ht-kqrt.52/hc-smoke.out`. Not re-run here (opt-in, needs the network cache, and it ran on its own leaf with the same code: `git log -- scripts/hc-smoke tests/herdr-core-releases.tsv` shows only ce04839b7).
+
+### Spikes (H1)
+
+- D1 (Herdr TUI socket reply to `hello`; must not hang): ANSWERED. Probe test against the fake Herdr with the captured reply `tests/fixtures/herdr-hello/reply.txt`: `multi_host::kind_probe::d1_captured_herdr_hello_reply_classifies_as_herdr`; bounded deadline where the peer never replies: `multi_host::kind_probe::silent_peer_fails_within_probe_deadline` (0.84 s, within the probe deadline); `probe_classifies_fake_hc_and_fake_herdr_before_row_written`. Live capture available and run: `d1_live_herdr_hello_capture` against an isolated Herdr test session passed (0.55 s), classified as Herdr.
+- E1 hc path (host server env via `server_process`): ANSWERED by `hc_inherited_name::server_process_is_fake_hc_pid` and `inherited_name_refused_m6_herdr_core` (the `fake-hc` child with the name in its env; inherited name refused M6). The Herdr reader half passed in the N gate (`service::locate::environ_reader_tests::native_cli_server_process_is_the_socket_peer`, passed here too). Live macOS `KERN_PROCARGS2` stays remaining evidence.
+- S5 two-kind half: ANSWERED by `store::seats::publication::named_restore_tests::s5_unnamed_restored_row_held_unresolved_on_two_kind_node` (TUI plus fake hc, both attach orders; passed). Named half is in the N gate.
+- H-C1 (Codex hooks in hc with and without `--no-daemon`): FALLBACK ANSWERED by `service::locate::tests::daemon_mode_codex_reparented_two_families_refuse` (two families refuse), `one_family_accepted_unverified`, `double_forked_two_families_refuse`, `two_families_nearest_ancestor_wins` over fake process trees; all pass. The live real-core Codex run is remaining evidence (needs authenticated Codex quota, none spent here).
+
+### Remaining evidence
+
+Live macOS `KERN_PROCARGS2` (E1), live real-core Codex with and without `--no-daemon` (H-C1), L1 (macOS-only herdr-app tab ids).
+
+### Test hygiene
+
+`check-no-leaked-processes --run-id` clean after the suite. `stop-run-processes --check` matched nothing run-owned (only uninspectable foreign pid 2448583, an sshd session, listed as `unknown:`). Nothing to stop.
