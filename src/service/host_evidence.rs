@@ -130,10 +130,11 @@ impl HostEvidenceStatus {
     /// store refused on it (skipped, never fatal; counted for Health);
     /// `completes_publication` marks the pass's last page. Success-only:
     /// `last_reconciliation_at` advances only when the whole pass completed
-    /// and the store refused no transition on any of its pages.
+    /// and the store refused no transition on any of its pages, so it can lag
+    /// a marker recorded past a persistent refusal (TRUST-POLICY C2).
     pub fn record_reconcile_page(
         &self,
-        refusals: &[(crate::protocol::ids::SeatId, crate::ports::StaleReason)],
+        refusals: &[crate::identity::reconcile::RefusedTransition],
         completes_publication: bool,
         at: UtcMillis,
     ) {
@@ -141,13 +142,14 @@ impl HostEvidenceStatus {
             let refused = refusals.len() as u64;
             state.transitions_refused = state.transitions_refused.saturating_add(refused);
             state.pass_refused = state.pass_refused.saturating_add(refused);
-            for (seat, reason) in refusals.iter().filter(|(_, reason)| !reason.is_transient()) {
+            for refusal in refusals.iter().filter(|r| !r.reason.is_transient()) {
+                let (seat, reason) = (&refusal.seat, refusal.reason);
                 state.refusal_tick += 1;
                 let tick = state.refusal_tick;
                 let known = &mut state.refused_seats;
                 if let Some(pair) = known
                     .iter_mut()
-                    .find(|pair| pair.seat == *seat && pair.reason == *reason)
+                    .find(|pair| pair.seat == *seat && pair.reason == reason)
                 {
                     pair.count = pair.count.saturating_add(1);
                     pair.last_seen = tick;
@@ -160,7 +162,7 @@ impl HostEvidenceStatus {
                 }
                 known.push(RefusedSeat {
                     seat: seat.clone(),
-                    reason: *reason,
+                    reason,
                     count: 1,
                     last_seen: tick,
                 });

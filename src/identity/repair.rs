@@ -201,8 +201,8 @@ impl OrdinaryIdentity {
         outcome.map(Some)
     }
 
-    /// Record that `published`'s saved-seat pass ended with no refused
-    /// transition (TRUST-POLICY C2). Taken under the observation lane lock, like
+    /// Record that `published`'s saved-seat pass ended with no refusal that
+    /// holds the marker back (TRUST-POLICY C2). Taken under the observation lane lock, like
     /// a reconciliation page: the marker write can lift the baseline hold and
     /// bump the lifecycle revision, which would otherwise supersede an explicit
     /// target observation (operator repair, resolve) admitted concurrently.

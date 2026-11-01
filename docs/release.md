@@ -2,6 +2,19 @@
 
 ## Current release status
 
+[v2.8.3 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.3) from source `6a1b698c6`, a patch release. No schema change (node schema stays 12) and no peer wire change: `scripts/freeze-peer-wire 2.4.0 --at v2.8.3 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It carries ht-kaw9, which had a fixer roast and an independent review: new panes on the laptop (Q0V) got no seat because one seat's open binding, reopened in place, was read from the wrong row and refused Stale on every reconciliation pass. Reconciliation now reads the open binding first; while reconciliation lags, a session no seat could claim enrolls normally (TRUST-POLICY "Startup enrollment", which the review checked against C1/C2 and found does not weaken an invariant); and refusals are logged and named in Health. Also: the peer stdio test's timeout no longer counts the daemon start.
+
+**Qualification** on `6a1b698c6` (claude-1 token, codex-2 credential), evidence in `~/.cache/herdr-threads-release/2.8.3`:
+- Static checks, builds, the package gate, installer suites and every leak check pass. The full suite passed 8150/8153, with only the 3 zsh failures.
+- Herdr matrix: 0.9.1-0.9.4 passed. On 0.9.5 the live-handoff case failed once under load 32 ("p0 wake held for an agent Herdr reports not awaiting input: ... status unknown"); two reruns of 0.9.5 passed every case.
+- Wake e2e: the first run aborted on a transient `No space left on device`. The rerun passed 119/120. The FAIL was `busy-send-p0/group` on Codex at T=0, "busy tool did not enter": the model did not start the sleep tool, a driver precondition, so no product assertion was evaluated. That case passed 3/3 when rerun alone (`wake-busy-rerun`). **The user accepted this failure for 2.8.3 on 2026-11-01** and asked for every flake seen in this qualification to be fixed in a separate tab.
+
+**CI** on the prep commit (run 41272157131) failed only on time: shard 1/6 ran 309 s against its 300 s budget, with every test passing (ht-b4rn). The [release run 41277847455](https://github.com/alepar/herdr-threads/actions/runs/41277847455) passed, and the archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 2.8.3, the right TARGET, modes and licenses; `scripts/install.sh` equals the tag's; the credential scan is clean.
+
+**Installed on blacky with `herdr-threads update`** on the first try: "updated 2.8.2 -> 2.8.3 (sha256 verified twice; backup pre-v2.8.3-20261101T055337Z)". The daemon's `/proc` exe hash `15af9431…` equals the archive binary, the daemon is healthy, and the Herdr plugin link is unchanged. The laptop (Q0V) took 2.8.3 with `herdr-threads update` on the first try, passing through the schema-12 migration (backup pre-v2.8.3-20261101T055422Z). Its health shows `last_reconciliation_at` set, and new Codex and Claude tabs both got seats, which confirms the ht-kaw9 fix.
+
 [v2.8.2 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.2) from source `b86202243`, a patch release. It carries a one-way store upgrade to node schema 12: migration 0012 rebuilds `allocation_decisions` for the new rebind kind. The peer wire is unchanged: `scripts/freeze-peer-wire 2.4.0 --at v2.8.2 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 It carries two merged branches, each with a fixer roast and an independent review:

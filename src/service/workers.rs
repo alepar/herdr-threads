@@ -2367,19 +2367,6 @@ impl crate::identity::reconcile::observation_store::ObservationStore for Schedul
     }
 }
 
-/// End-of-page decision of a saved-seat pass: whether the pass is complete and
-/// whether any page so far had a refused transition. A pass with a refusal never
-/// records the reconciliation marker (TRUST-POLICY C2).
-fn pass_complete(
-    refused_so_far: bool,
-    page: &crate::identity::reconcile::ReconcilePageProgress,
-) -> (bool, bool) {
-    (
-        page.next_after_ordinal.is_none(),
-        refused_so_far || page.transitions_refused > 0,
-    )
-}
-
 /// The elected owner joins this thread before releasing its lease. A cancelled
 /// host call must physically return before this worker can finish.
 // Allowed: worker start-up wiring: each argument is a distinct dependency.
@@ -2496,20 +2483,21 @@ where
             let _origin = kicks::enter_lane(Lane::Observation);
             status.attach_pacer(Arc::clone(&pacer));
             let _guard = status.lane_guard(&cancellation);
-            let mut continuation = None;
+            let mut continuation: Option<(_, _, _, Vec<_>)> = None;
+            let mut streaks = crate::identity::reconcile::RefusalStreaks::default();
             while !cancellation.is_cancelled() {
                 let now = port.clock().monotonic_now().0;
                 let budget = CallBudget {
                     deadline: crate::protocol::time::MonoInstant(now.saturating_add(5_000)),
                     cancellation: cancellation.clone(),
                 };
-                if let Some((outcome, after, high, refused)) = continuation.take() {
+                if let Some((outcome, after, high, mut refusals)) = continuation.take() {
                     let page = identity.reconcile_page(&port, &outcome, after, high, &budget);
                     status.observe_reconciliation(&page);
                     if let Ok(page) = page {
-                        let (done, refused) = pass_complete(refused, &page);
-                        for (seat, reason) in &page.refusals {
-                            status.report_reconciliation_refusal(seat, *reason);
+                        let done = page.next_after_ordinal.is_none();
+                        for refusal in &page.refusals {
+                            status.report_reconciliation_refusal(&refusal.seat, refusal.reason);
                         }
                         // Health: success-only `last_reconciliation_at` (B3).
                         host_evidence.record_reconcile_page(
@@ -2520,18 +2508,19 @@ where
                             ),
                             port.clock().utc_now(),
                         );
-                        if let (false, Some(next)) = (done, page.next_after_ordinal) {
+                        refusals.extend(page.refusals);
+                        if let Some(next) = page.next_after_ordinal {
                             continuation =
-                                Some((outcome, next, Some(page.high_water_ordinal), refused));
+                                Some((outcome, next, Some(page.high_water_ordinal), refusals));
                         } else if let crate::identity::reconcile::ObservationOutcome::Published(
                             published,
                         ) = &outcome
-                            && !refused
+                            && streaks.pass_finished(published, &refusals)
                         {
                             // Durable reconciliation marker (TRUST-POLICY C2):
-                            // only a pass with no refused transition records
-                            // it. An Err leaves the marker behind; the next
-                            // pass retries.
+                            // a pass records it unless a refusal could still
+                            // change a C1 answer or the unresolved set. An Err
+                            // leaves the marker behind; the next pass retries.
                             if let Ok(true) =
                                 identity.record_reconciliation_pass(&port, published, &budget)
                             {
@@ -2604,7 +2593,7 @@ where
                                     | crate::identity::reconcile::ObservationOutcome::Frozen { .. }
                             ) {
                                 host_evidence.begin_reconcile_pass();
-                                continuation = Some((outcome, 0, None, false));
+                                continuation = Some((outcome, 0, None, Vec::new()));
                             }
                         }
                         Ok(None) => {}

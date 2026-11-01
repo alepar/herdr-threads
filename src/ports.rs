@@ -1252,6 +1252,24 @@ pub struct GuardedSeatTransition {
     pub expected_terminal: Option<TerminalId>,
     pub action: ReconciliationAction,
 }
+impl ReconciliationAction {
+    /// Whether a pass may complete past this action once its refusal persists
+    /// (TRUST-POLICY C2): the action cannot add a C1 candidate or a seat to
+    /// protect. A new action must make this judgment, so nothing here defaults.
+    pub fn may_complete_past_refusal(&self) -> bool {
+        match self {
+            Self::MarkUnresolved => false,
+            Self::ReconfirmStructure { .. }
+            | Self::CarryForward { .. }
+            | Self::Move { .. }
+            | Self::BeginRetirement { .. }
+            | Self::WatchRestoredPane
+            | Self::NoteRestoredPaneAbsent
+            | Self::RetireRestoredPane { .. } => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconciliationAction {
     /// Structural reconfirmation of a host-invalidated seat (seat-identity
@@ -1303,7 +1321,8 @@ pub enum ReconciliationOutcome {
     Applied,
     Unchanged,
     /// The guarded decision changed nothing; the reason names the check that
-    /// refused it (diagnostics only, never a decision input).
+    /// refused it (diagnostics, and the key that recognizes a repeated refusal;
+    /// no seat is ever decided on it).
     Stale(StaleReason),
     RetirementStarted(RetirementJob),
 }

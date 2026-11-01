@@ -233,8 +233,7 @@ fn reconciliation_refusal_lines_name_seat_and_reason() {
     log.record_reconciliation_refusal(&a, StaleReason::new("seat_cas_failed"));
     at(&clock, 31_000);
     log.record_reconciliation_refusal(&a, mismatch);
-    let detail =
-        "reconciliation transition refused; the seat was skipped and the pass is not recorded";
+    let detail = "reconciliation transition refused; the seat was skipped";
     assert_eq!(
         lines.lock().unwrap().clone(),
         vec![
