@@ -202,6 +202,8 @@ mod legacy_purge;
 #[path = "integration/priority_config_smoke.rs"]
 mod priority_config_smoke;
 
+#[path = "host/hc_contract.rs"]
+mod hc_contract;
 #[path = "integration/priority_sweep.rs"]
 mod priority_sweep;
 #[path = "update/update_cli.rs"]

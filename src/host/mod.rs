@@ -56,6 +56,7 @@ pub fn child_env_scrub_list() -> Vec<&'static str> {
 }
 
 pub mod compatibility;
+pub mod hc;
 pub mod native;
 pub mod observation;
 pub mod process_table;

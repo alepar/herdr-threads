@@ -5,6 +5,8 @@ pub mod counting_client;
 pub mod fact_exchange;
 pub mod failpoints;
 #[cfg(feature = "test-support")]
+pub mod fake_hc;
+#[cfg(feature = "test-support")]
 pub mod fake_herdr;
 pub mod fake_hosts;
 pub mod harness_shim;
