@@ -1952,7 +1952,12 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
   cooperative same-user claim like the rest of the caller context; a plain seat-acting call (and the mod's
   `watch`) under the variable first sends that check-in, so every enrollment path records it, and a
   refused check-in refuses the call (a readonly caller never falls back to writable); a session that omits
-  the variable is writable. A subagent, a person and a retry replay send no such check-in.
+  the variable is writable. A subagent, a person and a retry replay send no such check-in. A
+  readonly caller's inbox display records and submits no ACK settlement (the daemon would skip it) and
+  exits 0. Accepted limit: a plain-only named seat's first call under the variable is refused until the
+  named host has observed the seat; the refused check-in stays a pending local intent, recovered with
+  `retry <ref>` (or by enrolling the seat through a hook first), because falling back to writable would
+  void the marker.
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
 mail is seat-level, not per binding (A8). A seat-pending row is settled for the

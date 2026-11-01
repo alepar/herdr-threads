@@ -506,6 +506,11 @@ impl Rig {
 /// Alice (hook-enrolled) sends bob an ACK request; bob is enrolled only by plain commands, with
 /// or without the readonly variable. Returns the message id after bob's `inbox` displayed it.
 fn plain_enrolled_bob_reads(rig: &Rig, readonly: bool) -> (String, String) {
+    let (id, bob, _) = plain_enrolled_bob_display(rig, readonly);
+    (id, bob)
+}
+
+fn plain_enrolled_bob_display(rig: &Rig, readonly: bool) -> (String, String, Ran) {
     enroll(rig, "alice", "s-alice");
     let bob_agent = |args: &[&str]| {
         if readonly {
@@ -566,11 +571,15 @@ fn plain_enrolled_bob_reads(rig: &Rig, readonly: bool) -> (String, String) {
         )
     });
     let id = sent_message(&sent);
-    // One display. Under the variable the display itself exits non-zero (its settlement is
-    // skipped), so only the rows it printed are asserted.
+    // One display: it exits clean with or without the variable.
     let shown = bob_agent(&["inbox"]);
     assert!(shown.stdout.contains("ack me"), "{shown:?}");
-    (id, bob)
+    assert_eq!(shown.code, Some(0), "{shown:?}");
+    // The row is shown again and the second display settles it (writable) or leaves it owed
+    // (readonly): both displays exit clean.
+    let again = bob_agent(&["inbox"]);
+    assert_eq!(again.code, Some(0), "{again:?}");
+    (id, bob, shown)
 }
 
 // Kills: a session enrolled only by plain commands under the readonly variable whose display
@@ -578,7 +587,7 @@ fn plain_enrolled_bob_reads(rig: &Rig, readonly: bool) -> (String, String) {
 #[test]
 fn plain_commands_under_readonly_never_discharge_an_ack() {
     let rig = Rig::start("nc-ro-plain");
-    let (id, bob) = plain_enrolled_bob_reads(&rig, true);
+    let (id, bob, _) = plain_enrolled_bob_display(&rig, true);
     let owed = rig.readonly_agent("bob", "s-bob", &["pending-receipts", "--machine"]);
     assert!(
         owed.stdout.contains(&id),
@@ -596,7 +605,14 @@ fn plain_commands_under_readonly_never_discharge_an_ack() {
 #[test]
 fn plain_commands_without_the_variable_stay_writable() {
     let rig = Rig::start("nc-rw-plain");
-    let (_id, bob) = plain_enrolled_bob_reads(&rig, false);
+    let (id, bob) = plain_enrolled_bob_reads(&rig, false);
+    // The control that makes the readonly test's "still owed" discriminate: the writable displays
+    // discharge the same ACK.
+    let owed = rig.agent("bob", "s-bob", &["pending-receipts", "--machine"]);
+    assert!(
+        !owed.stdout.contains(&id),
+        "writable display settles the ACK: {owed:?}"
+    );
     let flags = rig.readonly_flags(&bob);
     assert!(
         !flags.is_empty() && flags.iter().all(|flag| *flag == 0),
