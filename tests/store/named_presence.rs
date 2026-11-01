@@ -292,9 +292,12 @@ fn unresolved_named_row_does_not_silence_others() {
         1
     );
     assert_eq!(f.holds(), (0, 0), "the named host holds nothing");
+    // Seat ids are random, so `candidate_seats()` (sorted) is compared with a sorted expectation.
+    let mut expected = vec![alpha.as_str().to_owned(), beta.as_str().to_owned()];
+    expected.sort();
     assert_eq!(
         f.candidate_seats(),
-        vec![alpha.as_str().to_owned(), beta.as_str().to_owned()],
+        expected,
         "the live bindings stay judged by liveness"
     );
 
