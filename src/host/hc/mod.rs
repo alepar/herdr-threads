@@ -708,19 +708,26 @@ impl ports::CreateTargetPort for HcHost {
             Err(e) => return run_failure(e),
         };
         let address = reply.value.address;
+        // The record exists now: a result this host cannot vouch for stays unknown. The
+        // composed incarnation outgrows the id bound for a core id near its own bound.
+        let Ok(host_incarnation) = HostBootId::parse(format!(
+            "{BOOT_PREFIX}{expected_core}:pid={}:start={}:uid={}",
+            peer.pid, peer.start_seconds, peer.uid
+        )) else {
+            return OutcomeUnknown(api_error(
+                ErrorCode::StaleHostObservation,
+                "incoherent hc terminal creation evidence",
+            ));
+        };
         let created = ports::CreatedTarget {
             correlation: request.correlation.clone(),
             placement: request.placement.clone(),
             target: HostTargetId::new(address.clone()),
             root_pane: None,
             terminal: crate::protocol::ids::TerminalId::new(address),
-            host_incarnation: HostBootId::new(format!(
-                "{BOOT_PREFIX}{expected_core}:pid={}:start={}:uid={}",
-                peer.pid, peer.start_seconds, peer.uid
-            )),
+            host_incarnation,
             witness: request.expected_witness.clone(),
         };
-        // The record exists now: a result this host cannot vouch for stays unknown.
         let coherent = !created.target.as_str().is_empty() && created.validate().is_ok();
         if coherent {
             Created(Box::new(created))
