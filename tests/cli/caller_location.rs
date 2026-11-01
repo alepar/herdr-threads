@@ -407,3 +407,21 @@ fn tmux_hint_needs_a_named_caller_in_a_tmux_pane() {
         Some(Located::One(CallerLocator::Named(_)))
     ));
 }
+
+// Kills: a caller-location variable (`HC_TERMINAL_ID`, `TMUX`, ...) missing from the test scrub, so
+// the suite's result depends on whether the runner sits in a herdr-core terminal or a tmux pane.
+#[test]
+fn every_caller_location_variable_is_scrubbed() {
+    use herdr_threads::host::{hc, named, native};
+    use herdr_threads::test_support::isolation::SCRUBBED_PREFIXES;
+    for name in native::ENV_VARS
+        .iter()
+        .chain(named::ENV_VARS)
+        .chain(hc::ENV_VARS)
+    {
+        assert!(
+            SCRUBBED_PREFIXES.iter().any(|p| name.starts_with(p)),
+            "{name} is a caller-location variable but no SCRUBBED_PREFIXES entry covers it"
+        );
+    }
+}

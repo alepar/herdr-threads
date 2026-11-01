@@ -11,8 +11,11 @@ use std::{
 /// Inherited variables removed from every spawned binary's environment, so
 /// the suite behaves the same inside a Herdr pane or a harness session.
 /// `ZDOTDIR` too: shell startup files then resolve under the test's HOME, never
-/// the developer's own zsh directory.
-pub const SCRUBBED_PREFIXES: &[&str] = &["HERDR_", "CLAUDE", "CODEX", "ZDOTDIR"];
+/// the developer's own zsh directory. Every caller-location variable (`HC_*` of a
+/// herdr-core terminal, `TMUX` and `TMUX_PANE` of a tmux pane) is listed here, in
+/// this one place, never scrubbed per test; a test that wants one sets it after
+/// the scrub with `.env(..)`.
+pub const SCRUBBED_PREFIXES: &[&str] = &["HERDR_", "CLAUDE", "CODEX", "ZDOTDIR", "HC_", "TMUX"];
 /// `sockaddr_un.sun_path` capacity (macOS 104, Linux 108; the smaller wins).
 pub const SUN_PATH_MAX: usize = 104;
 
