@@ -27,7 +27,7 @@ Every top-level agent working on this repository inside a Herdr pane joins the a
 ## Trust policy
 
 [TRUST-POLICY.md](TRUST-POLICY.md) is normative for seat continuity, caller attribution, receipt provenance
-and operator repair. Read it before changing anything in `src/identity/`, `src/store/seats.rs`,
+and operator repair. Read it before changing anything in `src/identity/`, `src/store/seats.rs` and `src/store/seats/`,
 `src/store/receipts.rs`, `src/store/control.rs`, `src/protocol/authority.rs`, `src/cli/me.rs`,
 `src/cli/hook.rs`, launch or wake.
 
