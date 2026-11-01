@@ -297,6 +297,7 @@ fn capability_constants_are_stable() {
     assert_eq!(HOST_TOPOLOGIES_V1, "topology.host_topologies_v1");
     assert_eq!(HOST_SITES_V1, "seat.host_sites_v1");
     assert_eq!(TURN_STATE_EDGE, "turn_state.edge_v1");
+    assert_eq!(TERMINAL_SITES_V1, "seat.terminal_sites_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -347,7 +348,8 @@ fn capability_constants_are_stable() {
             "caller.locate_v1",
             "topology.host_topologies_v1",
             "seat.host_sites_v1",
-            "turn_state.edge_v1"
+            "turn_state.edge_v1",
+            "seat.terminal_sites_v1"
         ]
     );
 }
@@ -541,6 +543,7 @@ fn every_advertised_capability_has_a_handler() {
                         .is_err()
                 );
             }
+            TERMINAL_SITES_V1 => probe_terminal_sites(),
             PEER_PRUNE_V1 => probe_sync_commands(&[
                 crate::protocol::sync_admin::SyncCommand::PeerPrune {
                     host: None,
@@ -1203,6 +1206,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "topology.host_topologies_v1",
             "seat.host_sites_v1",
             "turn_state.edge_v1",
+            "seat.terminal_sites_v1",
             "invitation.confirmation_v1",
             "handoff.summary_prompt_v1"
         ]
@@ -2267,18 +2271,28 @@ fn probe_seats_directory() {
 /// A Named site's `SeatsQuery.host` (the reserved named-host locator) round-trips and the store
 /// answers it with a seat page.
 fn probe_host_sites() {
+    probe_site_lookup(
+        "cap-host-sites",
+        "worker-1",
+        crate::protocol::ids::NAMED_HOST_LOCATOR,
+    );
+}
+
+/// A Terminal site's seat lookup carries the core's socket as host and the terminal id as target.
+fn probe_terminal_sites() {
+    probe_site_lookup("cap-terminal-sites", "t2", "/core/work.sock");
+}
+
+fn probe_site_lookup(label: &str, target: &str, host: &str) {
     use crate::{
         ports::{ReadContext, StorePort},
         protocol::{
-            commands::SeatsQuery,
-            ids::{HostLocator, NAMED_HOST_LOCATOR},
-            output::OutputSpec,
-            pagination::PageRequest,
+            commands::SeatsQuery, ids::HostLocator, output::OutputSpec, pagination::PageRequest,
         },
         store::{SqliteStore, StoreSettings, connection::StoreContext},
         test_support::isolation::TestIsolation,
     };
-    let iso = TestIsolation::new("cap-host-sites");
+    let iso = TestIsolation::new(label);
     let context =
         StoreContext::new(iso.state_root().join("store.db"), Arc::new(FixedClock)).with_test_host();
     let store = SqliteStore::new(
@@ -2289,10 +2303,10 @@ fn probe_host_sites() {
     .unwrap();
     let command = Command::Seats(SeatsQuery {
         page: PageRequest::default(),
-        target: Some(crate::protocol::ids::HostTargetId::new("worker-1")),
+        target: Some(crate::protocol::ids::HostTargetId::new(target)),
         include_retired: false,
         filter: Default::default(),
-        host: Some(HostLocator::parse(NAMED_HOST_LOCATOR).unwrap()),
+        host: Some(HostLocator::parse(host).unwrap()),
     });
     assert!(command.validate().is_ok());
     assert_eq!(

@@ -42,6 +42,11 @@ pub const HOST_TOPOLOGIES_V1: &str = "topology.host_topologies_v1";
 /// named-host locator with the seat name as target. A CLI sends a Named site only to a daemon that
 /// advertises this (`cli::site_capability`, M13).
 pub const HOST_SITES_V1: &str = "seat.host_sites_v1";
+/// Terminal caller sites (a herdr-core terminal): the same request fields as [`HOST_SITES_V1`],
+/// carrying the core's socket as the host locator and the terminal id as target. A CLI sends a
+/// Terminal site only to a daemon that advertises this, so a daemon that only knows Named sites
+/// gets one clear refusal (`cli::site_capability`, M13).
+pub const TERMINAL_SITES_V1: &str = "seat.terminal_sites_v1";
 /// `SyncCommand::PeerPrune` and `SyncCommand::PeerUnforget` (TRUST-POLICY
 /// N16). The CLI sends them only to a daemon that advertises this, so an
 /// older daemon gets one clear refusal instead of an unknown-variant error.
@@ -214,6 +219,7 @@ pub const ADVERTISED: &[&str] = &[
     HOST_TOPOLOGIES_V1,
     HOST_SITES_V1,
     TURN_STATE_EDGE,
+    TERMINAL_SITES_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

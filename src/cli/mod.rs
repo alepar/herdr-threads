@@ -344,8 +344,15 @@ where
     {
         return Err(invalid_request(line));
     }
-    let site = env.named().map(caller_location::CallerLocator::Named);
-    let pane = cli_caller_pane(&env);
+    let site = env.non_pane_locator(caller_location::EnvMode::Cli);
+    // A lone herdr-core terminal acts as its `tN` target: it has no pane, and its seat lookup
+    // is the same target lookup a pane's is.
+    let pane = cli_caller_pane(&env).or_else(|| match &site {
+        Some(terminal @ caller_location::CallerLocator::Terminal { .. }) => {
+            terminal.site().moved_target().map(str::to_owned)
+        }
+        _ => None,
+    });
     run_in_site(argv, pane.as_deref(), site.as_ref(), writer)
 }
 
@@ -468,8 +475,9 @@ where
     run_in_site(argv, caller_pane, None, writer)
 }
 
-/// [`run_in_pane`] with the caller's located site: a `Named` site (no pane) sends its host
-/// scope with thread resolution, behind the daemon's `seat.host_sites_v1` (M13).
+/// [`run_in_pane`] with the caller's located site: a `Named` or `Terminal` site (no pane) sends
+/// its host scope with thread resolution, behind the daemon's `seat.host_sites_v1` /
+/// `seat.terminal_sites_v1` (M13).
 pub fn run_in_site<I, T, W>(
     argv: I,
     caller_pane: Option<&str>,
@@ -562,8 +570,7 @@ fn run_parsed_in_pane<W: Write>(
                 .ok()
                 .as_deref(),
             caller_pane,
-            parsed.cooperative.is_some()
-                || matches!(site, Some(caller_location::CallerLocator::Named(_))),
+            parsed.cooperative.is_some() || site.is_some(),
             matches!(&parsed.action, CliAction::Watch(_)),
             writer,
         )?;
@@ -3888,7 +3895,14 @@ fn located_pane_seat<C: LocalClient + ?Sized>(
             moved_from: None,
         }));
     }
-    // The caller's own Herdr host (the claim host); a moved pane stays on it.
+    // The caller's own Herdr host (the claim host); a moved pane stays on it. A terminal's
+    // host is a herdr-core socket, not a Herdr server, and its id does not move.
+    if caller_location::CallerEnv::from_process()
+        .non_pane_locator(caller_location::EnvMode::Cli)
+        .is_some()
+    {
+        return Ok(None);
+    }
     let Ok(endpoint) = runtime.require_host() else {
         return Ok(None);
     };

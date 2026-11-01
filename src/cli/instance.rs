@@ -69,6 +69,9 @@ pub struct InstanceInputs {
     /// standalone default state dir, beside a Herdr the command group's store, and its Herdr
     /// host endpoint resolves lazily (fast sources only, never a `herdr` query).
     pub non_pane_site: bool,
+    /// The lone herdr-core terminal's core socket (`HC_TERMINAL_SOCKET`): the claim host of such
+    /// a caller, ahead of a Herdr `HERDR_SOCKET_PATH` that may be stale in its environment.
+    pub site_host: Option<PathBuf>,
 }
 
 fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
@@ -92,6 +95,12 @@ impl InstanceInputs {
             herdr: hook::resolve_on_path("herdr", path.as_deref()),
             herdr_env: caller.herdr_env(),
             non_pane_site: caller.non_pane_site(),
+            site_host: match caller.non_pane_locator(super::caller_location::EnvMode::Cli) {
+                Some(site @ super::caller_location::CallerLocator::Terminal { .. }) => {
+                    site.site().claim_host_locator().map(PathBuf::from)
+                }
+                _ => None,
+            },
         }
     }
 
@@ -440,6 +449,9 @@ pub fn claim_host(
 pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String), String> {
     if let Some(host) = &inputs.host_flag {
         return Ok((host.clone(), "--host-endpoint".into()));
+    }
+    if let Some(host) = &inputs.site_host {
+        return Ok((host.clone(), "the terminal site core socket".into()));
     }
     if let Some(host) = &inputs.env_host {
         return Ok((host.clone(), "HERDR_SOCKET_PATH".into()));
