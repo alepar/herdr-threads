@@ -3595,6 +3595,7 @@ mod refusal_streaks {
             seat: SeatId::new(seat),
             generation,
             reason,
+            action: std::mem::discriminant(&ReconciliationAction::WatchRestoredPane),
             excludable: true,
         }
     }
@@ -3652,7 +3653,7 @@ mod refusal_streaks {
         assert!(!streaks.pass_finished(&publication(1), &[old, refusal("new", 1, REASON)]));
     }
 
-    /// Kills: a key that drops the generation or reason, a run that survives a
+    /// Kills: a key that drops the generation, reason or action, a run that survives a
     /// clean pass, and a run carried into a new recovery epoch.
     #[test]
     fn the_run_restarts_on_any_change() {
@@ -3668,6 +3669,14 @@ mod refusal_streaks {
         let mut streaks = RefusalStreaks::default();
         run_to_threshold(&mut streaks);
         let other = refusal("s", 1, StaleReason::new("move_target_owned"));
+        assert!(!streaks.pass_finished(&publication(1), &[other]));
+        // Refused as one action twice, then as another: its run starts now.
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        let other = RefusedTransition {
+            action: std::mem::discriminant(&ReconciliationAction::NoteRestoredPaneAbsent),
+            ..refused.clone()
+        };
         assert!(!streaks.pass_finished(&publication(1), &[other]));
         let mut streaks = RefusalStreaks::default();
         run_to_threshold(&mut streaks);

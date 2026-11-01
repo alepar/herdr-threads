@@ -1744,6 +1744,7 @@ fn refusal(
         seat: crate::protocol::ids::SeatId::new(seat.into()),
         generation: 1,
         reason,
+        action: std::mem::discriminant(&crate::ports::ReconciliationAction::MarkUnresolved),
         excludable: false,
     }
 }

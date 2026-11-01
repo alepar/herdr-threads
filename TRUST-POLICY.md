@@ -266,11 +266,13 @@ this grants no enrollment around pending recovery and adds no non-resume hook re
 
 The reconciliation marker means nothing this pass planned can still add a C1 candidate or a seat to protect; it does
 not mean every planned transition applied (ht-wp7n). A pass records it past a refused transition only if the refusal is
-non-transient, repeated for the same seat, seat generation and reason on 3 consecutive finished passes of the recovery
+non-transient, repeated for the same seat, seat generation, reason and action on 3 consecutive finished passes of the recovery
 boot and epoch (a pass cut short by a store error counts for nothing), and its action is anything but `MarkUnresolved`. Any other action means the seat is already unresolved, where it
 keeps blocking the hold lift, or proven in the current incarnation, so the pass would not have unresolved it: it adds
 no C1 candidate and no seat to protect. The refused seat is replanned on every pass and stays named in the daemon log
-and Health; an unapplied carry ends in the ordinary unavailable path (C4). The run is daemon memory: a restart proves
+and Health; an unapplied carry ends in the ordinary unavailable path (C4), and target ownership stays as last applied: after a
+refused `Move` the seat still owns its old target and the destination has no resolved owner, which is what the kept and
+process continuity guards then read at that target. The run is daemon memory: a restart proves
 it again. Health's `last_reconciliation_at` stays refusal-free only, so it can lag the marker. Refused transitions are
 never evidence, so no seat moves or is unresolved because of them. Accepted limit: until the marker first names the
 recovery boot and epoch, a resolved seat whose `MarkUnresolved` keeps being refused holds it back, and with it the hold

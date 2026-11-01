@@ -369,6 +369,8 @@ pub struct RefusedTransition {
     /// The seat generation the transition was planned against.
     pub generation: u64,
     pub reason: crate::ports::StaleReason,
+    /// The refused action's kind: a different action is a different refusal.
+    pub action: std::mem::Discriminant<ReconciliationAction>,
     /// Whether a pass may complete past this refusal once it persists: its
     /// action was not `MarkUnresolved`, so the seat is already unresolved or
     /// proven in the current incarnation, and applying it could neither add a
@@ -376,8 +378,8 @@ pub struct RefusedTransition {
     pub excludable: bool,
 }
 
-/// Consecutive finished passes that must refuse the same seat, generation and reason
-/// before a pass completes past it: one pass is a race, a run of them is not.
+/// Consecutive finished passes that must refuse the same seat, generation,
+/// reason and action before a pass completes past it: one pass is a race, a run of them is not.
 pub const PERSISTENT_REFUSAL_PASSES: u32 = 3;
 
 /// In how many consecutive finished passes of one recovery boot and epoch each refusal
@@ -387,7 +389,12 @@ pub const PERSISTENT_REFUSAL_PASSES: u32 = 3;
 pub struct RefusalStreaks {
     recovery: Option<(crate::protocol::ids::HostBootId, u64)>,
     streaks: std::collections::HashMap<
-        (crate::protocol::ids::SeatId, u64, crate::ports::StaleReason),
+        (
+            crate::protocol::ids::SeatId,
+            u64,
+            crate::ports::StaleReason,
+            std::mem::Discriminant<ReconciliationAction>,
+        ),
         u32,
     >,
 }
@@ -409,7 +416,12 @@ impl RefusalStreaks {
         let mut complete = true;
         let mut streaks = std::collections::HashMap::with_capacity(refusals.len());
         for refusal in refusals {
-            let key = (refusal.seat.clone(), refusal.generation, refusal.reason);
+            let key = (
+                refusal.seat.clone(),
+                refusal.generation,
+                refusal.reason,
+                refusal.action,
+            );
             let passes = self
                 .streaks
                 .get(&key)
@@ -488,6 +500,7 @@ pub fn reconcile_published_page(
     for transition in plan_page(&page)? {
         let seat = transition.seat.clone();
         let generation = transition.expected_binding_generation;
+        let action = std::mem::discriminant(&transition.action);
         let excludable = transition.action.may_complete_past_refusal();
         let result = store.apply_reconciliation_transition(transition, budget)?;
         match result {
@@ -501,6 +514,7 @@ pub fn reconcile_published_page(
                     seat,
                     generation,
                     reason,
+                    action,
                     excludable,
                 });
                 continue;
