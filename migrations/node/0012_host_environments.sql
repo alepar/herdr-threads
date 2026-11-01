@@ -22,6 +22,22 @@ ALTER TABLE seats ADD COLUMN name TEXT
 CREATE UNIQUE INDEX seats_live_name ON seats(host_id, name)
     WHERE name IS NOT NULL AND is_local = 1 AND state <> 'retired';
 
+-- Remote rows materialized before `name` existed keep the name their `seat.created` carried.
+-- Display only, never authority. The predicates mirror the column CHECK plus the
+-- leading-character rule; the seat-id-shaped rule cannot be stated in SQL, and such a value is
+-- at worst an odd label. An invalid value stays NULL: the CHECK would abort the migration, so
+-- the SET reads the same valid row the WHERE found.
+UPDATE seats SET name = (
+    SELECT json_extract(CAST(j.payload AS TEXT), '$.display_name') FROM journal j
+    WHERE j.kind = 'seat.created' AND j.creates = seats.id
+      AND json_valid(CAST(j.payload AS TEXT))
+      AND typeof(json_extract(CAST(j.payload AS TEXT), '$.display_name')) = 'text'
+      AND length(CAST(json_extract(CAST(j.payload AS TEXT), '$.display_name') AS BLOB)) BETWEEN 1 AND 64
+      AND json_extract(CAST(j.payload AS TEXT), '$.display_name') NOT GLOB '*[^A-Za-z0-9._-]*'
+      AND json_extract(CAST(j.payload AS TEXT), '$.display_name') NOT GLOB '[-.]*'
+    ORDER BY j.ingest_seq LIMIT 1)
+WHERE is_local = 0 AND name IS NULL;
+
 -- `locator_hint`: pane id or `<core>:<tN>` of a named binding; a hint, never authority.
 -- `readonly`: the binding's display never ACKs receipt-bearing rows.
 ALTER TABLE occupant_bindings ADD COLUMN locator_hint TEXT;

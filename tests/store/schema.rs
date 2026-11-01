@@ -7279,3 +7279,108 @@ fn seats_name_check_sample() {
         assert!(!accepts(bad), "{bad:?} must fail the CHECK");
     }
 }
+
+const RAW: &str = "x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'";
+
+/// A store at schema version 11 (every delta before 0012).
+pub(super) fn store_before_0012() -> Connection {
+    let db = Connection::open_in_memory().unwrap();
+    let before: Vec<schema::NodeDelta> = schema::NODE_DELTAS
+        .iter()
+        .filter(|d| d.version < 12)
+        .copied()
+        .collect();
+    assert_eq!(before.len() + 1, 11);
+    open_with(&db, &before).unwrap();
+    assert_eq!(user_version(&db), 11);
+    db
+}
+
+/// A remote seat row (version 11 shape) and, when `payload` is given, its `seat.created` journal row.
+pub(super) fn remote_with_created(db: &Connection, seat: &str, payload: Option<&[u8]>) {
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+         VALUES (?1,(SELECT id FROM local_node),'remote','native',0,0,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',0,'agent',1)",
+        [seat],
+    )
+    .unwrap();
+    let Some(payload) = payload else { return };
+    db.execute_batch(
+        "INSERT OR IGNORE INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
+         VALUES (1,printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0)",
+    )
+    .unwrap();
+    db.execute(
+        &format!(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,ingested_at,apply_state,raw) \
+             VALUES (1,(SELECT coalesce(max(counter),0)+1 FROM journal),zeroblob(32),zeroblob(32),0,'seat.created',1,x'',?1,?2,zeroblob(64),0,'pending',{RAW})"
+        ),
+        rusqlite::params![seat, payload],
+    )
+    .unwrap();
+}
+
+// Kills: a 0012 without the backfill (a valid name stays NULL), a backfill that copies an invalid
+// value (the CHECK aborts the migration, or a leading dot survives), one that rewrites a local
+// row, and one that aborts on a non-JSON payload.
+#[test]
+fn delta_0012_backfills_remote_seat_names() {
+    let db = store_before_0012();
+    let long = format!(r#"{{"display_name":"{}"}}"#, "a".repeat(65));
+    let cases: [(&str, Option<&[u8]>); 8] = [
+        ("valid", Some(br#"{"display_name":"reviewer.1"}"#)),
+        ("space", Some(br#"{"display_name":"bad name"}"#)),
+        ("dot", Some(br#"{"display_name":".hidden"}"#)),
+        ("dash", Some(br#"{"display_name":"-x"}"#)),
+        ("long", Some(long.as_bytes())),
+        ("nullname", Some(br#"{"display_name":null}"#)),
+        ("junk", Some(b"\xff not json")),
+        ("nojournal", None),
+    ];
+    for (seat, payload) in &cases {
+        remote_with_created(&db, seat, *payload);
+    }
+    db.execute(
+        "INSERT INTO herdr_hosts(node_id,endpoint,created_at) SELECT id,'/h.sock',0 FROM local_node",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) \
+         VALUES ('localseat',(SELECT id FROM local_node),'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        &format!(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,ingested_at,apply_state,raw) \
+             VALUES (1,100,zeroblob(32),zeroblob(32),0,'seat.created',1,x'','localseat',?1,zeroblob(64),0,'pending',{RAW})"
+        ),
+        [br#"{"display_name":"mine"}"#.as_slice()],
+    )
+    .unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
+    let name = |seat: &str| -> Option<String> {
+        db.query_row("SELECT name FROM seats WHERE id=?1", [seat], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(name("valid").as_deref(), Some("reviewer.1"));
+    // The name is what a read of the remote seat shows after the upgrade.
+    let entry = crate::store::seat_directory::directory(&db, "valid", UtcMillis(100))
+        .unwrap()
+        .expect("a remote seat has an entry");
+    assert_eq!(entry.name.as_deref(), Some("reviewer.1"));
+    for seat in [
+        "space",
+        "dot",
+        "dash",
+        "long",
+        "nullname",
+        "junk",
+        "nojournal",
+        "localseat",
+    ] {
+        assert_eq!(name(seat), None, "{seat}");
+    }
+}
