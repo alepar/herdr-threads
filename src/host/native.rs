@@ -1262,6 +1262,28 @@ impl HostPort for NativeCli {
         self.topology(budget)
     }
 
+    fn target_root_process(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        self.check_context(context)?;
+        let raw = self.run_unfenced(
+            &["pane", "process-info", target.as_str()],
+            &context.budget,
+            Duration::from_millis(750),
+        )?;
+        Ok(serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|response| {
+                response
+                    .pointer("/result/process_info/shell_pid")
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid != 0))
+    }
+
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         // Herdr 0.9.1 `agent.start` checks shell ownership and prompt
         // readiness itself. The same-incarnation preflight needs the kernel
