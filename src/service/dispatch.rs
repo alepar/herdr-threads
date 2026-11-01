@@ -1228,6 +1228,8 @@ impl DomainService {
         super::turn_state::TurnKey {
             seat: claim.seat.clone(),
             generation: claim.binding_generation,
+            harness: claim.harness.as_str().to_owned(),
+            native_session: claim.native_session.clone(),
         }
     }
 

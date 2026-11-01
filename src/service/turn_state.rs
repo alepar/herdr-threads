@@ -9,7 +9,10 @@
 //! A binding the book has not heard from is [`TurnState::Unknown`] and never reads as idle: a daemon
 //! restart forgets every binding, and the next hook of each sets it. The wake lane (ht-kqrt.69)
 //! types only into `Idle`.
-use crate::{harness::adapter::TurnEdge, protocol::ids::SeatId};
+use crate::{
+    harness::adapter::TurnEdge,
+    protocol::ids::{NativeSessionId, SeatId},
+};
 use std::{collections::HashMap, sync::Mutex};
 
 /// A busy binding is a candidate for the screen-idle clear only after this long (ms).
@@ -30,11 +33,15 @@ pub enum TurnState {
     Idle,
 }
 
-/// A binding's identity for turn state: its seat and binding generation (a rebind starts over).
+/// A binding's identity for turn state: the top-level binding key of `occupant_bindings`
+/// (seat, harness, native session) plus the generation, so a rebind starts over. Two bindings of
+/// one seat and generation (several sessions in one pane) keep separate entries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TurnKey {
     pub seat: SeatId,
     pub generation: u64,
+    pub harness: String,
+    pub native_session: NativeSessionId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -148,13 +155,13 @@ impl TurnStateBook {
     /// [`SCREEN_READ_GAP_MS`] apart both answered `Some(false)`; any other answer restarts the
     /// count. Whether this read recorded the idle.
     pub fn observe_screen(&self, key: &TurnKey, running: Option<bool>, now_ms: u64) -> bool {
-        let clear = self.with(|inner| {
+        self.with(|inner| {
             let Some((
                 Entry::Busy {
                     since_ms,
                     first_clear_ms,
                 },
-                at,
+                _,
             )) = inner.entries.get_mut(key)
             else {
                 return false;
@@ -163,15 +170,18 @@ impl TurnStateBook {
                 *first_clear_ms = None;
                 return false;
             }
-            let _ = at;
             match *first_clear_ms {
                 None => {
                     *first_clear_ms = Some(now_ms);
                     false
                 }
-                Some(first) => now_ms.saturating_sub(first) >= SCREEN_READ_GAP_MS,
+                Some(first) if now_ms.saturating_sub(first) >= SCREEN_READ_GAP_MS => {
+                    // Decided and applied under this one lock: a fresh Busy edge cannot land between.
+                    Self::put(inner, key.clone(), Entry::Idle);
+                    true
+                }
+                Some(_) => false,
             }
-        });
-        clear && self.record(key, TurnEdge::ScreenIdle, now_ms)
+        })
     }
 }

@@ -4088,8 +4088,8 @@ fn run_admitted_hook_since(
         && env.located()
         && deadline > clock.instant_now()
     {
-        // Best effort: an unreachable or older daemon keeps no turn state, and a missed edge only
-        // delays a wake until the binding's next hook.
+        // Best effort: an unreachable or older daemon keeps no turn state. A missed Idle only
+        // delays a wake; a missed Busy is covered by the wake gate's screen read.
         let _ = report_turn_edge(args, decoded, edge, env, deadline, &clock);
     }
     outcome

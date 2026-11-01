@@ -418,12 +418,16 @@ impl Clock for ManualClock {
 
 /// The seat's connected top-level binding generations, set by the test.
 #[derive(Default)]
-pub(crate) struct GenSeats(Mutex<Vec<u64>>);
+pub(crate) struct GenSeats(Mutex<Vec<crate::store::named_seats::TopLevelBinding>>);
 impl NamedSeatSource for GenSeats {
     fn live_named(&self, _: &HostId, _: &CallBudget) -> Result<Vec<(SeatId, SeatName)>, ApiError> {
         Ok(Vec::new())
     }
-    fn top_level_generations(&self, _: &SeatId, _: &CallBudget) -> Result<Vec<u64>, ApiError> {
+    fn top_level_bindings(
+        &self,
+        _: &SeatId,
+        _: &CallBudget,
+    ) -> Result<Vec<crate::store::named_seats::TopLevelBinding>, ApiError> {
         Ok(self.0.lock().unwrap().clone())
     }
 }
@@ -549,10 +553,21 @@ impl WakeRig {
         let keys: Vec<TurnKey> = (1..=states.len() as u64)
             .map(|generation| TurnKey {
                 seat: self.seat.clone(),
-                generation,
+                generation: 1,
+                harness: self.harness.to_owned(),
+                native_session: crate::protocol::ids::NativeSessionId::new(format!(
+                    "s{generation}"
+                )),
             })
             .collect();
-        *self.seats.0.lock().unwrap() = keys.iter().map(|k| k.generation).collect();
+        *self.seats.0.lock().unwrap() = keys
+            .iter()
+            .map(|k| crate::store::named_seats::TopLevelBinding {
+                generation: k.generation,
+                harness: k.harness.clone(),
+                native_session: k.native_session.clone(),
+            })
+            .collect();
         for (key, edge) in keys.iter().zip(states) {
             if let Some(edge) = edge {
                 self.book.record(key, *edge, 0);
@@ -667,6 +682,37 @@ fn stale_busy_cleared_only_by_screen_idle_rule() {
         assert_eq!(rig.book.state(&keys[0]), TurnState::Busy, "{case}");
         assert_eq!(rig.typed(), "", "{case}");
     }
+}
+
+// Kills: a wake typed into a running turn whose Busy edge was missed (every entry Idle, the
+// screen shows the running footer).
+#[test]
+fn idle_entry_with_a_running_screen_refuses() {
+    let screen = format!("{}  esc to interrupt\n", IDLE.trim_end());
+    let Some(rig) = WakeRig::new("idle_running_screen", "claude", &screen, "esc to interrupt")
+    else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let detail = refused(rig.attempt());
+    assert!(detail.contains("running turn"), "{detail}");
+    assert_eq!(rig.typed(), "");
+}
+
+// Kills: pane idleness keyed on seat and generation only, where one session's Stop marks the
+// shared entry Idle while a sibling session of the same generation is mid-turn.
+#[test]
+fn sibling_binding_mid_turn_holds_the_wake() {
+    let Some(rig) = WakeRig::new("sib_same_generation", "claude", IDLE, "manual mode on") else {
+        return;
+    };
+    let keys = rig.bindings(&[Some(TurnEdge::Busy), Some(TurnEdge::Busy)]);
+    assert_eq!(keys[0].generation, keys[1].generation);
+    rig.clock.set(1_000);
+    rig.book.record(&keys[0], TurnEdge::Idle, 1_000);
+    refused(rig.attempt());
+    assert_eq!(rig.typed(), "");
+    assert_eq!(rig.book.state(&keys[1]), TurnState::Busy);
 }
 
 // Kills: typing into copy-mode (keys go to the mode, not the program), into a pane with input off
