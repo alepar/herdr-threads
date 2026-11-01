@@ -67,6 +67,7 @@ mod tests {
             harness: Some("h".into()),
             wake,
             first,
+            host: None,
         }
     }
 

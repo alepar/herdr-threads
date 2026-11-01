@@ -1766,6 +1766,11 @@ pub struct SeatWakeStatus {
     /// First report of this seat's `no_wake` to the query's observer.
     #[serde(default, skip_serializing_if = "is_false")]
     pub first: bool,
+    /// The seat's own host (`seats.host_id`), set by the store for the daemon's per-row
+    /// classification. `HostId` is node-local and has no wire form, so the row never carries
+    /// it to a client: it decodes as `None` and encodes without it.
+    #[serde(default, skip)]
+    pub host: Option<crate::ports::HostId>,
 }
 /// Canonical seat mapping. A local seat's topology labels are client-local
 /// (the CLI's own host read); a remote seat's come from its home node

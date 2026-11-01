@@ -245,9 +245,10 @@ impl DomainService {
         Ok(self)
     }
 
-    /// `Command::WakeStatus`: the store names the seats and their harnesses. A known harness with
-    /// no idle-wake path is `no_wake`; otherwise any attached host reports the block its last
-    /// wake attempt for the seat met (never attaching one). With an observer, `first` marks a
+    /// `Command::WakeStatus`: the store names the seats, their harnesses and their own hosts.
+    /// A known harness with no idle-wake path on its seat's host (`idle_wake_on`) is `no_wake`;
+    /// otherwise that host reports the block its last wake attempt for the seat met (never
+    /// attaching one). With an observer, `first` marks a
     /// `no_wake` not yet reported to it; a seat that is no longer `no_wake` forgets the report.
     fn wake_status(
         &self,
@@ -268,20 +269,11 @@ impl DomainService {
         let hosts = self
             .hosts
             .as_ref()
-            .map_or_else(Vec::new, |hosts| hosts.attached());
-        let registry = crate::harness::registry::builtins();
-        for row in &mut rows {
-            let Some(harness) = row.harness.as_deref() else {
-                continue;
-            };
-            row.wake = match registry.has_idle_wake(harness) {
-                Some(false) => Some(WakeBlock::NoWake),
-                Some(true) => hosts
-                    .iter()
-                    .find_map(|host| host.port().wake_block(&row.seat)),
-                None => None,
-            };
-        }
+            .map_or_else(Vec::new, |hosts| hosts.all_for_reads());
+        let now = self.clock.utc_now();
+        classify_wake_rows(&mut rows, &hosts, &|seat| {
+            self.mod_channels.wake_suppressed(seat) && !self.mod_channels.stalled(seat, now)
+        });
         if let Some(observer) = &query.observer {
             let mut reports = self
                 .wake_reports
@@ -2299,6 +2291,50 @@ mod topology_contract_dispatch_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Fills each row's `wake` from the row's own host (`SeatWakeStatus.host`, looked up among
+/// `hosts`): a known harness with no idle-wake path on that host is `NoWake`, otherwise the
+/// host's last-attempt block. `channel_live(seat)` is `ModChannels::mod_suppressed`. A row whose
+/// host is absent (an older store row, a host not attached) is classified as on a Herdr TUI
+/// composer host and asks every host for the block, as before per-row hosts.
+fn classify_wake_rows(
+    rows: &mut [crate::protocol::results::SeatWakeStatus],
+    hosts: &[Arc<HostSession>],
+    channel_live: &dyn Fn(&crate::protocol::ids::SeatId) -> bool,
+) {
+    use crate::{
+        harness::registry::IdleWakeOn,
+        ports::{ComposerTraits, WakeCapability},
+        protocol::results::WakeBlock,
+    };
+    let registry = crate::harness::registry::builtins();
+    for row in rows {
+        let Some(harness) = row.harness.as_deref() else {
+            continue;
+        };
+        let own = row
+            .host
+            .and_then(|id| hosts.iter().find(|host| host.host_id() == id));
+        let capability = own.map_or(
+            WakeCapability::Composer(ComposerTraits::HERDR_TUI),
+            |host| host.port().wake_capability(),
+        );
+        row.wake = match registry.idle_wake_on(harness, capability, channel_live(&row.seat)) {
+            Some(IdleWakeOn::None) => Some(WakeBlock::NoWake),
+            Some(_) => match own {
+                Some(host) => host.port().wake_block(&row.seat),
+                None => hosts
+                    .iter()
+                    .find_map(|host| host.port().wake_block(&row.seat)),
+            },
+            None => None,
+        };
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/service/wake_status_hosts.rs"]
+mod wake_status_hosts_tests;
 
 #[cfg(test)]
 #[path = "../../tests/service/host_routing.rs"]

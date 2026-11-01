@@ -6594,22 +6594,24 @@ fn wake_status_seats(
         {
             continue;
         }
-        let local: bool = db
+        let Some(host) = db
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND is_local=1)",
+                "SELECT host_id FROM seats WHERE id=?1 AND instance_id=?2 AND is_local=1",
                 rusqlite::params![seat, instance],
-                |r| r.get(0),
+                |r| r.get::<_, Option<i64>>(0),
             )
-            .map_err(|e| db.map_error(e))?;
-        if !local {
+            .optional()
+            .map_err(|e| db.map_error(e))?
+        else {
             continue;
-        }
+        };
         let harness = open_binding(db, &seat)?.map(|binding| binding.harness);
         rows.push(crate::protocol::results::SeatWakeStatus {
             seat: SeatId::new(seat),
             harness,
             wake: None,
             first: false,
+            host: host.map(crate::ports::HostId::from_row),
         });
     }
     Ok(CommandResult::WakeStatus(rows))
