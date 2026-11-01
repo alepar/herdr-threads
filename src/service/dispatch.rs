@@ -1829,6 +1829,11 @@ impl LocalService for DomainService {
                 ErrorCode::Unsupported,
                 "local intents are client-owned",
             )),
+            // Seam only (ht-kqrt.53): the handler lands with `capabilities::LAUNCH_GATE_V1`.
+            Command::AuthorizeLaunchGate(_) => Err(error(
+                ErrorCode::Unsupported,
+                "launch gate authorization is not served yet",
+            )),
             Command::Health
             | Command::Capabilities
             | Command::HookParseFailure(_)

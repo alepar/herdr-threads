@@ -281,6 +281,52 @@ impl ports::CreateTabPort for NativeCli {
     }
 }
 
+impl ports::CreateTargetPort for NativeCli {
+    /// A Herdr socket creates a tab: the request narrows to the frozen `create_tab` call and
+    /// the correlated `CreatedTab` widens back to a `CreatedTarget`.
+    fn create_target(
+        &self,
+        request: &ports::CreateTargetRequest,
+        context: &HostCallContext,
+    ) -> ports::CreateTargetOutcome {
+        use ports::CreateTargetOutcome::{Created, NotSubmitted, OutcomeUnknown};
+        let (ports::Placement::NewTab { space }, ports::HostWitness::HerdrSocket(witness)) =
+            (&request.placement, &request.expected_witness)
+        else {
+            return NotSubmitted(error(
+                ErrorCode::InvalidRequest,
+                "native host creates tabs against a Herdr socket witness only",
+            ));
+        };
+        let tab_request = ports::CreateTabRequest {
+            correlation: request.correlation.clone(),
+            workspace: space.clone(),
+            cwd: request.cwd.clone(),
+            label: request.label.clone(),
+            focus: request.focus,
+            env: request.env.clone(),
+            directory_context: request.directory_context.clone(),
+            expected_witness: witness.clone(),
+        };
+        match ports::CreateTabPort::create_tab(self, &tab_request, context) {
+            ports::CreateTabOutcome::Created(tab) => {
+                let tab = *tab;
+                Created(Box::new(ports::CreatedTarget {
+                    correlation: tab.correlation,
+                    placement: request.placement.clone(),
+                    target: tab.tab,
+                    root_pane: Some(tab.root_pane),
+                    terminal: tab.terminal,
+                    host_incarnation: tab.host_incarnation,
+                    witness: ports::HostWitness::HerdrSocket(tab.witness),
+                }))
+            }
+            ports::CreateTabOutcome::NotSubmitted(e) => NotSubmitted(e),
+            ports::CreateTabOutcome::OutcomeUnknown(e) => OutcomeUnknown(e),
+        }
+    }
+}
+
 impl NativeCli {
     /// Herdr's guarded start (`agent.start`): Herdr itself checks that the
     /// pane is at its interactive shell prompt before it starts the agent, and

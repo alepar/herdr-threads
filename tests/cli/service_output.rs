@@ -197,3 +197,44 @@ fn peer_hygiene_commands_refuse_one_line_on_an_older_daemon() {
         assert_eq!(client.0.lock().unwrap().len(), 1, "one health read only");
     }
 }
+
+// Kills: a launch-gate authorization sent to a daemon without `launch.gate_v1` (a raw
+// unknown-variant decode error instead of the existing upgrade line).
+#[test]
+fn launch_gate_refuses_one_line_on_an_older_daemon() {
+    use crate::protocol::{
+        handoff::{AuthorizeLaunchGate, BootstrapAttempt},
+        ids::OperationId,
+    };
+    let client = OlderDaemon::default();
+    let mut bytes = Vec::new();
+    let error = run_wire(
+        Command::AuthorizeLaunchGate(Box::new(AuthorizeLaunchGate {
+            compound: OperationId::new("c-1"),
+            attempt: BootstrapAttempt::first(),
+            core_id: "core-a".into(),
+            terminal: "t7".into(),
+            timeout_ms: 5_000,
+        })),
+        &OutputSpec {
+            format: OutputFormat::Text,
+            context: ContinuationContext::default(),
+        },
+        &client,
+        &|| CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &mut bytes,
+    )
+    .unwrap_err();
+    let text = format!("{error:?}");
+    assert!(
+        text.contains(
+            "the running daemon (an older version) does not support launch gate authorization; after upgrading run: herdr-threads daemon stop && herdr-threads daemon ensure"
+        ),
+        "{text}"
+    );
+    assert!(bytes.is_empty());
+    assert_eq!(client.0.lock().unwrap().len(), 1, "one health read only");
+}

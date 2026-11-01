@@ -377,6 +377,86 @@ pub enum BootstrapState {
     Cancelled,
 }
 
+/// Bootstrap journal records V3: the same shapes as V1/V2 with the creation carried as a
+/// `CreatedTarget`, so a non-Herdr host can journal its creation. V1 and V2 bytes stay frozen
+/// and keep their own records; nothing here is reachable from them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapPlanV3 {
+    pub version: u32,
+    pub payload: BootstrapPayload,
+    pub placement: crate::ports::Placement,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapProgressV3 {
+    pub version: u32,
+    pub identity: BootstrapIdentity,
+    pub attempt: BootstrapAttempt,
+    pub possible_creation: bool,
+    #[serde(default)]
+    pub request: Option<crate::ports::CreateTargetRequest>,
+    #[serde(default)]
+    pub creation: Option<crate::ports::CreatedTarget>,
+    #[serde(default)]
+    pub not_submitted: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapAttachmentV3 {
+    pub attempt: BootstrapAttempt,
+    pub created: crate::ports::CreatedTarget,
+    pub resolve_operation: OperationId,
+    pub resolved_seat: SeatId,
+    pub handoff: HandoffIdentity,
+}
+
+/// Longest wait a launch gate may ask the daemon for.
+pub const LAUNCH_GATE_MAX_TIMEOUT_MS: u32 = 30_000;
+fn default_launch_gate_timeout_ms() -> u32 {
+    10_000
+}
+/// A launched terminal asks the daemon to authorize its `exec`: bootstrap
+/// `<compound>:<attempt>` and the `(core, tN)` witness the daemon resolves as the frozen
+/// recipient. The bootstrap Send is staged before the daemon replies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizeLaunchGate {
+    pub compound: OperationId,
+    pub attempt: BootstrapAttempt,
+    pub core_id: String,
+    pub terminal: String,
+    #[serde(default = "default_launch_gate_timeout_ms")]
+    pub timeout_ms: u32,
+}
+impl AuthorizeLaunchGate {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.core_id.is_empty() || self.terminal.is_empty() {
+            return Err("launch gate witness is empty");
+        }
+        if self.timeout_ms == 0 || self.timeout_ms > LAUNCH_GATE_MAX_TIMEOUT_MS {
+            return Err("launch gate timeout out of range");
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchGateRefusal {
+    UnknownBootstrap,
+    WitnessMismatch,
+    StaleAttempt,
+    TimedOut,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LaunchGateReply {
+    Authorized,
+    Refused {
+        #[serde(default = "default_launch_gate_refusal")]
+        reason: LaunchGateRefusal,
+    },
+}
+fn default_launch_gate_refusal() -> LaunchGateRefusal {
+    LaunchGateRefusal::UnknownBootstrap
+}
+
 /// Per-attempt lifecycle is separate from absorbing parent dispositions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
