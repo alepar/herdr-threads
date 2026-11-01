@@ -410,9 +410,19 @@ impl SemanticMutation {
                 if let Self::DirectSend(plan) = mutation.as_ref() {
                     plan.validate_claim(self.frozen_claim().unwrap())?;
                 }
+                // A V3 automatic bootstrap and its child may hand off into a core whose socket
+                // is not the caller's host.
+                let own_host = match mutation.as_ref() {
+                    Self::AutomaticBootstrap(plan) => plan.placement.is_some(),
+                    Self::AutomaticHandoff(plan) => {
+                        plan.version == crate::protocol::handoff::AUTOMATIC_TARGET_PLAN_VERSION
+                    }
+                    _ => false,
+                };
                 if mutation.namespace().is_some_and(|ns| {
                     let claim = self.frozen_claim().unwrap();
-                    ns.instance != claim.instance || ns.host_endpoint != claim.host.as_path()
+                    ns.instance != claim.instance
+                        || (!own_host && ns.host_endpoint != claim.host.as_path())
                 }) {
                     return Err(invalid("frozen namespace differs from original claim"));
                 }

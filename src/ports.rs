@@ -1376,6 +1376,8 @@ pub struct BootstrapPaneObservation {
     witness: crate::host::continuity::LocalEndpointWitness,
     workspace: HostTargetId,
     tab: HostTargetId,
+    /// The core id of a herdr-core terminal read; `None` for a Herdr pane.
+    core_id: Option<String>,
 }
 impl BootstrapPaneObservation {
     /// Publish this same response before deriving its canonical attachment guard.
@@ -1424,6 +1426,39 @@ impl BootstrapPaneObservation {
             witness,
             workspace,
             tab,
+            core_id: None,
+        })
+    }
+
+    /// The same-response rules for one herdr-core `terminal.get`: a fresh current target with
+    /// a verified structural proof, a transport peer, and the boot and the proof's incarnation
+    /// both `hc-core:<core_id>`. `workspace` and `tab` both hold the target, because an hc
+    /// terminal has neither; only the Herdr tab arm of the attachment check reads them.
+    pub(crate) fn try_new_terminal(
+        observation: HostObservation,
+        core_id: String,
+        witness: crate::host::continuity::LocalEndpointWitness,
+    ) -> Result<Self, &'static str> {
+        let boot = format!("hc-core:{core_id}");
+        let proof = observation
+            .verified_structural_proof()
+            .ok_or("bootstrap requires qualified same-response terminal scope")?;
+        if observation.provenance != ObservationProvenance::FreshCurrentTarget
+            || core_id.is_empty()
+            || witness.peer_pid == 0
+            || witness.start_seconds == 0
+            || observation.host_boot.as_str() != boot
+            || proof.incarnation() != boot
+        {
+            return Err("bootstrap witness does not qualify the same-response terminal");
+        }
+        let target = observation.target.clone();
+        Ok(Self {
+            observation,
+            witness,
+            workspace: target.clone(),
+            tab: target,
+            core_id: Some(core_id),
         })
     }
     pub fn witness(&self) -> &crate::host::continuity::LocalEndpointWitness {
@@ -1454,6 +1489,7 @@ pub struct BootstrapAttachmentGuard {
     ordinary: OrdinaryResolutionGuard,
     workspace: HostTargetId,
     tab: HostTargetId,
+    core_id: Option<String>,
 }
 impl BootstrapAttachmentGuard {
     pub(crate) fn try_new(
@@ -1467,10 +1503,26 @@ impl BootstrapAttachmentGuard {
             witness: pane.witness,
             workspace: pane.workspace,
             tab: pane.tab,
+            core_id: pane.core_id,
         })
     }
     pub fn witness(&self) -> &crate::host::continuity::LocalEndpointWitness {
         &self.witness
+    }
+    /// The creation witness this read corresponds to: the core and its serving process for a
+    /// terminal read, the socket witness for a Herdr pane.
+    pub fn host_witness(&self) -> HostWitness {
+        match &self.core_id {
+            Some(core_id) => HostWitness::HcCore {
+                core_id: core_id.clone(),
+                peer: HcPeer {
+                    pid: self.witness.peer_pid,
+                    start_seconds: self.witness.start_seconds,
+                    uid: self.witness.peer_uid,
+                },
+            },
+            None => HostWitness::HerdrSocket(self.witness.clone()),
+        }
     }
     pub fn ordinary(&self) -> &OrdinaryResolutionGuard {
         &self.ordinary
@@ -2941,6 +2993,18 @@ pub struct PulledNotice {
     pub author: Option<SeatId>,
 }
 
+/// What the launch gate reads of one bootstrap. Daemon-side only; never on a wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchGateView {
+    /// The current attempt's V3 creation; `None` before RecordCreated or for a V2 record.
+    pub created: Option<CreatedTarget>,
+    /// The asked attempt is the bootstrap's current one.
+    pub current_attempt: bool,
+    pub cancelled: bool,
+    /// The bootstrap Send is published (`handoff::automatic::published_send`).
+    pub send_staged: bool,
+}
+
 /// Store implementations inject a clock at construction and sample UTC inside each
 /// deciding write transaction, after validation and lock/queue waits. Mutation and due
 /// methods have no caller-provided UTC decision time.
@@ -2982,6 +3046,17 @@ pub trait BootstrapStorePort: Send + Sync {
         Err(ApiError::unsupported(
             "automatic bootstrap runtime unavailable",
         ))
+    }
+    /// What the launch gate reads of one automatic bootstrap; `None` for an unknown or
+    /// ambiguous compound. Read-only.
+    fn automatic_launch_gate_view(
+        &self,
+        _instance: &str,
+        _compound: &crate::protocol::ids::OperationId,
+        _attempt: crate::protocol::handoff::BootstrapAttempt,
+        _budget: &CallBudget,
+    ) -> Result<Option<LaunchGateView>, ApiError> {
+        Err(ApiError::unsupported("launch gate view unavailable"))
     }
     fn automatic_bootstrap_recovery_replay(
         &self,
@@ -5934,6 +6009,15 @@ pub enum Placement {
     NewTab { space: HostTargetId },
     NewTerminal { parent: HostTargetId },
 }
+impl Placement {
+    /// The space or parent the placement is anchored on.
+    pub fn anchor(&self) -> &HostTargetId {
+        match self {
+            Self::NewTab { space } => space,
+            Self::NewTerminal { parent } => parent,
+        }
+    }
+}
 /// Process identity of a herdr-core server (`hc`), derived from the transport peer.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HcPeer {
@@ -5975,6 +6059,15 @@ pub struct CreatedTarget {
     pub witness: HostWitness,
 }
 impl CreatedTarget {
+    /// The boot a fresh read of this target reports: `hc-core:<core id>` for a core (the
+    /// `host_incarnation` also names the serving process), the incarnation itself for a
+    /// Herdr socket.
+    pub fn observed_boot(&self) -> HostBootId {
+        match &self.witness {
+            HostWitness::HcCore { core_id, .. } => HostBootId::new(format!("hc-core:{core_id}")),
+            HostWitness::HerdrSocket(_) => self.host_incarnation.clone(),
+        }
+    }
     /// The Herdr-socket creation as the frozen tab record, or `None` for another witness.
     pub fn as_created_tab(&self) -> Option<CreatedTab> {
         let (HostWitness::HerdrSocket(witness), Placement::NewTab { space }) =

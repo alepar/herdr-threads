@@ -298,6 +298,7 @@ fn capability_constants_are_stable() {
     assert_eq!(HOST_SITES_V1, "seat.host_sites_v1");
     assert_eq!(TURN_STATE_EDGE, "turn_state.edge_v1");
     assert_eq!(TERMINAL_SITES_V1, "seat.terminal_sites_v1");
+    assert_eq!(AUTOMATIC_TARGET_V1, "handoff.automatic_target_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -349,7 +350,8 @@ fn capability_constants_are_stable() {
             "topology.host_topologies_v1",
             "seat.host_sites_v1",
             "turn_state.edge_v1",
-            "seat.terminal_sites_v1"
+            "seat.terminal_sites_v1",
+            "handoff.automatic_target_v1"
         ]
     );
 }
@@ -544,6 +546,7 @@ fn every_advertised_capability_has_a_handler() {
                 );
             }
             TERMINAL_SITES_V1 => probe_terminal_sites(),
+            AUTOMATIC_TARGET_V1 => probe_automatic_target(),
             PEER_PRUNE_V1 => probe_sync_commands(&[
                 crate::protocol::sync_admin::SyncCommand::PeerPrune {
                     host: None,
@@ -1207,6 +1210,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.host_sites_v1",
             "turn_state.edge_v1",
             "seat.terminal_sites_v1",
+            "handoff.automatic_target_v1",
             "invitation.confirmation_v1",
             "handoff.summary_prompt_v1"
         ]
@@ -2279,6 +2283,31 @@ fn probe_host_sites() {
 }
 
 /// A Terminal site's seat lookup carries the core's socket as host and the terminal id as target.
+/// A V3 plan (version 3, placement set) is a valid original; its V2 spelling of the same
+/// payload (version 2, no placement) is a different one, and an older decoder that denies
+/// unknown fields refuses the V3 bytes.
+fn probe_automatic_target() {
+    use crate::protocol::handoff::{AUTOMATIC_TARGET_PLAN_VERSION, AutomaticBootstrapPlan};
+    let plan: AutomaticBootstrapPlan = serde_json::from_str(include_str!(
+        "../fixtures/handoff-journal/automatic-v2-plan.json"
+    ))
+    .unwrap();
+    assert!(plan.validate().is_ok());
+    let mut v3 = plan.clone();
+    v3.version = AUTOMATIC_TARGET_PLAN_VERSION;
+    v3.payload.startup_input = None;
+    v3.placement = Some(crate::ports::Placement::NewTab {
+        space: v3.payload.workspace.clone(),
+    });
+    assert!(v3.validate().is_ok());
+    let bytes = serde_json::to_string(&v3).unwrap();
+    assert_eq!(
+        serde_json::from_str::<AutomaticBootstrapPlan>(&bytes).unwrap(),
+        v3
+    );
+    assert_ne!(bytes, serde_json::to_string(&plan).unwrap());
+}
+
 fn probe_terminal_sites() {
     probe_site_lookup("cap-terminal-sites", "t2", "/core/work.sock");
 }

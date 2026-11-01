@@ -13,10 +13,16 @@ use herdr_threads::{
         capabilities::{ADVERTISED, LAUNCH_GATE_V1},
         commands::Command,
         handoff::{
-            AuthorizeLaunchGate, BootstrapAttachment, BootstrapAttachmentV3, BootstrapPlanV3,
-            BootstrapProgressV3, LAUNCH_GATE_MAX_TIMEOUT_MS, LaunchGateRefusal, LaunchGateReply,
+            AUTOMATIC_PLAN_VERSION, AUTOMATIC_TARGET_PLAN_VERSION, AuthorizeLaunchGate,
+            AutomaticBootstrapAction, AutomaticBootstrapAttachment, AutomaticBootstrapIdentity,
+            AutomaticBootstrapMutation, AutomaticBootstrapPlan,
+            AutomaticBootstrapRecoveryDisposition, AutomaticCreation, AutomaticDeliveryMutation,
+            AutomaticOriginal, BootstrapAttachment, BootstrapAttachmentV3, BootstrapAttempt,
+            BootstrapPlanV3, BootstrapProgressV3, BootstrapQuiescenceAssertion,
+            BootstrapRecoveryInspection, LAUNCH_GATE_MAX_TIMEOUT_MS, LaunchGateRefusal,
+            LaunchGateReply,
         },
-        ids::{HostBootId, HostCallId, HostTargetId, TerminalId},
+        ids::{HostBootId, HostCallId, HostTargetId, SeatId, TerminalId},
         results::CommandResult,
         time::{CallBudget, Cancellation, Clock},
     },
@@ -88,27 +94,74 @@ fn hc_target() -> CreatedTarget {
     }
 }
 
+const AUTOMATIC_PLAN: &str = include_str!("../fixtures/handoff-journal/automatic-v2-plan.json");
+const AUTOMATIC_CREATION: &str =
+    include_str!("../fixtures/handoff-journal/automatic-v2-creation.json");
+const CORE_SOCKET: &str = "/core/work.sock";
+
+/// The automatic V2 plan the fixture pins, from the V2 progress fixture's caller.
+fn v2_identity() -> AutomaticBootstrapIdentity {
+    let progress: BootstrapProgress = serde_json::from_str(V2_PROGRESS).unwrap();
+    let plan: AutomaticBootstrapPlan = serde_json::from_str(AUTOMATIC_PLAN).unwrap();
+    AutomaticBootstrapIdentity::new(progress.identity.scope, progress.identity.claim, plan).unwrap()
+}
+
+fn v3_plan(placement: Placement, endpoint: &std::path::Path) -> AutomaticBootstrapPlan {
+    let mut plan: AutomaticBootstrapPlan = serde_json::from_str(AUTOMATIC_PLAN).unwrap();
+    plan.version = AUTOMATIC_TARGET_PLAN_VERSION;
+    plan.payload.startup_input = None;
+    plan.payload.workspace = placement.anchor().clone();
+    plan.payload.handoff.namespace.host_endpoint = endpoint.to_path_buf();
+    plan.placement = Some(placement);
+    plan
+}
+
+fn v3_identity(placement: Placement, endpoint: &std::path::Path) -> AutomaticBootstrapIdentity {
+    let v2 = v2_identity();
+    AutomaticBootstrapIdentity::new(v2.scope, v2.claim, v3_plan(placement, endpoint)).unwrap()
+}
+
+fn hc_identity() -> AutomaticBootstrapIdentity {
+    v3_identity(hc_target().placement, std::path::Path::new(CORE_SOCKET))
+}
+
+fn herdr_identity(created: &CreatedTarget) -> AutomaticBootstrapIdentity {
+    let HostWitness::HerdrSocket(witness) = &created.witness else {
+        panic!("a Herdr target")
+    };
+    v3_identity(created.placement.clone(), &witness.endpoint)
+}
+
 /// Kills: a V3 record that drops the `CreatedTarget` or its witness on the way through serde.
 #[test]
 fn v3_round_trips() {
     let attachment: BootstrapAttachment = serde_json::from_str(V2_ATTACHMENT).unwrap();
-    let progress: BootstrapProgress = serde_json::from_str(V2_PROGRESS).unwrap();
-    let plan: BootstrapPlan = serde_json::from_str(V2_PLAN).unwrap();
-    for created in [herdr_target(&attachment), hc_target()] {
+    for (created, id) in [
+        (herdr_target(&attachment), None),
+        (hc_target(), Some(hc_identity())),
+    ] {
+        let id = id.unwrap_or_else(|| herdr_identity(&created));
+        let derived = AutomaticBootstrapAttachment::derive(
+            &id,
+            BootstrapAttempt::first(),
+            created.clone(),
+            SeatId::new("recipient"),
+        )
+        .unwrap();
         let v3 = BootstrapAttachmentV3 {
-            attempt: attachment.attempt,
+            attempt: derived.attempt,
             created: created.clone(),
-            resolve_operation: attachment.resolve_operation.clone(),
-            resolved_seat: attachment.resolved_seat.clone(),
-            handoff: attachment.handoff.clone(),
+            resolve_operation: derived.resolve_operation.clone(),
+            resolved_seat: derived.resolved_seat.clone(),
+            child: derived.child.clone(),
         };
         let back: BootstrapAttachmentV3 =
             serde_json::from_str(&serde_json::to_string(&v3).unwrap()).unwrap();
         assert_eq!(back, v3);
         let progress = BootstrapProgressV3 {
             version: 3,
-            identity: progress.identity.clone(),
-            attempt: progress.attempt,
+            identity: id.clone(),
+            attempt: BootstrapAttempt::first(),
             possible_creation: true,
             request: None,
             creation: Some(created.clone()),
@@ -120,7 +173,7 @@ fn v3_round_trips() {
         assert_eq!(back.creation, Some(created.clone()));
         let plan = BootstrapPlanV3 {
             version: 3,
-            payload: plan.payload.clone(),
+            payload: id.plan.payload.clone(),
             placement: created.placement.clone(),
         };
         let back: BootstrapPlanV3 =
@@ -130,13 +183,186 @@ fn v3_round_trips() {
     // A V3 record never decodes as a frozen record: the version-gated readers refuse it.
     let v3_plan = serde_json::to_string(&BootstrapPlanV3 {
         version: 3,
-        payload: plan.payload.clone(),
-        placement: Placement::NewTab {
-            space: plan.payload.workspace.clone(),
-        },
+        payload: hc_identity().plan.payload,
+        placement: hc_target().placement,
     })
     .unwrap();
     assert!(serde_json::from_str::<BootstrapPlan>(&v3_plan).is_err());
+}
+
+/// Kills: a typed V3 struct that drifts from the record the store holds, in field order or
+/// in what it omits.
+#[test]
+fn v3_structs_are_the_automatic_record_bytes() {
+    let id = hc_identity();
+    let plan = BootstrapPlanV3 {
+        version: 3,
+        payload: id.plan.payload.clone(),
+        placement: hc_target().placement,
+    };
+    let bytes = serde_json::to_string(&plan).unwrap();
+    assert_eq!(bytes, serde_json::to_string(&id.plan).unwrap());
+    let automatic: AutomaticBootstrapPlan = serde_json::from_str(&bytes).unwrap();
+    assert_eq!(serde_json::to_string(&automatic).unwrap(), bytes);
+    assert_eq!(AutomaticBootstrapPlan::from(plan), automatic);
+
+    let derived = AutomaticBootstrapAttachment::derive(
+        &id,
+        BootstrapAttempt::first(),
+        hc_target(),
+        SeatId::new("recipient"),
+    )
+    .unwrap();
+    let bytes = serde_json::to_string(&derived).unwrap();
+    let typed: BootstrapAttachmentV3 = serde_json::from_str(&bytes).unwrap();
+    assert_eq!(serde_json::to_string(&typed).unwrap(), bytes);
+    assert_eq!(derived.created, AutomaticCreation::Target(hc_target()));
+}
+
+/// Kills: an untagged creation that re-spells a V2 tab, takes a tab with a stray key as a
+/// tab or a target, or reads a core terminal as a tab.
+#[test]
+fn automatic_creation_keeps_v2_bytes_and_decodes_v3() {
+    let tab: AutomaticCreation = serde_json::from_str(AUTOMATIC_CREATION).unwrap();
+    assert!(matches!(tab, AutomaticCreation::Tab(_)));
+    assert_eq!(serde_json::to_string(&tab).unwrap(), AUTOMATIC_CREATION);
+
+    let hc = serde_json::to_string(&hc_target()).unwrap();
+    let target: AutomaticCreation = serde_json::from_str(&hc).unwrap();
+    assert_eq!(target, AutomaticCreation::Target(hc_target()));
+    assert_eq!(serde_json::to_string(&target).unwrap(), hc);
+
+    let mut stray: serde_json::Value = serde_json::from_str(AUTOMATIC_CREATION).unwrap();
+    stray["extra"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<AutomaticCreation>(stray).is_err());
+}
+
+/// Kills: a plan whose version and placement disagree, or a V3 plan that keeps a startup
+/// template or a workspace other than its anchor.
+#[test]
+fn v3_plan_pairs_version_and_placement() {
+    let ok = v3_plan(hc_target().placement, std::path::Path::new(CORE_SOCKET));
+    assert!(ok.validate().is_ok());
+    let mut v2_with_placement = ok.clone();
+    v2_with_placement.version = 2;
+    assert!(v2_with_placement.validate().is_err());
+    let mut v3_without = ok.clone();
+    v3_without.placement = None;
+    assert!(v3_without.validate().is_err());
+    let mut with_template = ok.clone();
+    with_template.payload.startup_input =
+        Some(herdr_threads::harness::adapter::StartupInputTemplate::positional(0));
+    assert!(with_template.payload.startup_input.is_some());
+    assert!(with_template.validate().is_err());
+    let mut other_workspace = ok;
+    other_workspace.payload.workspace = HostTargetId::new("elsewhere");
+    assert!(other_workspace.validate().is_err());
+}
+
+/// Kills: a V3 plan that insists the caller's host is the target core, a V2 plan that
+/// stops insisting, and a child that does not carry the V3 marker.
+#[test]
+fn v3_claim_host_may_differ_from_the_namespace() {
+    let v2 = v2_identity();
+    let id = hc_identity();
+    assert_ne!(id.claim.host.as_path(), std::path::Path::new(CORE_SOCKET));
+    assert!(id.validate().is_ok());
+    // The same values on a V2 plan are refused.
+    let mut v2_plan = v2.plan.clone();
+    v2_plan.payload.handoff.namespace.host_endpoint = CORE_SOCKET.into();
+    assert!(AutomaticBootstrapIdentity::new(v2.scope.clone(), v2.claim.clone(), v2_plan).is_err());
+
+    let child = id.child(hc_target(), SeatId::new("recipient")).unwrap();
+    assert!(child.targets_own_host());
+    child.validate().unwrap();
+    let AutomaticOriginal::Handoff(plan) = &child.original else {
+        panic!("a handoff original")
+    };
+    assert_eq!(plan.version, AUTOMATIC_TARGET_PLAN_VERSION);
+    assert_eq!(plan.launch.target, hc_target().target);
+    // The same child spelled as a V2 one is refused: only a V3 child may leave its host.
+    let mut as_v2 = plan.as_ref().clone();
+    as_v2.version = AUTOMATIC_PLAN_VERSION;
+    assert!(
+        AutomaticDeliveryMutation::new(
+            child.scope.clone(),
+            child.claim.clone(),
+            AutomaticOriginal::Handoff(Box::new(as_v2)),
+        )
+        .is_err()
+    );
+    // A creation on another placement is not this plan's.
+    let mut elsewhere = hc_target();
+    elsewhere.placement = Placement::NewTerminal {
+        parent: HostTargetId::new("t9"),
+    };
+    assert!(id.child(elsewhere, SeatId::new("recipient")).is_err());
+    // A V3 creation on a V2 plan, and a tab on a V3 plan, are refused.
+    assert!(v2.child(hc_target(), SeatId::new("recipient")).is_err());
+    let attachment: BootstrapAttachment = serde_json::from_str(V2_ATTACHMENT).unwrap();
+    assert!(
+        id.child(attachment.created.clone(), SeatId::new("recipient"))
+            .is_err()
+    );
+}
+
+/// Kills: a V3 mutation an older daemon would decode and half-record: the old decoder denies
+/// the unknown `placement`, and the V3 child's version is not the one it accepts.
+#[test]
+fn v3_mutation_is_refused_by_the_pre_v3_decoder() {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct OldPlan {
+        version: u32,
+        payload: serde::de::IgnoredAny,
+    }
+    let v2 = serde_json::to_string(&v2_identity().plan).unwrap();
+    assert!(serde_json::from_str::<OldPlan>(&v2).is_ok());
+    let v3 = serde_json::to_string(&hc_identity().plan).unwrap();
+    assert!(serde_json::from_str::<OldPlan>(&v3).is_err());
+    assert_ne!(AUTOMATIC_TARGET_PLAN_VERSION, AUTOMATIC_PLAN_VERSION);
+    let child = hc_identity()
+        .child(hc_target(), SeatId::new("recipient"))
+        .unwrap();
+    let AutomaticOriginal::Handoff(plan) = &child.original else {
+        panic!("a handoff original")
+    };
+    assert_ne!(plan.version, AUTOMATIC_PLAN_VERSION);
+}
+
+/// Kills: a V3 plan that accepts a created-pane recovery (it names a Herdr pane), and a
+/// cancellation or not-created disposition that stops validating.
+#[test]
+fn v3_created_pane_recovery_is_refused_and_cancelled_validates() {
+    let attachment: BootstrapAttachment = serde_json::from_str(V2_ATTACHMENT).unwrap();
+    let recover = |id: AutomaticBootstrapIdentity, disposition| AutomaticBootstrapMutation {
+        identity: id,
+        action: AutomaticBootstrapAction::Recover {
+            attempt: BootstrapAttempt::first(),
+            inspection: BootstrapRecoveryInspection {
+                version: 1,
+                digest: "f".repeat(64),
+            },
+            disposition,
+        },
+    };
+    let created_pane = || AutomaticBootstrapRecoveryDisposition::CreatedPane {
+        evidence: Box::new(attachment.created.clone()),
+        structural_reference: HostCallId::new("ref"),
+    };
+    let cancelled = || AutomaticBootstrapRecoveryDisposition::Cancelled {
+        reason: "inspected quiescence".into(),
+        quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+        attached_child: None,
+    };
+    let not_created = || AutomaticBootstrapRecoveryDisposition::NotCreated {
+        quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+    };
+    assert!(recover(v2_identity(), created_pane()).validate().is_ok());
+    assert!(recover(hc_identity(), created_pane()).validate().is_err());
+    assert!(recover(hc_identity(), cancelled()).validate().is_ok());
+    assert!(recover(hc_identity(), not_created()).validate().is_ok());
 }
 
 /// Kills: `validate` accepting a witness whose kind does not match the placement or whose

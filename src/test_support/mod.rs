@@ -105,6 +105,22 @@ pub fn test_host_id() -> crate::ports::HostId {
     crate::ports::HostId::from_row(1)
 }
 
+/// One due observation capture of `identity`, published through `store` for `host`: what the
+/// observation worker does before any read, so a bootstrap read finds a published boot.
+pub fn capture_host_observation(
+    identity: &crate::identity::repair::OrdinaryIdentity,
+    store: std::sync::Arc<dyn crate::ports::StorePort>,
+    host: crate::ports::HostId,
+    budget: &crate::protocol::time::CallBudget,
+) -> Result<(), crate::protocol::results::ApiError> {
+    let ports = crate::service::workers::ScheduledStore::new(
+        store,
+        std::sync::Arc::new(crate::service::fair_writer::FairWriter::new(32)),
+    )
+    .for_host(host);
+    identity.capture_if_due(&ports, budget, budget).map(|_| ())
+}
+
 /// A `HostId` for fixtures that build a second host: the raw `herdr_hosts.host_id`
 /// (the second `attach_host` of a fresh store gets 2).
 pub fn host_id_for_test(raw: i64) -> crate::ports::HostId {

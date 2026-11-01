@@ -403,18 +403,23 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTargetPort + ?Sized>(
                 &id,
                 AutomaticBootstrapAction::RecordCreated {
                     attempt: local.attempt,
-                    evidence: created.clone(),
+                    evidence: created.clone().into(),
                 },
             ),
         );
         let saved = match result {
             Ok(value) => parent_result(&id, value)?,
             Err(error) => match status(client, clock, &id) {
-                Ok(saved) if saved.creation.as_ref() == Some(created) => saved,
+                Ok(saved)
+                    if saved.creation.as_ref().and_then(AutomaticCreation::as_tab)
+                        == Some(created) =>
+                {
+                    saved
+                }
                 _ => return Err(error),
             },
         };
-        if saved.creation.as_ref() != Some(created) {
+        if saved.creation.as_ref().and_then(AutomaticCreation::as_tab) != Some(created) {
             return Err(invalid("automatic recorded creation differs"));
         }
         return resolve_and_attach(client, clock, &id, saved);
@@ -582,18 +587,23 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTargetPort + ?Sized>(
                     &id,
                     AutomaticBootstrapAction::RecordCreated {
                         attempt: current.attempt,
-                        evidence: created.clone(),
+                        evidence: created.clone().into(),
                     },
                 ),
             );
             let saved = match recorded {
                 Ok(value) => parent_result(&id, value)?,
                 Err(error) => match status(client, clock, &id) {
-                    Ok(saved) if saved.creation.as_ref() == Some(&created) => saved,
+                    Ok(saved)
+                        if saved.creation.as_ref().and_then(AutomaticCreation::as_tab)
+                            == Some(&created) =>
+                    {
+                        saved
+                    }
                     _ => return Err(error),
                 },
             };
-            if saved.creation.as_ref() != Some(&created) {
+            if saved.creation.as_ref().and_then(AutomaticCreation::as_tab) != Some(&created) {
                 return Err(invalid("automatic recorded creation differs"));
             }
             resolve_and_attach(client, clock, &id, saved)
@@ -640,7 +650,7 @@ fn retained_report(
     let result = LinkedBootstrapReport {
         thread: thread.clone(),
         recipient: attachment.resolved_seat.clone(),
-        pane: attachment.created.root_pane.clone(),
+        pane: attachment.created.launch_target().clone(),
         kind: "launch".into(),
         launch: id.plan.payload.launch.clone(),
         report: report.clone(),
@@ -648,8 +658,8 @@ fn retained_report(
             "{:x}",
             Sha256::digest(serde_json::to_vec(report).map_err(std::io::Error::other)?)
         ),
-        terminal: attachment.created.terminal.clone(),
-        host_incarnation: attachment.created.host_incarnation.clone(),
+        terminal: attachment.created.terminal().clone(),
+        host_incarnation: attachment.created.host_incarnation().clone(),
     };
     result.validate().map_err(invalid)?;
     Ok(result)
@@ -830,7 +840,7 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTargetPort + ?S
                 .as_ref()
                 .is_none_or(|v| v["outcome"] != "started")
     {
-        return Err(ApiError::unknown_outcome(format!("automatic bootstrap {} downstream possible start; inspect exact pane {}; no automatic relaunch", reference.recovery_ref(), attachment.created.root_pane.as_str())).into());
+        return Err(ApiError::unknown_outcome(format!("automatic bootstrap {} downstream possible start; inspect exact pane {}; no automatic relaunch", reference.recovery_ref(), attachment.created.launch_target().as_str())).into());
     }
     let report = progress
         .launch
@@ -1113,7 +1123,7 @@ pub(super) fn write_pending<C: LocalClient + ?Sized, W: Write>(
             "status_unknown": current.is_none(),
             "creation": current.as_ref().and_then(|v| v.creation.as_ref()),
             "seat": current.as_ref().and_then(|v| v.attachment.as_ref()).map(|a| &a.resolved_seat),
-            "pane": current.as_ref().and_then(|v| v.creation.as_ref()).map(|c| &c.root_pane),
+            "pane": current.as_ref().and_then(|v| v.creation.as_ref()).map(|c| c.launch_target()),
             "thread": current.as_ref().and_then(|v| v.thread.as_ref()),
             "message": child.as_ref().and_then(|v| v.message.as_ref()),
             "possible_start": possible_start,
@@ -1254,7 +1264,7 @@ fn present_completed<W: Write>(
         "bootstrap": { "failed": false, "outcome": "started", "state": "completed",
             "recovery_ref": reference.recovery_ref(), "thread": completed.thread,
             "seat": completed.attachment.as_ref().map(|a| &a.resolved_seat),
-            "pane": completed.attachment.as_ref().map(|a| &a.created.root_pane),
+            "pane": completed.attachment.as_ref().map(|a| a.created.launch_target()),
             "message": message, "launch": completed.completed.as_ref().map(|r| &r.report),
         }
     });

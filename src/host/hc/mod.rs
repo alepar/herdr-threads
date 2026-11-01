@@ -463,16 +463,85 @@ impl HcHost {
     }
 }
 
-/// The hc host has no bootstrap pane observation yet: every call is refused.
-pub struct HcBootstrapObserver;
+/// The same-response bootstrap scope of a herdr-core terminal: one `hello`, then one
+/// `terminal.get` pinned to the `hello`'s peer.
+pub struct HcBootstrapObserver {
+    host: Arc<HcHost>,
+}
+
+impl HcBootstrapObserver {
+    pub fn new(host: Arc<HcHost>) -> Self {
+        Self { host }
+    }
+}
 
 impl crate::ports::BootstrapObserver for HcBootstrapObserver {
     fn observe_bootstrap_target(
         &self,
-        _: &HostTargetId,
-        _: &HostCallContext,
+        target: &HostTargetId,
+        context: &HostCallContext,
     ) -> Result<crate::ports::BootstrapPaneObservation, ApiError> {
-        Err(HcHost::unavailable("bootstrap observation"))
+        self.host.observe_bootstrap(target, context)
+    }
+}
+
+impl HcHost {
+    /// One terminal read for a bootstrap attachment. A changed core (boot or peer) is
+    /// `StaleHostObservation`; an absent or finished terminal is `NotFound`.
+    fn observe_bootstrap(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::BootstrapPaneObservation, ApiError> {
+        if context.budget.cancellation.is_cancelled() {
+            return Err(ApiError::cancelled("hc observe_bootstrap"));
+        }
+        let epoch = self.epoch.load(Ordering::Acquire);
+        let started = self.clock.monotonic_now();
+        let hello = Self::run(self.client.hello())
+            .map_err(|e| ApiError::host_unavailable(e.to_string()))?;
+        let boot = HcBoot::from_hello(&hello.value)
+            .ok_or_else(|| ApiError::host_unavailable("hc hello names no usable core id"))?;
+        let stale = |what: &str| api_error(ErrorCode::StaleHostObservation, what);
+        if context
+            .expected_boot
+            .as_ref()
+            .is_some_and(|expected| expected != boot.id())
+        {
+            return Err(stale("hc core changed before the bootstrap read"));
+        }
+        let reply = Self::run(
+            self.client
+                .clone()
+                .expecting(hello.witness.clone())
+                .terminal_get(target.as_str()),
+        )
+        .map_err(|e| match e {
+            HcError::WitnessChanged | HcError::Witness(_) => {
+                stale("hc peer changed before the bootstrap read")
+            }
+            HcError::Rpc { .. } => api_error(ErrorCode::NotFound, "no such terminal"),
+            other => ApiError::host_unavailable(other.to_string()),
+        })?;
+        let not_found = || api_error(ErrorCode::NotFound, "no such terminal");
+        let record = reply.value;
+        if record.address != target.as_str() {
+            return Err(not_found());
+        }
+        let terminal = match HcClosure::of(&record) {
+            HcClosure::Present => TerminalId::new(record.address.clone()),
+            _ => return Err(not_found()),
+        };
+        let sequence = self.next_observation_sequence();
+        let mut observation =
+            self.target(&record, boot.id(), epoch, sequence, started, Some(terminal));
+        observation.provenance = ObservationProvenance::FreshCurrentTarget;
+        crate::ports::BootstrapPaneObservation::try_new_terminal(
+            observation,
+            hello.value.core.id.clone(),
+            reply.witness,
+        )
+        .map_err(stale)
     }
 }
 

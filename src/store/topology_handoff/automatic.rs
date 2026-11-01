@@ -164,7 +164,7 @@ pub(crate) fn current(
     }
     let attempt = BootstrapAttempt::new(attempt).map_err(|_| corrupt())?;
     let (attempt_state,creation):(String,Option<Vec<u8>>)=db.query_row("SELECT state,substr(creation_json,1,131073) FROM automatic_bootstrap_attempts WHERE parent_id=?1 AND attempt=?2",params![parent,attempt.get()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(store_error)?;
-    let creation: Option<crate::ports::CreatedTab> =
+    let creation: Option<AutomaticCreation> =
         creation.as_deref().map(|b| decode(b, LIMIT)).transpose()?;
     if let Some(c) = &creation {
         creation_scope(ns, id, c)?;
@@ -359,14 +359,14 @@ fn insert_attempt(
 fn creation_scope(
     ns: &HandoffNamespace,
     id: &AutomaticBootstrapIdentity,
-    c: &crate::ports::CreatedTab,
+    c: &AutomaticCreation,
 ) -> Result<(), ApiError> {
+    debug_assert_eq!(
+        ns.host_endpoint.as_os_str(),
+        id.plan.payload.handoff.namespace.host_endpoint.as_os_str()
+    );
     c.validate().map_err(ApiError::invalid_request)?;
-    if c.workspace != id.plan.payload.workspace
-        || c.witness.endpoint.as_os_str() != ns.host_endpoint.as_os_str()
-    {
-        return Err(mismatch());
-    }
+    id.creation_scope(c).map_err(|_| mismatch())?;
     encode(c, LIMIT)?;
     Ok(())
 }
@@ -400,7 +400,10 @@ fn validate_report(
     };
     let p = &id.plan.payload;
     let argv = report.report.get("argv");
-    let valid = if let Some(template) = &p.startup_input {
+    let valid = if p.startup_input.is_none() && id.plan.placement.is_some() {
+        // A V3 plan's argv is frozen at creation, before the thread exists.
+        argv == Some(&serde_json::json!(p.launch.argv))
+    } else if let Some(template) = &p.startup_input {
         crate::cli::handoff::retained_prompts(
             p.launch.summary_prompt.as_ref(),
             report.thread.as_str(),
@@ -549,14 +552,21 @@ fn validate_guard(
     let created = s.creation.as_ref().ok_or_else(conflict)?;
     let ordinary = guard.ordinary();
     let proof = ordinary.structural_proof();
+    // Workspace and tab belong to a Herdr tab only; a core terminal has neither.
+    let scope = match created {
+        AutomaticCreation::Tab(tab) => {
+            guard.workspace() == &tab.workspace
+                && guard.tab() == &tab.tab
+                && guard.witness().endpoint.as_os_str() == tab.witness.endpoint.as_os_str()
+                && guard.witness() == &tab.witness
+        }
+        AutomaticCreation::Target(target) => guard.host_witness() == target.witness,
+    };
     if ordinary.operation() != &id.plan.payload.keys.resolve
-        || guard.workspace() != &created.workspace
-        || guard.tab() != &created.tab
-        || proof.target() != &created.root_pane
-        || proof.terminal() != &created.terminal
-        || proof.host_boot() != &created.host_incarnation
-        || guard.witness().endpoint.as_os_str() != created.witness.endpoint.as_os_str()
-        || guard.witness() != &created.witness
+        || !scope
+        || proof.target() != created.launch_target()
+        || proof.terminal() != created.terminal()
+        || proof.host_boot() != &created.observed_boot()
     {
         return Err(api_error(
             ErrorCode::StaleHostObservation,
@@ -598,11 +608,14 @@ fn resolution_record(
     tx: &Transaction<'_>,
     ns: &HandoffNamespace,
     id: &AutomaticBootstrapIdentity,
-    created: &crate::ports::CreatedTab,
+    created: &AutomaticCreation,
 ) -> Result<Option<CommandResult>, ApiError> {
     let row:Option<(Vec<u8>,String)>=tx.query_row("SELECT digest,substr(result_json,1,131073) FROM operations WHERE actor_scope=?1 AND operation_key=?2",params![format!("service-allocation:{}",ns.instance),id.plan.payload.keys.resolve.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
-    let expected =
-        schema::canonical_digest(&("resolve_seat", ns.instance.as_str(), &created.root_pane))?;
+    let expected = schema::canonical_digest(&(
+        "resolve_seat",
+        ns.instance.as_str(),
+        created.launch_target(),
+    ))?;
     row.map(|(digest, json)| {
         if digest != expected {
             return Err(mismatch());
@@ -829,7 +842,7 @@ fn apply(
                 at,
                 &ns.instance,
                 guard.ordinary().admission().host_id(),
-                &created.root_pane,
+                created.launch_target(),
                 guard.ordinary().structural_proof(),
             )?;
             let CommandResult::SeatResolved(seat) = &result else {
@@ -859,7 +872,7 @@ fn apply(
             let digest = schema::canonical_digest(&(
                 "resolve_seat",
                 ns.instance.as_str(),
-                &created.root_pane,
+                created.launch_target(),
             ))?;
             tx.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES(?1,?2,?3,?4,?5)",params![format!("service-allocation:{}",ns.instance),id.plan.payload.keys.resolve.as_str(),digest.as_slice(),serde_json::to_string(&result).map_err(|_|corrupt())?,at.utc.0]).map_err(store_error)?;
             Ok(result)
@@ -1081,8 +1094,9 @@ pub(crate) fn recover(
             ) {
                 return Err(conflict());
             }
-            creation_scope(ns, id, evidence)?;
-            s.creation = Some(evidence.as_ref().clone());
+            let evidence = AutomaticCreation::from(evidence.as_ref().clone());
+            creation_scope(ns, id, &evidence)?;
+            s.creation = Some(evidence);
             validate_guard(
                 tx,
                 ns,
@@ -1251,4 +1265,45 @@ pub(crate) fn complete(
         tx.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES(?1,?2,?3,?4,?5)",params![actor(id),operation.as_str(),digest.as_slice(),std::str::from_utf8(&result_bytes).map_err(|_|corrupt())?,now.0]).map_err(store_error)?;
     }
     Ok(result)
+}
+
+/// The launch gate's read of one automatic bootstrap by `(instance, compound, attempt)`:
+/// `None` for an unknown compound or one two actors share. Read-only; the creation is the
+/// current attempt's and `current_attempt` says whether `attempt` is that one.
+pub(crate) fn launch_gate_view(
+    db: &Connection,
+    instance: &str,
+    compound: &OperationId,
+    attempt: BootstrapAttempt,
+) -> Result<Option<crate::ports::LaunchGateView>, ApiError> {
+    let mut query = db
+        .prepare("SELECT substr(original_json,1,524289) FROM automatic_bootstrap_parents WHERE instance_id=?1 AND compound=?2 LIMIT 2")
+        .map_err(store_error)?;
+    let rows = query
+        .query_map(params![instance, compound.as_str()], |r| {
+            r.get::<_, Vec<u8>>(0)
+        })
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    let [bytes] = rows.as_slice() else {
+        return Ok(None);
+    };
+    let id: AutomaticBootstrapIdentity = decode(bytes, 524288)?;
+    let ns = &id.plan.payload.handoff.namespace;
+    let s = current(db, ns, &id)?.ok_or_else(corrupt)?;
+    let send_staged = match (&s.attachment, &s.thread) {
+        (Some(a), Some(thread)) => handoff::automatic::published_send(db, &a.child, thread)?,
+        _ => false,
+    };
+    Ok(Some(crate::ports::LaunchGateView {
+        created: s
+            .creation
+            .as_ref()
+            .and_then(AutomaticCreation::as_target)
+            .cloned(),
+        current_attempt: s.attempt == attempt,
+        cancelled: s.state == BootstrapState::Cancelled,
+        send_staged,
+    }))
 }

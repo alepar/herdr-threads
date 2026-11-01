@@ -924,6 +924,7 @@ fn automatic_parent(id: &BootstrapIdentity) -> AutomaticBootstrapIdentity {
         id.scope.clone(),
         id.claim.clone(),
         AutomaticBootstrapPlan {
+            placement: None,
             version: 2,
             payload: AutomaticBootstrapPayload {
                 directory_context: id.payload.directory_context.clone(),
@@ -997,7 +998,7 @@ fn automatic_parent_created(
         id,
         AutomaticBootstrapAction::RecordCreated {
             attempt: BootstrapAttempt::first(),
-            evidence: crate::protocol::handoff::topology_contract_tests::created(),
+            evidence: crate::protocol::handoff::topology_contract_tests::created().into(),
         },
         None,
         budget,
@@ -1035,7 +1036,7 @@ fn automatic_linked_selected_resolve_attach_and_exact_pair_share_canonical_paren
     let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
     let attachment = AutomaticBootstrapAttachment {
         attempt: BootstrapAttempt::first(),
-        created: a.created,
+        created: a.created.into(),
         resolve_operation: id.plan.payload.keys.resolve.clone(),
         resolved_seat: a.resolved_seat,
         child: child.clone(),
@@ -1213,6 +1214,103 @@ fn automatic_linked_selected_resolve_attach_and_exact_pair_share_canonical_paren
     let _ = std::fs::remove_file(path);
 }
 
+/// Bytes a V2 (Herdr) automatic bootstrap wrote before V3 records existed; never re-blessed.
+fn pinned_v2(name: &str, actual: &[u8]) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/handoff-journal")
+        .join(name);
+    if std::env::var_os("HT_BLESS").is_some() {
+        std::fs::write(&path, actual).unwrap();
+    }
+    let expected = std::fs::read(&path).unwrap_or_else(|e| panic!("{name}: {e}; HT_BLESS=1"));
+    assert_eq!(
+        String::from_utf8_lossy(actual),
+        String::from_utf8_lossy(&expected),
+        "{name}"
+    );
+}
+
+#[test]
+fn automatic_v2_bytes_match_the_pre_v3_capture() {
+    let (_context, db, path, store, observation, budget, old, a) =
+        attachment_fixture_inner(false, false);
+    let id = automatic_parent(&old);
+    pinned_v2(
+        "automatic-v2-plan.json",
+        &serde_json::to_vec(&id.plan).unwrap(),
+    );
+    pinned_v2("automatic-v2-digest.txt", id.digest.as_bytes());
+    automatic_parent_created(&store, &id, &budget);
+    let creation: Vec<u8> = db
+        .query_row(
+            "SELECT creation_json FROM automatic_bootstrap_attempts",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    pinned_v2("automatic-v2-creation.json", &creation);
+    let derived = AutomaticBootstrapAttachment::derive(
+        &id,
+        BootstrapAttempt::first(),
+        a.created.clone(),
+        SeatId::new("fixture-recipient"),
+    )
+    .unwrap();
+    pinned_v2(
+        "automatic-v2-attachment.json",
+        &serde_json::to_vec(&derived).unwrap(),
+    );
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        5,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Resolve {
+            attempt: BootstrapAttempt::first(),
+        },
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    let attachment = AutomaticBootstrapAttachment::derive(
+        &id,
+        BootstrapAttempt::first(),
+        a.created.clone(),
+        a.resolved_seat.clone(),
+    )
+    .unwrap();
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        6,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Attach(Box::new(attachment.clone())),
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    let row: Vec<u8> = db
+        .query_row(
+            "SELECT attachment_json FROM automatic_bootstrap_attachments",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(row, serde_json::to_vec(&attachment).unwrap());
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
 fn automatic_status(
     store: &crate::store::SqliteStore,
     id: &AutomaticBootstrapIdentity,
@@ -1260,7 +1358,7 @@ fn automatic_parent_checks_remembered_per_identity_and_row_bytes() {
     let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
     let attachment = AutomaticBootstrapAttachment {
         attempt: BootstrapAttempt::first(),
-        created: a.created,
+        created: a.created.into(),
         resolve_operation: id.plan.payload.keys.resolve.clone(),
         resolved_seat: a.resolved_seat,
         child,
@@ -1413,7 +1511,7 @@ fn automatic_terminal_directories(directories: bool) {
     let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
     let attachment = AutomaticBootstrapAttachment {
         attempt: BootstrapAttempt::first(),
-        created: a.created,
+        created: a.created.into(),
         resolve_operation: id.plan.payload.keys.resolve.clone(),
         resolved_seat: a.resolved_seat,
         child: child.clone(),
@@ -1533,11 +1631,11 @@ fn automatic_terminal_directories(directories: bool) {
     .unwrap();
     let mut argv = id.plan.payload.launch.argv.clone();
     argv.push(prompt);
-    let report = serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":id.plan.payload.launch.harness.as_str(),"argv":argv});
+    let report = serde_json::json!({"outcome":"started","pane":attachment.created.launch_target(),"seat":attachment.resolved_seat,"harness":id.plan.payload.launch.harness.as_str(),"argv":argv});
     let retained = LinkedBootstrapReport {
         thread: thread.clone(),
         recipient: attachment.resolved_seat.clone(),
-        pane: attachment.created.root_pane.clone(),
+        pane: attachment.created.launch_target().clone(),
         kind: "launch".into(),
         launch: id.plan.payload.launch.clone(),
         report_digest: format!(
@@ -1545,8 +1643,8 @@ fn automatic_terminal_directories(directories: bool) {
             sha2::Sha256::digest(serde_json::to_vec(&report).unwrap())
         ),
         report,
-        terminal: attachment.created.terminal.clone(),
-        host_incarnation: attachment.created.host_incarnation.clone(),
+        terminal: attachment.created.terminal().clone(),
+        host_incarnation: attachment.created.host_incarnation().clone(),
     };
     let action = AutomaticBootstrapAction::Complete {
         attachment: Box::new(attachment.clone()),
@@ -1702,7 +1800,7 @@ fn automatic_launch_bootstrap_send_raises_no_unavailable_warning() {
     let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
     let attachment = AutomaticBootstrapAttachment {
         attempt: BootstrapAttempt::first(),
-        created: a.created,
+        created: a.created.into(),
         resolve_operation: id.plan.payload.keys.resolve.clone(),
         resolved_seat: a.resolved_seat,
         child: child.clone(),
@@ -1898,7 +1996,7 @@ fn automatic_linked_wire_refuses_unknown_fields_inside_derived_launch() {
     let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
     let attachment = AutomaticBootstrapAttachment {
         attempt: BootstrapAttempt::first(),
-        created: a.created,
+        created: a.created.into(),
         resolve_operation: id.plan.payload.keys.resolve.clone(),
         resolved_seat: a.resolved_seat,
         child,
@@ -1974,7 +2072,7 @@ fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current
     )
     .unwrap();
     assert!(
-        matches!(saved,CommandResult::AutomaticBootstrap(ref status) if status.state==BootstrapState::Created && status.creation.as_ref()==Some(&a.created))
+        matches!(saved,CommandResult::AutomaticBootstrap(ref status) if status.state==BootstrapState::Created && status.creation.as_ref()==Some(&AutomaticCreation::from(&a.created)))
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM seats", [], |r| r.get::<_, i64>(0))
@@ -2006,7 +2104,7 @@ fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current
     )
     .unwrap();
     assert!(
-        matches!(cancelled,CommandResult::AutomaticBootstrap(ref status) if status.state==BootstrapState::Cancelled && status.creation.as_ref()==Some(&a.created))
+        matches!(cancelled,CommandResult::AutomaticBootstrap(ref status) if status.state==BootstrapState::Cancelled && status.creation.as_ref()==Some(&AutomaticCreation::from(&a.created)))
     );
     db.execute_batch("UPDATE occupant_bindings SET ended_at=1;UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+5;").unwrap();
     assert_eq!(
@@ -2198,11 +2296,11 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
             serde_json::json!(p.launch.argv),
             "startup inbox prompt is retained"
         );
-        let report = serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":p.launch.harness.as_str(),"argv":argv_value});
+        let report = serde_json::json!({"outcome":"started","pane":attachment.created.launch_target(),"seat":attachment.resolved_seat,"harness":p.launch.harness.as_str(),"argv":argv_value});
         let retained = LinkedBootstrapReport {
             thread,
             recipient: attachment.resolved_seat.clone(),
-            pane: attachment.created.root_pane.clone(),
+            pane: attachment.created.launch_target().clone(),
             kind: "launch".into(),
             launch: p.launch.clone(),
             report_digest: format!(
@@ -2210,8 +2308,8 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
                 sha2::Sha256::digest(serde_json::to_vec(&report).unwrap())
             ),
             report,
-            terminal: attachment.created.terminal.clone(),
-            host_incarnation: attachment.created.host_incarnation.clone(),
+            terminal: attachment.created.terminal().clone(),
+            host_incarnation: attachment.created.host_incarnation().clone(),
         };
         retained.validate().unwrap();
         retained
@@ -2298,7 +2396,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
             attempt: BootstrapAttempt::first(),
             attempt_state: BootstrapAttemptState::Created,
             administrative_revision: 1,
-            creation: Some(a.created.clone()),
+            creation: Some(a.created.clone().into()),
             attachment: Some(attachment.clone()),
             thread: Some(ThreadId::new("thread")),
             completed: None,
@@ -2521,4 +2619,634 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
         drop(db);
         std::fs::remove_file(path).unwrap();
     }
+}
+
+// ---- V3 automatic bootstrap records (ht-kqrt.133) ----
+
+use crate::ports::{CreatedTarget, HcPeer, HostWitness, Placement};
+
+const CORE_SOCKET: &str = "/core/work.sock";
+
+fn v3_placements() -> [Placement; 2] {
+    [
+        Placement::NewTab {
+            space: HostTargetId::new("space-a"),
+        },
+        Placement::NewTerminal {
+            parent: HostTargetId::new("t1"),
+        },
+    ]
+}
+
+fn v3_created(placement: &Placement) -> CreatedTarget {
+    CreatedTarget {
+        correlation: HostCallId::new("hc-correlation"),
+        placement: placement.clone(),
+        target: HostTargetId::new("t2"),
+        root_pane: None,
+        terminal: TerminalId::new("t2"),
+        host_incarnation: HostBootId::new("hc-core:core-a:pid=42:start=7:uid=501"),
+        witness: HostWitness::HcCore {
+            core_id: "core-a".into(),
+            peer: HcPeer {
+                pid: 42,
+                start_seconds: 7,
+                uid: 501,
+            },
+        },
+    }
+}
+
+struct V3Fixture {
+    db: Connection,
+    path: PathBuf,
+    store: Arc<crate::store::SqliteStore>,
+    observation: crate::ports::HostObservation,
+    budget: CallBudget,
+    old: BootstrapIdentity,
+    clock: Arc<FixedClock>,
+}
+
+/// A store whose published host is a core (`hc-core:core-a`) with the recipient terminal
+/// `t2`, and a sender seat whose claim names the Herdr-shaped host: the handoff-from-a-pane
+/// shape, where the claim host is not the namespace endpoint.
+fn v3_fixture() -> V3Fixture {
+    use crate::ports::{EvidenceKind, IncarnationEvidence};
+    let (context, mut db, path, clock) = fixture(100);
+    db.execute_batch("DELETE FROM seat_archival; DELETE FROM seats;")
+        .unwrap();
+    let budget = CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Cancellation::default(),
+    };
+    let boot = HostBootId::new("hc-core:core-a");
+    let verified = |kind| IncarnationEvidence::Verified {
+        identity: "hc-core:core-a".into(),
+        evidence_kind: kind,
+    };
+    let mut snapshot = snapshot_for_test(1, &["w1:p1", "t2"]);
+    snapshot.boot = boot.clone();
+    snapshot.incarnation = verified(EvidenceKind::CoherentEnumeration);
+    for target in &mut snapshot.targets {
+        target.host_boot = boot.clone();
+        target.incarnation = verified(EvidenceKind::CoherentEnumeration);
+        target.terminal = Some(if target.target.as_str() == "t2" {
+            TerminalId::new("t2")
+        } else {
+            TerminalId::new("sender-terminal")
+        });
+    }
+    let admission = crate::store::seats::begin_host_observation(
+        &context,
+        &mut db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
+    let stage = staged_test_snapshot(&context, &mut db, admission, &snapshot, &budget);
+    crate::store::seats::publish_snapshot_stage(&context, &mut db, &stage, &budget).unwrap();
+    let store = Arc::new(
+        crate::store::SqliteStore::new(
+            StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let mut observation = snapshot.targets.remove(1);
+    observation.provenance = crate::ports::ObservationProvenance::FreshCurrentTarget;
+    observation.incarnation = verified(EvidenceKind::NativeCurrentTarget);
+    let mut old = crate::protocol::handoff::topology_contract_tests::identity();
+    old.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
+    old.digest = old.semantic_digest().unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w1:p1','hc-core:core-a',1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0,'sender-terminal','hc-core:core-a')",[]).unwrap();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('thread','sender','joined',0)").unwrap();
+    V3Fixture {
+        db,
+        path,
+        store,
+        observation,
+        budget,
+        old,
+        clock,
+    }
+}
+
+/// The frozen V3 plan for `placement`: the automatic V2 payload with no template, the
+/// anchor as its workspace and the core socket as its namespace endpoint.
+fn v3_identity(old: &BootstrapIdentity, placement: &Placement) -> AutomaticBootstrapIdentity {
+    let v2 = automatic_parent(old);
+    let mut plan = v2.plan;
+    plan.version = crate::protocol::handoff::AUTOMATIC_TARGET_PLAN_VERSION;
+    plan.payload.startup_input = None;
+    plan.payload.workspace = placement.anchor().clone();
+    plan.payload.handoff.namespace.host_endpoint = CORE_SOCKET.into();
+    plan.placement = Some(placement.clone());
+    AutomaticBootstrapIdentity::new(old.scope.clone(), old.claim.clone(), plan).unwrap()
+}
+
+/// The guard a core terminal read produces: the same response's observation and the transport
+/// witness of the core process the creation names.
+fn v3_guard(fx: &V3Fixture, operation: &OperationId, sequence: u64) -> BootstrapAttachmentGuard {
+    let (current, admission) =
+        ordinary_resolution_read(&fx.store, &fx.observation, sequence, &fx.budget);
+    let mut witness = crate::protocol::handoff::topology_contract_tests::created().witness;
+    witness.peer_pid = 42;
+    witness.start_seconds = 7;
+    witness.peer_uid = 501;
+    let pane =
+        BootstrapPaneObservation::try_new_terminal(current.clone(), "core-a".into(), witness)
+            .unwrap();
+    BootstrapAttachmentGuard::try_new(
+        &ResolveSeat {
+            host: crate::test_support::test_host_locator(),
+            target: current.target.clone(),
+            operation: operation.clone(),
+            locator_hint: None,
+            tmux_hint: None,
+        },
+        pane,
+        &admission,
+    )
+    .unwrap()
+}
+
+fn v3_record_created(fx: &V3Fixture, id: &AutomaticBootstrapIdentity, created: &CreatedTarget) {
+    let step = |action| automatic_parent_mutate(&fx.store, id, action, None, &fx.budget).unwrap();
+    step(AutomaticBootstrapAction::Begin);
+    step(AutomaticBootstrapAction::Reserve {
+        attempt: BootstrapAttempt::first(),
+    });
+    step(AutomaticBootstrapAction::RecordCreated {
+        attempt: BootstrapAttempt::first(),
+        evidence: created.clone().into(),
+    });
+}
+
+/// Begin to Attach: the daemon resolves the core terminal's seat and records the attachment.
+fn v3_attach(
+    fx: &V3Fixture,
+    id: &AutomaticBootstrapIdentity,
+    created: &CreatedTarget,
+) -> AutomaticBootstrapAttachment {
+    v3_record_created(fx, id, created);
+    let resolved = automatic_parent_mutate(
+        &fx.store,
+        id,
+        AutomaticBootstrapAction::Resolve {
+            attempt: BootstrapAttempt::first(),
+        },
+        Some(v3_guard(fx, &id.plan.payload.keys.resolve, 5)),
+        &fx.budget,
+    )
+    .unwrap();
+    let CommandResult::SeatResolved(seat) = resolved else {
+        panic!("a resolved seat")
+    };
+    let attachment =
+        AutomaticBootstrapAttachment::derive(id, BootstrapAttempt::first(), created.clone(), seat)
+            .unwrap();
+    let attached = automatic_parent_mutate(
+        &fx.store,
+        id,
+        AutomaticBootstrapAction::Attach(Box::new(attachment.clone())),
+        Some(v3_guard(fx, &id.plan.payload.keys.resolve, 6)),
+        &fx.budget,
+    )
+    .unwrap();
+    assert!(
+        matches!(attached, CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Attached)
+    );
+    attachment
+}
+
+/// Attach to a published bootstrap Send and a completed child.
+fn v3_send_and_complete_child(
+    fx: &V3Fixture,
+    id: &AutomaticBootstrapIdentity,
+    attachment: &AutomaticBootstrapAttachment,
+) -> ThreadId {
+    let child = &attachment.child;
+    automatic_child_mutate(&fx.store, &child.begin(), &fx.budget).unwrap();
+    let thread = automatic_selected_thread(
+        &automatic_child_mutate(&fx.store, &child.ensure(), &fx.budget).unwrap(),
+    )
+    .unwrap()
+    .clone();
+    let send = child.send(thread.clone());
+    loop {
+        if let crate::ports::SendPreparationProgress::Ready { .. } =
+            crate::ports::BootstrapStorePort::automatic_delivery_prepare_send_step(
+                &*fx.store,
+                &id.plan.payload.handoff.namespace,
+                &send,
+                crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                &fx.budget,
+            )
+            .unwrap()
+        {
+            break;
+        }
+    }
+    automatic_child_mutate(&fx.store, &send, &fx.budget).unwrap();
+    automatic_child_mutate(&fx.store, &child.complete(), &fx.budget).unwrap();
+    thread
+}
+
+fn v3_retained(
+    id: &AutomaticBootstrapIdentity,
+    attachment: &AutomaticBootstrapAttachment,
+    thread: &ThreadId,
+    argv: Vec<String>,
+) -> LinkedBootstrapReport {
+    use sha2::Digest;
+    let report = serde_json::json!({"outcome":"started","pane":attachment.created.launch_target(),"seat":attachment.resolved_seat,"harness":id.plan.payload.launch.harness.as_str(),"argv":argv});
+    LinkedBootstrapReport {
+        thread: thread.clone(),
+        recipient: attachment.resolved_seat.clone(),
+        pane: attachment.created.launch_target().clone(),
+        kind: "launch".into(),
+        launch: id.plan.payload.launch.clone(),
+        report_digest: format!(
+            "{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&report).unwrap())
+        ),
+        report,
+        terminal: attachment.created.terminal().clone(),
+        host_incarnation: attachment.created.host_incarnation().clone(),
+    }
+}
+
+fn v3_complete(
+    fx: &V3Fixture,
+    id: &AutomaticBootstrapIdentity,
+    attachment: &AutomaticBootstrapAttachment,
+    retained: LinkedBootstrapReport,
+) -> Result<CommandResult, ApiError> {
+    crate::ports::BootstrapStorePort::automatic_bootstrap_complete(
+        &*fx.store,
+        &id.plan.payload.handoff.namespace,
+        &AutomaticBootstrapMutation {
+            identity: id.clone(),
+            action: AutomaticBootstrapAction::Complete {
+                attachment: Box::new(attachment.clone()),
+                retained,
+            },
+        },
+        &fx.budget,
+    )
+}
+
+#[test]
+fn automatic_v3_runs_to_complete_for_both_placements() {
+    for placement in v3_placements() {
+        let fx = v3_fixture();
+        let id = v3_identity(&fx.old, &placement);
+        let created = v3_created(&placement);
+        let attachment = v3_attach(&fx, &id, &created);
+        assert_eq!(
+            attachment.created,
+            AutomaticCreation::Target(created.clone())
+        );
+        let thread = v3_send_and_complete_child(&fx, &id, &attachment);
+        let retained = v3_retained(
+            &id,
+            &attachment,
+            &thread,
+            id.plan.payload.launch.argv.clone(),
+        );
+        let done = v3_complete(&fx, &id, &attachment, retained.clone()).unwrap();
+        assert!(
+            matches!(done, CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Completed && v.completed.as_ref() == Some(&retained)),
+            "{placement:?}"
+        );
+        // The rows survive a reopen and `current()` validates them again.
+        drop(fx.store);
+        let reopened = crate::store::SqliteStore::new(
+            StoreContext::new(fx.path.clone(), fx.clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap();
+        let CommandResult::AutomaticBootstrap(status) =
+            automatic_status(&reopened, &id, &fx.budget).unwrap()
+        else {
+            panic!("status")
+        };
+        assert_eq!(status.state, BootstrapState::Completed);
+        assert_eq!(status.creation, Some(created.into()));
+        let current =
+            topology_handoff::automatic::current(&fx.db, &id.plan.payload.handoff.namespace, &id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(current.attachment, Some(attachment));
+        drop(fx.db);
+        let _ = std::fs::remove_file(fx.path);
+    }
+}
+
+#[test]
+fn automatic_v3_record_created_refuses_mismatches() {
+    let [tab, terminal] = v3_placements();
+    let fx = v3_fixture();
+    let id = v3_identity(&fx.old, &terminal);
+    let good = v3_created(&terminal);
+    let step = |action| automatic_parent_mutate(&fx.store, &id, action, None, &fx.budget);
+    step(AutomaticBootstrapAction::Begin).unwrap();
+    step(AutomaticBootstrapAction::Reserve {
+        attempt: BootstrapAttempt::first(),
+    })
+    .unwrap();
+    let mut other_peer = good.clone();
+    other_peer.witness = HostWitness::HcCore {
+        core_id: "core-a".into(),
+        peer: HcPeer {
+            pid: 43,
+            start_seconds: 7,
+            uid: 501,
+        },
+    };
+    let mut other_incarnation = good.clone();
+    other_incarnation.host_incarnation = HostBootId::new("hc-core:core-b:pid=42:start=7:uid=501");
+    let mut other_placement = good.clone();
+    other_placement.placement = tab.clone();
+    let mut other_anchor = good.clone();
+    other_anchor.placement = Placement::NewTerminal {
+        parent: HostTargetId::new("t9"),
+    };
+    let herdr: AutomaticCreation =
+        crate::protocol::handoff::topology_contract_tests::created().into();
+    for (what, evidence) in [
+        ("witness", AutomaticCreation::from(other_peer)),
+        ("incarnation", other_incarnation.into()),
+        ("placement kind", other_placement.into()),
+        ("placement anchor", other_anchor.into()),
+        ("a Herdr tab on a V3 plan", herdr),
+    ] {
+        assert!(
+            step(AutomaticBootstrapAction::RecordCreated {
+                attempt: BootstrapAttempt::first(),
+                evidence,
+            })
+            .is_err(),
+            "{what}"
+        );
+        let CommandResult::AutomaticBootstrap(status) =
+            automatic_status(&fx.store, &id, &fx.budget).unwrap()
+        else {
+            panic!("status")
+        };
+        assert_eq!(status.creation, None, "{what}");
+        assert_eq!(
+            status.attempt_state,
+            BootstrapAttemptState::PossibleCreation
+        );
+    }
+    // The reverse: a V3 creation on a V2 plan.
+    let v2_fx = v3_fixture();
+    let v2 = automatic_parent(&v2_fx.old);
+    let v2_step = |action| automatic_parent_mutate(&v2_fx.store, &v2, action, None, &v2_fx.budget);
+    v2_step(AutomaticBootstrapAction::Begin).unwrap();
+    v2_step(AutomaticBootstrapAction::Reserve {
+        attempt: BootstrapAttempt::first(),
+    })
+    .unwrap();
+    assert!(
+        v2_step(AutomaticBootstrapAction::RecordCreated {
+            attempt: BootstrapAttempt::first(),
+            evidence: good.into(),
+        })
+        .is_err()
+    );
+    let CommandResult::AutomaticBootstrap(status) =
+        automatic_status(&v2_fx.store, &v2, &v2_fx.budget).unwrap()
+    else {
+        panic!("status")
+    };
+    assert_eq!(status.creation, None);
+    for fx in [fx, v2_fx] {
+        drop(fx.db);
+        let _ = std::fs::remove_file(fx.path);
+    }
+}
+
+#[test]
+fn automatic_v3_report_keeps_the_frozen_argv() {
+    let [_, placement] = v3_placements();
+    let fx = v3_fixture();
+    let id = v3_identity(&fx.old, &placement);
+    let attachment = v3_attach(&fx, &id, &v3_created(&placement));
+    let thread = v3_send_and_complete_child(&fx, &id, &attachment);
+    let frozen = id.plan.payload.launch.argv.clone();
+    for argv in [
+        vec!["--other".to_owned()],
+        [frozen.clone(), vec!["a prompt".to_owned()]].concat(),
+    ] {
+        let retained = v3_retained(&id, &attachment, &thread, argv.clone());
+        assert!(
+            v3_complete(&fx, &id, &attachment, retained).is_err(),
+            "{argv:?}"
+        );
+    }
+    let retained = v3_retained(&id, &attachment, &thread, frozen);
+    assert!(v3_complete(&fx, &id, &attachment, retained).is_ok());
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+}
+
+#[test]
+fn automatic_v3_admission_fits_its_bounds() {
+    let [_, placement] = v3_placements();
+    let fx = v3_fixture();
+    let mut id = v3_identity(&fx.old, &placement);
+    id.plan.payload.handoff = id
+        .plan
+        .payload
+        .handoff
+        .clone()
+        .with_policy(Some(HandoffPolicy {
+            deadline_millis: Some(60_000),
+            invitation_confirmation: crate::protocol::commands::InvitationConfirmation::Lazy,
+            invite_deadline_millis: None,
+        }))
+        .unwrap();
+    id.digest = id.semantic_digest().unwrap();
+    id.validate().unwrap();
+    id.validate_admission().unwrap();
+    let attachment = AutomaticBootstrapAttachment::derive(
+        &id,
+        BootstrapAttempt::first(),
+        v3_created(&placement),
+        SeatId::new("recipient"),
+    )
+    .unwrap();
+    attachment.child.validate_admission().unwrap();
+    let summaries = attachment.child.admission_summaries().unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(
+        summaries[0]["argv"],
+        serde_json::json!(id.plan.payload.launch.argv)
+    );
+    // The same plan on a V2 shape still needs its template.
+    let mut v2 = automatic_parent(&fx.old);
+    v2.plan.payload.handoff = id.plan.payload.handoff.clone();
+    v2.digest = v2.semantic_digest().unwrap();
+    assert!(v2.validate_admission().is_err());
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+}
+
+fn gate_view(
+    store: &crate::store::SqliteStore,
+    compound: &str,
+    attempt: BootstrapAttempt,
+    budget: &CallBudget,
+) -> Option<crate::ports::LaunchGateView> {
+    crate::ports::BootstrapStorePort::automatic_launch_gate_view(
+        store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &OperationId::new(compound),
+        attempt,
+        budget,
+    )
+    .unwrap()
+}
+
+#[test]
+fn launch_gate_view_answers() {
+    let [_, placement] = v3_placements();
+    let fx = v3_fixture();
+    let id = v3_identity(&fx.old, &placement);
+    let created = v3_created(&placement);
+    let first = BootstrapAttempt::first();
+    let compound = id.plan.payload.keys.compound.as_str().to_owned();
+    assert_eq!(gate_view(&fx.store, &compound, first, &fx.budget), None);
+
+    v3_record_created(&fx, &id, &created);
+    let created_view = crate::ports::LaunchGateView {
+        created: Some(created.clone()),
+        current_attempt: true,
+        cancelled: false,
+        send_staged: false,
+    };
+    assert_eq!(
+        gate_view(&fx.store, &compound, first, &fx.budget),
+        Some(created_view.clone())
+    );
+    let stale = gate_view(
+        &fx.store,
+        &compound,
+        BootstrapAttempt::new(2).unwrap(),
+        &fx.budget,
+    )
+    .unwrap();
+    assert!(!stale.current_attempt);
+
+    // Resolve, Attach and a published Send: the view turns `send_staged`.
+    let seat = match automatic_parent_mutate(
+        &fx.store,
+        &id,
+        AutomaticBootstrapAction::Resolve { attempt: first },
+        Some(v3_guard(&fx, &id.plan.payload.keys.resolve, 5)),
+        &fx.budget,
+    )
+    .unwrap()
+    {
+        CommandResult::SeatResolved(seat) => seat,
+        other => panic!("{other:?}"),
+    };
+    let attachment =
+        AutomaticBootstrapAttachment::derive(&id, first, created.clone(), seat).unwrap();
+    automatic_parent_mutate(
+        &fx.store,
+        &id,
+        AutomaticBootstrapAction::Attach(Box::new(attachment.clone())),
+        Some(v3_guard(&fx, &id.plan.payload.keys.resolve, 6)),
+        &fx.budget,
+    )
+    .unwrap();
+    assert_eq!(
+        gate_view(&fx.store, &compound, first, &fx.budget),
+        Some(created_view.clone()),
+        "attached but not yet sent"
+    );
+    v3_send_and_complete_child(&fx, &id, &attachment);
+    assert_eq!(
+        gate_view(&fx.store, &compound, first, &fx.budget),
+        Some(crate::ports::LaunchGateView {
+            send_staged: true,
+            ..created_view
+        })
+    );
+
+    // The same compound under two actors is ambiguous.
+    fx.db
+        .execute(
+            "INSERT INTO automatic_bootstrap_parents(instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) SELECT instance_id,'seat:other',compound,state_dir,host_endpoint,original_json,state,current_attempt FROM automatic_bootstrap_parents",
+            [],
+        )
+        .unwrap();
+    assert_eq!(gate_view(&fx.store, &compound, first, &fx.budget), None);
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+
+    // Cancelled before any attachment.
+    let fx = v3_fixture();
+    let id = v3_identity(&fx.old, &placement);
+    v3_record_created(&fx, &id, &created);
+    let CommandResult::AutomaticBootstrap(status) =
+        automatic_status(&fx.store, &id, &fx.budget).unwrap()
+    else {
+        panic!("status")
+    };
+    let cancel = AutomaticBootstrapMutation {
+        identity: id.clone(),
+        action: AutomaticBootstrapAction::Recover {
+            attempt: first,
+            inspection: status.recovery_inspection().unwrap(),
+            disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                reason: "inspected quiescence".into(),
+                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                attached_child: None,
+            },
+        },
+    };
+    let actor = OperatorActor::from_peer(
+        crate::protocol::authority::PeerIdentity::from_kernel(501),
+        501,
+    )
+    .unwrap();
+    crate::ports::BootstrapStorePort::automatic_bootstrap_recover(
+        &*fx.store,
+        &id.plan.payload.handoff.namespace,
+        &cancel,
+        &actor,
+        None,
+        &fx.budget,
+    )
+    .unwrap();
+    let view = gate_view(&fx.store, &compound, first, &fx.budget).unwrap();
+    assert!(view.cancelled && !view.send_staged);
+    assert_eq!(view.created, Some(created));
+    drop(fx.db);
+    let _ = std::fs::remove_file(fx.path);
+
+    // A V2 record has no V3 creation to show.
+    let (_context, db, path, store, _observation, budget, old, _a) =
+        attachment_fixture_inner(false, false);
+    let v2 = automatic_parent(&old);
+    automatic_parent_created(&store, &v2, &budget);
+    let view = gate_view(
+        &store,
+        v2.plan.payload.keys.compound.as_str(),
+        first,
+        &budget,
+    )
+    .unwrap();
+    assert_eq!(view.created, None);
+    assert!(view.current_attempt && !view.cancelled && !view.send_staged);
+    drop(db);
+    let _ = std::fs::remove_file(path);
 }

@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     cli::journal::{IntentScope, OriginalActor, SemanticMutation, classify_original_claim},
-    ports::CreatedTab,
+    ports::{CreatedTab, CreatedTarget, HostWitness, Placement},
 };
 use sha2::{Digest, Sha256};
 
@@ -65,6 +65,10 @@ pub struct AutomaticBootstrapPayload {
 pub struct AutomaticBootstrapPlan {
     pub version: u32,
     pub payload: AutomaticBootstrapPayload,
+    /// Set exactly for a version 3 plan: where its `CreateTargetPort` creation goes. Omission
+    /// preserves the released V2 plan and its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Placement>,
 }
 impl AutomaticBootstrapPlan {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -74,7 +78,15 @@ impl AutomaticBootstrapPlan {
         }
         p.handoff.validate()?;
         p.launch.validate()?;
-        if self.version != 2
+        let versioned = match &self.placement {
+            None => self.version == AUTOMATIC_PLAN_VERSION,
+            Some(placement) => {
+                self.version == AUTOMATIC_TARGET_PLAN_VERSION
+                    && p.startup_input.is_none()
+                    && &p.workspace == placement.anchor()
+            }
+        };
+        if !versioned
             || !frozen_absolute_path(&p.cwd)
             || !bounded_text(&p.label, 128)
             || p.label.chars().any(char::is_control)
@@ -152,8 +164,11 @@ impl AutomaticBootstrapIdentity {
         if self.version != 2
             || self.claim.role != crate::protocol::authority::CallerRole::TopLevel
             || self.claim.instance != self.plan.payload.handoff.namespace.instance
-            || self.claim.host.as_path()
-                != self.plan.payload.handoff.namespace.host_endpoint.as_path()
+            // A V3 plan's namespace endpoint is the target core's socket, which a caller in a
+            // Herdr pane or a named seat does not share.
+            || (self.plan.placement.is_none()
+                && self.claim.host.as_path()
+                    != self.plan.payload.handoff.namespace.host_endpoint.as_path())
             || self.digest != self.semantic_digest()?
             || classify_original_claim(&self.scope, &self.claim)
                 .map_err(|_| "invalid bootstrap scope")?
@@ -174,31 +189,59 @@ impl AutomaticBootstrapIdentity {
         }
         Ok(())
     }
+    /// Whether `created` is the creation this frozen plan asked for: the plan's placement
+    /// (V3) or workspace (V2) on the namespace's endpoint. `created.validate()` is separate.
+    pub fn creation_scope(&self, created: &AutomaticCreation) -> Result<(), &'static str> {
+        const DIFFERS: &str = "automatic bootstrap creation scope differs";
+        let p = &self.plan.payload;
+        let endpoint = &p.handoff.namespace.host_endpoint;
+        match (created, &self.plan.placement) {
+            (AutomaticCreation::Tab(tab), None)
+                if tab.workspace == p.workspace
+                    && tab.witness.endpoint.as_os_str() == endpoint.as_os_str() =>
+            {
+                Ok(())
+            }
+            (AutomaticCreation::Target(target), Some(placement))
+                if &target.placement == placement
+                    && match &target.witness {
+                        HostWitness::HerdrSocket(w) => {
+                            w.endpoint.as_os_str() == endpoint.as_os_str()
+                        }
+                        HostWitness::HcCore { .. } => true,
+                    } =>
+            {
+                Ok(())
+            }
+            _ => Err(DIFFERS),
+        }
+    }
     /// Deterministic derivation from frozen inputs; never consult current defaults.
     pub fn child(
         &self,
-        created: &CreatedTab,
+        created: impl Into<AutomaticCreation>,
         recipient: SeatId,
     ) -> Result<AutomaticDeliveryMutation, &'static str> {
+        let created = created.into();
         self.validate()?;
         created.validate()?;
+        self.creation_scope(&created)?;
         let p = &self.plan.payload;
         let ns = &p.handoff.namespace;
-        if created.workspace != p.workspace
-            || created.witness.endpoint.as_os_str() != ns.host_endpoint.as_os_str()
-        {
-            return Err("automatic bootstrap creation scope differs");
-        }
         let harness = p.launch.harness.into();
         AutomaticDeliveryMutation::new(
             self.scope.clone(),
             self.claim.clone(),
             AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
-                version: 2,
+                version: if self.plan.placement.is_some() {
+                    AUTOMATIC_TARGET_PLAN_VERSION
+                } else {
+                    AUTOMATIC_PLAN_VERSION
+                },
                 delivery: AutomaticDeliveryPlan::new(p.handoff.clone(), recipient)?,
                 launch: crate::cli::launch::LaunchRequest {
                     directory_context: p.directory_context.clone(),
-                    target: created.root_pane.clone(),
+                    target: created.launch_target().clone(),
                     harness,
                     harness_binary: p.launch.binary.clone(),
                     argv: p.launch.argv.clone(),
@@ -216,11 +259,92 @@ impl AutomaticBootstrapIdentity {
         )
     }
 }
+/// The creation an automatic bootstrap records: a Herdr tab (V2, byte-exact as released) or a
+/// `CreatedTarget` (V3). `CreatedTab` denies unknown fields and is tried first, so V2 bytes
+/// decode to `Tab` and re-encode unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AutomaticCreation {
+    Tab(CreatedTab),
+    Target(CreatedTarget),
+}
+impl From<CreatedTab> for AutomaticCreation {
+    fn from(tab: CreatedTab) -> Self {
+        Self::Tab(tab)
+    }
+}
+impl From<CreatedTarget> for AutomaticCreation {
+    fn from(target: CreatedTarget) -> Self {
+        Self::Target(target)
+    }
+}
+impl From<&CreatedTab> for AutomaticCreation {
+    fn from(tab: &CreatedTab) -> Self {
+        Self::Tab(tab.clone())
+    }
+}
+impl From<&CreatedTarget> for AutomaticCreation {
+    fn from(target: &CreatedTarget) -> Self {
+        Self::Target(target.clone())
+    }
+}
+impl From<&AutomaticCreation> for AutomaticCreation {
+    fn from(created: &AutomaticCreation) -> Self {
+        created.clone()
+    }
+}
+impl AutomaticCreation {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Tab(tab) => tab.validate(),
+            Self::Target(target) => target.validate(),
+        }
+    }
+    /// The target the launch runs in: the tab's root pane, or the created target's root pane
+    /// (a Herdr tab) else the target itself (a core terminal).
+    pub fn launch_target(&self) -> &HostTargetId {
+        match self {
+            Self::Tab(tab) => &tab.root_pane,
+            Self::Target(target) => target.root_pane.as_ref().unwrap_or(&target.target),
+        }
+    }
+    pub fn terminal(&self) -> &TerminalId {
+        match self {
+            Self::Tab(tab) => &tab.terminal,
+            Self::Target(target) => &target.terminal,
+        }
+    }
+    pub fn host_incarnation(&self) -> &HostBootId {
+        match self {
+            Self::Tab(tab) => &tab.host_incarnation,
+            Self::Target(target) => &target.host_incarnation,
+        }
+    }
+    /// The boot a fresh read of the launch target reports.
+    pub fn observed_boot(&self) -> HostBootId {
+        match self {
+            Self::Tab(tab) => tab.host_incarnation.clone(),
+            Self::Target(target) => target.observed_boot(),
+        }
+    }
+    pub fn as_tab(&self) -> Option<&CreatedTab> {
+        match self {
+            Self::Tab(tab) => Some(tab),
+            Self::Target(_) => None,
+        }
+    }
+    pub fn as_target(&self) -> Option<&CreatedTarget> {
+        match self {
+            Self::Target(target) => Some(target),
+            Self::Tab(_) => None,
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AutomaticBootstrapAttachment {
     pub attempt: BootstrapAttempt,
-    pub created: CreatedTab,
+    pub created: AutomaticCreation,
     pub resolve_operation: OperationId,
     pub resolved_seat: SeatId,
     pub child: AutomaticDeliveryMutation,
@@ -229,9 +353,10 @@ impl AutomaticBootstrapAttachment {
     pub fn derive(
         id: &AutomaticBootstrapIdentity,
         attempt: BootstrapAttempt,
-        created: CreatedTab,
+        created: impl Into<AutomaticCreation>,
         recipient: SeatId,
     ) -> Result<Self, &'static str> {
+        let created = created.into();
         let child = id.child(&created, recipient.clone())?;
         let attachment = Self {
             attempt,
@@ -284,7 +409,7 @@ pub enum AutomaticBootstrapAction {
     },
     RecordCreated {
         attempt: BootstrapAttempt,
-        evidence: CreatedTab,
+        evidence: AutomaticCreation,
     },
     RecordOutcomeUnknown {
         attempt: BootstrapAttempt,
@@ -340,9 +465,9 @@ impl AutomaticBootstrapMutation {
                 let p = &self.identity.plan.payload;
                 if retained.launch != p.launch
                     || retained.recipient != attachment.resolved_seat
-                    || retained.pane != attachment.created.root_pane
-                    || retained.terminal != attachment.created.terminal
-                    || retained.host_incarnation != attachment.created.host_incarnation
+                    || &retained.pane != attachment.created.launch_target()
+                    || &retained.terminal != attachment.created.terminal()
+                    || &retained.host_incarnation != attachment.created.host_incarnation()
                 {
                     return Err("automatic retained launch differs");
                 }
@@ -354,6 +479,14 @@ impl AutomaticBootstrapMutation {
             } => {
                 inspection.validate()?;
                 disposition.validate()?;
+                if self.identity.plan.placement.is_some()
+                    && matches!(
+                        disposition,
+                        AutomaticBootstrapRecoveryDisposition::CreatedPane { .. }
+                    )
+                {
+                    return Err("created-pane recovery names a Herdr pane, not a V3 creation");
+                }
                 if serde_json::to_vec(self)
                     .map_err(|_| "invalid automatic recovery")?
                     .len()
@@ -422,7 +555,7 @@ pub struct AutomaticBootstrapResult {
     pub attempt: BootstrapAttempt,
     pub attempt_state: BootstrapAttemptState,
     pub administrative_revision: u64,
-    pub creation: Option<CreatedTab>,
+    pub creation: Option<AutomaticCreation>,
     pub attachment: Option<AutomaticBootstrapAttachment>,
     pub thread: Option<ThreadId>,
     pub completed: Option<LinkedBootstrapReport>,
@@ -591,18 +724,6 @@ impl AutomaticBootstrapIdentity {
         let escaped = "\\".repeat(128);
         let thread = ThreadId::new(escaped.clone());
         let recipient = SeatId::new(escaped.clone());
-        let prefix = format!("{}:", p.workspace.as_str());
-        if prefix.len() >= 128 {
-            return Err("automatic workspace leaves no bounded pane identifier");
-        }
-        let target = |last: char| {
-            HostTargetId::new(format!(
-                "{}{}{}",
-                prefix,
-                "\\".repeat(127 - prefix.len()),
-                last
-            ))
-        };
         let witness = LocalEndpointWitness {
             schema: 1,
             platform: MACOS_WITNESS_PLATFORM.into(),
@@ -620,20 +741,62 @@ impl AutomaticBootstrapIdentity {
                 change_nanoseconds: i64::MIN,
             },
         };
-        let created = CreatedTab {
-            correlation: HostCallId::new(escaped.clone()),
-            workspace: p.workspace.clone(),
-            tab: target('t'),
-            root_pane: target('p'),
-            terminal: TerminalId::new(escaped.clone()),
-            host_incarnation: HostBootId::new(format!(
-                "herdr-server:pid={}:start={}.{:06}:uid={}",
-                witness.peer_pid,
-                witness.start_seconds,
-                witness.start_microseconds,
-                witness.peer_uid
-            )),
-            witness,
+        let created: AutomaticCreation = if let Some(placement) = &self.plan.placement {
+            // The longest core id whose `hc-core:<id>:pid=..:start=..:uid=..` incarnation, at
+            // the widest peer, still fits an id's 128 bytes (a longer one cannot be created).
+            let core_id = "c".repeat(63);
+            let peer = crate::ports::HcPeer {
+                pid: u32::MAX,
+                start_seconds: u64::MAX,
+                uid: u32::MAX,
+            };
+            // A longest target that differs from the anchor.
+            let mut target = "\\".repeat(128);
+            if target == placement.anchor().as_str() {
+                target.replace_range(127.., "x");
+            }
+            CreatedTarget {
+                correlation: HostCallId::new(escaped.clone()),
+                placement: placement.clone(),
+                target: HostTargetId::new(target),
+                root_pane: None,
+                terminal: TerminalId::new(escaped.clone()),
+                host_incarnation: HostBootId::new(format!(
+                    "hc-core:{core_id}:pid={}:start={}:uid={}",
+                    peer.pid, peer.start_seconds, peer.uid
+                )),
+                witness: HostWitness::HcCore { core_id, peer },
+            }
+            .into()
+        } else {
+            let prefix = format!("{}:", p.workspace.as_str());
+            if prefix.len() >= 128 {
+                return Err("automatic workspace leaves no bounded pane identifier");
+            }
+            let target = |last: char| {
+                HostTargetId::new(format!(
+                    "{}{}{}",
+                    prefix,
+                    "\\".repeat(127 - prefix.len()),
+                    last
+                ))
+            };
+            CreatedTab {
+                correlation: HostCallId::new(escaped.clone()),
+                workspace: p.workspace.clone(),
+                tab: target('t'),
+                root_pane: target('p'),
+                terminal: TerminalId::new(escaped.clone()),
+                host_incarnation: HostBootId::new(format!(
+                    "herdr-server:pid={}:start={}.{:06}:uid={}",
+                    witness.peer_pid,
+                    witness.start_seconds,
+                    witness.start_microseconds,
+                    witness.peer_uid
+                )),
+                witness,
+            }
+            .into()
         };
         let attempt = BootstrapAttempt::new(u32::MAX)?;
         let attachment = AutomaticBootstrapAttachment::derive(
@@ -651,26 +814,34 @@ impl AutomaticBootstrapIdentity {
                 .to_str()
                 .map(str::to_owned),
         };
-        let template = p
-            .startup_input
-            .as_ref()
-            .ok_or("modern automatic origin lacks startup template")?;
         // Both canonical-routing and historical null-routing prompt outcomes are supported.
         let mut summaries = Vec::new();
-        for prompt in crate::cli::handoff::retained_prompts(
-            p.launch.summary_prompt.as_ref(),
-            thread.as_str(),
-            &context,
-            &self.claim.instance,
-        ) {
-            let (argv, _) = template
-                .apply(&p.launch.argv, &prompt)
-                .map_err(|_| "automatic future startup input exceeds bounds")?;
-            let argv = crate::harness::launch::compose_native_argv(p.launch.harness, argv, vec![])
-                .map_err(|_| "automatic future native argv exceeds bounds")?;
-            crate::ports::NativeLaunchRequest::validate_argv(&argv)?;
-            let source = serde_json::json!({"outcome":"started","pane":created.root_pane,"seat":recipient,"harness":p.launch.harness.as_str(),"argv":argv});
+        if self.plan.placement.is_some() {
+            // The argv of a V3 plan is frozen at creation: no prompt substitution.
+            crate::ports::NativeLaunchRequest::validate_argv(&p.launch.argv)?;
+            let source = serde_json::json!({"outcome":"started","pane":created.launch_target(),"seat":recipient,"harness":p.launch.harness.as_str(),"argv":p.launch.argv});
             summaries.push(automatic_launch_summary(&source, &"f".repeat(64))?);
+        } else {
+            let template = p
+                .startup_input
+                .as_ref()
+                .ok_or("modern automatic origin lacks startup template")?;
+            for prompt in crate::cli::handoff::retained_prompts(
+                p.launch.summary_prompt.as_ref(),
+                thread.as_str(),
+                &context,
+                &self.claim.instance,
+            ) {
+                let (argv, _) = template
+                    .apply(&p.launch.argv, &prompt)
+                    .map_err(|_| "automatic future startup input exceeds bounds")?;
+                let argv =
+                    crate::harness::launch::compose_native_argv(p.launch.harness, argv, vec![])
+                        .map_err(|_| "automatic future native argv exceeds bounds")?;
+                crate::ports::NativeLaunchRequest::validate_argv(&argv)?;
+                let source = serde_json::json!({"outcome":"started","pane":created.launch_target(),"seat":recipient,"harness":p.launch.harness.as_str(),"argv":argv});
+                summaries.push(automatic_launch_summary(&source, &"f".repeat(64))?);
+            }
         }
         let selection = crate::protocol::results::DirectThreadEnsured {
             thread: thread.clone(),
@@ -703,11 +874,15 @@ impl AutomaticBootstrapIdentity {
             version: 1,
             digest: "f".repeat(64),
         };
-        let dispositions = vec![
-            AutomaticBootstrapRecoveryDisposition::CreatedPane {
-                evidence: Box::new(created.clone()),
+        let mut dispositions = Vec::new();
+        // A V3 plan refuses the created-pane disposition.
+        if let Some(tab) = created.as_tab() {
+            dispositions.push(AutomaticBootstrapRecoveryDisposition::CreatedPane {
+                evidence: Box::new(tab.clone()),
                 structural_reference: HostCallId::new(escaped.clone()),
-            },
+            });
+        }
+        dispositions.extend([
             AutomaticBootstrapRecoveryDisposition::NotCreated {
                 quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
             },
@@ -716,7 +891,7 @@ impl AutomaticBootstrapIdentity {
                 quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
                 attached_child: Some(Box::new(attachment.child.clone())),
             },
-        ];
+        ]);
         let wire_request = |command: Command| WireRequest {
             version: PROTOCOL_VERSION,
             request_id: escaped.clone(),
@@ -783,7 +958,7 @@ impl AutomaticBootstrapIdentity {
             let retained = LinkedBootstrapReport {
                 thread: thread.clone(),
                 recipient: recipient.clone(),
-                pane: created.root_pane.clone(),
+                pane: created.launch_target().clone(),
                 kind: "launch".into(),
                 launch: p.launch.clone(),
                 report_digest: format!(
@@ -793,8 +968,8 @@ impl AutomaticBootstrapIdentity {
                     )
                 ),
                 report: summary.clone(),
-                terminal: created.terminal.clone(),
-                host_incarnation: created.host_incarnation.clone(),
+                terminal: created.terminal().clone(),
+                host_incarnation: created.host_incarnation().clone(),
             };
             retained.validate()?;
             check_request(mutation(AutomaticBootstrapAction::Complete {
@@ -855,9 +1030,35 @@ impl AutomaticBootstrapIdentity {
                     }
                 }
                 let message = CommandResult::MessageSent(MessageId::new(escaped.clone()));
+                let create_request = || match &created {
+                    AutomaticCreation::Tab(tab) => {
+                        serde_json::json!(crate::ports::CreateTabRequest {
+                            correlation: tab.correlation.clone(),
+                            workspace: p.workspace.clone(),
+                            cwd: p.cwd.clone(),
+                            label: p.label.clone(),
+                            focus: false,
+                            env: p.env.clone(),
+                            directory_context: p.directory_context.clone(),
+                            expected_witness: tab.witness.clone()
+                        })
+                    }
+                    AutomaticCreation::Target(target) => {
+                        serde_json::json!(crate::ports::CreateTargetRequest {
+                            correlation: target.correlation.clone(),
+                            placement: target.placement.clone(),
+                            cwd: p.cwd.clone(),
+                            label: p.label.clone(),
+                            focus: false,
+                            env: p.env.clone(),
+                            directory_context: p.directory_context.clone(),
+                            expected_witness: target.witness.clone()
+                        })
+                    }
+                };
                 for local in [
                     serde_json::json!({"version":2,"identity":self,"attachment":attachment,"thread":thread,"selection":selection,"message":message,"possible_start":true,"launch":summary}),
-                    serde_json::json!({"version":2,"identity":self,"attempt":attempt,"possible_creation":true,"request":crate::ports::CreateTabRequest {correlation:created.correlation.clone(),workspace:p.workspace.clone(),cwd:p.cwd.clone(),label:p.label.clone(),focus:false,env:p.env.clone(),directory_context:p.directory_context.clone(),expected_witness:created.witness.clone()},"creation":created,"not_submitted":false}),
+                    serde_json::json!({"version":2,"identity":self,"attempt":attempt,"possible_creation":true,"request":create_request(),"creation":created,"not_submitted":false}),
                 ] {
                     if serde_json::to_vec(&local)
                         .map_err(|_| "automatic local envelope encoding")?

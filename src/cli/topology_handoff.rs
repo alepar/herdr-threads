@@ -276,6 +276,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         scope,
         inputs.claim.clone(),
         AutomaticBootstrapPlan {
+            placement: None,
             version: AUTOMATIC_PLAN_VERSION,
             payload: AutomaticBootstrapPayload {
                 directory_context: directory_context.clone(),

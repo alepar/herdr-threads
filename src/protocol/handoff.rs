@@ -377,19 +377,30 @@ pub enum BootstrapState {
     Cancelled,
 }
 
-/// Bootstrap journal records V3: the same shapes as V1/V2 with the creation carried as a
-/// `CreatedTarget`, so a non-Herdr host can journal its creation. V1 and V2 bytes stay frozen
-/// and keep their own records; nothing here is reachable from them.
+/// Bootstrap records V3: the automatic V2 shapes with the creation carried as a
+/// `CreatedTarget` under a frozen placement, so a non-Herdr host can record its creation.
+/// These are the typed byte form of the records the store holds as `AutomaticBootstrapPlan`
+/// (`version` 3, `placement` set) and `AutomaticBootstrapAttachment`; tests pin them byte-equal.
+/// V1 and V2 bytes stay frozen and nothing here is reachable from them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootstrapPlanV3 {
     pub version: u32,
-    pub payload: BootstrapPayload,
+    pub payload: AutomaticBootstrapPayload,
     pub placement: crate::ports::Placement,
+}
+impl From<BootstrapPlanV3> for AutomaticBootstrapPlan {
+    fn from(plan: BootstrapPlanV3) -> Self {
+        Self {
+            version: plan.version,
+            payload: plan.payload,
+            placement: Some(plan.placement),
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootstrapProgressV3 {
     pub version: u32,
-    pub identity: BootstrapIdentity,
+    pub identity: AutomaticBootstrapIdentity,
     pub attempt: BootstrapAttempt,
     pub possible_creation: bool,
     #[serde(default)]
@@ -405,7 +416,7 @@ pub struct BootstrapAttachmentV3 {
     pub created: crate::ports::CreatedTarget,
     pub resolve_operation: OperationId,
     pub resolved_seat: SeatId,
-    pub handoff: HandoffIdentity,
+    pub child: AutomaticDeliveryMutation,
 }
 
 /// Longest wait a launch gate may ask the daemon for.
@@ -1476,6 +1487,7 @@ pub(crate) mod topology_contract_tests {
             explicit.scope.clone(),
             explicit.claim.clone(),
             AutomaticBootstrapPlan {
+                placement: None,
                 version: 2,
                 payload: AutomaticBootstrapPayload {
                     directory_context: Some(context.clone()),
@@ -1587,6 +1599,7 @@ pub(crate) mod topology_contract_tests {
         assert_eq!(serde_json::to_vec(&restored).unwrap(), bytes);
         restored.directory_context = saved.directory_context;
         let plan = AutomaticBootstrapPlan {
+            placement: None,
             version: 2,
             payload: restored,
         };
