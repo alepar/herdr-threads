@@ -632,6 +632,12 @@ fn cached_event<C: LocalClient + ?Sized>(
     let response = contexts.dispatch(&event.event_id, &mut |pending: &PendingCheckIn| {
         let command = decode_request(pending)?;
         let budget = observed_budget(turn, pending.mode, clock)?;
+        if let Err(error) = crate::cli::site_capability::require_readonly(&command, client, &budget)
+        {
+            let detail = error.detail.clone();
+            api_error = Some(error);
+            return Err(ContextError::Dispatch(detail));
+        }
         let result = client
             .call_with_output(command, output, &budget)
             .map_err(|error| {
@@ -1363,6 +1369,8 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         claim,
         operation: OperationId::new(Uuid::new_v4().to_string()),
     });
+    crate::cli::site_capability::require_readonly(&command, client, budget)
+        .map_err(BridgeError::Api)?;
     let result = client
         .call_with_output(command, output, budget)
         .map_err(BridgeError::Api)?;
