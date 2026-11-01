@@ -579,6 +579,17 @@ model open work, and summary closure never changes receipt state or installs glo
   supersedes its predecessor only after copying its cursors (except the plain-first late link, see
   *Lineage*). A seat is active while any open binding is
   connected, or while its open human binding sits on a resolved seat.
+- *Live-holder guard (named seats, D19, SA16)*: when a named seat (`seats.name` set) would gain or
+  reconnect a top-level agent binding, the daemon's enrolling transaction reads the seat's other connected
+  top-level bindings and refuses with `seat_name_in_use` (M7, `herdr-threads: seat <name> is held by live pid
+  <pid>; use another name`) when a holder is alive (`LivenessFingerprint::is_alive` against the daemon's
+  process table: pid and start stamp, so an exited or pid-reused holder frees the name at once), differs
+  from the caller, and neither process is in the other's parent chain. Admitted beside a live holder: the
+  same process (a new session id in it), its ancestors and descendants, subagents (`agent_id`), `readonly`
+  bindings (D3), independent forks (`concurrent_session=1`) and `managed_launch` placeholders. A call by an
+  already-connected binding is a touch, never judged. The refusal rolls the transaction back, so two
+  concurrent unrelated enrolls of one name yield one binding (SA7). The guard is cooperative same-user
+  consistency, not verification (see Accepted limits).
 - *Independent lifecycle forks (ht-i9a7)*: neutral `EventKind::Fork` maps to a
   journaled `CheckInMode::Fork` with the same expected-generation and exact execution
   checks as an ordinary lifecycle. The adapter maps only its native independent-start
@@ -1787,6 +1798,11 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
 
 ## Accepted limits
 
+- Live-holder guard (named seats). The guard compares process fingerprints and parent chains from the
+  daemon's process table; a same-user process that fakes a fingerprint, runs under a holder's ancestor, or
+  starts after a holder's liveness row disconnected is admitted. Two unrelated sessions sharing a name through
+  a common ancestor (for example one shell starting both) are treated as one holder family. It prevents
+  accidental sharing of one role's ACK obligations, not an adversary (D19).
 - Typo seats (named seats). A seat-acting call under a name allocates the live seat of that name when none
   exists (`seats.name` on the built-in named host, the CLI prints M8 `herdr-threads: created seat <seat>
   (<name>)` once), so a misspelled name is a new seat, not an error. Reads (`inbox`, `seat list`,

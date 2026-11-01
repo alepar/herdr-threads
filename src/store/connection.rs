@@ -430,6 +430,8 @@ pub struct StoreContext {
     /// missing or does not cover every target (restart, eviction, another
     /// process staging, a differing target).
     snapshot_stage_matches: std::sync::Mutex<Vec<SnapshotStageMatch>>,
+    /// The host process table the enroll transaction's live-holder guard reads (SA16, D19).
+    processes: Arc<dyn crate::ports::ProcessInfo>,
     /// The journal runtime, installed once by `journal::open` (see
     /// [`SyncState`]).
     sync: OnceLock<SyncState>,
@@ -594,6 +596,17 @@ impl StoreContext {
         Some(entries.swap_remove(index))
     }
 
+    /// The process table the live-holder guard consults (fixtures supply a fake tree).
+    #[must_use]
+    pub fn with_processes(mut self, processes: Arc<dyn crate::ports::ProcessInfo>) -> Self {
+        self.processes = processes;
+        self
+    }
+
+    pub(crate) fn processes(&self) -> &dyn crate::ports::ProcessInfo {
+        self.processes.as_ref()
+    }
+
     pub fn new(path: PathBuf, clock: Arc<dyn Clock>) -> Self {
         Self::with_host_index(path, clock, Arc::default())
     }
@@ -623,6 +636,7 @@ impl StoreContext {
             binding_evidence_pinned: AtomicBool::new(false),
             binding_evidence_lacking: std::sync::Mutex::new(Vec::new()),
             snapshot_stage_matches: std::sync::Mutex::new(Vec::new()),
+            processes: Arc::new(crate::host::process_table::HostProcessTable),
             #[cfg(any(test, feature = "test-support"))]
             test_host: false,
             #[cfg(any(test, feature = "test-support"))]

@@ -60,6 +60,7 @@ const EXPECTED: &[(ErrorCode, Option<ErrorClass>)] = &[
     (ErrorCode::LivenessFingerprintRequired, None),
     (ErrorCode::SubagentReadOnly, None),
     (ErrorCode::ManagedDaemonRefused, None),
+    (ErrorCode::SeatNameInUse, None),
 ];
 
 #[test]
