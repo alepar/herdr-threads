@@ -113,6 +113,7 @@ pub fn authorize<C: LocalClient + ?Sized>(
         core_id: core_id.to_owned(),
         terminal: gate.terminal.clone(),
         timeout_ms,
+        socket: Some(gate.socket.clone()),
     };
     request.validate().map_err(invalid_request)?;
     let budget = CallBudget {

@@ -557,6 +557,7 @@ fn every_advertised_capability_has_a_handler() {
                         core_id: "core".into(),
                         terminal: "t1".into(),
                         timeout_ms: 1,
+                        socket: None,
                     },
                 ));
                 assert!(command.validate().is_ok());

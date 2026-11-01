@@ -105,6 +105,15 @@ fn authorized_reply_releases_and_carries_the_witness() {
 }
 
 #[test]
+fn authorize_sends_the_core_socket() {
+    let daemon = fake(LaunchGateReply::Authorized);
+    let clock = crate::app::SystemClock::new();
+    authorize(&daemon, &gate(), "core-a", 5_000, &clock).unwrap();
+    let seen = daemon.seen.lock().unwrap();
+    assert_eq!(seen[0].socket.as_deref(), Some("/run/core.sock"));
+}
+
+#[test]
 fn every_refusal_is_an_error() {
     let clock = crate::app::SystemClock::new();
     for reason in [

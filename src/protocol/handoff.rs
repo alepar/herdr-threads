@@ -438,6 +438,10 @@ pub struct AuthorizeLaunchGate {
     pub terminal: String,
     #[serde(default = "default_launch_gate_timeout_ms")]
     pub timeout_ms: u32,
+    /// The core socket the shim runs under (`HC_TERMINAL_SOCKET`). An ordering hint only: the
+    /// daemon asks the host with this locator first; the witness comparison decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
 }
 impl AuthorizeLaunchGate {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -446,6 +450,13 @@ impl AuthorizeLaunchGate {
         }
         if self.timeout_ms == 0 || self.timeout_ms > LAUNCH_GATE_MAX_TIMEOUT_MS {
             return Err("launch gate timeout out of range");
+        }
+        if self
+            .socket
+            .as_ref()
+            .is_some_and(|socket| socket.is_empty() || socket.len() > 4096)
+        {
+            return Err("launch gate socket out of range");
         }
         Ok(())
     }

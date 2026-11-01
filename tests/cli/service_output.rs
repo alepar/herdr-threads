@@ -215,6 +215,7 @@ fn launch_gate_refuses_one_line_on_an_older_daemon() {
             core_id: "core-a".into(),
             terminal: "t7".into(),
             timeout_ms: 5_000,
+            socket: None,
         })),
         &OutputSpec {
             format: OutputFormat::Text,
