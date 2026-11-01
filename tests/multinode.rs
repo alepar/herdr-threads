@@ -231,6 +231,9 @@ mod seat_directory;
 #[path = "multinode/named_seats.rs"]
 mod named_seats;
 
+#[path = "multinode/hc_seats.rs"]
+mod hc_seats;
+
 #[path = "multinode/config_restore.rs"]
 mod config_restore;
 
