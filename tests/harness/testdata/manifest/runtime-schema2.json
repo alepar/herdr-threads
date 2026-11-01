@@ -48,7 +48,7 @@
       {
         "domain": "native_payload",
         "origin": "native_payload",
-        "id": "fc1e3270060b4b87",
+        "id": "de803558d66158f3",
         "events": [
           {
             "event": "SessionStart",
@@ -67,6 +67,16 @@
           },
           {
             "event": "UserPromptSubmit",
+            "milestone": null,
+            "always_send": false
+          },
+          {
+            "event": "Stop",
+            "milestone": null,
+            "always_send": false
+          },
+          {
+            "event": "StopFailure",
             "milestone": null,
             "always_send": false
           },
@@ -98,7 +108,7 @@
       },
       "domain": "native_payload",
       "origin": "native_payload",
-      "contract_id": "fc1e3270060b4b87",
+      "contract_id": "de803558d66158f3",
       "status": "verified",
       "evidence_stage": "no_model",
       "source": "manual",

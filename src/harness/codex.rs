@@ -1605,6 +1605,13 @@ impl HarnessAdapter for CodexAdapter {
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         Some(&composer::NativeComposer)
     }
+    fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge> {
+        match event.metadata.native_event.as_str() {
+            "UserPromptSubmit" => Some(TurnEdge::Busy),
+            "Stop" => Some(TurnEdge::Idle),
+            _ => None,
+        }
+    }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(self)
     }

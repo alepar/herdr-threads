@@ -2406,6 +2406,16 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   collect (D7, `direct.auto_join_v1`; A5 "Automatic pair reservation"): the peer seat is joined in the creating
   transaction, and its first session is offered the opener and every later send. Explicit leave still applies.
   A pair created before the upgrade with a pending invitation keeps it.
+- **Hook turn state is cooperative and in memory (N2-turn).** The daemon records busy/idle per top-level binding
+  from the harness's own hooks (`HarnessAdapter::turn_state_edge`, reported by `Command::TurnState`, gated by
+  `turn_state.edge_v1`): a turn start is busy; a `Stop` that ended the turn, a Claude `StopFailure`, or a stale busy
+  cleared by the screen (`ScreenIdle`, only for a binding recorded busy, only after 60 s of busy and two
+  `screen_turn_running == Some(false)` reads at least 5 s apart) is idle. A `Stop` the daemon answered with a
+  continuation (`TurnEndDue` due) leaves the binding busy. A binding the daemon has not heard from since it started
+  is `Unknown` and never reads as idle. The state grants no authority and changes no seat. Accepted limit: a missed
+  `Stop` (killed harness, user interrupt, a hook that never ran) keeps the binding busy, so a typed wake waits for
+  the binding's next hook; a harness whose `screen_turn_running` answers `None` (today Hermes) has no screen clear.
+  Claude's `Stop` and `StopFailure` hooks are report-only: empty stdout, exit 0, never a continuation.
 
 ### Cross-node sync (ht-5fr)
 

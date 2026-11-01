@@ -4,6 +4,8 @@ allow_rule: none
 command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'claude'
 commands.PreToolUse: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'PreToolUse'
 commands.SessionStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SessionStart'
+commands.Stop: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'Stop'
+commands.StopFailure: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'StopFailure'
 commands.SubagentStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SubagentStart'
 commands.SubagentStop: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SubagentStop'
 commands.UserPromptSubmit: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'UserPromptSubmit'

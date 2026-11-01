@@ -122,6 +122,9 @@ pub enum Command {
     /// Whether an ending turn owes the caller's seat a continuation; gated by
     /// `turn_end.due_v1`. Read-only.
     TurnEndDue(TurnEndDue),
+    /// A harness hook's turn edge for the caller's binding (N2-turn); gated by
+    /// `turn_state.edge_v1`. Top-level claims only.
+    TurnState(TurnStateReport),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
     /// Advance the caller binding's own read cursors over messages it fully displayed. Allowed
@@ -1062,6 +1065,15 @@ pub struct TurnEndDue {
     pub claim: CallerClaim,
 }
 
+/// A harness hook's turn edge (a turn started or ended) for the caller's top-level binding, kept in
+/// daemon memory (`service::turn_state`). Changes no seat state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnStateReport {
+    pub claim: CallerClaim,
+    pub edge: crate::harness::adapter::TurnEdge,
+}
+
 /// Advance the caller binding's cursors over messages it fully displayed (spec §2). Allowed for
 /// subagent bindings: it changes only the caller's own read position, never seat state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1358,6 +1370,7 @@ impl Command {
             Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
             Self::TurnEndDue(v) => Some(&v.claim),
+            Self::TurnState(v) => Some(&v.claim),
             Self::AdvanceCursors(v) => Some(&v.claim),
             Self::BindingEvent(v) => Some(&v.claim),
             Self::Summary(v) => Some(&v.claim),
@@ -1504,6 +1517,7 @@ impl Command {
             Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
             Self::TurnEndDue(v) => Some(&v.claim),
+            Self::TurnState(v) => Some(&v.claim),
             _ => None,
         });
         if let Some(claim) = claim {

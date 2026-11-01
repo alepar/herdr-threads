@@ -305,6 +305,7 @@ trait ErasedAdapter: Send + Sync {
     fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence;
     fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec>;
     fn hook_step(&self) -> Option<&dyn HookStep>;
+    fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge>;
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str;
     fn binding_turn_delivery(&self, provenance: Option<&str>) -> bool;
@@ -531,6 +532,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn hook_step(&self) -> Option<&dyn HookStep> {
         self.0.hook_step()
+    }
+    fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge> {
+        self.0.turn_state_edge(event)
     }
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         self.0.delivery_policy()
@@ -1173,6 +1177,10 @@ impl Registration {
     }
     pub fn hook_step(&self) -> Option<&dyn HookStep> {
         self.adapter.hook_step()
+    }
+    /// The turn edge a decoded hook event reports (`None`: it says nothing about the turn).
+    pub fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge> {
+        self.adapter.turn_state_edge(event)
     }
     pub fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         self.adapter.delivery_policy()

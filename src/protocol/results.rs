@@ -119,6 +119,10 @@ pub enum CommandResult {
     TurnEndDue {
         due: bool,
     },
+    /// `Command::TurnState`: whether the edge changed the recorded turn state.
+    TurnState {
+        recorded: bool,
+    },
     Left(ThreadId),
     TopicChanged(ThreadId),
     ThreadNameChanged(ThreadId),

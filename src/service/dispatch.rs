@@ -121,6 +121,8 @@ pub struct DomainService {
     wake_reports: std::sync::Mutex<WakeReports>,
     /// `Command::LocateCaller`: nearest-ancestor verification of a two-family caller.
     locator: super::locate::LocateCallerService,
+    /// Hook turn state per top-level binding (N2-turn): in memory, so a restart reads `Unknown`.
+    pub(super) turn_state: Arc<super::turn_state::TurnStateBook>,
 }
 
 type WakeReports =
@@ -149,7 +151,12 @@ impl DomainService {
             locator: super::locate::LocateCallerService::new(Arc::new(
                 crate::host::process_table::HostProcessTable,
             )),
+            turn_state: Default::default(),
         }
+    }
+    /// The turn state the wake lane reads (the same instance this service records into).
+    pub fn turn_state(&self) -> Arc<super::turn_state::TurnStateBook> {
+        Arc::clone(&self.turn_state)
     }
     /// The process table `LocateCaller` walks (fixtures supply a fake tree).
     pub fn with_processes(mut self, processes: Arc<dyn crate::ports::ProcessInfo>) -> Self {
@@ -1055,10 +1062,62 @@ impl DomainService {
                 "caller instance does not match service",
             ));
         }
-        let due = request.claim.role == crate::protocol::authority::CallerRole::TopLevel
-            && !request.claim.is_subagent()
-            && self.store.turn_end_due(&request.claim, budget)?;
+        let top_level = request.claim.role == crate::protocol::authority::CallerRole::TopLevel
+            && !request.claim.is_subagent();
+        let due = top_level && self.store.turn_end_due(&request.claim, budget)?;
+        if top_level {
+            // The daemon's own answer decides whether this `Stop` ended the turn: a continuation
+            // keeps the binding busy (no turn-start hook follows it), anything else ends it.
+            self.turn_state.answered_turn_end(
+                &Self::turn_key(&request.claim),
+                due,
+                self.clock.monotonic_now().0,
+            );
+        }
         Ok(CommandResult::TurnEndDue { due })
+    }
+
+    fn turn_key(claim: &CallerClaim) -> super::turn_state::TurnKey {
+        super::turn_state::TurnKey {
+            seat: claim.seat.clone(),
+            generation: claim.binding_generation,
+        }
+    }
+
+    /// A hook's turn edge for the caller's top-level binding: daemon memory only, authorised like
+    /// a cooperative call.
+    fn turn_state_edge(
+        &self,
+        request: &crate::protocol::commands::TurnStateReport,
+        peer: PeerIdentity,
+    ) -> Result<CommandResult, ApiError> {
+        let (owner_uid, _) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if request.claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let top_level = request.claim.role == crate::protocol::authority::CallerRole::TopLevel
+            && !request.claim.is_subagent();
+        let recorded = top_level
+            && self.turn_state.record(
+                &Self::turn_key(&request.claim),
+                request.edge,
+                self.clock.monotonic_now().0,
+            );
+        Ok(CommandResult::TurnState { recorded })
     }
 
     /// The hook pull's plain touch-or-reconnect of the claim's binding (spec §3), authorised like
@@ -1733,6 +1792,7 @@ impl LocalService for DomainService {
             Command::DeliveryPull(pull) => self.delivery_pull(pull, peer, budget, &read),
             Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
             Command::TurnEndDue(request) => self.turn_end_due(&request, peer, budget),
+            Command::TurnState(request) => self.turn_state_edge(&request, peer),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
