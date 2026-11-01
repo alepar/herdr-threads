@@ -3,12 +3,15 @@
 
 use std::collections::HashMap;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
+use std::time::Duration;
 
 pub mod tmux;
 
+use crate::harness::adapter::ComposerPolicy;
+use crate::harness::composer::{ComposerRead, read_composer_in};
 use crate::host::observation::{HostTopology, SeatHostLabels};
 use crate::ports::{
     AgentComposerState, ArchivalEvidence, BootstrapObserver, BootstrapPaneObservation,
@@ -16,7 +19,7 @@ use crate::ports::{
     ExecutionEvidence, HostCallContext, HostId, HostKind, HostObservation, HostPort, HostSnapshot,
     HostUiState, IncarnationEvidence, NativeLaunchCapability, NativeLaunchOutcome,
     NativeLaunchRequest, ObservationProvenance, ProcessInfo, PromptOutcome, SafeWakeTarget,
-    StructuralOccupancy, WakeCapability,
+    StructuralOccupancy, WakeCapability, WakeTargetBasis,
 };
 use crate::protocol::authority::LivenessFingerprint;
 use crate::protocol::{
@@ -24,6 +27,7 @@ use crate::protocol::{
     results::{ApiError, ErrorCode},
     time::{CallBudget, Clock},
 };
+use crate::service::turn_state::{TurnKey, TurnState, TurnStateBook};
 use crate::store::named_seats::NamedSeatSource;
 
 /// Caller env of a named seat: the seat's name, its read-only marker and the tmux client's pane
@@ -81,8 +85,25 @@ pub struct NamedHost {
     processes: Arc<dyn ProcessInfo>,
     /// Verified tmux bindings by target (seat name), in daemon memory only: lost on restart,
     /// refreshed by every seat-acting call, pruned when the anchor process is gone.
-    tmux: Mutex<HashMap<String, Vec<LivenessFingerprint>>>,
+    tmux: Mutex<HashMap<String, Vec<TmuxBinding>>>,
+    /// The daemon's per-binding hook turn state; unset (or a binding it has not heard from) never
+    /// reads as idle.
+    turns: OnceLock<Arc<TurnStateBook>>,
 }
+
+/// One verified tmux binding of a seat.
+struct TmuxBinding {
+    /// The long-lived process the verification anchored on; the binding lives while it does.
+    anchor: LivenessFingerprint,
+    hint: tmux::TmuxHint,
+    /// The pids from the caller up to the pane's own process: a binding's fingerprint names one.
+    walk: Vec<u32>,
+}
+
+/// The wake text a typed composer is read back against, and the settle wait before that read.
+const SETTLE: Duration = Duration::from_millis(300);
+/// `C-u` presses `clear_own_wake_text` makes at most (an Enter taken as a newline leaves two rows).
+const CLEAR_PRESSES: usize = 2;
 
 /// Most verified bindings held per seat (SA16 admits several in one pane).
 const MAX_TMUX_BINDINGS: usize = 16;
@@ -105,43 +126,236 @@ impl NamedHost {
             calls: AtomicU64::new(0),
             processes: Arc::new(crate::host::process_table::HostProcessTable),
             tmux: Mutex::new(HashMap::new()),
+            turns: OnceLock::new(),
         }
+    }
+
+    /// Install the daemon's turn state (once). Without it every binding reads `Unknown`.
+    pub fn set_turn_state(&self, turns: Arc<TurnStateBook>) {
+        let _ = self.turns.set(turns);
     }
 
     /// Verify a caller's tmux hint for `target` and, when it holds, remember the binding. A hint
     /// that does not verify records nothing and never touches the seat: that binding simply has
     /// no wake path. Returns whether the binding is verified.
     pub fn record_tmux_hint(&self, target: &HostTargetId, subject_pid: u32, hint: &str) -> bool {
-        let Some(anchor) = tmux::TmuxHint::parse(hint)
-            .and_then(|hint| tmux::verify(&hint, subject_pid, self.processes.as_ref()))
-        else {
+        let Some((hint, anchor, walk)) = tmux::TmuxHint::parse(hint).and_then(|hint| {
+            tmux::verify_walk(&hint, subject_pid, self.processes.as_ref())
+                .map(|(anchor, walk)| (hint, anchor, walk))
+        }) else {
             return false;
         };
         let Ok(mut map) = self.tmux.lock() else {
             return false;
         };
         let bindings = map.entry(target.as_str().to_owned()).or_default();
-        bindings.retain(|held| held.is_alive(self.processes.as_ref()));
-        if !bindings.contains(&anchor) && bindings.len() < MAX_TMUX_BINDINGS {
-            bindings.push(anchor);
+        bindings.retain(|held| held.anchor.is_alive(self.processes.as_ref()));
+        if let Some(held) = bindings.iter_mut().find(|held| held.anchor == anchor) {
+            held.hint = hint;
+            held.walk = walk;
+            return true;
         }
-        bindings.contains(&anchor)
+        if bindings.len() >= MAX_TMUX_BINDINGS {
+            return false;
+        }
+        bindings.push(TmuxBinding { anchor, hint, walk });
+        true
+    }
+
+    /// The live verified bindings of `target`, pruning the dead ones.
+    fn live_bindings<T>(
+        &self,
+        target: &HostTargetId,
+        read: impl FnOnce(&[TmuxBinding]) -> T,
+    ) -> Option<T> {
+        let mut map = self.tmux.lock().ok()?;
+        let bindings = map.get_mut(target.as_str())?;
+        bindings.retain(|held| held.anchor.is_alive(self.processes.as_ref()));
+        if bindings.is_empty() {
+            map.remove(target.as_str());
+            return None;
+        }
+        Some(read(bindings))
     }
 
     /// True while some verified binding of `target` is alive.
     fn has_live_tmux_binding(&self, target: &HostTargetId) -> bool {
+        self.live_bindings(target, |_| ()).is_some()
+    }
+
+    /// The wake-armed named bindings: verified tmux hint, live fingerprint. Dead ones are pruned
+    /// here, so the daemon's idle exit sees the count fall to zero once the last process is gone.
+    fn wake_armed(&self) -> usize {
         let Ok(mut map) = self.tmux.lock() else {
-            return false;
+            return 0;
         };
-        let Some(bindings) = map.get_mut(target.as_str()) else {
-            return false;
+        map.retain(|_, bindings| {
+            bindings.retain(|held| held.anchor.is_alive(self.processes.as_ref()));
+            !bindings.is_empty()
+        });
+        map.values().map(Vec::len).sum()
+    }
+
+    /// The composer policy of the bound harness; `None` means no tmux wake for it.
+    fn wake_policy(
+        target: &SafeWakeTarget,
+    ) -> Option<(
+        crate::harness::registry::AgentHarnessId,
+        &'static dyn ComposerPolicy,
+    )> {
+        let registry = crate::harness::registry::builtins();
+        let id = registry.agent(target.bound_harness.as_deref()?).ok()?;
+        Some((id, registry.by_id(id).ok()?.composer_policy()?))
+    }
+
+    /// Every check before a wake is typed, per pane (rule 4): the context fence, one verified pane
+    /// for the seat, a pane that delivers keys, every live top-level binding idle (a stale busy is
+    /// cleared by the screen rule), a recognised unblocked screen and an empty composer. Each
+    /// refusal is `TargetUnsafe`: the attempt is retried on the ladder, never `no_wake`.
+    fn wake_gate(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+        what: &str,
+    ) -> Result<(tmux::TmuxHint, u16), ApiError> {
+        let refuse = |detail: &str| {
+            ApiError::new(
+                ErrorCode::TargetUnsafe,
+                format!("{what} refused before submission: {detail}"),
+            )
         };
-        bindings.retain(|held| held.is_alive(self.processes.as_ref()));
-        if bindings.is_empty() {
-            map.remove(target.as_str());
-            return false;
+        if target.basis != WakeTargetBasis::CooperativeAgent {
+            return Err(refuse("native execution is unverified"));
         }
-        true
+        if context.expected_boot.as_ref() != Some(&target.host_boot)
+            || context.expected_epoch != Some(target.epoch)
+            || self.epoch.load(Ordering::SeqCst) != target.epoch
+        {
+            return Err(refuse("host context changed"));
+        }
+        if context.budget.cancellation.is_cancelled() {
+            return Err(ApiError::new(ErrorCode::Cancelled, "wake prompt cancelled"));
+        }
+        let Some((harness, policy)) = Self::wake_policy(target) else {
+            return Err(refuse("no composer policy for the bound harness"));
+        };
+        let hints: Vec<tmux::TmuxHint> = self
+            .live_bindings(&target.target, |bindings| {
+                let mut hints: Vec<tmux::TmuxHint> = Vec::new();
+                for held in bindings {
+                    if !hints.contains(&held.hint) {
+                        hints.push(held.hint.clone());
+                    }
+                }
+                hints
+            })
+            .unwrap_or_default();
+        let [hint] = hints.as_slice() else {
+            return Err(refuse(if hints.is_empty() {
+                "no verified tmux binding"
+            } else {
+                "bindings in several panes"
+            }));
+        };
+        let Some(facts) = tmux::pane_facts(hint).filter(|f| f.server_pid == hint.server_pid) else {
+            return Err(refuse("pane unreadable"));
+        };
+        if !facts.delivers_keys() {
+            return Err(refuse(
+                "pane is in a mode, has input off or is synchronized",
+            ));
+        }
+        // The pane is idle only when every live top-level binding of the seat is.
+        let generations = self
+            .source
+            .top_level_generations(&target.seat, &context.budget)?;
+        let keys: Vec<TurnKey> = generations
+            .into_iter()
+            .map(|generation| TurnKey {
+                seat: target.seat.clone(),
+                generation,
+            })
+            .collect();
+        let Some(turns) = self.turns.get().filter(|_| !keys.is_empty()) else {
+            return Err(refuse("no turn state for the pane's bindings"));
+        };
+        let mut screen = None;
+        if keys.iter().any(|key| turns.state(key) == TurnState::Busy) {
+            let seen = tmux::capture(hint).ok_or_else(|| refuse("pane unreadable"))?;
+            let running = policy.screen_turn_running(&seen);
+            let now = self.clock.monotonic_now().0;
+            for key in &keys {
+                turns.observe_screen(key, running, now);
+            }
+            screen = Some(seen);
+        }
+        if !keys.iter().all(|key| turns.state(key) == TurnState::Idle) {
+            return Err(refuse("pane busy or a binding's turn state is unknown"));
+        }
+        let screen = match screen {
+            Some(screen) => screen,
+            None => tmux::capture(hint).ok_or_else(|| refuse("pane unreadable"))?,
+        };
+        if policy.screen_blocked(&screen) != Some(false) {
+            return Err(refuse("screen blocked or not recognised"));
+        }
+        match read_composer_in(
+            crate::harness::registry::builtins(),
+            crate::harness::registry::OccupantHarness::Agent(harness),
+            &screen,
+            Some(facts.width),
+        ) {
+            ComposerRead::Empty => Ok((hint.clone(), facts.width)),
+            ComposerRead::Unreadable => Err(refuse("composer is unreadable")),
+            _ => Err(refuse("composer is nonempty")),
+        }
+    }
+
+    /// The wake: gate, ask `still_owed`, type the text literally, press Enter.
+    fn type_wake(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+        still_owed: Option<&dyn Fn() -> Result<bool, ApiError>>,
+    ) -> Result<Option<PromptOutcome>, ApiError> {
+        let (hint, _) = self.wake_gate(target, context, "wake prompt")?;
+        if let Some(still_owed) = still_owed
+            && !still_owed()?
+        {
+            return Ok(None);
+        }
+        if context.budget.is_exhausted(self.clock.as_ref()) {
+            return Err(ApiError::new(
+                ErrorCode::DeadlineExceeded,
+                "insufficient wake prompt budget",
+            ));
+        }
+        if !tmux::type_text(&hint, text) {
+            // Possibly typed: the composer read-back decides what to clear.
+            return Ok(Some(PromptOutcome::OutcomeUnknown));
+        }
+        Ok(Some(if tmux::press(&hint, "Enter") {
+            PromptOutcome::Submitted
+        } else {
+            PromptOutcome::OutcomeUnknown
+        }))
+    }
+
+    /// The composer of the seat's pane now, through the bound harness's policy.
+    fn read_pane_composer(&self, target: &SafeWakeTarget) -> Option<ComposerRead> {
+        let (harness, _) = Self::wake_policy(target)?;
+        let hint = self.live_bindings(&target.target, |bindings| {
+            bindings.first().map(|held| held.hint.clone())
+        })??;
+        let screen = tmux::capture(&hint)?;
+        let width = tmux::pane_facts(&hint).map_or(80, |facts| facts.width);
+        Some(read_composer_in(
+            crate::harness::registry::builtins(),
+            crate::harness::registry::OccupantHarness::Agent(harness),
+            &screen,
+            Some(width),
+        ))
     }
 
     fn observation(&self, name: &SeatName) -> HostObservation {
@@ -219,8 +433,13 @@ impl HostPort for NamedHost {
     fn kind(&self) -> HostKind {
         HostKind::Named
     }
+    /// The host starts a wake lane (pacer, reachability, Health) because a verified tmux binding
+    /// can be typed into; a target without one answers `None` per target.
     fn wake_capability(&self) -> WakeCapability {
-        WakeCapability::None
+        WakeCapability::Composer(ComposerTraits::TMUX)
+    }
+    fn wake_armed_bindings(&self) -> usize {
+        self.wake_armed()
     }
     /// `Composer` only for a target with a live binding whose tmux hint verified; any other named
     /// seat has no wake path.
@@ -303,20 +522,67 @@ impl HostPort for NamedHost {
             targets,
         })
     }
+    /// A cooperative target for a seat with a live verified tmux binding. The composer, turn
+    /// state and pane-mode checks run immediately before typing (`wake_gate`).
     fn safe_wake_target(
         &self,
-        _seat: &SeatId,
-        _observation: &HostObservation,
+        seat: &SeatId,
+        observation: &HostObservation,
     ) -> Option<SafeWakeTarget> {
-        None
+        if !self.has_live_tmux_binding(&observation.target) {
+            return None;
+        }
+        let IncarnationEvidence::Verified { identity, .. } = &observation.incarnation else {
+            return None;
+        };
+        Some(SafeWakeTarget {
+            seat: seat.clone(),
+            target: observation.target.clone(),
+            host_boot: observation.host_boot.clone(),
+            generation: observation.generation,
+            terminal: observation.terminal.clone()?,
+            incarnation: identity.clone(),
+            basis: WakeTargetBasis::CooperativeAgent,
+            epoch: observation.epoch,
+            observation_sequence: observation.observation_sequence,
+            bound_harness: None,
+        })
     }
     fn submit_prompt(
         &self,
-        _target: &SafeWakeTarget,
-        _text: &str,
-        _context: &HostCallContext,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
     ) -> Result<PromptOutcome, ApiError> {
-        Err(unreachable_method("composer to submit a prompt into"))
+        self.type_wake(target, text, context, None)
+            .map(|outcome| outcome.unwrap_or(PromptOutcome::OutcomeUnknown))
+    }
+    fn submit_prompt_if_owed(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+        still_owed: &dyn Fn() -> Result<bool, ApiError>,
+    ) -> Result<Option<PromptOutcome>, ApiError> {
+        self.type_wake(target, text, context, Some(still_owed))
+    }
+    /// The pids of the verified bindings' walks, which a binding's fingerprint names.
+    fn foreground_pids(
+        &self,
+        target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Vec<u32>, ApiError> {
+        Ok(self
+            .live_bindings(target, |bindings| {
+                let mut pids: Vec<u32> = bindings
+                    .iter()
+                    .flat_map(|held| held.walk.iter().copied())
+                    .collect();
+                pids.sort_unstable();
+                pids.dedup();
+                pids
+            })
+            .unwrap_or_default())
     }
     fn launch_native(
         &self,
@@ -325,12 +591,23 @@ impl HostPort for NamedHost {
     ) -> Result<NativeLaunchOutcome, ApiError> {
         Err(unreachable_method("pane to launch into"))
     }
+    /// The read-back after a wake: the composer empty again means submitted, text in it means the
+    /// wake (or a draft) is held.
     fn pane_agent_state(
         &self,
-        _target: &SafeWakeTarget,
-        _context: &HostCallContext,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
     ) -> Result<AgentComposerState, ApiError> {
-        Err(unreachable_method("composer to read"))
+        if context.budget.cancellation.wait_blocking(SETTLE) {
+            return Ok(AgentComposerState::Unknown);
+        }
+        Ok(match self.read_pane_composer(target) {
+            Some(ComposerRead::Empty) => AgentComposerState::Submitted,
+            Some(ComposerRead::Text(_) | ComposerRead::Unsafe { .. }) => {
+                AgentComposerState::HoldingPrompt
+            }
+            _ => AgentComposerState::Unknown,
+        })
     }
     fn send_submit_key(
         &self,
@@ -338,6 +615,48 @@ impl HostPort for NamedHost {
         _context: &HostCallContext,
     ) -> Result<(), ApiError> {
         Err(unreachable_method("composer to submit into"))
+    }
+    /// One `C-u` per press, only when the bound harness opts in and a fresh read holds exactly the
+    /// wake text: any other content (a draft, the wake plus typed input) is left alone.
+    fn clear_own_wake_text(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<bool, ApiError> {
+        let Some((_, policy)) = Self::wake_policy(target).filter(|(_, policy)| {
+            policy.clears_unsubmitted_wake() && policy.clear_key() == "ctrl+u"
+        }) else {
+            return Ok(false);
+        };
+        let _ = policy;
+        if target.basis != WakeTargetBasis::CooperativeAgent
+            || context.expected_boot.as_ref() != Some(&target.host_boot)
+            || context.expected_epoch != Some(target.epoch)
+            || self.epoch.load(Ordering::SeqCst) != target.epoch
+        {
+            return Ok(false);
+        }
+        let Some(hint) = self
+            .live_bindings(&target.target, |bindings| {
+                bindings.first().map(|held| held.hint.clone())
+            })
+            .flatten()
+        else {
+            return Ok(false);
+        };
+        for press in 0..=CLEAR_PRESSES {
+            match self.read_pane_composer(target) {
+                Some(ComposerRead::Empty) => return Ok(press > 0),
+                Some(ComposerRead::Text(held)) if held == text && press < CLEAR_PRESSES => {
+                    if !tmux::press(&hint, "C-u") {
+                        return Ok(false);
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -347,4 +666,4 @@ mod tests;
 
 #[cfg(test)]
 #[path = "../../tests/host/named_tmux.rs"]
-mod tmux_tests;
+pub(crate) mod tmux_tests;

@@ -14,8 +14,8 @@ pub const IDLE_EXIT_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often the monitor samples the probe in production.
 pub const CHECK_EVERY: Duration = Duration::from_secs(30);
 
-/// What keeps the daemon alive: attached hosts, peer links, enabled dial
-/// targets and local client connections.
+/// What keeps the daemon alive: attached hosts, wake-armed named bindings, peer links, enabled
+/// dial targets and local client connections.
 ///
 /// Responsibility (ActivityProbe)
 /// - Owns: the one list of liveness inputs and the "any of them non-zero"
@@ -38,12 +38,19 @@ pub(crate) fn dialled_hosts_active(hosts: &HostSessions) -> bool {
     hosts.attached_count() != 0
 }
 
+/// The host half of the liveness inputs: a dialled host, or a named binding whose tmux wake the
+/// daemon could still type (N2-idle-exit).
+pub(crate) fn host_inputs_active(hosts: &HostSessions) -> bool {
+    dialled_hosts_active(hosts) || hosts.wake_armed_bindings() != 0
+}
+
 impl ActivityProbe {
-    /// True while any host is attached, any peer link is established or
+    /// True while any host is attached, any named binding holds a verified tmux wake hint on a
+    /// live process (the daemon could still wake it), any peer link is established or
     /// handshaking (inbound or dialed), any dial target is enabled, or any
     /// local client connection is open.
     pub fn active(&self) -> bool {
-        dialled_hosts_active(&self.hosts)
+        host_inputs_active(&self.hosts)
             || self.sync.link_count() != 0
             || self.sync.enabled_target_count() != 0
             || self.gauge.count() != 0

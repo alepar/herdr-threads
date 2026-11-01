@@ -4098,6 +4098,11 @@ pub trait HostPort: Send + Sync {
     /// result in memory per binding; a hint that does not verify only disables wake for that
     /// binding. Default: ignored.
     fn note_wake_hint(&self, _target: &HostTargetId, _subject_pid: u32, _hint: &str) {}
+    /// How many wake-armed named bindings this host holds (verified wake hint, live process): the
+    /// daemon's idle exit counts them as a liveness input. Default: none.
+    fn wake_armed_bindings(&self) -> usize {
+        0
+    }
     /// The root process of a target (a pane's shell). Default: none known.
     fn target_root_process(
         &self,

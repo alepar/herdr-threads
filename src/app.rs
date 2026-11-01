@@ -1965,6 +1965,9 @@ where
             let mod_channels: Arc<dyn crate::ports::ModChannels> = mod_registry.clone();
             let delivery_pull =
                 Arc::new(crate::service::delivery_pull::DeliveryPullState::default());
+            // Hook turn state per binding: the service records into it, the named host's tmux
+            // wake lane reads it.
+            let turn_state = Arc::new(crate::service::turn_state::TurnStateBook::default());
             // Binding liveness (spec §3, decision 9): the host process table backs
             // both the periodic re-check thread and the re-check before each
             // wake decision of every session's wake worker.
@@ -2053,6 +2056,7 @@ where
                     Arc::clone(&named_seats),
                     Arc::clone(&factory_clock),
                 ));
+                port.set_turn_state(Arc::clone(&turn_state));
                 host_sessions.attach_builtin(port, Arc::new(crate::host::named::NoBootstrap), &locator)
             }) {
                 Ok(_) => {}
@@ -2589,6 +2593,7 @@ where
                 .with_mod_channels(Arc::clone(&mod_channels))
                 .with_sync_admin(sync_admin)
                 .with_delivery_pull(Arc::clone(&delivery_pull))
+                .with_turn_state(Arc::clone(&turn_state))
                 .with_bootstrap_store(bootstrap_store);
             // Guarded bootstrap is advertised when the startup server has a
             // bootstrap runtime.

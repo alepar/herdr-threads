@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 /// A fixture host with configurable answers to the policy questions.
 #[derive(Clone, Copy)]
-struct AuditHost {
+pub(super) struct AuditHost {
     kind: HostKind,
     wake: bool,
     archival: ArchivalEvidence,
@@ -38,7 +38,7 @@ struct AuditHost {
 
 impl AuditHost {
     /// A dialled Herdr-shaped host: wakes, has evidence, closes, guarded start.
-    const HERDR: AuditHost = AuditHost {
+    pub(super) const HERDR: AuditHost = AuditHost {
         kind: HostKind::Herdr,
         wake: true,
         archival: ArchivalEvidence::Supported,
@@ -147,15 +147,15 @@ fn loc(text: &str) -> HostLocator {
     HostLocator::parse(text).unwrap()
 }
 
-struct Rig {
+pub(super) struct Rig {
     _isolation: TestIsolation,
     world: Arc<FakeHostWorld>,
-    sessions: Arc<HostSessions>,
+    pub(super) sessions: Arc<HostSessions>,
     store: Arc<SqliteStore>,
 }
 
 impl Rig {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let isolation = TestIsolation::new(label);
         let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::default());
         let instance = crate::node::NodeUuid::new_v4().to_string();
@@ -192,10 +192,17 @@ impl Rig {
     }
 
     /// Attaches a dialled fake at `locator`.
-    fn dial(&self, locator: &str, host: AuditHost) -> Arc<HostSession> {
+    pub(super) fn dial(&self, locator: &str, host: AuditHost) -> Arc<HostSession> {
         let locator = loc(locator);
         self.world.add(&locator, Arc::new(host));
         self.sessions.resolve(&locator, &self.budget()).unwrap()
+    }
+
+    /// Attaches `port` as the built-in host.
+    pub(super) fn builtin_port(&self, port: Arc<dyn HostPort>) -> Arc<HostSession> {
+        self.sessions
+            .attach_builtin(port, Arc::new(NoObserver), &loc("/builtin/named"))
+            .unwrap()
     }
 
     /// Attaches the built-in fake.

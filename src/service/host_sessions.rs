@@ -551,6 +551,14 @@ impl HostSessions {
         self.sessions.read().map_or(0, |map| map.len())
     }
 
+    /// The built-in host's wake-armed named bindings (tmux hint verified, process alive), pruning
+    /// the dead ones: the idle-exit term for a tmux seat the daemon could wake.
+    pub fn wake_armed_bindings(&self) -> usize {
+        self.builtin
+            .get()
+            .map_or(0, |session| session.port().wake_armed_bindings())
+    }
+
     /// Whether any attached Herdr server is not marked down. The peer-discovery
     /// gate asks about Herdr (`machines` come from its CLI), so this is the one
     /// new `kind()` reader: dialled sessions of another kind never open it.
