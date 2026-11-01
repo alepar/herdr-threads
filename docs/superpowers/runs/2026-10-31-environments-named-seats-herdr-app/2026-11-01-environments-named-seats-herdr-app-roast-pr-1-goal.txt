@@ -1,0 +1,28 @@
+## Goal
+An agent in a Herdr TUI pane, an agent in a plain or tmux process started with `HERDR_THREADS_SEAT_NAME=<name>`,
+and an agent in a herdr-core terminal (`hc run` or a Herdr desktop-app pane) each get a durable seat with full
+messaging: join, send, inbox, ACK, turn-hook and channel delivery, and cross-environment and cross-node addressing.
+All three go through one environment-agnostic core, where routing, delivery, receipts and binding logic never learn
+which environment a seat lives in. Idle wake works as far as each host allows.
+
+## Out of scope / follow-on
+- **H2, hc composer wake.** It includes `terminal.read` (the W1 composer read), the `terminal.send` refusals
+  (`blocked`, `status_mismatch`) and fake_hc's screen-text and refusal knobs, none of which this run builds. Blocked
+  on herdr-core shipping an atomic draft-safe `send`
+  (`if_input_empty`/`quiet:"refuse"`) and `if:[idle,done]`, detected through `hello.features`. It also needs
+  W1-W5, `foreground_contains`, `process_group`, `WakeBlock::{NoStatus, StatusDone}`, `ComposerTraits.focus_known`
+  and `stash`, a budget of at least 10 s, and the 05 4b outcome table.
+- **Upstream asks.** These are filed by the top-level session or the user, not as code tasks:
+  - to herdr-core: the draft-safe send, `if:[idle,done]`, `if_turn`, a sanitized core base env, a public `scope`
+    (D6, 06 §12);
+  - to Herdr TUI: parse OSC 7501 and answer `7501;?`, prefer reported status over screen detection with fallback,
+    and expose `status_source` and `turn` in `pane.get`/events (D21).
+- A herdr-app mod panel or a labelled hc operator terminal (05 D9). App tab rename via `herdr-app do`.
+- Remote cores (`machine/tN` mirrors, core-to-core links). Remote hc is reached through ht peers.
+- `scripts/check-host-neutral` (G6, D18 O8). A cap-gated `RetireReason::SelfRetired`. Named person seats
+  (`me init --name`). The hc wake e2e joining the release gate (O9).
+- Herdr TUI defect follow-ups: ht-hsyg (keep seats resolved across a Herdr live handoff), ht-wm97 (upstream
+  `agent_start_process_hint_v1`), ht-mf0w (instance fast defaults for named Herdr sessions). The rest of R8 (01):
+  cross-workspace `pane.move`, plugin-action pane id, Hermes managed-launch refusal.
+- Remaining evidence to record in the run report: E1 on macOS, H-C1 live, L1 live, Codex `--no-daemon` live, and the
+  Claude half of the wake e2e if no Linux credential is present.

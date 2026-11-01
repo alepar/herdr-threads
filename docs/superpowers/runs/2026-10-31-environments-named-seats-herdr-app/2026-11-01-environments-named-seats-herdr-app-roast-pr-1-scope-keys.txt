@@ -1,0 +1,39 @@
+[Should-fix] src/store/apply.rs:985
+[Should-fix] src/store/seats/publication.rs:245
+[Should-fix] src/host/hc/mod.rs:877; src/host/hc/mod.rs:878
+[Should-fix] src/service/turn_state.rs:35
+[Should-fix] src/cli/mod.rs:3940
+[Should-fix] src/service/locate.rs:376
+[Should-fix] src/cli/caller_location.rs:143
+[Should-fix] src/host/named/tmux.rs:221
+[Should-fix] src/host/hc/mod.rs:320
+[Should-fix] src/cli/caller_guard.rs:98
+[Should-fix] scripts/wake-e2e.py:2767
+[Should-fix] src/store/local_seat_status.rs:92
+[Should-fix] src/service/launch_gate.rs:89
+[Should-fix] src/service/host_sessions.rs:627
+[Should-fix] src/cli/doctor.rs:1250
+[Nit] src/host/hc/rpc.rs:115
+[Nit] src/service/dispatch.rs:212
+[Nit] src/service/launch_gate.rs:100; src/service/launch_gate.rs:48
+[Nit] src/host/named.rs:283; src/cli/hook.rs:4093
+[Nit] src/service/turn_state.rs:175
+[Nit] src/host/hc/mod.rs:733; src/host/hc/mod.rs:438
+[Nit] src/store/topology_handoff/runtime.rs:168
+[Nit] src/store/seats/resolution.rs:699
+[Nit] src/store/apply.rs:986
+[Nit] src/store/seats/publication.rs:197
+[Nit] src/cli/caller_location.rs:184
+[Nit] src/host/hc/mod.rs:884
+[Nit] src/cli/commands.rs:929
+[Nit] src/cli/caller_guard.rs:70
+[Nit] src/service/dispatch.rs:190; src/service/dispatch.rs:197
+[Nit] src/service/dispatch.rs:1848
+[Nit] src/test_support/isolation.rs:15
+[Nit] src/host/named.rs:323
+[Nit] src/host/named.rs:260
+[Nit] src/host/named.rs:637
+[Nit] integrations/skill/SKILL.md:3
+[Nit] src/service/launch_gate.rs:100
+[Nit] tests/multinode/hc_seats.rs:250
+[FYI] docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/profile-inv-3.json:11

@@ -1,0 +1,41 @@
+scopeFilter-round-1: [Should-fix] src/store/apply.rs:985 in-scope — named seat parked restore never drains; goal-named durable named seats
+scopeFilter-round-1: [Should-fix] src/store/seats/publication.rs:245 in-scope — retired named seat resurrected after restore; wrong behavior for named seats
+scopeFilter-round-1: [Should-fix] src/host/hc/mod.rs:877; src/host/hc/mod.rs:878 in-scope — hc enumerate_targets ends bindings on capture failure; hc seat correctness
+scopeFilter-round-1: [Should-fix] src/service/turn_state.rs:35 in-scope — shared turn-state key lets wake type into a running session; named wake/rule 4 wrong
+scopeFilter-round-1: [Should-fix] src/cli/mod.rs:3940 in-scope — terminal CLI seat lookup not host-scoped; hc terminal messaging wrong with two cores
+scopeFilter-round-1: [Should-fix] src/service/locate.rs:376 in-scope — LocateCaller picks wrong core for terminal; hc cross-core addressing wrong
+scopeFilter-round-1: [Should-fix] src/cli/caller_location.rs:143 in-scope — suite results depend on HC_ env; missing isolation for hc caller path tests
+scopeFilter-round-1: [Should-fix] src/host/named/tmux.rs:221 in-scope — tmux hint anchored on hook process so named tmux wake silently absent; goal-named wake
+scopeFilter-round-1: [Should-fix] src/host/hc/mod.rs:320 in-scope — HcHost resume_after_epoch never called via HostPort; hc behavior wrong
+scopeFilter-round-1: [Should-fix] src/cli/caller_guard.rs:98 in-scope — verified hc terminal in two-family env gets no seat; goal-named hc messaging fails
+scopeFilter-round-1: [Should-fix] scripts/wake-e2e.py:2767 in-scope — tmux-named wake e2e reports false wake; misleading result for named wake
+scopeFilter-round-1: [Should-fix] src/store/local_seat_status.rs:92 in-scope — untested daemon rule for seat labels on reused target; missing test for goal-named behavior
+scopeFilter-round-1: [Should-fix] src/service/launch_gate.rs:89 in-scope — cancelled-bootstrap refusal untested in hc launch authorization; missing test
+scopeFilter-round-1: [Should-fix] src/service/host_sessions.rs:627 in-scope — named-host wake lane degradation never reaches Health; misleading result
+scopeFilter-round-1: [Should-fix] src/cli/doctor.rs:1250 punch-list — cluster override: doctor display is not goal-named, unlike the Health lane defect
+scopeFilter-round-1: [Nit] src/host/hc/rpc.rs:115 in-scope — missing terminals decodes as complete empty enumeration, retiring seats; hc correctness
+scopeFilter-round-1: [Nit] src/service/dispatch.rs:212 in-scope — inherited-name check skipped for unattached hc core; cross-environment identity
+scopeFilter-round-1: [Nit] src/service/launch_gate.rs:100; src/service/launch_gate.rs:48 in-scope — transient hc failure becomes permanent WitnessMismatch refusal; incorrect hc launch behavior
+scopeFilter-round-1: [Nit] src/host/named.rs:283; src/cli/hook.rs:4093 in-scope — wake gate can type into running turn on missed Busy edge; violates wake rule 4 for named seats
+scopeFilter-round-1: [Nit] src/service/turn_state.rs:175 in-scope — turn-state clear race overwrites fresh Busy; incorrect wake gating
+scopeFilter-round-1: [Nit] src/host/hc/mod.rs:733; src/host/hc/mod.rs:438 punch-list — cluster override: latency hardening only, not an incorrect result
+scopeFilter-round-1: [Nit] src/store/topology_handoff/runtime.rs:168 punch-list — writer-lock use in launch-gate poll vs doc comment; performance/doc quality
+scopeFilter-round-1: [Nit] src/store/seats/resolution.rs:699 punch-list — unverified hint refusing allocation is TRUST-POLICY wording plus hardening; specified M10 behavior
+scopeFilter-round-1: [Nit] src/store/apply.rs:986 in-scope — named restore parked on wrong readiness; same defect as parked-readiness Should-fix
+scopeFilter-round-1: [Nit] src/store/seats/publication.rs:197 in-scope — named seat names not backfilled for peers after upgrade; cross-node named seats wrong
+scopeFilter-round-1: [Nit] src/cli/caller_location.rs:184 in-scope — hint drops terminal when pane env also present; hc inherited-name check misses
+scopeFilter-round-1: [Nit] src/host/hc/mod.rs:884 in-scope — hc observation sequence ordering can be defeated; hc correctness
+scopeFilter-round-1: [Nit] src/cli/commands.rs:929 in-scope — readonly field breaks older daemon with deny_unknown_fields; named readonly seat wrong under skew
+scopeFilter-round-1: [Nit] src/cli/caller_guard.rs:70 punch-list — verdict cache never hits; dead optimisation, verdicts still correct
+scopeFilter-round-1: [Nit] src/service/dispatch.rs:190; src/service/dispatch.rs:197 punch-list — cache epoch wording/hardening; no incorrect result in a goal path
+scopeFilter-round-1: [Nit] src/service/dispatch.rs:1848 punch-list — extra host label reads per page; performance only
+scopeFilter-round-1: [Nit] src/test_support/isolation.rs:15 punch-list — cluster override: hardening only; no TMUX-attributable failure observed, unlike the HC_ failures
+scopeFilter-round-1: [Nit] src/host/named.rs:323 in-scope — missing test for NamedHost still_owed re-check; goal-named wake guard
+scopeFilter-round-1: [Nit] src/host/named.rs:260 in-scope — missing test for wake-time server-pid re-check; goal-named wake guard
+scopeFilter-round-1: [Nit] src/host/named.rs:637 in-scope — missing test for clear_own_wake_text stale-target guard; goal-named wake guard
+scopeFilter-round-1: [Nit] integrations/skill/SKILL.md:3 in-scope — skill still says Herdr pane required, misleading for named and hc callers
+scopeFilter-round-1: [Nit] src/service/launch_gate.rs:100 punch-list — cluster override: latency hardening, unlike the WitnessMismatch misreport
+scopeFilter-round-1: [Nit] tests/multinode/hc_seats.rs:250 punch-list — slow multinode test cost; not goal behavior
+scopeFilter-round-1: [FYI] docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/profile-inv-3.json:11 punch-list — committed run artifacts path scrubbing; unrelated to goal
+cluster dropped: locate-verdict-cache — delete the verdict cache, which never hits for a production caller and whose walk the design itself calls cheap, then remove its claims from the design and TRUST-POLICY.md:418. That also ends the cached-NotAncestor concern under terminal-identity.
+scope-filter: 28 in-scope · 11 punch-listed
