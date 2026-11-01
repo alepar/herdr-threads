@@ -89,6 +89,11 @@ name = "config_smoke"
 path = "tests/config_smoke.rs"
 required-features = ["test-support"]
 
+[[test]]
+name = "integration_sweep"
+path = "tests/integration_sweep.rs"
+required-features = ["test-support"]
+
 [dependencies]
 shlex = "=2.0.1"
 serde = { version = "=1.0.229", features = ["derive"] }
