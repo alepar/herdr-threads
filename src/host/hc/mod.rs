@@ -95,6 +95,7 @@ impl HcBoot {
 pub struct HcHost {
     client: HcClient,
     observation_sequence: AtomicU64,
+    doc_names: labels::DocNames,
 }
 
 impl HcHost {
@@ -102,6 +103,7 @@ impl HcHost {
         Self {
             client,
             observation_sequence: AtomicU64::new(0),
+            doc_names: labels::DocNames::default(),
         }
     }
 
@@ -127,6 +129,47 @@ impl HcHost {
                 .join()
                 .unwrap_or_else(|_| Err(HcError::Decode("hc call panicked".into())))
         })
+    }
+
+    /// This core's session name (`hello` `core.name`), the `<session>` of its addresses.
+    fn session(&self) -> Option<String> {
+        Self::run(self.client.hello())
+            .ok()
+            .map(|reply| reply.value.core.name)
+            .filter(|name| !name.is_empty())
+    }
+
+    /// `<session>:tN` for one of this core's terminals; `None` when `hello` fails or
+    /// names no session, or `target` is not a `tN` address.
+    pub fn display_address(&self, target: &HostTargetId) -> Option<labels::HcAddress> {
+        Some(labels::HcAddress::new(
+            self.session()?,
+            labels::TerminalId::parse(target.as_str())?,
+        ))
+    }
+
+    /// Live local terminals (no `machine/tN` mirrors) and the app doc's names. The doc is
+    /// advisory: a failed read gives no names.
+    fn read_labelled(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<(Vec<HcTerminal>, std::sync::Arc<labels::AppNames>), ApiError> {
+        if budget.cancellation.is_cancelled() {
+            return Err(ApiError::cancelled("hc labels"));
+        }
+        let snapshot = Self::run(self.client.events_subscribe_snapshot())
+            .map_err(|e| ApiError::host_unavailable(e.to_string()))?
+            .value;
+        let names = match Self::run(self.client.doc_get(labels::APP_DOC)) {
+            Ok(reply) => self.doc_names.names(&reply.value),
+            Err(_) => Default::default(),
+        };
+        let live = snapshot
+            .terminals
+            .into_iter()
+            .filter(|t| t.state == "live" && !t.address.contains('/'))
+            .collect();
+        Ok((live, names))
     }
 
     fn unavailable(what: &str) -> ApiError {
@@ -188,11 +231,71 @@ impl HostPort for HcHost {
         Err(Self::unavailable("archival observation"))
     }
 
+    fn seat_labels(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
+        let (terminals, names) = self.read_labelled(budget)?;
+        Ok(terminals
+            .into_iter()
+            .map(|t| {
+                let space = t.labels.get(labels::LABEL_SPACE);
+                let tab = t.labels.get(labels::LABEL_TAB);
+                crate::host::observation::SeatHostLabels {
+                    terminal: t.address.clone(),
+                    incarnation: None,
+                    target: HostTargetId::new(&t.address),
+                    workspace_id: space.cloned().unwrap_or_else(|| "-".into()),
+                    workspace_label: space.and_then(|id| names.space_name(id)).map(str::to_owned),
+                    tab_id: tab.cloned().unwrap_or_else(|| "-".into()),
+                    tab_label: tab.and_then(|id| names.tab_label(id)),
+                    pane_label: t.name.filter(|name| !name.is_empty()),
+                }
+            })
+            .collect())
+    }
+
     fn live_topology(
         &self,
-        _: &CallBudget,
+        budget: &CallBudget,
     ) -> Result<crate::host::observation::HostTopology, ApiError> {
-        Err(Self::unavailable("live_topology"))
+        use crate::host::observation::{HostTopology, TopologyPane, TopologySpace, TopologyTab};
+        let (terminals, names) = self.read_labelled(budget)?;
+        let mut topology = HostTopology {
+            spaces: Vec::new(),
+            tabs: Vec::new(),
+            panes: Vec::new(),
+        };
+        for t in terminals {
+            // A terminal without both labels is not in the app, so it has no place here.
+            let (Some(space), Some(tab)) = (
+                t.labels.get(labels::LABEL_SPACE),
+                t.labels.get(labels::LABEL_TAB),
+            ) else {
+                continue;
+            };
+            if !topology.spaces.iter().any(|s| &s.id == space) {
+                topology.spaces.push(TopologySpace {
+                    id: space.clone(),
+                    label: names.space_name(space).map(str::to_owned),
+                });
+            }
+            if !topology.tabs.iter().any(|x| &x.id == tab) {
+                topology.tabs.push(TopologyTab {
+                    id: tab.clone(),
+                    space: space.clone(),
+                    label: names.tab_label(tab),
+                });
+            }
+            topology.panes.push(TopologyPane {
+                target: HostTargetId::new(&t.address),
+                space: space.clone(),
+                tab: tab.clone(),
+                label: t.name.filter(|name| !name.is_empty()),
+                agent_names: Vec::new(),
+            });
+        }
+        Ok(topology)
     }
 
     /// Only the failed-`hello` outcome: nothing is enumerated and nothing is
@@ -252,3 +355,7 @@ impl HostPort for HcHost {
 #[cfg(all(test, feature = "test-support"))]
 #[path = "../../../tests/host/hc_host.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../../tests/host/hc_labels.rs"]
+mod label_tests;

@@ -67,6 +67,8 @@ pub struct FakeTerminal {
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
     pub finished_ms: Option<u64>,
+    /// The terminal's `title` (a program-set string, never a label).
+    pub title: String,
 }
 
 impl FakeTerminal {
@@ -86,6 +88,7 @@ impl FakeTerminal {
             exit_code: None,
             signal: None,
             finished_ms: None,
+            title: String::new(),
         }
     }
 
@@ -98,7 +101,7 @@ impl FakeTerminal {
             "exit_code": self.exit_code, "signal": self.signal,
             "finished_ms": self.finished_ms, "argv": ["sh"], "cwd": "/",
             "created_ms": 1, "screen": "exact", "cols": 80, "rows": 24,
-            "title": "", "parent": null,
+            "title": self.title, "parent": null,
         });
         if unknown {
             t["x_unknown"] = json!({"nested": [1, 2]});
@@ -246,6 +249,11 @@ impl FakeHcState {
 
     pub fn set_doc(&self, name: &str, value: Value, version: u64) {
         self.lock().docs.insert(name.to_owned(), (value, version));
+    }
+
+    /// Renames the core (its session), as a core started under another `HC_SESSION`.
+    pub fn set_core_name(&self, name: &str) {
+        self.lock().core_name = name.to_owned();
     }
 
     /// A wipe: a new permanent core id, no terminals, the sequence back at 0.
