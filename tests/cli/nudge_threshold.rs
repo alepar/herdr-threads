@@ -121,6 +121,7 @@ impl LocalClient for Client {
                         first: false,
                         offline: false,
                         host: None,
+                        target: None,
                     })
                     .collect(),
             )),

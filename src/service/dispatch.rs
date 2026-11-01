@@ -2533,7 +2533,10 @@ fn classify_wake_rows(
             .and_then(|id| hosts.iter().find(|host| host.host_id() == id));
         let capability = own.map_or(
             WakeCapability::Composer(ComposerTraits::HERDR_TUI),
-            |host| host.port().wake_capability(),
+            |host| match &row.target {
+                Some(target) => host.port().target_wake_capability(target),
+                None => host.port().wake_capability(),
+            },
         );
         let idle = registry.idle_wake_on(harness, capability, channel_live(&row.seat));
         if let Some(episode) = episodes.last_mut() {

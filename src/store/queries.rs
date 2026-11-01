@@ -6600,11 +6600,11 @@ fn wake_status_seats(
         {
             continue;
         }
-        let Some(host) = db
+        let Some((host, target)) = db
             .query_row(
-                "SELECT host_id FROM seats WHERE id=?1 AND instance_id=?2 AND is_local=1",
+                "SELECT host_id,target_id FROM seats WHERE id=?1 AND instance_id=?2 AND is_local=1",
                 rusqlite::params![seat, instance],
-                |r| r.get::<_, Option<i64>>(0),
+                |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
             )
             .optional()
             .map_err(|e| db.map_error(e))?
@@ -6633,6 +6633,7 @@ fn wake_status_seats(
             first: false,
             offline,
             host: host.map(crate::ports::HostId::from_row),
+            target: target.map(crate::protocol::ids::HostTargetId::new),
         });
     }
     Ok(CommandResult::WakeStatus(rows))

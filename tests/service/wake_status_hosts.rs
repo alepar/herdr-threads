@@ -97,6 +97,7 @@ fn row(seat: &str, harness: &str, host: Option<crate::ports::HostId>) -> SeatWak
         first: false,
         offline: false,
         host,
+        target: None,
     }
 }
 

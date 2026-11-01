@@ -30,6 +30,77 @@ impl ModChannels for Flap {
     }
 }
 
+/// A composer-level host (default `Composer` wake capability) whose answer for the target
+/// named `"target"` is `None` while the flag is set: a per-target wake path that comes and goes.
+struct PerTargetWake(Arc<AtomicBool>);
+impl HostPort for PerTargetWake {
+    fn target_wake_capability(&self, target: &HostTargetId) -> WakeCapability {
+        if target.as_str() == "target" && self.0.load(Ordering::SeqCst) {
+            WakeCapability::None
+        } else {
+            self.wake_capability()
+        }
+    }
+    fn live_topology(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, ApiError> {
+        RefusingHost.live_topology(budget)
+    }
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        NativeLaunchCapability::Unsupported
+    }
+    fn observe_current_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        RefusingHost.observe_current_target(target, context)
+    }
+    fn observe_current_target_for_archival(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<ComposerObservation, ApiError> {
+        RefusingHost.observe_current_target_for_archival(target, context)
+    }
+    fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        RefusingHost.enumerate_targets(context)
+    }
+    fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
+        None
+    }
+    fn submit_prompt(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        RefusingHost.submit_prompt(target, text, context)
+    }
+    fn launch_native(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        RefusingHost.launch_native(request, context)
+    }
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<AgentComposerState, ApiError> {
+        RefusingHost.pane_agent_state(target, context)
+    }
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        RefusingHost.send_submit_key(target, context)
+    }
+}
+
 /// One daemon incarnation over the rig's store file.
 struct Boot {
     service: DomainService,
@@ -41,6 +112,8 @@ pub(super) struct Rig {
     node: String,
     clock: Arc<dyn Clock>,
     channel: Arc<Flap>,
+    /// Set: the composer host answers `None` for the target `"target"`.
+    target_none: Arc<AtomicBool>,
     boot: Option<Boot>,
 }
 
@@ -51,6 +124,7 @@ impl Rig {
             node: uuid::Uuid::new_v4().simple().to_string(),
             clock: Arc::new(SystemClock::new()),
             channel: Arc::new(Flap::default()),
+            target_none: Arc::new(AtomicBool::new(false)),
             boot: None,
         };
         rig.restart();
@@ -108,7 +182,10 @@ impl Rig {
             .unwrap();
         let composer =
             HostLocator::parse(self.isolation.socket_path("herdr.sock").to_string_lossy()).unwrap();
-        world.add(&composer, Arc::new(RefusingHost));
+        world.add(
+            &composer,
+            Arc::new(PerTargetWake(Arc::clone(&self.target_none))),
+        );
         sessions.resolve(&composer, &self.budget()).unwrap();
         let service = DomainService::new(self.node.clone(), store, Arc::clone(&self.clock))
             .with_sessions(Arc::clone(&sessions))
@@ -329,4 +406,56 @@ fn row_deleted_when_read_finds_composer() {
         rig.status(&sender, &target).first,
         "a new episode reports again"
     );
+}
+
+// Kills: reading only the host-level answer (a Composer host whose one target has no wake path
+// never reports), or keeping the row across a Composer read (the second None episode would stay
+// silent), or reporting again within one episode.
+#[test]
+fn per_target_none_composer_none_reports_once_per_episode() {
+    let rig = Rig::new("nwr-per-target");
+    let (sender, target) = (
+        rig.named_seat("s", "codex"),
+        rig.named_seat("target", "claude"),
+    );
+    let composer_host: i64 = rig
+        .sql()
+        .query_row(
+            "SELECT host_id FROM herdr_hosts WHERE kind='herdr'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    rig.sql()
+        .execute(
+            "UPDATE seats SET host_id=?1 WHERE id=?2",
+            rusqlite::params![composer_host, target.as_str()],
+        )
+        .unwrap();
+    let read = |none: bool| {
+        rig.target_none.store(none, Ordering::SeqCst);
+        let row = rig.status(&sender, &target);
+        (row.wake, row.first)
+    };
+    assert_eq!(read(false), (None, false), "a Composer answer is no block");
+    assert!(rig.reports().is_empty());
+    assert_eq!(
+        read(true),
+        (Some(WakeBlock::NoWake), true),
+        "episode 1 reports"
+    );
+    assert_eq!(
+        read(true),
+        (Some(WakeBlock::NoWake), false),
+        "once per episode"
+    );
+    assert_eq!(rig.reports().len(), 1);
+    assert_eq!(read(false), (None, false));
+    assert!(rig.reports().is_empty(), "a Composer read ends the episode");
+    assert_eq!(
+        read(true),
+        (Some(WakeBlock::NoWake), true),
+        "episode 2 reports"
+    );
+    assert_eq!(read(true), (Some(WakeBlock::NoWake), false));
 }
