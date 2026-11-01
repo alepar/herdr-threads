@@ -205,14 +205,14 @@ fn m14_m15_m16_goldens() {
 }
 
 #[test]
-fn invalid_name_maps_to_m16_and_other_errors_to_no_line() {
-    use herdr_threads::cli::caller_location::{LocatorError, M16};
+fn invalid_name_maps_to_m16_and_terminal_without_socket_to_m17() {
+    use herdr_threads::cli::caller_location::{LocatorError, M16, M17};
     for value in ["-bad", "has space", &"a".repeat(65)] {
         let e = env(&[("HERDR_THREADS_SEAT_NAME", value)]);
         let error = e.locate(EnvMode::Cli).unwrap_err();
         assert_eq!(error.refusal(), Some(M16), "{value}");
     }
-    assert_eq!(LocatorError::TerminalWithoutSocket.refusal(), None);
+    assert_eq!(LocatorError::TerminalWithoutSocket.refusal(), Some(M17));
 }
 
 #[test]
