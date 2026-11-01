@@ -35,6 +35,7 @@ mod picker;
 pub mod pre_upgrade_backup;
 pub mod retry;
 mod seat_resolution;
+pub mod site_capability;
 pub mod update;
 pub use crate::protocol::address as seat_selector;
 pub mod peer_launch;
@@ -846,6 +847,8 @@ fn run_parsed_in_pane<W: Write>(
                     selector: selector.to_owned(),
                     caller: thread_caller.clone(),
                     caller_target: thread_caller_target.clone(),
+
+                    caller_host: None,
                 }),
                 &budget(),
             )
@@ -3699,6 +3702,8 @@ pub(crate) fn collect_pane_seats(
             target: Some(pane.clone()),
             include_retired: false,
             filter: Default::default(),
+
+            host: None,
         }))
         .map_err(PaneSeatsError::Api)?;
         let CommandResult::Seats(page) = result else {

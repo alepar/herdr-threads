@@ -1755,6 +1755,8 @@ fn seats_of(
                 target: None,
                 include_retired: false,
                 filter,
+
+                host: None,
             }),
             &ReadContext {
                 instance: rig
@@ -1902,6 +1904,7 @@ fn seat_list_carries_the_directory_and_filters_it() {
                 node: Some("zq7".into()),
                 ..SeatFilter::default()
             },
+            host: None,
         })
     };
     let instance: String = rig

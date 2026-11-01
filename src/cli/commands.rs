@@ -3409,6 +3409,8 @@ fn parse_cli_in_registry(
                     label: label.map(|v| bounded(v, "--label")).transpose()?,
                     local,
                 },
+
+                host: None,
             })),
             SeatSub::Resolve {
                 selector,

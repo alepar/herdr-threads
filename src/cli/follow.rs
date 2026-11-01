@@ -509,6 +509,8 @@ impl NickCache {
                     target: None,
                     include_retired: false,
                     filter: Default::default(),
+
+                    host: None,
                 }),
                 spec,
                 &budget(self.clock.as_ref(), 2_000, &self.cancel),

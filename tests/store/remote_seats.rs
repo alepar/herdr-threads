@@ -610,6 +610,8 @@ fn reads_render_remote_state_and_null_panes() {
             target: None,
             include_retired: false,
             filter: Default::default(),
+
+            host: None,
         }),
     );
     let CommandResult::Seats(listing) = &seats else {
@@ -660,6 +662,8 @@ fn pane_listings_omit_remote() {
             target: Some(HostTargetId::new("pane")),
             include_retired: true,
             filter: Default::default(),
+
+            host: None,
         }),
     ) else {
         panic!("wrong result")
@@ -1026,6 +1030,7 @@ fn label_filter_matches_resolved_local_seats_by_host_labels() {
                 label: Some(label.into()),
                 ..Default::default()
             },
+            host: None,
         });
         let CommandResult::Seats(page) = f
             .store
