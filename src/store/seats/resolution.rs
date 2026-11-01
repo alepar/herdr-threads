@@ -814,9 +814,6 @@ fn record_locator_hint(
             |r| r.get(0),
         )
         .map_err(store_error)?;
-    if known {
-        return Ok(None);
-    }
     let unmarked: Option<i64> = tx
         .query_row(
             "SELECT ordinal FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL \
@@ -829,6 +826,8 @@ fn record_locator_hint(
     let Some(ordinal) = unmarked else {
         return Ok(None);
     };
+    // A known locator is no second locator (no M9), but a session restarted from it still
+    // records it on its own binding, so `seat inspect` labels it and the next hint skips it.
     let earlier: Option<String> = tx
         .query_row(
             "SELECT locator_hint FROM occupant_bindings WHERE seat_id=?1 \
@@ -843,7 +842,9 @@ fn record_locator_hint(
         params![hint, ordinal],
     )
     .map_err(store_error)?;
-    Ok(earlier.map(|earlier| (earlier, hint.to_owned())))
+    Ok(earlier
+        .filter(|_| !known)
+        .map(|earlier| (earlier, hint.to_owned())))
 }
 
 /// A seat-acting resolve under a name on the named host: [`named_seat_apply`] in one idempotent

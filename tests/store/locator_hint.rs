@@ -184,6 +184,11 @@ fn no_m9_on_repeat_from_either_locator() {
     f.bind(&seat, "s3");
     assert_eq!(f.resolve(Some("w1:p1"), "op-3").1, None);
     assert_eq!(f.hints().len(), 3);
+    assert_eq!(
+        f.hints().last().cloned().flatten().as_deref(),
+        Some("w1:p1"),
+        "the restarted session's binding carries its locator"
+    );
 }
 
 // Kills: deciding from process memory (the decision must read the persisted rows).
