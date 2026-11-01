@@ -4073,6 +4073,13 @@ pub trait HostPort: Send + Sync {
     fn wake_capability(&self) -> WakeCapability {
         WakeCapability::Composer(ComposerTraits::HERDR_TUI)
     }
+    /// Wake capability of one target. `wake_status`, the persisted no-wake reports and the
+    /// host-side tripwire read this answer, so a host whose wake path depends on the target
+    /// (a named seat with or without a verified tmux hint) answers per target. Default: the
+    /// host-level answer.
+    fn target_wake_capability(&self, _target: &HostTargetId) -> WakeCapability {
+        self.wake_capability()
+    }
     /// The root process of a target (a pane's shell). Default: none known.
     fn target_root_process(
         &self,

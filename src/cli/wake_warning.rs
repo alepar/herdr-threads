@@ -73,6 +73,7 @@ mod tests {
             first,
             offline: false,
             host: None,
+            target: None,
         }
     }
 

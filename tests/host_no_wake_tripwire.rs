@@ -3,15 +3,14 @@
 //! `wake=no_wake` reachable, so SKILL.md must explain it (K2). The harness half is
 //! `idle_wake_classification_of_the_builtins` (src/harness/registry.rs).
 //!
-//! Keyed on the host-level `wake_capability()` today. After the tmux wake path (N2) a named host
-//! answers `Composer` at host level and `None` only per target; this test then asks the
-//! per-target answer for a target with no verified hint.
+//! Keyed on `target_wake_capability` for a target with no verified wake path: after the tmux wake
+//! path (N2) a named host answers `Composer` at host level and `None` only per target.
 
 use herdr_threads::{
     host::{hc::HcHost, hc::rpc::HcClient, named::NamedHost, native::NativeCli},
     ports::{HostId, HostKind, HostPort, WakeCapability},
     protocol::{
-        ids::{SeatId, SeatName},
+        ids::{HostTargetId, SeatId, SeatName},
         time::CallBudget,
     },
     store::named_seats::NamedSeatSource,
@@ -54,11 +53,16 @@ fn build(kind: HostKind) -> Box<dyn HostPort> {
     }
 }
 
+/// A target no host has a verified wake path for.
+fn unverified() -> HostTargetId {
+    HostTargetId::new("unverified")
+}
+
 /// Err names the kinds whose host has no wake path while `skill` does not explain `no_wake`.
 fn tripwire(skill: &str) -> Result<(), String> {
     let silent: Vec<_> = HostKind::IMPLEMENTED
         .iter()
-        .filter(|kind| build(**kind).wake_capability() == WakeCapability::None)
+        .filter(|kind| build(**kind).target_wake_capability(&unverified()) == WakeCapability::None)
         .map(|kind| kind.stored_name().unwrap_or("?"))
         .collect();
     if silent.is_empty() || skill.contains(K2) {

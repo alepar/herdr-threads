@@ -1865,6 +1865,10 @@ pub struct SeatWakeStatus {
     /// it to a client: it decodes as `None` and encodes without it.
     #[serde(default, skip)]
     pub host: Option<crate::ports::HostId>,
+    /// The seat's host target (`seats.target_id`), for the per-target wake answer; node-local
+    /// like `host`: never on the wire.
+    #[serde(default, skip)]
+    pub target: Option<HostTargetId>,
 }
 /// Canonical seat mapping. A local seat's topology labels are client-local
 /// (the CLI's own host read); a remote seat's come from its home node
