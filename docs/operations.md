@@ -246,7 +246,7 @@ The v2.0 daemon starts a fresh node store. Existing sessions get new seat IDs at
 
 ## Ambiguous restore or move, and operator repair
 
-A restored or moved pane whose identity is ambiguous is **held** for inspection. The plugin does not silently hand the prior role to it. Inspect with `seat list`, `seat inspect SEAT`, `diagnostics`, `daemon health` (unresolved seats) and `view --once`, then choose deliberately among the three operator actions:
+A restored or moved pane whose identity is ambiguous is **held** for inspection. The plugin does not hand the prior role to it on a guess; only the evidence below (the session's own resume, or after a live handoff the seat's own surviving process) reattaches a seat without an operator. Inspect with `seat list`, `seat inspect SEAT`, `diagnostics`, `daemon health` (unresolved seats) and `view --once`, then choose deliberately among the three operator actions:
 
 ```text
 herdr-threads seat rebind SEAT --pane PANE_ADDRESS --operator
@@ -267,7 +267,7 @@ Restore holds follow the [trust policy](../TRUST-POLICY.md) (C1 to C3, F6 resolv
 
 **When a hold lifts.**
 
-- Per target: an operator `seat rebind` or `seat resolve --new-seat` on that target, or cooperative continuity on it (below).
+- Per target: an operator `seat rebind` or `seat resolve --new-seat` on that target, or cooperative or process continuity on it (below).
 - Instance-wide: automatically once no unresolved nonretired seat remains and the restored baseline is reconciled. Nothing is left to protect, so panes created before the restart but never claimed become ordinary again. No command is needed.
 
 **Retire a seat.** `herdr-threads seat retire SEAT --operator` abandons the seat. It retires and its pending obligations settle as recipient-retired. Seats are never merged.
@@ -283,6 +283,8 @@ The first abandons the old seat. The second abandons the new role: it retires NE
 
 **Cooperative continuity.** A resumed top-level agent session (SessionStart source `resume`) whose harness session id uniquely matches an unresolved seat's last binding reattaches that seat by itself, with no operator step. It never applies to `startup`, `/clear` or `/new`, which carry a new id, and it never merges seats. Claude does this with `claude --resume`. Codex does it when you run `codex resume` by hand in the pane. Managed `launch` of the Codex `resume` form stays refused (no captured hook evidence), so reattachment is by running it yourself in the pane. If the id matches no unresolved seat, or matches more than one, nothing happens and the seat waits for an operator choice. A resume that arrives before the daemon has reconciled the restored Herdr is retried within the hook; if the hook gives up, the pane stays held and the next `resume` in the pane finishes it and installs the pane's context; `herdr-threads retry` of the pending continuity intent completes the reattachment in the daemon only (it installs no pane context), so the agent in the pane picks up its seat at its next `resume`. Evidence: [cooperative continuity](compatibility/cooperative-continuity-resume.md).
 
+**Process continuity (live handoff).** `herdr server live-handoff` and `herdr update --handoff` start a new Herdr server process that keeps every pane and its processes but gives each terminal a new id, so seats first become unresolved as after a restart. Within one observation pass the daemon reattaches each seat whose agent process is still running in its pane: the agent's recorded process (pid and start time) must be the pane's shell as Herdr reports it, or in the session that shell leads on its terminal. No turn of the agent's own is needed, so idle agents become wakeable again. Person seats (`me init`) and launched agents that never checked in are not covered: they stay unresolved as after a restart and are recovered the same way (an agent's own check-in, or the operator actions above). A cold restart kills the panes' processes, so nothing reattaches this way. The decision is recorded as `structural_process_continuity` ([trust policy](../TRUST-POLICY.md) C1, C2).
+
 **Reading the repair history.** `seat inspect SEAT` shows how the seat's latest repair was decided:
 
 | Row kind | Meaning |
@@ -290,6 +292,7 @@ The first abandons the old seat. The second abandons the new role: it retires NE
 | `operator_rebind` | `seat rebind` (including `--replace`), decided as `operator:local-user:<uid>` |
 | `operator_retire` | `seat retire`, or the retire half of `--replace` |
 | `cooperative_continuity` | reattached by a resumed session. The row carries a Herdr `agent_session` diagnostic: `match`, `mismatch`, `absent` or `read_error`. It is a diagnostic only and never decides anything |
+| `structural_process_continuity` | reattached after a new Herdr incarnation because the seat's own agent process was found running in the pane (process continuity, above) |
 | `operator_human_override` | a person's `me init --operator` replaced an agent binding |
 
 **Daemon restart.** A request carries the daemon boot the client addressed. If the daemon restarted in between, it refuses before dispatch with `daemon_boot_changed` (`DaemonBootChanged`, exit 3, transient) and nothing was applied. Retry the command; the client addresses the daemon's current boot on the next attempt. A joined seat whose pane mapping is structurally reconfirmed after the restart stays available: its open binding carries forward to the new host epoch with no new check-in. The carry lands in the first reconciliation pass, not at `daemon ensure`; a send in between does not wait for it. A recipient whose binding is about to be carried (same Herdr boot and incarnation, a cooperative or operator binding) is staged as not yet available but draws no `recipient_unavailable` warning; its receipt deadline already runs from the committed send time (A6), and the carry only restores availability. If the pass does not carry the seat, the ordinary unavailable paths open the outage and later sends warn as usual. A native `verified_current_target` binding is never carried; it re-registers. Availability still ends when the mapping becomes unresolved, the seat retires, or its last connected binding disconnects.

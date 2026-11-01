@@ -73,6 +73,13 @@ launches its recipient raises no send-time unavailable-recipient warning for tha
 deadline (A6) still reports a launch that never checks in (C4); availability is recorded unchanged; no new
 provenance or wire value.
 
+Amended 2026-10-31 for process continuity (ht-hsyg): after a new Herdr incarnation that kept the pane processes
+alive (a live handoff, `herdr server live-handoff` / `herdr update --handoff`), the daemon reattaches a seat whose
+top-level harness binding's own fingerprinted process lives in the session and controlling terminal of the shell
+Herdr reports for the seat's saved target (C1 process continuity, C2); new seat-history provenance
+`structural_process_continuity`; person seats stay under the restore holds; three accepted limits; no new wire
+value.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -148,12 +155,13 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 
 ## Continuity invariants
 
-**C1. How a seat's mapping may change.** Exactly three ways:
+**C1. How a seat's mapping may change.** Exactly four ways:
 
 | Path | Trigger | Recorded as |
 |---|---|---|
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
 | Cooperative continuity | A top-level lifecycle or turn event, or a push-channel harness's in-process watch for its own session (ht-dtx0), carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
+| Process continuity (ht-hsyg) | After a new or unknown Herdr incarnation, a top-level harness binding (not human, `managed_launch` or subagent) of an unresolved seat (reason `other`) that its latest unresolve ended while open and connected, placed under an earlier incarnation than the current one, has a live fingerprinted process (same pid and start stamp) that is the shell Herdr reports for the seat's saved target in the current incarnation or belongs to the session that shell leads, on that shell's controlling terminal; no other such binding of another seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, the pane has no resolved owner, and the session's unique C1 match is that seat at the judged generation | `structural_process_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 
 A herdr-threads daemon upgrade can leave a still-running native session needing recovery;
@@ -260,6 +268,28 @@ Memberships retire, receipts settle recipient-retired and invitations close, all
 every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown incarnation never retires: it
 yields unresolved seats under the C2 restore holds above, and each binding ends with reason `seat_unresolved`
 so the same session can reopen it after a rebind.
+
+**Process continuity (ht-hsyg).** A new incarnation can keep the pane processes alive: a Herdr live handoff
+(`herdr server live-handoff`, `herdr update --handoff`) passes each pane's terminal to a new server process, which
+assigns new terminal ids. Old ids still prove nothing. What carries over is the process: after each completed
+reconciliation pass of the current recovery boot and epoch, and after the kept claims (the sessions' own word), the
+daemon walks the unresolved seats (reason `other`) a page at a time. A seat's candidates are the top-level harness
+bindings its latest unresolve ended while open and connected (`seat_unresolved`, placed at the generation that unresolve
+bumped from) that carry a liveness fingerprint and were placed under an earlier Herdr incarnation than the published
+one, so a same-incarnation unresolve is never this path's. If a candidate's fingerprinted process is still the same
+process (pid and start stamp) and is the shell Herdr reports for the pane at the seat's saved target, or belongs to the
+session that shell leads, with that shell's controlling terminal, the seat's newest such binding is reattached there
+through the C1 transaction: provenance `structural_process_continuity` in seat history, the pane's hold released, the
+binding reopened under its own session and fingerprint. The saved target only selects the pane to ask (one `pane
+process-info` read per seat, no scan); the kernel session and terminal are the evidence. A cold restart cannot satisfy
+it: the old shells are gone, and a process that survived the hangup lost its controlling terminal. Nothing is decided
+while a candidate of another seat saved at the same target has its process in that pane or cannot be read (the pane's
+process could be either's; every such seat is listed, never a bounded page), while a kept C1 claim names the target,
+when the pane has an owner, or when the session's unique C1 match is not the judged seat at its judged generation; nor
+on an unreadable fact. A candidate the facts rule out, or that a definitive C1 refusal answers, is not read again for
+10 minutes for that seat generation and fingerprint; that memory is the daemon process's own (a restart forgets it).
+A gone process, an unread fact or a not-ready refusal is retried next pass. Person seats and `managed_launch` bindings
+are not covered.
 
 **Restored-pane retirement (ht-wpq4).** A seat that a new incarnation left unresolved (reason `other`) keeps a
 saved target from the old one, which proves nothing (C2), so its absence never retires the seat. What retires it
@@ -387,6 +417,7 @@ records there are replay machinery, never its identity.
 | `cooperative_hook_context` | receipt action observation and lazy completion claim | A top-level standard native hook **of a harness whose adapter declares no hook-pull delivery** wrote and flushed output whose context carried the message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`; its exact receipt candidates, source and original caller claim are frozen into the accountable payload digest. Receipt observations preserve binding provenance separately. Lazy rows store no per-row source. Not proof that the harness ingested it or the model read it. A prefix never carries it. The daemon refuses this claim from a hook-pull binding. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because the same native harness session id matched (C1). Never on receipts. |
+| `structural_process_continuity` | seat rebinds only | The seat's top-level binding process (same fingerprint) was observed as, or in the session of, the shell Herdr reports for the pane, on that shell's controlling terminal, after a new incarnation (C1 process continuity, ht-hsyg). The reopened binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. Also covers `sync clone-cleared` and the other mutating sync, peer and legacy commands (`sync resync`, `peer add`, `peer forget`, `legacy purge`). |
 | `replicated_from:<node_uuid>` | receipts, invitation answers (the accept and reject rows) and events applied from another node's fact (bindings never) | Applied as given from a fact authored and signed by node `<node_uuid>`; the authoring node's own provenance travels inside the fact. Never written for a locally authored fact. |
 | `local_journal` | receipts, invitation answers and events materialized from an own old incarnation's entry with no staged local attribution | A wipe or restore pull-back re-applied this node's own earlier fact; the original binding is not known here. Never on bindings. |
@@ -2200,6 +2231,18 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   the PID within the same start tick would read as the same incarnation. On Linux a wall-clock step moves
   the boot time, so the same server then reads as a new incarnation: holds (C2), never a false match.
   Other platforms have no witness: every observation is unverified and host-observed flows refuse.
+- **Process continuity trusts Herdr's shell pid and the kernel session (ht-hsyg).** The pane's `shell_pid` is
+  Herdr-reported, like terminal ids. Session and controlling terminal come from procfs (Linux) or `getsid` and
+  `proc_pidinfo` (macOS); elsewhere the path is off and C2 applies. A harness that leaves the pane's session
+  (setsid, tmux, screen) is not matched.
+- **Process continuity proves the process, not its current session (ht-hsyg).** The reopened binding keeps the
+  session the process last claimed; a process that switched sessions without a hook firing is corrected by its
+  next claim (supersede rules unchanged).
+- **Unavailability window after a live handoff (ht-hsyg).** Between the new incarnation's first reconciliation
+  pass and the process continuity decision that follows it, the seat is unresolved: sends warn and wakes wait, and
+  the rebind bumps the seat generation. Person seats and launched agents that have not checked in stay unresolved
+  until `me init`, a check-in or the operator. A Herdr that does not carry the agent state across the handoff
+  reports it `unknown` until the agent redraws, and wakes wait for that (delivery contract rule 4).
 - **Mod delivery claims are cooperative.** A same-user process could run `herdr-threads watch ack` and settle
   receipts as `cooperative_mod_delivery`; the daemon checks the canonical binding the claim's key names and that binding's live
   channel, not the process.
@@ -2398,6 +2441,17 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   against one of them applies as before.
 
 ## Decision record
+
+### Process continuity across a Herdr live handoff (2026-10-31, ht-hsyg)
+
+A live handoff gives every pane a new terminal id under a new server process, so C2 unresolved every seat and idle
+agents could not be woken until their next turn. Herdr exposes no handoff lineage and no stable terminal identity,
+and none was requested upstream. The harness session id alone gives only the hook path C1 already had: the daemon
+cannot observe it without the agent's claim. The kernel can: the agent process and the pane's shell survive the
+handoff, Herdr still reports the shell's pid, and session plus controlling terminal tie the process to that pane's
+terminal. That is structural evidence of the same kind as a terminal id, decided per seat with every C1 guard,
+applied after the reconciliation pass rather than inside it (the invalidation path is unchanged). Design and the
+rejected alternatives (Herdr lineage, the successor's `--handoff-import` argv token) are in the bead ht-hsyg.
 
 ### Cross-node sync trust model (2026-10-14, ht-5fr)
 

@@ -1728,6 +1728,53 @@ pub struct ContinuityRequest {
     pub command: ContinuityCheckIn,
     pub guard: ContinuityTargetGuard,
     pub diagnostic: &'static str,
+    pub evidence: ContinuityEvidence,
+}
+
+/// What a C1 reattachment rests on; it selects the provenance recorded in seat history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContinuityEvidence {
+    /// The session's own claim (a hook, a watch, or the daemon deciding a kept claim):
+    /// `cooperative_continuity`.
+    Cooperative,
+    /// The daemon observed the binding's own process in the pane's kernel session and
+    /// controlling terminal (C1 process continuity, ht-hsyg): `structural_process_continuity`.
+    /// The decision is valid only for the judged seat at the judged generation: the deciding
+    /// transaction refuses when the session's unique match is another seat, or the seat moved.
+    Process { seat: SeatId, seat_generation: u64 },
+}
+
+/// One C1 process continuity listing. `full`: the bounded page filled up (counted before rows of
+/// a harness this build does not know are skipped), so more may follow; a target listing is
+/// never bounded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessContinuityListing {
+    pub candidates: Vec<ProcessContinuityCandidate>,
+    pub full: bool,
+}
+
+/// Which C1 process continuity candidates to list: the page after a seat (seat order), and/or
+/// only the seats saved at one target (the rivals of a match).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessContinuityPage {
+    pub after: Option<SeatId>,
+    pub target: Option<HostTargetId>,
+}
+
+/// One unresolved seat's binding that C1 process continuity may reattach (ht-hsyg): a
+/// top-level harness binding ended `seat_unresolved` with a liveness fingerprint, at the
+/// seat's saved target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessContinuityCandidate {
+    pub seat: SeatId,
+    pub seat_generation: u64,
+    pub binding_id: String,
+    pub target: HostTargetId,
+    pub host: crate::protocol::ids::HostLocator,
+    pub harness: crate::protocol::authority::Harness,
+    pub native_session: crate::protocol::ids::NativeSessionId,
+    pub execution: ExecutionId,
+    pub liveness: crate::protocol::authority::LivenessFingerprint,
 }
 
 /// Herdr's per-pane agent record for exactly one pane. TRUST-POLICY C1/A4:
@@ -3314,6 +3361,14 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         command: &ContinuityCheckIn,
         budget: &CallBudget,
     ) -> Result<bool, ApiError>;
+    /// TRUST-POLICY C1 process continuity (ht-hsyg): the host's unresolved local seats'
+    /// candidate bindings, bounded per pass, seat order.
+    fn process_continuity_candidates(
+        &self,
+        host: HostId,
+        page: ProcessContinuityPage,
+        budget: &CallBudget,
+    ) -> Result<ProcessContinuityListing, ApiError>;
     /// The host's kept claims due for another decision, oldest first and
     /// bounded per pass; expired rows are dropped first.
     fn kept_continuity_claims(
@@ -3956,6 +4011,16 @@ pub trait HostPort: Send + Sync {
     ) -> Result<Vec<u32>, ApiError> {
         Ok(Vec::new())
     }
+    /// The pid of the process Herdr started in the pane (its shell or launched program), for
+    /// C1 process continuity. `None` when Herdr reports none or the adapter cannot ask: the
+    /// evidence is then missing and no seat moves.
+    fn pane_shell_pid(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        Ok(None)
+    }
     /// Archival requires an explicit composer-aware adapter. Each adapter must
     /// provide composer evidence or explicitly refuse this observation; ordinary
     /// Idle status alone cannot qualify a target for archival.
@@ -4173,9 +4238,23 @@ pub struct ProcessRecord {
     /// argv as reported by the host (argv[0] first); may be empty when unreadable.
     pub argv: Vec<String>,
 }
+/// A process's kernel session and controlling terminal (TRUST-POLICY C1 process continuity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalSession {
+    /// The session id (the pid of the session leader).
+    pub session: u32,
+    /// The controlling terminal's device number; `None` when the process has none.
+    pub tty: Option<u64>,
+}
 /// Read-only view of the host process table. `None`: no such process (or unreadable).
 pub trait ProcessInfo: Send + Sync {
     fn process(&self, pid: u32) -> Option<ProcessRecord>;
+    /// The process's session and controlling terminal, for a process this user started. `None`
+    /// when unknown (no such process, another user's, or a platform without the reader): the
+    /// evidence that needs it is then missing, never assumed.
+    fn terminal_session(&self, _pid: u32) -> Option<TerminalSession> {
+        None
+    }
 }
 
 /// The registry of live mod delivery channels (spec D2, D7; spec §3 Wake). Every method has

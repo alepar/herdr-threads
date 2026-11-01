@@ -3855,6 +3855,7 @@ fn v10_allocation_decisions_accepts_b5_kinds() {
         "operator_retire",
         "operator_human_override",
         "cooperative_continuity",
+        "structural_process_continuity",
     ] {
         insert(kind, None).unwrap();
     }
@@ -6356,6 +6357,75 @@ fn sibling_delivery_upgrade_preserves_rows_and_refuses_schema3_binary() {
     let detail = incompatible_detail(open_with(&db, old));
     assert!(detail.contains("newer than this binary"), "{detail}");
     assert_eq!(user_version(&db), 4);
+}
+
+/// Node schema 12 (ht-hsyg) rebuilds `allocation_decisions` to admit the
+/// `structural_process_continuity` kind. Kills: losing or renumbering rows, restarting the
+/// AUTOINCREMENT sequence, dropping either index, or still refusing the new kind.
+#[test]
+fn process_continuity_upgrade_preserves_allocation_decisions() {
+    let db = Connection::open_in_memory().unwrap();
+    let old = &schema::NODE_DELTAS[..10];
+    open_with(&db, old).unwrap();
+    assert_eq!(user_version(&db), 11);
+    crate::test_support::attach_test_host_to_connection(&db);
+    let insert = |ordinal: i64, kind: &str| {
+        db.execute(
+            "INSERT INTO allocation_decisions(ordinal,host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) VALUES (?1,(SELECT min(host_id) FROM herdr_hosts),'t'||?1,'s'||?1,?2,?1,'b',1,2,'op',NULL)",
+            params![ordinal, kind],
+        )
+    };
+    insert(3, "ordinary").unwrap();
+    insert(9, "cooperative_continuity").unwrap();
+    assert!(insert(10, "structural_process_continuity").is_err());
+    open_with(&db, &schema::NODE_DELTAS[..11]).unwrap();
+    assert_eq!(user_version(&db), 12);
+    let rows: Vec<(i64, String, String, String, i64, Option<String>)> = db
+        .prepare("SELECT ordinal,target_id,seat_id,kind,decided_at,operator_label FROM allocation_decisions ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                3,
+                "t3".into(),
+                "s3".into(),
+                "ordinary".into(),
+                3,
+                Some("op".into())
+            ),
+            (
+                9,
+                "t9".into(),
+                "s9".into(),
+                "cooperative_continuity".into(),
+                9,
+                Some("op".into())
+            ),
+        ]
+    );
+    db.execute(
+        "INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ((SELECT min(host_id) FROM herdr_hosts),'t','s','structural_process_continuity',1,'b',1,2)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.last_insert_rowid(),
+        10,
+        "the sequence continues past the copied rows"
+    );
+    for index in [
+        "allocation_decisions_target",
+        "allocation_decisions_seat_history",
+    ] {
+        assert!(object_exists(&db, "index", index), "{index} missing");
+    }
+    assert!(!object_exists(&db, "table", "allocation_decisions_new"));
+    open_with(&db, schema::NODE_DELTAS).unwrap();
 }
 
 /// Node schema 5, the bytes-first journal (ht-76u6): the delta rebuilds

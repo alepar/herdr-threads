@@ -2522,6 +2522,9 @@ where
                                 // ht-dtx0: claims kept while this epoch lagged
                                 // are decided now; a failure retries next pass.
                                 let _ = identity.decide_kept_continuity();
+                                // ht-hsyg: then the seats whose own processes the
+                                // current incarnation's panes still host.
+                                let _ = identity.decide_process_continuity();
                             }
                         }
                     }

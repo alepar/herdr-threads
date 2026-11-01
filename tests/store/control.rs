@@ -9278,6 +9278,7 @@ fn c1_decide(
             command: command.clone(),
             guard,
             diagnostic,
+            evidence: crate::ports::ContinuityEvidence::Cooperative,
         },
     )
 }
@@ -9327,6 +9328,339 @@ fn c1_tables_mentioning(conn: &Connection, needle: &str) -> Vec<String> {
         }
     }
     found
+}
+
+/// TRUST-POLICY C1 process continuity (ht-hsyg): the candidate query lists exactly the
+/// unresolved seat's top-level harness bindings its latest unresolve ended while open and that
+/// carry a fingerprint, pages by seat and filters by target; a decision on process evidence is
+/// refused unless the session's match is the judged seat at the judged generation with no kept
+/// claim on the target, and records `structural_process_continuity`.
+/// Kills: listing a binding without a fingerprint, a human or managed-launch binding, one ended
+/// for another reason or at an earlier unresolve, or a seat unresolved for host invalidation;
+/// ignoring the page filters; deciding for another seat, a moved seat or past a kept claim;
+/// recording the cooperative kind.
+#[test]
+fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
+    use crate::ports::{ContinuityEvidence, ProcessContinuityPage};
+    use crate::protocol::time::{CallBudget, Cancellation};
+    let (context, mut conn, path) = c1_fixture();
+    let budget = CallBudget {
+        deadline: MonoInstant(1_000),
+        cancellation: Cancellation::default(),
+    };
+    conn.execute(
+        "UPDATE seats SET state='unresolved',unresolved_reason='other',target_id='held-pane',generation=5 WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    let seat_generation: i64 = conn
+        .query_row("SELECT generation FROM seats WHERE id='s1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    // The bindings the latest unresolve ended: placed at the generation it bumped from, under
+    // the old incarnation (the published one is another).
+    let current: String = conn
+        .query_row(
+            "SELECT g.incarnation FROM herdr_hosts h JOIN snapshot_generations g ON g.id=h.active_snapshot_id WHERE h.host_id=(SELECT min(host_id) FROM herdr_hosts)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(current, "before-handoff");
+    conn.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',disconnected_at=50,liveness_pid=4242,liveness_start=7,generation=?1,incarnation='before-handoff' WHERE seat_id='s1'",
+        [seat_generation - 1],
+    )
+    .unwrap();
+    // Excluded: no fingerprint, a human binding, a managed launch, another end reason, a binding
+    // an earlier unresolve ended (an older generation), and one placed in the current incarnation
+    // (a same-incarnation unresolve is not this path's).
+    for (n, harness, session, provenance, reason, pid, generation, incarnation) in [
+        (
+            2,
+            "claude",
+            "no-print",
+            "cooperative_top_level",
+            "seat_unresolved",
+            None,
+            1,
+            "before-handoff",
+        ),
+        (
+            3,
+            "human",
+            "person",
+            "cooperative_top_level",
+            "seat_unresolved",
+            Some(1),
+            1,
+            "before-handoff",
+        ),
+        (
+            4,
+            "claude",
+            "launch:x",
+            "managed_launch",
+            "seat_unresolved",
+            Some(1),
+            1,
+            "before-handoff",
+        ),
+        (
+            5,
+            "claude",
+            "other-end",
+            "cooperative_top_level",
+            "superseded",
+            Some(1),
+            1,
+            "before-handoff",
+        ),
+        (
+            6,
+            "claude",
+            "stale",
+            "cooperative_top_level",
+            "seat_unresolved",
+            Some(1),
+            2,
+            "before-handoff",
+        ),
+        (
+            7,
+            "claude",
+            "same-inc",
+            "cooperative_top_level",
+            "seat_unresolved",
+            Some(1),
+            1,
+            current.as_str(),
+        ),
+    ] {
+        c1_bind(&conn, "s1", n, harness, session);
+        conn.execute(
+            "UPDATE occupant_bindings SET observation_provenance=?2,liveness='disconnected',disconnect_reason=?3,liveness_pid=?4,liveness_start=?4,disconnected_at=50,generation=?5,incarnation=?6 WHERE seat_id='s1' AND native_session=?1",
+            rusqlite::params![session, provenance, reason, pid, seat_generation - generation, incarnation],
+        )
+        .unwrap();
+    }
+    let list = |page: ProcessContinuityPage| {
+        crate::store::seats::process_continuity_candidates(
+            &context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &page,
+            &budget,
+        )
+        .unwrap()
+    };
+    let page = |after: Option<&str>, target: Option<&str>| ProcessContinuityPage {
+        after: after.map(SeatId::new),
+        target: target.map(HostTargetId::new),
+    };
+    let listing = list(page(None, None));
+    assert!(!listing.full);
+    let listed: Vec<_> = listing
+        .candidates
+        .iter()
+        .map(|c| {
+            (
+                c.seat.as_str().to_owned(),
+                c.target.as_str().to_owned(),
+                c.native_session.as_str().to_owned(),
+                c.liveness.pid,
+                c.liveness.start,
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        vec![("s1".into(), "held-pane".into(), "sess-1".into(), 4242, 7)]
+    );
+    assert_eq!(
+        list(page(Some("s0"), Some("held-pane"))).candidates.len(),
+        1
+    );
+    assert!(
+        list(page(Some("s1"), None)).candidates.is_empty(),
+        "the page starts after the cursor"
+    );
+    assert!(
+        list(page(None, Some("other-pane"))).candidates.is_empty(),
+        "only the given target"
+    );
+    // A seat unresolved for host invalidation is the structural bridge's, not this path's.
+    conn.execute(
+        "UPDATE seats SET unresolved_reason='host_invalidation' WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    assert!(list(page(None, None)).candidates.is_empty());
+    conn.execute(
+        "UPDATE seats SET unresolved_reason='other' WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    // 33 stale seats saved at the same pane sort before s1: a page is bounded and says so, but
+    // the target listing (the rivals of a match) is complete.
+    for n in 0..33 {
+        let seat = format!("r{n:02}");
+        conn.execute("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','other','native','held-pane',2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&seat]).unwrap();
+        c1_bind(&conn, &seat, 1, "claude", &format!("old-{n}"));
+        conn.execute(
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',disconnected_at=50,liveness_pid=9,liveness_start=9,incarnation='before-handoff' WHERE seat_id=?1",
+            [&seat],
+        )
+        .unwrap();
+    }
+    let first = list(page(None, None));
+    assert!(first.full);
+    assert_eq!(first.candidates.len(), 32);
+    assert!(first.candidates.iter().all(|c| c.seat.as_str() != "s1"));
+    let rivals = list(page(None, Some("held-pane")));
+    assert!(!rivals.full);
+    assert_eq!(
+        rivals.candidates.len(),
+        34,
+        "the target listing is never cut"
+    );
+    assert!(rivals.candidates.iter().any(|c| c.seat.as_str() == "s1"));
+    conn.execute(
+        "UPDATE seats SET state='retired',unresolved_reason=NULL,retired_at=1 WHERE id LIKE 'r%'",
+        [],
+    )
+    .unwrap();
+
+    let generation: i64 = conn
+        .query_row("SELECT generation FROM seats WHERE id='s1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let mut decide = |operation: &str, seat: &str, seat_generation: i64| {
+        let mut command = c1_command("held-pane", "sess-1", operation);
+        command.source = "same_session".into();
+        let guard = crate::ports::ContinuityTargetGuard::try_new(
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &command,
+            b5_fresh_observation("held-pane"),
+        )
+        .unwrap();
+        crate::store::seats::decide_continuity(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::ports::ContinuityRequest {
+                command,
+                guard,
+                diagnostic: "absent",
+                evidence: ContinuityEvidence::Process {
+                    seat: SeatId::new(seat),
+                    seat_generation: seat_generation as u64,
+                },
+            },
+        )
+    };
+    let refused = decide("pc-other-seat", "s2", generation).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict, "{refused:?}");
+    let refused = decide("pc-moved", "s1", generation + 1).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict, "{refused:?}");
+    drop(decide);
+    conn.execute(
+        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),'held-pane','claude','someone','{}',1)",
+        [],
+    )
+    .unwrap();
+    let mut decide = |operation: &str| {
+        let mut command = c1_command("held-pane", "sess-1", operation);
+        command.source = "same_session".into();
+        let guard = crate::ports::ContinuityTargetGuard::try_new(
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &command,
+            b5_fresh_observation("held-pane"),
+        )
+        .unwrap();
+        crate::store::seats::decide_continuity(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::ports::ContinuityRequest {
+                command,
+                guard,
+                diagnostic: "absent",
+                evidence: ContinuityEvidence::Process {
+                    seat: SeatId::new("s1"),
+                    seat_generation: generation as u64,
+                },
+            },
+        )
+    };
+    let refused = decide("pc-kept").unwrap_err();
+    assert_eq!(
+        refused.code,
+        ErrorCode::ServiceBusy,
+        "a kept claim is decided first: {refused:?}"
+    );
+    drop(decide);
+    conn.execute("DELETE FROM kept_continuity_claims", [])
+        .unwrap();
+    let mut command = c1_command("held-pane", "sess-1", "pc-ok");
+    command.source = "same_session".into();
+    let guard = crate::ports::ContinuityTargetGuard::try_new(
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &command,
+        b5_fresh_observation("held-pane"),
+    )
+    .unwrap();
+    let result = crate::store::seats::decide_continuity(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::ports::ContinuityRequest {
+            command,
+            guard,
+            diagnostic: "absent",
+            evidence: ContinuityEvidence::Process {
+                seat: SeatId::new("s1"),
+                seat_generation: generation as u64,
+            },
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(result, CommandResult::ContinuityReattached(_)),
+        "{result:?}"
+    );
+    let kinds: Vec<String> = conn
+        .prepare("SELECT kind FROM allocation_decisions WHERE seat_id='s1'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(kinds, vec!["structural_process_continuity".to_owned()]);
+    let state: String = conn
+        .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "resolved");
+    assert!(
+        crate::store::seats::process_continuity_candidates(
+            &context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &ProcessContinuityPage::default(),
+            &budget,
+        )
+        .unwrap()
+        .candidates
+        .is_empty(),
+        "a resolved seat is no candidate"
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]

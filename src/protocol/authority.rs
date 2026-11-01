@@ -146,6 +146,9 @@ pub const CARRIED_BINDING_PROVENANCES: [&str; 4] = [
 /// and never the provenance of a binding (the binding the reattached seat
 /// opens stays `cooperative_top_level`).
 pub const COOPERATIVE_CONTINUITY_PROVENANCE: &str = "cooperative_continuity";
+/// TRUST-POLICY C1 process continuity (ht-hsyg): the daemon observed the binding's own process
+/// in the pane's kernel session and controlling terminal. Seat history only, never on receipts.
+pub const STRUCTURAL_PROCESS_CONTINUITY_PROVENANCE: &str = "structural_process_continuity";
 /// TRUST-POLICY A3: Herdr's guarded `agent.start` in this pane was observed
 /// starting the harness and the agent has not checked in. Bindings only (an
 /// unregistered occupant binding the daemon opens after a correlated launch,

@@ -133,6 +133,14 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
         sql: include_str!("../../migrations/node/0011_peer_hygiene.sql"),
         rebuild: None,
     },
+    NodeDelta {
+        version: 12,
+        sql: include_str!("../../migrations/node/0012_process_continuity.sql"),
+        rebuild: Some(Rebuild {
+            copy: super::seats::copy_allocation_decisions,
+            sql_after: include_str!("../../migrations/node/0012_process_continuity_after.sql"),
+        }),
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.

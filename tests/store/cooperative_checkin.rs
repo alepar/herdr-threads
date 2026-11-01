@@ -4273,6 +4273,7 @@ mod cross_server_continuity {
                 command: command.clone(),
                 guard,
                 diagnostic: "match",
+                evidence: crate::ports::ContinuityEvidence::Cooperative,
             },
         )
     }
