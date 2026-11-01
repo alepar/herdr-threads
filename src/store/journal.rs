@@ -2534,7 +2534,7 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {
 impl crate::store::SqliteStore {
     /// One bounded `ReplayScope::Startup` pass: `parked_unknown` entries the
     /// registry now knows and `parked_dep` entries whose creator applied or that
-    /// wait for a host while one is attached.
+    /// wait for a host while the host their park waits for is attached.
     pub fn replay_startup(&self, budget: &CallBudget) -> Result<ApplyProgress, ApiError> {
         let mut writer = self.writer(budget)?;
         self.context.execute_budgeted_decision(
