@@ -54,6 +54,7 @@ fn request() -> Request {
     Request {
         summary: None,
         policy: None,
+        target: None,
         automatic: false,
         new_tab: Some("same label".into()),
         existing: false,
@@ -1739,7 +1740,7 @@ mod live {
                 self.peer.as_ref(),
                 &self.clock,
                 BootstrapSubmissionInputs {
-                    witness: &self.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(self.witness.clone()),
                     context: &self.context,
                 },
             )
@@ -1871,7 +1872,7 @@ mod live {
             launcher,
             &f.clock,
             BootstrapSubmissionInputs {
-                witness: &f.witness,
+                witness: &crate::ports::HostWitness::HerdrSocket(f.witness.clone()),
                 context: &f.context,
             },
             &crate::protocol::output::OutputSpec {
@@ -1921,7 +1922,7 @@ mod live {
             &port,
             &f.clock,
             BootstrapSubmissionInputs {
-                witness: &f.witness,
+                witness: &crate::ports::HostWitness::HerdrSocket(f.witness.clone()),
                 context: &f.context,
             },
         )
@@ -3732,7 +3733,7 @@ mod live {
             launcher,
             &f.clock,
             BootstrapSubmissionInputs {
-                witness: &f.witness,
+                witness: &crate::ports::HostWitness::HerdrSocket(f.witness.clone()),
                 context: &f.context,
             },
             &crate::protocol::output::OutputSpec {
@@ -4009,7 +4010,7 @@ mod live {
             &mut DownstreamLauncher::default(),
             &f.clock,
             BootstrapSubmissionInputs {
-                witness: &f.witness,
+                witness: &crate::ports::HostWitness::HerdrSocket(f.witness.clone()),
                 context: &f.context,
             },
             &crate::protocol::output::OutputSpec::default(),
@@ -4263,7 +4264,7 @@ mod live {
                 &mut launcher,
                 &f.clock,
                 BootstrapSubmissionInputs {
-                    witness: &f.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(f.witness.clone()),
                     context: &f.context,
                 },
                 &crate::protocol::output::OutputSpec {
@@ -4746,7 +4747,7 @@ mod live {
                     &mut launcher,
                     &f.clock,
                     BootstrapSubmissionInputs {
-                        witness: &f.witness,
+                        witness: &crate::ports::HostWitness::HerdrSocket(f.witness.clone()),
                         context: &f.context
                     },
                     &Default::default(),
@@ -5285,7 +5286,7 @@ mod live {
             &peer,
             &clock,
             BootstrapSubmissionInputs {
-                witness: &witness,
+                witness: &crate::ports::HostWitness::HerdrSocket(witness.clone()),
                 context: &context,
             },
         );
@@ -5487,7 +5488,7 @@ mod live {
             f.peer.as_ref(),
             &f.clock,
             BootstrapSubmissionInputs {
-                witness: &f.witness,
+                witness: &crate::ports::HostWitness::HerdrSocket(f.witness.clone()),
                 context: &f.context,
             },
         )
@@ -5558,6 +5559,25 @@ mod live {
         crate::ports::HostObservationAdmission,
         CallBudget,
     ) {
+        scoped_observation(
+            peer,
+            "w1:p2",
+            "herdr-server:pid=42:start=1.000002:uid=501",
+            "terminal",
+        )
+    }
+    /// One fresh current-target observation of `target` published through `peer`'s store.
+    fn scoped_observation(
+        peer: &Peer,
+        target: &str,
+        boot: &str,
+        terminal: &str,
+    ) -> (
+        crate::store::connection::StoreContext,
+        crate::ports::HostObservation,
+        crate::ports::HostObservationAdmission,
+        CallBudget,
+    ) {
         use crate::ports::*;
         let context = crate::store::connection::StoreContext::new(
             peer.database_path.clone(),
@@ -5577,8 +5597,8 @@ mod live {
         let observed_at_mono = context.clock().monotonic_now();
         let observation = HostObservation {
             focused: false,
-            target: HostTargetId::new("w1:p2"),
-            host_boot: HostBootId::new("herdr-server:pid=42:start=1.000002:uid=501"),
+            target: HostTargetId::new(target),
+            host_boot: HostBootId::new(boot),
             epoch: 1,
             generation: 1,
             observed_at_utc: context.clock().utc_now(),
@@ -5586,10 +5606,10 @@ mod live {
             provenance: ObservationProvenance::FreshCurrentTarget,
             occupant: None,
             ui: HostUiState::Unknown,
-            terminal: Some(TerminalId::new("terminal")),
+            terminal: Some(TerminalId::new(terminal)),
             occupancy: StructuralOccupancy::Unknown,
             incarnation: IncarnationEvidence::Verified {
-                identity: "herdr-server:pid=42:start=1.000002:uid=501".into(),
+                identity: boot.into(),
                 evidence_kind: EvidenceKind::NativeCurrentTarget,
             },
             execution: ExecutionEvidence::Unknown,
@@ -7031,6 +7051,9 @@ mod live {
             lost_child_reply: std::sync::Mutex<Option<&'static str>>,
             lost_parent_reply: std::sync::Mutex<Option<&'static str>>,
             fail_outer_complete_once: std::sync::atomic::AtomicBool,
+            /// The next `RecordCreated` is refused before it commits (a crash between the host
+            /// creation and the canonical record).
+            fail_record_once: std::sync::atomic::AtomicBool,
         }
         impl AutoPeer {
             fn new() -> Self {
@@ -7050,6 +7073,29 @@ mod live {
                 body: &str,
                 historical: bool,
                 profile: Option<std::path::PathBuf>,
+            ) -> Self {
+                Self::build(kind, body, historical, profile, None)
+            }
+            /// A V3 plan for `target` (a core socket) with `binary` as its frozen executable.
+            #[cfg(feature = "test-support")]
+            fn with_target(
+                target: crate::cli::topology_handoff::TargetSelection,
+                binary: &std::path::Path,
+            ) -> Self {
+                Self::build(
+                    "codex",
+                    "literal work",
+                    false,
+                    None,
+                    Some((target, binary.to_string_lossy().into_owned())),
+                )
+            }
+            fn build(
+                kind: &'static str,
+                body: &str,
+                historical: bool,
+                profile: Option<std::path::PathBuf>,
+                target: Option<(crate::cli::topology_handoff::TargetSelection, String)>,
             ) -> Self {
                 let base = Fixture::aligned(Fault::None, None);
                 base.journal.complete(&base.peer.reference).unwrap();
@@ -7071,11 +7117,17 @@ mod live {
                 };
                 assert!(request.automatic);
                 request.profile_dir = profile;
+                let mut namespace = base.peer.identity.payload.handoff.namespace.clone();
+                if let Some((selection, binary)) = target {
+                    namespace.host_endpoint = selection.endpoint.clone();
+                    request.target = Some(selection);
+                    request.binary = Some(binary);
+                }
                 let mut identity = prepare_automatic(
                     &request,
                     Preparation {
                         claim: &base.peer.identity.claim,
-                        namespace: &base.peer.identity.payload.handoff.namespace,
+                        namespace: &namespace,
                         topology: &topology(),
                         invocation_cwd: base._temp.path(),
                         options: None,
@@ -7118,6 +7170,7 @@ mod live {
                     lost_child_reply: std::sync::Mutex::new(None),
                     lost_parent_reply: std::sync::Mutex::new(None),
                     fail_outer_complete_once: std::sync::atomic::AtomicBool::new(false),
+                    fail_record_once: std::sync::atomic::AtomicBool::new(false),
                 }
             }
             fn ns(&self) -> &HandoffNamespace {
@@ -7269,7 +7322,7 @@ mod live {
                     &mut launcher,
                     &self.base.clock,
                     BootstrapSubmissionInputs {
-                        witness: &self.base.witness,
+                        witness: &crate::ports::HostWitness::HerdrSocket(self.base.witness.clone()),
                         context: &self.base.context,
                     },
                     &crate::protocol::output::OutputSpec::default(),
@@ -7381,7 +7434,79 @@ mod live {
                 };
                 *status
             }
+            /// The guard of a core terminal read: the recorded creation's terminal, observed
+            /// under the core's boot, with the transport witness of the core process.
+            fn terminal_guard_for(
+                &self,
+                identity: &AutomaticBootstrapIdentity,
+            ) -> BootstrapAttachmentGuard {
+                let created = self
+                    .status_for(identity)
+                    .creation
+                    .and_then(|c| c.as_target().cloned())
+                    .expect("a V3 creation precedes its guard");
+                let crate::ports::HostWitness::HcCore { core_id, peer } = &created.witness else {
+                    panic!("a core creation carries a core witness")
+                };
+                // The store's world becomes the core's: its published boot, snapshot and the
+                // sender's binding move to `hc-core:<id>`.
+                {
+                    let boot = created.observed_boot();
+                    let state = self.base.peer.state.lock().unwrap();
+                    let b = [boot.as_str()];
+                    state
+                        .db
+                        .execute("UPDATE herdr_hosts SET host_boot=?1,recovery_boot=?1", b)
+                        .unwrap();
+                    state
+                        .db
+                        .execute(
+                            "UPDATE snapshot_generations SET host_boot=?1,incarnation=?1",
+                            b,
+                        )
+                        .unwrap();
+                    state
+                        .db
+                        .execute("UPDATE occupant_bindings SET host_boot=?1", b)
+                        .unwrap();
+                    state
+                        .db
+                        .execute("UPDATE observed_targets SET host_boot=?1,incarnation=?1", b)
+                        .unwrap();
+                }
+                let (_context, observation, admission, _budget) = scoped_observation(
+                    &self.base.peer,
+                    created.target.as_str(),
+                    created.observed_boot().as_str(),
+                    created.terminal.as_str(),
+                );
+                let mut witness =
+                    crate::protocol::handoff::topology_contract_tests::created().witness;
+                witness.peer_pid = peer.pid;
+                witness.start_seconds = peer.start_seconds;
+                witness.peer_uid = peer.uid;
+                BootstrapAttachmentGuard::try_new(
+                    &crate::protocol::commands::ResolveSeat {
+                        host: crate::test_support::test_host_locator(),
+                        target: observation.target.clone(),
+                        operation: identity.plan.payload.keys.resolve.clone(),
+                        locator_hint: None,
+                        tmux_hint: None,
+                    },
+                    BootstrapPaneObservation::try_new_terminal(
+                        observation,
+                        core_id.clone(),
+                        witness,
+                    )
+                    .unwrap(),
+                    &admission,
+                )
+                .unwrap()
+            }
             fn guard_for(&self, identity: &AutomaticBootstrapIdentity) -> BootstrapAttachmentGuard {
+                if identity.plan.placement.is_some() {
+                    return self.terminal_guard_for(identity);
+                }
                 let (_context, observation, admission, _budget) =
                     scoped_peer_current(&self.base.peer);
                 BootstrapAttachmentGuard::try_new(
@@ -7445,6 +7570,7 @@ mod live {
                             capabilities: vec![
                                 crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1.into(),
                                 crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
+                                crate::protocol::capabilities::AUTOMATIC_TARGET_V1.into(),
                                 crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.into(),
                                 crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
                                 crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into(),
@@ -7476,6 +7602,17 @@ mod live {
                             AutomaticBootstrapAction::Recover { .. } => "auto_recover",
                         };
                         self.base.peer.state.lock().unwrap().calls.push(role);
+                        if matches!(
+                            request.action,
+                            AutomaticBootstrapAction::RecordCreated { .. }
+                        ) && self
+                            .fail_record_once
+                            .swap(false, std::sync::atomic::Ordering::SeqCst)
+                        {
+                            return Err(ApiError::host_unavailable(
+                                "simulated crash before record",
+                            ));
+                        }
                         if matches!(request.action, AutomaticBootstrapAction::Status) {
                             return self.store.automatic_bootstrap_query(
                                 &request.identity.plan.payload.handoff.namespace,
@@ -7738,6 +7875,591 @@ mod live {
                 created.correlation = request.correlation.clone();
                 created.witness = request.expected_witness.clone();
                 CreateTabOutcome::Created(Box::new(created))
+            }
+        }
+
+        /// V3 plans through `CreateTargetPort` against a fake herdr-core, over the real store.
+        #[cfg(feature = "test-support")]
+        mod hc_pipeline {
+            use super::*;
+            use crate::{
+                cli::{
+                    commands::{CliAction, parse_argv},
+                    host_client::LaunchHandle,
+                    topology_handoff::TargetSelection,
+                },
+                ports::{CreateTargetOutcome, CreateTargetPort, Placement},
+                test_support::fake_hc::{FakeHc, FakeTerminal, RunFailure},
+            };
+
+            /// Records `hc_create` in the peer's call order, then delegates.
+            struct Ordered<'a> {
+                inner: &'a dyn CreateTargetPort,
+                peer: &'a AutoPeer,
+            }
+            impl CreateTargetPort for Ordered<'_> {
+                fn create_target(
+                    &self,
+                    request: &crate::ports::CreateTargetRequest,
+                    context: &HostCallContext,
+                ) -> CreateTargetOutcome {
+                    self.peer
+                        .base
+                        .peer
+                        .state
+                        .lock()
+                        .unwrap()
+                        .calls
+                        .push("hc_create");
+                    self.inner.create_target(request, context)
+                }
+            }
+
+            struct World {
+                fake: FakeHc,
+                handle: LaunchHandle,
+                exe: std::path::PathBuf,
+                _dir: Temp,
+            }
+            fn world(placement: &Placement) -> World {
+                let fake = FakeHc::start();
+                if matches!(placement, Placement::NewTerminal { .. }) {
+                    fake.add_terminal(FakeTerminal::live("t1"));
+                }
+                let clock: Arc<dyn crate::protocol::time::Clock> =
+                    Arc::new(crate::app::SystemClock::new());
+                let handle = LaunchHandle::hc(
+                    fake.socket(),
+                    clock.clone(),
+                    &crate::cli::cooperative_budget(clock.as_ref()),
+                )
+                .unwrap();
+                let dir = Temp::new();
+                let exe = dir.path().join("codex");
+                std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+                }
+                World {
+                    fake,
+                    handle,
+                    exe,
+                    _dir: dir,
+                }
+            }
+            fn selection(world: &World, placement: &Placement) -> TargetSelection {
+                TargetSelection {
+                    endpoint: world.fake.socket().to_path_buf(),
+                    placement: placement.clone(),
+                    kind: world.handle.kind().unwrap(),
+                }
+            }
+            fn placements() -> [Placement; 2] {
+                [
+                    Placement::NewTab {
+                        space: HostTargetId::new("w1"),
+                    },
+                    Placement::NewTerminal {
+                        parent: HostTargetId::new("t1"),
+                    },
+                ]
+            }
+            fn peer_for(world: &World, placement: &Placement) -> AutoPeer {
+                AutoPeer::with_target(selection(world, placement), &world.exe)
+            }
+            fn parsed_for(world: &World, placement: &Placement) -> crate::cli::commands::ParsedCli {
+                let mut parsed = parse_argv([
+                    "ht",
+                    "handoff",
+                    "--new-tab",
+                    "new peer",
+                    "--kind",
+                    "codex",
+                    "--",
+                    "literal work",
+                ])
+                .unwrap();
+                let CliAction::TopologyHandoff(request) = &mut parsed.action else {
+                    panic!("new-tab route")
+                };
+                request.target = Some(selection(world, placement));
+                request.binary = Some(world.exe.to_string_lossy().into_owned());
+                parsed
+            }
+            fn resume(
+                peer: &AutoPeer,
+                world: &World,
+                launcher: &mut DownstreamLauncher,
+            ) -> Result<crate::protocol::handoff::AutomaticBootstrapResult, RunError> {
+                let ordered = Ordered {
+                    inner: world.handle.create_port(),
+                    peer,
+                };
+                let context = fresh_context(&peer.base.clock);
+                resume_automatic_to_writer(
+                    &peer.base.journal,
+                    &peer.reference,
+                    crate::cli::actor_route::InvocationActor::Agent,
+                    peer.ns(),
+                    peer,
+                    &ordered,
+                    launcher,
+                    &peer.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: world.handle.witness().unwrap(),
+                        context: &context,
+                    },
+                    &Default::default(),
+                    &mut Vec::new(),
+                )
+            }
+            /// A core creation pins no Herdr boot.
+            fn fresh_context(clock: &dyn crate::protocol::time::Clock) -> HostCallContext {
+                HostCallContext {
+                    budget: crate::cli::cooperative_budget(clock),
+                    expected_boot: None,
+                    expected_epoch: None,
+                }
+            }
+            fn calls(peer: &AutoPeer) -> Vec<&'static str> {
+                const SEQUENCE: [&str; 13] = [
+                    "auto_begin",
+                    "auto_reserve",
+                    "auto_check",
+                    "hc_create",
+                    "auto_record",
+                    "auto_resolve",
+                    "auto_attach",
+                    "auto_child_ensure",
+                    "auto_child_send",
+                    "auto_check_start",
+                    "auto_child_complete",
+                    "auto_complete",
+                    "auto_native_create",
+                ];
+                peer.base
+                    .peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .copied()
+                    .filter(|c| SEQUENCE.contains(c))
+                    .collect()
+            }
+            const WHOLE: [&str; 12] = [
+                "auto_begin",
+                "auto_reserve",
+                "auto_check",
+                "hc_create",
+                "auto_record",
+                "auto_resolve",
+                "auto_attach",
+                "auto_child_ensure",
+                "auto_child_send",
+                "auto_check_start",
+                "auto_child_complete",
+                "auto_complete",
+            ];
+            fn runs(world: &World) -> Vec<Vec<String>> {
+                world
+                    .fake
+                    .calls_to("terminal.run")
+                    .iter()
+                    .map(|c| {
+                        c.params["argv"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|a| a.as_str().unwrap().to_owned())
+                            .collect()
+                    })
+                    .collect()
+            }
+
+            fn whole_sequence(placement: Placement) {
+                let world = world(&placement);
+                let peer = peer_for(&world, &placement);
+                let parsed = parsed_for(&world, &placement);
+                let mut launcher = DownstreamLauncher::default();
+                let ordered = Ordered {
+                    inner: world.handle.create_port(),
+                    peer: &peer,
+                };
+                let mut topology_reads = 0;
+                let handled = crate::cli::topology_runtime::try_run_automatic_new_with_ports(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &ordered,
+                    &mut launcher,
+                    &peer.base.clock,
+                    peer.base._temp.path(),
+                    None,
+                    &mut || {
+                        topology_reads += 1;
+                        Ok(topology())
+                    },
+                    &mut |_| Ok(world.handle.witness().unwrap().clone()),
+                    &Default::default(),
+                    &mut Vec::new(),
+                )
+                .unwrap();
+                assert!(handled);
+                assert_eq!(calls(&peer), WHOLE.to_vec(), "{placement:?}");
+                assert_eq!(runs(&world).len(), 1);
+                assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+                assert_eq!(launcher.starts, 0, "the plan chose the launcher");
+                // A terminal anchor reads no topology; a tab's space is selected through it.
+                assert_eq!(
+                    topology_reads,
+                    usize::from(matches!(placement, Placement::NewTab { .. }))
+                );
+            }
+            #[test]
+            fn v3_new_tab_runs_the_whole_sequence() {
+                whole_sequence(placements()[0].clone());
+            }
+            #[test]
+            fn v3_new_terminal_runs_the_whole_sequence() {
+                whole_sequence(placements()[1].clone());
+            }
+
+            fn gate(argv: &[String]) -> (String, Vec<String>, Vec<String>) {
+                let parsed = parse_argv(argv.iter().map(String::as_str)).unwrap();
+                let CliAction::InternalLaunchGate {
+                    bootstrap,
+                    config_roots,
+                    argv,
+                } = parsed.action
+                else {
+                    panic!("the recorded argv is the gate shim")
+                };
+                (bootstrap, config_roots, argv)
+            }
+
+            #[test]
+            fn v3_terminal_run_argv_is_the_gate_shim() {
+                let placement = placements()[0].clone();
+                let world = world(&placement);
+                let peer = peer_for(&world, &placement);
+                let mut launcher = DownstreamLauncher::default();
+                resume(&peer, &world, &mut launcher).unwrap();
+                let argv = &runs(&world)[0];
+                assert_eq!(argv[1], "--state-dir");
+                assert_eq!(std::path::Path::new(&argv[2]), peer.ns().state_dir);
+                let (bootstrap, roots, harness) = gate(argv);
+                assert_eq!(
+                    bootstrap,
+                    format!("{}:1", peer.identity.plan.payload.keys.compound.as_str())
+                );
+                assert!(roots.is_empty());
+                let context = crate::protocol::output::ContinuationContext {
+                    state_dir: peer.ns().state_dir.to_str().map(str::to_owned),
+                    host: peer.ns().host_endpoint.to_str().map(str::to_owned),
+                };
+                assert_eq!(
+                    harness,
+                    vec![
+                        world.exe.to_string_lossy().into_owned(),
+                        "--no-daemon".to_owned(),
+                        crate::cli::handoff::summary_prompt::render_thread_free(None, &context),
+                    ]
+                );
+                // The frozen plan carries exactly the harness words after the executable.
+                assert_eq!(&harness[1..], &peer.identity.plan.payload.launch.argv[..]);
+            }
+
+            #[test]
+            fn v3_profile_plan_passes_its_config_root() {
+                let placement = placements()[0].clone();
+                let world = world(&placement);
+                let profile = Temp::new();
+                let mut selection = selection(&world, &placement);
+                selection.kind = world.handle.kind().unwrap();
+                let peer = AutoPeer::build(
+                    "codex",
+                    "literal work",
+                    false,
+                    Some(profile.path().to_path_buf()),
+                    Some((selection, world.exe.to_string_lossy().into_owned())),
+                );
+                let mut launcher = DownstreamLauncher::default();
+                resume(&peer, &world, &mut launcher).unwrap();
+                let (_, roots, _) = gate(&runs(&world)[0]);
+                assert_eq!(
+                    roots,
+                    vec![format!("codex={}", profile.path().to_str().unwrap())]
+                );
+            }
+
+            #[test]
+            fn v3_second_attempt_after_not_submitted_carries_attempt_2() {
+                let placement = placements()[0].clone();
+                let world = world(&placement);
+                let peer = peer_for(&world, &placement);
+                let mut launcher = DownstreamLauncher::default();
+                world.fake.fail_next_run(RunFailure::Error("busy"));
+                resume(&peer, &world, &mut launcher).unwrap_err();
+                assert_eq!(runs(&world).len(), 1, "the refused run was attempt 1");
+                assert_eq!(peer.status().attempt.get(), 2);
+                assert_eq!(peer.status().state, BootstrapState::Prepared);
+                resume(&peer, &world, &mut launcher).unwrap();
+                let argv = runs(&world);
+                assert_eq!(argv.len(), 2);
+                assert!(gate(&argv[0]).0.ends_with(":1"));
+                let (bootstrap, _, _) = gate(&argv[1]);
+                assert!(bootstrap.ends_with(":2"), "{bootstrap}");
+            }
+
+            fn progress_path(peer: &AutoPeer) -> std::path::PathBuf {
+                peer.base.journal.root().join(format!(
+                    "automatic-bootstrap-{}.progress",
+                    peer.reference.operation.as_str()
+                ))
+            }
+
+            #[test]
+            fn v3_crash_after_run_resumes_without_a_second_run() {
+                let placement = placements()[0].clone();
+                let world = world(&placement);
+                let peer = peer_for(&world, &placement);
+                let mut launcher = DownstreamLauncher::default();
+                // The creation is journaled, then the canonical record is refused once.
+                peer.fail_record_once
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                resume(&peer, &world, &mut launcher).unwrap_err();
+                assert_eq!(runs(&world).len(), 1);
+                let saved: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(progress_path(&peer)).unwrap()).unwrap();
+                assert_eq!(saved["version"], 3);
+                assert_eq!(saved["creation"]["target"], "t1");
+                resume(&peer, &world, &mut launcher).unwrap();
+                assert_eq!(runs(&world).len(), 1, "no second terminal.run");
+                assert_eq!(peer.status().state, BootstrapState::Completed);
+            }
+
+            #[test]
+            fn v3_crash_before_record_resumes_from_the_journal_request() {
+                // A crash after `terminal.run` and before the creation reached the journal:
+                // the request is on disk with `possible_creation`, so the resume refuses to
+                // submit again and records unknown.
+                let placement = placements()[0].clone();
+                let world = world(&placement);
+                let peer = peer_for(&world, &placement);
+                let mut launcher = DownstreamLauncher::default();
+                world.fake.fail_next_run(RunFailure::Disconnect);
+                resume(&peer, &world, &mut launcher).unwrap_err();
+                assert_eq!(runs(&world).len(), 1);
+                let saved: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(progress_path(&peer)).unwrap()).unwrap();
+                assert_eq!(saved["possible_creation"], true);
+                assert!(saved["creation"].is_null());
+                assert_eq!(saved["request"]["gate_argv"][5], "--bootstrap");
+                // A fresh resume sees the journaled attempt and never submits again.
+                resume(&peer, &world, &mut launcher).unwrap_err();
+                assert_eq!(runs(&world).len(), 1);
+            }
+
+            #[test]
+            fn v3_possible_creation_with_no_creation_stays_unknown() {
+                let placement = placements()[0].clone();
+                let world = world(&placement);
+                let peer = peer_for(&world, &placement);
+                let mut launcher = DownstreamLauncher::default();
+                world.fake.fail_next_run(RunFailure::Disconnect);
+                resume(&peer, &world, &mut launcher).unwrap_err();
+                // The fake now holds a terminal labelled `ht.bootstrap` with this
+                // correlation; it must never be adopted as the creation.
+                let state = world.fake.state();
+                state.set_labels("t1", &[("ht.bootstrap", "any")]);
+                let error = resume(&peer, &world, &mut launcher).unwrap_err();
+                assert!(matches!(
+                    error,
+                    RunError::Api(ApiError {
+                        code: crate::protocol::results::ErrorCode::UnknownOutcome,
+                        ..
+                    })
+                ));
+                assert_eq!(runs(&world).len(), 1);
+                assert!(peer.status().creation.is_none());
+                assert_eq!(launcher.starts, 0);
+            }
+
+            #[test]
+            fn v3_outcome_unknown_is_recorded() {
+                let placement = placements()[0].clone();
+                let world = world(&placement);
+                let peer = peer_for(&world, &placement);
+                let mut launcher = DownstreamLauncher::default();
+                world.fake.fail_next_run(RunFailure::Hang);
+                let error = resume(&peer, &world, &mut launcher).unwrap_err();
+                assert!(matches!(
+                    error,
+                    RunError::Api(ApiError {
+                        code: crate::protocol::results::ErrorCode::UnknownOutcome,
+                        ..
+                    })
+                ));
+                assert_eq!(peer.status().state, BootstrapState::PossibleCreation);
+            }
+
+            struct NoTarget<'a>(&'a AutoPeer);
+            impl LocalClient for NoTarget<'_> {
+                fn call_with_output(
+                    &self,
+                    command: Command,
+                    _: &crate::protocol::output::OutputSpec,
+                    budget: &CallBudget,
+                ) -> Result<CommandResult, ApiError> {
+                    self.call(command, budget)
+                }
+                fn call(
+                    &self,
+                    command: Command,
+                    budget: &CallBudget,
+                ) -> Result<CommandResult, ApiError> {
+                    match self.0.call(command, budget)? {
+                        CommandResult::Capabilities(mut list) => {
+                            list.capabilities.retain(|c| {
+                                c != crate::protocol::capabilities::AUTOMATIC_TARGET_V1
+                            });
+                            Ok(CommandResult::Capabilities(list))
+                        }
+                        other => Ok(other),
+                    }
+                }
+            }
+
+            #[test]
+            fn v3_without_target_capability_refuses_before_reservation() {
+                for placement in placements() {
+                    let world = world(&placement);
+                    let peer = peer_for(&world, &placement);
+                    let parsed = parsed_for(&world, &placement);
+                    let mut launcher = DownstreamLauncher::default();
+                    let before = std::fs::read_dir(peer.base.journal.root()).unwrap().count();
+                    let result = crate::cli::topology_runtime::try_run_automatic_new_with_ports(
+                        &parsed,
+                        &peer.base.peer.identity.claim,
+                        &peer.base.journal,
+                        peer.ns(),
+                        &NoTarget(&peer),
+                        world.handle.create_port(),
+                        &mut launcher,
+                        &peer.base.clock,
+                        peer.base._temp.path(),
+                        None,
+                        &mut || panic!("no topology before the capability"),
+                        &mut |_| panic!("no preflight before the capability"),
+                        &Default::default(),
+                        &mut Vec::new(),
+                    );
+                    assert!(matches!(
+                        result,
+                        Err(RunError::Api(ApiError {
+                            code: crate::protocol::results::ErrorCode::Unsupported,
+                            ..
+                        }))
+                    ));
+                    assert!(calls(&peer).is_empty());
+                    assert_eq!(runs(&world).len(), 0);
+                    assert_eq!(
+                        std::fs::read_dir(peer.base.journal.root()).unwrap().count(),
+                        before,
+                        "nothing published"
+                    );
+                }
+            }
+
+            #[test]
+            fn herdr_new_tab_still_reaches_the_native_delegate() {
+                let peer = AutoPeer::new();
+                let parsed = parse_argv([
+                    "ht",
+                    "handoff",
+                    "--new-tab",
+                    "new peer",
+                    "--kind",
+                    "codex",
+                    "--",
+                    "literal work",
+                ])
+                .unwrap();
+                let mut launcher = DownstreamLauncher::default();
+                crate::cli::topology_runtime::try_run_automatic_new_with_ports(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    peer.base._temp.path(),
+                    None,
+                    &mut || Ok(topology()),
+                    &mut |_| {
+                        Ok(crate::ports::HostWitness::HerdrSocket(
+                            peer.base.witness.clone(),
+                        ))
+                    },
+                    &Default::default(),
+                    &mut Vec::new(),
+                )
+                .unwrap();
+                assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+                assert_eq!(launcher.starts, 1);
+            }
+
+            #[test]
+            fn launch_handle_hc_ports_to_the_core() {
+                let placement = placements()[0].clone();
+                let world = world(&placement);
+                assert!(matches!(
+                    world.handle.witness(),
+                    Some(crate::ports::HostWitness::HcCore { .. })
+                ));
+                assert!(world.handle.host().is_err());
+            }
+
+            #[test]
+            fn thread_free_prompt_names_no_thread_and_fits_v1() {
+                let context = crate::protocol::output::ContinuationContext {
+                    state_dir: Some("/state".into()),
+                    host: Some("/host.sock".into()),
+                };
+                let v1 =
+                    crate::cli::handoff::summary_prompt::render(Some("one line"), "t", &context);
+                for summary in [Some("one line"), None] {
+                    let free =
+                        crate::cli::handoff::summary_prompt::render_thread_free(summary, &context);
+                    assert!(!free.contains("thread t"), "{free}");
+                    assert!(
+                        free.len() <= v1.len() + 64,
+                        "{} vs {}",
+                        free.len(),
+                        v1.len()
+                    );
+                }
+                let inbox_len =
+                    "herdr-threads --state-dir /state --host-endpoint /host.sock inbox".len();
+                assert_eq!(
+                    crate::cli::handoff::summary_prompt::render_thread_free(
+                        Some("one line"),
+                        &context
+                    )
+                    .len(),
+                    79 + "one line".len() + inbox_len
+                );
+                assert_eq!(
+                    crate::cli::handoff::summary_prompt::render_thread_free(None, &context).len(),
+                    76 + inbox_len
+                );
             }
         }
 
@@ -8398,7 +9120,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec {
@@ -8627,7 +9349,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec::default(),
@@ -8677,7 +9399,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec::default(),
@@ -8770,7 +9492,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec::default(),
@@ -8859,7 +9581,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &Default::default(),
@@ -9032,7 +9754,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec {
@@ -9090,7 +9812,7 @@ mod live {
                     launcher,
                     &peer.base.clock,
                     BootstrapSubmissionInputs {
-                        witness: &peer.base.witness,
+                        witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                         context: &peer.base.context,
                     },
                     &crate::protocol::output::OutputSpec::default(),
@@ -9141,7 +9863,7 @@ mod live {
                     launcher,
                     &peer.base.clock,
                     BootstrapSubmissionInputs {
-                        witness: &peer.base.witness,
+                        witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                         context: &peer.base.context,
                     },
                     &crate::protocol::output::OutputSpec::default(),
@@ -9190,7 +9912,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec::default(),
@@ -9217,7 +9939,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec::default(),
@@ -9359,7 +10081,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec::default(),
@@ -9388,7 +10110,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec::default(),
@@ -9416,7 +10138,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec::default(),
@@ -9468,7 +10190,7 @@ mod live {
                     launcher,
                     &peer.base.clock,
                     BootstrapSubmissionInputs {
-                        witness: &peer.base.witness,
+                        witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                         context: &peer.base.context,
                     },
                     &crate::protocol::output::OutputSpec::default(),
@@ -9680,7 +10402,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec {
@@ -9796,7 +10518,9 @@ mod live {
                     peer.base._temp.path(),
                     None,
                     &mut || Ok(topology()),
-                    &mut |_| Ok(peer.base.witness.clone()),
+                    &mut |_| Ok(crate::ports::HostWitness::HerdrSocket(
+                        peer.base.witness.clone()
+                    )),
                     &crate::protocol::output::OutputSpec {
                         format: crate::protocol::output::OutputFormat::Json,
                         ..Default::default()
@@ -9871,7 +10595,7 @@ mod live {
                     launcher,
                     &zero.base.clock,
                     BootstrapSubmissionInputs {
-                        witness: &zero.base.witness,
+                        witness: &crate::ports::HostWitness::HerdrSocket(zero.base.witness.clone()),
                         context: &zero.base.context,
                     },
                     &output,
@@ -9905,7 +10629,9 @@ mod live {
                     &mut launcher,
                     &unknown.base.clock,
                     BootstrapSubmissionInputs {
-                        witness: &unknown.base.witness,
+                        witness: &crate::ports::HostWitness::HerdrSocket(
+                            unknown.base.witness.clone(),
+                        ),
                         context: &unknown.base.context,
                     },
                     &output,
@@ -9948,7 +10674,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &output,
@@ -10006,7 +10732,9 @@ mod live {
                             &mut launcher,
                             &peer.base.clock,
                             BootstrapSubmissionInputs {
-                                witness: &peer.base.witness,
+                                witness: &crate::ports::HostWitness::HerdrSocket(
+                                    peer.base.witness.clone(),
+                                ),
                                 context: &peer.base.context,
                             },
                             &output,
@@ -10069,7 +10797,7 @@ mod live {
                     &mut launcher,
                     &peer.base.clock,
                     BootstrapSubmissionInputs {
-                        witness: &peer.base.witness,
+                        witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                         context: &peer.base.context
                     },
                     &output,
@@ -10186,7 +10914,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &output,
@@ -10239,7 +10967,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &output,
@@ -10259,7 +10987,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &output,
@@ -10304,7 +11032,7 @@ mod live {
                     &mut launcher,
                     &peer.base.clock,
                     BootstrapSubmissionInputs {
-                        witness: &peer.base.witness,
+                        witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                         context: &peer.base.context,
                     },
                     &output,
@@ -10519,7 +11247,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec::default(),
@@ -10568,7 +11296,7 @@ mod live {
                 &mut launcher,
                 &peer.base.clock,
                 BootstrapSubmissionInputs {
-                    witness: &peer.base.witness,
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
                     context: &peer.base.context,
                 },
                 &crate::protocol::output::OutputSpec {
@@ -10603,7 +11331,9 @@ mod live {
                         &mut launcher,
                         &peer.base.clock,
                         BootstrapSubmissionInputs {
-                            witness: &peer.base.witness,
+                            witness: &crate::ports::HostWitness::HerdrSocket(
+                                peer.base.witness.clone(),
+                            ),
                             context: &peer.base.context,
                         },
                         &crate::protocol::output::OutputSpec {
@@ -11449,5 +12179,76 @@ fn retained_family_collision_two_v2_terminals_refuses_before_decoder() {
             format!("automatic-bootstrap-{:020}-{operation}.terminal", 1),
         ],
         "ambiguous original intent reference",
+    );
+}
+
+/// The V2 `ParentProgress` journal bytes, pinned before V3 shares its path. The fixture is
+/// captured once (`HT_BLESS=1`) and never re-blessed.
+#[test]
+fn v2_parent_progress_bytes_are_pinned() {
+    use crate::{
+        host::continuity::LocalEndpointWitness,
+        ports::CreateTabRequest,
+        protocol::{handoff::*, ids::HostCallId, ids::OperationId},
+    };
+    let old = crate::protocol::handoff::topology_contract_tests::identity();
+    let identity = AutomaticBootstrapIdentity::new(
+        old.scope.clone(),
+        old.claim.clone(),
+        AutomaticBootstrapPlan {
+            placement: None,
+            version: 2,
+            payload: AutomaticBootstrapPayload {
+                directory_context: None,
+                handoff: AutomaticHandoffPayload::new(
+                    old.payload.handoff.namespace.clone(),
+                    OperationId::new("auto-child"),
+                    "automatic work".into(),
+                )
+                .unwrap(),
+                keys: AutomaticBootstrapKeys::new(OperationId::new("auto-parent")),
+                workspace: old.payload.workspace.clone(),
+                cwd: old.payload.cwd.clone(),
+                label: old.payload.label.clone(),
+                focus: false,
+                env: Default::default(),
+                launch: old.payload.launch.clone(),
+                startup_input: None,
+            },
+        },
+    )
+    .unwrap();
+    let created = crate::protocol::handoff::topology_contract_tests::created();
+    let witness: LocalEndpointWitness = created.witness.clone();
+    let request = CreateTabRequest {
+        correlation: HostCallId::new("correlation"),
+        workspace: identity.plan.payload.workspace.clone(),
+        cwd: identity.plan.payload.cwd.clone(),
+        label: identity.plan.payload.label.clone(),
+        focus: false,
+        env: Default::default(),
+        directory_context: None,
+        expected_witness: witness,
+    };
+    let progress = super::automatic::ParentProgress {
+        version: 2,
+        identity,
+        attempt: BootstrapAttempt::first(),
+        possible_creation: true,
+        request: Some(request),
+        creation: Some(created),
+        not_submitted: false,
+    };
+    let bytes = serde_json::to_vec(&progress).unwrap();
+    assert_eq!(bytes, serde_json::to_vec(&progress).unwrap());
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/handoff-journal/automatic-v2-parent-progress.json");
+    if std::env::var_os("HT_BLESS").is_some() {
+        std::fs::write(&path, &bytes).unwrap();
+    }
+    let expected = std::fs::read(&path).unwrap_or_else(|e| panic!("{e}; HT_BLESS=1"));
+    assert_eq!(
+        String::from_utf8_lossy(&bytes),
+        String::from_utf8_lossy(&expected)
     );
 }

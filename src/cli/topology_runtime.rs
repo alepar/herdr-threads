@@ -303,8 +303,7 @@ pub(crate) fn try_run_automatic_new_with_ports(
     topology: &mut dyn FnMut() -> Result<crate::host::observation::HostTopology, RunError>,
     preflight: &mut dyn FnMut(
         &AutomaticBootstrapIdentity,
-    )
-        -> Result<crate::host::continuity::LocalEndpointWitness, RunError>,
+    ) -> Result<crate::ports::HostWitness, RunError>,
     output: &OutputSpec,
     writer: &mut dyn Write,
 ) -> Result<bool, RunError> {
@@ -319,7 +318,36 @@ pub(crate) fn try_run_automatic_new_with_ports(
         super::topology_handoff::require_directory_capability(client, clock)?;
     }
     super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
-    let topology = automatic_before_topology(client, clock, topology)?;
+    // A selected target is a V3 plan: the daemon must know the V3 records before anything is
+    // read or published, and the plan's namespace endpoint is the target host's socket.
+    let selected_namespace;
+    let (topology, namespace) = match &request.target {
+        None => (
+            automatic_before_topology(client, clock, topology)?,
+            namespace,
+        ),
+        Some(target) => {
+            super::topology_handoff::require_target_capability(client, clock)?;
+            selected_namespace = HandoffNamespace {
+                host_endpoint: target.endpoint.clone(),
+                ..namespace.clone()
+            };
+            let topology = match target.placement {
+                crate::ports::Placement::NewTab { .. } => {
+                    automatic_before_topology(client, clock, topology)?
+                }
+                crate::ports::Placement::NewTerminal { .. } => {
+                    require_automatic_capability(client, clock)?;
+                    crate::host::observation::HostTopology {
+                        spaces: Vec::new(),
+                        tabs: Vec::new(),
+                        panes: Vec::new(),
+                    }
+                }
+            };
+            (topology, &selected_namespace)
+        }
+    };
     let identity = super::topology_handoff::prepare_automatic(
         request,
         super::topology_handoff::Preparation {
@@ -389,7 +417,7 @@ pub(crate) fn run(
         selected.require_host()?.to_path_buf(),
         clock.clone(),
     );
-    let host = handle.host();
+    let host = handle.host()?;
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(selected.state_dir.to_string_lossy().into_owned());
     output.context.host = Some(selected.require_host()?.to_string_lossy().into_owned());
@@ -471,10 +499,11 @@ pub(crate) fn run(
                         expected_boot: None,
                         expected_epoch: None,
                     };
-                    Ok(host
-                        .observe_bootstrap_target(&claim.target, &context)?
-                        .witness()
-                        .clone())
+                    Ok(crate::ports::HostWitness::HerdrSocket(
+                        host.observe_bootstrap_target(&claim.target, &context)?
+                            .witness()
+                            .clone(),
+                    ))
                 },
                 &output,
                 writer,
@@ -675,19 +704,23 @@ pub(crate) fn run(
                     expected_boot: None,
                     expected_epoch: None,
                 };
-                let witness = match current.as_ref().and_then(|v| v.creation.as_ref()) {
-                    Some(created) => created
-                        .as_tab()
-                        .ok_or_else(|| {
-                            super::invalid_request("a V3 creation reaches the Herdr bootstrap arm")
-                        })?
-                        .witness
-                        .clone(),
-                    None => host
-                        .observe_bootstrap_target(&claim.target, &context)?
-                        .witness()
-                        .clone(),
-                };
+                let witness = crate::ports::HostWitness::HerdrSocket(
+                    match current.as_ref().and_then(|v| v.creation.as_ref()) {
+                        Some(created) => created
+                            .as_tab()
+                            .ok_or_else(|| {
+                                super::invalid_request(
+                                    "a V3 creation reaches the Herdr bootstrap arm",
+                                )
+                            })?
+                            .witness
+                            .clone(),
+                        None => host
+                            .observe_bootstrap_target(&claim.target, &context)?
+                            .witness()
+                            .clone(),
+                    },
+                );
                 let mut env = super::setup::SetupEnv::from_process(&output)?;
                 env.cwd = identity.plan.payload.cwd.clone();
                 env.state_dir = Some(selected.state_dir.clone());
@@ -929,7 +962,7 @@ pub(crate) fn run(
         &mut launcher,
         clock.as_ref(),
         super::topology_handoff::BootstrapSubmissionInputs {
-            witness: &witness,
+            witness: &crate::ports::HostWitness::HerdrSocket(witness),
             context: &submission_context,
         },
         &output,

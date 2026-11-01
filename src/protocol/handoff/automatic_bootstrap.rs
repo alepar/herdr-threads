@@ -1052,7 +1052,8 @@ impl AutomaticBootstrapIdentity {
                             focus: false,
                             env: p.env.clone(),
                             directory_context: p.directory_context.clone(),
-                            expected_witness: target.witness.clone()
+                            expected_witness: target.witness.clone(),
+                            gate_argv: Vec::new()
                         })
                     }
                 };

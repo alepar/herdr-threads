@@ -456,6 +456,7 @@ fn native_cli_create_target_delegates_to_create_tab() {
         env: Default::default(),
         directory_context: None,
         expected_witness: HostWitness::HerdrSocket(witness),
+        gate_argv: Vec::new(),
     };
     let context = budget_context(clock.as_ref());
     let CreateTargetOutcome::Created(created) = native.create_target(&request, &context) else {
@@ -526,4 +527,43 @@ fn launch_gate_command_reply_round_trip() {
         assert!(bad.validate().is_err());
     }
     assert!(!ADVERTISED.contains(&LAUNCH_GATE_V1));
+}
+
+/// Kills: a `gate_argv` that is always serialized (every released request record would change
+/// bytes) or that does not round-trip when set.
+#[test]
+fn create_target_request_without_gate_argv_keeps_its_bytes() {
+    let mut request = CreateTargetRequest {
+        correlation: HostCallId::new("c"),
+        placement: Placement::NewTerminal {
+            parent: HostTargetId::new("t1"),
+        },
+        cwd: "/w".into(),
+        label: "l".into(),
+        focus: false,
+        env: Default::default(),
+        directory_context: None,
+        expected_witness: HostWitness::HcCore {
+            core_id: "core".into(),
+            peer: HcPeer {
+                pid: 1,
+                start_seconds: 2,
+                uid: 3,
+            },
+        },
+        gate_argv: Vec::new(),
+    };
+    let bytes = serde_json::to_string(&request).unwrap();
+    assert!(!bytes.contains("gate_argv"), "{bytes}");
+    assert_eq!(
+        serde_json::from_str::<CreateTargetRequest>(&bytes).unwrap(),
+        request
+    );
+    request.gate_argv = vec!["shim".into()];
+    let with = serde_json::to_string(&request).unwrap();
+    assert!(with.contains(r#""gate_argv":["shim"]"#), "{with}");
+    assert_eq!(
+        serde_json::from_str::<CreateTargetRequest>(&with).unwrap(),
+        request
+    );
 }

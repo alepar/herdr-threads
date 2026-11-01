@@ -1000,7 +1000,7 @@ fn interrupted_saved_inspection_refuses_after_original_normal_retry_unknown_crea
         &native,
         &clock,
         super::super::topology_handoff::BootstrapSubmissionInputs {
-            witness: &witness,
+            witness: &crate::ports::HostWitness::HerdrSocket(witness.clone()),
             context: &context,
         },
     );

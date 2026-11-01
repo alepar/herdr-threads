@@ -25,6 +25,19 @@ pub struct Request {
     pub binary: Option<String>,
     pub name: Option<String>,
     pub argv: Vec<String>,
+    /// Where a V3 automatic handoff creates its target; `None` is today's Herdr new tab.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetSelection>,
+}
+
+/// The selected host and placement of a V3 automatic handoff.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TargetSelection {
+    pub endpoint: std::path::PathBuf,
+    pub placement: crate::ports::Placement,
+    /// Passed to the adapter's `host_launch_argv`; never branched on here.
+    #[serde(skip)]
+    pub kind: crate::ports::HostKind,
 }
 
 pub struct Preparation<'a, C: crate::ports::LocalClient + ?Sized> {
@@ -55,6 +68,48 @@ pub(crate) fn require_directory_capability<C: crate::ports::LocalClient + ?Sized
             "daemon lacks handoff launch directories capability",
         )),
     }
+}
+
+/// The daemon must understand V3 automatic bootstrap records before one is reserved.
+pub(crate) fn require_target_capability<C: crate::ports::LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn crate::protocol::time::Clock,
+) -> Result<(), RunError> {
+    use crate::protocol::{commands::Command, results::CommandResult};
+    match client.call(Command::Capabilities, &super::cooperative_budget(clock))? {
+        CommandResult::Capabilities(c)
+            if c.capabilities
+                .iter()
+                .any(|name| name == crate::protocol::capabilities::AUTOMATIC_TARGET_V1) =>
+        {
+            Ok(())
+        }
+        _ => Err(super::unsupported(
+            "daemon lacks automatic target handoff capability",
+        )),
+    }
+}
+
+/// The exact id of the space `value` names in `topology`: an exact id, else a unique label.
+fn select_space(
+    topology: &crate::host::observation::HostTopology,
+    value: &str,
+) -> Result<crate::protocol::ids::HostTargetId, RunError> {
+    let fail = super::invalid_request;
+    if let Some(exact) = topology.spaces.iter().find(|space| space.id == value) {
+        return crate::protocol::ids::HostTargetId::parse(&exact.id).map_err(fail);
+    }
+    let mut found = topology
+        .spaces
+        .iter()
+        .filter(|space| space.label.as_deref() == Some(value));
+    let selected = found
+        .next()
+        .ok_or_else(|| fail("workspace is absent from live topology"))?;
+    if found.next().is_some() {
+        return Err(fail("ambiguous workspace; use its exact ID"));
+    }
+    crate::protocol::ids::HostTargetId::parse(&selected.id).map_err(fail)
 }
 
 fn capture_directories<C: crate::ports::LocalClient + ?Sized>(
@@ -200,42 +255,56 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         host_endpoint: runtime.require_host()?.to_path_buf(),
         state_dir: runtime.state_dir,
     };
-    let workspace = if let Some(value) = &request.selector.space {
-        if let Some(exact) = inputs
-            .topology
-            .spaces
-            .iter()
-            .find(|space| &space.id == value)
-        {
-            &exact.id
-        } else {
-            let mut found = inputs
+    let target_placement = match &request.target {
+        None => None,
+        Some(target) => Some(match &target.placement {
+            crate::ports::Placement::NewTab { space } => crate::ports::Placement::NewTab {
+                space: select_space(inputs.topology, space.as_str())?,
+            },
+            parent @ crate::ports::Placement::NewTerminal { .. } => parent.clone(),
+        }),
+    };
+    let workspace_id: HostTargetId = if let Some(placement) = &target_placement {
+        placement.anchor().clone()
+    } else {
+        let workspace = if let Some(value) = &request.selector.space {
+            if let Some(exact) = inputs
                 .topology
                 .spaces
                 .iter()
-                .filter(|space| space.label.as_ref() == Some(value));
-            let selected = found
-                .next()
-                .ok_or_else(|| fail("workspace is absent from live topology"))?;
-            if found.next().is_some() {
-                return Err(fail("ambiguous workspace; use its exact ID"));
+                .find(|space| &space.id == value)
+            {
+                &exact.id
+            } else {
+                let mut found = inputs
+                    .topology
+                    .spaces
+                    .iter()
+                    .filter(|space| space.label.as_ref() == Some(value));
+                let selected = found
+                    .next()
+                    .ok_or_else(|| fail("workspace is absent from live topology"))?;
+                if found.next().is_some() {
+                    return Err(fail("ambiguous workspace; use its exact ID"));
+                }
+                &selected.id
             }
-            &selected.id
-        }
-    } else {
-        let caller = inputs
-            .topology
-            .panes
-            .iter()
-            .find(|pane| pane.target == inputs.claim.target)
-            .ok_or_else(|| fail("caller pane is absent from live topology"))?;
-        &inputs
-            .topology
-            .spaces
-            .iter()
-            .find(|space| space.id == caller.space)
-            .ok_or_else(|| fail("caller workspace is absent from live topology"))?
-            .id
+        } else {
+            let caller = inputs
+                .topology
+                .panes
+                .iter()
+                .find(|pane| pane.target == inputs.claim.target)
+                .ok_or_else(|| fail("caller pane is absent from live topology"))?;
+            &inputs
+                .topology
+                .spaces
+                .iter()
+                .find(|space| space.id == caller.space)
+                .ok_or_else(|| fail("caller workspace is absent from live topology"))?
+                .id
+        };
+        HostTargetId::parse(workspace).map_err(fail)?
     };
     let launch = super::launch::LaunchRequest {
         directory_context: None,
@@ -261,12 +330,75 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         .ok_or_else(|| super::unsupported("selected adapter has no handoff startup input"))?;
     let compound = OperationId::new(uuid::Uuid::new_v4().to_string());
     let handoff = AutomaticHandoffPayload::new(
-        namespace,
+        namespace.clone(),
         OperationId::new(uuid::Uuid::new_v4().to_string()),
         request.body.clone(),
     )
     .and_then(|payload| payload.with_policy(request.policy.clone()))
     .map_err(fail)?;
+    // A V3 plan creates its target before the thread exists, so its harness argv, executable
+    // and startup prompt are frozen here (the prompt names no thread).
+    let (plan_version, frozen_binary, frozen_argv, frozen_prompt_v, payload_startup) =
+        if let (Some(target), Some(_)) = (&request.target, &target_placement) {
+            let binary = match launch.harness_binary.as_deref() {
+                Some(explicit) => {
+                    let explicit = std::path::Path::new(explicit);
+                    if !explicit.is_absolute() || !explicit.is_file() {
+                        return Err(fail("--harness-binary must be an absolute executable file"));
+                    }
+                    explicit.to_string_lossy().into_owned()
+                }
+                None => {
+                    let crate::harness::adapter::ExecutableLookup::Path(name) =
+                        registration.metadata().executable
+                    else {
+                        return Err(super::unsupported("selected adapter has no executable"));
+                    };
+                    super::hook::resolve_on_path(name, std::env::var_os("PATH").as_deref())
+                        .ok_or_else(|| fail(&format!("no executable `{name}` on PATH")))?
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            };
+            let context = crate::protocol::output::ContinuationContext {
+                state_dir: namespace.state_dir.to_str().map(str::to_owned),
+                host: namespace.host_endpoint.to_str().map(str::to_owned),
+            };
+            let prompt = super::handoff::summary_prompt::render_thread_free(
+                request.summary.as_deref(),
+                &context,
+            );
+            let (applied, _) = startup_input.apply(&launch.argv, &prompt)?;
+            let mut argv = registration.host_launch_argv(target.kind);
+            argv.extend(applied);
+            crate::ports::NativeLaunchRequest::validate_argv(
+                &crate::harness::launch::compose_native_argv(
+                    harness.occupant(),
+                    argv.clone(),
+                    vec![],
+                )?,
+            )
+            .map_err(fail)?;
+            (
+                AUTOMATIC_TARGET_PLAN_VERSION,
+                Some(binary),
+                argv,
+                None,
+                None,
+            )
+        } else {
+            (
+                AUTOMATIC_PLAN_VERSION,
+                launch.harness_binary,
+                launch.argv,
+                super::handoff::frozen_prompt(
+                    inputs.client,
+                    inputs.clock,
+                    request.summary.as_deref(),
+                ),
+                Some(startup_input),
+            )
+        };
     let scope = super::journal::IntentScope::Cooperative {
         instance: inputs.claim.instance.clone(),
         host: inputs.claim.host.clone(),
@@ -276,20 +408,20 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         scope,
         inputs.claim.clone(),
         AutomaticBootstrapPlan {
-            placement: None,
-            version: AUTOMATIC_PLAN_VERSION,
+            placement: target_placement,
+            version: plan_version,
             payload: AutomaticBootstrapPayload {
                 directory_context: directory_context.clone(),
                 handoff,
                 keys: AutomaticBootstrapKeys::new(compound),
-                workspace: HostTargetId::parse(workspace).map_err(fail)?,
+                workspace: workspace_id,
                 cwd,
                 label: label.clone(),
                 focus: false,
                 env: directory_context.map(|c| c.env).unwrap_or_default(),
                 launch: BootstrapLaunch {
                     harness: harness.occupant(),
-                    binary: launch.harness_binary,
+                    binary: frozen_binary,
                     name: launch
                         .name
                         .as_deref()
@@ -298,17 +430,13 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
                                 .ok_or_else(|| fail("invalid agent --name"))
                         })
                         .transpose()?,
-                    argv: launch.argv,
+                    argv: frozen_argv,
                     // The automatic plan freezes its startup input on the payload, not the V2 launch.
                     composed_argv: None,
                     startup_input: None,
-                    summary_prompt: super::handoff::frozen_prompt(
-                        inputs.client,
-                        inputs.clock,
-                        request.summary.as_deref(),
-                    ),
+                    summary_prompt: frozen_prompt_v,
                 },
-                startup_input: Some(startup_input),
+                startup_input: payload_startup,
             },
         },
     )
@@ -337,6 +465,18 @@ pub(super) fn preflight_automatic_launch_request(
     use crate::protocol::ids::ThreadId;
     let p = &identity.plan.payload;
     let ns = &p.handoff.namespace;
+    if identity.plan.placement.is_some() {
+        // A V3 plan froze its prompt into the argv: nothing to apply.
+        return Ok(super::launch::LaunchRequest {
+            directory_context: p.directory_context.clone(),
+            target: identity.claim.target.clone(),
+            harness: p.launch.harness.into(),
+            harness_binary: p.launch.binary.clone(),
+            name: p.launch.name.clone(),
+            pane_label: Some(p.label.clone()),
+            argv: p.launch.argv.clone(),
+        });
+    }
     let template = p
         .startup_input
         .as_ref()
@@ -797,8 +937,21 @@ pub(crate) fn resume_automatic_to_writer<
 /// Expected native endpoint witness captured by the actual qualified transport.
 /// The caller must admit the original actor before invoking this internal seam.
 pub struct BootstrapSubmissionInputs<'a> {
-    pub witness: &'a crate::host::continuity::LocalEndpointWitness,
+    pub witness: &'a crate::ports::HostWitness,
     pub context: &'a crate::ports::HostCallContext,
+}
+impl BootstrapSubmissionInputs<'_> {
+    /// The Herdr socket witness the V1 and V2 (tab) paths submit against.
+    pub(crate) fn herdr_witness(
+        &self,
+    ) -> Result<&crate::host::continuity::LocalEndpointWitness, RunError> {
+        match self.witness {
+            crate::ports::HostWitness::HerdrSocket(witness) => Ok(witness),
+            _ => Err(super::invalid_request(
+                "automatic native endpoint differs from frozen namespace",
+            )),
+        }
+    }
 }
 
 /// Internal live coordinator through canonical exact attachment. Public routes
@@ -945,7 +1098,7 @@ pub fn resume_to_attachment<
     if current.state != BootstrapState::Prepared || local.possible_creation {
         return Err(creation_unknown(reference, &identity, current.attempt));
     }
-    if submission.witness.endpoint.as_os_str() != namespace.host_endpoint.as_os_str() {
+    if submission.herdr_witness()?.endpoint.as_os_str() != namespace.host_endpoint.as_os_str() {
         return Err(super::invalid_request(
             "native submission endpoint differs from frozen namespace",
         ));
@@ -1010,7 +1163,7 @@ pub fn resume_to_attachment<
         focus: identity.payload.focus,
         env: identity.payload.env.clone(),
         directory_context: identity.payload.directory_context.clone(),
-        expected_witness: submission.witness.clone(),
+        expected_witness: submission.herdr_witness()?.clone(),
     };
     local.possible_creation = true;
     local.request = Some(request.clone());

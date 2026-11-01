@@ -72,6 +72,7 @@ fn request(placement: Placement, witness: HostWitness) -> CreateTargetRequest {
         env: [("K".to_owned(), "V".to_owned())].into(),
         directory_context: None,
         expected_witness: witness,
+        gate_argv: Vec::new(),
     }
 }
 
@@ -266,5 +267,22 @@ fn recorded_unknown_never_reclassified_by_bootstrap_label() {
             .collect::<Vec<_>>(),
         ["terminal.run"],
         "{methods:?}"
+    );
+}
+
+/// Kills: a host that keeps running its constructor-time argv when the request carries the
+/// per-attempt gate argv (every attempt would then authorize the first one's bootstrap).
+#[test]
+fn request_gate_argv_wins_over_the_constructor() {
+    let (fake, host, witness) = setup();
+    let mut request = new_tab(witness);
+    request.gate_argv = vec!["other".into(), "--bootstrap".into(), "op:2".into()];
+    assert!(matches!(
+        host.create_target(&request, &context()),
+        CreateTargetOutcome::Created(_)
+    ));
+    assert_eq!(
+        run_params(&fake)["argv"],
+        json!(["other", "--bootstrap", "op:2"])
     );
 }
