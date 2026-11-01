@@ -1749,6 +1749,7 @@ impl LocalService for DomainService {
             | Command::CompleteInboxDelivery(_)
             | Command::SetWakeOn(_)
             | Command::SetNudgeThreshold(_)
+            | Command::SelfRetire(_)
             | Command::Leave(_)
             | Command::SetTopic(_)
             | Command::SetThreadName(_)
@@ -2329,6 +2330,10 @@ mod operator_tests {
 #[cfg(test)]
 #[path = "../../tests/service/cooperative.rs"]
 mod cooperative_tests;
+
+#[cfg(test)]
+#[path = "../../tests/daemon/self_retire.rs"]
+mod self_retire_tests;
 
 #[cfg(test)]
 mod topology_contract_dispatch_tests {

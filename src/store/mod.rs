@@ -2025,6 +2025,9 @@ impl StorePort for SqliteStore {
             PermitMutation::SetNudgeThreshold(v) => {
                 seats::set_nudge_threshold(&self.context, &mut writer, budget, &v, permit)
             }
+            PermitMutation::SelfRetire(v) => {
+                seats::self_retire(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::CheckIn(_) => Err(api_error(
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",
@@ -3850,6 +3853,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             control::cooperative_payload_hash("set_nudge_threshold", v)?,
+            None,
+        ),
+        PermitMutation::SelfRetire(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("self_retire", v)?,
             None,
         ),
         PermitMutation::Leave(v) => (

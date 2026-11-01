@@ -4905,3 +4905,26 @@ fn every_help_page_is_harness_neutral() {
         violations.join("\n")
     );
 }
+
+// Kills: `seat retire --self` parsing as the operator retire, `--force` accepted alone, a seat
+// beside --self, or --operator beside --self.
+#[test]
+fn seat_retire_self_parses_and_rejects_combinations() {
+    let own = parse_argv(["herdr-threads", "seat", "retire", "--self"]).unwrap();
+    assert!(matches!(own.action, CliAction::SelfRetire { force: false }));
+    let forced = parse_argv(["herdr-threads", "seat", "retire", "--self", "--force"]).unwrap();
+    assert!(matches!(forced.action, CliAction::SelfRetire { force: true }));
+    let operator = parse_argv(["herdr-threads", "human", "seat", "retire", "s1", "--operator"]).unwrap();
+    assert!(matches!(
+        operator.action,
+        CliAction::Mutation(MutationSpec::Retire(_))
+    ));
+    for bad in [
+        vec!["herdr-threads", "seat", "retire", "--force"],
+        vec!["herdr-threads", "seat", "retire", "s1", "--self"],
+        vec!["herdr-threads", "seat", "retire", "--self", "--operator"],
+        vec!["herdr-threads", "seat", "retire"],
+    ] {
+        assert!(parse_argv(bad.clone()).is_err(), "{bad:?}");
+    }
+}

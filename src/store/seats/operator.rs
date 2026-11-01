@@ -533,52 +533,241 @@ fn operator_retire(
             }
         },
         |tx, at| {
-            let (boot, epoch, host_id): (Option<String>, i64, i64) = tx
-                .query_row(
-                    "SELECT h.host_boot,h.host_epoch,h.host_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
-                    [seat.as_str()],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .map_err(store_error)?;
-            let host = HostId::from_row(host_id);
-            let (target, generation): (Option<String>, i64) = tx
-                .query_row(
-                    "SELECT target_id,target_generation FROM seats WHERE id=?1",
-                    [seat.as_str()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(store_error)?;
-            let target = match target {
-                Some(target) => target,
-                None => tx
-                    .query_row(
-                        "SELECT target_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
-                        [seat.as_str()],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(store_error)?
-                    .unwrap_or_default(),
-            };
-            let boot = boot.unwrap_or_default();
-            control::begin_retirement_authored(
+            retire_seat(
                 tx,
                 context,
                 at,
-                RetireReason::Operator,
-                seat.clone(),
                 instance,
-                &boot,
-                epoch,
-                &target,
-                generation,
+                &seat,
+                RetireReason::Operator,
+                &actor.audit_label(),
             )?;
-            tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
-                params![host.get(),target,seat.as_str(),at.utc.0,boot,epoch,generation,actor.audit_label()]).map_err(store_error)?;
-            lift_baseline_hold_if_clear(tx, instance, host, at.utc)?;
             Ok(CommandResult::OperatorRetired(seat.clone()))
         },
     )?;
     crate::store::operator::validate_result(&typed, &result)?;
     Ok(result)
+}
+
+/// The retirement body shared by operator and cooperative self retirement: begins the bounded
+/// retirement cutover for the live local `seat`, authors `seat.retired` with `wire` and records
+/// the local `allocation_decisions` row under `label`. The caller has already checked that the
+/// seat is live and local.
+pub(crate) fn retire_seat(
+    tx: &Transaction<'_>,
+    context: &StoreContext,
+    at: crate::store::connection::DecisionInstant,
+    instance: &str,
+    seat: &SeatId,
+    wire: RetireReason,
+    label: &str,
+) -> Result<(), ApiError> {
+    let (boot, epoch, host_id): (Option<String>, i64, i64) = tx
+            .query_row(
+                "SELECT h.host_boot,h.host_epoch,h.host_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
+                [seat.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(store_error)?;
+    let host = HostId::from_row(host_id);
+    let (target, generation): (Option<String>, i64) = tx
+        .query_row(
+            "SELECT target_id,target_generation FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(store_error)?;
+    let target = match target {
+            Some(target) => target,
+            None => tx
+                .query_row(
+                    "SELECT target_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?
+                .unwrap_or_default(),
+        };
+    let boot = boot.unwrap_or_default();
+    control::begin_retirement_authored(
+        tx,
+        context,
+        at,
+        wire,
+        seat.clone(),
+        instance,
+        &boot,
+        epoch,
+        &target,
+        generation,
+    )?;
+    tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
+            params![host.get(),target,seat.as_str(),at.utc.0,boot,epoch,generation,label]).map_err(store_error)?;
+    lift_baseline_hold_if_clear(tx, instance, host, at.utc)?;
+    Ok(())
+}
+
+/// M20 (57 bytes): `seat retire --self` from a seat that is not a named seat.
+pub const M20: &str = "herdr-threads: seat retire --self is for named seats only";
+
+/// M18 (65 bytes plus the fields): another top-level binding of the seat is connected.
+pub fn m18(seat: &SeatId, bindings: &[String]) -> String {
+    format!(
+        "herdr-threads: seat {} has another connected binding: {}; use --force",
+        seat.as_str(),
+        bindings.join(", ")
+    )
+}
+
+/// `seat retire --self` (SA6, D5): the caller's named seat retires itself through the shared
+/// [`retire_seat`] body. On the wire this is `RetireReason::Operator`; locally the
+/// `allocation_decisions` row carries `cooperative_self_retire:<binding>`.
+///
+/// Scoped `self-retire:<seat>`, so a replay of a committed retirement returns the stored result
+/// before the live-seat precheck, which the now-retired seat would fail (spike S4). Refused for a
+/// seat without a name (M20), and while another top-level binding of the seat is connected unless
+/// `force` (M18).
+pub fn self_retire(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &crate::protocol::commands::SelfRetire,
+    mut permit: crate::protocol::authority::MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    use crate::protocol::{
+        authority::{CallerRole, ObligationRef},
+        results::{AbandonedItem, AbandonedKind, SELF_RETIRE_ROWS, SelfRetired},
+    };
+    let claim = &command.claim;
+    if claim.role == CallerRole::Subagent {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "declared subagents cannot retire a seat",
+        ));
+    }
+    let seat = claim.seat.clone();
+    let instance = claim.instance.as_str();
+    let operation = &command.operation;
+    let digest = control::cooperative_payload_hash("self_retire", command)?;
+    let obligation = ObligationRef::CheckIn(seat.clone());
+    crate::store::schema::execute_accountable_transaction(
+        context,
+        conn,
+        budget,
+        permit.cooperative_metadata(),
+        &format!("self-retire:{}", seat.as_str()),
+        operation.as_str(),
+        digest,
+        |tx| {
+            let row: Option<(String, Option<String>)> = tx
+                .query_row(
+                    &format!("SELECT state,name FROM seats WHERE id=?1 AND instance_id=?2 AND {LOCAL_SEAT}"),
+                    params![seat.as_str(), instance],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            match row {
+                Some((state, _)) if state == "retired" => Err(api_error(
+                    ErrorCode::NotFound,
+                    "seat is not a live seat of this instance",
+                )),
+                None => Err(api_error(
+                    ErrorCode::NotFound,
+                    "seat is not a live seat of this instance",
+                )),
+                Some((_, None)) => Err(api_error(ErrorCode::InvalidRequest, M20)),
+                Some((_, Some(_))) => Ok(()),
+            }
+        },
+        |tx, at| {
+            let actor = control::decide_accountable(
+                context,
+                tx,
+                at,
+                &mut permit,
+                claim,
+                &seat,
+                operation,
+                &obligation,
+                &digest,
+            )?;
+            if !command.force {
+                let others = other_connected_bindings(tx, &seat, actor.binding_id.as_str())?;
+                if !others.is_empty() {
+                    return Err(api_error(ErrorCode::Conflict, m18(&seat, &others)));
+                }
+            }
+            let (abandoned, more) = abandoned_items(tx, &seat, SELF_RETIRE_ROWS)?;
+            retire_seat(
+                tx,
+                context,
+                at,
+                instance,
+                &seat,
+                RetireReason::Operator,
+                &format!("cooperative_self_retire:{}", actor.binding_id.as_str()),
+            )?;
+            Ok(CommandResult::SelfRetired(SelfRetired {
+                seat: seat.clone(),
+                abandoned: abandoned
+                    .into_iter()
+                    .map(|(kind, id): (AbandonedKind, String)| AbandonedItem { kind, id })
+                    .collect(),
+                more,
+            }))
+        },
+    )
+}
+
+/// The ids of the seat's other connected top-level bindings, oldest first.
+fn other_connected_bindings(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    own_binding: &str,
+) -> Result<Vec<String>, ApiError> {
+    let mut stmt = tx
+        .prepare("SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' AND role='top_level' AND binding_id<>?2 ORDER BY ordinal")
+        .map_err(store_error)?;
+    stmt.query_map(params![seat.as_str(), own_binding], |r| r.get(0))
+        .map_err(store_error)?
+        .collect::<Result<_, _>>()
+        .map_err(store_error)
+}
+
+/// The seat's pending obligations at retirement: unanswered invitations, then messages that want
+/// its ACK. Lists at most `limit` and counts the rest.
+fn abandoned_items(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    limit: usize,
+) -> Result<(Vec<(crate::protocol::results::AbandonedKind, String)>, u64), ApiError> {
+    use crate::protocol::results::AbandonedKind;
+    let mut items = Vec::new();
+    let mut total = 0u64;
+    for (kind, sql) in [
+        (
+            AbandonedKind::Invitation,
+            "SELECT i.id FROM invitations i WHERE i.seat_id=?1 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS (SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id) ORDER BY i.ordinal",
+        ),
+        (
+            AbandonedKind::Ack,
+            "SELECT message_id FROM receipts WHERE seat_id=?1 AND state='pending' AND ack_required=1 ORDER BY ordinal",
+        ),
+    ] {
+        let mut stmt = tx.prepare(sql).map_err(store_error)?;
+        let ids = stmt
+            .query_map([seat.as_str()], |r| r.get::<_, String>(0))
+            .map_err(store_error)?;
+        for id in ids {
+            let id = id.map_err(store_error)?;
+            total += 1;
+            if items.len() < limit {
+                items.push((kind, id));
+            }
+        }
+    }
+    let more = total - items.len() as u64;
+    Ok((items, more))
 }

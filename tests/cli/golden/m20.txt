@@ -1,0 +1,1 @@
+herdr-threads: seat retire --self is for named seats only

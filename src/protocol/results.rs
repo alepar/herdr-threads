@@ -130,6 +130,8 @@ pub enum CommandResult {
     OperatorFreshSeat(SeatId),
     OperatorInvited(InvitationId),
     OperatorRetired(SeatId),
+    /// A named seat retired itself (`seat retire --self`): the obligations it abandoned.
+    SelfRetired(SelfRetired),
     Bootstrap(Box<crate::protocol::handoff::BootstrapResult>),
     BootstrapReserved(Box<crate::protocol::handoff::ReserveBootstrapResult>),
     LaunchGate(crate::protocol::handoff::LaunchGateReply),
@@ -1561,6 +1563,36 @@ pub struct WakeOnState {
     pub seat: SeatId,
     pub wake_on: crate::protocol::commands::WakeOn,
     pub changed: bool,
+}
+
+/// The answer to `seat retire --self`: the retired seat and the obligations it left pending
+/// (at most [`SELF_RETIRE_ROWS`] listed; `more` counts the rest).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelfRetired {
+    pub seat: SeatId,
+    pub abandoned: Vec<AbandonedItem>,
+    #[serde(default)]
+    pub more: u64,
+}
+
+/// Most abandoned items `seat retire --self` lists; the rest are counted in `SelfRetired::more`.
+pub const SELF_RETIRE_ROWS: usize = 50;
+
+/// One pending obligation a self-retired seat abandoned: an invitation it never answered or a
+/// message that wanted its ACK.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbandonedItem {
+    pub kind: AbandonedKind,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AbandonedKind {
+    Invitation,
+    Ack,
 }
 
 /// A seat's nudge threshold. `changed` is true only when a set altered the stored value; a read, or

@@ -337,7 +337,7 @@ fn collect_seat_selectors(command: &Top) -> Vec<SeatSelectorArg> {
         }
         Top::Seat { command } => match command {
             SeatSub::Inspect { seat, .. } => record(SeatSlot::InspectSeat, &Some(seat.clone())),
-            SeatSub::Retire { seat, .. } => record(SeatSlot::RetireSeat, &Some(seat.clone())),
+            SeatSub::Retire { seat, .. } => record(SeatSlot::RetireSeat, seat),
             SeatSub::Rebind { seat, replace, .. } => {
                 record(SeatSlot::RebindSeat, &Some(seat.clone()));
                 record(SeatSlot::RebindReplace, replace);
@@ -496,6 +496,11 @@ pub enum CliAction {
     /// `nudge-threshold [N]`: read or set the invoking seat's nudge threshold; same
     /// caller rules as `wake-on`.
     NudgeThreshold(Option<NudgeThreshold>),
+    /// `seat retire --self [--force]`: the invoking named seat retires itself; acts as the seat
+    /// (cooperative claim), never journaled.
+    SelfRetire {
+        force: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -660,7 +665,8 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Follow(_)
         | CliAction::Summary(_)
         | CliAction::WakeOn(_)
-        | CliAction::NudgeThreshold(_) => {
+        | CliAction::NudgeThreshold(_)
+        | CliAction::SelfRetire { .. } => {
             return Err(ApiError::unsupported(
                 "setup, launch and skill are local compositions without a daemon backend",
             ));
@@ -1654,9 +1660,19 @@ enum SeatSub {
     /// recipient-retired. The seat is never merged into another.
     Retire {
         /// SEAT: exact ID or SPACE/TAB/PANE[@MACHINE]; single-quote path: names with \/ \\ \@ escapes
-        seat: String,
+        #[arg(
+            required_unless_present = "self_retire",
+            conflicts_with = "self_retire"
+        )]
+        seat: Option<String>,
         #[arg(long)]
         operator: bool,
+        /// Retire the invoking named seat (HERDR_THREADS_SEAT_NAME); lists the obligations it abandons.
+        #[arg(long = "self", conflicts_with = "operator")]
+        self_retire: bool,
+        /// With --self: retire although another connected binding of the seat exists.
+        #[arg(long, requires = "self_retire")]
+        force: bool,
     },
     /// List retired seats and their cleanup progress.
     Retirements(PageArgs),
@@ -3486,6 +3502,11 @@ fn parse_cli_in_registry(
                     None => MutationSpec::Rebind { seat, pane },
                 })
             }
+            SeatSub::Retire {
+                self_retire: true,
+                force,
+                ..
+            } => CliAction::SelfRetire { force },
             SeatSub::Retire { operator, .. } => {
                 if !operator {
                     return Err(invalid("operator required"));

@@ -37,6 +37,7 @@ mod picker;
 pub mod pre_upgrade_backup;
 pub mod retry;
 mod seat_resolution;
+pub(crate) mod self_retire;
 pub mod site_capability;
 pub mod update;
 pub use crate::protocol::address as seat_selector;
@@ -1270,6 +1271,9 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::WakeOn(_) => unreachable!("wake-on always derives a caller selection"),
         CliAction::NudgeThreshold(_) => {
             unreachable!("nudge-threshold always derives a caller selection")
+        }
+        CliAction::SelfRetire { .. } => {
+            unreachable!("seat retire --self always derives a caller selection")
         }
         CliAction::View { once, page } => {
             if !once {
@@ -2785,6 +2789,12 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             &parsed, value, selection, paths, instance, host, client, clock, writer,
         );
     }
+    if let CliAction::SelfRetire { force } = &parsed.action {
+        let force = *force;
+        return self_retire::run(
+            &parsed, force, selection, paths, instance, host, client, clock, writer,
+        );
+    }
     if historical.is_some()
         && let CliAction::Retry(recovery) = &parsed.action
     {
@@ -3376,6 +3386,7 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller
         | CliAction::Summary(_)
         | CliAction::WakeOn(_)
         | CliAction::NudgeThreshold(_)
+        | CliAction::SelfRetire { .. }
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::Watch(_)
