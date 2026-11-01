@@ -1034,12 +1034,7 @@ impl LaneProbe {
     /// The first attached server's Pacer for a host lane.
     fn first_host_pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
         // Dialled-only: the built-in host has no observation Pacer to follow (07 §5.3).
-        let session = self.host_sessions()?.attached().into_iter().next()?;
-        match lane {
-            Lane::Observation => Some(Arc::clone(session.observation().pacer())),
-            Lane::Wakes => session.wake().map(|wake| Arc::clone(wake.pacer())),
-            _ => None,
-        }
+        self.host_sessions()?.first_pacer(lane)
     }
     /// The daemon's host registry while the daemon lives (the probe holds it
     /// weakly, so a stopped daemon's hosts are released).
@@ -1386,6 +1381,36 @@ where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
     run_elected_impl(paths, clock, shutdown, config, plan, None, probe, on_ready).await
+}
+
+/// [`run_elected_guarded`] with a [`LaneProbe`]: the production guarded composition (the handoff
+/// state directory reaches every session's bootstrap runtime) a test can inspect.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_elected_guarded_probed<R>(
+    paths: &NodePaths,
+    state_dir: std::path::PathBuf,
+    clock: Arc<dyn Clock>,
+    shutdown: Cancellation,
+    config: ServiceConfig,
+    plan: HostAttachPlan,
+    probe: LaneProbe,
+    on_ready: R,
+) -> io::Result<bool>
+where
+    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
+{
+    run_elected_impl(
+        paths,
+        clock,
+        shutdown,
+        config,
+        plan,
+        Some(state_dir),
+        probe,
+        on_ready,
+    )
+    .await
 }
 
 /// Production native composition: `plan.factory` builds each attached host,
@@ -1863,6 +1888,7 @@ where
             );
             factory_probe.attach_store(&sqlite);
             let remembered_store = Arc::clone(&sqlite);
+            let seated_store = Arc::clone(&sqlite);
             let bootstrap_store = sqlite.clone();
             let apply_store = sqlite.clone();
             let apply_identity = Arc::clone(&identity);
@@ -2023,6 +2049,10 @@ where
                     remembered: Arc::new(move |budget: &CallBudget| {
                         let db = remembered_store.context().open_query(budget.clone())?;
                         crate::store::hosts::remembered(&db, usize::MAX)
+                    }),
+                    seated: Arc::new(move |budget: &CallBudget| {
+                        let db = seated_store.context().open_query(budget.clone())?;
+                        crate::store::hosts::hosts_with_resolved_seat(&db)
                     }),
                     sweep_interval: factory_probe.host_sweep_period(),
                     wake_safety_tick: config.lane_tick(Duration::from_millis(

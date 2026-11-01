@@ -34,6 +34,10 @@ pub(super) struct AuditHost {
     archival: ArchivalEvidence,
     closure: ClosureAuthority,
     launch: NativeLaunchCapability,
+    /// `creates_targets_itself()`: a herdr-core shape.
+    creates: bool,
+    /// The one space (id and label) its topology lists, if any.
+    space: Option<&'static str>,
 }
 
 impl AuditHost {
@@ -44,6 +48,18 @@ impl AuditHost {
         archival: ArchivalEvidence::Supported,
         closure: ClosureAuthority::Closing,
         launch: NativeLaunchCapability::HostGuardedStart,
+        creates: false,
+        space: None,
+    };
+    /// A dialled herdr-core shape: no wake, no evidence, closing, creates its own targets.
+    pub(super) const HC: AuditHost = AuditHost {
+        kind: HostKind::Hc,
+        wake: false,
+        archival: ArchivalEvidence::NoEvidence,
+        closure: ClosureAuthority::Closing,
+        launch: NativeLaunchCapability::Unsupported,
+        creates: true,
+        space: None,
     };
     /// The named-host shape: no wake, no evidence, non-closing, no launch.
     const NAMED: AuditHost = AuditHost {
@@ -52,6 +68,8 @@ impl AuditHost {
         archival: ArchivalEvidence::NoEvidence,
         closure: ClosureAuthority::NonClosing,
         launch: NativeLaunchCapability::Unsupported,
+        creates: false,
+        space: None,
     };
 }
 
@@ -76,11 +94,25 @@ impl HostPort for AuditHost {
     fn closure_authority(&self) -> ClosureAuthority {
         self.closure
     }
+    fn creates_targets_itself(&self) -> bool {
+        self.creates
+    }
     fn live_topology(
         &self,
         _: &CallBudget,
     ) -> Result<crate::host::observation::HostTopology, ApiError> {
-        refused()
+        use crate::host::observation::{HostTopology, TopologySpace};
+        match self.space {
+            Some(space) => Ok(HostTopology {
+                spaces: vec![TopologySpace {
+                    id: space.to_owned(),
+                    label: Some(space.to_owned()),
+                }],
+                tabs: Vec::new(),
+                panes: Vec::new(),
+            }),
+            None => refused(),
+        }
     }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         self.launch
@@ -152,6 +184,9 @@ pub(super) struct Rig {
     world: Arc<FakeHostWorld>,
     pub(super) sessions: Arc<HostSessions>,
     store: Arc<SqliteStore>,
+    clock: Arc<dyn Clock>,
+    /// The dialled hosts that hold a resolved local seat (what `SessionDeps::seated` answers).
+    seated: Arc<std::sync::Mutex<std::collections::BTreeSet<crate::ports::HostId>>>,
 }
 
 impl Rig {
@@ -174,13 +209,22 @@ impl Rig {
             .unwrap(),
         );
         let world = FakeHostWorld::new();
-        let deps = SessionDeps::detached(Arc::clone(&store) as Arc<dyn StorePort>, clock, instance);
+        let mut deps = SessionDeps::detached(
+            Arc::clone(&store) as Arc<dyn StorePort>,
+            Arc::clone(&clock),
+            instance,
+        );
+        let seated = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        let reading = Arc::clone(&seated);
+        deps.seated = Arc::new(move |_| Ok(reading.lock().unwrap().clone()));
         let sessions = Arc::new(HostSessions::new(index, world.plan(None).factory, deps));
         Self {
             _isolation: isolation,
             world,
             sessions,
             store,
+            clock,
+            seated,
         }
     }
 
@@ -191,8 +235,15 @@ impl Rig {
         }
     }
 
-    /// Attaches a dialled fake at `locator`.
+    /// Attaches a dialled fake at `locator` that holds a resolved local seat.
     pub(super) fn dial(&self, locator: &str, host: AuditHost) -> Arc<HostSession> {
+        let session = self.dial_seatless(locator, host);
+        self.seated.lock().unwrap().insert(session.host_id());
+        session
+    }
+
+    /// Attaches a dialled fake at `locator` that holds no seat.
+    pub(super) fn dial_seatless(&self, locator: &str, host: AuditHost) -> Arc<HostSession> {
         let locator = loc(locator);
         self.world.add(&locator, Arc::new(host));
         self.sessions.resolve(&locator, &self.budget()).unwrap()
@@ -329,4 +380,116 @@ fn startup_primary_picks_only_host_guarded_start_dialled_host() {
     let capable = rig.dial("/herdr/b.sock", AuditHost::HERDR);
     let primary = rig.sessions.startup_primary(None).unwrap();
     assert!(Arc::ptr_eq(&primary, &capable));
+}
+
+// The two-host half of the audit: an hc core is dialled first (the lowest host id) and a Herdr
+// TUI second, so a consumer that takes "the first dialled host" mis-picks.
+
+fn hc_then_tui(rig: &Rig) -> (Arc<HostSession>, Arc<HostSession>) {
+    let hc = rig.dial(
+        "/hc/core.sock",
+        AuditHost {
+            space: Some("w9"),
+            ..AuditHost::HC
+        },
+    );
+    let tui = rig.dial(
+        "/herdr/a.sock",
+        AuditHost {
+            space: Some("w1"),
+            ..AuditHost::HERDR
+        },
+    );
+    assert!(hc.host_id() < tui.host_id(), "hc holds the lowest host id");
+    (hc, tui)
+}
+
+// Kills: `first_host_pacer` taking the lowest dialled session (hc, which runs no wake lane) and
+// answering no wake Pacer while a Herdr TUI's wake lane runs.
+#[test]
+fn first_host_pacer_two_host() {
+    use crate::service::kicks::Lane;
+    let rig = Rig::new("audit-pacer-two-host");
+    let (hc, tui) = hc_then_tui(&rig);
+    assert!(hc.wake().is_none(), "hc runs no wake lane");
+    let wake = rig
+        .sessions
+        .first_pacer(Lane::Wakes)
+        .expect("the TUI's lane");
+    assert!(Arc::ptr_eq(&wake, tui.wake().unwrap().pacer()));
+    // The observation lane runs on every dialled host: the first one leads.
+    let observation = rig.sessions.first_pacer(Lane::Observation).unwrap();
+    assert!(Arc::ptr_eq(&observation, hc.observation().pacer()));
+}
+
+// Kills: a placement that lands a launch on the wrong kind of host: a pane or a space of a TUI
+// only on the TUI, a terminal only on the core, and a space both know refused as ambiguous.
+#[test]
+fn place_two_host() {
+    use crate::{
+        service::{fair_writer::FairWriter, peer_launcher::PeerLaunchService},
+        sync::frame::{LaunchState, LaunchTarget},
+    };
+    let rig = Rig::new("audit-place-two-host");
+    let (hc, tui) = hc_then_tui(&rig);
+    let launcher = PeerLaunchService {
+        live: Default::default(),
+        store: Arc::clone(&rig.store),
+        sessions: Arc::clone(&rig.sessions),
+        writer: Arc::new(FairWriter::new(32)),
+        clock: Arc::clone(&rig.clock),
+        state_dir: std::path::PathBuf::from("/nonexistent"),
+        log: Arc::new(|_| {}),
+    };
+    let tab = |space: &str| LaunchTarget::NewTab {
+        space: space.into(),
+        label: "t".into(),
+    };
+    let placed = launcher.place(&tab("w1")).expect("w1 is the TUI's");
+    assert!(Arc::ptr_eq(&placed.session, &tui));
+    let placed = launcher.place(&tab("w9")).expect("w9 is the core's");
+    assert!(Arc::ptr_eq(&placed.session, &hc));
+    let terminal = LaunchTarget::NewTerminal { label: "t".into() };
+    let placed = launcher.place(&terminal).expect("one core");
+    assert!(Arc::ptr_eq(&placed.session, &hc), "never the TUI");
+    // A pane is a Herdr notion: only the guarded-start host is consulted, never the core.
+    let pane = LaunchTarget::Pane {
+        space: None,
+        tab: None,
+        pane: "w1:p1".into(),
+    };
+    match launcher.place(&pane) {
+        Err(LaunchState::Refused { .. }) => {}
+        other => panic!("no pane on the TUI fixture: {:?}", other.err()),
+    }
+    // A second TUI knowing w9 makes the core's space ambiguous, not silently the lowest id.
+    rig.dial(
+        "/herdr/b.sock",
+        AuditHost {
+            space: Some("w9"),
+            ..AuditHost::HERDR
+        },
+    );
+    match launcher.place(&tab("w9")) {
+        Err(LaunchState::Refused { detail }) => assert!(detail.contains("ambiguous"), "{detail}"),
+        other => panic!("w9 exists on two hosts: {:?}", other.err()),
+    }
+}
+
+// Kills: an idle-exit input that counts a dialled host holding no resolved seat (a seatless core
+// attached at startup would keep the daemon up for ever), and one that drops a seated hc host.
+#[test]
+fn idle_exit_seatless_core_exits() {
+    let rig = Rig::new("audit-idle-seatless-core");
+    rig.dial_seatless("/hc/core.sock", AuditHost::HC);
+    assert_eq!(rig.sessions.attached_count(), 1);
+    assert!(
+        !dialled_hosts_active(&rig.sessions),
+        "a seatless core alone keeps the daemon up"
+    );
+    rig.dial("/hc/other.sock", AuditHost::HC);
+    assert!(
+        dialled_hosts_active(&rig.sessions),
+        "a core holding a seat keeps it up"
+    );
 }

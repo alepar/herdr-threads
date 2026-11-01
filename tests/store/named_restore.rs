@@ -374,3 +374,43 @@ fn unnamed_rows_placed_only_on_single_kind_nodes() {
         .unwrap();
     assert_eq!(rows, 1, "the mixed-node restore inserted nothing");
 }
+
+// Kills (S5 two-kind half, D12): an unnamed restore placed on either host of a node that has a
+// Herdr TUI and a herdr-core row, whichever attached last (the old `ORDER BY last_attached_at`),
+// and a held restore that leaves a seat row behind on either host.
+#[test]
+fn s5_unnamed_restored_row_held_unresolved_on_two_kind_node() {
+    for hc_first in [true, false] {
+        let mut f = fixture();
+        let herdr = crate::test_support::test_host_id();
+        let hc = HostLocator::parse("/hc/core.sock").unwrap();
+        // The fixture's Herdr row is host 1; a second Herdr-kind row would not change the kinds.
+        let (hc_id, _) = crate::store::hosts::attach_host(
+            &mut f.conn,
+            &hc,
+            if hc_first { 9_000 } else { 1_000 },
+            HostKind::Hc,
+        )
+        .unwrap();
+        let held = f.restore(None).unwrap_err();
+        assert_eq!(held.code, ErrorCode::HostUnavailable, "{held:?}");
+        assert!(held.detail.contains("more than one kind"), "{held:?}");
+        for host in [herdr, hc_id] {
+            let seats: i64 = f
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM seats WHERE host_id=?1 AND instance_id=(SELECT id FROM local_node) \
+                     AND state<>'retired'",
+                    [host.get()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                seats,
+                0,
+                "nothing placed on host {} (hc_first={hc_first})",
+                host.get()
+            );
+        }
+    }
+}

@@ -12,7 +12,7 @@
 //! asked to submit.
 
 use herdr_threads::{
-    app::{LaneProbe, SystemClock, run_elected_probed},
+    app::{LaneProbe, SystemClock, run_elected_guarded_probed, run_elected_probed},
     client::local::LocalSocketClient,
     daemon::{ownership::EndpointDescriptor, paths::NodePaths},
     ports::{
@@ -88,6 +88,8 @@ struct ServerHost {
     foreground: Mutex<BTreeMap<String, u32>>,
     sequence: AtomicU64,
     prompts: Mutex<Vec<(String, String)>>,
+    /// Whether it answers `HostGuardedStart` (a launch-capable Herdr TUI).
+    guarded: bool,
 }
 
 impl ServerHost {
@@ -101,7 +103,15 @@ impl ServerHost {
             foreground: Mutex::new(BTreeMap::new()),
             sequence: AtomicU64::new(0),
             prompts: Mutex::new(Vec::new()),
+            guarded: false,
         })
+    }
+
+    /// A server that also answers `HostGuardedStart`.
+    fn guarded(clock: &Arc<dyn Clock>, boot: &str, panes: &[&str]) -> Arc<Self> {
+        let mut server = Arc::into_inner(Self::new(clock, boot, panes)).expect("a fresh server");
+        server.guarded = true;
+        Arc::new(server)
     }
 
     fn set_up(&self, up: bool) {
@@ -217,7 +227,11 @@ impl HostPort for ServerHost {
         Err(ApiError::unsupported("fixture has no archival observation"))
     }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
-        NativeLaunchCapability::Unsupported
+        if self.guarded {
+            NativeLaunchCapability::HostGuardedStart
+        } else {
+            NativeLaunchCapability::Unsupported
+        }
     }
     fn observe_current_target(
         &self,
@@ -330,6 +344,30 @@ impl Daemon {
         world: &Arc<FakeHostWorld>,
         hint: Option<HostLocator>,
     ) -> Self {
+        // Wakes go out at once, not after the ordinary batching window.
+        let config = ServiceConfig::default().with_wake_batch_delay(0).unwrap();
+        Self::start_with(isolation, clock, world, hint, config)
+    }
+
+    fn start_with(
+        isolation: &TestIsolation,
+        clock: &Arc<dyn Clock>,
+        world: &Arc<FakeHostWorld>,
+        hint: Option<HostLocator>,
+        config: ServiceConfig,
+    ) -> Self {
+        Self::start_composed(isolation, clock, world, hint, config, false)
+    }
+
+    /// `guarded`: the production guarded composition, whose sessions carry a bootstrap runtime.
+    fn start_composed(
+        isolation: &TestIsolation,
+        clock: &Arc<dyn Clock>,
+        world: &Arc<FakeHostWorld>,
+        hint: Option<HostLocator>,
+        config: ServiceConfig,
+        guarded: bool,
+    ) -> Self {
         let guard = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
         let paths: NodePaths = herdr_threads::test_support::resolve_seeded(&state_dir(isolation));
         let clock = Arc::clone(clock);
@@ -340,25 +378,38 @@ impl Daemon {
         let plan = world.plan(hint);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (daemon_stop, daemon_probe) = (stop.clone(), probe.clone());
+        let guarded_dir = guarded.then(|| state_dir(isolation));
         let thread = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
+            let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .unwrap()
-                .block_on(run_elected_probed(
+                .unwrap();
+            let ready = move |descriptor: &EndpointDescriptor| {
+                ready_tx
+                    .send(descriptor.clone())
+                    .map_err(std::io::Error::other)
+            };
+            match guarded_dir {
+                Some(dir) => runtime.block_on(run_elected_guarded_probed(
+                    &paths,
+                    dir,
+                    clock,
+                    daemon_stop,
+                    config,
+                    plan,
+                    daemon_probe,
+                    ready,
+                )),
+                None => runtime.block_on(run_elected_probed(
                     &paths,
                     clock,
                     daemon_stop,
-                    // Wakes go out at once, not after the ordinary batching window.
-                    ServiceConfig::default().with_wake_batch_delay(0).unwrap(),
+                    config,
                     plan,
                     daemon_probe,
-                    move |descriptor| {
-                        ready_tx
-                            .send(descriptor.clone())
-                            .map_err(std::io::Error::other)
-                    },
-                ))
+                    ready,
+                )),
+            }
         });
         let descriptor = ready_rx
             .recv_timeout(Duration::from_secs(20))
@@ -1558,5 +1609,277 @@ mod kind_probe {
             "a Herdr TUI socket must not look like an hc core: {reply}"
         );
         herdr.stop();
+    }
+}
+
+/// H1-twohost: the dialled-only consumers (07 §5.3) over a node with a Herdr TUI fixture and a
+/// fake herdr-core, where the core holds the lowest host id. Every consumer here must filter on
+/// a capability answer, so none of them may take "the first dialled host".
+///
+/// Crate-private consumers have their two-host tests in the library: `place()` in
+/// `consumer_audit::place_two_host`, the seatless core with a wake-armed or unhinted named binding
+/// in `tmux_idle_exit::combined_idle_exit_predicate_matrix` (the "seatless core" row), and S5's
+/// two-kind restore in `named_restore::s5_unnamed_restored_row_held_unresolved_on_two_kind_node`.
+mod two_kind {
+    use super::*;
+    use herdr_threads::{
+        host::hc::{HcClient, HcHost},
+        ports::{ArchivalEvidence, HostKind},
+        service::{archival::ArchivalHosts, host_sessions::HostSession},
+        test_support::fake_hc::FakeHc,
+    };
+
+    /// A daemon over the core `hc` (attached first: host id 1) and the TUI fixture `tui`.
+    struct TwoKind {
+        // Fields drop in order: the daemon stops before the fixtures under it go.
+        daemon: Daemon,
+        hc_session: Arc<HostSession>,
+        tui_session: Arc<HostSession>,
+        loc_hc: HostLocator,
+        loc_tui: HostLocator,
+        isolation: TestIsolation,
+        _tui: Arc<ServerHost>,
+        _hc: FakeHc,
+    }
+
+    fn budget(clock: &Arc<dyn Clock>) -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 20_000),
+            cancellation: Cancellation::default(),
+        }
+    }
+
+    impl TwoKind {
+        /// Both hosts attached, the core first; `hint` names the startup hint (the core is
+        /// attached through it, the TUI lazily). `idle` is the idle-exit period, if any.
+        fn start(label: &str, hint_hc: bool, idle: Option<Duration>, attach_tui: bool) -> Self {
+            let isolation = TestIsolation::new(label);
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+            let hc = FakeHc::start();
+            let loc_hc = HostLocator::parse(hc.socket().to_string_lossy().into_owned()).unwrap();
+            let loc_tui = {
+                let socket = isolation.socket_path("herdr-tui.sock");
+                let directory = std::fs::canonicalize(socket.parent().unwrap()).unwrap();
+                HostLocator::parse(
+                    directory
+                        .join("herdr-tui.sock")
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+                .unwrap()
+            };
+            let tui = ServerHost::guarded(&clock, "boot-tui", &["pane-1"]);
+            let world = FakeHostWorld::new();
+            world.add(
+                &loc_hc,
+                Arc::new(HcHost::with_clock(
+                    HcClient::new(hc.socket()),
+                    Arc::clone(&clock),
+                )) as Arc<dyn HostPort>,
+            );
+            world.add(&loc_tui, Arc::clone(&tui) as Arc<dyn HostPort>);
+            let mut config = ServiceConfig::default().with_wake_batch_delay(0).unwrap();
+            if let Some(idle) = idle {
+                config = config.with_idle_exit_after(idle);
+            }
+            let daemon = Daemon::start_composed(
+                &isolation,
+                &clock,
+                &world,
+                hint_hc.then(|| loc_hc.clone()),
+                config,
+                true,
+            );
+            let sessions = daemon.probe.host_sessions().expect("host sessions");
+            let hc_session = sessions
+                .resolve(&loc_hc, &budget(&clock))
+                .expect("the core attaches");
+            let tui_session = if attach_tui {
+                sessions
+                    .resolve(&loc_tui, &budget(&clock))
+                    .expect("the TUI attaches")
+            } else {
+                Arc::clone(&hc_session)
+            };
+            Self {
+                daemon,
+                hc_session,
+                tui_session,
+                loc_hc,
+                loc_tui,
+                isolation,
+                _tui: tui,
+                _hc: hc,
+            }
+        }
+
+        fn sessions(&self) -> Arc<herdr_threads::service::host_sessions::HostSessions> {
+            self.daemon.probe.host_sessions().expect("host sessions")
+        }
+    }
+
+    // Kills: a rig that does not give the core the lowest host id, and a probe that takes the
+    // core for a Herdr server (every other test here would then pass for the wrong reason).
+    #[test]
+    fn hc_holds_the_lowest_host_id_and_both_kinds_are_probed() {
+        let rig = TwoKind::start("mh-two-kind-ids", false, None, true);
+        assert!(rig.hc_session.host_id() < rig.tui_session.host_id());
+        assert_eq!(rig.hc_session.port().kind(), HostKind::Hc);
+        assert_eq!(rig.tui_session.port().kind(), HostKind::Herdr);
+        let kinds: Vec<String> = rig
+            .daemon_db()
+            .prepare("SELECT kind FROM herdr_hosts WHERE kind<>'named' ORDER BY host_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(kinds, ["hc", "herdr"]);
+        let _ = (&rig.loc_hc, &rig.loc_tui, &rig.isolation);
+    }
+
+    impl TwoKind {
+        fn daemon_db(&self) -> rusqlite::Connection {
+            let paths = herdr_threads::test_support::resolve_seeded(&state_dir(&self.isolation));
+            let db = rusqlite::Connection::open(paths.database_path).unwrap();
+            db.busy_timeout(Duration::from_secs(5)).unwrap();
+            db
+        }
+    }
+
+    // Kills: a startup primary that falls back to the lowest dialled host (the core: Health and
+    // the advertised guarded bootstrap would follow a server that cannot run guarded bootstrap),
+    // and one that ignores a hint naming the TUI.
+    #[test]
+    fn startup_primary_two_host() {
+        let rig = TwoKind::start("mh-primary-two-host", false, None, true);
+        let sessions = rig.sessions();
+        let primary = sessions.startup_primary(None).expect("a guarded host");
+        assert!(Arc::ptr_eq(&primary, &rig.tui_session), "never the core");
+        let hinted = sessions.startup_primary(Some(&rig.loc_tui)).unwrap();
+        assert!(Arc::ptr_eq(&hinted, &rig.tui_session));
+        // With only the core attached there is no guarded-start host: store-only Health.
+        drop(rig);
+        let alone = TwoKind::start("mh-primary-core-only", false, None, false);
+        assert!(alone.sessions().startup_primary(None).is_none());
+    }
+
+    // Kills: `first_host_pacer` following the lowest dialled session, whose core runs no wake
+    // lane, so the wake Pacer of a Herdr TUI on the same node is never found.
+    #[test]
+    fn first_host_pacer_two_host() {
+        let rig = TwoKind::start("mh-pacer-two-host", false, None, true);
+        assert!(
+            rig.hc_session.wake().is_none(),
+            "the core runs no wake lane"
+        );
+        let sessions = rig.sessions();
+        let wake = sessions
+            .first_pacer(Lane::Wakes)
+            .expect("the TUI's wake lane");
+        assert!(Arc::ptr_eq(&wake, rig.tui_session.wake().unwrap().pacer()));
+        // The lane the TUI shares with the core: the lowest id leads.
+        let observation = sessions.first_pacer(Lane::Observation).unwrap();
+        assert!(Arc::ptr_eq(
+            &observation,
+            rig.hc_session.observation().pacer()
+        ));
+        assert!(sessions.first_pacer(Lane::Archival).is_none());
+    }
+
+    // Kills: a peer-discovery gate opened by a reachable core (`machines` come from the Herdr
+    // CLI), and a gate closed by one while a Herdr server is attached.
+    #[test]
+    fn discovery_gate_two_host() {
+        let core_only = TwoKind::start("mh-gate-core-only", false, None, false);
+        assert!(core_only.hc_session.port().creates_targets_itself());
+        assert!(
+            !core_only.sessions().any_reachable(),
+            "a core alone never opens the Herdr discovery gate"
+        );
+        // One daemon at a time.
+        drop(core_only);
+        let both = TwoKind::start("mh-gate-two-host", false, None, true);
+        assert!(both.sessions().any_reachable());
+    }
+
+    // Kills: archival sampling the core (no evidence: read as incoherent for ever) or skipping
+    // the TUI because the core came first.
+    #[test]
+    fn archival_two_host() {
+        let rig = TwoKind::start("mh-archival-two-host", false, None, true);
+        assert_eq!(
+            rig.hc_session.port().archival_evidence(),
+            ArchivalEvidence::NoEvidence
+        );
+        let sessions = rig.sessions();
+        let listed: Vec<_> = ArchivalHosts::attached(&*sessions)
+            .iter()
+            .map(|host| host.host_id)
+            .collect();
+        assert_eq!(listed, vec![rig.tui_session.host_id()]);
+        assert!(ArchivalHosts::get(&*sessions, rig.hc_session.host_id()).is_none());
+        assert!(ArchivalHosts::get(&*sessions, rig.tui_session.host_id()).is_some());
+    }
+
+    // Kills: the production guarded `BootstrapRuntime` gate (07 §4.6) keyed on the lowest id or
+    // on the kind: only the guarded-start TUI has the V1/V2 runtime, only the core the V3 one,
+    // and the daemon advertises guarded bootstrap on the TUI's locator.
+    #[test]
+    fn bootstrap_runtime_gate_two_host() {
+        let rig = TwoKind::start("mh-bootstrap-two-host", false, None, true);
+        assert!(rig.hc_session.bootstrap().is_none());
+        assert!(rig.tui_session.bootstrap().is_some());
+        let v3 = rig
+            .hc_session
+            .target_bootstrap()
+            .expect("the core's V3 runtime");
+        assert_eq!(
+            v3.canonical.host_endpoint,
+            PathBuf::from(rig.loc_hc.as_str())
+        );
+        assert!(rig.tui_session.target_bootstrap().is_none());
+        // The daemon's advertisement: the startup primary, when it has a runtime.
+        let guarded = rig
+            .sessions()
+            .startup_primary(None)
+            .filter(|session| session.bootstrap().is_some())
+            .map(|session| session.locator().clone());
+        assert_eq!(guarded, Some(rig.loc_tui.clone()));
+    }
+
+    /// Waits for the daemon thread to end by itself (idle exit), up to `limit`.
+    fn exits_by_itself(rig: &mut TwoKind, limit: Duration) -> bool {
+        let until = Instant::now() + limit;
+        while Instant::now() < until {
+            if rig
+                .daemon
+                .thread
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
+            {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    // Kills: an idle exit that counts a dialled host holding no resolved seat, so a daemon with
+    // only a seatless core attached never exits (the core's session is attached, its host holds
+    // no seat); and, in the same run, one that exits while a client is connected.
+    #[test]
+    fn idle_exit_seatless_core_exits() {
+        let mut rig = TwoKind::start(
+            "mh-idle-seatless-core",
+            true,
+            Some(Duration::from_millis(400)),
+            false,
+        );
+        assert_eq!(rig.sessions().attached_count(), 1, "the core is attached");
+        assert!(
+            exits_by_itself(&mut rig, Duration::from_secs(20)),
+            "a daemon with only a seatless core attached idles out"
+        );
     }
 }
