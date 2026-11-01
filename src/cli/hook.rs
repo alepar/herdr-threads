@@ -4021,7 +4021,13 @@ fn two_family_guard(
             refusal.first,
         );
     let stdout = if due {
-        output_bytes(registration.encode(admitted, decoded, &neutral_offer(refusal.m3()))).0
+        // Nothing was bound, so a qualified turn has no prepared result kind: it encodes as a
+        // plain current-turn context (a qualified intent alone is not encodable).
+        let mut encoding = decoded.clone();
+        if matches!(encoding.intent, EventIntent::QualifiedTurn(_)) {
+            encoding.intent = EventIntent::Current;
+        }
+        output_bytes(registration.encode(admitted, &encoding, &neutral_offer(refusal.m3()))).0
     } else {
         Vec::new()
     };

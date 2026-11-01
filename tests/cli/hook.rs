@@ -11593,4 +11593,333 @@ mod two_family_guard {
         assert_eq!(hooks(&restarted, "hermes:s1", 3), [true, false, false]);
         let _ = LocateReply::Verified { index: 0, root: 0 };
     }
+
+    /// A scripted daemon on a real socket: `Capabilities` advertises `caller.locate_v1`,
+    /// `LocateCaller` runs the real service over a fake process tree (hook subject pid 30 under
+    /// pane shell 10; the pane's shell is `root`), every other command is recorded and refused.
+    struct Locating {
+        service: LocateCallerService,
+        host: Arc<dyn crate::ports::HostPort>,
+        commands: Mutex<Vec<Command>>,
+    }
+    impl crate::ports::LocalService for Locating {
+        fn service_control(
+            &self,
+            _: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &str,
+            _: &str,
+            _: &crate::service::live_gate::LiveServiceGate,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            Err(crate::test_support::unserved("no service control"))
+        }
+        fn audit_service_disconnect(
+            &self,
+            _: &str,
+            _: u64,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &CallBudget,
+        ) -> Result<(), ApiError> {
+            Err(crate::test_support::unserved("no service disconnect"))
+        }
+        fn service_operation(
+            &self,
+            _: crate::protocol::service::ServiceOperation,
+            _: &crate::ports::ServiceConnectionAuthority,
+            _: &dyn crate::ports::ServiceAuthorityGate,
+            _: &CallBudget,
+        ) -> Result<crate::protocol::service::ServiceResult, ApiError> {
+            Err(crate::test_support::unserved("no service operation"))
+        }
+        fn handle_with_output(
+            &self,
+            c: Command,
+            p: crate::protocol::authority::PeerIdentity,
+            b: &CallBudget,
+            _: &OutputSpec,
+        ) -> Result<CommandResult, ApiError> {
+            self.handle(c, p, b)
+        }
+        fn handle(
+            &self,
+            c: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            b: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            match c {
+                Command::Capabilities => Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: vec![
+                            crate::protocol::capabilities::LOCATE_CALLER_V1.to_owned(),
+                        ],
+                    },
+                )),
+                Command::LocateCaller(request) => Ok(CommandResult::Located(self.service.locate(
+                    &request,
+                    Some(30),
+                    std::slice::from_ref(&self.host),
+                    0,
+                    b,
+                ))),
+                other => {
+                    self.commands.lock().unwrap().push(other);
+                    Err(crate::test_support::unserved("scripted daemon"))
+                }
+            }
+        }
+    }
+
+    /// The daemon's serve loop on its own thread; dropped, it is stopped and joined.
+    struct Daemon {
+        service: Arc<Locating>,
+        shutdown: Cancellation,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Daemon {
+        fn start(iso: &crate::test_support::isolation::TestIsolation, root: Option<u32>) -> Self {
+            use crate::daemon::ownership::OwnerLock;
+            let context =
+                RuntimeContext::explicit(iso.path("state"), iso.path("host.sock"), None).unwrap();
+            let paths = NodePaths::resolve(&context.state_dir).unwrap();
+            let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+            let instance = owner.node_uuid().unwrap();
+            let listener = owner.bind_socket().unwrap();
+            owner
+                .publish_endpoint(
+                    &listener,
+                    env!("CARGO_PKG_VERSION"),
+                    crate::protocol::wire::PROTOCOL_VERSION,
+                )
+                .unwrap();
+            let service = Arc::new(Locating {
+                service: LocateCallerService::new(tree()),
+                host: Roots::port(vec![("w1:p1", Ok(root))]),
+                commands: Mutex::new(Vec::new()),
+            });
+            let handler = Arc::clone(&service);
+            let shutdown = Cancellation::default();
+            let stopped = shutdown.clone();
+            let worker = std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(async {
+                    let _ = crate::daemon::transport::serve(
+                        listener.into_async().unwrap(),
+                        instance,
+                        handler,
+                        Arc::new(SystemClock::new()),
+                        crate::daemon::paths::effective_uid(),
+                        stopped,
+                    )
+                    .await
+                    .unwrap();
+                });
+                drop(owner);
+            });
+            Self {
+                service,
+                shutdown,
+                worker: Some(worker),
+            }
+        }
+        /// The commands that were not part of the guard itself.
+        fn other_commands(&self) -> Vec<Command> {
+            self.service.commands.lock().unwrap().clone()
+        }
+    }
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+
+    fn registration(harness: &str) -> &'static crate::harness::registry::Registration {
+        let registry = builtins();
+        registry.by_id(registry.agent(harness).unwrap()).unwrap()
+    }
+
+    fn hook_args(
+        iso: &crate::test_support::isolation::TestIsolation,
+        harness: &str,
+        event: Option<&str>,
+    ) -> HookArgs {
+        HookArgs {
+            state_dir: Some(iso.path("state")),
+            host_endpoint: Some(iso.path("host.sock")),
+            harness: crate::harness::registry::OccupantHarness::Agent(
+                builtins().agent(harness).unwrap(),
+            )
+            .into(),
+            event: event.map(str::to_owned),
+        }
+    }
+
+    /// The hook environment of a caller naming both a pane and an hc terminal.
+    fn ambiguous_env() -> HookEnv {
+        let marked = env(&[
+            (native::ENV_HERDR, "1"),
+            (native::ENV_PANE_ID, "w1:p1"),
+            (HC_TERMINAL_ID_ENV, "t3"),
+            (HC_TERMINAL_SOCKET_ENV, "/hc.sock"),
+        ]);
+        HookEnv {
+            herdr_env: true,
+            pane: Some("w1:p1".into()),
+            ambiguous: crate::cli::caller_guard::hook_candidates(&marked),
+        }
+    }
+
+    fn run(
+        registration: &'static crate::harness::registry::Registration,
+        args: &HookArgs,
+        payload: &[u8],
+    ) -> HookOutcome {
+        run_hook_registered(
+            registration,
+            args,
+            &InstalledHarness::Claude("unused".into()),
+            payload,
+            &ambiguous_env(),
+            Instant::now() + LIFECYCLE_BUDGET,
+            Arc::new(SystemClock::new()),
+            None,
+        )
+    }
+
+    const M1: &str = "herdr-threads: runs in herdr-core terminal t3; not supported yet";
+    const M3: &str = "[herdr-threads] guard: runs in herdr-core terminal t3, not Herdr pane w1:p1; no seat bound here";
+
+    fn claude_payload(event: &str, source: Option<&str>) -> Vec<u8> {
+        let mut value = serde_json::json!({
+            "session_id": "sess-1", "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp",
+            "hook_event_name": event,
+        });
+        if let Some(source) = source {
+            value["source"] = source.into();
+        } else {
+            value["permission_mode"] = "default".into();
+            value["tool_name"] = "Bash".into();
+            value["tool_input"] = serde_json::json!({"command": "ls"});
+            value["tool_use_id"] = "toolu_1".into();
+        }
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    fn hermes_payload() -> Vec<u8> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+        let now = SystemClock::new().utc_now().0;
+        value["started_at"] = now.into();
+        value["deadline_at"] = (now + 1200).into();
+        value["observation_order"]["observed_at_millis"] = now.into();
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    fn context(outcome: &HookOutcome) -> String {
+        String::from_utf8(outcome.stdout.clone()).unwrap()
+    }
+
+    // Kills: a hook that binds the named pane without asking the daemon, a refused check-in that
+    // exits non-zero or prints no M1, M3 missing from the lifecycle check-in (acceptance 3), M3
+    // on a per-turn hook of an adapter that has a lifecycle check-in (token rule (a)), and any
+    // seat command (check-in, resolve) sent for a pane that did not verify.
+    #[test]
+    fn claude_shape_unverified_gets_m3_on_session_start_only() {
+        let iso = crate::test_support::isolation::TestIsolation::new("guard-claude-start");
+        let daemon = Daemon::start(&iso, Some(99));
+        let start = run(
+            registration("claude"),
+            &hook_args(&iso, "claude", Some("SessionStart")),
+            &claude_payload("SessionStart", Some("startup")),
+        );
+        assert_eq!(start.diagnostic.as_deref(), Some(M1));
+        assert!(
+            context(&start).contains(M3),
+            "lifecycle check-in carries M3: {:?}",
+            context(&start)
+        );
+        assert!(start.attention.is_none());
+
+        let turn = run(
+            registration("claude"),
+            &hook_args(&iso, "claude", Some("PreToolUse")),
+            &claude_payload("PreToolUse", None),
+        );
+        assert_eq!(turn.diagnostic.as_deref(), Some(M1));
+        assert!(
+            turn.stdout.is_empty(),
+            "a per-turn hook never carries M3: {:?}",
+            context(&turn)
+        );
+        assert_eq!(daemon.other_commands(), Vec::<Command>::new());
+    }
+
+    // Kills: a compact re-entry that is not treated as a lifecycle check-in for M3. Claude's
+    // production contract decodes no compact (it is unqualified), so Codex's compact carries it.
+    #[test]
+    fn compact_re_entry_gets_m3() {
+        let iso = crate::test_support::isolation::TestIsolation::new("guard-codex-compact");
+        let daemon = Daemon::start(&iso, Some(99));
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "session_id": "sess-1", "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp",
+            "hook_event_name": "SessionStart", "source": "compact", "model": "m",
+        }))
+        .unwrap();
+        let outcome = run(
+            registration("codex"),
+            &hook_args(&iso, "codex", Some("SessionStart")),
+            &payload,
+        );
+        assert_eq!(outcome.diagnostic.as_deref(), Some(M1), "{outcome:?}");
+        assert!(context(&outcome).contains(M3), "{:?}", context(&outcome));
+        assert_eq!(daemon.other_commands(), Vec::<Command>::new());
+    }
+
+    // Kills: M3 on every delivering hook of a Hermes-shaped adapter (no lifecycle check-in), or
+    // never, or remembered across a daemon restart. M1 stays on every hook.
+    #[test]
+    fn hermes_shape_gets_m3_once_per_binding_and_again_after_restart() {
+        let iso = crate::test_support::isolation::TestIsolation::new("guard-hermes");
+        let hook = |daemon: &Daemon| {
+            let outcome = run(
+                registration("hermes"),
+                &hook_args(&iso, "hermes", None),
+                &hermes_payload(),
+            );
+            assert_eq!(outcome.diagnostic.as_deref(), Some(M1), "{outcome:?}");
+            assert_eq!(daemon.other_commands(), Vec::<Command>::new());
+            context(&outcome).contains(M3)
+        };
+        let daemon = Daemon::start(&iso, Some(99));
+        assert_eq!(
+            [hook(&daemon), hook(&daemon), hook(&daemon)],
+            [true, false, false]
+        );
+        drop(daemon);
+        let restarted = Daemon::start(&iso, Some(99));
+        assert_eq!([hook(&restarted), hook(&restarted)], [true, false]);
+    }
+
+    // Kills: a guard that refuses a pane the daemon verified (no seat would ever bind from a
+    // two-family caller), or one that still prints M1/M3 for it.
+    #[test]
+    fn verified_pane_proceeds_to_bind() {
+        let iso = crate::test_support::isolation::TestIsolation::new("guard-verified");
+        let daemon = Daemon::start(&iso, Some(10));
+        let outcome = run(
+            registration("claude"),
+            &hook_args(&iso, "claude", Some("SessionStart")),
+            &claude_payload("SessionStart", Some("startup")),
+        );
+        assert!(!context(&outcome).contains(M3), "{:?}", context(&outcome));
+        assert_ne!(outcome.diagnostic.as_deref(), Some(M1));
+        assert!(
+            !daemon.other_commands().is_empty(),
+            "the hook went on to seat resolution"
+        );
+    }
 }
