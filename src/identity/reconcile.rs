@@ -267,18 +267,27 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
             if observed.observation_sequence == 0
                 || observed.observation_sequence > page.publication.observation_sequence
                 || observed.structural_generation == 0
-                || (saved.terminal.is_some() && saved.terminal != observed.terminal)
+                || (saved.terminal.is_some()
+                    && observed.terminal.is_some()
+                    && saved.terminal != observed.terminal)
             {
                 return Err(stale("indexed seat match conflicts with publication"));
             }
             let Some(terminal) = observed.terminal.as_ref() else {
+                // The target is shown with no terminal behind it. A resolved
+                // seat waits as recoverable; an unresolved one is unchanged.
+                let action = if saved.state == SeatState::Resolved {
+                    ReconciliationAction::UnresolveAwaitingTerminal
+                } else {
+                    ReconciliationAction::MarkUnresolved
+                };
                 actions.push(GuardedSeatTransition {
                     publication: page.publication.clone(),
                     seat: saved.seat.clone(),
                     expected_binding_generation: saved.binding_generation,
                     expected_target: saved.target.clone(),
                     expected_terminal: saved.terminal.clone(),
-                    action: ReconciliationAction::MarkUnresolved,
+                    action,
                 });
                 continue;
             };

@@ -325,6 +325,24 @@ fn wake_text(report: &Value, debug: bool) -> String {
         .collect()
 }
 
+/// `agent_status: <target> source=<label>` for each row of
+/// `report.hosts.agent_status` (D21): where a host's agent status came from.
+/// Debug doctor text only; no model-visible surface carries it.
+fn agent_status_text(report: &Value) -> String {
+    report["hosts"]["agent_status"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|row| {
+            format!(
+                "agent_status: {} source={}\n",
+                scalar(&row["target"]),
+                scalar(&row["source"])
+            )
+        })
+        .collect()
+}
+
 /// The node directory, when it exists and fails the 0700 ownership checks
 /// `daemon ensure` applies. An absent directory is fine: ensure creates it 0700.
 /// Only the typed unsafe-state marker counts, exactly as `daemon ensure`
@@ -1499,6 +1517,7 @@ pub(crate) fn render_debug_text_in(
             scalar(&report["skill"]["summary_procedure"])
         ));
         out.push_str(&wake_text(report, true));
+        out.push_str(&agent_status_text(report));
         for registration in text_adapters(report, registry) {
             out.push_str(&registration.doctor_text(
                 &report["hooks"][registration.metadata().id],

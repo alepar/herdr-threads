@@ -1213,7 +1213,13 @@ fn saved_seat_scalar(
                 })
         });
     let observed_match = match stage {
-        Some(stage) => snapshot_match(conn, stage, target.as_deref(), terminal)?,
+        Some(stage) => match snapshot_match(conn, stage, target.as_deref(), terminal)? {
+            // The seat's terminal is not shown, but its target is, with no
+            // terminal behind it (an hc terminal kept for a restart).
+            None if terminal.is_some() => snapshot_match(conn, stage, target.as_deref(), None)?
+                .filter(|shown| shown.terminal.is_none()),
+            shown => shown,
+        },
         None => None,
     };
     Ok(Some(SnapshotSavedSeat {
@@ -2277,7 +2283,10 @@ pub fn apply_reconciliation_transition(
                 }
                 return Ok(Some((0, None, false, host)));
             }
-            if matches!(transition.action, ReconciliationAction::MarkUnresolved) {
+            if matches!(
+                transition.action,
+                ReconciliationAction::MarkUnresolved | ReconciliationAction::UnresolveAwaitingTerminal
+            ) {
                 let already_unresolved: bool = tx.query_row(
                     &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND host_id=?5 AND {LOCAL_SEAT} AND state='unresolved' AND generation=?3 AND target_id IS ?4)"),
                     params![transition.seat.as_str(),publication.instance,checked_host_number(transition.expected_binding_generation)?,transition.expected_target.as_ref().map(HostTargetId::as_str),host.get()],
@@ -2301,7 +2310,8 @@ pub fn apply_reconciliation_transition(
                 return Ok(None);
             }
             let generation = match &transition.action {
-                ReconciliationAction::MarkUnresolved => 0,
+                ReconciliationAction::MarkUnresolved
+                | ReconciliationAction::UnresolveAwaitingTerminal => 0,
                 ReconciliationAction::WatchRestoredPane
                 | ReconciliationAction::NoteRestoredPaneAbsent
                 | ReconciliationAction::RetireRestoredPane { .. } => {
@@ -2486,11 +2496,24 @@ pub fn apply_reconciliation_transition(
                         ).optional().map_err(store_error)?;
                         match historical {
                             Some(bound) => Some(bound),
-                            None => tx.query_row(
-                                "SELECT g.host_boot,g.incarnation FROM seats s JOIN snapshot_generations g ON g.id=s.unresolved_from_generation_id AND g.status='published' AND g.staged_targets=g.expected_targets JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='unresolved' AND s.unresolved_reason='host_invalidation' AND s.unresolved_prior_binding_generation=?3 AND t.terminal_id=?4",
-                                params![transition.seat.as_str(),publication.instance,checked_host_number(transition.expected_binding_generation)?.saturating_sub(1),transition.expected_terminal.as_ref().map(TerminalId::as_str)],
-                                |r| Ok((r.get(0)?,Some(r.get(1)?))),
-                            ).optional().map_err(store_error)?,
+                            None => {
+                                let prior = tx.query_row(
+                                    "SELECT g.host_boot,g.incarnation FROM seats s JOIN snapshot_generations g ON g.id=s.unresolved_from_generation_id AND g.status='published' AND g.staged_targets=g.expected_targets JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='unresolved' AND s.unresolved_reason='host_invalidation' AND s.unresolved_prior_binding_generation=?3 AND t.terminal_id=?4",
+                                    params![transition.seat.as_str(),publication.instance,checked_host_number(transition.expected_binding_generation)?.saturating_sub(1),transition.expected_terminal.as_ref().map(TerminalId::as_str)],
+                                    |r| Ok((r.get(0)?,Some(r.get(1)?))),
+                                ).optional().map_err(store_error)?;
+                                match prior {
+                                    Some(prior) => Some(prior),
+                                    // A seat that never registered: the verified
+                                    // structural proof its allocation wrote is
+                                    // its only boot and incarnation evidence.
+                                    None => tx.query_row(
+                                        "SELECT structural_host_boot,structural_incarnation FROM seats WHERE id=?1 AND structural_host_boot IS NOT NULL",
+                                        [transition.seat.as_str()],
+                                        |r| Ok((r.get(0)?,r.get(1)?)),
+                                    ).optional().map_err(store_error)?,
+                                }
+                            }
                         }
                     };
                     let Some((bound_boot, bound_incarnation)) = bound else { return Ok(None); };
@@ -2554,6 +2577,15 @@ pub fn apply_reconciliation_transition(
                     seat,
                     transition.expected_binding_generation,
                     UnresolvedReason::Other,
+                )?,
+                ReconciliationAction::UnresolveAwaitingTerminal => mark_seat_unresolved(
+                    tx,
+                    at,
+                    instance,
+                    host,
+                    seat,
+                    transition.expected_binding_generation,
+                    UnresolvedReason::HostInvalidation,
                 )?,
                 ReconciliationAction::ReconfirmStructure { target, .. } => {
                     let changed = tx.execute(

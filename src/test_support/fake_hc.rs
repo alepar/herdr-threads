@@ -138,6 +138,9 @@ impl FakeTerminal {
 pub struct Call {
     pub method: String,
     pub params: Value,
+    /// The accepted connection that carried it (0 for `respond`), so a test
+    /// can see which requests shared one connection.
+    pub connection: u64,
 }
 
 struct Inner {
@@ -149,6 +152,7 @@ struct Inner {
     calls: Vec<Call>,
     /// The `event` params of every fact change, in order.
     log: Vec<Value>,
+    connections: u64,
     unknown_fields: bool,
     unknown_events: bool,
     stream_before_result: bool,
@@ -175,6 +179,7 @@ impl FakeHcState {
             docs: BTreeMap::new(),
             calls: Vec::new(),
             log: Vec::new(),
+            connections: 0,
             unknown_fields: false,
             unknown_events: false,
             stream_before_result: false,
@@ -213,6 +218,20 @@ impl FakeHcState {
 
     pub fn set_turn(&self, address: &str, turn: u64) {
         self.edit(address, "turn", |t| t.turn = turn);
+    }
+
+    /// The core restarts a kept terminal waiting in `live` with no holder:
+    /// it has a pid and a shell foreground again and no finish reason
+    /// (`restarted` event). The same `tN`: ids are never reused.
+    pub fn restart(&self, address: &str) {
+        self.edit(address, "restarted", |t| {
+            assert!(t.state == "live", "fake hc: {} is finished", t.address);
+            t.pid = Some(4243);
+            t.foreground = Some(json!({"pid": 4243, "name": "sh", "argv": ["sh"], "cwd": "/"}));
+            t.reason = None;
+            t.exit_code = None;
+            t.signal = None;
+        });
     }
 
     pub fn set_pid(&self, address: &str, pid: Option<u32>) {
@@ -341,9 +360,20 @@ impl FakeHcState {
             .collect()
     }
 
+    fn next_connection(&self) -> u64 {
+        let mut s = self.lock();
+        s.connections += 1;
+        s.connections
+    }
+
     /// The reply lines for one request line (the response, plus notification
     /// lines around an `events.subscribe` result).
     pub fn respond(&self, line: &str) -> Vec<String> {
+        self.respond_on(0, line)
+    }
+
+    /// [`Self::respond`] for a request that arrived on connection `connection`.
+    fn respond_on(&self, connection: u64, line: &str) -> Vec<String> {
         let mut s = self.lock();
         let request: Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -362,6 +392,7 @@ impl FakeHcState {
         s.calls.push(Call {
             method: method.clone(),
             params: params.clone(),
+            connection,
         });
         match method.as_str() {
             "hello" => vec![s.result_line(&id, s.hello())],
@@ -544,7 +575,7 @@ fn error_line(id: &Value, code: i64, kind: &str, message: &str) -> String {
     .to_string()
 }
 
-fn handle(stream: UnixStream, state: &FakeHcState) {
+fn handle(stream: UnixStream, connection: u64, state: &FakeHcState) {
     let Ok(mut out) = stream.try_clone() else {
         return;
     };
@@ -556,7 +587,7 @@ fn handle(stream: UnixStream, state: &FakeHcState) {
             Ok(0) | Err(_) => return,
             Ok(_) => {}
         }
-        for reply in state.respond(line.trim_end()) {
+        for reply in state.respond_on(connection, line.trim_end()) {
             if out.write_all(reply.as_bytes()).is_err() || out.write_all(b"\n").is_err() {
                 return;
             }
@@ -579,7 +610,8 @@ pub fn serve(listener: UnixListener, state: Arc<FakeHcState>, stop: Arc<AtomicBo
             Ok((stream, _)) => {
                 let _ = stream.set_nonblocking(false);
                 let state = state.clone();
-                std::thread::spawn(move || handle(stream, &state));
+                let connection = state.next_connection();
+                std::thread::spawn(move || handle(stream, connection, &state));
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(5));

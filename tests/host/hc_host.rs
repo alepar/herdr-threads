@@ -127,17 +127,15 @@ fn enumerate_targets_failed_hello_closes_nothing() {
     );
     assert!(snapshot.targets.is_empty());
     assert!(!snapshot.authorizes_absence_closure());
-    // A live core with a terminal still enumerates nothing here (ht-kqrt.67).
+    // A live core with a terminal enumerates it (the capture rule is
+    // tests/host/hc_closure.rs): one connection, no `terminal.get`.
     let (fake, host) = host_with_t1();
     let snapshot = host.enumerate_targets(&context()).unwrap();
-    assert_eq!(
-        snapshot.enumeration,
-        EnumerationEvidence::CompleteUnverified
-    );
-    assert!(snapshot.targets.is_empty());
-    assert!(!snapshot.authorizes_absence_closure());
+    assert_eq!(snapshot.enumeration, EnumerationEvidence::CoherentVerified);
+    assert_eq!(snapshot.targets.len(), 1);
     assert_eq!(snapshot.boot.as_str(), "hc-core:core-0001");
-    assert!(fake.calls_to("events.subscribe").is_empty());
+    assert!(fake.calls_to("terminal.get").is_empty());
+    assert_eq!(fake.calls_to("events.subscribe").len(), 1);
 }
 
 #[test]
