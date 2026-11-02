@@ -848,7 +848,7 @@ model open work, and summary closure never changes receipt state or installs glo
 - *tmux wake hint (named seats, N2-hint)*: a named caller inside a tmux pane sends `tmux:<socket>:<server_pid>:<pane>`
   (from `TMUX` and `TMUX_PANE`) in `ResolveSeat.tmux_hint` or `TurnStateReport.tmux_hint` (every hook that reports a turn
   edge), never in `CallerClaim` and never as `locator_hint`. The
-  daemon accepts it for a binding only when `tmux -S <socket> display -p -t <pane> '#{pane_pid} #{pid} #{pane_in_mode} #{pane_input_off} #{synchronize-panes} #{pane_width}'` (2 s deadline)
+  daemon accepts it for a binding only when `tmux -S <socket> display -p -t <pane> '#{pane_pid} #{pid} #{pane_in_mode} #{pane_input_off} #{synchronize-panes} #{pane_width} #{pane_active} #{window_active} #{session_attached}'` (2 s deadline)
   answers the hint's server pid and the pane's process is the subject's process or an ancestor of it (the subject is the
   claim's harness fingerprint when the report has one, else the calling process, so the binding anchors on the harness
   and not on a short-lived hook); the verified
@@ -868,7 +868,10 @@ model open work, and summary closure never changes receipt state or installs glo
   empty (a draft is never typed over, never stashed), and when `#{pane_in_mode}`, `#{pane_input_off}` or
   `#{synchronize-panes}` is non-zero (copy-mode or another mode, input disabled, synchronized panes): each is a
   pre-send refusal retried on the ladder, treated as busy and never reported as `no_wake` (for a seat the gate can
-  type into; a seat whose harnesses have no recognizer answers `None` and is reported `no_wake`); the copy-mode scroll
+  type into; a seat whose harnesses have no recognizer answers `None` and is reported `no_wake`); a focused pane
+  (`#{pane_active}` and `#{window_active}` set and `#{session_attached}` non-zero, read for the wake's own pane) also needs
+  A4's minute of observed empty composer samples on the daemon's monotonic clock, under the rules A4 *Wake* states, and each
+  held attempt is such a pre-send refusal, recorded as the `focused` wake block; the copy-mode scroll
   position is never touched. The hint is re-verified at the wake's pane query (server pid) and at bind (ancestry). A
   daemon that holds a wake-armed binding (verified hint, live fingerprint) does not idle-exit, so a p0 more than
   10 min after the seat's last hook still wakes it; the binding is pruned when its process exits and the daemon then
@@ -2418,7 +2421,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Native attention uses sampled composer/focus guards.** Check-to-send focus or input races are
   accepted: a user may type or change focus after the final read. Empty samples do not establish an
   absence of keystrokes, cursor moves, or type/delete activity between samples. Focus is Herdr's pane
-  selection, not every attached client's physical attention. Restart/outage gaps can delay focused
+  selection, not every attached client's physical attention; on tmux it is the session's current window and pane with
+  any client attached, so a control-mode client counts, several clients read as one, and it says nothing about where
+  a person is looking. Restart/outage gaps can delay focused
   wakes; nonempty/unreadable composers can defer indefinitely. No atomic host/client buffer claim is made.
 - **A received wake can be judged unreceived.** The receipt check sees only calls that claim the seat: a session
   that took the woken turn without any herdr-threads call before the ladder's next retry (at least 30 s) is

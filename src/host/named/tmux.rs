@@ -91,6 +91,12 @@ pub struct PaneFacts {
     /// `#{synchronize-panes}`: a key typed here goes to every pane of the window.
     pub synchronized: bool,
     pub width: u16,
+    /// `#{pane_active}`: the window's current pane.
+    pub pane_active: bool,
+    /// `#{window_active}`: the session's current window.
+    pub window_active: bool,
+    /// `#{session_attached}` above zero: it counts clients, so it is not a 0/1 flag.
+    pub attached: bool,
 }
 
 impl PaneFacts {
@@ -98,12 +104,16 @@ impl PaneFacts {
     pub fn delivers_keys(&self) -> bool {
         !(self.in_mode || self.input_off || self.synchronized)
     }
+
+    /// The pane a client is looking at: the design's `pane_active && window_active && session_attached`.
+    pub fn focused(&self) -> bool {
+        self.pane_active && self.window_active && self.attached
+    }
 }
 
 /// The `display -p` format of every pane query: the verification pair, then the three key-delivery
-/// flags, then the pane width the composer read needs.
-const PANE_FORMAT: &str =
-    "#{pane_pid} #{pid} #{pane_in_mode} #{pane_input_off} #{synchronize-panes} #{pane_width}";
+/// flags, then the pane width the composer read needs, then the three focus reads.
+const PANE_FORMAT: &str = "#{pane_pid} #{pid} #{pane_in_mode} #{pane_input_off} #{synchronize-panes} #{pane_width} #{pane_active} #{window_active} #{session_attached}";
 
 /// Run `tmux -S <socket> <args...>` with the 2 s deadline; its stdout (at most `limit` bytes).
 /// `None` on a missing binary, a missing pane or server, a nonzero exit or a timeout.
@@ -162,6 +172,9 @@ pub fn pane_facts(hint: &TmuxHint) -> Option<PaneFacts> {
         input_off: flag(words.next())?,
         synchronized: flag(words.next())?,
         width: words.next()?.parse().ok()?,
+        pane_active: flag(words.next())?,
+        window_active: flag(words.next())?,
+        attached: words.next()?.parse::<u32>().ok()? > 0,
     };
     words.next().is_none().then_some(facts)
 }
@@ -231,6 +244,25 @@ pub fn verify_walk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Kills: a focus that ignores one of its three reads.
+    #[test]
+    fn focus_needs_the_pane_the_window_and_a_client() {
+        for bits in 0..8u8 {
+            let facts = PaneFacts {
+                pane_pid: 1,
+                server_pid: 1,
+                in_mode: false,
+                input_off: false,
+                synchronized: false,
+                width: 80,
+                pane_active: bits & 1 != 0,
+                window_active: bits & 2 != 0,
+                attached: bits & 4 != 0,
+            };
+            assert_eq!(facts.focused(), bits == 7, "bits {bits:03b}");
+        }
+    }
 
     #[test]
     fn env_round_trips_through_the_wire_form() {

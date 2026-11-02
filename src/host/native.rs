@@ -86,7 +86,7 @@ const WAKE_BLOCK_MILLIS: u64 = 10 * 60_000;
 /// Bound on recorded blocks; expired ones are pruned first, then a new seat is not recorded.
 const MAX_WAKE_BLOCKS: usize = 1_024;
 
-struct EmptyComposerWindow {
+pub(crate) struct EmptyComposerWindow {
     target: SafeWakeTarget,
     since: u64,
     last: u64,
@@ -99,7 +99,7 @@ pub struct NativeCli {
     epoch: AtomicU64,
     /// Observation order within one (boot, epoch). Never reused by this adapter.
     sequence: AtomicU64,
-    empty_windows: Mutex<HashMap<SeatId, EmptyComposerWindow>>,
+    empty_windows: EmptyWindows,
     /// The block each seat's last wake attempt met, with when (monotonic ms) it was recorded
     /// (`HostPort::wake_block`).
     wake_blocks: Mutex<HashMap<SeatId, (WakeBlock, u64)>>,
@@ -1924,48 +1924,68 @@ fn cooperative_wake_ready(
     Ok(())
 }
 
+/// Per-seat empty-composer samples of one host.
+pub(crate) type EmptyWindows = Mutex<HashMap<SeatId, EmptyComposerWindow>>;
+
+/// Empty samples are process-local, bounded, and tied to the same target.
+/// Missing samples for over a minute restart qualification. These are
+/// screen observations, not a claim that no keyboard activity occurred.
+/// An unfocused pane is ready at once; a focused one is ready after `FOCUSED_EMPTY_MILLIS` of
+/// samples, `now` being the host's monotonic millisecond.
+pub(crate) fn focused_empty_ready(
+    windows: &EmptyWindows,
+    now: u64,
+    target: &SafeWakeTarget,
+    focused: bool,
+    previous: Option<EmptyComposerWindow>,
+) -> bool {
+    if !focused {
+        return true;
+    }
+    let mut identity = target.clone();
+    // This counter orders reads, not the identity of the composer.
+    identity.observation_sequence = 0;
+    let since = previous
+        .filter(|window| {
+            window.target == identity
+                && now >= window.last
+                && now - window.last <= FOCUSED_EMPTY_MILLIS
+        })
+        .map_or(now, |window| window.since);
+    if now.saturating_sub(since) >= FOCUSED_EMPTY_MILLIS {
+        return true;
+    }
+    let Ok(mut windows) = windows.lock() else {
+        return false;
+    };
+    windows.retain(|_, window| now >= window.last && now - window.last <= FOCUSED_EMPTY_MILLIS);
+    if windows.len() < MAX_EMPTY_WINDOWS {
+        windows.insert(
+            target.seat.clone(),
+            EmptyComposerWindow {
+                target: identity,
+                since,
+                last: now,
+            },
+        );
+    }
+    false
+}
+
 impl NativeCli {
-    /// Empty samples are process-local, bounded, and tied to the same target.
-    /// Missing samples for over a minute restart qualification. These are
-    /// screen observations, not a claim that no keyboard activity occurred.
     fn focused_empty_ready(
         &self,
         target: &SafeWakeTarget,
         focused: bool,
         previous: Option<EmptyComposerWindow>,
     ) -> bool {
-        if !focused {
-            return true;
-        }
-        let now = self.clock.monotonic_now().0;
-        let mut identity = target.clone();
-        // This counter orders reads, not the identity of the composer.
-        identity.observation_sequence = 0;
-        let since = previous
-            .filter(|window| {
-                window.target == identity
-                    && now >= window.last
-                    && now - window.last <= FOCUSED_EMPTY_MILLIS
-            })
-            .map_or(now, |window| window.since);
-        if now.saturating_sub(since) >= FOCUSED_EMPTY_MILLIS {
-            return true;
-        }
-        let Ok(mut windows) = self.empty_windows.lock() else {
-            return false;
-        };
-        windows.retain(|_, window| now >= window.last && now - window.last <= FOCUSED_EMPTY_MILLIS);
-        if windows.len() < MAX_EMPTY_WINDOWS {
-            windows.insert(
-                target.seat.clone(),
-                EmptyComposerWindow {
-                    target: identity,
-                    since,
-                    last: now,
-                },
-            );
-        }
-        false
+        focused_empty_ready(
+            &self.empty_windows,
+            self.clock.monotonic_now().0,
+            target,
+            focused,
+            previous,
+        )
     }
 
     /// Records the block a wake attempt met (`None`: the attempt got past the composer checks).
