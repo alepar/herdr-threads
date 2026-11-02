@@ -19,8 +19,8 @@ fn tag_of(cluster: &Cluster, observer: usize, node: usize) -> String {
         .expect("a known node")
 }
 
-/// A handoff into a new terminal (`terminal`: the test-support switch turns the `--new-tab`
-/// target into a `NewTerminal`) or a new tab on `machine`'s node, as the seat on node 0.
+/// A handoff into a new terminal (`terminal`: `--new-terminal --space @MACHINE`) or a new tab
+/// (`--new-tab review --space w1@MACHINE`) on `machine`'s node, as the seat on node 0.
 fn handoff_into(
     cluster: &Cluster,
     seat: &herdr_threads::test_support::multinode::Seat,
@@ -28,28 +28,25 @@ fn handoff_into(
     terminal: bool,
     timeout_ms: &str,
 ) -> (i32, String, String) {
-    let mut env = vec![("HT_TEST_REMOTE_LAUNCH_TIMEOUT_MS", timeout_ms)];
-    if terminal {
-        env.push(("HT_TEST_REMOTE_TERMINAL", "1"));
-    }
-    cluster.text_as_env(
-        Some(seat),
-        0,
-        &[
-            "handoff",
-            "--new-tab",
-            "review",
-            "--space",
-            &format!("w1@{machine}"),
-            "--cwd",
-            "/tmp",
-            "--kind",
-            "claude",
-            "--",
-            "look at this",
-        ],
-        &env,
-    )
+    let env = vec![("HT_TEST_REMOTE_LAUNCH_TIMEOUT_MS", timeout_ms)];
+    let target: Vec<String> = if terminal {
+        vec![
+            "--new-terminal".into(),
+            "--space".into(),
+            format!("@{machine}"),
+        ]
+    } else {
+        vec![
+            "--new-tab".into(),
+            "review".into(),
+            "--space".into(),
+            format!("w1@{machine}"),
+        ]
+    };
+    let mut args = vec!["handoff"];
+    args.extend(target.iter().map(String::as_str));
+    args.extend(["--cwd", "/tmp", "--kind", "claude", "--", "look at this"]);
+    cluster.text_as_env(Some(seat), 0, &args, &env)
 }
 
 fn handoff_terminal(

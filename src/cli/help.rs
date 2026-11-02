@@ -70,6 +70,7 @@ const LAUNCH_HEAD: &str = r#"Target:
   --new-tab LABEL creates a tab in --space, else the caller's workspace, and launches in
   its root pane; a herdr-core needs --space (an app space).
   --new-terminal creates a herdr-core terminal parented on the calling terminal.
+  --new-terminal --space @MACHINE --cwd DIR creates one on another machine (DIR there).
   A herdr-core target runs the launch gate: --harness-binary and --name are refused, the
   preflight below is the argument check alone, and the agent starts idle.
 
@@ -124,7 +125,8 @@ Choose one target mode:
   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
     to an existing canonical seat without launching or restarting its session.
 On another machine: --pane PANE@MACHINE, or --new-tab LABEL --space SPACE@MACHINE
-  --cwd DIR (DIR on that machine); --existing --seat SEAT@MACHINE.
+  --cwd DIR (DIR on that machine), or --new-terminal --space @MACHINE --cwd DIR;
+  --existing --seat SEAT@MACHINE.
 Handoff requires an original top-level Agent and the guarded daemon capability.
 --new-tab conflicts with --existing, --tab, --pane and --seat. Directory example:
   handoff --new-tab review --kind HARNESS --profile-dir /absolute/profile --cwd /absolute/workdir -- "Review this change"
