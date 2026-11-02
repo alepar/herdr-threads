@@ -217,29 +217,10 @@ pub(crate) fn begin_retirement_fence(
         let _scope = crate::test_support::write_guard::enter_replicated_write_scope();
         let changed = tx.execute("UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,generation=generation+1,retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
             params![cutover.0,cutover_seq as i64,seat.as_str()]).map_err(store_error)?;
-        // Every open binding disconnects (`seat_retired`, side-effect hooks run) and ends through
-        // the sole transition; an already disconnected binding keeps its own reason.
-        crate::store::bindings::end_open_bindings(
-            tx,
-            &seat,
-            crate::store::bindings::DisconnectReason::SeatRetired,
-            cutover,
-        )?;
-        crate::store::catch_up::supersede_ended_bindings(tx, &seat, cutover)?;
-        tx.execute(
-            "DELETE FROM warning_offer WHERE seat_id=?1",
-            [seat.as_str()],
-        )
-        .map_err(store_error)?;
-        tx.execute(
-            "DELETE FROM in_turn_offer WHERE seat_id=?1",
-            [seat.as_str()],
-        )
-        .map_err(store_error)?;
-        crate::store::no_wake_reports::delete_for_retired(tx, &seat)?;
+        end_local_seat(tx, &seat, cutover)?;
         Ok(changed == 1)
     })?;
-    tx.execute("UPDATE wake_work SET reason_bits=0,reservation_id=NULL,reservation_boot=NULL,binding_generation=NULL WHERE seat_id=?1",[seat.as_str()]).map_err(store_error)?;
+    settle_local_seat(tx, &seat)?;
     let job = RetirementJobId::new(crate::store::public_ids::fresh(
         tx,
         prefix::RETIREMENT,
@@ -247,18 +228,6 @@ pub(crate) fn begin_retirement_fence(
     )?);
     tx.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation) VALUES (?1,?2,?3,?4,?5,?6,?7)",
         params![job.as_str(),seat.as_str(),cutover.0,boot,epoch,target,generation]).map_err(store_error)?;
-    // The retired seat's own server advances its lifecycle; a seat with no server (remote) leaves
-    // every local host's lifecycle alone.
-    if let Some(host) = tx
-        .query_row(
-            "SELECT host_id FROM seats WHERE id=?1",
-            [seat.as_str()],
-            |r| r.get::<_, Option<i64>>(0),
-        )
-        .map_err(store_error)?
-    {
-        schema::bump_host_lifecycle_revision(tx, crate::ports::HostId::from_row(host))?;
-    }
     schema::bump_filter_revision(tx, instance, "directory", "all")?;
     bump_member_directory(tx, instance, &seat)?;
     Ok(RetirementJob {
@@ -270,6 +239,53 @@ pub(crate) fn begin_retirement_fence(
         high_water_ordinal: 0,
         processed_units: 0,
     })
+}
+
+/// What retiring a local seat ends, inside its eligibility transition: open bindings (the sole
+/// ending transition; `seat_retired`, side-effect hooks run, an already disconnected binding keeps
+/// its own reason), catch-ups of ended bindings, the seat's offers and its no-wake reports. The
+/// fence and a replayed own `seat.retired` both run this: retirement has one transition.
+pub(crate) fn end_local_seat(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    cutover: UtcMillis,
+) -> Result<(), ApiError> {
+    crate::store::bindings::end_open_bindings(
+        tx,
+        seat,
+        crate::store::bindings::DisconnectReason::SeatRetired,
+        cutover,
+    )?;
+    crate::store::catch_up::supersede_ended_bindings(tx, seat, cutover)?;
+    tx.execute(
+        "DELETE FROM warning_offer WHERE seat_id=?1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        "DELETE FROM in_turn_offer WHERE seat_id=?1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
+    crate::store::no_wake_reports::delete_for_retired(tx, seat)?;
+    Ok(())
+}
+
+/// After the retirement transition: the seat's wake work resets and its own server's lifecycle
+/// revision advances. A seat with no server (remote) leaves every local host's lifecycle alone.
+pub(crate) fn settle_local_seat(tx: &Transaction<'_>, seat: &SeatId) -> Result<(), ApiError> {
+    tx.execute("UPDATE wake_work SET reason_bits=0,reservation_id=NULL,reservation_boot=NULL,binding_generation=NULL WHERE seat_id=?1",[seat.as_str()]).map_err(store_error)?;
+    if let Some(host) = tx
+        .query_row(
+            "SELECT host_id FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .map_err(store_error)?
+    {
+        schema::bump_host_lifecycle_revision(tx, crate::ports::HostId::from_row(host))?;
+    }
+    Ok(())
 }
 
 pub fn advance_retirement(

@@ -467,18 +467,43 @@ pub fn materialize_seat_retired(
     let retired_seq = i64::try_from(m.decision_seq)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "decision_seq out of range"))?;
     let changed = schema::apply_eligibility_transition(tx, &instance, |tx| {
+        // A local row takes the fence's transition in the fence's order; a remote row keeps the
+        // bare statements (it holds no bindings, offers or wake work here).
+        if local_row {
+            schema::clear_open_unavailability_for_seat(
+                tx,
+                id,
+                crate::protocol::time::UtcMillis(payload.retired_at),
+            )?;
+        }
+        let generation_bump = if local_row {
+            ",generation=generation+1"
+        } else {
+            ""
+        };
         let changed = tx
             .execute(
-                "UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
+                &format!("UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL{generation_bump},retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'"),
                 params![payload.retired_at, retired_seq, id],
             )
             .map_err(store_error)?;
+        if local_row && changed == 1 {
+            crate::store::control::end_local_seat(
+                tx,
+                &payload.seat,
+                crate::protocol::time::UtcMillis(payload.retired_at),
+            )?;
+        }
         Ok(changed == 1)
     })?;
     if !changed {
         return Ok(());
     }
-    crate::store::no_wake_reports::delete_for_retired(tx, &payload.seat)?;
+    if local_row {
+        crate::store::control::settle_local_seat(tx, &payload.seat)?;
+    } else {
+        crate::store::no_wake_reports::delete_for_retired(tx, &payload.seat)?;
+    }
     schema::bump_filter_revision(tx, &instance, "directory", "all")?;
     crate::store::control::bump_member_directory(tx, &instance, &payload.seat)?;
     let job = crate::protocol::ids::RetirementJobId::new(crate::store::public_ids::fresh(

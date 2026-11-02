@@ -50,6 +50,7 @@ pub use retirement::begin_retirement;
 pub(crate) use retirement::begin_retirement_authored;
 #[cfg(test)]
 pub(crate) use retirement::begin_retirement_fence;
+pub(crate) use retirement::{end_local_seat, settle_local_seat};
 pub use thread::NewThread;
 pub use thread::archive;
 pub(crate) use thread::author_register;

@@ -347,6 +347,10 @@ before any pass of the incarnation saw it, is never retired this way and waits f
 A retirement of a published seat is also a `seat.retired` fact. Other nodes retire their remote copy of the seat
 only on that fact from the seat's home node (a fact from any other origin is recorded `failed` and retires
 nothing); they never retire a remote seat on their own evidence.
+A replayed own `seat.retired` of a local row (a restore from the own log) takes the same transition as the fence: its
+open bindings end `seat_retired`, their catch-ups are superseded, its offers and no-wake reports go, its wake work
+resets, its generation and its server's lifecycle revision advance. Its `retirements` row is `replicated`, with no
+closure evidence.
 
 **Startup enrollment.** Installed Claude/Codex top-level `SessionStart` lifecycle hooks enroll
 `HERDR_PANE_ID` through the same journaled ordinary canonical guarded seat resolver as `launch`.

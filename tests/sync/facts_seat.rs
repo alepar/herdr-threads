@@ -1199,9 +1199,11 @@ fn seat_retired_remote_row_and_replicated_job_row() {
             None
         )]
     );
-    // B's own row is untouched by its own fact (the fence retires it, not the handler).
-    assert_eq!(b.seat(&seat).unwrap().0, "resolved");
-    assert!(retirement_rows(&b).is_empty());
+    // B's own row, retired by its own fact (`author_retired` authors the fact alone, no fence behind
+    // it), takes the fence's transition on replay: retired, with one `replicated` retirement row.
+    assert_eq!(b.seat(&seat).unwrap().0, "retired");
+    assert_eq!(retirement_rows(&b).len(), 1);
+    assert_eq!(retirement_rows(&b)[0].1, "replicated");
 }
 
 #[test]
