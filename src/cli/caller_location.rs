@@ -37,7 +37,11 @@ use std::ffi::OsString;
 
 use crate::host::named::tmux;
 use crate::host::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV, named, native};
+use crate::protocol::commands::HINT_PANE_HOST;
 use crate::protocol::ids::{HostLocator, HostTargetId, NAMED_HOST_LOCATOR, SeatName};
+
+/// The Herdr server socket of a pane caller; it names the server of the pane hint (M10).
+const HERDR_SOCKET_ENV: &str = "HERDR_SOCKET_PATH";
 
 /// Which entry point is asking. A hook only trusts the pane family when Herdr
 /// itself marked the environment (`HERDR_ENV=1`); the CLI accepts a pane id.
@@ -165,10 +169,11 @@ impl CallerEnv {
     }
 
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Self {
-        let names = native::ENV_VARS
-            .iter()
-            .chain(named::ENV_VARS)
-            .chain([&HC_TERMINAL_ID_ENV, &HC_TERMINAL_SOCKET_ENV]);
+        let names = native::ENV_VARS.iter().chain(named::ENV_VARS).chain([
+            &HC_TERMINAL_ID_ENV,
+            &HC_TERMINAL_SOCKET_ENV,
+            &HERDR_SOCKET_ENV,
+        ]);
         let vars = names
             .filter_map(|&name| {
                 lookup(name)
@@ -213,12 +218,25 @@ impl CallerEnv {
             .text(HC_TERMINAL_ID_ENV)
             .zip(self.text(HC_TERMINAL_SOCKET_ENV))
             .map(|(id, socket)| format!("{socket}:{id}"));
-        let parts: Vec<String> = self
-            .text(native::ENV_PANE_ID)
-            .into_iter()
-            .chain(terminal)
-            .collect();
+        let pane = self.text(native::ENV_PANE_ID);
+        let host = pane
+            .as_ref()
+            .and_then(|_| self.pane_host())
+            .map(|host| format!("{HINT_PANE_HOST}{host}"));
+        let parts: Vec<String> = pane.into_iter().chain(terminal).chain(host).collect();
         (!parts.is_empty()).then(|| parts.join("\n"))
+    }
+
+    /// The Herdr server of this process's pane, spelled as `RuntimeContext` spells a host: a
+    /// canonical parent and the file name, so it equals `herdr_hosts.endpoint`.
+    fn pane_host(&self) -> Option<String> {
+        let socket = std::path::PathBuf::from(self.text(HERDR_SOCKET_ENV)?);
+        let endpoint = socket
+            .parent()?
+            .canonicalize()
+            .ok()?
+            .join(socket.file_name()?);
+        endpoint.to_str().map(str::to_owned)
     }
 
     /// The tmux wake hint `tmux:<socket>:<server_pid>:<pane>` of a named caller that runs inside

@@ -811,6 +811,20 @@ fn hint_candidates_split_pane_and_terminals() {
     assert_eq!(hint_candidates(""), Vec::<LocateCandidate>::new());
 }
 
+// Kills: the pane-host part read as one more pane, which the inherited-name check would ask each
+// host about.
+#[test]
+fn hint_candidates_skip_the_pane_host_part() {
+    assert_eq!(
+        hint_candidates("w1:p2\npane-host=/a.sock"),
+        vec![pane("w1:p2")]
+    );
+    assert_eq!(
+        hint_candidates("w1:p2\n/run/hc/a.sock:t4\npane-host=/a.sock"),
+        vec![pane("w1:p2"), terminal_at_id("/run/hc/a.sock", "t4")]
+    );
+}
+
 fn terminal_at_id(socket: &str, id: &str) -> LocateCandidate {
     LocateCandidate::Terminal {
         socket: socket.into(),

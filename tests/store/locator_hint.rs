@@ -347,6 +347,13 @@ fn stored_hint_is_the_display_form_of_the_first_candidate() {
         f.resolve(Some("w1:p1\n/run/hc/alpha.sock:t1"), "op-4").1,
         None
     );
+    // A pane-host part never reaches the stored hint.
+    f.bind(&seat, "s2b");
+    f.resolve(Some("w1:p9\npane-host=/run/h.sock"), "op-2b");
+    assert_eq!(
+        f.hints().last().cloned().flatten().as_deref(),
+        Some("w1:p9")
+    );
     // A socket path past the stored-hint bound still stores its short display form.
     f.bind(&seat, "s3");
     let long = format!("/run/{}/beta.sock:t2", "d".repeat(200));
@@ -354,5 +361,46 @@ fn stored_hint_is_the_display_form_of_the_first_candidate() {
     assert_eq!(
         f.hints().last().cloned().flatten().as_deref(),
         Some("beta:t2")
+    );
+}
+
+fn hosts(f: &Fixture) -> Vec<(Option<String>, Option<String>)> {
+    let mut stmt = f
+        .conn
+        .prepare("SELECT locator_hint, locator_host FROM occupant_bindings ORDER BY ordinal")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+// Kills: a pane's server dropped (M10 then compares the bare pane id), a non-canonical host
+// stored (a hint is never trusted as a locator), a host kept for a terminal hint, and M9 firing
+// for the same pane id seen from two servers.
+#[test]
+fn pane_host_is_recorded_beside_the_pane_hint() {
+    let mut f = fixture();
+    let (seat, _) = f.resolve(None, "op-0");
+    f.bind(&seat, "s1");
+    f.resolve(Some("w1:p2\npane-host=/run/h.sock"), "op-1");
+    assert_eq!(
+        hosts(&f),
+        vec![(Some("w1:p2".to_owned()), Some("/run/h.sock".to_owned()))]
+    );
+    // The same pane id from another server is the same hint: no M9.
+    f.bind(&seat, "s2");
+    let (_, second) = f.resolve(Some("w1:p2\npane-host=/run/other.sock"), "op-2");
+    assert_eq!(second, None);
+    // A host that is no canonical locator is dropped.
+    f.bind(&seat, "s3");
+    f.resolve(Some("w1:p3\npane-host=rel/h.sock"), "op-3");
+    assert_eq!(hosts(&f).last().unwrap(), &(Some("w1:p3".to_owned()), None));
+    // A terminal hint carries no host.
+    f.bind(&seat, "s4");
+    f.resolve(Some("/run/hc/alpha.sock:t1"), "op-4");
+    assert_eq!(
+        hosts(&f).last().unwrap(),
+        &(Some("alpha:t1".to_owned()), None)
     );
 }
