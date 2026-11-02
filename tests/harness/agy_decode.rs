@@ -579,14 +579,14 @@ fn hook_agy_prints_nothing_on_every_fixture_without_a_pane_or_daemon() {
                 pane: None,
                 ambiguous: None,
                 named: None,
-                terminal_site: None,
+                caller: Default::default(),
             },
             HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
                 ambiguous: None,
                 named: None,
-                terminal_site: None,
+                caller: Default::default(),
             },
         ] {
             let outcome = run_hook(

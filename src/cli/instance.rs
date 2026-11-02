@@ -81,8 +81,20 @@ fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
 
 impl InstanceInputs {
     pub fn from_process(state_flag: Option<PathBuf>, host_flag: Option<PathBuf>) -> Self {
+        Self::from_caller(
+            state_flag,
+            host_flag,
+            &super::caller_location::CallerEnv::from_process(),
+        )
+    }
+
+    /// [`Self::from_process`] over a caller environment the entry point already read.
+    pub(crate) fn from_caller(
+        state_flag: Option<PathBuf>,
+        host_flag: Option<PathBuf>,
+        caller: &super::caller_location::CallerEnv,
+    ) -> Self {
         let path = std::env::var_os("PATH");
-        let caller = super::caller_location::CallerEnv::from_process();
         Self {
             state_flag,
             host_flag,
