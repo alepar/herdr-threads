@@ -34,7 +34,6 @@ pub struct ServiceConfig {
 /// The test-support variable (milliseconds) that replaces the lanes' 5 s
 /// safety ticks and cadences in a daemon loaded by [`ServiceConfig::load`].
 /// Ordinary builds ignore it.
-#[cfg(feature = "test-support")]
 pub const TEST_LANE_TICK_ENV: &str = "HT_TEST_LANE_TICK_MS";
 
 impl Default for ServiceConfig {
