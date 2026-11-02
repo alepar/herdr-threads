@@ -34,6 +34,7 @@ use crate::{
     host::hc::foreign_terminal_process_names,
     ports::{HostCallContext, HostPort, ProcessInfo},
     protocol::{
+        commands::HINT_PANE_HOST,
         ids::HostTargetId,
         locate::{CandidateVerdict, LocateCaller, LocateCandidate, LocateReply},
         results::{ApiError, ErrorCode},
@@ -160,10 +161,11 @@ pub fn inherited_name_detail(name: &str, host: &str) -> String {
 pub type CorePort<'a> = &'a dyn Fn(&str) -> Result<Arc<dyn HostPort>, ApiError>;
 
 /// The candidates of a `ResolveSeat.locator_hint`: parts joined by `\n`; a part starting with `/`
-/// is `<socket>:<tN>`, split at its last `:`; anything else is a pane.
+/// is `<socket>:<tN>`, split at its last `:`; anything else is a pane. A `pane-host=` part names
+/// the server of a pane part and is no candidate.
 pub fn hint_candidates(hint: &str) -> Vec<LocateCandidate> {
     hint.split('\n')
-        .filter(|part| !part.is_empty())
+        .filter(|part| !part.is_empty() && !part.starts_with(HINT_PANE_HOST))
         .map(
             |part| match part.strip_prefix('/').and(part.rsplit_once(':')) {
                 Some((socket, id)) => LocateCandidate::Terminal {

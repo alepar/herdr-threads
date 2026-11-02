@@ -446,6 +446,70 @@ fn locator_hint_carries_socket_and_every_candidate() {
     assert_eq!(hint(&[&terminal]), None, "no name, no hint");
 }
 
+// Kills: a pane hint that names no server (M10 then compares the bare pane id across Herdr
+// hosts), a server sent with no pane, and a symlinked socket directory spelled as written (it
+// would never equal the daemon's canonical `herdr_hosts.endpoint`).
+#[test]
+fn locator_hint_names_the_panes_herdr_server() {
+    let named = [("HERDR_THREADS_SEAT_NAME", "reviewer")];
+    let hint = |pairs: &[&[(&str, &str)]]| env(&pairs.concat()).locator_hint();
+    assert_eq!(
+        hint(&[
+            &named,
+            &[
+                ("HERDR_PANE_ID", "w1:p2"),
+                ("HERDR_SOCKET_PATH", "/herdr.sock")
+            ]
+        ])
+        .as_deref(),
+        Some("w1:p2\npane-host=/herdr.sock")
+    );
+    assert_eq!(
+        hint(&[&named, &[("HERDR_PANE_ID", "w1:p2")]]).as_deref(),
+        Some("w1:p2")
+    );
+    assert_eq!(
+        hint(&[&named, &[("HERDR_SOCKET_PATH", "/herdr.sock")]]),
+        None,
+        "a server with no pane names nothing"
+    );
+    assert_eq!(
+        hint(&[
+            &named,
+            &[
+                ("HERDR_PANE_ID", "w1:p2"),
+                ("HERDR_SOCKET_PATH", "/no/such/dir/herdr.sock")
+            ]
+        ])
+        .as_deref(),
+        Some("w1:p2"),
+        "a parent that cannot be canonicalized sends no host part"
+    );
+
+    use herdr_threads::test_support::scratch::temp_path;
+    let id = std::process::id();
+    let real = temp_path(format!("ht-pane-host-real-{id}"));
+    let link = temp_path(format!("ht-pane-host-link-{id}"));
+    std::fs::create_dir_all(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let socket = link.join("herdr.sock");
+    let expected = format!(
+        "w1:p2\npane-host={}",
+        real.canonicalize().unwrap().join("herdr.sock").display()
+    );
+    assert_eq!(
+        hint(&[
+            &named,
+            &[
+                ("HERDR_PANE_ID", "w1:p2"),
+                ("HERDR_SOCKET_PATH", socket.to_str().unwrap())
+            ]
+        ])
+        .as_deref(),
+        Some(expected.as_str())
+    );
+}
+
 // Kills: a caller-location variable (`HC_TERMINAL_ID`, `TMUX`, ...) missing from the test scrub, so
 // the suite's result depends on whether the runner sits in a herdr-core terminal or a tmux pane.
 #[test]

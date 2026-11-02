@@ -113,6 +113,14 @@ impl Fixture {
             .0
     }
 
+    /// A Herdr TUI host at `socket`.
+    fn herdr(&mut self, socket: &str) -> HostId {
+        let locator = HostLocator::parse(socket).unwrap();
+        crate::store::hosts::attach_host(&mut self.conn, &locator, 0, HostKind::Herdr)
+            .unwrap()
+            .0
+    }
+
     /// [`Self::allocate`] on `host`.
     fn allocate_on(
         &mut self,
@@ -224,4 +232,65 @@ fn same_tn_on_another_core_still_allocates() {
         f.allocate_on(beta, "t1", "alloc-1").is_ok(),
         "t1 of core beta is not the named seat's terminal"
     );
+}
+
+// Kills: a refusal by a named binding whose process exited (liveness `disconnected`), which holds
+// the pane until the seat is retired.
+#[test]
+fn exited_named_agent_no_longer_refuses() {
+    let mut f = fixture();
+    f.named_seat_on("w1:p2");
+    f.conn
+        .execute(
+            "UPDATE occupant_bindings SET liveness='disconnected', disconnected_at=5, disconnect_reason=?1",
+            [crate::store::bindings::DisconnectReason::ProcessExit.as_str()],
+        )
+        .unwrap();
+    assert!(f.allocate("w1:p2", "alloc-1").is_ok(), "exited named agent");
+}
+
+// Kills: a liveness filter that is not reversible (a reconnected binding must refuse again).
+#[test]
+fn reconnected_named_agent_refuses_again() {
+    let mut f = fixture();
+    f.named_seat_on("w1:p2");
+    f.conn
+        .execute(
+            "UPDATE occupant_bindings SET liveness='disconnected', disconnected_at=5, disconnect_reason='process_exit'",
+            [],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "UPDATE occupant_bindings SET liveness='connected', disconnected_at=NULL, disconnect_reason=NULL",
+            [],
+        )
+        .unwrap();
+    let refused = f.allocate("w1:p2", "alloc-1").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::TargetAlreadyOwned);
+}
+
+// Kills: M10 comparing the bare pane id, which refuses the same pane id of another Herdr server.
+#[test]
+fn same_pane_id_on_another_herdr_still_allocates() {
+    let mut f = fixture();
+    f.named_seat_on("w1:p2\npane-host=/run/herdr-a.sock");
+    let a = f.herdr("/run/herdr-a.sock");
+    let b = f.herdr("/run/herdr-b.sock");
+    assert!(
+        f.allocate_on(b, "w1:p2", "alloc-1").is_ok(),
+        "w1:p2 of server b is not the named seat's pane"
+    );
+    let refused = f.allocate_on(a, "w1:p2", "alloc-2").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::TargetAlreadyOwned);
+}
+
+// Pins the accepted limit: a pane hint with no reported server matches that pane id on every host.
+#[test]
+fn pane_hint_with_no_server_matches_any_host() {
+    let mut f = fixture();
+    f.named_seat_on("w1:p2");
+    let a = f.herdr("/run/herdr-a.sock");
+    let refused = f.allocate_on(a, "w1:p2", "alloc-1").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::TargetAlreadyOwned);
 }

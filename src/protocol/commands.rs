@@ -690,6 +690,10 @@ pub struct RetirementJobsQuery {
     pub page: PageRequest,
 }
 
+/// The `ResolveSeat.locator_hint` part naming the Herdr server of the pane part beside it
+/// (`pane-host=<socket>`, a canonical locator). Never first, so a binding stores the pane.
+pub const HINT_PANE_HOST: &str = "pane-host=";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolveSeat {
@@ -701,7 +705,8 @@ pub struct ResolveSeat {
     /// environment carries them. The daemon reads the server environ of the host that owns each
     /// (the core a socket names, attached for the check) and refuses a name equal to the
     /// server's own (M6). A binding stores only the first, a terminal as `<stem>:<tN>`. Absent
-    /// everywhere else, so those requests' bytes are unchanged.
+    /// everywhere else, so those requests' bytes are unchanged. A pane part may be followed by a
+    /// [`HINT_PANE_HOST`] part naming its Herdr server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locator_hint: Option<String>,
     /// N2-hint: the caller's tmux wake hint, `tmux:<socket>:<server_pid>:<pane>`, sent only by a

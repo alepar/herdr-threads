@@ -589,3 +589,33 @@ fn a_retired_seat_publishes_at_the_next_tick() {
         }
     });
 }
+
+// Kills: a CLI that sends no server beside the pane (M10 would compare the bare pane id), a wire
+// or store that drops it, and a `locator_host` stored for a pane the hint never named.
+#[test]
+fn named_pane_hint_records_its_herdr_host() {
+    let rig = Rig::standalone("ns-pane-host");
+    let (_alice, bob) = two_named(&rig);
+    let mut command = rig.command();
+    command
+        .args(["send", "--seat", &bob, "--body", "hi"])
+        .env("HERDR_THREADS_SEAT_NAME", "alice")
+        .env("HERDR_PANE_ID", "w1:p2")
+        .env("HERDR_SOCKET_PATH", "/herdr.sock");
+    herdr_threads::test_support::isolation::as_agent(&mut command, "claude", "s-alice");
+    let sent = run(command, None);
+    assert_eq!(sent.code, Some(0), "{sent:?}");
+    let row: (Option<String>, Option<String>) = rig
+        .db()
+        .query_row(
+            "SELECT b.locator_hint, b.locator_host FROM occupant_bindings b \
+             JOIN seats s ON s.id=b.seat_id WHERE s.name='alice' AND b.ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (Some("w1:p2".to_owned()), Some("/herdr.sock".to_owned()))
+    );
+}

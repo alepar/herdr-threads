@@ -1764,3 +1764,14 @@ lines 237, 1139, 1163, 1500 and 1585-1589), which stay as written: the cache key
 unstamped-never-cached behaviours, and the cached-`NotAncestor` concern under terminal identity no longer exist. The
 checklist item on a reused pid is met trivially (there is no cached verdict to return). TRUST-POLICY drops the matching
 sentence.
+
+### 2026-11-02: M10 needs a live binding and compares the Herdr server (ht-kqrt.234)
+
+This amends the bullet that says a Herdr pane's hint is the bare pane id (M10, SA9). M10 now refuses only for a
+connected top-level binding of a live named seat: a named process that exits is disconnected by the liveness
+worker but its binding never ends, so the old query held the pane until the seat was retired. M10 also compares the
+Herdr server: the caller sends its canonical `HERDR_SOCKET_PATH` as a `pane-host=<socket>` part after the pane in
+`ResolveSeat.locator_hint` (a part, not a field, so `ResolveSeat` and the wire are unchanged), the binding stores it in
+`occupant_bindings.locator_host` (migration 0014), and the pane hint refuses only an allocation on that host. A pane
+hint with no recorded server still matches that pane id on every Herdr host (accepted limit; the outcome is M10
+naming a live seat, never a wrong bind). `locator_hint`, M9 and `seat inspect` read the pane part exactly as before.

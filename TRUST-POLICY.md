@@ -727,11 +727,18 @@ model open work, and summary closure never changes receipt state or installs glo
   M9 (`herdr-threads: seat <name> now bound from <loc1> and <loc2>`, 41 bytes + fields). The decision reads
   only the persisted rows, so it fires once per (seat, locator), also across daemon restarts. `seat inspect`
   lists each binding with its hint. `locator_hint` is a hint, never authority: only M9, M10 and `seat inspect`
-  read it, and it never selects, binds, moves or ends a seat. M10 (pane-form allocation refused for a
-  pane a live named seat's binding hinted) compares host plus target: a Herdr pane's hint is the bare
-  pane id, a herdr-core terminal's is `<socket stem>:<tN>`, built from the allocation's host endpoint, so
-  `t1` of another core never matches. Accepted limit: hints store the socket's file stem, so two cores
-  with one stem share the form, and the outcome is M10 naming a live seat, never a wrong bind. It is the caller's claim, so the attribution
+  read it (and `occupant_bindings.locator_host`, below, M10 alone), and it never selects, binds, moves or ends a
+  seat. M10 (pane-form allocation refused for a pane a named seat's binding hinted) needs a connected
+  top-level binding of a live named seat, so a named process that exited stops refusing once liveness
+  disconnects it (its binding never ends, so the pane would otherwise stay refused until the seat retires). It
+  compares host plus target: a Herdr pane's hint is the bare pane id and its server is
+  `occupant_bindings.locator_host` (the caller's `HERDR_SOCKET_PATH`, a canonical parent plus file name,
+  sent as a `pane-host=` part of the wire hint and stored only when it parses as a locator), compared with the
+  allocation's host endpoint; a herdr-core terminal's hint is `<socket stem>:<tN>`, built from the
+  allocation's host endpoint, so `t1` of another core never matches. Accepted limits: a pane hint with no
+  reported server (a binding marked before `locator_host`, or a caller with no `HERDR_SOCKET_PATH`) matches
+  that pane id on every Herdr host, and hints store the socket's file stem, so two cores with one stem share
+  the form; the outcome of each is M10 naming a live seat, never a wrong bind. It is the caller's claim, so the attribution
   of a hint to a binding is best effort (it lands on the newest unmarked open binding); the tmux hint is a
   separate field held in daemon memory and is never recorded here.
 - *Independent lifecycle forks (ht-i9a7)*: neutral `EventKind::Fork` maps to a

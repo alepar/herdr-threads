@@ -7,7 +7,8 @@ use crate::{
     },
     protocol::{
         authority::MutationPermit,
-        ids::{HostBootId, HostTargetId, SeatId, SeatName, prefix},
+        commands::HINT_PANE_HOST,
+        ids::{HostBootId, HostLocator, HostTargetId, SeatId, SeatName, prefix},
         results::{ApiError, CommandResult, ErrorCode},
         time::CallBudget,
     },
@@ -705,11 +706,16 @@ pub(crate) fn ordinary_resolution_apply(
 /// second, ordinary seat for it. The hint is a hint, never authority: it only refuses an
 /// allocation, and the refusal names the seat so the caller addresses it by name.
 ///
-/// It compares host plus target. A Herdr pane's hint is the bare pane id; a herdr-core terminal's
-/// is `<stem>:<tN>` (see [`stored_hint`]), so the allocation's host endpoint builds that second
-/// form and a `t1` of another core never matches. Accepted limit: hints store the socket's file
-/// stem, so two cores with one stem share the form, and the outcome is M10 naming a live seat,
-/// never a wrong bind.
+/// Only a connected binding refuses: a named process that exited is disconnected by the liveness
+/// worker (its binding never ends), and its pane is free again.
+///
+/// It compares host plus target. A Herdr pane's hint is the bare pane id and its server is
+/// `occupant_bindings.locator_host` (the caller's `HERDR_SOCKET_PATH`), compared with the
+/// allocation's host endpoint; a herdr-core terminal's hint is `<stem>:<tN>` (see
+/// [`stored_hint`]), so the endpoint builds that second form and a `t1` of another core never
+/// matches. Accepted limits: a pane hint with no reported server (`locator_host` NULL) matches
+/// that pane id on every Herdr host, and hints store the socket's file stem, so two cores with
+/// one stem share the form; the outcome of each is M10 naming a live seat, never a wrong bind.
 fn refuse_named_seat_pane(
     tx: &Transaction<'_>,
     host_endpoint: Option<&str>,
@@ -721,9 +727,12 @@ fn refuse_named_seat_pane(
     let name: Option<String> = tx
         .query_row(
             "SELECT s.name FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
-             WHERE b.locator_hint IN (?1, ?2) AND b.ended_at IS NULL AND b.role='top_level' \
-             AND s.name IS NOT NULL AND s.state<>'retired' ORDER BY b.ordinal DESC LIMIT 1",
-            [pane.as_str(), terminal_form.as_str()],
+             WHERE b.ended_at IS NULL AND b.liveness='connected' AND b.role='top_level' \
+             AND s.name IS NOT NULL AND s.state<>'retired' \
+             AND (b.locator_hint=?2 OR (b.locator_hint=?1 \
+                  AND (b.locator_host IS NULL OR b.locator_host=?3))) \
+             ORDER BY b.ordinal DESC LIMIT 1",
+            params![pane.as_str(), terminal_form.as_str(), host_endpoint],
             |r| r.get(0),
         )
         .optional()
@@ -857,6 +866,13 @@ fn stored_hint(hint: &str) -> Option<String> {
     Some(stem.map_or_else(|| id.to_owned(), |stem| format!("{stem}:{id}")))
 }
 
+/// The server a hint names for its pane, when it is a canonical locator.
+fn hinted_pane_host(hint: &str) -> Option<&str> {
+    hint.split('\n')
+        .find_map(|part| part.strip_prefix(HINT_PANE_HOST))
+        .filter(|host| HostLocator::parse(*host).is_ok())
+}
+
 /// N4-hint: record the locator a named seat is addressed from on the seat's open top-level
 /// binding that carries none yet, and return M9's `(earlier, new)` pair when `hint` is on no
 /// earlier row of the seat (ended rows included) while another distinct hint is. The decision
@@ -867,12 +883,13 @@ fn stored_hint(hint: &str) -> Option<String> {
 fn record_locator_hint(
     tx: &Transaction<'_>,
     seat: &SeatId,
-    hint: &str,
+    wire_hint: &str,
 ) -> Result<Option<(String, String)>, ApiError> {
-    let Some(hint) = stored_hint(hint) else {
+    let Some(hint) = stored_hint(wire_hint) else {
         return Ok(None);
     };
     let hint = hint.as_str();
+    let pane_host = hinted_pane_host(wire_hint);
     if hint.is_empty() || hint.len() > LOCATOR_HINT_MAX_BYTES || hint.chars().any(char::is_control)
     {
         return Ok(None);
@@ -908,8 +925,8 @@ fn record_locator_hint(
         .optional()
         .map_err(store_error)?;
     tx.execute(
-        "UPDATE occupant_bindings SET locator_hint=?1 WHERE ordinal=?2",
-        params![hint, ordinal],
+        "UPDATE occupant_bindings SET locator_hint=?1, locator_host=?3 WHERE ordinal=?2",
+        params![hint, ordinal, pane_host],
     )
     .map_err(store_error)?;
     Ok(earlier
