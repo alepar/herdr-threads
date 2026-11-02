@@ -646,3 +646,125 @@ fn plain_commands_without_the_variable_stay_writable() {
         "{flags:?}"
     );
 }
+
+/// A running `watch` child; stopped with its process group when dropped.
+struct Watch {
+    lines: std::sync::mpsc::Receiver<String>,
+    _child: OwnedChild,
+}
+
+impl Watch {
+    /// Lines until one satisfies `want`, within 30 s; every line seen is returned for the failure.
+    fn until(&self, what: &str, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let until = Instant::now() + Duration::from_secs(30);
+        let mut seen = Vec::new();
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            let Ok(line) = self.lines.recv_timeout(left) else {
+                break;
+            };
+            let value: serde_json::Value =
+                serde_json::from_str(&line).unwrap_or_else(|e| panic!("watch line {line:?}: {e}"));
+            if want(&value) {
+                return value;
+            }
+            seen.push(line);
+        }
+        panic!("no watch line for {what}; saw {seen:?}");
+    }
+}
+
+impl Rig {
+    /// The mod's `watch` child of `session` named `name` under `HERDR_THREADS_SEAT_READONLY=1`.
+    fn readonly_watch(&self, name: &str, session: &str) -> Watch {
+        use std::io::BufRead;
+        let mut command = self.command();
+        command
+            .args(["watch", "--harness", "claude", "--session", session])
+            .env("HERDR_THREADS_SEAT_NAME", name)
+            .env("HERDR_THREADS_SEAT_READONLY", "1");
+        as_agent(&mut command, "claude", session);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child: OwnedChild = command.spawn_owned().expect("spawn the watch child");
+        let stdout = child.stdout.take().unwrap();
+        let (sender, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Watch {
+            lines,
+            _child: child,
+        }
+    }
+}
+
+// Kills: a readonly `watch` that registers its channel without recording the marker
+// (`mark_readonly_caller` removed): bob is enrolled writable by his hook and only the watch
+// carries the variable, so a missing marker leaves the binding writable and the mod's
+// `watch ack` for the displayed row discharges the ACK.
+#[test]
+fn readonly_watch_records_the_marker_and_the_ack_stays_owed() {
+    let rig = Rig::start("nc-ro-watch");
+    let (alice, bob) = two_seats(&rig);
+    assert_eq!(
+        rig.readonly_flags(&bob),
+        vec![0],
+        "bob's hook enrolled a writable binding"
+    );
+    let watch = rig.readonly_watch("bob", "s-bob");
+    watch.until("connected", |v| {
+        v["kind"] == "status" && v["state"] == "connected"
+    });
+
+    let sent = rig.agent(
+        "alice",
+        "s-alice",
+        &[
+            "send",
+            "--seat",
+            &bob,
+            "--body",
+            "ack me",
+            "--require-ack",
+            &bob,
+        ],
+    );
+    assert_eq!(sent.code, Some(0), "{sent:?} from {alice}");
+    let id = sent_message(&sent);
+    watch.until("the displayed row", |v| v["body"] == "ack me");
+
+    // The mod acknowledges the row it displayed; the daemon decides on the binding's marker.
+    let acked = rig.agent(
+        "bob",
+        "s-bob",
+        &[
+            "watch",
+            "ack",
+            "--session",
+            "s-bob",
+            "--via",
+            "context",
+            &id,
+        ],
+    );
+    assert_eq!(acked.code, Some(0), "{acked:?}");
+    let owed = rig.agent("bob", "s-bob", &["pending-receipts", "--machine"]);
+    assert!(
+        owed.stdout.contains(&id),
+        "a readonly display leaves the ACK owed: {owed:?}"
+    );
+    let flags = rig.readonly_flags(&bob);
+    assert!(
+        flags.contains(&1),
+        "the watch recorded the readonly marker: {flags:?}"
+    );
+}

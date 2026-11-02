@@ -679,6 +679,73 @@ fn named_tmux_site_four_harnesses() {
     print_cells("named+tmux", &cells);
 }
 
+/// `from` sends `body` with an ACK request to `seat`; the finished send.
+fn send_requiring_ack(world: &World, seat: &str, from: &Caller, body: &str) -> Ran {
+    let sent = world.run(
+        from,
+        &[
+            "send",
+            "--seat",
+            seat,
+            "--body",
+            body,
+            "--require-ack",
+            seat,
+        ],
+        None,
+    );
+    assert_eq!(sent.code, Some(0), "{sent:?}");
+    sent
+}
+
+// Kills: a turn edge that does not bring a named tmux seat's wake back after a daemon restart:
+// the hook leaving the hint out of its `TurnState` report, or the daemon not handing it to the
+// host. A restart loses the in-memory hint, so only the turn edge's report can restore it, and
+// both halves alone decide the outcome. The control is a second sender after the restart and
+// before the hook: it is told `no_wake`, so the restart did lose the wake.
+#[test]
+fn turn_edge_restores_the_tmux_wake_after_a_daemon_restart() {
+    let Some(tmux) = PrivateTmux::start("cfgs-turn-edge") else {
+        return;
+    };
+    let mut world = World::new(Rig::standalone("cfgs-turn-edge"), Some(tmux), None);
+    let sender = claude("s-sender", Loc::Name("sender".into()));
+    let control = claude("s-control", Loc::Name("control".into()));
+    world.enroll(&sender);
+    world.enroll(&control);
+    // The harness stand-in is the pane's shell: it outlives every hook of the test.
+    let pane = world.tmux_pane();
+    let who = recipient("claude", Loc::Tmux("rcpt-claude".into(), pane));
+    let seat = world.enroll(&who);
+    assert_eq!(world.hook(&who, true).code, Some(0));
+    // A CLI call carries the tmux hint the daemon verifies for the binding.
+    assert_eq!(world.run(&who, &["inbox"], None).code, Some(0));
+    let before = send_requiring_ack(&world, &seat, &sender, "before the restart");
+    assert_eq!(
+        no_wake_warnings(&before),
+        0,
+        "a verified tmux wake: {before:?}"
+    );
+
+    world.rig.restart_daemon();
+    let lost = send_requiring_ack(&world, &seat, &control, "after the restart");
+    assert_eq!(
+        no_wake_warnings(&lost),
+        1,
+        "the restart lost the hint: {lost:?}"
+    );
+
+    // One turn: its edge re-establishes the hint, without any CLI call of the recipient.
+    let turn = world.hook(&who, true);
+    assert_eq!(turn.code, Some(0), "{turn:?}");
+    let after = send_requiring_ack(&world, &seat, &sender, "after the turn edge");
+    assert_eq!(
+        no_wake_warnings(&after),
+        0,
+        "the turn edge restored the wake: {after:?}"
+    );
+}
+
 // Kills: an hc terminal of any harness that cannot enroll or message, and one told it has an idle
 // wake with no mod channel (hc has no composer wake).
 #[test]

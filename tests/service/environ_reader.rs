@@ -19,7 +19,10 @@ use crate::{
         spawn::{OwnedChild, SpawnOwned, command},
     },
 };
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU32, AtomicUsize, Ordering},
+};
 
 /// No core can be had for any socket.
 fn no_core(_: &str) -> Result<Arc<dyn HostPort>, ApiError> {
@@ -34,6 +37,12 @@ pub(crate) struct EnvHost {
     server: AtomicU32,
     /// A herdr-core stand-in: `pane` is its terminal id and it answers terminal ids.
     core: bool,
+    /// Answers `creates_targets_itself`: a core that starts its own targets.
+    creates: bool,
+    /// How many times `target_root_process` was asked.
+    root_calls: AtomicUsize,
+    /// Every `note_wake_hint` handed to this host: (target, subject pid, hint).
+    hints: Mutex<Vec<(String, u32, String)>>,
 }
 
 impl EnvHost {
@@ -42,6 +51,9 @@ impl EnvHost {
             pane,
             server: AtomicU32::new(server.unwrap_or(0)),
             core: false,
+            creates: false,
+            root_calls: AtomicUsize::new(0),
+            hints: Mutex::default(),
         })
     }
     /// A herdr-core stand-in owning terminal `terminal`, served from `server`.
@@ -50,7 +62,28 @@ impl EnvHost {
             pane: terminal,
             server: AtomicU32::new(server.unwrap_or(0)),
             core: true,
+            creates: false,
+            root_calls: AtomicUsize::new(0),
+            hints: Mutex::default(),
         })
+    }
+    /// A stand-in of `pane` that answers terminal ids as `core` says and starts its own
+    /// targets as `creates` says, so one guard at a time can be the one that decides.
+    pub(crate) fn shaped(pane: &'static str, core: bool, creates: bool) -> Arc<Self> {
+        Arc::new(Self {
+            pane,
+            server: AtomicU32::new(0),
+            core,
+            creates,
+            root_calls: AtomicUsize::new(0),
+            hints: Mutex::default(),
+        })
+    }
+    pub(crate) fn root_calls(&self) -> usize {
+        self.root_calls.load(Ordering::SeqCst)
+    }
+    pub(crate) fn hints(&self) -> Vec<(String, u32, String)> {
+        self.hints.lock().unwrap().clone()
     }
     /// The server restarted as `pid`.
     pub(crate) fn restart_as(&self, pid: u32) {
@@ -69,11 +102,21 @@ impl HostPort for EnvHost {
     fn answers_terminal_ids(&self) -> bool {
         self.core
     }
+    fn creates_targets_itself(&self) -> bool {
+        self.creates
+    }
+    fn note_wake_hint(&self, target: &HostTargetId, subject_pid: u32, hint: &str) {
+        self.hints
+            .lock()
+            .unwrap()
+            .push((target.as_str().to_owned(), subject_pid, hint.to_owned()));
+    }
     fn target_root_process(
         &self,
         target: &HostTargetId,
         _: &HostCallContext,
     ) -> Result<Option<u32>, ApiError> {
+        self.root_calls.fetch_add(1, Ordering::SeqCst);
         Ok((target.as_str() == self.pane).then_some(1))
     }
     fn server_process(&self) -> Option<u32> {
