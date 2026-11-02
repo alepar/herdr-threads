@@ -3052,6 +3052,68 @@ fn a_dormant_binding_is_a_cooperative_wake_target_on_its_own_terminal() {
     let _ = std::fs::remove_file(path);
 }
 
+/// A named seat's tmux binding ends with its process and hc has no composer wake: the process exit
+/// leaves no dormant target, so nothing is a candidate, reserved or attempted (`HostKind::wakes_dormant_target`).
+/// The Herdr control in the same fixture is a candidate.
+#[test]
+fn a_named_or_hc_process_exit_is_no_wake_target() {
+    for (kind, woken) in [("herdr", true), ("named", false), ("hc", false)] {
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-wake-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
+        let db = context.open_writer().unwrap();
+        db.execute_batch("\
+            UPDATE herdr_hosts SET host_boot='host',host_epoch=2; UPDATE local_node SET decision_seq=1;\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+            INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane','host',2,1,0,'fresh','term-pane','inc','native_current_target',1);\
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
+            INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','invited');\
+            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','s',1,'pending',0,1,100,100,(SELECT id FROM local_node));\
+        ").unwrap();
+        db.execute("UPDATE herdr_hosts SET kind=?1", [kind])
+            .unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',1,'codex','session','self-reported','cooperative_top_level',0,0,'term-pane','inc','disconnected',5,'liveness_process_exit',4242,1)", []).unwrap();
+        let targets = crate::store::wake::wake_targets(&db, &SeatId::new("s"), true).unwrap();
+        assert_eq!(!targets.is_empty(), woken, "{kind}: wake_targets");
+        drop(db);
+        let store = SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings {
+                daemon_boot: Some(uuid::Uuid::parse_str(DAEMON_BOOT).unwrap()),
+                ..StoreSettings::default()
+            },
+        )
+        .unwrap();
+        let candidates = StorePort::wake_candidates(
+            &store,
+            crate::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget(),
+        )
+        .unwrap()
+        .items;
+        // The invitation keeps the seat a candidate; what the dormant binding adds is the reservation.
+        let reserved = candidates
+            .into_iter()
+            .find(|c| c.seat.as_str() == "s")
+            .and_then(|candidate| {
+                StorePort::reserve_wake(
+                    &store,
+                    crate::test_support::test_host_id(),
+                    &candidate,
+                    &budget(),
+                )
+                .unwrap()
+            });
+        assert_eq!(reserved.is_some(), woken, "{kind}: reserve_wake");
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
     let (store, path) = multi_store(&[

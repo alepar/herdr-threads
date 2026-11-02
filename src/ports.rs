@@ -4214,6 +4214,14 @@ impl HostKind {
         Self::IMPLEMENTED.contains(&self)
     }
 
+    /// Whether this host can wake a target with no live process of ours in it (the dormant binding,
+    /// TRUST-POLICY A4 *Wake*): its wake needs no binding, only the target. Read by the store, which
+    /// holds the stored kind and no host port; `tests/host_no_wake_tripwire.rs` holds it equal to
+    /// each host's own `target_wake_capability`.
+    pub fn wakes_dormant_target(self) -> bool {
+        matches!(self, HostKind::Herdr)
+    }
+
     /// The text a host row stores for this kind (`herdr_hosts.kind`).
     /// `Unknown` has none: it is only ever the reading of a foreign value.
     pub fn stored_name(self) -> Option<&'static str> {

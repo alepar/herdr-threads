@@ -954,7 +954,9 @@ model open work, and summary closure never changes receipt state or installs glo
   turn, so a session resumed in the pane sits idle unknown to the daemon. With no top-level binding of the seat
   connected, the last disconnected top-level agent binding (not a fork, `concurrent_session`) is a target when a
   process exit disconnected it (`liveness_process_exit`) and it has something to act on at the seat's threshold,
-  placed on the observed terminal and seat generation like any target. It authorizes nothing but an ordinary wake
+  placed on the observed terminal and seat generation like any target, and only on a host that can wake a target with no live
+  process (`HostKind::wakes_dormant_target`, today Herdr): a named seat's verified tmux binding ends with its process and hc
+  has no composer wake, so such a seat gets no dormant target and its sender reads `wake=no_wake`. It authorizes nothing but an ordinary wake
   prompt (never a soft-deadline poke, whose text names threads): no binding, seat, cursor, receipt or availability
   changes, and the session reconnects only through its own later check-in. A session that connects voids a wake
   still reserved for the dormant target, and a refused one retries at up to 5 minutes, since nothing else clears a
