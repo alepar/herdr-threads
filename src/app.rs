@@ -226,6 +226,13 @@ impl ElectedHostEvidence {
         }
     }
 
+    /// Refusals over the fallback and every session, the built-in named one included.
+    pub(crate) fn refusals(&self) -> (u64, Vec<crate::service::host_evidence::RefusedSeat>) {
+        let mut ledgers = self.release.evidences();
+        ledgers.push(Arc::clone(&self.status));
+        crate::service::host_evidence::merged_refusals(&ledgers)
+    }
+
     /// The status, incarnation witness and safe-prompt capability Health
     /// reports now.
     pub(crate) fn current(&self) -> (Arc<HostEvidenceStatus>, CapabilityState, CapabilityState) {
@@ -262,6 +269,18 @@ impl HostReleaseSource {
         self.0
             .as_ref()
             .map_or_else(Vec::new, |source| source.sessions.health_entries())
+    }
+
+    /// Every session's evidence ledger, the built-in one last; empty with no source.
+    fn evidences(&self) -> Vec<Arc<HostEvidenceStatus>> {
+        self.0.as_ref().map_or_else(Vec::new, |source| {
+            source
+                .sessions
+                .all_for_reads()
+                .iter()
+                .map(|session| Arc::clone(session.evidence()))
+                .collect()
+        })
     }
 
     fn observed(&self) -> Option<crate::host::compatibility::HostRelease> {
@@ -409,8 +428,7 @@ impl ElectedHealth {
             inputs.scheduler = ComponentStatus::Degraded(first.summary.clone());
         }
         inputs.degraded_lanes.extend(session_lanes);
-        inputs.transitions_refused = self.host.status.transitions_refused();
-        inputs.refused_seats = self.host.status.refused_seats();
+        (inputs.transitions_refused, inputs.refused_seats) = self.host.refusals();
         inputs.last_scheduler_tick_at = self.workers.first().and_then(|status| status.last_tick());
         if let Ok(observed) = self.host.harnesses.lock() {
             // A harness with a legacy contract always reports (`Unknown` until
