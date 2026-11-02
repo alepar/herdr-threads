@@ -141,19 +141,15 @@ pub(crate) fn automatic_before_topology<C: LocalClient + ?Sized, T>(
     require_automatic_capability(client, clock)?;
     topology()
 }
-/// The capability a retried automatic bootstrap needs: a V3 plan (it carries a placement) only
-/// that the daemon decodes V3 records (its host gates the plan itself), any other the node-wide
-/// automatic one.
-fn require_bootstrap_route_capability<C: LocalClient + ?Sized>(
+/// The capability a journaled automatic bootstrap needs on any path (fresh, retry, recovery): a
+/// V3 plan (it carries a placement) only that the daemon decodes V3 records (its host gates the
+/// plan itself), any other the node-wide automatic one.
+pub(crate) fn require_bootstrap_route_capability<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
-    original: &super::journal::PendingIntent,
+    identity: &AutomaticBootstrapIdentity,
 ) -> Result<(), RunError> {
-    if super::topology_handoff::automatic_bootstrap_identity(original)?
-        .plan
-        .placement
-        .is_some()
-    {
+    if identity.plan.placement.is_some() {
         super::topology_handoff::require_target_capability(client, clock)
     } else {
         require_automatic_capability(client, clock)
@@ -200,7 +196,14 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
     writer: &mut dyn Write,
 ) -> Result<bool, RunError> {
-    let ns = namespace(selected, instance, &parsed.output)?;
+    let ns = match target_endpoint(parsed, journal)? {
+        Some(host_endpoint) => HandoffNamespace {
+            instance: instance.to_string(),
+            state_dir: selected.state_dir.clone(),
+            host_endpoint,
+        },
+        None => namespace(selected, instance, &parsed.output)?,
+    };
     try_completed_with_namespace(parsed, journal, &ns, client, clock, writer)
 }
 
@@ -266,7 +269,11 @@ pub(crate) fn try_completed_with_namespace<C: LocalClient + ?Sized>(
             }
         }
         SemanticMutation::AutomaticBootstrap(_) => {
-            require_bootstrap_route_capability(client, clock, &original)?;
+            require_bootstrap_route_capability(
+                client,
+                clock,
+                &super::topology_handoff::automatic_bootstrap_identity(&original)?,
+            )?;
             super::topology_handoff::try_completed_automatic(
                 journal,
                 reference,
@@ -906,8 +913,8 @@ pub(crate) fn run(
             }
 
             if let SemanticMutation::AutomaticBootstrap(_) = original_kind(&original.semantic) {
-                require_bootstrap_route_capability(&client, clock.as_ref(), &original)?;
                 let identity = super::topology_handoff::automatic_bootstrap_identity(&original)?;
+                require_bootstrap_route_capability(&client, clock.as_ref(), &identity)?;
                 let current = match client.call(
                     Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
                         identity: identity.clone(),
@@ -1419,7 +1426,7 @@ pub(crate) fn try_run_automatic_operator_with_ports<'a>(
     connect: &mut dyn FnMut() -> Result<(HandoffNamespace, Box<dyn LocalClient + 'a>), RunError>,
     observe_created: &mut AutomaticCreatedObserver<'_>,
 ) -> Result<bool, RunError> {
-    let automatic = match &parsed.action {
+    let identity = match &parsed.action {
         CliAction::TopologyRecover(request) => {
             let source =
                 super::retry::load_original_for_actor(journal, request.reference.as_str())?;
@@ -1430,38 +1437,39 @@ pub(crate) fn try_run_automatic_operator_with_ports<'a>(
                     "recovery needs original agent bootstrap",
                 ));
             }
-            let automatic = matches!(
+            if matches!(
                 original_kind(&source.semantic),
                 SemanticMutation::AutomaticBootstrap(_)
-            );
-            if automatic {
+            ) {
                 recovery_origin_host_matches(&source.semantic, selected, &parsed.output)?;
+                Some(super::topology_handoff::automatic_bootstrap_identity(
+                    &source,
+                )?)
+            } else {
+                None
             }
-            automatic
         }
         CliAction::Retry(recovery) => {
             let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
-            let automatic = matches!(
-                original.semantic,
-                SemanticMutation::OperatorRecoverAutomaticBootstrap(_)
-            );
-            if automatic {
+            if let SemanticMutation::OperatorRecoverAutomaticBootstrap(plan) = &original.semantic {
                 recovery_origin_host_matches(&original.semantic, selected, &parsed.output)?;
+                Some(plan.request.identity.clone())
+            } else {
+                None
             }
-            automatic
         }
-        _ => false,
+        _ => None,
     };
-    if !automatic {
+    let Some(identity) = identity else {
         return Ok(false);
-    }
+    };
     if parsed.actor != InvocationActor::Human {
         return Err(super::invalid_request(
             "recovery requires immediate human namespace",
         ));
     }
     let (ns, client) = connect()?;
-    super::topology_recover::automatic::require_capability(client.as_ref(), clock)?;
+    super::topology_recover::automatic::require_capability(client.as_ref(), clock, &identity)?;
     let mut writer = ForwardWriter(writer);
     if matches!(parsed.action, CliAction::Retry(_)) {
         run_automatic_operator_retry_parsed(
@@ -1528,7 +1536,7 @@ pub(crate) fn run_automatic_operator_parsed<C: LocalClient + ?Sized, W: Write>(
             "automatic recovery namespace differs from original",
         ));
     }
-    super::topology_recover::automatic::require_capability(client, clock)?;
+    super::topology_recover::automatic::require_capability(client, clock, &identity)?;
     let lock = super::handoff::lock(journal, &source.header.reference)?;
     let CommandResult::AutomaticBootstrap(status) = client.call(
         Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {

@@ -1661,5 +1661,6 @@ attached then, so a Herdr host attached after startup is served, and `new_guarde
 `handoff.automatic_target_v1`, not on the node-wide automatic flag, so `handoff` onto a core works on a core-only
 daemon. Health's status, incarnation witness and safe-prompt answers follow the same primary per call. The lane
 slots, archival start and the startup log line stay as they were. Delivery into an existing seat
-(`handoff_delivery::require_automatic_capability`) and the operator recovery of an automatic bootstrap still gate on
-the node-wide flag; neither creates a target.
+(`handoff_delivery::require_automatic_capability`) still gates on the node-wide flag; it creates no target. Every path
+over a journaled V3 bootstrap (fresh, crash retry, operator recovery and its retry, with or without a profile
+directory) gates on the plan's route through `require_bootstrap_route_capability`, never on the node-wide flag.

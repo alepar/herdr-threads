@@ -32,7 +32,7 @@ use herdr_threads::{
     },
     service::launch_gate::{GateWorld, authorize},
     test_support::{
-        fake_hc::{FakeHc, FakeTerminal},
+        fake_hc::{FakeHc, FakeTerminal, RunFailure},
         scratch::temp_path,
     },
 };
@@ -1269,6 +1269,44 @@ mod launch_new {
             assert_eq!(ran.code, Some(0), "{}{}", ran.stdout, ran.stderr);
         }
 
+        /// `args` as an operator in a plain shell (no caller site) that names the fake core.
+        fn operator(&self, args: &[&str]) -> Ran {
+            let mut command = self.isolation.command(BIN);
+            command
+                .arg("human")
+                .arg("--state-dir")
+                .arg(&self.state)
+                .arg("--host-endpoint")
+                .arg(self.fake.socket())
+                .args(args)
+                .env("PATH", &self.path);
+            self.finish(command)
+        }
+
+        /// A `--new-tab worker --space w1` handoff of `sess-a` that fails after its attempt is
+        /// journaled; returns the recovery reference the `pending-ops` listing shows for it.
+        fn failed_handoff(&self, extra: &[&str]) -> String {
+            self.fake
+                .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
+            self.enroll("sess-a");
+            let mut args = vec!["--json", "handoff", "--new-tab", "worker", "--space", "w1"];
+            args.extend(extra);
+            args.extend(["--kind", "claude", "--", "do the work"]);
+            let ran = self.agent("sess-a", &args, None);
+            assert_ne!(ran.code, Some(0), "{}{}", ran.stdout, ran.stderr);
+            self.pending_reference()
+        }
+
+        fn pending_reference(&self) -> String {
+            let ran = self.agent("sess-a", &["--json", "pending-ops"], None);
+            assert_eq!(ran.code, Some(0), "{}{}", ran.stdout, ran.stderr);
+            let value: serde_json::Value = serde_json::from_str(ran.stdout.trim()).unwrap();
+            value["result"]["data"]["items"][0]["recovery_ref"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no pending reference in {}", ran.stdout))
+                .to_owned()
+        }
+
         /// The stand-in's `<pid> <terminal>` once the gate let it start.
         fn marker(&self) -> (u32, String) {
             let until = Instant::now() + Duration::from_secs(30);
@@ -1379,6 +1417,150 @@ mod launch_new {
             "{}",
             ran.stderr
         );
+    }
+
+    const NODE_WIDE_REFUSAL: &str = "daemon lacks automatic handoff capability";
+
+    fn assert_routed(ran: &Ran) {
+        assert_eq!(
+            ran.code,
+            Some(0),
+            "stdout {} stderr {}",
+            ran.stdout,
+            ran.stderr
+        );
+        for refusal in [NODE_WIDE_REFUSAL, "invalid state/host context"] {
+            assert!(!ran.stderr.contains(refusal), "{}", ran.stderr);
+        }
+    }
+
+    // A crashed V3 attempt on a core-only daemon retries from the agent's own terminal: the retry
+    // reads the plan's endpoint and gates on the plan's route, not on the node-wide flag.
+    #[test]
+    fn core_only_crash_retry_completes_a_v3_bootstrap() {
+        let rig = LaunchRig::start("handoff-core-retry");
+        rig.fake.fail_next_run(RunFailure::Error("busy"));
+        let reference = rig.failed_handoff(&[]);
+        let ran = rig.agent("sess-a", &["--json", "retry", &reference], None);
+        assert_routed(&ran);
+        let (_, terminal) = rig.marker();
+        assert_ne!(terminal, "t1", "the stand-in runs in the created terminal");
+    }
+
+    // A possibly-created attempt stays refused until an operator decides; the decision is served
+    // by the core-only daemon, and the agent's retry then completes as the next attempt.
+    #[test]
+    fn core_only_operator_recovers_a_stuck_v3_attempt() {
+        let rig = LaunchRig::start("handoff-core-recover");
+        rig.fake.fail_next_run(RunFailure::Disconnect);
+        let reference = rig.failed_handoff(&[]);
+        let refused = rig.agent("sess-a", &["--json", "retry", &reference], None);
+        assert_ne!(refused.code, Some(0), "a possible creation stays refused");
+        let ran = rig.operator(&[
+            "handoff",
+            "recover",
+            &reference,
+            "--attempt",
+            "1",
+            "--not-created",
+        ]);
+        assert_routed(&ran);
+        let ran = rig.agent("sess-a", &["--json", "retry", &reference], None);
+        assert_routed(&ran);
+        rig.marker();
+    }
+
+    #[test]
+    fn core_only_operator_cancels_a_stuck_v3_attempt() {
+        let rig = LaunchRig::start("handoff-core-cancel");
+        rig.fake.fail_next_run(RunFailure::Disconnect);
+        let reference = rig.failed_handoff(&[]);
+        let ran = rig.operator(&[
+            "handoff",
+            "recover",
+            &reference,
+            "--attempt",
+            "1",
+            "--cancel",
+            "--reason",
+            "stuck",
+        ]);
+        assert_routed(&ran);
+        let cancelled: i64 = rig
+            .db()
+            .query_row(
+                "SELECT count(*) FROM automatic_bootstrap_parents WHERE state='cancelled'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cancelled, 1);
+    }
+
+    // The operator's own decision is a journaled V3 record: its retry routes by the plan too.
+    #[test]
+    fn core_only_operator_retry_of_a_recovery_routes_too() {
+        let rig = LaunchRig::start("handoff-core-recover-retry");
+        rig.fake.fail_next_run(RunFailure::Disconnect);
+        let reference = rig.failed_handoff(&[]);
+        let ran = rig.operator(&[
+            "handoff",
+            "recover",
+            &reference,
+            "--attempt",
+            "1",
+            "--not-created",
+        ]);
+        assert_routed(&ran);
+        let ran = rig.operator(&["retry", &reference]);
+        assert!(!ran.stderr.contains(NODE_WIDE_REFUSAL), "{}", ran.stderr);
+    }
+
+    // A profile directory with a placement target needs no node-wide directory capability.
+    #[test]
+    fn core_only_profile_directory_with_a_target() {
+        let rig = LaunchRig::start("handoff-core-profile");
+        rig.fake
+            .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
+        rig.enroll("sess-a");
+        let dir = temp_path(format!("ht-profile-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ran = rig.agent(
+            "sess-a",
+            &[
+                "--json",
+                "handoff",
+                "--new-tab",
+                "worker",
+                "--space",
+                "w1",
+                "--profile-dir",
+                dir.to_str().unwrap(),
+                "--kind",
+                "claude",
+                "--",
+                "do the work",
+            ],
+            None,
+        );
+        assert!(
+            !ran.stderr
+                .contains("daemon lacks handoff launch directories capability"),
+            "{}",
+            ran.stderr
+        );
+        assert_routed(&ran);
+    }
+
+    #[test]
+    fn core_only_crash_retry_with_a_profile_directory() {
+        let rig = LaunchRig::start("handoff-core-profile-retry");
+        let dir = temp_path(format!("ht-profile-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        rig.fake.fail_next_run(RunFailure::Error("busy"));
+        let reference = rig.failed_handoff(&["--profile-dir", dir.to_str().unwrap()]);
+        let ran = rig.agent("sess-a", &["--json", "retry", &reference], None);
+        assert_routed(&ran);
     }
 
     #[test]
