@@ -155,6 +155,37 @@ const MAX_WAKE_REPORTS: usize = 4_096;
 /// Longest host label read of one `seat list --label` (ms).
 const LABEL_READ_MS: u64 = 1_000;
 
+/// What the node's attached hosts can do now: read per `Capabilities` call, so
+/// a Herdr host attached after startup is served and none is frozen from
+/// whichever session led startup.
+pub struct GuardedAnswers {
+    hosts: Option<Arc<HostSessions>>,
+    store: Option<Arc<dyn BootstrapStorePort>>,
+}
+
+impl GuardedAnswers {
+    /// A bootstrap store, and an attached session with a guarded bootstrap
+    /// runtime (a core has none: its V3 runtime sits in the target slot).
+    pub fn bootstrap(&self) -> bool {
+        self.store.is_some()
+            && self.hosts.as_ref().is_some_and(|hosts| {
+                hosts
+                    .attached()
+                    .iter()
+                    .any(|session| session.bootstrap().is_some())
+            })
+    }
+
+    /// [`Self::bootstrap`] and the store's automatic-handoff support.
+    pub fn automatic(&self) -> bool {
+        self.bootstrap()
+            && self
+                .store
+                .as_ref()
+                .is_some_and(|store| store.automatic_available())
+    }
+}
+
 impl DomainService {
     pub fn new(instance: String, store: Arc<dyn StorePort>, clock: Arc<dyn Clock>) -> Self {
         Self {
@@ -489,24 +520,13 @@ impl DomainService {
             .resolve(locator, budget)
     }
 
-    /// Whether guarded bootstrap runs on the already attached server at
-    /// `locator` (a bootstrap store, and a session with a bootstrap runtime).
-    pub(crate) fn bootstrap_available(&self, locator: &HostLocator) -> bool {
-        self.bootstrap_store.is_some()
-            && self
-                .hosts
-                .as_ref()
-                .and_then(|hosts| hosts.by_locator(locator))
-                .is_some_and(|session| session.bootstrap().is_some())
-    }
-
-    /// [`Self::bootstrap_available`] and the store's automatic-handoff support.
-    pub(crate) fn automatic_available(&self, locator: &HostLocator) -> bool {
-        self.bootstrap_available(locator)
-            && self
-                .bootstrap_store
-                .as_ref()
-                .is_some_and(|store| store.automatic_available())
+    /// What the node's attached hosts can do now, read per `Capabilities`
+    /// call (see [`GuardedAnswers`]).
+    pub(crate) fn guarded_answers(&self) -> GuardedAnswers {
+        GuardedAnswers {
+            hosts: self.hosts.clone(),
+            store: self.bootstrap_store.clone(),
+        }
     }
 
     /// The bootstrap runtime of the server `namespace` names, resolved

@@ -123,57 +123,74 @@ pub(crate) fn elected_health_provider(
 
 /// The host evidence the elected Health provider reports: the status the
 /// observation worker records into, and the adapter's static incarnation
-/// witness (`HostPort::incarnation_witness`), read once at composition.
+/// witness (`HostPort::incarnation_witness`). A composed daemon reads both
+/// per Health call from the startup primary (`HostReleaseSource::primary`);
+/// these fields are the answer while there is none.
 pub(crate) struct ElectedHostEvidence {
     pub(crate) status: Arc<HostEvidenceStatus>,
     pub(crate) incarnation_witness: CapabilityState,
     /// The adapter's static cooperative wake-prompt capability
-    /// (`HostPort::safe_prompt_capability`), read once at composition.
+    /// (`HostPort::safe_prompt_capability`), the answer while there is no primary.
     pub(crate) safe_prompt: CapabilityState,
     /// The installed `claude` and `codex` observed on the daemon's `PATH`
     /// at boot; Unknown until the bounded background observation completes.
     pub(crate) harnesses: Arc<Mutex<HarnessObservations>>,
-    /// The adapter, read on each Health for the Herdr release it last saw.
+    /// The attached sessions, read on each Health.
     pub(crate) release: HostReleaseSource,
 }
 
 impl ElectedHostEvidence {
-    /// The evidence of a composed daemon: the startup session's evidence
-    /// status and static adapter capabilities (`fallback` and the neutral
-    /// answers when no server is attached), and a release source over every
-    /// attached session.
+    /// The evidence of a composed daemon: `fallback` and the neutral answers
+    /// until a guarded-start session leads startup (`hint` names the one
+    /// startup was asked to attach), then that session's evidence status and
+    /// static adapter capabilities, read per Health call so a host attached
+    /// later is reported; and a release source over every attached session.
     pub(crate) fn of_sessions(
         sessions: &Arc<HostSessions>,
-        primary: Option<&HostSession>,
+        hint: Option<crate::protocol::ids::HostLocator>,
         fallback: Arc<HostEvidenceStatus>,
         harnesses: Arc<Mutex<HarnessObservations>>,
     ) -> Self {
-        let (status, incarnation_witness, safe_prompt) = match primary {
+        Self {
+            status: fallback,
+            incarnation_witness: CapabilityState::Unknown,
+            safe_prompt: CapabilityState::Unsupported,
+            harnesses,
+            release: HostReleaseSource(Some(HostSource {
+                sessions: Arc::clone(sessions),
+                hint,
+            })),
+        }
+    }
+
+    /// The status, incarnation witness and safe-prompt capability Health
+    /// reports now.
+    pub(crate) fn current(&self) -> (Arc<HostEvidenceStatus>, CapabilityState, CapabilityState) {
+        match self.release.primary() {
             Some(session) => (
                 Arc::clone(session.evidence()),
                 session.port().incarnation_witness(),
                 session.port().safe_prompt_capability(),
             ),
             None => (
-                fallback,
-                CapabilityState::Unknown,
-                CapabilityState::Unsupported,
+                Arc::clone(&self.status),
+                self.incarnation_witness,
+                self.safe_prompt,
             ),
-        };
-        Self {
-            status,
-            incarnation_witness,
-            safe_prompt,
-            harnesses,
-            release: HostReleaseSource(Some(Arc::clone(sessions))),
         }
     }
 }
 
-/// Where Health reads the attached Herdr servers and their observed release;
-/// the default has none.
+/// Where Health reads the attached Herdr servers, their observed release and
+/// the startup primary; the default has none.
 #[derive(Default)]
-pub(crate) struct HostReleaseSource(Option<Arc<HostSessions>>);
+pub(crate) struct HostReleaseSource(Option<HostSource>);
+
+pub(crate) struct HostSource {
+    sessions: Arc<HostSessions>,
+    /// The startup hint `HostSessions::startup_primary` prefers.
+    hint: Option<crate::protocol::ids::HostLocator>,
+}
 
 impl HostReleaseSource {
     /// One Health entry per attached server, read on every Health call;
@@ -181,16 +198,24 @@ impl HostReleaseSource {
     fn entries(&self) -> Vec<crate::service::host_sessions::HostHealthEntry> {
         self.0
             .as_ref()
-            .map_or_else(Vec::new, |sessions| sessions.health_entries())
+            .map_or_else(Vec::new, |source| source.sessions.health_entries())
     }
 
     fn observed(&self) -> Option<crate::host::compatibility::HostRelease> {
-        self.0.as_ref().and_then(|sessions| {
-            sessions
+        self.0.as_ref().and_then(|source| {
+            source
+                .sessions
                 .attached()
                 .iter()
                 .find_map(|session| session.port().observed_release())
         })
+    }
+
+    /// The guarded-start session Health follows now; `None` while none is attached.
+    fn primary(&self) -> Option<Arc<HostSession>> {
+        self.0
+            .as_ref()
+            .and_then(|source| source.sessions.startup_primary(source.hint.as_ref()))
     }
 }
 
@@ -268,7 +293,8 @@ impl ElectedHealth {
         }
         // Host reachability, coherent enumeration and reconciliation
         // time come only from evidence the observation lane observed.
-        let observed = self.host.status.health(self.host.incarnation_witness);
+        let (status, incarnation_witness, safe_prompt) = self.host.current();
+        let observed = status.health(incarnation_witness);
         inputs.host = observed.host;
         inputs.coherent_enumeration = observed.coherent_enumeration;
         inputs.last_reconciliation_at = observed.last_reconciliation_at;
@@ -292,7 +318,7 @@ impl ElectedHealth {
             Err(_) => degrade(&mut inputs, "unresolved seat status unavailable"),
         }
         inputs.current_execution = CapabilityState::Unsupported;
-        inputs.safe_prompt = self.host.safe_prompt;
+        inputs.safe_prompt = safe_prompt;
         inputs.receipt_registration = CapabilityState::Unsupported;
         if let Some(release) = self.host.release.observed() {
             inputs.host_version = Some(release.summary());
@@ -2624,12 +2650,6 @@ where
                 .with_delivery_pull(Arc::clone(&delivery_pull))
                 .with_turn_state(Arc::clone(&turn_state))
                 .with_bootstrap_store(bootstrap_store);
-            // Guarded bootstrap is advertised when the startup server has a
-            // bootstrap runtime.
-            let guarded_host = primary
-                .as_ref()
-                .filter(|session| session.bootstrap().is_some())
-                .map(|session| session.locator().clone());
             let stop = StopController::new(instance, boot, cancellation);
             let provider = elected_health_provider(
                 instance,
@@ -2640,7 +2660,7 @@ where
                 health_lanes,
                 ElectedHostEvidence::of_sessions(
                     &host_sessions,
-                    primary.as_deref(),
+                    factory_hint.clone(),
                     factory_host_evidence.clone(),
                     harnesses,
                 ),
@@ -2707,12 +2727,10 @@ where
                 .with_rich_manifest_source(Arc::clone(&manifest)
                     as Arc<dyn crate::daemon::harness_evidence::RichManifestSource>),
             );
-            let control = if let Some(locator) = &guarded_host {
-                ControlService::new_guarded(stop, health, domain, locator)
-                    .map_err(|error| io::Error::other(error.detail))?
-            } else {
-                ControlService::new(stop, health, domain)
-            };
+            // Guarded capabilities are answered per `Capabilities` call from
+            // the hosts attached then, so a Herdr server attached after
+            // startup is served.
+            let control = ControlService::new_guarded(stop, health, domain);
             Ok(Arc::new(
                 control
                     .with_hook_parse_failures(factory_parse_failures)

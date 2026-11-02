@@ -1640,3 +1640,18 @@ is allocated and bound `managed_launch` before the gate opens, and the agent sta
 "the bootstrap Send is staged before the harness runs" holds for a handoff only. `--harness-binary` and `--name` are
 refused on a core, and there is no hook preflight there. This supersedes the narrowing recorded in run.md:220, which
 stays as history.
+
+### 2026-11-01: guarded capabilities are decided for the host they act on (ht-kqrt.200)
+
+This amends line 168 ("`startup_primary` falls back to a dialled host filtered to `HostGuardedStart`"): every branch
+of `startup_primary` is filtered, not only the fallback. A hinted or remembered built-in or core session no longer
+leads startup, so a named or core first caller cannot take the guarded answers from Herdr panes. The node-wide
+`handoff.bootstrap_guarded_resolution_v1`, `handoff.automatic_v1` and launch-directories capabilities are no longer frozen
+once at composition from the startup primary: `Capabilities` reads them per call (`GuardedAnswers`) from the hosts
+attached then, so a Herdr host attached after startup is served, and `new_guarded` takes no host. A V3 handoff plan
+(a selected target) is gated on the target core's own session (`target_bootstrap()`, decided in the daemon) and on
+`handoff.automatic_target_v1`, not on the node-wide automatic flag, so `handoff` onto a core works on a core-only
+daemon. Health's status, incarnation witness and safe-prompt answers follow the same primary per call. The lane
+slots, archival start and the startup log line stay as they were. Delivery into an existing seat
+(`handoff_delivery::require_automatic_capability`) and the operator recovery of an automatic bootstrap still gate on
+the node-wide flag; neither creates a target.

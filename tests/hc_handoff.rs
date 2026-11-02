@@ -1232,6 +1232,43 @@ mod launch_new {
             self.finish(command)
         }
 
+        /// `args` as the Claude agent of `session` in the fake core's terminal `t1` (the core
+        /// environment and nothing of Herdr), with `stdin` as a hook payload when given.
+        fn agent(&self, session: &str, args: &[&str], stdin: Option<&[u8]>) -> Ran {
+            use std::io::Write;
+            let mut command = self.command(args);
+            herdr_threads::test_support::isolation::as_agent(&mut command, "claude", session);
+            command
+                .env("HC_TERMINAL_ID", "t1")
+                .env("HC_TERMINAL_SOCKET", self.fake.socket())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            command.stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            });
+            let mut child: OwnedChild = command.spawn_owned().expect("spawn the process");
+            if let Some(bytes) = stdin {
+                child.stdin.take().unwrap().write_all(bytes).unwrap();
+            }
+            let output = child.wait_with_output().expect("process output");
+            Ran {
+                code: output.status.code(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            }
+        }
+
+        /// The SessionStart hook of `session` in `t1`: enrolls the terminal's seat.
+        fn enroll(&self, session: &str) {
+            let payload = format!(
+                r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"startup"}}"#
+            );
+            let ran = self.agent(session, &["hook", "claude"], Some(payload.as_bytes()));
+            assert_eq!(ran.code, Some(0), "{}{}", ran.stdout, ran.stderr);
+        }
+
         /// The stand-in's `<pid> <terminal>` once the gate let it start.
         fn marker(&self) -> (u32, String) {
             let until = Instant::now() + Duration::from_secs(30);
@@ -1307,6 +1344,41 @@ mod launch_new {
             .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
             .unwrap();
         assert_eq!(messages, 0, "a plain launch stages no first message");
+    }
+
+    // A daemon whose only host is a herdr-core has no Herdr primary, so the node-wide automatic
+    // handoff capability is off. A handoff that creates its target on the core is gated on the
+    // core's own session, not on that flag.
+    #[test]
+    fn core_only_daemon_hands_off_onto_its_core() {
+        let rig = LaunchRig::start("handoff-core-only");
+        rig.fake
+            .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
+        rig.enroll("sess-a");
+        let handoff = |placement: &[&str]| {
+            let mut args = vec!["--json", "handoff"];
+            args.extend(placement);
+            args.extend(["--kind", "claude", "--", "do the work"]);
+            rig.agent("sess-a", &args, None)
+        };
+        let ran = handoff(&["--new-tab", "worker", "--space", "w1"]);
+        assert_eq!(
+            ran.code,
+            Some(0),
+            "stdout {} stderr {}",
+            ran.stdout,
+            ran.stderr
+        );
+        let (_, terminal) = rig.marker();
+        assert_ne!(terminal, "t1", "the stand-in runs in the created terminal");
+        assert_eq!(run_params(&rig.fake)["labels"]["ht.label"], "worker");
+        let ran = handoff(&["--new-terminal"]);
+        assert!(
+            !ran.stderr
+                .contains("daemon lacks automatic handoff capability"),
+            "{}",
+            ran.stderr
+        );
     }
 
     #[test]

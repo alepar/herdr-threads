@@ -132,6 +132,24 @@ pub(crate) fn automatic_before_topology<C: LocalClient + ?Sized, T>(
     require_automatic_capability(client, clock)?;
     topology()
 }
+/// The capability a retried automatic bootstrap needs: a V3 plan (it carries a placement) only
+/// that the daemon decodes V3 records (its host gates the plan itself), any other the node-wide
+/// automatic one.
+fn require_bootstrap_route_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    original: &super::journal::PendingIntent,
+) -> Result<(), RunError> {
+    if super::topology_handoff::automatic_bootstrap_identity(original)?
+        .plan
+        .placement
+        .is_some()
+    {
+        super::topology_handoff::require_target_capability(client, clock)
+    } else {
+        require_automatic_capability(client, clock)
+    }
+}
 fn original_kind(semantic: &SemanticMutation) -> &SemanticMutation {
     match semantic {
         SemanticMutation::Frozen { mutation, .. } => mutation,
@@ -239,7 +257,7 @@ pub(crate) fn try_completed_with_namespace<C: LocalClient + ?Sized>(
             }
         }
         SemanticMutation::AutomaticBootstrap(_) => {
-            require_automatic_capability(client, clock)?;
+            require_bootstrap_route_capability(client, clock, &original)?;
             super::topology_handoff::try_completed_automatic(
                 journal,
                 reference,
@@ -331,12 +349,14 @@ pub(crate) fn try_run_automatic_new_with_ports(
         return Ok(false);
     }
     agent_claim(claim)?;
-    if request.profile_dir.is_some() {
+    if request.profile_dir.is_some() && request.target.is_none() {
         super::topology_handoff::require_directory_capability(client, clock)?;
     }
     super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
     // A selected target is a V3 plan: the daemon must know the V3 records before anything is
-    // read or published, and the plan's namespace endpoint is the target host's socket.
+    // read or published, and the plan's namespace endpoint is the target host's socket. The
+    // node-wide automatic and directory capabilities do not apply to it: the daemon gates the
+    // plan on the target core's own session.
     let selected_namespace;
     let (topology, namespace) = match &request.target {
         None => (
@@ -350,11 +370,8 @@ pub(crate) fn try_run_automatic_new_with_ports(
                 ..namespace.clone()
             };
             let topology = match target.placement {
-                crate::ports::Placement::NewTab { .. } => {
-                    automatic_before_topology(client, clock, topology)?
-                }
+                crate::ports::Placement::NewTab { .. } => topology()?,
                 crate::ports::Placement::NewTerminal { .. } => {
-                    require_automatic_capability(client, clock)?;
                     crate::host::observation::HostTopology {
                         spaces: Vec::new(),
                         tabs: Vec::new(),
@@ -524,7 +541,6 @@ pub(crate) fn run_target(
                     "live retry differs from original caller",
                 ));
             }
-            require_automatic_capability(client, clock.as_ref())?;
             super::topology_handoff::require_target_capability(client, clock.as_ref())?;
             // A created target is witnessed by its own creation; an uncreated one by the
             // host as probed now.
@@ -877,7 +893,7 @@ pub(crate) fn run(
             }
 
             if let SemanticMutation::AutomaticBootstrap(_) = original_kind(&original.semantic) {
-                require_automatic_capability(&client, clock.as_ref())?;
+                require_bootstrap_route_capability(&client, clock.as_ref(), &original)?;
                 let identity = super::topology_handoff::automatic_bootstrap_identity(&original)?;
                 let current = match client.call(
                     Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {

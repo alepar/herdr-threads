@@ -558,7 +558,7 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTargetPort + ?Sized>(
     let completed =
         matches!(status(client, clock, &id), Ok(s) if s.state == BootstrapState::Completed);
     if !completed {
-        if id.plan.payload.directory_context.is_some() {
+        if id.plan.payload.directory_context.is_some() && id.plan.placement.is_none() {
             super::require_directory_capability(client, clock)?;
         }
         if id.plan.placement.is_some() {

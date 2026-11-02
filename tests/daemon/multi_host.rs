@@ -338,27 +338,6 @@ struct Daemon {
 }
 
 impl Daemon {
-    fn start(
-        isolation: &TestIsolation,
-        clock: &Arc<dyn Clock>,
-        world: &Arc<FakeHostWorld>,
-        hint: Option<HostLocator>,
-    ) -> Self {
-        // Wakes go out at once, not after the ordinary batching window.
-        let config = ServiceConfig::default().with_wake_batch_delay(0).unwrap();
-        Self::start_with(isolation, clock, world, hint, config)
-    }
-
-    fn start_with(
-        isolation: &TestIsolation,
-        clock: &Arc<dyn Clock>,
-        world: &Arc<FakeHostWorld>,
-        hint: Option<HostLocator>,
-        config: ServiceConfig,
-    ) -> Self {
-        Self::start_composed(isolation, clock, world, hint, config, false)
-    }
-
     /// `guarded`: the production guarded composition, whose sessions carry a bootstrap runtime.
     fn start_composed(
         isolation: &TestIsolation,
@@ -487,10 +466,30 @@ impl Drop for Rig {
     }
 }
 
+/// What a guarded rig's startup is asked to attach.
+#[derive(Clone, Copy)]
+enum StartupHint {
+    /// Server A.
+    A,
+    /// The built-in named host's reserved locator.
+    Reserved,
+}
+
 impl Rig {
     /// A daemon over servers A (panes `pane-1`) and B (`pane-1`, `pane-2`),
-    /// with `hint` naming the server attached at startup, if any.
+    /// with `hint_a` naming the server attached at startup, if any.
     fn start(label: &str, hint_a: bool) -> Self {
+        Self::build(label, hint_a.then_some(StartupHint::A), false)
+    }
+
+    /// The production guarded composition over a server A that is no Herdr TUI (it answers no
+    /// guarded start, as a core does) and a Herdr TUI B, with `hint` naming what startup
+    /// attaches, if anything.
+    fn start_guarded(label: &str, hint: Option<StartupHint>) -> Self {
+        Self::build(label, hint, true)
+    }
+
+    fn build(label: &str, hint: Option<StartupHint>, guarded: bool) -> Self {
         let isolation = TestIsolation::new(label);
         // Canonical spelling: the hook canonicalizes the pane's server path.
         let locator = |name: &str| {
@@ -502,11 +501,23 @@ impl Rig {
         // The daemon's clock, which the servers stamp their observations with.
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let a = ServerHost::new(&clock, "boot-a", &["pane-1"]);
-        let b = ServerHost::new(&clock, "boot-b", &["pane-1", "pane-2"]);
+        let b = if guarded {
+            ServerHost::guarded(&clock, "boot-b", &["pane-1", "pane-2"])
+        } else {
+            ServerHost::new(&clock, "boot-b", &["pane-1", "pane-2"])
+        };
         let world = FakeHostWorld::new();
         world.add(&loc_a, Arc::clone(&a) as Arc<dyn HostPort>);
         world.add(&loc_b, Arc::clone(&b) as Arc<dyn HostPort>);
-        let daemon = Daemon::start(&isolation, &clock, &world, hint_a.then(|| loc_a.clone()));
+        let hint = hint.map(|hint| match hint {
+            StartupHint::A => loc_a.clone(),
+            StartupHint::Reserved => {
+                HostLocator::parse(herdr_threads::protocol::ids::NAMED_HOST_LOCATOR).unwrap()
+            }
+        });
+        // Wakes go out at once, not after the ordinary batching window.
+        let config = ServiceConfig::default().with_wake_batch_delay(0).unwrap();
+        let daemon = Daemon::start_composed(&isolation, &clock, &world, hint, config, guarded);
         let client = LocalSocketClient::new(
             daemon.descriptor.endpoint.clone(),
             Arc::clone(&clock),
@@ -1046,6 +1057,66 @@ fn claim_from_b_attaches_b_and_both_seats_nudged() {
     // Each server was only ever asked about its own pane.
     assert!(rig.a.woken().iter().all(|pane| pane == "pane-1"));
     assert!(rig.b.woken().iter().all(|pane| pane == "pane-1"));
+}
+
+// Kills: guarded capabilities frozen at startup from whichever session led it: a daemon that
+// started on the reserved named locator, on a core-shaped server, or on no server at all must
+// advertise guarded bootstrap and automatic handoff once a Herdr host attaches, and Health must
+// then list that host.
+fn guarded_capabilities_follow_a_host_attached_later(label: &str, hint: Option<StartupHint>) {
+    use herdr_threads::protocol::capabilities::{
+        AUTOMATIC_HANDOFF_V1, BOOTSTRAP_GUARDED_RESOLUTION_V1,
+    };
+    let rig = Rig::start_guarded(label, hint);
+    let listed = |rig: &Rig| match rig.call(Command::Capabilities).expect("capabilities") {
+        CommandResult::Capabilities(list) => (
+            list.capabilities
+                .iter()
+                .any(|name| name == BOOTSTRAP_GUARDED_RESOLUTION_V1),
+            list.capabilities
+                .iter()
+                .any(|name| name == AUTOMATIC_HANDOFF_V1),
+        ),
+        other => panic!("not a capability list: {other:?}"),
+    };
+    assert_eq!(
+        listed(&rig),
+        (false, false),
+        "no Herdr host is attached yet"
+    );
+    rig.touch(&rig.loc_b);
+    assert!(rig.attached(&rig.loc_b));
+    assert_eq!(
+        listed(&rig),
+        (true, true),
+        "the host attached later is served"
+    );
+    let health = rig.health();
+    assert!(
+        health
+            .hosts
+            .iter()
+            .any(|host| host.host_id == rig.host_id_of(&rig.loc_b)),
+        "{health:?}"
+    );
+}
+
+#[test]
+fn reserved_hint_startup_serves_a_herdr_host_attached_later() {
+    guarded_capabilities_follow_a_host_attached_later(
+        "mh-guarded-reserved",
+        Some(StartupHint::Reserved),
+    );
+}
+
+#[test]
+fn core_hint_startup_serves_a_herdr_host_attached_later() {
+    guarded_capabilities_follow_a_host_attached_later("mh-guarded-core", Some(StartupHint::A));
+}
+
+#[test]
+fn store_only_startup_serves_a_herdr_host_attached_later() {
+    guarded_capabilities_follow_a_host_attached_later("mh-guarded-store-only", None);
 }
 
 // Kills: Health that reports a count or the startup server instead of one
