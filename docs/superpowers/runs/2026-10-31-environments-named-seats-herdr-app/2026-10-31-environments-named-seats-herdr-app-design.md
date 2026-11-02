@@ -1754,3 +1754,13 @@ bytes unchanged), checked against the plan by `creation_scope`. The CLI routes a
 (one `terminal.get` pinned to the core's peer, the creation text `create_target` reports); a Herdr plan keeps the
 `NativeCli` read. A recovery later than the gate shim's 10 s authorization wait finds no terminal and takes
 `--not-created`. TRUST-POLICY.md's V3 limit is rewritten accordingly.
+
+### 2026-11-02: the `LocateCaller` verdict cache is deleted (ht-kqrt.232)
+
+`LocateCallerService` keeps no verdict cache and `LocateCallerService::locate` takes no epoch. The only production
+`LocateCaller` is the CLI guard's, which sends `subject: None`, so the key was the one-shot process's own pid and start
+stamp and never repeated; the walk is cheap. Every call now walks afresh. This supersedes the body's cache claims (about
+lines 237, 1139, 1163, 1500 and 1585-1589), which stay as written: the cache key, the reused-pid-misses and
+unstamped-never-cached behaviours, and the cached-`NotAncestor` concern under terminal identity no longer exist. The
+checklist item on a reused pid is met trivially (there is no cached verdict to return). TRUST-POLICY drops the matching
+sentence.

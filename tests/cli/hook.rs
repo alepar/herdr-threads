@@ -11410,7 +11410,6 @@ mod two_family_guard {
                                 crate::protocol::results::ApiError::unsupported("no core")
                             })
                     },
-                    0,
                     &budget(),
                 ))),
                 other => panic!("unexpected command {other:?}"),
@@ -11650,7 +11649,6 @@ mod two_family_guard {
                                 crate::protocol::results::ApiError::unsupported("no core")
                             })
                     },
-                    0,
                     b,
                 ))),
                 other => {

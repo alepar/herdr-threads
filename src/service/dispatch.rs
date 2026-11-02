@@ -229,20 +229,16 @@ impl DomainService {
         peer: PeerIdentity,
         budget: &CallBudget,
     ) -> CommandResult {
-        use std::hash::{Hash, Hasher};
         let sessions = self
             .hosts
             .as_ref()
             .map_or_else(Vec::new, |hosts| hosts.all_for_reads());
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        sessions.iter().for_each(|s| s.host_id().hash(&mut hasher));
         let ports: Vec<_> = sessions.iter().map(|s| Arc::clone(s.port())).collect();
         CommandResult::Located(self.locator.locate(
             request,
             peer.pid(),
             &ports,
             &|socket| self.core_port(socket, budget),
-            hasher.finish(),
             budget,
         ))
     }
