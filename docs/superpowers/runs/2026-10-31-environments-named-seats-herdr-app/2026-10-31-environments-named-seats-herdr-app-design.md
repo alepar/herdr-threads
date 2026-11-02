@@ -1782,3 +1782,12 @@ The `Labels are` set in the H3 section is a new tab's. A new terminal carries th
 (`ht.bootstrap` = the call id, `ht.label` = the request label) and still no `herdr.*` app label, so "sends no app
 labels" holds and an `OutcomeUnknown` leaves a terminal that can be found by them. Nothing reads them to classify an
 outcome. TRUST-POLICY already said `ht.label` always; the code now matches it.
+
+### 2026-11-02: a V3 handoff records its managed_launch binding at Attach (ht-kqrt.237)
+
+A V3 handoff into a core recorded no `managed_launch` binding, though TRUST-POLICY's row says a host-guarded launch does.
+`launch_gate::allocate_seat` is split: `record_placeholder` is its binding half, and `automatic_bootstrap_command` calls
+it on the `Attach` action of a V3 plan, in the daemon, before the Attach mutation and so before the child's Send. The
+seat is the one `Resolve` allocated (the attachment names it); the store refuses a seat not resolved onto the recorded
+creation's terminal. The gate does not move: it still opens only on a published Send. A retried `Attach` adds a second
+placeholder with the same fingerprint, which `launch_placeholder_replace` replaces. TRUST-POLICY.md is unchanged.
