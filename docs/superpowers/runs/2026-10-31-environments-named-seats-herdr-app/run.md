@@ -116,6 +116,8 @@ roastCodeExit: capped
 baseAbsorbed: de5af6736 → f454aa5a2, 24 conflicted files (migration renumbered to 0013)
 sweepFix: sweep-1 @ 9296918db: 8903/8906, 3 failed (2 lane health, 1 test-defect); leaks clean; 341 s; fix pass inv-8; re-run @ d838b955b: 8909/8910, one regression (spawn-site scan) fixed by regression-only ht-kqrt.221 (applied by the orchestrator, two comment lines); final re-run @ 6ebe15eab 8910/8910
 postCapAudit: docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/2026-11-01-environments-named-seats-herdr-app-roast-pr-post-cap-audit.md: 0 Blocking, 11 Should-fix to the punch list (no fix loop)
+friction: 22 events
+wakeE2E: NOT MEASURED @ 611932717 — self-test passed; Codex 0/60, all startup failures at the sign-in screen (codex-2 auth rejected, stale since 2026-10-23), no product signal; the retry on profile codex-1 was denied by the auto-mode classifier and not worked around; Claude half not runnable on this Linux host (no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY). Release prerequisite, not a merge gate; owed before tagging
 finalReviewFixRound: inv-7 — site-decision, core-recovery, tmux-gate-parity (Must-fix correctness, skill exception); plus dormant-wake-hosts (merge residue), named-publish-cadence (user's SSD rule outranks the cap default), scan allowlist and test-edge-ordering (known-red pre-empted from the sweep); post-cap audit covers what lands
 userAccepted: launch gate exceptions .143 and .186 including the idle-launch limit (relayed by coordinator, mnSGz27x89j5); ht-8lem atomic remote handoff stays out of scope
 scope-filter: 19 in-scope · 3 punch-listed
