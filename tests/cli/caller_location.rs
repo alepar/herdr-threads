@@ -19,6 +19,33 @@ fn env(pairs: &[(&str, &str)]) -> CallerEnv {
     })
 }
 
+fn ambient(name: &str) -> Option<OsString> {
+    [
+        "HERDR_THREADS_SEAT_NAME",
+        "HERDR_THREADS_SEAT_READONLY",
+        "HERDR_PANE_ID",
+    ]
+    .contains(&name)
+    .then(|| OsString::from("x"))
+}
+
+#[test]
+fn seat_variables_are_hidden_from_a_library_caller() {
+    use herdr_threads::cli::caller_location::seat_filter;
+    for name in ["HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY"] {
+        assert_eq!(seat_filter(false, name, ambient), None, "{name} hidden");
+        assert_eq!(
+            seat_filter(true, name, ambient),
+            Some("x".into()),
+            "{name} read"
+        );
+    }
+    assert_eq!(
+        seat_filter(false, "HERDR_PANE_ID", ambient),
+        Some("x".into())
+    );
+}
+
 fn pane(id: &str) -> CallerLocator {
     CallerLocator::pane(id)
 }
