@@ -7644,19 +7644,799 @@
       "dispositions": [],
       "outstanding": true,
       "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Must fix before landing",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Must fix before landing",
+          "position": 1,
+          "key": "Merge `main`: 65 commits behind, 24 conflicted files in a dry run, and `0012_host_environments.sql` silently shares its number with `main`'s `0012_process_continuity` pair; renumber as the spec requires and check `structural_process_continuity` against the cross-kind refusal.",
+          "text": "Merge `main`: 65 commits behind, 24 conflicted files in a dry run, and `0012_host_environments.sql` silently shares its number with `main`'s `0012_process_continuity` pair; renumber as the spec requires and check `structural_process_continuity` against the cross-kind refusal."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Must fix before landing",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Must fix before landing",
+          "position": 2,
+          "key": "A verified two-family terminal uses its core socket as the Herdr server: `herdr_endpoint_io` builds `from_process` and ignores the decided site (src/cli/topology_runtime.rs:75, src/cli/instance.rs:157), so pane forms, `launch` and `handoff --pane` or `--existing` fail on a reachable Herdr; pass `parsed.caller_site` through `for_site`, fix `pane_agent` beside it, and add a two-family test through a pane-form command.",
+          "text": "A verified two-family terminal uses its core socket as the Herdr server: `herdr_endpoint_io` builds `from_process` and ignores the decided site (src/cli/topology_runtime.rs:75, src/cli/instance.rs:157), so pane forms, `launch` and `handoff --pane` or `--existing` fail on a reachable Herdr; pass `parsed.caller_site` through `for_site`, fix `pane_agent` beside it, and add a two-family test through a pane-form command."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Must fix before landing",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Must fix before landing",
+          "position": 3,
+          "key": "tmux wake reads the composer as plain text only (src/host/named.rs:384, :449; src/host/named/tmux.rs:183), so a default hooks-only Claude seat showing a prompt suggestion is refused every wake; capture with `-e` and take the styled read, or record the limit with a human decision.",
+          "text": "tmux wake reads the composer as plain text only (src/host/named.rs:384, :449; src/host/named/tmux.rs:183), so a default hooks-only Claude seat showing a prompt suggestion is refused every wake; capture with `-e` and take the styled read, or record the limit with a human decision."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Must fix before landing",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Must fix before landing",
+          "position": 4,
+          "key": "Operator recovery of a V3 bootstrap gates on the node-wide flag (src/cli/topology_recover/automatic.rs:80, ledger 1476, misgraded minor), so a stuck attempt on a core-only daemon cannot be recovered; route it like `require_bootstrap_route_capability` and test recovery on a core.",
+          "text": "Operator recovery of a V3 bootstrap gates on the node-wide flag (src/cli/topology_recover/automatic.rs:80, ledger 1476, misgraded minor), so a stuck attempt on a core-only daemon cannot be recovered; route it like `require_bootstrap_route_capability` and test recovery on a core."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Must fix before landing",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Must fix before landing",
+          "position": 5,
+          "key": "Parked `.64` and ledger 1136, 1519: get a green unfiltered suite on a host with zsh and tmux (CI supplies it), read the job summary for skipped Herdr and tmux tests, and confirm the three zsh failures at base.",
+          "text": "Parked `.64` and ledger 1136, 1519: get a green unfiltered suite on a host with zsh and tmux (CI supplies it), read the job summary for skipped Herdr and tmux tests, and confirm the three zsh failures at base."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 1,
+          "key": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed",
+          "text": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed"
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 2,
+          "key": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed",
+          "text": "whole-epic review incomplete; bounded inspected hunks only; all remaining hunks and provenance gaps remain unreviewed"
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 3,
+          "key": "Whole-range review outstanding: 29 of 655 changed paths are listed in coverage, with 103 of 1830 hunks; every other path and hunk is unreviewed.",
+          "text": "Whole-range review outstanding: 29 of 655 changed paths are listed in coverage, with 103 of 1830 hunks; every other path and hunk is unreviewed."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 4,
+          "key": "Four provenance gaps remain, at base and at head: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md lines 51 and 58, invocations inv-8759cc82-264d-4506-beaa-307c9600bb8d and inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f (invalid failed assembly archive).",
+          "text": "Four provenance gaps remain, at base and at head: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md lines 51 and 58, invocations inv-8759cc82-264d-4506-beaa-307c9600bb8d and inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f (invalid failed assembly archive)."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 5,
+          "key": "No full-suite measurement of this head exists and the sweep is deferred to the caller, so nothing here treats the branch as tested. The last recorded run, `.205`'s proof before its rebase, ran 8799 tests with 3 failures and 53 skipped.",
+          "text": "No full-suite measurement of this head exists and the sweep is deferred to the caller, so nothing here treats the branch as tested. The last recorded run, `.205`'s proof before its rebase, ran 8799 tests with 3 failures and 53 skipped."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 6,
+          "key": "This review ran nothing; every finding comes from reading the head, and none was reproduced.",
+          "text": "This review ran nothing; every finding comes from reading the head, and none was reproduced."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 7,
+          "key": "Read through the 81b092894..head diff but not listed in coverage, because coverage records base..head hunks: src/app.rs, src/daemon/control.rs, src/daemon/transport.rs, src/main.rs, src/service/dispatch.rs, src/service/host_sessions.rs, src/service/launch_gate.rs, src/cli/hook.rs, src/cli/mod.rs, src/cli/handoff.rs, src/cli/topology_runtime.rs, src/cli/topology_handoff.rs, src/cli/watch.rs, src/cli/doctor.rs, src/cli/setup.rs, src/cli/me.rs, src/host/native.rs, src/host/probe.rs, src/host/hc/mod.rs, src/store/control/retirement.rs, src/store/seats/publication.rs, src/store/seats/resolution.rs; no conclusion covers their earlier hunks.",
+          "text": "Read through the 81b092894..head diff but not listed in coverage, because coverage records base..head hunks: src/app.rs, src/daemon/control.rs, src/daemon/transport.rs, src/main.rs, src/service/dispatch.rs, src/service/host_sessions.rs, src/service/launch_gate.rs, src/cli/hook.rs, src/cli/mod.rs, src/cli/handoff.rs, src/cli/topology_runtime.rs, src/cli/topology_handoff.rs, src/cli/watch.rs, src/cli/doctor.rs, src/cli/setup.rs, src/cli/me.rs, src/host/native.rs, src/host/probe.rs, src/host/hc/mod.rs, src/store/control/retirement.rs, src/store/seats/publication.rs, src/store/seats/resolution.rs; no conclusion covers their earlier hunks."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 8,
+          "key": "Partly read and not listed in coverage: src/host/named.rs, src/host/named/tmux.rs, src/host/hc/rpc.rs, src/host/hc/labels.rs, src/host/hc/wire.rs, src/service/locate.rs, src/cli/launch_new.rs, src/cli/handoff_delivery.rs, src/cli/topology_recover/automatic.rs, TRUST-POLICY.md and the design; no conclusion covers their unread parts.",
+          "text": "Partly read and not listed in coverage: src/host/named.rs, src/host/named/tmux.rs, src/host/hc/rpc.rs, src/host/hc/labels.rs, src/host/hc/wire.rs, src/service/locate.rs, src/cli/launch_new.rs, src/cli/handoff_delivery.rs, src/cli/topology_recover/automatic.rs, TRUST-POLICY.md and the design; no conclusion covers their unread parts."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 9,
+          "key": "Unreviewed: src/store/seats/observation.rs, cooperative.rs, operator.rs and continuity.rs beyond the line comparison, src/identity/reconcile.rs, the migration, doctor and setup before the fix round, install, hc discovery, fake_hc, wake-e2e changes, CI, and almost all new tests.",
+          "text": "Unreviewed: src/store/seats/observation.rs, cooperative.rs, operator.rs and continuity.rs beyond the line comparison, src/identity/reconcile.rs, the migration, doctor and setup before the fix round, install, hc discovery, fake_hc, wake-e2e changes, CI, and almost all new tests."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 10,
+          "key": "Metrics are UNAVAILABLE (ledger re-read malformed), so ledger absence proves nothing, and BLOCKED-AUTH absence is only as good as the ledger.",
+          "text": "Metrics are UNAVAILABLE (ledger re-read malformed), so ledger absence proves nothing, and BLOCKED-AUTH absence is only as good as the ledger."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 11,
+          "key": "Real herdr-core and macOS: `PendingRestart` keys, H-C1, L1-L3, Codex `--no-daemon`, `KERN_PROCARGS2` and herdr-app labels are not exercised here.",
+          "text": "Real herdr-core and macOS: `PendingRestart` keys, H-C1, L1-L3, Codex `--no-daemon`, `KERN_PROCARGS2` and herdr-app labels are not exercised here."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Untested scope",
+        "position": 12
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Untested scope",
+          "position": 12,
+          "key": "Live wake e2e was not run, including tmux wake against a real Claude, which is what finding 2 needs.",
+          "text": "Live wake e2e was not run, including tmux wake against a real Claude, which is what finding 2 needs."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 1
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 1,
+          "key": "Recurring clusters (seven `missing-evidence` or `suite-not-run` groups): process findings, answered by the deferred sweep and a report template fix.",
+          "text": "Recurring clusters (seven `missing-evidence` or `suite-not-run` groups): process findings, answered by the deferred sweep and a report template fix."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 2
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 2,
+          "key": "`handoff --existing` with no Herdr host, ledger 1476 second half: outside the spec's promise and refused cleanly; `send` works; file a bead and state it in the skill.",
+          "text": "`handoff --existing` with no Herdr host, ledger 1476 second half: outside the spec's promise and refused cleanly; `send` works; file a bead and state it in the skill."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 3
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 3,
+          "key": "`watch.rs` `from_process` reads for a verified terminal: printed selectors only; fix with the two-family item.",
+          "text": "`watch.rs` `from_process` reads for a verified terminal: printed selectors only; fix with the two-family item."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 4
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 4,
+          "key": "A Terminal `next:` line pins the core as `--host-endpoint`: a failure only if copied onto a pane form.",
+          "text": "A Terminal `next:` line pins the core as `--host-endpoint`: a failure only if copied onto a pane form."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 5
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 5,
+          "key": "`claim_recovery_env` has no Terminal case: the retry works from the terminal; the Terminal arm of `env_assignments` is dead until then.",
+          "text": "`claim_recovery_env` has no Terminal case: the retry works from the terminal; the Terminal arm of `env_assignments` is dead until then."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 6
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 6,
+          "key": "`report_turn_edge` still runs for every located hook, and `note_wake_hint` still spawns `tmux display` on the request path: carried from inv-5, latency only.",
+          "text": "`report_turn_edge` still runs for every located hook, and `note_wake_hint` still spawns `tmux display` on the request path: carried from inv-5, latency only."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 7
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 7,
+          "key": "Full-suite wall clock: 354 s in the `.205` proof against the 300 s budget, with `failpoints_are_compiled_out_of_release_builds` at 312 s alone; not a release gate, send it to a fixer.",
+          "text": "Full-suite wall clock: 354 s in the `.205` proof against the 300 s budget, with `failpoints_are_compiled_out_of_release_builds` at 312 s alone; not a release gate, send it to a fixer."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 8
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 8,
+          "key": "Ledger 1336 (`.181` parked): accepted limit in TRUST-POLICY, and it fails toward not settling.",
+          "text": "Ledger 1336 (`.181` parked): accepted limit in TRUST-POLICY, and it fails toward not settling."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 9
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 9,
+          "key": "Ledger 1490 `[accepted-limit]`, 1467 `[ordering-change]`, 1479 `[stale-startup-lane-status]`, 1494 `[doc-drift]`: recorded limits or harmless.",
+          "text": "Ledger 1490 `[accepted-limit]`, 1467 `[ordering-change]`, 1479 `[stale-startup-lane-status]`, 1494 `[doc-drift]`: recorded limits or harmless."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 10
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 10,
+          "key": "Ledger 1489 `[regression-guard-only]`, 1484 `[test-replaced]`, 1501 `[late-duplicate-unchecked]`, 1505 `[flaky-test-risk]`, 1510, 1511, 1517: test-quality follow-ups.",
+          "text": "Ledger 1489 `[regression-guard-only]`, 1484 `[test-replaced]`, 1501 `[late-duplicate-unchecked]`, 1505 `[flaky-test-risk]`, 1510, 1511, 1517: test-quality follow-ups."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 11
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 11,
+          "key": "Roast r2 punch list: the tmux test helper's `TMUX_TMPDIR`, Health degraded on hc nodes, and label documentation.",
+          "text": "Roast r2 punch list: the tmux test helper's `TMUX_TMPDIR`, Health degraded on hc nodes, and label documentation."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 12
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 12,
+          "key": "Kept task worktrees and /tmp/sp-503081fe from `process cleanup incomplete (exit 4)` for every task of this round: the caller removes them once the unknown pids are understood.",
+          "text": "Kept task worktrees and /tmp/sp-503081fe from `process cleanup incomplete (exit 4)` for every task of this round: the caller removes them once the unknown pids are understood."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
+    },
+    {
+      "ref": {
+        "source": "inv-6/final",
+        "section": "Deferred OK",
+        "position": 13
+      },
+      "occurrences": [
+        {
+          "source": "inv-6/final",
+          "artifact": "reviews/inv-6/final-review-inv-6.md",
+          "section": "Deferred OK",
+          "position": 13,
+          "key": "Committed run artifacts under `evidence/` and `docs/superpowers/runs` are bulk to prune as a follow-up.",
+          "text": "Committed run artifacts under `evidence/` and `docs/superpowers/runs` are bulk to prune as a follow-up."
+        }
+      ],
+      "artifacts": [
+        "reviews/inv-6/final-review-inv-6.md"
+      ],
+      "variants": [],
+      "links": [],
+      "routes": [],
+      "dispositions": [],
+      "outstanding": true,
+      "deferred": false
     }
   ],
   "gaps": [],
   "metrics": {
     "scope": "retained sources",
-    "sources": 6,
+    "sources": 7,
     "sourceKinds": [
       "final-review",
       "roast"
     ],
-    "occurrences": 294,
-    "occurrenceGroups": 294,
-    "findings": 223,
+    "occurrences": 324,
+    "occurrenceGroups": 324,
+    "findings": 253,
     "otherSectionGroups": 71,
     "sections": [
       "Must fix before landing",
@@ -7670,7 +8450,7 @@
     ],
     "repaired": 0,
     "rejected": 0,
-    "outstanding": 223,
+    "outstanding": 253,
     "deferred": 0,
     "gaps": 0
   }

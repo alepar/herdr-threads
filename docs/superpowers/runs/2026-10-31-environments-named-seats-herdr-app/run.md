@@ -101,6 +101,8 @@ scopeFilter-round-2: [Nit] src/daemon/health.rs:618 punch-list — Health report
 scopeFilter-round-2: [Nit] src/cli/caller_location.rs:135 in-scope — The turn edge of a verified-terminal caller is reported against the Herdr pane's seat instead of the terminal's seat, an incorrect attribution in a goal-named path.
 scopeFilter-round-2: [Nit] src/store/queries.rs:1658 punch-list — The daemon-side labels are intended by the design; the gap is unrevised SKILL.md and doc text, a documentation improvement on code the goal does not name.
 scopeFilter-round-2: [Nit] src/cli/launch_new.rs:144 in-scope — Missing test for the created-target mismatch check in the goal-named launch path, where the recorded creation releases the gate.
+stepBackCode-round-3: local — decisions hold, no mechanical trigger (ledger degraded); recurring shapes are raw env reads after the site decision and a tmux gate that copies the native gate piecemeal; no redesign cycle spent
+roastCodeExit: capped
 scope-filter: 19 in-scope · 3 punch-listed
 scopeFilter-round-1: [Should-fix] src/store/apply.rs:985 in-scope — named seat parked restore never drains; goal-named durable named seats
 scopeFilter-round-1: [Should-fix] src/store/seats/publication.rs:245 in-scope — retired named seat resurrected after restore; wrong behavior for named seats

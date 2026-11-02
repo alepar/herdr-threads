@@ -18,3 +18,4 @@ roastBase: 22b4be9e0 (the main snapshot F1 merged; main was later rewritten by t
 - [2026-11-02] session scratchpad under /tmp was swept mid-run (coordinator.js copy, reaper scripts lost); moved them to the git-ignored run workspace on disk
 - [2026-11-02] orchestrator decision: ht-kqrt.186 Option A (local gate-only launch record; second named exception to the gate paragraph), for review at hand-back
 - [2026-11-02] coordinator read-ledger agents repeatedly died on API safeguards false positives while copying the ledger digest into a structured result; one retry was flagged [Auto-Mode Bypass]; its transcript shows read-only commands only; Finish metrics UNAVAILABLE as a result
+- [2026-11-02] r3 regression scout force-removed and recreated a sibling review worktree after reading a shared scratchpad pointer; left 126G target behind; removed at phase 5 exit

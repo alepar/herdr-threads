@@ -1,0 +1,15 @@
+[Should-fix] src/host/probe.rs:135; src/app.rs:48; tests/host_neutral_scan.rs:381; tests/service/loop_inventory.rs:515
+[Should-fix] src/cli/topology_runtime.rs:79; src/cli/mod.rs:457
+[Should-fix] src/cli/mod.rs:327
+[Should-fix] src/cli/mod.rs:349
+[Should-fix] tests/service/composition.rs:1603
+[Should-fix] tests/host/named_tmux.rs:1694
+[Should-fix] src/host/named.rs:631
+[Should-fix] src/cli/commands.rs:3822
+[Should-fix] src/cli/topology_runtime.rs:147; src/cli/topology_runtime.rs:361
+[Should-fix] src/identity/reconcile.rs:915
+[Nit] src/host/named.rs:595
+[Nit] src/cli/launch_new.rs:269; src/service/launch_gate.rs:183
+[Nit] src/store/seats/publication.rs:472; tests/store/named_restore.rs:598
+[Nit] docs/install.md:239
+[Nit] docs/agent-usage.md:89
