@@ -1065,10 +1065,23 @@ fn two_cores_watch_continuity_stays_on_its_core() {
 
 // ---- two-family callers: the site is decided after the routing flags ----
 
+/// The directory of a `herdr` that fails every query. First on a rig caller's `PATH`, so its Herdr
+/// lookup fails the same way on every host and no real binary runs.
+fn no_herdr_dir(rig: &Rig) -> PathBuf {
+    rig.isolation.path("no-herdr")
+}
+
 /// A rig whose terminal `t1` is a verified ancestor (this process), so a caller naming both `t1`
 /// and a Herdr pane acts as the terminal.
 fn verified_two_family(label: &str) -> Rig {
     let rig = Rig::start(label, &["t1"]);
+    let stand_in = no_herdr_dir(&rig).join("herdr");
+    std::fs::create_dir_all(no_herdr_dir(&rig)).unwrap();
+    std::fs::write(&stand_in, "#!/bin/sh\nexit 1\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     rig.fake.set_pid("t1", Some(std::process::id()));
     let socket = rig.socket().to_owned();
     let hook = rig.session_start_in(&socket, Some("w9:p9"), "t1", "s-t1");
@@ -1087,6 +1100,12 @@ fn two_family_in(rig: &Rig, herdr_socket: Option<&Path>, args: &[&str]) -> Ran {
         .env("HC_TERMINAL_SOCKET", rig.socket())
         .env("HERDR_PANE_ID", "w9:p9")
         .env("HERDR_ENV", "1");
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::iter::once(no_herdr_dir(rig)).chain(std::env::split_paths(&inherited));
+    command.env(
+        "PATH",
+        std::env::join_paths(dirs).expect("PATH entries join"),
+    );
     match herdr_socket {
         Some(socket) => command.env("HERDR_SOCKET_PATH", socket),
         None => command.env_remove("HERDR_SOCKET_PATH"),
