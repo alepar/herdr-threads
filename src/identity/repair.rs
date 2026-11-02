@@ -254,7 +254,9 @@ impl OrdinaryIdentity {
             )
         })?;
         let recorded = store.record_reconciliation_pass(published, budget)?;
-        lane.promote_live();
+        if recorded {
+            lane.promote_live();
+        }
         Ok(recorded)
     }
 

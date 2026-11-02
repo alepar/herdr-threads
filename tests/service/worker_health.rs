@@ -953,6 +953,8 @@ struct FaultyObservationStore {
     fail_page: std::sync::atomic::AtomicBool,
     pages_ok: AtomicU64,
     pass_records: AtomicU64,
+    /// While set, the marker write answers `Ok(false)`: the store found the publication stale.
+    refuse_marker: std::sync::atomic::AtomicBool,
     /// While set, every published page carries one synthetic saved seat whose
     /// planned transition the store refuses (`Stale`).
     refuse_transitions: std::sync::atomic::AtomicBool,
@@ -1119,6 +1121,9 @@ impl crate::identity::reconcile::observation_store::ObservationStore
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         self.pass_records.fetch_add(1, Ordering::SeqCst);
+        if self.refuse_marker.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
         self.inner.record_reconciliation_pass(published, budget)
     }
 }
@@ -1215,6 +1220,7 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
         fail_page: Default::default(),
         pages_ok: AtomicU64::new(0),
         pass_records: AtomicU64::new(0),
+        refuse_marker: Default::default(),
         refuse_transitions: Default::default(),
     });
     let private = ["private", "/Users/", "SQLite", "socket"];
@@ -2147,6 +2153,7 @@ fn refusal_free_pass_records_marker_once() {
         fail_page: Default::default(),
         pages_ok: AtomicU64::new(0),
         pass_records: AtomicU64::new(0),
+        refuse_marker: Default::default(),
         refuse_transitions: Default::default(),
     });
     let worker = StopWorker(
@@ -2240,6 +2247,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
         fail_page: Default::default(),
         pages_ok: AtomicU64::new(0),
         pass_records: AtomicU64::new(0),
+        refuse_marker: Default::default(),
         refuse_transitions: std::sync::atomic::AtomicBool::new(true),
     });
     let worker = StopWorker(
@@ -2377,6 +2385,7 @@ fn store_only_rig() -> StoreOnlyRig {
         fail_page: Default::default(),
         pages_ok: AtomicU64::new(0),
         pass_records: AtomicU64::new(0),
+        refuse_marker: Default::default(),
         refuse_transitions: Default::default(),
     });
     StoreOnlyRig {
@@ -2547,5 +2556,37 @@ fn store_only_lane_retries_a_failure_the_lane_never_saw() {
     assert!(
         capture().is_some(),
         "an outstanding failure forces a real capture"
+    );
+}
+
+// Kills: a lane that promotes the live set after a marker write the store refused (`Ok(false)`, a
+// stale publication), which would skip every later tick while the set is unchanged.
+#[test]
+fn store_only_lane_publishes_again_after_a_refused_marker() {
+    let rig = store_only_rig();
+    let budget = || CallBudget {
+        deadline: crate::protocol::time::MonoInstant(rig.clock.monotonic_now().0 + 10_000),
+        cancellation: Cancellation::default(),
+    };
+    let capture = || {
+        rig.identity
+            .capture_if_due(&rig.port, &budget(), &budget())
+            .unwrap()
+    };
+    rig.port.refuse_marker.store(true, Ordering::SeqCst);
+    let Some(crate::identity::reconcile::ObservationOutcome::Published(published)) = capture()
+    else {
+        panic!("the first capture publishes");
+    };
+    assert!(
+        !rig.identity
+            .record_reconciliation_pass(&rig.port, &published, &budget())
+            .unwrap(),
+        "the store refused the marker"
+    );
+    rig.clock.0.fetch_add(5_000, Ordering::SeqCst);
+    assert!(
+        capture().is_some(),
+        "a refused pass leaves the live set unpromoted: the next tick publishes again"
     );
 }
