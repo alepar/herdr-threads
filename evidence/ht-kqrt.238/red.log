@@ -1,0 +1,38 @@
+heavy: slot 1 acquired 02:50:08
+   Compiling herdr-threads v2.8.4 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.238)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 35s
+────────────
+ Nextest run ID c723e2ca-c579-43a1-b9f2-24e7129f0e95 with nextest profile: default
+    Starting 10 tests across 17 binaries (8983 tests skipped)
+        PASS [   0.009s] ( 1/10) herdr-threads service::peer_launcher::tests::slots_are_capped_per_node_and_freed_with_their_guard
+        PASS [   0.009s] ( 2/10) herdr-threads service::peer_launcher::tests::launch_children_keep_only_login_environment
+        PASS [   0.010s] ( 3/10) herdr-threads service::peer_launcher::tests::a_worker_whose_thread_cannot_start_keeps_its_slot_until_recorded
+        PASS [   0.010s] ( 4/10) herdr-threads service::peer_launcher::tests::only_a_started_child_can_leave_an_unconfirmed_start
+        PASS [   0.010s] ( 5/10) herdr-threads service::peer_launcher::tests::gate_argv_carries_host_launch_argv
+        PASS [   0.011s] ( 6/10) herdr-threads service::peer_launcher::tests::gate_argv_refuses_an_unresolvable_executable
+        PASS [   0.011s] ( 7/10) herdr-threads service::peer_launcher::tests::gate_argv_parses_as_the_real_launch_gate
+        PASS [   0.013s] ( 8/10) herdr-threads service::peer_launcher::tests::plans_are_refused_before_anything_runs
+        PASS [   0.014s] ( 9/10) herdr-threads service::peer_launcher::tests::gate_argv_carries_the_callers_config_root
+        FAIL [   0.017s] (10/10) herdr-threads service::peer_launcher::tests::child_output_and_argv_match_the_real_commands
+  stdout ───
+
+    running 1 test
+    test service::peer_launcher::tests::child_output_and_argv_match_the_real_commands ... FAILED
+
+    failures:
+
+    failures:
+        service::peer_launcher::tests::child_output_and_argv_match_the_real_commands
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6964 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'service::peer_launcher::tests::child_output_and_argv_match_the_real_commands' (910284) panicked at src/service/peer_launcher.rs:1232:18:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: InvalidRequest, detail: "error: unrecognized subcommand 'peer-tab-create'\n\n  tip: a similar subcommand exists: 'peer-target-create'\n\nUsage: ht internal [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.056s] 10 tests run: 9 passed, 1 failed, 8983 skipped
+        FAIL [   0.017s] (10/10) herdr-threads service::peer_launcher::tests::child_output_and_argv_match_the_real_commands
+error: test run failed
