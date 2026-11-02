@@ -471,3 +471,85 @@ fn idle_exit_with_only_named_host() {
         }
     });
 }
+
+fn named_sequence(rig: &Rig) -> i64 {
+    rig.db()
+        .query_row(
+            "SELECT observation_admission_sequence FROM herdr_hosts WHERE kind='named'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+}
+
+/// The named lane has published once (the S2 first publication) and stopped.
+fn wait_flat(rig: &Rig) -> i64 {
+    wait_for(
+        "the first named publication",
+        Duration::from_secs(30),
+        || {
+            if named_sequence(rig) >= 1 {
+                Ok(())
+            } else {
+                Err("no publication yet".to_owned())
+            }
+        },
+    );
+    std::thread::sleep(Duration::from_millis(900));
+    named_sequence(rig)
+}
+
+// Kills: a named lane that runs a five-transaction pass every tick although its only input is
+// the store (the sequence rises every 300 ms tick).
+#[test]
+fn an_idle_named_lane_writes_nothing() {
+    let rig = Rig::standalone("ns-idle-lane");
+    let before = wait_flat(&rig);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(named_sequence(&rig), before, "five idle ticks published");
+}
+
+// Kills: a first hook that waits for the next tick (the cadence literal, about 5 s) and a lane
+// that skips a changed live set.
+#[test]
+fn a_new_seat_publishes_within_a_tick() {
+    let rig = Rig::standalone("ns-new-seat");
+    let before = wait_flat(&rig);
+    let started = std::time::Instant::now();
+    rig.enroll("alice", "s-alice");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "enroll took {:?}",
+        started.elapsed()
+    );
+    wait_for("the new seat's publication", Duration::from_secs(5), || {
+        if named_sequence(&rig) > before {
+            Ok(())
+        } else {
+            Err("no publication".to_owned())
+        }
+    });
+}
+
+// Kills: a skip that compares names or counts instead of the live set, so a retire never publishes.
+#[test]
+fn a_retired_seat_publishes_at_the_next_tick() {
+    let rig = Rig::standalone("ns-retire-lane");
+    rig.enroll("alice", "s-alice");
+    let before = wait_flat(&rig);
+    let seat = rig.seat_of("alice");
+    let mut command = rig.base(BIN);
+    command
+        .args(["human", "--state-dir"])
+        .arg(&rig.state)
+        .args(["seat", "retire", &seat, "--operator"]);
+    let retired = run(command, None);
+    assert_eq!(retired.code, Some(0), "{retired:?}");
+    wait_for("the retire's publication", Duration::from_secs(5), || {
+        if named_sequence(&rig) > before {
+            Ok(())
+        } else {
+            Err("no publication".to_owned())
+        }
+    });
+}

@@ -4445,6 +4445,16 @@ pub trait HostPort: Send + Sync {
         context: &HostCallContext,
     ) -> Result<ComposerObservation, ApiError>;
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError>;
+    /// The seats a host whose only input is this node's store would enumerate, ordered as
+    /// `enumerate_targets` reports them. The lane compares it with the set it last finished
+    /// publishing and skips an unchanged capture, so a store-only host adds no store writes of its
+    /// own. `None` (default): the host has input of its own, and every due capture runs.
+    fn store_enumeration(
+        &self,
+        _context: &HostCallContext,
+    ) -> Result<Option<Vec<SeatId>>, ApiError> {
+        Ok(None)
+    }
     fn safe_wake_target(
         &self,
         seat: &SeatId,

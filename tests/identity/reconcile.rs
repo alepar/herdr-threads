@@ -166,11 +166,61 @@ fn discarded_attempt_waits_for_the_pacer_retry_time_but_event_hints_do_not() {
     lane.mark_unavailable();
     lane.discard(ticket).unwrap();
     // Gated by the Pacer's next_retry_at(), not immediately due.
-    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
-    assert!(lane.snapshot_due_gated(MonoInstant(400), Some(MonoInstant(400))));
+    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
+    assert!(lane.snapshot_due_gated(MonoInstant(400), Some(MonoInstant(400)), 5_000));
     // Host-event hints still set dirty and bypass the gate.
     lane.mark_event_dirty();
-    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
+}
+
+// Kills: a cadence hard-coded at 5_000 whatever the daemon is configured with.
+#[test]
+fn snapshot_cadence_is_the_configured_one() {
+    for cadence in [300_u64, 7_000] {
+        let mut lane = ObservationLane::default();
+        let ticket = lane.begin_observation().unwrap();
+        lane.accept_applied(&snapshot(2, vec![]), ticket, MonoInstant(1_000))
+            .unwrap();
+        assert!(!lane.snapshot_due_gated(MonoInstant(1_000 + cadence - 1), None, cadence));
+        assert!(lane.snapshot_due_gated(MonoInstant(1_000 + cadence), None, cadence));
+    }
+}
+
+// Kills: a promotion that publishes a set whose pass never finished, and one that forgets the
+// published set when nothing was staged.
+#[test]
+fn live_set_is_published_only_after_promotion() {
+    let mut lane = ObservationLane::default();
+    assert_eq!(lane.published_live(), None);
+    lane.stage_live(vec![SeatId::new("a")]);
+    assert_eq!(lane.published_live(), None, "staged is not published");
+    lane.promote_live();
+    assert_eq!(lane.published_live(), Some([SeatId::new("a")].as_slice()));
+    lane.promote_live();
+    assert_eq!(lane.published_live(), Some([SeatId::new("a")].as_slice()));
+    lane.stage_live(vec![SeatId::new("b")]);
+    lane.clear_staged_live();
+    lane.promote_live();
+    assert_eq!(lane.published_live(), Some([SeatId::new("a")].as_slice()));
+}
+
+// Kills: a skipped capture that leaves the dirty mark set, due forever.
+#[test]
+fn skipping_an_unchanged_capture_clears_dirty_only() {
+    let mut lane = ObservationLane::default();
+    let ticket = lane.begin_observation().unwrap();
+    lane.accept_applied(&snapshot(2, vec![]), ticket, MonoInstant(10))
+        .unwrap();
+    lane.mark_event_dirty();
+    assert!(lane.snapshot_due_gated(MonoInstant(11), None, 5_000));
+    lane.skip_unchanged_capture();
+    assert!(!lane.snapshot_due_gated(MonoInstant(11), None, 5_000));
+    lane.request_explicit_capture();
+    lane.skip_unchanged_capture();
+    assert!(
+        lane.explicit_capture_requested(),
+        "an explicit request is kept"
+    );
 }
 
 #[test]
@@ -179,15 +229,15 @@ fn explicit_capture_request_opens_the_gate_once() {
     let ticket = lane.begin_observation().unwrap();
     lane.mark_unavailable();
     lane.discard(ticket).unwrap();
-    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
     lane.request_explicit_capture();
-    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
     assert!(!lane.is_available(), "a request is not evidence");
     // Consumed by the next observation's start.
     let ticket = lane.begin_observation().unwrap();
     lane.mark_unavailable();
     lane.discard(ticket).unwrap();
-    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
 }
 
 #[test]

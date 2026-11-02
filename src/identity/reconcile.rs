@@ -953,7 +953,14 @@ pub struct ObservationLane {
     /// Lane captures that ran to an outcome; an explicit target read that
     /// needs a capture waits for this to advance.
     completed_captures: u64,
+    /// A store-only host's live set, read before the capture now being published.
+    staged_live: Option<Vec<crate::protocol::ids::SeatId>>,
+    /// The live set whose publication and reconciliation pass both finished. `None` after a start.
+    published_live: Option<Vec<crate::protocol::ids::SeatId>>,
 }
+
+/// The lane cadence a daemon runs at unless it is configured otherwise.
+pub const DEFAULT_SNAPSHOT_CADENCE_MILLIS: u64 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservationTicket(u64);
@@ -989,14 +996,47 @@ impl ObservationLane {
         self.completed_captures
     }
 
+    pub fn published_live(&self) -> Option<&[crate::protocol::ids::SeatId]> {
+        self.published_live.as_deref()
+    }
+
+    pub fn stage_live(&mut self, live: Vec<crate::protocol::ids::SeatId>) {
+        self.staged_live = Some(live);
+    }
+
+    pub fn clear_staged_live(&mut self) {
+        self.staged_live = None;
+    }
+
+    /// The staged live set becomes the published one; with nothing staged the published set stays.
+    pub fn promote_live(&mut self) {
+        if let Some(live) = self.staged_live.take() {
+            self.published_live = Some(live);
+        }
+    }
+
+    pub fn explicit_capture_requested(&self) -> bool {
+        self.explicit_capture
+    }
+
+    /// A due capture found nothing to publish: a dirty mark that found no change does not stay due.
+    pub fn skip_unchanged_capture(&mut self) {
+        self.dirty = false;
+    }
+
     pub fn snapshot_due(&self, now: MonoInstant) -> bool {
-        self.snapshot_due_gated(now, None)
+        self.snapshot_due_gated(now, None, DEFAULT_SNAPSHOT_CADENCE_MILLIS)
     }
 
     /// `retry_at` is the lane Pacer's `next_retry_at()`. A host-event hint is
     /// always due; a retry after failure waits for the backoff; otherwise the
-    /// 5 s cadence applies.
-    pub fn snapshot_due_gated(&self, now: MonoInstant, retry_at: Option<MonoInstant>) -> bool {
+    /// configured `cadence_millis` applies.
+    pub fn snapshot_due_gated(
+        &self,
+        now: MonoInstant,
+        retry_at: Option<MonoInstant>,
+        cadence_millis: u64,
+    ) -> bool {
         if self.dirty || self.explicit_capture {
             return true;
         }
@@ -1004,7 +1044,7 @@ impl ObservationLane {
             return retry_at.is_none_or(|at| now.0 >= at.0);
         }
         self.last_snapshot_at
-            .is_none_or(|last| now.0.saturating_sub(last.0) >= 5_000)
+            .is_none_or(|last| now.0.saturating_sub(last.0) >= cadence_millis)
     }
 
     /// The skip predicate (pacer spec D4): same reason as the last completed

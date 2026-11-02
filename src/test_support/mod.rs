@@ -941,6 +941,9 @@ pub fn resolve_seeded(state_dir: &std::path::Path) -> crate::daemon::paths::Node
     paths
 }
 
+/// The observation lane tick (ms) a shared test daemon runs at, in place of the 5 s production one.
+pub const TEST_DAEMON_LANE_TICK_MS: &str = "300";
+
 /// A detached `daemon run --state-dir <state>` child of the real binary,
 /// started the way the CLI's own ensure starts it, but owned by the test: the
 /// 5-argument form is store-only (no Herdr server attached unless the store
@@ -965,6 +968,10 @@ pub fn spawn_node_daemon(
         command.arg("--host-endpoint").arg(hint);
     }
     command
+        .env(
+            crate::service::config::TEST_LANE_TICK_ENV,
+            TEST_DAEMON_LANE_TICK_MS,
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::fs::File::create(stderr_to)?)

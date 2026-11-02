@@ -16,6 +16,7 @@ use crate::{
     service::{fair_writer::FairWriter, pacer::Pacer, workers::BoundedLane},
 };
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Hard upper bound, in monotonic milliseconds, of the post-failure
 /// invalidation compensation. It is deliberately independent of the request
@@ -102,6 +103,8 @@ pub struct OrdinaryIdentity {
     process_declined: std::sync::Mutex<std::collections::HashMap<ProcessDeclineKey, u64>>,
     /// The last seat C1 process continuity walked this round; `None` starts over.
     process_cursor: std::sync::Mutex<Option<SeatId>>,
+    /// The lane's configured cadence in milliseconds.
+    observation_cadence_millis: u64,
 }
 
 use crate::identity::process_continuity::DeclineKey as ProcessDeclineKey;
@@ -133,7 +136,14 @@ impl OrdinaryIdentity {
             observation_pacer: None,
             process_declined: std::sync::Mutex::new(std::collections::HashMap::new()),
             process_cursor: std::sync::Mutex::new(None),
+            observation_cadence_millis: crate::identity::reconcile::DEFAULT_SNAPSHOT_CADENCE_MILLIS,
         }
+    }
+
+    /// The lane's configured capture cadence.
+    pub fn with_observation_cadence(mut self, cadence: Duration) -> Self {
+        self.observation_cadence_millis = u64::try_from(cadence.as_millis()).unwrap_or(u64::MAX);
+        self
     }
 
     /// The Herdr server this identity acts on.
@@ -178,7 +188,11 @@ impl OrdinaryIdentity {
             .observation_pacer
             .as_ref()
             .and_then(|pacer| pacer.next_retry_at());
-        if !lane.snapshot_due_gated(self.clock.monotonic_now(), retry_at) {
+        if !lane.snapshot_due_gated(
+            self.clock.monotonic_now(),
+            retry_at,
+            self.observation_cadence_millis,
+        ) {
             return Ok(None);
         }
         let context = HostCallContext {
@@ -186,6 +200,17 @@ impl OrdinaryIdentity {
             expected_boot: None,
             expected_epoch: None,
         };
+        // A store-only host's capture is its own rows: unchanged, there is nothing to publish, and
+        // the pass would write five transactions to say so. A failed read falls through to the capture.
+        lane.clear_staged_live();
+        if let Ok(Some(live)) = self.host.store_enumeration(&context) {
+            if !lane.explicit_capture_requested() && lane.published_live() == Some(live.as_slice())
+            {
+                lane.skip_unchanged_capture();
+                return Ok(None);
+            }
+            lane.stage_live(live);
+        }
         let outcome = crate::identity::reconcile::observe_and_publish(
             self.host.as_ref(),
             store,
@@ -212,13 +237,15 @@ impl OrdinaryIdentity {
         published: &crate::ports::PublishedSnapshot,
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
-        let _lane = self.lane.lock().map_err(|_| {
+        let mut lane = self.lane.lock().map_err(|_| {
             error(
                 ErrorCode::StoreCorrupt,
                 "identity observation lane poisoned",
             )
         })?;
-        store.record_reconciliation_pass(published, budget)
+        let recorded = store.record_reconciliation_pass(published, budget)?;
+        lane.promote_live();
+        Ok(recorded)
     }
 
     pub fn reconcile_page(
@@ -307,8 +334,35 @@ impl OrdinaryIdentity {
         request: ResolveSeat,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
-        let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
-        self.store.resolve_named_seat(request, self.host_id, budget)
+        let result = {
+            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+            self.store
+                .resolve_named_seat(request, self.host_id, budget)?
+        };
+        if let CommandResult::NamedSeatResolved { seat, .. } = &result {
+            self.note_named_seat(seat);
+        }
+        Ok(result)
+    }
+
+    /// A seat the lane has not published is waited on by its own hook: capture now, not at the next
+    /// tick. After the writer turn, and never blocking: a capture holding the lane may wait for the
+    /// writer, and the next tick compares the live set anyway.
+    fn note_named_seat(&self, seat: &SeatId) {
+        let Ok(mut lane) = self.lane.try_lock() else {
+            return;
+        };
+        if lane
+            .published_live()
+            .is_some_and(|live| live.contains(seat))
+        {
+            return;
+        }
+        lane.mark_event_dirty();
+        drop(lane);
+        if let Some(pacer) = &self.observation_pacer {
+            pacer.kick();
+        }
     }
 
     /// Historical replay precedes host work and grants no current authority.
