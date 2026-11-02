@@ -673,6 +673,11 @@ pub fn observe_and_publish(
         }
     };
     let capture = host.enumerate_targets(context);
+    // A Stop that cancelled this capture is not a host outage: the lane's Cancelled check takes it.
+    if context.budget.cancellation.is_cancelled() {
+        let _ = lane.discard(ticket);
+        return Err(ApiError::cancelled("host capture"));
+    }
     // SA17 (c): a non-closing host (the named host) enumerates the store, not
     // a server. Its complete capture takes the host's fixed structural
     // boot/incarnation so the publication admits it; a failed capture still
@@ -686,7 +691,7 @@ pub fn observe_and_publish(
     };
     let reason = match &capture {
         Err(_) => Some(HostInvalidationReason::HostUnavailable),
-        Ok(_) if context.budget.is_exhausted(store.clock()) => {
+        Ok(_) if context.budget.deadline_passed(store.clock()) => {
             Some(HostInvalidationReason::HostUnavailable)
         }
         Ok(snapshot)
@@ -735,6 +740,11 @@ pub fn observe_and_publish(
         Err(error) => {
             lane.mark_unavailable();
             let _ = lane.discard(ticket);
+            // A Stop that cancelled the publication is not a failed publication: the lane's
+            // Cancelled check takes it, and nothing is frozen or invalidated.
+            if error.code == ErrorCode::Cancelled {
+                return Err(error);
+            }
             invalidate_or_skip(
                 store,
                 lane,

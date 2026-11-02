@@ -1864,6 +1864,8 @@ mod fake_port {
         actions: Vec<ReconciliationAction>,
         invalidated_seats: Vec<SeatId>,
         fail_offset: Option<u64>,
+        /// Staging fails as a Stop would end it (`Cancelled`) instead of as a stale write.
+        fail_offset_cancelled: bool,
         admission_sequence: u64,
         decided_sequence: u64,
         invalidation_revision: u64,
@@ -2026,6 +2028,9 @@ mod fake_port {
                 .calls
                 .push(format!("stage:{}:{}", offset, targets.len()));
             if state.fail_offset == Some(offset) {
+                if state.fail_offset_cancelled {
+                    return Err(ApiError::cancelled("injected stop"));
+                }
                 return Err(stale("injected staging failure"));
             }
             state.staged += targets.len() as u64;
@@ -2380,39 +2385,37 @@ mod fake_port {
     }
 
     #[test]
-    fn late_coherent_result_freezes_without_invalidating() {
-        let store = Arc::new(FakeStore::new());
-        let host = FakeHost {
-            store: store.clone(),
-            capture: Ok(snapshot(2, vec![])),
-            cancel_on_return: true,
-        };
-        let mut lane = ObservationLane::default();
-        let outcome = observe_and_publish(
-            &host,
-            store.as_ref(),
-            &mut lane,
-            "instance-a",
-            crate::test_support::test_host_id(),
-            &HostCallContext {
-                budget: budget(),
-                expected_boot: None,
-                expected_epoch: None,
-            },
-            &budget(),
-        )
-        .unwrap();
-        // A coherent answer past its budget is unavailability: frozen, not
-        // invalidated (ht-yms).
-        assert!(matches!(
-            outcome,
-            ObservationOutcome::Frozen {
-                reason: HostInvalidationReason::HostUnavailable,
-                ..
-            }
-        ));
-        assert!(!lane.is_available());
-        assert_eq!(store.state.lock().unwrap().calls, ["admit"]);
+    fn cancelled_capture_is_no_frozen_outcome() {
+        // A Stop that cancels the capture is not a host outage: whether the host answered or
+        // failed, the outcome is `Cancelled` (which the lane takes as no error), never `Frozen`.
+        for capture in [
+            Ok(snapshot(2, vec![])),
+            Err(ApiError::host_unavailable("down")),
+        ] {
+            let store = Arc::new(FakeStore::new());
+            let host = FakeHost {
+                store: store.clone(),
+                capture,
+                cancel_on_return: true,
+            };
+            let mut lane = ObservationLane::default();
+            let error = observe_and_publish(
+                &host,
+                store.as_ref(),
+                &mut lane,
+                "instance-a",
+                crate::test_support::test_host_id(),
+                &HostCallContext {
+                    budget: budget(),
+                    expected_boot: None,
+                    expected_epoch: None,
+                },
+                &budget(),
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Cancelled, "{error:?}");
+            assert_eq!(store.state.lock().unwrap().calls, ["admit"]);
+        }
     }
 
     #[test]
@@ -2452,6 +2455,33 @@ mod fake_port {
                 .iter()
                 .any(|call| call.starts_with("invalidate:"))
         );
+    }
+
+    #[test]
+    fn cancelled_publication_is_no_frozen_outcome() {
+        let store = Arc::new(FakeStore::new());
+        {
+            let mut state = store.state.lock().unwrap();
+            state.fail_offset = Some(0);
+            state.fail_offset_cancelled = true;
+        }
+        let host = FakeHost {
+            store: store.clone(),
+            capture: Ok(snapshot(2, vec![target("p", "t", None, 2)])),
+            cancel_on_return: false,
+        };
+        let mut lane = ObservationLane::default();
+        let error = observe_and_publish(
+            &host,
+            store.as_ref(),
+            &mut lane,
+            "instance-a",
+            crate::test_support::test_host_id(),
+            &context(),
+            &budget(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Cancelled, "{error:?}");
     }
 
     #[test]
