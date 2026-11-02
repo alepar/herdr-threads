@@ -77,6 +77,7 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
 }
 
 fn main() {
+    cli::caller::mark_process_entry();
     // Test-support builds: a test library defaults to the test fast paths;
     // this executable takes them only when its environment asks.
     #[cfg(feature = "test-support")]

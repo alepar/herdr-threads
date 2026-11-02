@@ -288,6 +288,8 @@ fn readonly_check_in_needs_the_capability() {
         );
         return;
     }
+    // This child stands in for a real process: it reads the variable the parent set.
+    crate::cli::caller::mark_process_entry();
     let refusal = crate::cli::site_capability::READONLY_REFUSAL;
     let (root, j, cj, seed, event) = fixture();
     let mut out = vec![];

@@ -46,10 +46,26 @@ thread_local! {
     static ACTIVE: RefCell<Option<CallerOrigin>> = const { RefCell::new(None) };
 }
 
+/// Set by [`derive_from_process`]: this is a real `herdr-threads` process.
+static PROCESS_ENTRY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Called first by `main`, whatever the command (CLI, hook, peer): this is a real
+/// `herdr-threads` process, which reads its seat name and read-only mark from its environment.
+/// A test binary that re-runs itself as such a process calls it too.
+pub fn mark_process_entry() {
+    PROCESS_ENTRY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Called by the process entrypoint only: every cooperative command derives its caller from the
 /// environment from here on.
 pub fn derive_from_process() {
+    mark_process_entry();
     SOURCE.with(|source| *source.borrow_mut() = Source::Process);
+}
+
+/// Whether the process entrypoint ran. Library and test callers read no ambient seat identity.
+pub(super) fn process_entry() -> bool {
+    PROCESS_ENTRY.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Test fixture: this thread's commands run as `origin`, as if derived from the environment.

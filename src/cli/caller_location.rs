@@ -8,7 +8,8 @@
 //! will use. It swaps the env with `verified_terminal()` and hands the resulting site (or
 //! `HookEnv`) to every later use (`CallerEnv::for_site`, `InstanceInputs::for_site`). Readers of
 //! the name, tmux or readonly variables keep `from_process()`: dropping `HERDR_PANE_ID` changes
-//! none of them.
+//! none of them. `from_process` hides the name and readonly variables from a caller that is not
+//! the process entrypoint (`seat_filter`), so a test process's own seat never leaks into it.
 //!
 //! Owns: reading and empty-filtering the caller-location variables (the names
 //! come from each host module's env consts, never from a literal here), the
@@ -156,7 +157,11 @@ impl CallerEnv {
     }
 
     pub fn from_process() -> Self {
-        Self::from_lookup(|name| std::env::var_os(name))
+        Self::from_lookup(|name| {
+            seat_filter(super::caller::process_entry(), name, |n| {
+                std::env::var_os(n)
+            })
+        })
     }
 
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Self {
@@ -427,4 +432,18 @@ pub fn claim_recovery_env(host: &HostLocator, target: &str) -> Vec<String> {
         Ok(name) if host.is_named_host() => CallerLocator::Named(name).site().env_assignments(),
         _ => recovery_env(target),
     }
+}
+
+/// One process-environment read as this caller may see it. An in-process library or test caller
+/// (`entry == false`) never inherits a seat name or the read-only mark: a harness session running
+/// the suite must not become the caller of what it tests. The real entrypoint reads both.
+pub fn seat_filter(
+    entry: bool,
+    name: &str,
+    lookup: impl Fn(&str) -> Option<OsString>,
+) -> Option<OsString> {
+    if !entry && (name == named::ENV_SEAT_NAME || name == named::ENV_SEAT_READONLY) {
+        return None;
+    }
+    lookup(name)
 }

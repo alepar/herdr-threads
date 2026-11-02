@@ -16,6 +16,9 @@ use std::{
 /// this one place, never scrubbed per test. `scrub_env` removes them, and so does
 /// `spawn::tag` (hence `spawn_owned`) for a command built with a bare `Command::new`; a test
 /// that wants one sets it on the command with `.env(..)`, and that explicit value wins.
+/// Spawned children are scrubbed here; in-process callers of `cli::run` are covered by
+/// `CallerEnv::from_process`, which hides the seat name and read-only variables unless the
+/// process entrypoint ran.
 pub const SCRUBBED_PREFIXES: &[&str] = &["HERDR_", "CLAUDE", "CODEX", "ZDOTDIR", "HC_", "TMUX"];
 /// `sockaddr_un.sun_path` capacity (macOS 104, Linux 108; the smaller wins).
 pub const SUN_PATH_MAX: usize = 104;
