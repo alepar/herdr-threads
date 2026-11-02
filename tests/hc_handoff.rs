@@ -1477,6 +1477,54 @@ mod launch_new {
         assert_eq!(messages, 0, "a plain launch stages no first message");
     }
 
+    // Answer to ht-kqrt.239: `cli::run` used to read the caller env and ask the daemon's
+    // two-family guard before it reached the `InternalLaunchGate` branch, so the shim, started
+    // in a terminal that leaked a Herdr pane, printed M4 (and a leaked invalid seat name
+    // refused it with M16 before the parse). The shim decides first now.
+    #[test]
+    fn gate_shim_never_reaches_the_two_family_guard() {
+        let rig = LaunchRig::start("gate-before-guard");
+        let gate = [
+            "internal",
+            "launch-gate",
+            "--bootstrap",
+            "op-9:1",
+            "--",
+            "true",
+        ];
+        let stale = [("HERDR_PANE_ID", "w-stale-1")];
+        // The control: any other command with the same two-family env is stopped by the guard.
+        let control = rig.run_env(&["inbox"], &stale);
+        assert!(
+            control
+                .stderr
+                .contains("env names pane w-stale-1 and terminal"),
+            "the guard speaks for a plain command: {}",
+            control.stderr
+        );
+        let ran = rig.run_env(&gate, &stale);
+        assert!(
+            !ran.stderr.contains("env names pane"),
+            "the shim never reaches the guard: {}",
+            ran.stderr
+        );
+        // A leaked invalid seat name refuses every command at once, except the shim, which
+        // reads only the terminal variables.
+        let bad = [("HERDR_THREADS_SEAT_NAME", "not a name!")];
+        let control = rig.run_env(&["inbox"], &bad);
+        assert!(
+            control.stderr.contains("not a valid seat name"),
+            "{}",
+            control.stderr
+        );
+        let ran = rig.run_env(&gate, &bad);
+        assert!(
+            !ran.stderr.contains("not a valid seat name"),
+            "the shim is not refused by a leaked name: {}",
+            ran.stderr
+        );
+    }
+
     // A daemon whose only host is a herdr-core has no Herdr primary, so the node-wide automatic
     // handoff capability is off. A handoff that creates its target on the core is gated on the
     // core's own session, not on that flag.

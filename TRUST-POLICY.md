@@ -3037,6 +3037,9 @@ transport-proven `NotSubmitted`; `spawn_failed`, a timeout, a disconnect or an u
 `OutcomeUnknown`. The created target's witness is the `(core id, peer)` the pre-run `hello` showed, and the run is
 pinned to that peer.
 
+The gate shim (`internal launch-gate`) is decided before the CLI's caller checks (ht-kqrt.239): it never runs the two-family
+guard and a leaked invalid seat name does not refuse it; it reads only the terminal variables (`launch_gate::terminal_env`).
+
 The launch gate's decision (H3d2, `LAUNCH_GATE_V1`, `Command::AuthorizeLaunchGate`) is the daemon's alone (A2). The shim
 sends `<compound>:<attempt>`, the core id and its `tN`; the daemon reads the canonical view of that bootstrap (never
 a label, never a path the client names) and authorizes only when the attempt is the current one, the recorded

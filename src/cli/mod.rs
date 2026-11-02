@@ -348,15 +348,30 @@ fn cli_caller_pane(
     (pane, terminal)
 }
 
+/// The argv is the launch-gate shim's (`internal launch-gate`).
+fn is_launch_gate(argv: &[OsString]) -> bool {
+    matches!(
+        commands::parse_argv_or_informational(argv.iter().cloned()),
+        Ok(commands::ParsedCli {
+            action: CliAction::InternalLaunchGate { .. },
+            ..
+        })
+    )
+}
+
 pub fn run<I, T, W>(argv: I, writer: &mut W) -> Result<(), RunError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
     W: Write,
 {
+    let argv: Vec<OsString> = argv.into_iter().map(Into::into).collect();
     let mut env = caller_location::CallerEnv::from_process();
+    // The launch-gate shim decides first (below): it reads only the terminal variables, so a
+    // leaked seat name or pane never refuses it.
     if let Err(error) = env.locate(caller_location::EnvMode::Cli)
         && let Some(line) = error.refusal()
+        && !is_launch_gate(&argv)
     {
         return Err(invalid_request(line));
     }
@@ -365,6 +380,13 @@ where
     let Some(parsed) = parse_cli(argv, writer)? else {
         return Ok(());
     };
+    if let CliAction::InternalLaunchGate { .. } = &parsed.action {
+        // No two-family guard: the shim is no seat, and its authorization is the daemon's call
+        // against the terminal witness. Its site is the terminal alone, as the shim reads it.
+        let site = launch_gate::terminal_env(|name| std::env::var_os(name))
+            .non_pane_locator(caller_location::EnvMode::Cli);
+        return run_parsed(parsed, None, site.as_ref(), writer);
+    }
     let (guarded_pane, verified_terminal) = cli_caller_pane(&env, &parsed.output);
     if verified_terminal {
         // The guard verified the terminal: from here the caller is that lone site, decided once.
