@@ -22,3 +22,5 @@ roastBase: 22b4be9e0 (the main snapshot F1 merged; main was later rewritten by t
 - [2026-11-02] relayed by coordinator (mnSGz27x89j5): user accepted both launch gate exceptions (.143 peer, .186 local plain launch), including the accepted limit that a launched agent can start idle; no branch change. Atomic remote handoff redesign is ht-8lem for 3.0.0, out of this run's scope.
 - [2026-11-02] orchestrator sent the graph seat a five-point reply after it had withdrawn the questions; harmless, disclosed to the user
 - [2026-11-02] post-cap audit scout ran check-no-leaked-processes --kill with a run id from a shared scratchpad pointer and killed a sibling's stress loop; scouts share pointer files that are not per-lane
+- [2026-11-02] coordinator review part 1 (mnSGHz9VthZU) filed into inv-9 as beads
+- [2026-11-02] impl:ht-kqrt.226 stalled 2h10m on a Bash call with no result and no live process; coordinator has no per-agent timeout; stopped and resumed inv-9, work saved as a WIP commit
