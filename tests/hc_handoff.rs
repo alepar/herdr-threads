@@ -1111,7 +1111,10 @@ mod launch_new {
         spawn::{OwnedChild, SpawnOwned},
         spawn_node_daemon,
     };
-    use std::{path::PathBuf, process::Stdio};
+    use std::{
+        path::{Path, PathBuf},
+        process::Stdio,
+    };
 
     use super::*;
 
@@ -1147,7 +1150,7 @@ mod launch_new {
             let exe = dir.join("claude");
             std::fs::write(
                 &exe,
-                "#!/bin/sh\necho \"$$ $HC_TERMINAL_ID\" > \"$HT_STANDIN_MARKER\"\nexec sleep 300\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$CLAUDE_CONFIG_DIR\" > \"$HT_STANDIN_MARKER.root\"\necho \"$$ $HC_TERMINAL_ID\" > \"$HT_STANDIN_MARKER\"\nexec sleep 300\n",
             )
             .unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1225,7 +1228,13 @@ mod launch_new {
 
         /// `args` as a process in the fake core's terminal `t1`.
         fn run(&self, args: &[&str]) -> Ran {
+            self.run_env(args, &[])
+        }
+
+        /// `run` with `env` set on the process (the caller's own profile variables).
+        fn run_env(&self, args: &[&str], env: &[(&str, &str)]) -> Ran {
             let mut command = self.command(args);
+            command.envs(env.iter().copied());
             command
                 .env("HC_TERMINAL_ID", "t1")
                 .env("HC_TERMINAL_SOCKET", self.fake.socket());
@@ -1235,8 +1244,20 @@ mod launch_new {
         /// `args` as the Claude agent of `session` in the fake core's terminal `t1` (the core
         /// environment and nothing of Herdr), with `stdin` as a hook payload when given.
         fn agent(&self, session: &str, args: &[&str], stdin: Option<&[u8]>) -> Ran {
+            self.agent_env(session, args, stdin, &[])
+        }
+
+        /// `agent` with `env` set on the process (the caller's own profile variables).
+        fn agent_env(
+            &self,
+            session: &str,
+            args: &[&str],
+            stdin: Option<&[u8]>,
+            env: &[(&str, &str)],
+        ) -> Ran {
             use std::io::Write;
             let mut command = self.command(args);
+            command.envs(env.iter().copied());
             herdr_threads::test_support::isolation::as_agent(&mut command, "claude", session);
             command
                 .env("HC_TERMINAL_ID", "t1")
@@ -1286,13 +1307,18 @@ mod launch_new {
         /// A `--new-tab worker --space w1` handoff of `sess-a` that fails after its attempt is
         /// journaled; returns the recovery reference the `pending-ops` listing shows for it.
         fn failed_handoff(&self, extra: &[&str]) -> String {
+            self.failed_handoff_env(extra, &[])
+        }
+
+        /// `failed_handoff` with `env` set on the handoff process.
+        fn failed_handoff_env(&self, extra: &[&str], env: &[(&str, &str)]) -> String {
             self.fake
                 .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
             self.enroll("sess-a");
             let mut args = vec!["--json", "handoff", "--new-tab", "worker", "--space", "w1"];
             args.extend(extra);
             args.extend(["--kind", "claude", "--", "do the work"]);
-            let ran = self.agent("sess-a", &args, None);
+            let ran = self.agent_env("sess-a", &args, None, env);
             assert_ne!(ran.code, Some(0), "{}{}", ran.stdout, ran.stderr);
             self.pending_reference()
         }
@@ -1322,6 +1348,23 @@ mod launch_new {
                 "the stand-in never started; daemon: {}",
                 std::fs::read_to_string(self.isolation.path("daemon.stderr")).unwrap_or_default()
             );
+        }
+
+        /// The `CLAUDE_CONFIG_DIR` the stand-in ran under (empty: none), once it started.
+        fn root(&self) -> String {
+            self.marker();
+            std::fs::read_to_string(self.marker.with_extension("root"))
+                .expect("the stand-in recorded its root")
+                .trim()
+                .to_owned()
+        }
+
+        /// Models a core autostarted under the profile `root`: its terminals start with it.
+        fn core_under(&self, root: &Path) {
+            self.fake.exec_runs(&[
+                ("HT_STANDIN_MARKER", self.marker.to_str().unwrap()),
+                ("CLAUDE_CONFIG_DIR", root.to_str().unwrap()),
+            ]);
         }
 
         fn db(&self) -> rusqlite::Connection {
@@ -1563,6 +1606,51 @@ mod launch_new {
         assert_routed(&ran);
     }
 
+    // Kills: a V3 handoff whose gate runs under the core's ambient profile instead of the
+    // handing-off caller's.
+    #[test]
+    fn core_only_handoff_runs_under_the_callers_root() {
+        let rig = LaunchRig::start("handoff-root-caller");
+        let (a, b) = (profile("core-a"), profile("caller-b"));
+        rig.core_under(&a);
+        rig.fake
+            .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
+        rig.enroll("sess-a");
+        let ran = rig.agent_env(
+            "sess-a",
+            &[
+                "--json",
+                "handoff",
+                "--new-tab",
+                "worker",
+                "--space",
+                "w1",
+                "--kind",
+                "claude",
+                "--",
+                "do the work",
+            ],
+            None,
+            &[("CLAUDE_CONFIG_DIR", b.to_str().unwrap())],
+        );
+        assert_routed(&ran);
+        assert_eq!(rig.root(), b.to_str().unwrap());
+    }
+
+    // Kills: a retry that re-reads the environment of whoever retries (the plan must freeze
+    // the caller's root) or is refused by the plan check for differing from the first attempt.
+    #[test]
+    fn core_only_retry_keeps_the_frozen_root() {
+        let rig = LaunchRig::start("handoff-root-retry");
+        let (a, b) = (profile("core-a"), profile("caller-b"));
+        rig.core_under(&a);
+        rig.fake.fail_next_run(RunFailure::Error("busy"));
+        let reference = rig.failed_handoff_env(&[], &[("CLAUDE_CONFIG_DIR", b.to_str().unwrap())]);
+        let ran = rig.agent("sess-a", &["--json", "retry", &reference], None);
+        assert_routed(&ran);
+        assert_eq!(rig.root(), b.to_str().unwrap());
+    }
+
     // Pins `runtime()`: a verified two-family terminal (its core an ancestor, a Herdr pane in
     // its environment, no Herdr socket) hands off onto its core; the context resolves as the
     // terminal site, not as a pane that needs a Herdr server.
@@ -1620,6 +1708,38 @@ mod launch_new {
             "{argv}"
         );
         assert_gate_recorded_and_idle(&rig, &report);
+    }
+
+    /// A real scratch profile directory.
+    fn profile(tag: &str) -> PathBuf {
+        let dir = temp_path(format!("ht-{tag}-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(dir).unwrap()
+    }
+
+    // Kills: a launch that runs under the autostarted core's profile (A) when the launching
+    // caller's own profile (B) differs: the gate argv carried no root and nothing scrubbed A.
+    #[test]
+    fn launch_new_terminal_runs_under_the_callers_root_not_the_cores() {
+        let rig = LaunchRig::start("launch-root-caller");
+        let (a, b) = (profile("core-a"), profile("caller-b"));
+        rig.core_under(&a);
+        let ran = rig.run_env(
+            &["--json", "launch", "--new-terminal", "--kind", "claude"],
+            &[("CLAUDE_CONFIG_DIR", b.to_str().unwrap())],
+        );
+        launched(&ran);
+        assert_eq!(rig.root(), b.to_str().unwrap());
+    }
+
+    // Kills: the core's ambient root surviving a launch from a caller that names none.
+    #[test]
+    fn launch_new_terminal_with_no_caller_root_leaves_the_core_root_behind() {
+        let rig = LaunchRig::start("launch-root-none");
+        rig.core_under(&profile("core-a"));
+        let ran = rig.run(&["--json", "launch", "--new-terminal", "--kind", "claude"]);
+        launched(&ran);
+        assert_eq!(rig.root(), "");
     }
 
     // Kills: a daemon that answers a repeated `Record` with the seat although the record is not

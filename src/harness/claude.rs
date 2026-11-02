@@ -989,6 +989,9 @@ impl super::adapter::CanaryStrategy for ClaudeCanary {
     }
 }
 impl HarnessAdapter for ClaudeAdapter {
+    fn child_scrub_vars(&self) -> &'static [&'static str] {
+        &["CLAUDE_CONFIG_DIR"]
+    }
     /// A hook-registered binding's turn start injects the pending items (`UserPromptSubmit`), so
     /// its native wake is content-free; other evidence keeps the `inbox` marker.
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {

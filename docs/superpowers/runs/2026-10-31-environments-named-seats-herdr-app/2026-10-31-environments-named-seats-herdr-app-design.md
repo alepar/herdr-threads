@@ -1713,3 +1713,13 @@ the site once. `InstanceInputs::from_process` is gone: `InstanceInputs::for_site
 every caller names the decided site (`None` only for the guard and `peer --stdio`); `CallerEnv::for_site` reads a
 verified terminal as its lone site. A direct send's `recipient_host` drops the claim-host pin on a non-Pane site so a
 recipient pane's server is never the core. `--help` and usage errors no longer pay the guard's daemon call or print M4.
+
+### 2026-11-02: a launch runs under the launching side's profile (ht-kqrt.223)
+
+Gate step 3 ("sets the caller's config roots, so a leaked `CLAUDE_CONFIG_DIR` cannot win") now holds for every launch
+onto a core. Each adapter names its config-root variable in `child_scrub_vars` (Claude `CLAUDE_CONFIG_DIR`, Codex
+`CODEX_HOME`, Hermes `HERMES_HOME`; agy's root is `HOME`, shared by core and caller, so it scrubs nothing), so the
+shim removes an autostarted core's root. `launch --new-terminal` passes the caller's own root as `--config-root`; a V3
+handoff freezes it in the plan's `directory_context` when no `--profile-dir` is given, so a retry from another
+environment keeps it. A peer launch plan carries no root and the wire is unchanged: the harness there runs on the peer
+user's default root, and the requesting side's profile cannot cross without a wire field.

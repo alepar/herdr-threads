@@ -50,7 +50,8 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     }
     /// Environment variables of this harness (beyond its `CallerEnvShape` session and pid
     /// variables) that the launch-gate shim removes before it `exec`s the harness, so a leaked
-    /// one cannot win over the launched caller's own. Default: none.
+    /// one cannot win over the launched caller's own. Each config-root variable goes here: an
+    /// autostarted core's leaked root must not win. Default: none.
     fn child_scrub_vars(&self) -> &'static [&'static str] {
         &[]
     }

@@ -121,24 +121,32 @@ fn capture_directories<C: crate::ports::LocalClient + ?Sized>(
     harness: crate::harness::context::Harness,
     cwd: &std::path::Path,
 ) -> Result<Option<crate::protocol::handoff::LaunchDirectoryContext>, RunError> {
-    let Some(profile_dir) = &request.profile_dir else {
-        return Ok(None);
+    let registration = crate::harness::launch::launch_registration(
+        crate::harness::registry::builtins(),
+        harness.occupant(),
+    )?;
+    let profile_dir = match (&request.profile_dir, &request.target) {
+        (Some(dir), _) => dir.clone(),
+        // A V3 plan freezes the caller's root: its gate runs under the core's ambient env.
+        (None, Some(_)) => match crate::harness::launch::caller_config_root(registration, |name| {
+            std::env::var_os(name)
+        })? {
+            Some(dir) => dir,
+            None => return Ok(None),
+        },
+        (None, None) => return Ok(None),
     };
     // A V3 plan's directories ride the target host's own gate, not the node-wide flag.
     if request.target.is_none() {
         require_directory_capability(inputs.client, inputs.clock)?;
     }
-    let registration = crate::harness::launch::launch_registration(
-        crate::harness::registry::builtins(),
-        harness.occupant(),
-    )?;
     let context = crate::protocol::handoff::LaunchDirectoryContext {
         profile_dir: profile_dir.clone(),
         cwd: cwd.to_path_buf(),
         env: registration
             .launch_policy()
             .expect("checked provider")
-            .explicit_directory_env(profile_dir)?,
+            .explicit_directory_env(&profile_dir)?,
     };
     context.validate().map_err(super::invalid_request)?;
     check_directories(Some(&context))?;
