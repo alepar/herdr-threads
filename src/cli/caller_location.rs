@@ -1,7 +1,12 @@
 //! Caller location: the CLI's only reader of caller-location environment.
 //!
 //! Pattern: a value type with closed enums (`CallerEnv` -> `Located` ->
-//! `CallerSite`), built once per CLI or hook invocation and immutable.
+//! `CallerSite`), built once per CLI or hook invocation and immutable. `from_process` reads
+//! the process environment and nothing else: a two-family caller whose terminal the daemon
+//! verified is decided once at the entry point (`run`, `run_admitted_hook_since`), which swaps
+//! the env with `verified_terminal()` and hands the resulting site (or `HookEnv`) to every later
+//! use. Readers of the name, tmux or readonly variables may keep `from_process()`: dropping
+//! `HERDR_PANE_ID` changes none of them.
 //!
 //! Owns: reading and empty-filtering the caller-location variables (the names
 //! come from each host module's env consts, never from a literal here), the
@@ -131,30 +136,6 @@ pub struct CallerEnv {
     vars: HashMap<&'static str, OsString>,
 }
 
-thread_local! {
-    static VERIFIED_TERMINAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// While held, this thread's caller is the terminal `LocateCaller` verified. Drop restores the
-/// previous value.
-pub struct VerifiedTerminalScope(bool);
-
-/// Marks this thread's caller as its verified terminal until the scope drops.
-pub fn enter_verified_terminal() -> VerifiedTerminalScope {
-    VerifiedTerminalScope(VERIFIED_TERMINAL.replace(true))
-}
-
-/// Whether this thread's caller is its verified terminal.
-pub fn verified_terminal_active() -> bool {
-    VERIFIED_TERMINAL.get()
-}
-
-impl Drop for VerifiedTerminalScope {
-    fn drop(&mut self) {
-        VERIFIED_TERMINAL.set(self.0);
-    }
-}
-
 impl CallerEnv {
     /// This environment with the pane id dropped: `LocateCaller` verified the terminal.
     pub fn verified_terminal(mut self) -> Self {
@@ -163,12 +144,7 @@ impl CallerEnv {
     }
 
     pub fn from_process() -> Self {
-        let env = Self::from_lookup(|name| std::env::var_os(name));
-        if VERIFIED_TERMINAL.get() {
-            env.verified_terminal()
-        } else {
-            env
-        }
+        Self::from_lookup(|name| std::env::var_os(name))
     }
 
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Self {

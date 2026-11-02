@@ -311,16 +311,10 @@ impl ViewReader for SocketViewReader {
 }
 
 /// The pane the CLI acts from ([`caller_guard::cli_pane`]): a two-family caller is verified by
-/// the daemon first, and an unverified one prints M4 and binds nothing. A verified terminal comes
-/// back as a scope: while held, every `CallerEnv::from_process()` reads the caller as that lone
-/// Terminal site.
-fn cli_caller_pane(
-    env: &caller_location::CallerEnv,
-) -> (
-    Option<String>,
-    Option<caller_location::VerifiedTerminalScope>,
-) {
-    let mut scope = None;
+/// the daemon first, and an unverified one prints M4 and binds nothing. The flag is set when the
+/// daemon verified the terminal: [`run`] then swaps the env once and passes the resulting site on.
+fn cli_caller_pane(env: &caller_location::CallerEnv) -> (Option<String>, bool) {
+    let mut terminal = false;
     let pane = caller_guard::cli_pane(
         env,
         |candidates| {
@@ -338,14 +332,12 @@ fn cli_caller_pane(
                         || caller_guard::unasked(candidates),
                         |(_, _, client)| caller_guard::verify(&client, candidates, &budget),
                     );
-            if matches!(guard, caller_guard::Guard::Terminal(_)) {
-                scope = Some(caller_location::enter_verified_terminal());
-            }
+            terminal = matches!(guard, caller_guard::Guard::Terminal(_));
             guard
         },
         |line| eprintln!("{line}"),
     );
-    (pane, scope)
+    (pane, terminal)
 }
 
 pub fn run<I, T, W>(argv: I, writer: &mut W) -> Result<(), RunError>
@@ -360,10 +352,10 @@ where
     {
         return Err(invalid_request(line));
     }
-    let (guarded_pane, _verified_terminal) = cli_caller_pane(&env);
-    if _verified_terminal.is_some() {
-        // The guard verified the terminal: read the environment again as that lone site.
-        env = caller_location::CallerEnv::from_process();
+    let (guarded_pane, verified_terminal) = cli_caller_pane(&env);
+    if verified_terminal {
+        // The guard verified the terminal: from here the caller is that lone site, decided once.
+        env = env.verified_terminal();
     }
     let site = env.non_pane_locator(caller_location::EnvMode::Cli);
     // A lone herdr-core terminal acts as its `tN` target: it has no pane, and its seat lookup
@@ -572,6 +564,7 @@ fn run_parsed_in_pane<W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     let _presentation = output::PresentationGuard::enter(parsed.presentation, &parsed.output);
+    parsed.caller_site = site.cloned();
     if let CliAction::Skill = &parsed.action {
         writer.write_all(skill::SKILL_MD.as_bytes())?;
         writer.flush()?;
@@ -695,7 +688,7 @@ fn run_parsed_in_pane<W: Write>(
         return run_legacy_purge(&parsed, *confirm, *operator, writer);
     }
     if let CliAction::Setup(request) = &parsed.action {
-        return setup::run(request, &parsed.output, writer);
+        return setup::run(request, &parsed.output, site, writer);
     }
     if let CliAction::SetupAll(verb, prompt_suggestions, permissions, pane_env) = &parsed.action {
         return setup::run_all(
@@ -704,6 +697,7 @@ fn run_parsed_in_pane<W: Write>(
             *permissions,
             *pane_env,
             &parsed.output,
+            site,
             writer,
         );
     }
@@ -722,9 +716,10 @@ fn run_parsed_in_pane<W: Write>(
         }
         _ => {}
     }
-    let (context, _) = instance::resolve_context(&instance::InstanceInputs::from_process(
+    let (context, _) = instance::resolve_context(&instance::InstanceInputs::for_site(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
         parsed.output.context.host.as_ref().map(PathBuf::from),
+        site,
     ))
     .map_err(context_error)?;
     if matches!(
@@ -4500,7 +4495,7 @@ fn run_launch<W: Write>(
         ));
     }
     let mut request = request.clone();
-    let mut env = setup::SetupEnv::from_process(&parsed.output)?;
+    let mut env = setup::SetupEnv::from_process(&parsed.output, parsed.caller_site.as_ref())?;
     env.state_dir = Some(context.state_dir.clone());
     let claim_host = topology_runtime::herdr_endpoint_io(context, &parsed.output)
         .map_err(|_| no_herdr_host(&format!("pane {}", request.target.as_str())))?;

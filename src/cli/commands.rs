@@ -38,6 +38,10 @@ pub struct ParsedCli {
     /// `--space`/`--tab` given with `--seat`: only the seat stage reads them; never a pane
     /// selector, never journaled (spec D3 Narrowing).
     pub seat_narrowing: Option<SeatNarrowing>,
+    /// The caller site the entry point decided (`run`, a verified terminal included); set once
+    /// by `run_parsed_in_pane`, read by the consumers that resolve the instance context. Never
+    /// parsed from argv, never journaled.
+    pub caller_site: Option<super::caller_location::CallerLocator>,
 }
 
 /// Raw `--space`/`--tab` values that narrow a seat name or verify an exact seat's location.
@@ -4190,6 +4194,7 @@ fn parse_cli_in_registry(
         agent_id,
         seat_selectors,
         seat_narrowing,
+        caller_site: None,
     })
 }
 

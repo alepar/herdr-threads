@@ -68,6 +68,7 @@ fn pick(harness: Harness, seats: Vec<SeatSummary>) -> Result<PaneSeat, Failure> 
     find_seat_for(
         harness,
         &Seats(seats),
+        &HookEnv::from_process(),
         &HostTargetId::new("pane"),
         Instant::now() + Duration::from_secs(5),
         &SystemClock::new(),

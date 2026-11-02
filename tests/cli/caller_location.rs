@@ -461,20 +461,3 @@ fn verified_terminal_reads_as_a_lone_terminal() {
     assert!(verified.herdr_env());
     assert_eq!(verified.pane(EnvMode::Cli), None);
 }
-
-/// Kills: a scope that stays set after it drops (every later read in the thread loses its pane),
-/// and a nested scope whose drop clears the outer one.
-#[test]
-fn verified_terminal_scope_restores_on_drop() {
-    use herdr_threads::cli::caller_location::{enter_verified_terminal, verified_terminal_active};
-    assert!(!verified_terminal_active());
-    let outer = enter_verified_terminal();
-    assert!(verified_terminal_active());
-    drop(enter_verified_terminal());
-    assert!(
-        verified_terminal_active(),
-        "the inner drop keeps the outer scope"
-    );
-    drop(outer);
-    assert!(!verified_terminal_active());
-}

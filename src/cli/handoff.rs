@@ -1422,7 +1422,16 @@ pub(crate) fn try_completed_retry<C: LocalClient + ?Sized, W: Write>(
                 .as_ref()
                 .is_none_or(|selector| selector.direct_id().as_ref() == Some(&claim.target))
     } else {
-        caller_pane == Some(claim.target.as_str()) && parsed.cooperative_selector.is_none()
+        // A terminal is (core socket, tN): the same `tN` of another core is not the frozen caller.
+        let host_agrees = match &parsed.caller_site {
+            Some(site @ super::caller_location::CallerLocator::Terminal { .. }) => {
+                site.site().claim_host_locator() == Some(claim.host.as_str())
+            }
+            _ => true,
+        };
+        caller_pane == Some(claim.target.as_str())
+            && host_agrees
+            && parsed.cooperative_selector.is_none()
     };
     if !selected {
         return Err(super::invalid_request(
@@ -2413,9 +2422,10 @@ pub(crate) fn run<W: Write>(
             );
         }
     }
-    let mut env = super::setup::SetupEnv::from_process(&parsed.output)?;
+    let mut env =
+        super::setup::SetupEnv::from_process(&parsed.output, parsed.caller_site.as_ref())?;
     let (runtime, _) =
-        super::instance::resolve_context(&super::instance::InstanceInputs::from_process(
+        super::instance::resolve_context(&super::instance::InstanceInputs::for_site(
             parsed
                 .output
                 .context
@@ -2428,6 +2438,7 @@ pub(crate) fn run<W: Write>(
                 .host
                 .as_ref()
                 .map(std::path::PathBuf::from),
+            parsed.caller_site.as_ref(),
         ))?;
     env.state_dir = Some(runtime.state_dir.clone());
     let claim_host = super::topology_runtime::herdr_endpoint(&runtime, &parsed.output)?;

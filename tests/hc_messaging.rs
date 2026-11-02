@@ -246,6 +246,75 @@ impl Rig {
         )
     }
 
+    /// `args` as a person (no agent environment) whose environment names the core at `socket`
+    /// and terminal `terminal`, and also the Herdr pane `pane` when given.
+    fn person_in(&self, socket: &Path, pane: Option<&str>, terminal: &str, args: &[&str]) -> Ran {
+        // The `human` namespace comes first: `human --state-dir DIR me init`.
+        let mut command = self.isolation.command(BIN);
+        let (namespace, rest) = args.split_first().expect("a namespace");
+        command
+            .arg(namespace)
+            .arg("--state-dir")
+            .arg(&self.state)
+            .args(rest);
+        command
+            .env("HC_TERMINAL_ID", terminal)
+            .env("HC_TERMINAL_SOCKET", socket);
+        if let Some(pane) = pane {
+            command
+                .env("HERDR_PANE_ID", pane)
+                .env("HERDR_ENV", "1")
+                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"))
+                .env("HERDR_PLUGIN_STATE_DIR", &self.state);
+        }
+        run_with_stdin(command, None)
+    }
+
+    /// [`Self::watch`] for the terminal of the core at `socket`, optionally also naming a pane.
+    fn watch_in(&self, socket: &Path, pane: Option<&str>, terminal: &str, session: &str) -> Watch {
+        use std::io::BufRead;
+        let mut command = self.isolation.command(BIN);
+        command.arg("--state-dir").arg(&self.state).args([
+            "watch",
+            "--harness",
+            "claude",
+            "--session",
+            session,
+        ]);
+        as_agent(&mut command, "claude", session);
+        command
+            .env("HC_TERMINAL_ID", terminal)
+            .env("HC_TERMINAL_SOCKET", socket);
+        if let Some(pane) = pane {
+            command
+                .env("HERDR_PANE_ID", pane)
+                .env("HERDR_ENV", "1")
+                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"))
+                .env("HERDR_PLUGIN_STATE_DIR", &self.state);
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child: OwnedChild = command.spawn_owned().expect("spawn the watch child");
+        let stdout = child.stdout.take().unwrap();
+        let (sender, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Watch {
+            lines,
+            _child: child,
+        }
+    }
+
     /// The seat on `terminal` of the core at `socket`.
     fn seat_on(&self, socket: &Path, terminal: &str) -> String {
         self.db()
@@ -907,4 +976,94 @@ fn terminal_site_against_host_sites_only_daemon_prints_m13() {
             .is_some()
     );
     let _ = TERMINAL_SITES_V1;
+}
+
+/// Two cores that each seat `t1`: the first core's `t1` has no seat yet and the second core's
+/// has an agent's.
+fn two_cores_with_a_seated_other_t1(label: &str) -> (Rig, FakeHc, PathBuf, PathBuf, String) {
+    let rig = Rig::start(label, &["t1", "t2"]);
+    let other = FakeHc::start();
+    other.add_terminal(FakeTerminal::live("t1"));
+    let (a, b) = (rig.socket().to_owned(), other.socket().to_owned());
+    assert_eq!(rig.session_start_in(&b, None, "t1", "s-b1").code, Some(0));
+    let b1 = rig.seat_on(&b, "t1");
+    (rig, other, a, b, b1)
+}
+
+fn assert_me_init_bound_its_own_core(rig: &Rig, a: &Path, b1: &str, ran: &Ran) {
+    assert_eq!(ran.code, Some(0), "{ran:?}");
+    assert!(!ran.stderr.contains("more than one seat"), "{ran:?}");
+    let a1 = rig.seat_on(a, "t1");
+    assert_ne!(
+        a1, b1,
+        "the person seat is this core's, not the other core's agent"
+    );
+    let host_of_b1: String = rig
+        .db()
+        .query_row(
+            "SELECT h.endpoint FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
+            [b1],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(host_of_b1, a.to_string_lossy());
+}
+
+// Kills: `human me init` looking its seat up by a bare `tN` (the other core's `t1` seat is bound
+// instead, or two cores seating `t1` fail with "maps to more than one seat").
+#[test]
+fn two_cores_me_init_resolves_each_callers_own_seat() {
+    let (rig, _other, a, _b, b1) = two_cores_with_a_seated_other_t1("hcm-me-init");
+    let ran = rig.person_in(&a, None, "t1", &["human", "me", "init"]);
+    assert_me_init_bound_its_own_core(&rig, &a, &b1, &ran);
+}
+
+// Kills: the same lookup for a two-family caller whose terminal verifies: the guard's swapped env
+// must reach `me init` as the (core socket, tN) site.
+#[test]
+fn two_family_verified_terminal_me_init_uses_the_core() {
+    let (rig, other, a, _b, b1) = two_cores_with_a_seated_other_t1("hcm-me-init-2f");
+    rig.fake.set_pid("t1", Some(std::process::id()));
+    let _ = &other;
+    let ran = rig.person_in(&a, Some("w9:p9"), "t1", &["human", "me", "init"]);
+    assert_me_init_bound_its_own_core(&rig, &a, &b1, &ran);
+}
+
+// Kills: a watch of a verified terminal that registers its channel on the other core's `t1` seat
+// (or on the Herdr pane the environment also names).
+#[test]
+fn two_cores_watch_continuity_stays_on_its_core() {
+    let rig = Rig::start("hcm-watch", &["t1", "t2"]);
+    let other = FakeHc::start();
+    other.add_terminal(FakeTerminal::live("t1"));
+    let (a, b) = (rig.socket().to_owned(), other.socket().to_owned());
+    rig.fake.set_pid("t1", Some(std::process::id()));
+    assert_eq!(rig.session_start_in(&a, None, "t1", "s-a1").code, Some(0));
+    assert_eq!(rig.session_start_in(&b, None, "t1", "s-b1").code, Some(0));
+    assert_eq!(rig.session_start_in(&a, None, "t2", "s-a2").code, Some(0));
+    let (a1, b1) = (rig.seat_on(&a, "t1"), rig.seat_on(&b, "t1"));
+    assert_ne!(a1, b1);
+    let watch_a = rig.watch_in(&a, Some("w9:p9"), "t1", "s-a1");
+    let watch_b = rig.watch_in(&b, None, "t1", "s-b1");
+    for watch in [&watch_a, &watch_b] {
+        let status = watch.until("connected", |v| {
+            v["kind"] == "status" && v["state"] == "connected"
+        });
+        assert_ne!(status["reason"], "no_pane");
+    }
+    for (to, body) in [(&a1, "for a1"), (&b1, "for b1")] {
+        let sent = rig.agent_in(
+            &a,
+            None,
+            "t2",
+            "s-a2",
+            &["send", "--seat", to, "--body", body],
+            None,
+        );
+        assert_eq!(sent.code, Some(0), "{sent:?}");
+    }
+    let seen_a = watch_a.until("a1's message", |v| v["body"].is_string());
+    assert_eq!(seen_a["body"], "for a1", "{seen_a}");
+    let seen_b = watch_b.until("b1's message", |v| v["body"].is_string());
+    assert_eq!(seen_b["body"], "for b1", "{seen_b}");
 }

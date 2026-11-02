@@ -417,7 +417,10 @@ the nearest ancestor root wins, whichever family owns it. A pane candidate asks 
 terminal candidate only the core its socket names, attached on a miss. If nothing verifies (not an ancestor, host unreachable, daemon too old
 to know the command), no seat binds and nothing falls back to a candidate: the CLI prints M4 (naming both
 candidates and asking to unset the stale one) and hooks exit 0 with M4 on stderr and inject nothing. A
-verified terminal acts as that Terminal site; nothing binds to the pane the environment also named. `HC_TERMINAL_ID` without
+verified terminal acts as that Terminal site at every hop (a terminal is always (core socket, `tN`), never a bare
+`tN`): the CLI decides once in `run` and the hook once in `run_admitted_hook_since`, each yielding one swapped env
+or site that every later use takes (instance context, seat lookups, `me init`, the claim host, the turn edge),
+with no ambient state; nothing binds to the pane the environment also named, and a refused hook reports no turn. `HC_TERMINAL_ID` without
 `HC_TERMINAL_SOCKET` and no pane is refused with M17. Single-family callers are never verified: that would be
 adversarial verification, which this policy does not add. The walk stops at a terminal-root wall: a process
 whose `argv[0]` basename is `herdr-core` or `hc` (`host::hc::foreign_terminal_process_names`), because on
@@ -661,8 +664,12 @@ model open work, and summary closure never changes receipt state or installs glo
   is on no earlier row of the seat (ended rows included) while another distinct hint is, the resolve answers
   M9 (`herdr-threads: seat <name> now bound from <loc1> and <loc2>`, 41 bytes + fields). The decision reads
   only the persisted rows, so it fires once per (seat, locator), also across daemon restarts. `seat inspect`
-  lists each binding with its hint. `locator_hint` is a hint, never authority: only M9 and `seat inspect`
-  read it, and it never selects, binds, moves or ends a seat. It is the caller's claim, so the attribution
+  lists each binding with its hint. `locator_hint` is a hint, never authority: only M9, M10 and `seat inspect`
+  read it, and it never selects, binds, moves or ends a seat. M10 (pane-form allocation refused for a
+  pane a live named seat's binding hinted) compares host plus target: a Herdr pane's hint is the bare
+  pane id, a herdr-core terminal's is `<socket stem>:<tN>`, built from the allocation's host endpoint, so
+  `t1` of another core never matches. Accepted limit: hints store the socket's file stem, so two cores
+  with one stem share the form, and the outcome is M10 naming a live seat, never a wrong bind. It is the caller's claim, so the attribution
   of a hint to a binding is best effort (it lands on the newest unmarked open binding); the tmux hint is a
   separate field held in daemon memory and is never recorded here.
 - *Independent lifecycle forks (ht-i9a7)*: neutral `EventKind::Fork` maps to a

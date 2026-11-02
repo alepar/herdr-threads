@@ -661,7 +661,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     let budget = observation_budget(&clock);
     let registry = crate::harness::registry::builtins();
     let ((mut report, code), captured) =
-        report_base(state_dir, host_endpoint, &clock, &budget, registry);
+        report_base(state_dir, host_endpoint, None, &clock, &budget, registry);
     let mut environment = doctor_environment(&report, registry, None);
     environment.clock = clock;
     let environment = local_ownership_environment(&environment, captured.as_ref(), false);
@@ -1000,11 +1000,12 @@ fn local_ownership_environment(
 fn report_base(
     state_dir: Option<PathBuf>,
     host_endpoint: Option<PathBuf>,
+    site: Option<&super::caller_location::CallerLocator>,
     clock: &Arc<dyn Clock>,
     budget: &CallBudget,
     registry: &crate::harness::registry::Registry,
 ) -> ((Value, i32), Option<CapturedDoctorContext>) {
-    let inputs = super::instance::InstanceInputs::from_process(state_dir, host_endpoint);
+    let inputs = super::instance::InstanceInputs::for_site(state_dir, host_endpoint, site);
     let (context, source, selected_state, selected_host) =
         match super::instance::resolve_context_with_selected_paths(&inputs) {
             Ok(resolved) => resolved,
@@ -1843,6 +1844,7 @@ pub(crate) fn run_registered<W: Write>(
     let ((mut report, mut code), captured) = report_base(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
         parsed.output.context.host.as_ref().map(PathBuf::from),
+        parsed.caller_site.as_ref(),
         &clock,
         &budget,
         registry,
