@@ -1,0 +1,331 @@
+{
+ "inspected": [
+  {
+   "path": "src/host/named.rs",
+   "hunks": [
+    "@@ -0,0 +1,864 @@"
+   ]
+  },
+  {
+   "path": "src/host/named/tmux.rs",
+   "hunks": [
+    "@@ -0,0 +1,323 @@"
+   ]
+  },
+  {
+   "path": "src/service/turn_state.rs",
+   "hunks": [
+    "@@ -0,0 +1,187 @@"
+   ]
+  },
+  {
+   "path": "src/cli/caller_location.rs",
+   "hunks": [
+    "@@ -0,0 +1,430 @@"
+   ]
+  },
+  {
+   "path": "src/cli/caller_guard.rs",
+   "hunks": [
+    "@@ -0,0 +1,130 @@"
+   ]
+  },
+  {
+   "path": "src/service/locate.rs",
+   "hunks": [
+    "@@ -0,0 +1,448 @@"
+   ]
+  },
+  {
+   "path": "src/host/hc/mod.rs",
+   "hunks": [
+    "@@ -0,0 +1,1009 @@"
+   ]
+  },
+  {
+   "path": "src/store/named_seats.rs",
+   "hunks": [
+    "@@ -0,0 +1,128 @@"
+   ]
+  },
+  {
+   "path": "src/store/no_wake_reports.rs",
+   "hunks": [
+    "@@ -0,0 +1,112 @@"
+   ]
+  },
+  {
+   "path": "src/cli/launch_gate.rs",
+   "hunks": [
+    "@@ -0,0 +1,280 @@"
+   ]
+  },
+  {
+   "path": "src/host/target_creator.rs",
+   "hunks": [
+    "@@ -0,0 +1,66 @@"
+   ]
+  },
+  {
+   "path": "migrations/node/0013_host_environments.sql",
+   "hunks": [
+    "@@ -0,0 +1,69 @@"
+   ]
+  },
+  {
+   "path": "src/cli/hook.rs",
+   "hunks": [
+    "@@ -248,16 +248,57 @@ pub(crate) fn parse_hook_argv_registered(",
+    "@@ -1273,10 +1314,10 @@ pub const CLI_ARGV0: &str = \"herdr-threads\";",
+    "@@ -1463,7 +1504,7 @@ fn report_parse_failure_to_daemon(",
+    "@@ -1536,18 +1577,36 @@ fn find_seat(",
+    "@@ -1615,12 +1674,13 @@ fn find_seat_for(",
+    "@@ -1628,6 +1688,11 @@ fn locate_seat_for(",
+    "@@ -1635,7 +1700,7 @@ fn locate_seat_for(",
+    "@@ -1787,17 +1852,16 @@ fn connect_pane(",
+    "@@ -1857,6 +1921,7 @@ fn enroll_pane(",
+    "@@ -1877,7 +1942,14 @@ fn enroll_pane(",
+    "@@ -1919,14 +1991,14 @@ fn check_in(",
+    "@@ -1955,6 +2027,7 @@ fn check_in(",
+    "@@ -2051,7 +2124,14 @@ fn check_in(",
+    "@@ -2110,6 +2190,9 @@ struct PaneCall<'a> {",
+    "@@ -2159,6 +2242,7 @@ pub(super) fn watch_continuity(",
+    "@@ -2175,6 +2259,7 @@ pub(super) fn watch_continuity(",
+    "@@ -2600,7 +2685,7 @@ impl PaneCall<'_> {",
+    "@@ -2631,7 +2716,7 @@ impl PaneCall<'_> {",
+    "@@ -3482,7 +3567,7 @@ pub(crate) fn run_hook_registered(",
+    "@@ -3593,7 +3678,8 @@ fn adapter_state_dir(",
+    "@@ -3645,7 +3731,10 @@ fn run_hook_step(",
+    "@@ -3654,7 +3743,7 @@ fn run_hook_step(",
+    "@@ -3664,7 +3753,7 @@ fn run_hook_step(",
+    "@@ -3762,7 +3851,8 @@ fn quiet_outcome(detail: String) -> HookOutcome {",
+    "@@ -3783,8 +3873,8 @@ fn pane_context_journal(",
+    "@@ -3837,7 +3927,7 @@ fn record_observer_reset(",
+    "@@ -3869,12 +3959,12 @@ fn report_binding_event(",
+    "@@ -3946,6 +4036,55 @@ fn report_binding_event(",
+    "@@ -3972,6 +4111,9 @@ pub fn run_admitted_hook(",
+    "@@ -3986,8 +4128,165 @@ fn run_admitted_hook_since(",
+    "@@ -4002,7 +4301,7 @@ fn run_admitted_hook_since(",
+    "@@ -4014,11 +4313,34 @@ fn run_admitted_hook_since(",
+    "@@ -4313,8 +4635,11 @@ fn run_admitted_hook_since(",
+    "@@ -4361,10 +4686,34 @@ fn same_endpoint(a: &Path, b: &Path) -> bool {",
+    "@@ -4390,6 +4739,9 @@ fn hook_runtime_context_with(",
+    "@@ -4479,7 +4831,7 @@ pub fn run_process(parsed: Result<HookArgs, String>) -> i32 {"
+   ]
+  },
+  {
+   "path": "src/service/dispatch.rs",
+   "hunks": [
+    "@@ -84,7 +84,19 @@ struct BootstrapRuntime {",
+    "@@ -93,6 +105,9 @@ impl BootstrapRuntime {",
+    "@@ -117,8 +132,20 @@ pub struct DomainService {",
+    "@@ -128,6 +155,37 @@ const MAX_WAKE_REPORTS: usize = 4_096;",
+    "@@ -144,7 +202,105 @@ impl DomainService {",
+    "@@ -245,9 +401,34 @@ impl DomainService {",
+    "@@ -268,26 +449,42 @@ impl DomainService {",
+    "@@ -323,24 +520,13 @@ impl DomainService {",
+    "@@ -352,6 +538,29 @@ impl DomainService {",
+    "@@ -374,7 +583,7 @@ impl DomainService {",
+    "@@ -389,9 +598,8 @@ impl DomainService {",
+    "@@ -416,9 +624,13 @@ impl DomainService {",
+    "@@ -460,6 +672,8 @@ impl DomainService {",
+    "@@ -519,9 +733,11 @@ impl DomainService {",
+    "@@ -569,6 +785,149 @@ impl DomainService {",
+    "@@ -576,9 +935,13 @@ impl DomainService {",
+    "@@ -817,6 +1180,8 @@ impl DomainService {",
+    "@@ -890,6 +1255,8 @@ impl DomainService {",
+    "@@ -982,12 +1349,81 @@ impl DomainService {",
+    "@@ -1332,6 +1768,22 @@ impl DomainService {",
+    "@@ -1553,29 +2005,29 @@ impl LocalService for DomainService {",
+    "@@ -1594,7 +2046,6 @@ impl LocalService for DomainService {",
+    "@@ -1645,6 +2096,7 @@ impl LocalService for DomainService {",
+    "@@ -1661,6 +2113,7 @@ impl LocalService for DomainService {",
+    "@@ -1691,6 +2144,19 @@ impl LocalService for DomainService {",
+    "@@ -1782,18 +2248,7 @@ impl LocalService for DomainService {",
+    "@@ -1821,6 +2276,7 @@ impl LocalService for DomainService {",
+    "@@ -1829,6 +2285,8 @@ impl LocalService for DomainService {",
+    "@@ -1883,6 +2341,38 @@ pub(super) fn error(code: ErrorCode, detail: &str) -> ApiError {",
+    "@@ -1939,6 +2429,7 @@ mod operator_tests {",
+    "@@ -2049,6 +2540,8 @@ mod operator_tests {",
+    "@@ -2232,6 +2725,18 @@ mod operator_tests {",
+    "@@ -2295,6 +2800,86 @@ mod topology_contract_dispatch_tests {"
+   ]
+  },
+  {
+   "path": "src/harness/claude.rs",
+   "hunks": [
+    "@@ -80,6 +80,28 @@ pub const CONTRACT: HarnessContract = HarnessContract {",
+    "@@ -425,6 +447,8 @@ fn parse_hooks_2_1_283(",
+    "@@ -822,6 +846,14 @@ pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {",
+    "@@ -1140,6 +1172,16 @@ impl HarnessAdapter for ClaudeAdapter {",
+    "@@ -1214,12 +1256,19 @@ impl HarnessAdapter for ClaudeAdapter {",
+    "@@ -1230,8 +1279,18 @@ impl HarnessAdapter for ClaudeAdapter {"
+   ]
+  },
+  {
+   "path": "src/harness/adapter.rs",
+   "hunks": [
+    "@@ -48,6 +48,17 @@ pub trait HarnessAdapter: Send + Sync + 'static {",
+    "@@ -230,6 +241,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {",
+    "@@ -690,6 +708,17 @@ pub struct EventMetadata {",
+    "@@ -1400,6 +1429,24 @@ pub trait ComposerPolicy: Send + Sync {"
+   ]
+  },
+  {
+   "path": "src/harness/codex.rs",
+   "hunks": [
+    "@@ -1482,6 +1482,14 @@ impl HarnessAdapter for CodexAdapter {",
+    "@@ -1605,6 +1613,13 @@ impl HarnessAdapter for CodexAdapter {"
+   ]
+  },
+  {
+   "path": "src/harness/composer.rs",
+   "hunks": [
+    "@@ -1,5 +1,7 @@",
+    "@@ -77,6 +79,35 @@ pub fn read_composer_in(",
+    "@@ -218,6 +249,54 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/harness/hermes.rs",
+   "hunks": [
+    "@@ -2051,6 +2051,9 @@ mod adapter_tests {",
+    "@@ -2162,6 +2165,9 @@ mod adapter_tests {",
+    "@@ -2257,6 +2263,9 @@ mod adapter_tests {",
+    "@@ -2674,7 +2683,10 @@ mod adapter_tests {",
+    "@@ -3321,6 +3333,9 @@ mod adapter_tests {"
+   ]
+  },
+  {
+   "path": "integrations/claude/mod/hooks/register.js",
+   "hunks": [
+    "@@ -59,7 +59,7 @@ export function frame(items) {",
+    "@@ -307,8 +307,11 @@ export function createCore(io) {",
+    "@@ -388,6 +391,7 @@ export function createCore(io) {",
+    "@@ -1091,11 +1095,13 @@ function rethrow(err) {",
+    "@@ -1137,7 +1143,7 @@ function buildIo($, ledgerFile, binName) {",
+    "@@ -1188,7 +1194,20 @@ export const register = (on) => {"
+   ]
+  },
+  {
+   "path": "src/host/mod.rs",
+   "hunks": [
+    "@@ -21,10 +21,46 @@ pub const PANE_SCOPED_ENV_VARS: &[&str] = &["
+   ]
+  },
+  {
+   "path": "src/daemon/idle_exit.rs",
+   "hunks": [
+    "@@ -1,5 +1,5 @@",
+    "@@ -14,8 +14,8 @@ pub const IDLE_EXIT_AFTER: Duration = Duration::from_secs(10 * 60);",
+    "@@ -31,12 +31,26 @@ pub struct ActivityProbe {"
+   ]
+  },
+  {
+   "path": "src/daemon/lifecycle.rs",
+   "hunks": [
+    "@@ -18,6 +18,7 @@ use crate::daemon::transport::{self, ServeOutcome};",
+    "@@ -318,12 +319,67 @@ enum StartupStderr {",
+    "@@ -355,7 +411,7 @@ fn pipe_reader(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, Re",
+    "@@ -367,8 +423,12 @@ fn spawn_detached(",
+    "@@ -377,7 +437,7 @@ fn spawn_detached(",
+    "@@ -395,10 +455,11 @@ fn spawn_detached(",
+    "@@ -418,7 +479,18 @@ fn spawn_detached(",
+    "@@ -556,34 +628,55 @@ pub async fn ensure_running_with_timeout("
+   ]
+  },
+  {
+   "path": "src/cli/internal.rs",
+   "hunks": [
+    "@@ -9,8 +9,37 @@"
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -141,6 +141,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &["
+   ]
+  },
+  {
+   "path": "src/store/lazy_delivery/mod.rs",
+   "hunks": [
+    "@@ -247,20 +247,29 @@ pub(crate) fn connected_top_level(conn: &Connection, seat: &str) -> Result<Vec<S"
+   ]
+  },
+  {
+   "path": "src/notification/dispatch.rs",
+   "hunks": [
+    "@@ -14,7 +14,8 @@ use crate::{",
+    "@@ -36,7 +37,6 @@ pub enum DispatchError {",
+    "@@ -94,6 +94,17 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche",
+    "@@ -107,11 +118,12 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche",
+    "@@ -505,11 +517,12 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_"
+   ]
+  },
+  {
+   "path": "src/service/kicks.rs",
+   "hunks": [
+    "@@ -203,6 +203,11 @@ pub const KNOWN_UNMAPPED: &[&str] = &["
+   ]
+  },
+  {
+   "path": "src/service/workers.rs",
+   "hunks": [
+    "@@ -617,6 +617,10 @@ impl WorkerStatus {"
+   ]
+  },
+  {
+   "path": "src/store/poke.rs",
+   "hunks": [
+    "@@ -109,6 +109,10 @@ fn collect(",
+    "@@ -116,6 +120,7 @@ fn collect("
+   ]
+  },
+  {
+   "path": "src/cli/setup.rs",
+   "hunks": [
+    "@@ -370,19 +370,25 @@ pub fn default_config_roots(",
+    "@@ -482,6 +488,17 @@ impl SetupEnv {",
+    "@@ -491,16 +508,15 @@ impl SetupEnv {",
+    "@@ -520,10 +536,11 @@ impl SetupEnv {",
+    "@@ -793,10 +810,11 @@ pub fn run_all<W: Write>("
+   ]
+  },
+  {
+   "path": "src/harness/setup.rs",
+   "hunks": [
+    "@@ -3905,7 +3905,10 @@ pub(crate) mod legacy {",
+    "@@ -3916,6 +3919,9 @@ pub(crate) mod legacy {"
+   ]
+  },
+  {
+   "path": "src/harness/claude/setup.rs",
+   "hunks": [
+    "@@ -1118,7 +1118,7 @@ const CHANNEL_STATUS_UNAVAILABLE: &str = \"channel status unavailable\";"
+   ]
+  },
+  {
+   "path": "scripts/install.sh",
+   "hunks": [
+    "@@ -906,7 +906,7 @@ OUT_LINKED=$registered"
+   ]
+  },
+  {
+   "path": "src/identity/reconcile.rs",
+   "hunks": [
+    "@@ -210,6 +210,17 @@ fn never_registered_structural_bridge(",
+    "@@ -262,23 +273,34 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>,",
+    "@@ -328,6 +350,9 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>,",
+    "@@ -476,6 +501,25 @@ pub fn reconcile_published_page(",
+    "@@ -497,7 +541,7 @@ pub fn reconcile_published_page(",
+    "@@ -618,6 +662,7 @@ pub fn observe_and_publish(",
+    "@@ -628,6 +673,17 @@ pub fn observe_and_publish(",
+    "@@ -661,7 +717,15 @@ pub fn observe_and_publish(",
+    "@@ -677,12 +741,28 @@ pub fn observe_and_publish(",
+    "@@ -693,11 +773,17 @@ fn invalidate_or_skip(",
+    "@@ -867,8 +953,15 @@ pub struct ObservationLane {",
+    "@@ -903,14 +996,47 @@ impl ObservationLane {"
+   ]
+  }
+ ]
+}
