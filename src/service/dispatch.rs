@@ -2734,6 +2734,10 @@ mod self_retire_tests;
 mod inherited_name_tests;
 
 #[cfg(test)]
+#[path = "../../tests/daemon/launch_gate_guards.rs"]
+mod launch_gate_guards_tests;
+
+#[cfg(test)]
 mod topology_contract_dispatch_tests {
     use super::*;
     #[test]

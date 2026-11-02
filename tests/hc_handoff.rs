@@ -1407,6 +1407,62 @@ mod launch_new {
         assert_gate_recorded_and_idle(&rig, &report);
     }
 
+    // Kills: a daemon that answers a repeated `Record` with the seat although the record is not
+    // open (the `local_launch_gate_record` refusal removed): the launch ran to completion, so
+    // its row is closed, and the same creation sent again must change nothing.
+    #[test]
+    fn local_gate_record_refuses_a_record_that_is_not_open() {
+        use herdr_threads::{
+            client::local::LocalSocketClient,
+            daemon::ownership::read_descriptor,
+            node::json::read_hint,
+            ports::LocalClient,
+            protocol::{
+                authority::Harness,
+                handoff::{LocalLaunchGate, LocalLaunchGateAction},
+                ids::HostLocator,
+            },
+        };
+        let rig = LaunchRig::start("launch-record-closed");
+        launched(&rig.run(&["--json", "launch", "--new-terminal", "--kind", "claude"]));
+        let row = rig.gate_row();
+        let (id, created, _) = row.clone();
+        let created: CreatedTarget =
+            serde_json::from_str(created.as_deref().expect("the creation is recorded")).unwrap();
+
+        let paths = resolve_seeded(&rig.state);
+        let node = read_hint(&paths.node_json_path).expect("node.json");
+        let descriptor = read_descriptor(&paths, node.node_uuid).expect("the daemon's descriptor");
+        let clock = clock();
+        let client = LocalSocketClient::new(
+            descriptor.endpoint.clone(),
+            Arc::clone(&clock),
+            descriptor.node_uuid,
+            Some(descriptor.boot_id),
+        );
+        let refused = client
+            .call(
+                Command::LocalLaunchGate(Box::new(LocalLaunchGate {
+                    id: OperationId::new(id),
+                    host: HostLocator::parse(rig.fake.socket().to_string_lossy().into_owned())
+                        .unwrap(),
+                    action: LocalLaunchGateAction::Record {
+                        harness: Harness::Claude,
+                        created: Box::new(created),
+                    },
+                })),
+                &budget(clock.as_ref(), 10_000),
+            )
+            .expect_err("a closed record cannot be recorded again");
+        assert_eq!(refused.code, ErrorCode::Conflict);
+        assert!(
+            refused.detail.contains("launch gate record is not open"),
+            "{}",
+            refused.detail
+        );
+        assert_eq!(rig.gate_row(), row, "the row is unchanged");
+    }
+
     #[test]
     fn launch_new_tab_runs_the_harness_through_the_gate() {
         let rig = LaunchRig::start("launch-new-tab");

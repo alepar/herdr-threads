@@ -23,8 +23,8 @@ use super::{
 use crate::{
     daemon::paths::{NodePaths, RuntimeContext},
     ports::{
-        CreateTargetOutcome, CreateTargetRequest, CreatedTarget, HostCallContext, HostPort,
-        LocalClient, Placement,
+        CreateTargetOutcome, CreateTargetPort, CreateTargetRequest, CreatedTarget, HostCallContext,
+        HostPort, HostWitness, LocalClient, Placement,
     },
     protocol::{
         capabilities::LOCAL_LAUNCH_GATE_V1,
@@ -105,18 +105,23 @@ pub(super) fn run<W: Write>(
     }
 }
 
-/// Creates the target on `handle`'s host and checks what came back against what was asked.
+/// What a creation on `handle` is witnessed against.
+fn witness_of(handle: &LaunchHandle) -> Result<HostWitness, RunError> {
+    handle
+        .witness()
+        .cloned()
+        .ok_or_else(|| invalid_request("a target host reports its witness"))
+}
+
+/// Creates the target through `port` and checks what came back against what was asked.
 fn create(
-    handle: &LaunchHandle,
+    port: &dyn CreateTargetPort,
+    witness: HostWitness,
     placement: Placement,
     label: &str,
     gate_argv: Vec<String>,
     clock: &dyn Clock,
 ) -> Result<CreatedTarget, RunError> {
-    let witness = handle
-        .witness()
-        .cloned()
-        .ok_or_else(|| invalid_request("a target host reports its witness"))?;
     let request = CreateTargetRequest {
         correlation: HostCallId::new(uuid::Uuid::new_v4().to_string()),
         placement,
@@ -133,7 +138,7 @@ fn create(
         expected_boot: None,
         expected_epoch: None,
     };
-    match handle.create_port().create_target(&request, &context) {
+    match port.create_target(&request, &context) {
         CreateTargetOutcome::Created(created) => {
             if created.validate().is_err()
                 || created.correlation != request.correlation
@@ -179,7 +184,8 @@ fn on_herdr<W: Write>(
     let label = request.new_tab.as_deref().unwrap_or_default();
     let handle = LaunchHandle::probed(&endpoint, Arc::clone(clock), &budget(clock.as_ref()))?;
     let created = create(
-        &handle,
+        handle.create_port(),
+        witness_of(&handle)?,
         Placement::NewTab { space },
         label,
         Vec::new(),
@@ -287,7 +293,14 @@ fn on_core<W: Write>(
     gate(LocalLaunchGateAction::Open)?;
     // Any failure from here returns its error: with no recorded creation the shim is refused
     // at its deadline, so an unknown outcome starts no harness.
-    let created = create(&handle, placement, label, gate_argv, clock.as_ref())?;
+    let created = create(
+        handle.create_port(),
+        witness_of(&handle)?,
+        placement,
+        label,
+        gate_argv,
+        clock.as_ref(),
+    )?;
     let CommandResult::LocalLaunchGate(Some(seat)) = gate(LocalLaunchGateAction::Record {
         harness: request.launch.harness.occupant(),
         created: Box::new(created.clone()),
@@ -314,4 +327,157 @@ fn on_core<W: Write>(
     writer.write_all(&bytes)?;
     writer.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ports::HcPeer,
+        protocol::{
+            ids::{HostBootId, TerminalId},
+            results::ErrorCode,
+        },
+    };
+    use std::sync::Mutex;
+
+    fn witness() -> HostWitness {
+        HostWitness::HcCore {
+            core_id: "core-a".into(),
+            peer: HcPeer {
+                pid: 42,
+                start_seconds: 7,
+                uid: 501,
+            },
+        }
+    }
+
+    fn placement() -> Placement {
+        Placement::NewTerminal {
+            parent: HostTargetId::new("t1"),
+        }
+    }
+
+    /// Answers `Created` with the request's own correlation, placement and witness, then
+    /// `change` alters the one thing a test wants to differ.
+    struct Port<F: Fn(&mut CreatedTarget) + Send + Sync> {
+        change: F,
+        asked: Mutex<Vec<HostCallId>>,
+    }
+    impl<F: Fn(&mut CreatedTarget) + Send + Sync> CreateTargetPort for Port<F> {
+        fn create_target(
+            &self,
+            request: &CreateTargetRequest,
+            _: &HostCallContext,
+        ) -> CreateTargetOutcome {
+            self.asked.lock().unwrap().push(request.correlation.clone());
+            let mut created = CreatedTarget {
+                correlation: request.correlation.clone(),
+                placement: request.placement.clone(),
+                target: HostTargetId::new("t2"),
+                root_pane: None,
+                terminal: TerminalId::new("t2"),
+                host_incarnation: HostBootId::new("hc-core:core-a:pid=42:start=7:uid=501"),
+                witness: request.expected_witness.clone(),
+            };
+            (self.change)(&mut created);
+            CreateTargetOutcome::Created(Box::new(created))
+        }
+    }
+
+    fn created_with(
+        change: impl Fn(&mut CreatedTarget) + Send + Sync,
+    ) -> Result<CreatedTarget, RunError> {
+        let port = Port {
+            change,
+            asked: Mutex::default(),
+        };
+        let clock = crate::app::SystemClock::new();
+        create(&port, witness(), placement(), "worker", Vec::new(), &clock)
+    }
+
+    fn unknown_outcome(result: Result<CreatedTarget, RunError>) -> ApiError {
+        match result {
+            Err(RunError::Api(error)) => error,
+            other => panic!("an unknown outcome, got {other:?}"),
+        }
+    }
+
+    // Kills: a `create` that accepts a creation of another call (the correlation comparison
+    // removed). Everything else in the answer matches the request.
+    #[test]
+    fn created_target_with_a_foreign_correlation_is_unknown_outcome() {
+        let error = unknown_outcome(created_with(|created| {
+            created.correlation = HostCallId::new("another-call");
+        }));
+        assert_eq!(error.code, ErrorCode::UnknownOutcome);
+        assert!(
+            error.detail.contains("differs from the request"),
+            "{}",
+            error.detail
+        );
+    }
+
+    // Kills: a `create` that accepts a creation placed elsewhere than asked (the placement
+    // comparison removed). The creation stays valid: its target differs from the new parent.
+    #[test]
+    fn created_target_with_a_foreign_placement_is_unknown_outcome() {
+        let error = unknown_outcome(created_with(|created| {
+            created.placement = Placement::NewTerminal {
+                parent: HostTargetId::new("t7"),
+            };
+        }));
+        assert_eq!(error.code, ErrorCode::UnknownOutcome);
+        assert!(
+            error.detail.contains("differs from the request"),
+            "{}",
+            error.detail
+        );
+    }
+
+    // Kills: a `create` that accepts a creation witnessed by another core (the witness
+    // comparison removed). The creation stays self-consistent: its incarnation names the
+    // other peer.
+    #[test]
+    fn created_target_with_a_foreign_witness_is_unknown_outcome() {
+        let error = unknown_outcome(created_with(|created| {
+            created.witness = HostWitness::HcCore {
+                core_id: "core-b".into(),
+                peer: HcPeer {
+                    pid: 43,
+                    start_seconds: 8,
+                    uid: 501,
+                },
+            };
+            created.host_incarnation = HostBootId::new("hc-core:core-b:pid=43:start=8:uid=501");
+        }));
+        assert_eq!(error.code, ErrorCode::UnknownOutcome);
+        assert!(
+            error.detail.contains("differs from the request"),
+            "{}",
+            error.detail
+        );
+    }
+
+    // Kills: a `create` that skips the creation's own validation (the `validate` call removed).
+    // Correlation, placement and witness all match; the creation answers its own parent.
+    #[test]
+    fn invalid_created_target_is_unknown_outcome() {
+        let error = unknown_outcome(created_with(|created| {
+            created.target = HostTargetId::new("t1");
+        }));
+        assert_eq!(error.code, ErrorCode::UnknownOutcome);
+        assert!(
+            error.detail.contains("differs from the request"),
+            "{}",
+            error.detail
+        );
+    }
+
+    // The control: an answer that matches the request in every field is returned as it is.
+    #[test]
+    fn matching_created_target_is_returned() {
+        let created = created_with(|_| {}).expect("a matching creation");
+        assert_eq!(created.target, HostTargetId::new("t2"));
+    }
 }

@@ -170,6 +170,15 @@ impl Rig {
         self.wait_for_daemon();
     }
 
+    /// Stops the daemon through the CLI and starts a fresh one over the same state directory
+    /// (a standalone rig: no host endpoint). Everything the daemon held in memory is lost.
+    pub fn restart_daemon(&mut self) {
+        let stopped = self.plain(&["daemon", "stop"]);
+        assert_eq!(stopped.code, Some(0), "daemon stop: {stopped:?}");
+        self.daemon.take();
+        self.start_daemon(None, &[]);
+    }
+
     pub fn daemon_exited(&mut self) -> bool {
         self.daemon
             .as_mut()

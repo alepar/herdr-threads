@@ -4,6 +4,7 @@
 //! `PATH` of the standalone cases. Every child is a `test_support` owned child and every test
 //! stops its daemon and Herdr session on drop.
 
+#[allow(dead_code)]
 #[path = "named_seats/rig.rs"]
 mod rig;
 

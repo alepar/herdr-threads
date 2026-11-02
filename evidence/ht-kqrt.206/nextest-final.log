@@ -1,0 +1,84 @@
+heavy: slot 1 acquired 18:24:48
+   Compiling herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.206)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 30s
+────────────
+ Nextest run ID 56e92f41-c118-4bb9-abf5-3c25315da48d with nextest profile: default
+    Starting 76 tests across 17 binaries (8793 tests skipped)
+        PASS [   0.010s] ( 1/76) herdr-threads cli::hook::tests::two_family_guard::locate_caller_never_sent_for_one
+        PASS [   0.010s] ( 2/76) herdr-threads cli::site_capability::tests::readonly_check_in_needs_the_capability
+        PASS [   0.010s] ( 3/76) herdr-threads cli::launch_new::tests::created_target_with_a_foreign_witness_is_unknown_outcome
+        PASS [   0.010s] ( 4/76) herdr-threads cli::launch_new::tests::created_target_with_a_foreign_placement_is_unknown_outcome
+        PASS [   0.010s] ( 5/76) herdr-threads cli::follow::read_cost_names::relative_nick_missing_scope_labels_and_event_recipient_keep_ids_and_readonly
+        PASS [   0.011s] ( 6/76) herdr-threads cli::launch_new::tests::invalid_created_target_is_unknown_outcome
+        PASS [   0.011s] ( 7/76) herdr-threads cli::launch_new::tests::created_target_with_a_foreign_correlation_is_unknown_outcome
+        PASS [   0.012s] ( 8/76) herdr-threads cli::hook::tests::terminal_turn_edge::verified_terminal_turn_edge_reports_the_terminal
+        PASS [   0.012s] ( 9/76) herdr-threads cli::readonly_caller_tests::readonly_failure_refuses_the_command
+        PASS [   0.012s] (10/76) herdr-threads cli::hook::tests::terminal_turn_edge::refused_two_family_reports_no_turn_edge
+        PASS [   0.016s] (11/76) herdr-threads cli::launch_new::tests::matching_created_target_is_returned
+        PASS [   0.016s] (12/76) herdr-threads cli::readonly_caller_tests::no_check_in_without_the_variable_or_for_a_subagent
+        PASS [   0.019s] (13/76) herdr-threads cli::cooperative_tests::scoped_runtime::thread_names_runtime_cooperative_caller_overrides_inherited_pane
+        PASS [   0.009s] (14/76) herdr-threads harness::launch::tests::native_profiles::explicit_profile_directory_precedes_inherited_scope
+        PASS [   0.018s] (15/76) herdr-threads host::native::tests::current_caller_uses_explicit_inherited_id_and_returns_live_moved_target
+        PASS [   0.023s] (16/76) herdr-threads harness::bridge_tests::readonly_check_in_needs_the_capability
+        PASS [   1.961s] (17/76) herdr-threads service::dispatch::launch_gate_guards_tests::locate_caller_refuses_a_non_core_socket
+        PASS [   2.054s] (18/76) herdr-threads cli::topology_handoff::tests::live::live_actor_wrapper_invalid_missing_ambiguous_origins_refuse_readonly
+        PASS [   2.083s] (19/76) herdr-threads service::dispatch::launch_gate_guards_tests::local_gate_refuses_a_host_that_starts_no_targets
+        PASS [   2.104s] (20/76) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_readonly_binding_skips_receipt_rows_and_the_writable_sibling_settles
+        PASS [   2.128s] (21/76) herdr-threads service::dispatch::inherited_name_tests::inherited_name_is_refused_other_names_bind_and_restart_frees_it
+        PASS [   2.110s] (22/76) herdr-threads store::control::tests::topology_attachment::local_gate_view_opens_only_on_a_recorded_creation
+        PASS [   2.143s] (23/76) herdr-threads cli::topology_handoff::tests::live::live_fix1_no_effect_without_saved_request_refuses_uncertain_attempt_readonly
+        PASS [   2.148s] (24/76) herdr-threads service::dispatch::inherited_name_tests::named_resolve_attaches_the_hinted_core_for_m6
+        PASS [   2.151s] (25/76) herdr-threads service::dispatch::inherited_name_tests::no_hint_or_no_server_pid_skips_the_check
+        PASS [   2.144s] (26/76) herdr-threads store::control::tests::topology_attachment::a_local_gate_is_recorded_only_once_open
+        PASS [   0.008s] (27/76) herdr-threads test_support::isolation::tests::scrub_env_removes_inherited_prefixed_vars
+        PASS [   0.007s] (28/76) herdr-threads::combined caller_location::readonly_marker_is_exactly_one
+        PASS [   0.006s] (29/76) herdr-threads::combined handoff_v3::created_target_validate_per_witness_kind
+        PASS [   0.019s] (30/76) herdr-threads::combined archival_legacy::archival_legacy_bootstrap_existing_and_new_thread_are_bounded_readonly_hints
+        PASS [   2.173s] (31/76) herdr-threads store::control::tests::topology_attachment::a_local_gate_never_stands_in_for_a_staged_send
+        PASS [   2.179s] (32/76) herdr-threads store::control::tests::topology_attachment::opening_a_local_gate_drops_stale_rows
+        PASS [   0.248s] (33/76) herdr-threads store::queries::binding_inbox_tests::readonly_bindings::pane_site_without_variable_unchanged
+        PASS [   0.015s] (34/76) herdr-threads::combined lazy_display::continuation_explicit_pane_stays_readonly_at_direct_entry
+        PASS [   2.228s] (35/76) herdr-threads service::dispatch::launch_gate_guards_tests::local_gate_refuses_another_uid
+        PASS [   2.233s] (36/76) herdr-threads service::dispatch::inherited_name_tests::locate_caller_attaches_the_core_on_a_miss
+        PASS [   0.152s] (37/76) herdr-threads store::queries::binding_inbox_tests::readonly_bindings::readonly_flag_only_rises_and_is_per_binding
+        PASS [   2.234s] (38/76) herdr-threads service::dispatch::launch_gate_guards_tests::turn_state_hands_the_hint_to_the_host_for_the_harness_process
+        PASS [   0.015s] (39/76) herdr-threads::combined lazy_display::lazy_display_legacy_readonly_fallback
+        PASS [   0.017s] (40/76) herdr-threads::combined lazy_markers::lazy_markers_advertised_but_unsupported_readonly_fallback
+        PASS [   0.026s] (41/76) herdr-threads::combined lazy_display::lazy_display_changed_length_budget_and_readonly_selection
+        PASS [   0.159s] (42/76) herdr-threads store::queries::binding_inbox_tests::readonly_bindings::reopened_binding_keeps_readonly
+        PASS [   0.025s] (43/76) herdr-threads::combined lazy_markers::lazy_markers_old_daemon_readonly_fallback
+        PASS [   0.046s] (44/76) herdr-threads::combined lazy_display::lazy_display_json_machine_explicit_selector_readonly
+        PASS [   0.164s] (45/76) herdr-threads store::queries::tests::thread_names_actual_caller_beats_inherited_target_and_foreign_target_is_ignored
+        PASS [   0.192s] (46/76) herdr-threads store::seats::cooperative::live_holder_tests::descendant_subagent_readonly_admitted
+        PASS [   0.028s] (47/76) herdr-threads::package manifest::build_ignores_inherited_cargo_target_dir
+        PASS [   0.006s] (48/76) herdr-threads::service turn_state::agy_turn_start_busy_stop_idle
+        PASS [   0.228s] (49/76) herdr-threads store::seats::cooperative::live_holder_tests::readonly_caller_admitted_beside_a_live_holder
+        PASS [   0.009s] (50/76) herdr-threads::service turn_state::claude_stop_failure_clears_busy
+        PASS [   0.006s] (51/76) herdr-threads::service turn_state::codex_continued_stop_stays_busy_then_idle
+        PASS [   0.004s] (52/76) herdr-threads::service turn_state::codex_continued_stop_with_a_missed_start_is_busy
+        PASS [   0.005s] (53/76) herdr-threads::service turn_state::codex_stop_without_continuation_idle
+        PASS [   0.005s] (54/76) herdr-threads::service turn_state::codex_turn_start_busy_stop_idle
+        PASS [   0.005s] (55/76) herdr-threads::service turn_state::stale_busy_clears_after_two_spaced_idle_reads
+        PASS [   0.008s] (56/76) herdr-threads::service turn_state::screen_idle_accepted_only_when_busy
+        PASS [   0.008s] (57/76) herdr-threads::service turn_state::turn_edge_reestablishes_the_hint_after_a_restart
+        PASS [   0.015s] (58/76) herdr-threads::service turn_state::turn_state_report_without_hint_keeps_its_bytes
+        PASS [   0.011s] (59/76) herdr-threads::service turn_state::two_bindings_of_one_generation_keep_separate_entries
+        PASS [   0.111s] (60/76) herdr-threads::hc_inherited_name inherited_name_refused_m6_herdr_core
+        PASS [   0.008s] (61/76) herdr-threads::service turn_state::unknown_after_restart_never_idle
+        PASS [   0.150s] (62/76) herdr-threads::hc_inherited_name inherited_name_checks_the_hinted_core_only
+        PASS [   2.440s] (63/76) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_completed_missing_child_and_artifact_is_readonly_and_truthful
+        PASS [   0.410s] (64/76) herdr-threads store::queries::binding_inbox_tests::readonly_bindings::readonly_display_never_acks
+        PASS [   2.514s] (65/76) herdr-threads cli::launch::task23_tests::profile_directory_guarded_launch_uses_selected_scope_over_inherited_environment
+        PASS [   1.317s] (66/76) herdr-threads::hc_handoff launch_new::local_gate_record_refuses_a_record_that_is_not_open
+        PASS [   1.509s] (67/76) herdr-threads::combined lazy_markers::lazy_markers_manifest_warning_history_and_body_render_readonly
+        PASS [   1.571s] (68/76) herdr-threads::combined lazy_config_smoke::lazy_config_json_machine_explicit_seat_are_readonly
+        PASS [   1.711s] (69/76) herdr-threads::combined inbox_continuation_context::continuation_machine_preserves_readonly_across_utf8_chunks
+        PASS [   1.854s] (70/76) herdr-threads::combined lazy_sweep::lazy_sweep_restart_readonly_then_text_delivery_without_attention
+        PASS [   2.206s] (71/76) herdr-threads::combined inbox_continuation_context::continuation_legacy_human_long_topics_fit_and_remain_readonly
+        PASS [   2.382s] (72/76) herdr-threads::combined inbox_continuation_context::continuation_legacy_checkin_replays_on_v2_daemon_readonly
+        PASS [   2.899s] (73/76) herdr-threads::combined inbox_continuation_context::continuation_explicit_own_and_foreign_text_stay_readonly
+        PASS [   6.978s] (74/76) herdr-threads::config_smoke turn_edge_restores_the_tmux_wake_after_a_daemon_restart
+        PASS [   6.700s] (75/76) herdr-threads::combined named_caller::readonly_watch_records_the_marker_and_the_ack_stays_owed
+        PASS [  11.500s] (76/76) herdr-threads::combined named_caller::plain_commands_under_readonly_never_discharge_an_ack
+────────────
+     Summary [  13.829s] 76 tests run: 76 passed, 8793 skipped
