@@ -1,0 +1,252 @@
+{
+ "inspected": [
+  {
+   "path": "integrations/claude/mod/hooks/register.js",
+   "hunks": [
+    "@@ -59,7 +59,7 @@ export function frame(items) {",
+    "@@ -307,8 +307,11 @@ export function createCore(io) {",
+    "@@ -388,6 +391,7 @@ export function createCore(io) {",
+    "@@ -1091,11 +1095,13 @@ function rethrow(err) {",
+    "@@ -1137,7 +1143,7 @@ function buildIo($, ledgerFile, binName) {",
+    "@@ -1188,7 +1194,20 @@ export const register = (on) => {"
+   ]
+  },
+  {
+   "path": "integrations/hermes/__init__.py",
+   "hunks": [
+    "@@ -34,7 +34,8 @@ HOOKS = (\"pre_llm_call\", \"post_tool_call\", \"on_session_start\", \"on_session_reset",
+    "@@ -335,7 +336,9 @@ def pane_env():",
+    "@@ -343,7 +346,8 @@ def pane_env():"
+   ]
+  },
+  {
+   "path": "integrations/skill/SKILL.md",
+   "hunks": [
+    "@@ -1,6 +1,6 @@",
+    "@@ -14,7 +14,7 @@ Use `thread list --all --search TEXT` to discover existing threads, then explici",
+    "@@ -24,7 +24,7 @@ Use `thread list --all --search TEXT` to discover existing threads, then explici",
+    "@@ -60,7 +60,8 @@ Ready commands (run exactly as written, in this pane):",
+    "@@ -139,7 +140,7 @@ herdr-threads leave THREAD",
+    "@@ -149,7 +150,7 @@ Linked machines (nodes) share threads, seats and messages. A seat whose home is",
+    "@@ -182,7 +183,7 @@ herdr-threads inbox --tab tryout --pane alice       # read-only; never display-A",
+    "@@ -208,7 +209,7 @@ Human author/recipient nicks are relative to the live caller: alice (same tab),"
+   ]
+  },
+  {
+   "path": "src/cli/caller_guard.rs",
+   "hunks": [
+    "@@ -0,0 +1,130 @@"
+   ]
+  },
+  {
+   "path": "src/cli/caller_location.rs",
+   "hunks": [
+    "@@ -0,0 +1,418 @@"
+   ]
+  },
+  {
+   "path": "src/cli/nudge_threshold.rs",
+   "hunks": [
+    "@@ -11,11 +11,12 @@ use crate::ports::LocalClient;",
+    "@@ -36,6 +37,37 @@ pub fn render(state: &NudgeThresholdState, set: bool) -> String {",
+    "@@ -83,7 +115,11 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>("
+   ]
+  },
+  {
+   "path": "src/cli/seat_resolution.rs",
+   "hunks": [
+    "@@ -30,17 +30,20 @@ use super::{",
+    "@@ -78,6 +81,48 @@ pub(crate) fn skip_first_freeze_for_test() -> impl Drop {",
+    "@@ -145,6 +190,8 @@ where",
+    "@@ -153,6 +200,8 @@ enum Resolved {",
+    "@@ -170,6 +219,8 @@ pub(crate) struct DeferredSeats {",
+    "@@ -231,6 +282,7 @@ where",
+    "@@ -253,11 +305,12 @@ where",
+    "@@ -326,11 +379,18 @@ where",
+    "@@ -369,9 +429,11 @@ where",
+    "@@ -382,8 +444,9 @@ where",
+    "@@ -636,6 +699,10 @@ where",
+    "@@ -643,15 +710,24 @@ where",
+    "@@ -659,13 +735,87 @@ where",
+    "@@ -718,6 +868,78 @@ where",
+    "@@ -852,6 +1074,16 @@ where",
+    "@@ -877,6 +1109,21 @@ where",
+    "@@ -962,6 +1209,30 @@ where",
+    "@@ -977,7 +1248,11 @@ where",
+    "@@ -994,7 +1269,14 @@ fn cannot_resolve_machines(error: &ApiError) -> bool {",
+    "@@ -1004,6 +1286,11 @@ fn same_resolution(a: &Resolved, b: &Resolved) -> bool {",
+    "@@ -1191,3 +1478,424 @@ pub(crate) fn post_freeze_checks(action: &mut CliAction) -> Result<(), ApiError>"
+   ]
+  },
+  {
+   "path": "src/cli/wake_warning.rs",
+   "hunks": [
+    "@@ -4,11 +4,12 @@",
+    "@@ -25,7 +26,10 @@ use std::io::Write;",
+    "@@ -67,6 +71,9 @@ mod tests {",
+    "@@ -83,4 +90,29 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/delivery/assemble.rs",
+   "hunks": [
+    "@@ -224,6 +224,7 @@ impl Assembler {",
+    "@@ -245,6 +246,7 @@ impl Assembler {",
+    "@@ -258,6 +260,7 @@ impl Assembler {",
+    "@@ -278,6 +281,7 @@ impl Assembler {",
+    "@@ -338,6 +342,7 @@ impl Assembler {",
+    "@@ -373,6 +378,7 @@ struct Chunk {"
+   ]
+  },
+  {
+   "path": "src/delivery/frame.rs",
+   "hunks": [
+    "@@ -26,6 +26,9 @@ pub struct FrameItem {",
+    "@@ -131,6 +134,14 @@ fn label(id: Option<&str>, name: Option<&str>) -> String {",
+    "@@ -151,7 +162,7 @@ pub fn frame(items: &[FrameItem]) -> String {"
+   ]
+  },
+  {
+   "path": "src/delivery/presentation.rs",
+   "hunks": [
+    "@@ -190,6 +190,7 @@ pub fn presentation_hook_text(items: &[Item]) -> String {"
+   ]
+  },
+  {
+   "path": "src/harness/adapter.rs",
+   "hunks": [
+    "@@ -48,6 +48,17 @@ pub trait HarnessAdapter: Send + Sync + 'static {",
+    "@@ -230,6 +241,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {",
+    "@@ -690,6 +708,17 @@ pub struct EventMetadata {",
+    "@@ -1400,6 +1429,24 @@ pub trait ComposerPolicy: Send + Sync {"
+   ]
+  },
+  {
+   "path": "src/harness/agy/composer.rs",
+   "hunks": [
+    "@@ -130,8 +130,55 @@ impl ComposerPolicy for AgyComposer {"
+   ]
+  },
+  {
+   "path": "src/harness/claude/composer.rs",
+   "hunks": [
+    "@@ -199,8 +199,51 @@ impl ComposerPolicy for NativeComposer {",
+    "@@ -317,4 +360,60 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/harness/codex/composer.rs",
+   "hunks": [
+    "@@ -73,12 +73,41 @@ impl ComposerPolicy for NativeComposer {",
+    "@@ -111,4 +140,41 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/notification/dispatch.rs",
+   "hunks": [
+    "@@ -14,7 +14,8 @@ use crate::{",
+    "@@ -36,7 +37,6 @@ pub enum DispatchError {",
+    "@@ -94,6 +94,17 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche",
+    "@@ -107,11 +118,12 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche",
+    "@@ -505,11 +517,12 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_"
+   ]
+  },
+  {
+   "path": "src/protocol/address.rs",
+   "hunks": [
+    "@@ -12,7 +12,7 @@",
+    "@@ -842,6 +842,16 @@ pub fn match_machine<'a>("
+   ]
+  },
+  {
+   "path": "src/protocol/ids.rs",
+   "hunks": [
+    "@@ -317,9 +317,17 @@ pub struct HostLocator(String);",
+    "@@ -339,6 +347,17 @@ impl HostLocator {",
+    "@@ -357,6 +376,50 @@ impl<'de> Deserialize<'de> for HostLocator {"
+   ]
+  },
+  {
+   "path": "src/service/remote_resolver.rs",
+   "hunks": [
+    "@@ -137,11 +137,18 @@ impl RemoteResolver {"
+   ]
+  },
+  {
+   "path": "src/service/seat_publisher.rs",
+   "hunks": [
+    "@@ -198,7 +198,8 @@ pub(crate) fn read_labels(",
+    "@@ -216,9 +217,18 @@ pub(crate) fn read_labels(",
+    "@@ -226,6 +236,40 @@ pub(crate) fn read_labels(",
+    "@@ -302,3 +346,7 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/service/turn_state.rs",
+   "hunks": [
+    "@@ -0,0 +1,187 @@"
+   ]
+  },
+  {
+   "path": "src/store/named_seats.rs",
+   "hunks": [
+    "@@ -0,0 +1,128 @@"
+   ]
+  },
+  {
+   "path": "src/store/no_wake_reports.rs",
+   "hunks": [
+    "@@ -0,0 +1,112 @@"
+   ]
+  },
+  {
+   "path": "src/store/poke.rs",
+   "hunks": [
+    "@@ -109,6 +109,10 @@ fn collect(",
+    "@@ -116,6 +120,7 @@ fn collect("
+   ]
+  },
+  {
+   "path": "src/store/seat_directory.rs",
+   "hunks": [
+    "@@ -9,9 +9,9 @@",
+    "@@ -36,15 +36,15 @@ pub fn directory(",
+    "@@ -72,6 +72,8 @@ pub fn directory(",
+    "@@ -104,9 +106,47 @@ pub fn directory("
+   ]
+  },
+  {
+   "path": "src/sync/coordinator.rs",
+   "hunks": [
+    "@@ -780,6 +780,9 @@ pub struct CoordinatorOptions {",
+    "@@ -791,6 +794,7 @@ impl Default for CoordinatorOptions {",
+    "@@ -828,6 +832,9 @@ impl CoordinatorOptions {",
+    "@@ -932,6 +939,11 @@ impl SyncCoordinator {"
+   ]
+  },
+  {
+   "path": "src/sync/coordinator/remote_launch.rs",
+   "hunks": [
+    "@@ -19,7 +19,7 @@ use std::sync::OnceLock;",
+    "@@ -45,9 +45,11 @@ pub enum LaunchAnswer {",
+    "@@ -105,6 +107,7 @@ fn malformed(request: &LaunchRequest) -> Option<&'static str> {",
+    "@@ -147,15 +150,22 @@ impl Actor {"
+   ]
+  },
+  {
+   "path": "src/sync/frame.rs",
+   "hunks": [
+    "@@ -67,6 +67,10 @@ pub const ADDR_CHECK_CAP: &str = \"addr.check.v1\";",
+    "@@ -591,6 +595,13 @@ pub enum LaunchTarget {"
+   ]
+  },
+  {
+   "path": "src/cli/instance.rs",
+   "hunks": [
+    "@@ -55,11 +55,24 @@ pub struct InstanceInputs {",
+    "@@ -68,6 +81,19 @@ fn non_empty(value: Option<OsString>) -> Option<PathBuf> {",
+    "@@ -80,6 +106,58 @@ impl InstanceInputs {"
+   ]
+  }
+ ]
+}
