@@ -2445,7 +2445,7 @@ impl StoreOnlyRig {
 #[test]
 fn store_only_lane_reports_recovery_with_an_unchanged_live_set() {
     let rig = store_only_rig();
-    let worker = rig.spawn();
+    let worker = rig.spawn(); // leak-guard: a worker thread stopped by StopWorker, no process
     rig.wait_for("first pass", &|| {
         rig.port.pass_records.load(Ordering::SeqCst) == 1
     });
@@ -2484,7 +2484,7 @@ fn store_only_lane_reports_recovery_with_an_unchanged_live_set() {
 #[test]
 fn store_only_lane_finishes_a_failed_pass_when_the_live_set_goes_back() {
     let rig = store_only_rig();
-    let worker = rig.spawn();
+    let worker = rig.spawn(); // leak-guard: a worker thread stopped by StopWorker, no process
     rig.wait_for("first pass", &|| {
         rig.port.pass_records.load(Ordering::SeqCst) == 1
     });
