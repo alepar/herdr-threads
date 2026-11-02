@@ -1304,6 +1304,31 @@ mod launch_new {
             self.finish(command)
         }
 
+        /// `operator` with its stdout closed before it can print: it fails after the daemon
+        /// answered and before it completes its journaled decision.
+        fn operator_without_stdout(&self, args: &[&str]) -> Ran {
+            let mut command = self.isolation.command(BIN);
+            command
+                .arg("human")
+                .arg("--state-dir")
+                .arg(&self.state)
+                .arg("--host-endpoint")
+                .arg(self.fake.socket())
+                .args(args)
+                .env("PATH", &self.path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child: OwnedChild = command.spawn_owned().expect("spawn the process");
+            drop(child.stdout.take());
+            let output = child.wait_with_output().expect("process output");
+            Ran {
+                code: output.status.code(),
+                stdout: String::new(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            }
+        }
+
         /// A `--new-tab worker --space w1` handoff of `sess-a` that fails after its attempt is
         /// journaled; returns the recovery reference the `pending-ops` listing shows for it.
         fn failed_handoff(&self, extra: &[&str]) -> String {
@@ -1331,6 +1356,31 @@ mod launch_new {
                 .as_str()
                 .unwrap_or_else(|| panic!("no pending reference in {}", ran.stdout))
                 .to_owned()
+        }
+
+        /// The recovery reference of the newest journaled intent: the operator's decision once
+        /// it is recorded (`pending-ops` lists the handoff's own reference, not this one).
+        fn latest_intent_reference(&self) -> String {
+            fn newest(dir: &std::path::Path, best: &mut u64) {
+                for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        newest(&path, best);
+                    } else if let Some(ordinal) = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .and_then(|name| name.strip_suffix(".intent"))
+                        .and_then(|name| name.split('-').next())
+                        .and_then(|ordinal| ordinal.parse::<u64>().ok())
+                    {
+                        *best = (*best).max(ordinal);
+                    }
+                }
+            }
+            let mut best = 0;
+            newest(&self.state, &mut best);
+            assert_ne!(best, 0, "no journaled intent under {:?}", self.state);
+            format!("local:{best}")
         }
 
         /// The stand-in's `<pid> <terminal>` once the gate let it start.
@@ -1540,12 +1590,68 @@ mod launch_new {
         assert_eq!(cancelled, 1);
     }
 
-    // The operator's own decision is a journaled V3 record: its retry routes by the plan too.
+    // A lost reply leaves a really created terminal. The operator keeps it: the recovery reads
+    // it through the core's own observer, never as a Herdr pane, and creates no second one.
     #[test]
-    fn core_only_operator_retry_of_a_recovery_routes_too() {
-        let rig = LaunchRig::start("handoff-core-recover-retry");
+    fn core_only_operator_keeps_a_really_created_terminal() {
+        let rig = LaunchRig::start("handoff-core-keep");
         rig.fake.fail_next_run(RunFailure::Disconnect);
         let reference = rig.failed_handoff(&[]);
+        let ran = rig.operator(&[
+            "handoff",
+            "recover",
+            &reference,
+            "--attempt",
+            "1",
+            "--created-pane",
+            "t2",
+        ]);
+        assert_routed(&ran);
+        // The decision keeps the creation; the agent's retry then launches into it.
+        let ran = rig.agent("sess-a", &["--json", "retry", &reference], None);
+        assert_routed(&ran);
+        let (_, terminal) = rig.marker();
+        assert_eq!(terminal, "t2", "the stand-in runs in the kept terminal");
+        let herdr: Vec<String> = rig
+            .fake
+            .calls()
+            .into_iter()
+            .map(|call| call.method)
+            .filter(|method| method == "ping")
+            .collect();
+        assert!(herdr.is_empty(), "the core was pinged as Herdr: {herdr:?}");
+        assert_eq!(rig.fake.calls_to("terminal.run").len(), 1, "one creation");
+        assert!(rig.fake.terminal("t2").is_some());
+        assert!(rig.fake.terminal("t3").is_none(), "no second terminal");
+    }
+
+    // An asserted terminal the core does not hold is refused before any state moves, and the
+    // operator's other decisions still work.
+    #[test]
+    fn core_only_created_pane_of_an_absent_terminal_refuses() {
+        let rig = LaunchRig::start("handoff-core-keep-absent");
+        rig.fake.fail_next_run(RunFailure::Disconnect);
+        let reference = rig.failed_handoff(&[]);
+        let refused = rig.operator(&[
+            "handoff",
+            "recover",
+            &reference,
+            "--attempt",
+            "1",
+            "--created-pane",
+            "t9",
+        ]);
+        assert_ne!(
+            refused.code,
+            Some(0),
+            "{}{}",
+            refused.stdout,
+            refused.stderr
+        );
+        assert!(
+            rig.fake.calls().iter().all(|call| call.method != "ping"),
+            "the core was pinged as Herdr"
+        );
         let ran = rig.operator(&[
             "handoff",
             "recover",
@@ -1555,8 +1661,31 @@ mod launch_new {
             "--not-created",
         ]);
         assert_routed(&ran);
-        let ran = rig.operator(&["retry", &reference]);
-        assert!(!ran.stderr.contains(NODE_WIDE_REFUSAL), "{}", ran.stderr);
+    }
+
+    // The operator's own decision is a journaled V3 record: its retry routes by the plan too.
+    // The retry names the decision's own recovery reference, so it reaches the V3 route gate
+    // instead of dying on the caller-site refusal of the handoff's reference.
+    #[test]
+    fn core_only_operator_retry_of_a_recovery_routes_too() {
+        let rig = LaunchRig::start("handoff-core-recover-retry");
+        rig.fake.fail_next_run(RunFailure::Disconnect);
+        let reference = rig.failed_handoff(&[]);
+        // The daemon applies the decision, but the operator's output has nowhere to go, so the
+        // decision stays journaled as pending.
+        let ran = rig.operator_without_stdout(&[
+            "handoff",
+            "recover",
+            &reference,
+            "--attempt",
+            "1",
+            "--not-created",
+        ]);
+        assert_ne!(ran.code, Some(0), "{}", ran.stderr);
+        let decision = rig.latest_intent_reference();
+        assert_ne!(decision, reference, "the decision has its own reference");
+        let ran = rig.operator(&["retry", &decision]);
+        assert_routed(&ran);
     }
 
     // A profile directory with a placement target needs no node-wide directory capability.

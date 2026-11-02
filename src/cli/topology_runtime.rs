@@ -1248,23 +1248,44 @@ pub(crate) fn run_operator(
     };
     let mut automatic_observe =
         |target: &crate::protocol::ids::HostTargetId,
-         saved_request: Option<&crate::ports::CreateTabRequest>| {
-            let host = NativeCli::new(
-                herdr_endpoint(selected, &parsed.output, parsed.caller_site.as_ref())?,
-                clock.clone(),
-            );
+         identity: &crate::protocol::handoff::AutomaticBootstrapIdentity,
+         saved: Option<crate::protocol::ids::HostCallId>| {
             let context = HostCallContext {
                 budget: super::cooperative_budget(clock.as_ref()),
                 expected_boot: None,
                 expected_epoch: None,
             };
+            let correlation = saved.unwrap_or_else(|| {
+                crate::protocol::ids::HostCallId::new(uuid::Uuid::new_v4().to_string())
+            });
+            // A V3 plan names a herdr-core terminal: read it through the core's own observer, never
+            // as a Herdr pane.
+            if let Some(placement) = &identity.plan.placement {
+                let host = crate::host::hc::HcHost::with_clock(
+                    crate::host::hc::HcClient::new(
+                        identity
+                            .plan
+                            .payload
+                            .handoff
+                            .namespace
+                            .host_endpoint
+                            .as_path(),
+                    ),
+                    clock.clone(),
+                );
+                let (created, reference) =
+                    host.recovered_creation(target, placement.clone(), correlation, &context)?;
+                return Ok((AutomaticCreation::Target(created), reference));
+            }
+            let host = NativeCli::new(
+                herdr_endpoint(selected, &parsed.output, parsed.caller_site.as_ref())?,
+                clock.clone(),
+            );
             let pane = host.observe_bootstrap_target(target, &context)?;
             let observation = pane.observation();
             Ok((
-                crate::ports::CreatedTab {
-                    correlation: saved_request.map(|v| v.correlation.clone()).unwrap_or_else(
-                        || crate::protocol::ids::HostCallId::new(uuid::Uuid::new_v4().to_string()),
-                    ),
+                AutomaticCreation::Tab(crate::ports::CreatedTab {
+                    correlation,
                     workspace: pane.workspace().clone(),
                     tab: pane.tab().clone(),
                     root_pane: observation.target.clone(),
@@ -1274,7 +1295,7 @@ pub(crate) fn run_operator(
                         .ok_or_else(|| super::invalid_request("recovery pane lacks terminal"))?,
                     host_incarnation: observation.host_boot.clone(),
                     witness: pane.witness().clone(),
-                },
+                }),
                 observation.call_id.clone(),
             ))
         };
@@ -1438,10 +1459,11 @@ pub(crate) fn run_operator(
 /// V2 recovery selection shares the public operator dispatch path. Historical
 /// actor and selected-host checks happen before opening the transport.
 type AutomaticCreatedObservation =
-    Result<(crate::ports::CreatedTab, crate::protocol::ids::HostCallId), RunError>;
+    Result<(AutomaticCreation, crate::protocol::ids::HostCallId), RunError>;
 type AutomaticCreatedObserver<'a> = dyn FnMut(
         &crate::protocol::ids::HostTargetId,
-        Option<&crate::ports::CreateTabRequest>,
+        &crate::protocol::handoff::AutomaticBootstrapIdentity,
+        Option<crate::protocol::ids::HostCallId>,
     ) -> AutomaticCreatedObservation
     + 'a;
 #[allow(clippy::too_many_arguments)]
@@ -1542,11 +1564,9 @@ pub(crate) fn run_automatic_operator_parsed<C: LocalClient + ?Sized, W: Write>(
     writer: &mut W,
     observe_created: impl FnOnce(
         &crate::protocol::ids::HostTargetId,
-        Option<&crate::ports::CreateTabRequest>,
-    ) -> Result<
-        (crate::ports::CreatedTab, crate::protocol::ids::HostCallId),
-        RunError,
-    >,
+        &AutomaticBootstrapIdentity,
+        Option<crate::protocol::ids::HostCallId>,
+    ) -> AutomaticCreatedObservation,
 ) -> Result<(), RunError> {
     let CliAction::TopologyRecover(request) = &parsed.action else {
         return Err(super::invalid_request("not a parsed recovery assertion"));
@@ -1601,12 +1621,12 @@ pub(crate) fn run_automatic_operator_parsed<C: LocalClient + ?Sized, W: Write>(
     }
     let disposition = match &request.disposition {
         super::topology_recover::Assertion::CreatedPane(target) => {
-            let saved_request = super::topology_handoff::saved_automatic_native_request(
+            let saved = super::topology_handoff::saved_automatic_correlation(
                 journal,
                 &source.header.reference,
                 &identity,
             )?;
-            let (evidence, structural_reference) = observe_created(target, saved_request.as_ref())?;
+            let (evidence, structural_reference) = observe_created(target, &identity, saved)?;
             AutomaticBootstrapRecoveryDisposition::CreatedPane {
                 evidence: Box::new(evidence),
                 structural_reference,

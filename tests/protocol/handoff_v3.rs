@@ -331,10 +331,11 @@ fn v3_mutation_is_refused_by_the_pre_v3_decoder() {
     assert_ne!(plan.version, AUTOMATIC_PLAN_VERSION);
 }
 
-/// Kills: a V3 plan that accepts a created-pane recovery (it names a Herdr pane), and a
+/// Kills: a plan that accepts a created-pane recovery of the other plan's creation kind (a
+/// tab on a V3 plan, a target on a V2 plan), a V3 plan that refuses its own target, and a
 /// cancellation or not-created disposition that stops validating.
 #[test]
-fn v3_created_pane_recovery_is_refused_and_cancelled_validates() {
+fn created_pane_recovery_takes_the_plan_s_own_creation_kind() {
     let attachment: BootstrapAttachment = serde_json::from_str(V2_ATTACHMENT).unwrap();
     let recover = |id: AutomaticBootstrapIdentity, disposition| AutomaticBootstrapMutation {
         identity: id,
@@ -348,7 +349,7 @@ fn v3_created_pane_recovery_is_refused_and_cancelled_validates() {
         },
     };
     let created_pane = || AutomaticBootstrapRecoveryDisposition::CreatedPane {
-        evidence: Box::new(attachment.created.clone()),
+        evidence: Box::new(attachment.created.clone().into()),
         structural_reference: HostCallId::new("ref"),
     };
     let cancelled = || AutomaticBootstrapRecoveryDisposition::Cancelled {
@@ -359,10 +360,40 @@ fn v3_created_pane_recovery_is_refused_and_cancelled_validates() {
     let not_created = || AutomaticBootstrapRecoveryDisposition::NotCreated {
         quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
     };
+    let created_target = || AutomaticBootstrapRecoveryDisposition::CreatedPane {
+        evidence: Box::new(hc_target().into()),
+        structural_reference: HostCallId::new("ref"),
+    };
     assert!(recover(v2_identity(), created_pane()).validate().is_ok());
     assert!(recover(hc_identity(), created_pane()).validate().is_err());
+    assert!(recover(hc_identity(), created_target()).validate().is_ok());
+    assert!(recover(v2_identity(), created_target()).validate().is_err());
     assert!(recover(hc_identity(), cancelled()).validate().is_ok());
     assert!(recover(hc_identity(), not_created()).validate().is_ok());
+}
+
+/// Kills: a created-pane disposition whose released bytes change when its evidence widens to
+/// either creation kind: a V2 recovery record keeps its exact encoding and decodes to a tab.
+#[test]
+fn v2_created_pane_disposition_bytes_are_unchanged() {
+    let attachment: BootstrapAttachment = serde_json::from_str(V2_ATTACHMENT).unwrap();
+    let disposition = AutomaticBootstrapRecoveryDisposition::CreatedPane {
+        evidence: Box::new(attachment.created.clone().into()),
+        structural_reference: HostCallId::new("ref"),
+    };
+    // The released shape: the tab record itself under `evidence`.
+    let released = serde_json::json!({
+        "kind": "created_pane",
+        "evidence": serde_json::to_value(&attachment.created).unwrap(),
+        "structural_reference": "ref",
+    });
+    assert_eq!(serde_json::to_value(&disposition).unwrap(), released);
+    let decoded: AutomaticBootstrapRecoveryDisposition = serde_json::from_value(released).unwrap();
+    assert_eq!(decoded, disposition);
+    assert!(matches!(
+        decoded,
+        AutomaticBootstrapRecoveryDisposition::CreatedPane { ref evidence, .. } if evidence.as_tab().is_some()
+    ));
 }
 
 /// Kills: `validate` accepting a witness whose kind does not match the placement or whose

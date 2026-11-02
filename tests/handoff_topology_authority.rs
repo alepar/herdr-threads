@@ -2770,7 +2770,7 @@ fn attach_through_fake_hc() {
 }
 
 #[test]
-fn created_pane_recovery_of_a_v3_plan_is_refused_and_cancelled_works() {
+fn created_pane_recovery_of_a_v3_plan_refuses_a_tab_and_cancelled_works() {
     let rig = HcRig::new();
     let (id, created) = (rig.identity(), rig.created());
     rig.through_created(&id, &created);
@@ -2789,7 +2789,7 @@ fn created_pane_recovery_of_a_v3_plan_is_refused_and_cancelled_works() {
             attempt,
             inspection: inspection.clone(),
             disposition: AutomaticBootstrapRecoveryDisposition::CreatedPane {
-                evidence: Box::new(tab),
+                evidence: Box::new(tab.into()),
                 structural_reference: HostCallId::new("ref"),
             },
         },
@@ -2820,6 +2820,39 @@ fn created_pane_recovery_of_a_v3_plan_is_refused_and_cancelled_works() {
     .unwrap();
     assert!(
         matches!(cancelled, CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Cancelled)
+    );
+}
+
+// An operator who asserts a really created core terminal keeps it: the V3 plan takes a target
+// creation, read through the core's observer, and the attempt moves to Created with it.
+#[test]
+fn created_pane_recovery_of_a_v3_plan_keeps_the_created_target() {
+    let rig = HcRig::new();
+    let (id, created) = (rig.identity(), rig.created());
+    let attempt = BootstrapAttempt::first();
+    parent_call(&rig.f, &id, AutomaticBootstrapAction::Begin).unwrap();
+    parent_call(&rig.f, &id, AutomaticBootstrapAction::Reserve { attempt }).unwrap();
+    let CommandResult::AutomaticBootstrap(status) =
+        parent_call(&rig.f, &id, AutomaticBootstrapAction::Status).unwrap()
+    else {
+        panic!("status")
+    };
+    let recovered = parent_call(
+        &rig.f,
+        &id,
+        AutomaticBootstrapAction::Recover {
+            attempt,
+            inspection: status.recovery_inspection().unwrap(),
+            disposition: AutomaticBootstrapRecoveryDisposition::CreatedPane {
+                evidence: Box::new(created.clone().into()),
+                structural_reference: HostCallId::new("ref"),
+            },
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(recovered, CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Created && v.creation == Some(created.into())),
+        "{recovered:?}"
     );
 }
 

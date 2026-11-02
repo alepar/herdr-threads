@@ -103,7 +103,7 @@ pub(crate) fn prepare(
         (
             Assertion::CreatedPane(target),
             AutomaticBootstrapRecoveryDisposition::CreatedPane { evidence, .. },
-        ) => target == &evidence.root_pane,
+        ) => target == evidence.launch_target(),
         (Assertion::NotCreated, AutomaticBootstrapRecoveryDisposition::NotCreated { .. }) => true,
         (
             Assertion::Cancelled { reason },

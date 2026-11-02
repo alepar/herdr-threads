@@ -1480,12 +1480,12 @@ pub(crate) fn saved_native_request(
             .and_then(|progress| progress.request),
     )
 }
-pub(crate) fn saved_automatic_native_request(
+pub(crate) fn saved_automatic_correlation(
     journal: &super::journal::Journal,
     reference: &super::journal::IntentRef,
     identity: &crate::protocol::handoff::AutomaticBootstrapIdentity,
-) -> Result<Option<crate::ports::CreateTabRequest>, RunError> {
-    automatic::saved_native_request(journal, reference, identity)
+) -> Result<Option<crate::protocol::ids::HostCallId>, RunError> {
+    automatic::saved_correlation(journal, reference, identity)
 }
 /// Before publication, check the known eventual request-bearing envelope with
 /// the actual witnessed endpoint metadata and the actual serializer/cap.
