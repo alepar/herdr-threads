@@ -31,7 +31,7 @@ codeBuckets:
   parked: ht-kqrt.24, ht-kqrt.56, ht-kqrt.64, ht-kqrt.181
   stalled: false
   review: not ready (unreviewed: whole-epic coverage and omission provenance remain incomplete)
-  sweep: SWEEP PASS 8952/8952 (54 skipped), 306 s, leak check clean @ 68961443e
+  sweep: SWEEP PASS 8956/8956 (54 skipped), 308 s, leak check clean @ c505e865e
   slowness: inv-2 stopped recovery-held on the inv-1 merge-lane hold (cleared by the orchestrator after restoring the worktree); integration blocked by an orchestrator-removed task worktree (ht-kqrt.14; restored); disk-driven unplanned stop and relaunch at concurrency 3
   worktreesKept: task worktrees under .worktrees/ (process cleanup exit 4 on an uninspectable root sshd-session; reaped by the orchestrator loop)
   processSweep: stopped 0 · survived 0 · unknown 1 · kept 0 — unknown: pid 1709587/3080385 (root-owned, uninspectable; not run-owned)
@@ -124,7 +124,7 @@ postCapAudit: docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-ap
 friction: 22 events
 wakeE2E: NOT MEASURED @ 611932717 — self-test passed; Codex 0/60, all startup failures at the sign-in screen (codex-2 auth rejected, stale since 2026-10-23), no product signal; the retry on profile codex-1 was denied by the auto-mode classifier and not worked around; Claude half not runnable on this Linux host (no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY). Release prerequisite, not a merge gate; owed before tagging Coordinator owns it at release qualification, tmux-named included; CI confirms zsh.
 coordinatorFixRound: inv-9 — coordinator refused the merge at 9292e6c58 and directed ht-kqrt.222-.232 (mnSGZ0I1Yl9g, item 8 narrowed in mnSGa0w7XKWg to gate .233); its independent review findings add to this round
-coordinatorFixRoundResult: .222-.240 landed; sweep 68961443e 8952/8952, leak check clean, check-default-features pass; 54 bulk files removed; token scan of main..tip clean (402 commits, 260941 added lines, merges and tip diff included, 10 patterns self-tested); no re-roast of this round: the coordinator reviewed independently
+coordinatorFixRoundResult: .222-.240 landed; sweep 68961443e 8952/8952, leak check clean, check-default-features pass; 54 bulk files removed; token scan of main..tip clean (402 commits, 260941 added lines, merges and tip diff included, 10 patterns self-tested); no re-roast of this round: the coordinator reviewed independently; ht-kqrt.241 (coordinator final review) landed at c505e865e, sweep above
 finalReviewFixRound: inv-7 — site-decision, core-recovery, tmux-gate-parity (Must-fix correctness, skill exception); plus dormant-wake-hosts (merge residue), named-publish-cadence (user's SSD rule outranks the cap default), scan allowlist and test-edge-ordering (known-red pre-empted from the sweep); post-cap audit covers what lands
 userAccepted: launch gate exceptions .143 and .186 including the idle-launch limit (relayed by coordinator, mnSGz27x89j5); ht-8lem atomic remote handoff stays out of scope
 scope-filter: 19 in-scope · 3 punch-listed

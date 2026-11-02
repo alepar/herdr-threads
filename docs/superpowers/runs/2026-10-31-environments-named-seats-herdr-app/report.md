@@ -11,11 +11,13 @@ The branch is not reviewed in full by this run; the coordinator reviewed the unr
 
 The coordinator refused the merge at 9292e6c58 and directed .222-.233, then added .234-.239 from its independent review; the final review added .240. All landed. These fixes had the coordinator's review and task reviews but no further roast. Remaining sections below predate this round except where they say fixed.
 
-- Tip code 68961443e: suite 8952 of 8952, 54 skipped, 306 s (6 s over the 300 s budget), leak check clean, check-default-features, check-harness-neutral and check-wire-compat pass.
+- Tip code c505e865e, including .241 (a read-only channel no longer covers a seat in the scheduler): suite 8956 of 8956, 54 skipped, 308 s (8 s over the 300 s budget), leak check clean, check-default-features, check-harness-neutral and check-wire-compat pass.
 - .237: the V3 handoff records managed_launch; gate order and TRUST-POLICY unchanged, no collision.
 - .239: the gate shim could reach the two-family guard; fixed, it is now decided first, pinned through the real binary.
 - Item 8, narrowed by the coordinator: 54 bulk files removed at the tip; token scan of main..tip clean over 402 commits and 260,941 added lines, merge resolutions and tip diff included, ten patterns self-tested, heuristic. History keeps the removed files; merge stays --no-ff.
 - Open: the refusal at the end of `prepare_automatic` advises `--new-thread` or `--thread`, which a core refuses, and says new-tab; reachable only by `--kind hermes` onto a core, from reading only. `failed_handoff` covers `--new-tab` retry only.
+- Open from .241, reading only: a read-only session woken for a receipt row gets an empty turn; the Claude mod has no read-only branch in its idle path, so a mod wake and a composer wake can run serially; the classifier answers per seat where the scheduler types per binding.
+- Held by the user: peer-launch config roots and credential variables.
 - Coverage is still bounded: inv-9 listed 21 of 695 paths.
 
 ## Implemented
