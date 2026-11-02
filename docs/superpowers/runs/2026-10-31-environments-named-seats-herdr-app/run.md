@@ -2,7 +2,7 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-11-01 · "lets pause now" · run paused in phase 3: coordinator inv-3 (Workflow run wf_a0c7a8e1-89d) stopped mid-run with 38 merges landed; resume = relaunch the coordinator with the same invocationId inv-3 and resumeFromRunId wf_a0c7a8e1-89d (unsettled), concurrency 4, then re-arm keepalive, disk guard and the merged-worktree reaper (scratchpad rm_loop.sh). Pending at base absorption: renumber 0012_host_environments to 13 (main v2.8.2 took schema 12)
-phase: report
+phase: finish
 roastCodeRound: 3
 findingsLedger: findings-ledger.md
 roast-code: 2026-11-01-environments-named-seats-herdr-app-roast-pr-1.md
