@@ -102,7 +102,7 @@ fn main() {
         // default state dir, created on a node never used locally; the host stays an
         // optional attach hint.
         let resolved = cli::instance::resolve_peer_context(
-            &cli::instance::InstanceInputs::from_process(peer.state_dir, peer.host_endpoint),
+            &cli::instance::InstanceInputs::for_site(peer.state_dir, peer.host_endpoint, None),
         );
         let code = match resolved {
             Ok(context) => cli::peer::run_stdio(&context),

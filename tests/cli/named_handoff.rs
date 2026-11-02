@@ -184,6 +184,6 @@ fn named_existing_handoff_uses_the_lazy_endpoint() {
     };
     let mut output = spec();
     output.context.host = Some("/run/herdr-test/herdr.sock".into());
-    let pane = herdr_endpoint(&context(base.join("herdr.sock")), &output).unwrap();
+    let pane = herdr_endpoint(&context(base.join("herdr.sock")), &output, None).unwrap();
     assert_eq!(pane, base.join("herdr.sock"));
 }

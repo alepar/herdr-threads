@@ -168,8 +168,12 @@ fn on_herdr<W: Write>(
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError> {
-    let endpoint = super::topology_runtime::herdr_endpoint_io(context, &parsed.output)
-        .map_err(|_| super::no_herdr_host("a new tab"))?;
+    let endpoint = super::topology_runtime::herdr_endpoint_io(
+        context,
+        &parsed.output,
+        parsed.caller_site.as_ref(),
+    )
+    .map_err(|_| super::no_herdr_host("a new tab"))?;
     let herdr = LaunchHandle::herdr(endpoint.clone(), Arc::clone(clock));
     let topology = herdr.host()?.topology(&budget(clock.as_ref()))?;
     let space = match &request.space {

@@ -480,7 +480,7 @@ terminal candidate only the core its socket names, attached on a miss. If nothin
 to know the command), no seat binds and nothing falls back to a candidate: the CLI prints M4 (naming both
 candidates and asking to unset the stale one) and hooks exit 0 with M4 on stderr and inject nothing. A
 verified terminal acts as that Terminal site at every hop (a terminal is always (core socket, `tN`), never a bare
-`tN`): the CLI decides once in `run` and the hook once in `run_admitted_hook_since`, each yielding one swapped env
+`tN`): the CLI decides once in `run` and the hook once in `run_admitted_hook_since`, after the routing flags (`--state-dir`, `--host-endpoint`) are known and against the daemon the command will use (the CLI parses first, so help and usage errors ask no daemon), each yielding one swapped env
 or site that every later use takes (instance context, seat lookups, `me init`, the claim host, the turn edge),
 with no ambient state; nothing binds to the pane the environment also named, and a refused hook reports no turn. `HC_TERMINAL_ID` without
 `HC_TERMINAL_SOCKET` and no pane is refused with M17. Single-family callers are never verified: that would be

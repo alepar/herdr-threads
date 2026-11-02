@@ -313,7 +313,10 @@ impl ViewReader for SocketViewReader {
 /// The pane the CLI acts from ([`caller_guard::cli_pane`]): a two-family caller is verified by
 /// the daemon first, and an unverified one prints M4 and binds nothing. The flag is set when the
 /// daemon verified the terminal: [`run`] then swaps the env once and passes the resulting site on.
-fn cli_caller_pane(env: &caller_location::CallerEnv) -> (Option<String>, bool) {
+fn cli_caller_pane(
+    env: &caller_location::CallerEnv,
+    output: &OutputSpec,
+) -> (Option<String>, bool) {
     let mut terminal = false;
     let pane = caller_guard::cli_pane(
         env,
@@ -323,15 +326,20 @@ fn cli_caller_pane(env: &caller_location::CallerEnv) -> (Option<String>, bool) {
                 deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
                 cancellation: Cancellation::default(),
             };
-            let guard =
-                instance::resolve_context(&instance::InstanceInputs::from_process(None, None))
-                    .ok()
-                    .and_then(|(context, _)| NodePaths::resolve_read_only(&context.state_dir).ok())
-                    .and_then(|paths| connect(&paths, &clock).ok())
-                    .map_or_else(
-                        || caller_guard::unasked(candidates),
-                        |(_, _, client)| caller_guard::verify(&client, candidates, &budget),
-                    );
+            // Nothing is decided yet: the guard resolves as the environment reads, with the
+            // routing flags.
+            let guard = instance::resolve_context(&instance::InstanceInputs::for_site(
+                output.context.state_dir.as_ref().map(PathBuf::from),
+                output.context.host.as_ref().map(PathBuf::from),
+                None,
+            ))
+            .ok()
+            .and_then(|(context, _)| NodePaths::resolve_read_only(&context.state_dir).ok())
+            .and_then(|paths| connect(&paths, &clock).ok())
+            .map_or_else(
+                || caller_guard::unasked(candidates),
+                |(_, _, client)| caller_guard::verify(&client, candidates, &budget),
+            );
             terminal = matches!(guard, caller_guard::Guard::Terminal(_));
             guard
         },
@@ -352,7 +360,12 @@ where
     {
         return Err(invalid_request(line));
     }
-    let (guarded_pane, verified_terminal) = cli_caller_pane(&env);
+    // Parse first: the routing flags pick the daemon the guard asks, and a usage error or
+    // `--help` pays no daemon call.
+    let Some(parsed) = parse_cli(argv, writer)? else {
+        return Ok(());
+    };
+    let (guarded_pane, verified_terminal) = cli_caller_pane(&env, &parsed.output);
     if verified_terminal {
         // The guard verified the terminal: from here the caller is that lone site, decided once.
         env = env.verified_terminal();
@@ -366,7 +379,7 @@ where
         }
         _ => None,
     });
-    run_in_site(argv, pane.as_deref(), site.as_ref(), writer)
+    run_parsed(parsed, pane.as_deref(), site.as_ref(), writer)
 }
 
 /// Process entrypoint: like [`run`], recording whether stdout is a terminal so
@@ -449,15 +462,13 @@ pub(crate) fn agent_evidence_refusal(pane: &str, evidence: &str) -> RunError {
 pub(crate) fn pane_agent(
     context: &RuntimeContext,
     clock: &Arc<dyn Clock>,
+    site: Option<&caller_location::CallerLocator>,
     pane: &crate::protocol::ids::HostTargetId,
 ) -> Result<Option<crate::ports::PaneAgentObservation>, ApiError> {
     use crate::ports::HostPort;
     // A non-Pane site's claim host is a core socket or the reserved locator, never a Herdr
     // server: nothing to observe (and a failed Herdr read is not evidence anyway).
-    if instance::InstanceInputs::from_process(None, None)
-        .site_host
-        .is_some()
-    {
+    if site.is_some() {
         return Ok(None);
     }
     let host = crate::host::native::NativeCli::new(
@@ -510,16 +521,38 @@ where
     T: Into<OsString> + Clone,
     W: Write,
 {
-    let parsed = match commands::parse_argv_or_informational(argv) {
-        Ok(parsed) => parsed,
+    let Some(parsed) = parse_cli(argv, writer)? else {
+        return Ok(());
+    };
+    run_parsed(parsed, caller_pane, site, writer)
+}
+
+/// `Ok(None)`: an informational parse (help, version) already written.
+fn parse_cli<I, T, W>(argv: I, writer: &mut W) -> Result<Option<commands::ParsedCli>, RunError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+    W: Write,
+{
+    match commands::parse_argv_or_informational(argv) {
+        Ok(parsed) => Ok(Some(parsed)),
         Err(commands::ParseFailure::Informational(text)) => {
             writer.write_all(text.as_bytes())?;
             writer.flush()?;
-            return Ok(());
+            Ok(None)
         }
-        Err(commands::ParseFailure::Usage(text)) => return Err(RunError::Usage(text)),
-        Err(commands::ParseFailure::Invalid(error)) => return Err(error.into()),
-    };
+        Err(commands::ParseFailure::Usage(text)) => Err(RunError::Usage(text)),
+        Err(commands::ParseFailure::Invalid(error)) => Err(error.into()),
+    }
+}
+
+/// The body of [`run_in_site`] after the parse: the namespace scope and the error mapping.
+fn run_parsed<W: Write>(
+    parsed: commands::ParsedCli,
+    caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
+    writer: &mut W,
+) -> Result<(), RunError> {
     let _namespace = human::invocation_scope(parsed.actor);
     let retry = matches!(parsed.action, CliAction::Retry(_));
     let watch = matches!(parsed.action, CliAction::Watch(_));
@@ -828,7 +861,7 @@ fn run_parsed_in_pane<W: Write>(
                 .map_err(host_context_error)?
                 .to_path_buf()
         } else {
-            topology_runtime::herdr_endpoint_io(&context, &host_output)
+            topology_runtime::herdr_endpoint_io(&context, &host_output, site)
                 .map_err(host_context_error)?
         };
         Ok(crate::host::native::NativeCli::new(
@@ -1132,8 +1165,13 @@ fn run_parsed_in_pane<W: Write>(
         let CliAction::Mutation(mutation) = &parsed.action else {
             unreachable!()
         };
-        let semantic = operator_semantic(mutation, &context, &parsed.output)
-            .expect("operator mutation selected above")?;
+        let semantic = operator_semantic(
+            mutation,
+            &context,
+            &parsed.output,
+            parsed.caller_site.as_ref(),
+        )
+        .expect("operator mutation selected above")?;
         return run_operator(semantic, &parsed, &paths, &clock, writer);
     }
     // Retain the requested read bound if caller derivation substitutes a
@@ -1235,7 +1273,12 @@ fn run_parsed_in_pane<W: Write>(
         }
         CliAction::Mutation(MutationSpec::Resolve(target)) => {
             let (instance, _, client) = connect(&paths, &clock)?;
-            let host = recipient_host(&context, &parsed.output, &target)?;
+            let host = recipient_host(
+                &context,
+                &parsed.output,
+                parsed.caller_site.as_ref(),
+                &target,
+            )?;
             let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
             retry::run_new_api_to_writer_discarding_rejection(
                 &journal,
@@ -3434,9 +3477,10 @@ fn run_legacy_purge<W: Write>(
     operator: bool,
     writer: &mut W,
 ) -> Result<(), RunError> {
-    let inputs = instance::InstanceInputs::from_process(
+    let inputs = instance::InstanceInputs::for_site(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
         parsed.output.context.host.as_ref().map(PathBuf::from),
+        parsed.caller_site.as_ref(),
     );
     let (context, ..) = instance::resolve_context_with_selected_paths(&inputs)
         .map_err(|error| invalid_request(&error.to_string()))?;
@@ -3490,10 +3534,18 @@ fn no_herdr_host(what: &str) -> RunError {
 fn recipient_host(
     context: &RuntimeContext,
     output: &OutputSpec,
+    site: Option<&caller_location::CallerLocator>,
     target: &crate::protocol::ids::HostTargetId,
 ) -> Result<crate::protocol::ids::HostLocator, RunError> {
     let missing = || no_herdr_host(&format!("pane {}", target.as_str()));
-    let endpoint = topology_runtime::herdr_endpoint_io(context, output).map_err(|_| missing())?;
+    // A direct send pins its claim host on `output` for its continuation lines. On a non-Pane
+    // site that host is the site's own, never the recipient pane's server.
+    let mut output = output.clone();
+    if site.is_some() && output.context.host == pinned_host(context) {
+        output.context.host = None;
+    }
+    let endpoint =
+        topology_runtime::herdr_endpoint_io(context, &output, site).map_err(|_| missing())?;
     crate::protocol::ids::HostLocator::parse(endpoint.to_string_lossy())
         .map_err(|detail| invalid_request(&detail.detail))
 }
@@ -3525,9 +3577,10 @@ fn operator_semantic(
     mutation: &MutationSpec,
     context: &RuntimeContext,
     output: &OutputSpec,
+    site: Option<&caller_location::CallerLocator>,
 ) -> Option<Result<SemanticMutation, RunError>> {
     let host =
-        |target: &crate::protocol::ids::HostTargetId| recipient_host(context, output, target);
+        |target: &crate::protocol::ids::HostTargetId| recipient_host(context, output, site, target);
     Some(match mutation {
         MutationSpec::FreshSeat(target) => {
             host(target).map(|host| SemanticMutation::OperatorFreshSeat {
@@ -3767,12 +3820,13 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
     output: &OutputSpec,
+    site: Option<&caller_location::CallerLocator>,
     target: crate::protocol::ids::HostTargetId,
     host: Option<crate::protocol::ids::HostLocator>,
 ) -> Result<crate::protocol::ids::SeatId, RunError> {
     let host = match host {
         Some(host) => host,
-        None => recipient_host(context, output, &target)?,
+        None => recipient_host(context, output, site, &target)?,
     };
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
@@ -3852,6 +3906,7 @@ where
             client,
             clock.as_ref(),
             &parsed.output,
+            parsed.caller_site.as_ref(),
             target,
             None,
         )
@@ -4420,7 +4475,7 @@ where
         &context,
         operator_override,
         std::env::vars(),
-        |pane| pane_agent(runtime, clock, pane),
+        |pane| pane_agent(runtime, clock, parsed.caller_site.as_ref(), pane),
     )
 }
 
@@ -4497,8 +4552,9 @@ fn run_launch<W: Write>(
     let mut request = request.clone();
     let mut env = setup::SetupEnv::from_process(&parsed.output, parsed.caller_site.as_ref())?;
     env.state_dir = Some(context.state_dir.clone());
-    let claim_host = topology_runtime::herdr_endpoint_io(context, &parsed.output)
-        .map_err(|_| no_herdr_host(&format!("pane {}", request.target.as_str())))?;
+    let claim_host =
+        topology_runtime::herdr_endpoint_io(context, &parsed.output, parsed.caller_site.as_ref())
+            .map_err(|_| no_herdr_host(&format!("pane {}", request.target.as_str())))?;
     let herdr_locator = crate::protocol::ids::HostLocator::parse(claim_host.to_string_lossy())
         .map_err(|detail| invalid_request(&detail.detail))?;
     env.host_endpoint = Some(claim_host.clone());

@@ -55,11 +55,12 @@ fn namespace(
     selected: &RuntimeContext,
     instance: crate::node::NodeUuid,
     output: &OutputSpec,
+    site: Option<&super::caller_location::CallerLocator>,
 ) -> Result<HandoffNamespace, RunError> {
     Ok(HandoffNamespace {
         instance: instance.to_string(),
         state_dir: selected.state_dir.clone(),
-        host_endpoint: herdr_endpoint(selected, output)?,
+        host_endpoint: herdr_endpoint(selected, output, site)?,
     })
 }
 /// The Herdr server this invocation talks to: the selected host, or for a named caller (whose
@@ -67,18 +68,21 @@ fn namespace(
 pub(super) fn herdr_endpoint(
     selected: &RuntimeContext,
     output: &OutputSpec,
+    site: Option<&super::caller_location::CallerLocator>,
 ) -> Result<std::path::PathBuf, RunError> {
-    herdr_endpoint_io(selected, output).map_err(super::context_error)
+    herdr_endpoint_io(selected, output, site).map_err(super::context_error)
 }
 
 /// [`herdr_endpoint`] with the raw error, for a caller that words its own refusal.
 pub(super) fn herdr_endpoint_io(
     selected: &RuntimeContext,
     output: &OutputSpec,
+    site: Option<&super::caller_location::CallerLocator>,
 ) -> std::io::Result<std::path::PathBuf> {
-    super::instance::InstanceInputs::from_process(
+    super::instance::InstanceInputs::for_site(
         None,
         output.context.host.as_ref().map(std::path::PathBuf::from),
+        site,
     )
     .herdr_endpoint(selected.require_host().ok())
 }
@@ -86,12 +90,13 @@ fn recovery_origin_host_matches(
     semantic: &SemanticMutation,
     selected: &RuntimeContext,
     output: &OutputSpec,
+    site: Option<&super::caller_location::CallerLocator>,
 ) -> Result<(), RunError> {
     let frozen = semantic
         .namespace()
         .ok_or_else(|| super::invalid_request("recovery lacks frozen namespace"))?;
     if frozen.state_dir.as_os_str() != selected.state_dir.as_os_str()
-        || frozen.host_endpoint.as_os_str() != herdr_endpoint(selected, output)?.as_os_str()
+        || frozen.host_endpoint.as_os_str() != herdr_endpoint(selected, output, site)?.as_os_str()
     {
         return Err(super::invalid_request(
             "recovery selected namespace differs from original",
@@ -202,7 +207,12 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
             state_dir: selected.state_dir.clone(),
             host_endpoint,
         },
-        None => namespace(selected, instance, &parsed.output)?,
+        None => namespace(
+            selected,
+            instance,
+            &parsed.output,
+            parsed.caller_site.as_ref(),
+        )?,
     };
     try_completed_with_namespace(parsed, journal, &ns, client, clock, writer)
 }
@@ -639,7 +649,12 @@ pub(crate) fn run(
             writer,
         );
     }
-    let ns = namespace(&selected, instance, &parsed.output)?;
+    let ns = namespace(
+        &selected,
+        instance,
+        &parsed.output,
+        parsed.caller_site.as_ref(),
+    )?;
     if matches!(&parsed.action, CliAction::TopologyHandoff(request) if request.profile_dir.is_some())
     {
         super::topology_handoff::require_directory_capability(&client, clock.as_ref())?;
@@ -1222,14 +1237,22 @@ pub(crate) fn run_operator(
     let mut automatic_connect = || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
         let (instance, _, client) = super::connect(paths, clock)?;
         Ok((
-            namespace(selected, instance, &parsed.output)?,
+            namespace(
+                selected,
+                instance,
+                &parsed.output,
+                parsed.caller_site.as_ref(),
+            )?,
             Box::new(client),
         ))
     };
     let mut automatic_observe =
         |target: &crate::protocol::ids::HostTargetId,
          saved_request: Option<&crate::ports::CreateTabRequest>| {
-            let host = NativeCli::new(herdr_endpoint(selected, &parsed.output)?, clock.clone());
+            let host = NativeCli::new(
+                herdr_endpoint(selected, &parsed.output, parsed.caller_site.as_ref())?,
+                clock.clone(),
+            );
             let context = HostCallContext {
                 budget: super::cooperative_budget(clock.as_ref()),
                 expected_boot: None,
@@ -1287,7 +1310,12 @@ pub(crate) fn run_operator(
         ));
     }
     let (instance, _, client) = super::connect(paths, clock)?;
-    let ns = namespace(selected, instance, &parsed.output)?;
+    let ns = namespace(
+        selected,
+        instance,
+        &parsed.output,
+        parsed.caller_site.as_ref(),
+    )?;
     super::topology_recover::require_capability(&client, clock.as_ref())?;
     let reference = if let Some(original) = original {
         original.header.reference
@@ -1441,7 +1469,12 @@ pub(crate) fn try_run_automatic_operator_with_ports<'a>(
                 original_kind(&source.semantic),
                 SemanticMutation::AutomaticBootstrap(_)
             ) {
-                recovery_origin_host_matches(&source.semantic, selected, &parsed.output)?;
+                recovery_origin_host_matches(
+                    &source.semantic,
+                    selected,
+                    &parsed.output,
+                    parsed.caller_site.as_ref(),
+                )?;
                 Some(super::topology_handoff::automatic_bootstrap_identity(
                     &source,
                 )?)
@@ -1452,7 +1485,12 @@ pub(crate) fn try_run_automatic_operator_with_ports<'a>(
         CliAction::Retry(recovery) => {
             let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
             if let SemanticMutation::OperatorRecoverAutomaticBootstrap(plan) = &original.semantic {
-                recovery_origin_host_matches(&original.semantic, selected, &parsed.output)?;
+                recovery_origin_host_matches(
+                    &original.semantic,
+                    selected,
+                    &parsed.output,
+                    parsed.caller_site.as_ref(),
+                )?;
                 Some(plan.request.identity.clone())
             } else {
                 None
