@@ -1506,8 +1506,8 @@ fn clear_own_wake_text_leaves_a_harness_that_does_not_opt_in() {
 // ---- the focused-composer hold (A4 Wake): a focused pane needs a minute of empty samples ----
 
 /// A control-mode client attached to the private server, stdin held open until it is dropped: it
-/// raises `#{session_attached}` without a pty.
-fn attach(tmux: &PrivateTmux) -> crate::test_support::spawn::OwnedChild {
+/// raises `#{session_attached}` without a pty. Returns once the session counts `clients`.
+fn attach(tmux: &PrivateTmux, clients: u32) -> crate::test_support::spawn::OwnedChild {
     use crate::test_support::spawn::SpawnOwned;
     let mut command = crate::test_support::spawn::command("tmux");
     command
@@ -1523,7 +1523,7 @@ fn attach(tmux: &PrivateTmux) -> crate::test_support::spawn::OwnedChild {
     wait_for(|| {
         let out = tmux.run(&["display", "-p", "#{session_attached}"]);
         let count: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
-        (count > 0).then_some(())
+        (count == clients).then_some(())
     });
     client
 }
@@ -1536,7 +1536,7 @@ fn focus(rig: &WakeRig) -> crate::test_support::spawn::OwnedChild {
             .status
             .success()
     );
-    attach(&rig.tmux)
+    attach(&rig.tmux, 1)
 }
 
 /// A rig whose single idle binding is ready to be woken.
@@ -1609,7 +1609,7 @@ fn an_attached_pane_out_of_focus_wakes_at_once() {
     let Some(rig) = idle_rig("focus_other_window") else {
         return;
     };
-    let _client = attach(&rig.tmux);
+    let _client = attach(&rig.tmux, 1);
     let out = rig.tmux.run(&[
         "display",
         "-p",
@@ -1689,7 +1689,7 @@ fn two_attached_clients_still_read_as_focused() {
         return;
     };
     let _first = focus(&rig);
-    let _second = attach(&rig.tmux);
+    let _second = attach(&rig.tmux, 2);
     let out = rig.tmux.run(&["display", "-p", "#{session_attached}"]);
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "2");
     let detail = refused(rig.attempt());
