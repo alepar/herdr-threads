@@ -115,6 +115,7 @@ stepBackCode-round-3: local — decisions hold, no mechanical trigger (ledger de
 roastCodeExit: capped
 baseAbsorbed: de5af6736 → f454aa5a2, 24 conflicted files (migration renumbered to 0013)
 sweepFix: sweep-1 @ 9296918db: 8903/8906, 3 failed (2 lane health, 1 test-defect); leaks clean; 341 s; fix pass inv-8; re-run @ d838b955b: 8909/8910, one regression (spawn-site scan) fixed by regression-only ht-kqrt.221 (applied by the orchestrator, two comment lines); final re-run @ 6ebe15eab 8910/8910
+postCapAudit: docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/2026-11-01-environments-named-seats-herdr-app-roast-pr-post-cap-audit.md: 0 Blocking, 11 Should-fix to the punch list (no fix loop)
 finalReviewFixRound: inv-7 — site-decision, core-recovery, tmux-gate-parity (Must-fix correctness, skill exception); plus dormant-wake-hosts (merge residue), named-publish-cadence (user's SSD rule outranks the cap default), scan allowlist and test-edge-ordering (known-red pre-empted from the sweep); post-cap audit covers what lands
 userAccepted: launch gate exceptions .143 and .186 including the idle-launch limit (relayed by coordinator, mnSGz27x89j5); ht-8lem atomic remote handoff stays out of scope
 scope-filter: 19 in-scope · 3 punch-listed
