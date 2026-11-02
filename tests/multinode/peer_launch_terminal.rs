@@ -222,6 +222,13 @@ fn assert_run_params(params: &serde_json::Value) {
         "{params}"
     );
     assert!(!argv.iter().any(|a| a == "--kind=claude"), "{params}");
+    // The recovery hints: the label names the sender, the bootstrap hint is the call id.
+    let label = params["labels"]["ht.label"].as_str().unwrap_or_default();
+    assert!(label.ends_with(']') && label.contains("[from "), "{params}");
+    let hint = params["labels"]["ht.bootstrap"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(!hint.trim().is_empty(), "{params}");
 }
 
 // Kills: a NewTerminal sent to a peer that never advertised the capability (an older
@@ -283,10 +290,14 @@ fn capable_peer_new_terminal_creates_on_fake_hc() {
     assert_eq!(runs.len(), 1, "{runs:?} {stdout}{stderr}");
     let params = &runs[0].params;
     assert_run_params(params);
-    // A new terminal carries no app labels at all (design, CLI and placement; the unit test
-    // `new_terminal_no_app_labels_parent_caller` pins the host side).
+    // A new terminal carries no app labels (herdr.*), only the two ht.* recovery hints (design,
+    // CLI and placement; the unit test `new_terminal_labels_and_parent_caller` pins the host side).
     assert!(
-        params["labels"].as_object().is_some_and(|l| l.is_empty()),
+        params["labels"].as_object().is_some_and(|l| {
+            let mut keys: Vec<&str> = l.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            keys == ["ht.bootstrap", "ht.label"]
+        }),
         "{params}"
     );
     assert_gate_launch(&cluster, &hc, &marker, "t1", &stdout);

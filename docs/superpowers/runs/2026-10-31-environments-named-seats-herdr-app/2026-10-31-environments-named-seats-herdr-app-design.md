@@ -1775,3 +1775,10 @@ Herdr server: the caller sends its canonical `HERDR_SOCKET_PATH` as a `pane-host
 `occupant_bindings.locator_host` (migration 0014), and the pane hint refuses only an allocation on that host. A pane
 hint with no recorded server still matches that pane id on every Herdr host (accepted limit; the outcome is M10
 naming a live seat, never a wrong bind). `locator_hint`, M9 and `seat inspect` read the pane part exactly as before.
+
+### 2026-11-02: NewTerminal writes ht.bootstrap and ht.label (ht-kqrt.236)
+
+The `Labels are` set in the H3 section is a new tab's. A new terminal carries the two `ht.*` recovery hints
+(`ht.bootstrap` = the call id, `ht.label` = the request label) and still no `herdr.*` app label, so "sends no app
+labels" holds and an `OutcomeUnknown` leaves a terminal that can be found by them. Nothing reads them to classify an
+outcome. TRUST-POLICY already said `ht.label` always; the code now matches it.

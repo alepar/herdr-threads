@@ -1611,6 +1611,28 @@ mod launch_new {
         rig.marker();
     }
 
+    // Kills: a NewTerminal creation that writes no ht.* labels, so a lost reply leaves a
+    // terminal nothing can be found by.
+    #[test]
+    fn core_only_unknown_new_terminal_carries_its_labels() {
+        let rig = LaunchRig::start("launch-core-unknown-labels");
+        rig.fake.fail_next_run(RunFailure::Disconnect);
+        let ran = rig.run(&["--json", "launch", "--new-terminal", "--kind", "claude"]);
+        assert_ne!(ran.code, Some(0), "{}{}", ran.stdout, ran.stderr);
+        let sent = run_params(&rig.fake);
+        let bootstrap = sent["labels"]["ht.bootstrap"].as_str().unwrap_or_default();
+        assert!(!bootstrap.trim().is_empty(), "{sent}");
+        let terminal = rig.fake.terminal("t2").expect("the core made the terminal");
+        assert_eq!(
+            terminal.labels.get("ht.label").map(String::as_str),
+            Some("claude")
+        );
+        assert_eq!(
+            terminal.labels.get("ht.bootstrap").map(String::as_str),
+            Some(bootstrap)
+        );
+    }
+
     #[test]
     fn core_only_operator_cancels_a_stuck_v3_attempt() {
         let rig = LaunchRig::start("handoff-core-cancel");
