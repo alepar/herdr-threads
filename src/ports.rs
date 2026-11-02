@@ -4222,6 +4222,11 @@ impl HostKind {
         matches!(self, HostKind::Herdr)
     }
 
+    /// A host of this kind reports where each target's agent status came from (D21).
+    pub fn reports_status_source(self) -> bool {
+        matches!(self, HostKind::Hc)
+    }
+
     /// The text a host row stores for this kind (`herdr_hosts.kind`).
     /// `Unknown` has none: it is only ever the reading of a foreign value.
     pub fn stored_name(self) -> Option<&'static str> {

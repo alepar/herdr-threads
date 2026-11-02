@@ -305,6 +305,31 @@ fn kind_mismatch_hosts_report(node_dir: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
+/// `report.hosts.agent_status`: each remembered host's rows, where its kind reports a status
+/// source (D21). Read-only; a host that does not answer names nothing.
+fn agent_status_report(node_dir: &std::path::Path, clock: &Arc<dyn Clock>) -> Vec<Value> {
+    let Some(conn) = open_store_read_only(node_dir) else {
+        return Vec::new();
+    };
+    crate::store::hosts::remembered(&conn, usize::MAX)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| row.attachable() && row.host_kind().reports_status_source())
+        .flat_map(|row| {
+            let budget = CallBudget {
+                deadline: MonoInstant(
+                    clock
+                        .monotonic_now()
+                        .0
+                        .saturating_add(DOCTOR_PROBE_BUDGET.as_millis() as u64),
+                ),
+                cancellation: Default::default(),
+            };
+            crate::host::hc::agent_status_rows(row.locator.as_path(), Arc::clone(clock), &budget)
+        })
+        .collect()
+}
+
 /// Per-seat wake blocks of the local seats with open bindings (`Command::WakeStatus`):
 /// `{"seats": [...]}` with every listed seat, or `{"error": ...}` when the daemon has none.
 fn wake_report(
@@ -1091,6 +1116,7 @@ fn report_captured(
     let mut unattachable_hosts: Vec<Value> = Vec::new();
     let mut mismatched_hosts: Vec<Value> = Vec::new();
     let mut held_names: Vec<Value> = Vec::new();
+    let mut agent_status: Vec<Value> = Vec::new();
     match resolved {
         Err(error) => {
             report["daemon"] = json!({"state": "unavailable", "error": error.to_string()});
@@ -1104,6 +1130,7 @@ fn report_captured(
             unattachable_hosts = unattachable_hosts_report(&paths.node_dir);
             mismatched_hosts = kind_mismatch_hosts_report(&paths.node_dir);
             held_names = held_names_report(&paths.node_dir);
+            agent_status = agent_status_report(&paths.node_dir, clock);
             report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
             report["harness_manifest"] = harness_manifest_report(
                 &paths.node_dir,
@@ -1250,6 +1277,9 @@ fn report_captured(
     report["other_stores"] = json!(extra_stores);
     report["hosts"] =
         json!({"unattachable": unattachable_hosts, "kind_mismatch": mismatched_hosts});
+    if !agent_status.is_empty() {
+        report["hosts"]["agent_status"] = json!(agent_status);
+    }
     if !held_names.is_empty() {
         report["held_names"] = json!(held_names);
     }

@@ -254,6 +254,20 @@ impl HcCapture {
     }
 }
 
+/// The `report.hosts.agent_status` rows of the core on `socket`; none when it does not answer
+/// inside `budget`.
+pub fn agent_status_rows(
+    socket: &std::path::Path,
+    clock: Arc<dyn Clock>,
+    budget: &CallBudget,
+) -> Vec<serde_json::Value> {
+    HcHost::with_clock(HcClient::new(socket), clock)
+        .capture_within(budget)
+        .ok()
+        .flatten()
+        .map_or_else(Vec::new, |capture| capture.status_rows())
+}
+
 /// The herdr-core `HostPort`. Capability answers: no wake path, closing,
 /// no archival evidence.
 pub struct HcHost {
