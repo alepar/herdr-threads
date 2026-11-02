@@ -124,7 +124,10 @@ fn capture_directories<C: crate::ports::LocalClient + ?Sized>(
     let Some(profile_dir) = &request.profile_dir else {
         return Ok(None);
     };
-    require_directory_capability(inputs.client, inputs.clock)?;
+    // A V3 plan's directories ride the target host's own gate, not the node-wide flag.
+    if request.target.is_none() {
+        require_directory_capability(inputs.client, inputs.clock)?;
+    }
     let registration = crate::harness::launch::launch_registration(
         crate::harness::registry::builtins(),
         harness.occupant(),

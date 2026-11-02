@@ -265,9 +265,7 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
             panic!("health outside capability probe")
         },
         f.service,
-        &herdr_threads::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
-    )
-    .unwrap();
+    );
     let CommandResult::Capabilities(caps) = control
         .handle(Command::Capabilities, peer, &budget)
         .unwrap()
@@ -2207,9 +2205,7 @@ fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
             ),
             |_| -> herdr_threads::daemon::health::HealthInputs { panic!("health") },
             f.service,
-            &herdr_threads::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
-        )
-        .unwrap();
+        );
         let CommandResult::Capabilities(caps) = service
             .handle(
                 Command::Capabilities,

@@ -382,6 +382,59 @@ fn startup_primary_picks_only_host_guarded_start_dialled_host() {
     assert!(Arc::ptr_eq(&primary, &capable));
 }
 
+// Kills: a hinted built-in or core session leading startup unfiltered, so the advertised
+// guarded capabilities and Health follow a host that cannot run them until restart.
+#[test]
+fn startup_primary_refuses_a_reserved_or_core_hint() {
+    let rig = Rig::new("audit-primary-hint");
+    let reserved = loc("/builtin/named");
+    rig.builtin(AuditHost::NAMED);
+    let core = rig.dial("/hc/core.sock", AuditHost::HC);
+    assert!(rig.sessions.startup_primary(Some(&reserved)).is_none());
+    assert!(rig.sessions.startup_primary(Some(core.locator())).is_none());
+    let herdr = rig.dial("/herdr/a.sock", AuditHost::HERDR);
+    for hint in [&reserved, core.locator()] {
+        let primary = rig.sessions.startup_primary(Some(hint)).unwrap();
+        assert!(
+            Arc::ptr_eq(&primary, &herdr),
+            "the guarded-start host leads"
+        );
+    }
+}
+
+// Kills: Health following the evidence of whichever session led startup, frozen at composition:
+// a reserved or core hint (or no host at all) must leave the fallback, and a guarded-start host
+// attached later must be reported from then on.
+#[test]
+fn elected_health_evidence_follows_the_guarded_host_attached_later() {
+    use crate::{app::ElectedHostEvidence, protocol::results::CapabilityState};
+    let rig = Rig::new("audit-health-evidence");
+    let fallback = Arc::new(crate::service::host_evidence::HostEvidenceStatus::default());
+    rig.builtin(AuditHost::NAMED);
+    let core = rig.dial("/hc/core.sock", AuditHost::HC);
+    let evidence = |hint: Option<HostLocator>| {
+        ElectedHostEvidence::of_sessions(
+            &rig.sessions,
+            hint,
+            Arc::clone(&fallback),
+            Default::default(),
+        )
+    };
+    let reserved = evidence(Some(loc("/builtin/named")));
+    let hinted_core = evidence(Some(core.locator().clone()));
+    for evidence in [&reserved, &hinted_core] {
+        let (status, witness, safe_prompt) = evidence.current();
+        assert!(Arc::ptr_eq(&status, &fallback));
+        assert_eq!(witness, CapabilityState::Unknown);
+        assert_eq!(safe_prompt, CapabilityState::Unsupported);
+    }
+    let herdr = rig.dial_seatless("/herdr/later.sock", AuditHost::HERDR);
+    for evidence in [&reserved, &hinted_core] {
+        let (status, _, _) = evidence.current();
+        assert!(Arc::ptr_eq(&status, herdr.evidence()));
+    }
+}
+
 // The two-host half of the audit: an hc core is dialled first (the lowest host id) and a Herdr
 // TUI second, so a consumer that takes "the first dialled host" mis-picks.
 

@@ -1073,22 +1073,21 @@ impl HostSessions {
         self.start_sweep()
     }
 
-    /// The session the node-wide seams without a claim host follow (Health,
-    /// archival, the advertised bootstrap capability): the hint's, else the first server startup
-    /// attached (the most recently attached remembered one), else the lowest
-    /// attached `host_id` whose port has `HostGuardedStart` (never the
-    /// built-in host); `None` when there is none.
+    /// The session the node-wide seams without a claim host follow (Health):
+    /// the hint's, else the first server startup attached (the most recently
+    /// attached remembered one), else the lowest attached `host_id`; each
+    /// branch only when its port has `HostGuardedStart`, so a built-in named
+    /// host or a core never leads. `None` when there is none.
     pub fn startup_primary(&self, hint: Option<&HostLocator>) -> Option<Arc<HostSession>> {
+        let guarded = |session: &Arc<HostSession>| {
+            session.port().native_launch_capability() == NativeLaunchCapability::HostGuardedStart
+        };
         let first = *self.startup_first.lock().unwrap_or_else(|e| e.into_inner());
         hint.and_then(|hint| self.by_locator(hint))
-            .or_else(|| first.and_then(|id| self.get(id)))
-            // Dialled-only fallback, filtered to guarded-start hosts (07 §5.3).
-            .or_else(|| {
-                self.attached().into_iter().find(|session| {
-                    session.port().native_launch_capability()
-                        == NativeLaunchCapability::HostGuardedStart
-                })
-            })
+            .filter(guarded)
+            .or_else(|| first.and_then(|id| self.get(id)).filter(guarded))
+            // Dialled-only fallback (07 §5.3).
+            .or_else(|| self.attached().into_iter().find(guarded))
     }
 
     fn remembered_rows(&self) -> Vec<HostRow> {
@@ -1268,8 +1267,9 @@ mod tests {
                 "fixture host has no topology",
             ))
         }
+        // Guarded-start, as a Herdr server: `startup_primary` leads only with one.
         fn native_launch_capability(&self) -> NativeLaunchCapability {
-            NativeLaunchCapability::Unsupported
+            NativeLaunchCapability::HostGuardedStart
         }
         fn observe_current_target(
             &self,
