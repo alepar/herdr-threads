@@ -582,6 +582,16 @@ const IDLE: &str = include_str!("../fixtures/screen_blocked/claude/idle.txt");
 const AGY_IDLE: &str = include_str!("../fixtures/screen_blocked/agy/idle.txt");
 const CLAUDE_APPROVAL: &str = include_str!("../fixtures/screen_blocked/claude/approval.txt");
 const WAKE: &str = "wake-text";
+// Claude Code 2.1.309 captures (docs/evidence/ansi-composer): a dim prompt suggestion, a typed
+// draft, and the suggestion's detection text (what `capture-pane -p` shows).
+const SUGGESTION_ANSI: &str = include_str!(
+    "../../docs/evidence/ansi-composer/captures/claude-2.1.309-suggestion.recent-ansi.txt"
+);
+const SUGGESTION_PLAIN: &str = include_str!(
+    "../../docs/evidence/ansi-composer/captures/claude-2.1.309-suggestion.read-detection.txt"
+);
+const DRAFT_ANSI: &str =
+    include_str!("../../docs/evidence/ansi-composer/captures/claude-2.1.309-draft.recent-ansi.txt");
 
 /// A clock the test moves (milliseconds).
 #[derive(Default)]
@@ -602,7 +612,11 @@ impl Clock for ManualClock {
 
 /// The seat's connected top-level binding generations, set by the test.
 #[derive(Default)]
-pub(crate) struct GenSeats(Mutex<Vec<crate::store::named_seats::TopLevelBinding>>);
+pub(crate) struct GenSeats(
+    Mutex<Vec<crate::store::named_seats::TopLevelBinding>>,
+    /// Run by every `top_level_bindings` read, which the wake gate makes before its capture.
+    Mutex<Option<Box<dyn Fn() + Send>>>,
+);
 impl NamedSeatSource for GenSeats {
     fn live_named(&self, _: &HostId, _: &CallBudget) -> Result<Vec<(SeatId, SeatName)>, ApiError> {
         Ok(Vec::new())
@@ -612,6 +626,9 @@ impl NamedSeatSource for GenSeats {
         _: &SeatId,
         _: &CallBudget,
     ) -> Result<Vec<crate::store::named_seats::TopLevelBinding>, ApiError> {
+        if let Some(hook) = self.1.lock().unwrap().as_ref() {
+            hook();
+        }
         Ok(self.0.lock().unwrap().clone())
     }
 }
@@ -640,12 +657,13 @@ fn scratch_file(name: &str, contents: &str) -> PathBuf {
 }
 
 fn screen_size(screen: &str) -> (usize, usize) {
-    let width = screen
-        .lines()
-        .map(|l| l.chars().count())
-        .max()
-        .unwrap_or(80);
-    (width.max(40), (screen.lines().count() + 4).max(24))
+    // An ANSI screen is sized by what it shows, not by its escapes.
+    let rows: Vec<String> = match crate::harness::sgr::parse(screen) {
+        Some(lines) => lines.into_iter().map(|line| line.text).collect(),
+        None => screen.lines().map(str::to_owned).collect(),
+    };
+    let width = rows.iter().map(|l| l.chars().count()).max().unwrap_or(80);
+    (width.max(40), (rows.len() + 4).max(24))
 }
 
 /// The script of a pane: wait for the window to be resized to the screen's size, show the screen,
@@ -1373,8 +1391,8 @@ fn wake_gate_refuses_a_harness_without_a_composer_policy() {
     assert_eq!(rig.typed_after_marker(), "Z\n");
 }
 
-// Kills: the budget check before typing removed. The gate passes (the cancellation is not set);
-// only the deadline has passed.
+// Kills: the gate's budget checks removed. The cancellation is not set; only the deadline has
+// passed (the floor refuses before any read).
 #[test]
 fn type_wake_with_an_exhausted_budget_types_nothing() {
     let Some(rig) = WakeRig::new("budget_exhausted", "claude", IDLE, "manual mode on") else {
@@ -1383,15 +1401,15 @@ fn type_wake_with_an_exhausted_budget_types_nothing() {
     rig.bindings(&[Some(TurnEdge::Idle)]);
     // Control: with the clock before the deadline the wake goes out.
     assert_eq!(
-        rig.attempt_with(|_, context| context.budget.deadline = MonoInstant(50))
+        rig.attempt_with(|_, context| context.budget.deadline = MonoInstant(1_000))
             .unwrap(),
         Some(PromptOutcome::Submitted)
     );
     wait_for(|| (rig.typed() == format!("{WAKE}\n")).then_some(()));
-    rig.clock.set(100);
+    rig.clock.set(1_100);
     let error = rig
         .attempt_with(|_, context| {
-            context.budget.deadline = MonoInstant(50);
+            context.budget.deadline = MonoInstant(1_000);
         })
         .expect_err("an exhausted budget is refused");
     assert_eq!(error.code, ErrorCode::DeadlineExceeded, "{error:?}");
@@ -1714,4 +1732,153 @@ fn observation_reports_the_panes_focus() {
     let _client = focus(&rig);
     assert!(observe("seat-wake"));
     assert!(!observe("no-binding"));
+}
+
+// ---- the gate matches native's pre-send path (ht-kqrt.214) ----
+
+/// A rig over a captured Claude screen, ready to be woken. The marker is the status row's text:
+/// the default (the last row) carries escapes.
+fn captured_rig(case: &str, screen: &str) -> Option<WakeRig> {
+    let rig = WakeRig::new(case, "claude", screen, "auto mode on")?;
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    Some(rig)
+}
+
+// Kills: a composer read from `capture-pane -p` alone. A default hooks-only Claude seat shows a
+// dim prompt suggestion after a turn; the plain text cannot tell it from a draft, so every wake
+// was refused with `composer is nonempty`.
+#[test]
+fn wake_types_over_a_dim_prompt_suggestion() {
+    let Some(rig) = captured_rig("suggestion", SUGGESTION_ANSI) else {
+        return;
+    };
+    assert_eq!(rig.attempt().unwrap(), Some(PromptOutcome::Submitted));
+    wait_for(|| (rig.typed() == format!("{WAKE}\n")).then_some(()));
+}
+
+// Kills: a styled read that vouches for any composer (dim and unstyled text told apart wrongly).
+#[test]
+fn styled_read_keeps_refusing_a_typed_draft() {
+    let Some(rig) = captured_rig("styled_draft", DRAFT_ANSI) else {
+        return;
+    };
+    let detail = refused(rig.attempt());
+    assert!(detail.contains("composer is nonempty"), "{detail}");
+    assert_eq!(rig.typed_after_marker(), "Z\n");
+}
+
+// Kills: a styled capture without SGR (or one that fails) replacing the detection read: the
+// plain screen stays a refusal, as in `native`.
+#[test]
+fn a_screen_with_no_styles_keeps_the_detection_refusal() {
+    let Some(rig) = captured_rig("suggestion_plain", SUGGESTION_PLAIN) else {
+        return;
+    };
+    let detail = refused(rig.attempt());
+    assert!(detail.contains("composer is nonempty"), "{detail}");
+    assert_eq!(rig.typed_after_marker(), "Z\n");
+}
+
+// Kills: the read-back and the clear loop using the plain read: a suggestion would read as text.
+#[test]
+fn the_read_back_sees_the_styled_composer() {
+    let Some(rig) = captured_rig("suggestion_readback", SUGGESTION_ANSI) else {
+        return;
+    };
+    let (safe, context) = rig.target_and_context();
+    assert_eq!(
+        rig.host.pane_agent_state(&safe, &context).unwrap(),
+        AgentComposerState::Submitted
+    );
+}
+
+// Kills: a non-empty read-back leaving the focused window running (native resets it on every
+// read path). Sampled empty at 0, a draft appears and is read back, the draft goes: without the
+// reset the minute passes and the gate at 60 s types.
+#[test]
+fn a_nonempty_read_back_restarts_the_focused_window() {
+    let typed = scratch_file("window_reset-typed", "");
+    let draft = scratch_file("window_reset-draft", DRAFT_ANSI);
+    let suggestion = scratch_file("window_reset-suggestion", SUGGESTION_ANSI);
+    let clear = "printf '\\033[2J\\033[H'";
+    let tail = format!(
+        "stty -echo; read a; {clear}; cat {}; read b; {clear}; cat {}; exec cat > {}",
+        draft.display(),
+        suggestion.display(),
+        typed.display()
+    );
+    let Some(rig) = WakeRig::with_tail(
+        "window_reset",
+        "claude",
+        SUGGESTION_ANSI,
+        "auto mode on",
+        typed,
+        &tail,
+    ) else {
+        return;
+    };
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    let _client = focus(&rig);
+    let enter = || {
+        assert!(
+            rig.tmux
+                .run(&["send-keys", "-t", &rig.pane.id, "Enter"])
+                .status
+                .success()
+        );
+    };
+    rig.clock.set(0);
+    let detail = refused(rig.attempt());
+    assert!(detail.contains("focused composer"), "{detail}");
+    enter();
+    wait_for(|| rig.capture().contains("hello draft").then_some(()));
+    let (safe, context) = rig.target_and_context();
+    assert_eq!(
+        rig.host.pane_agent_state(&safe, &context).unwrap(),
+        AgentComposerState::HoldingPrompt
+    );
+    enter();
+    wait_for(|| {
+        let screen = rig.capture();
+        (!screen.contains("hello draft") && screen.contains("auto mode on")).then_some(())
+    });
+    rig.clock.set(60_000);
+    let detail = refused(rig.attempt());
+    assert!(detail.contains("focused composer"), "{detail}");
+    assert_eq!(rig.typed(), "");
+}
+
+// Kills: no cancellation check after the gate's reads: `is_exhausted` alone reports a
+// cancellation that lands during the gate as `DeadlineExceeded`, or types.
+#[test]
+fn cancel_during_the_gate_refuses_before_typing() {
+    let Some(rig) = captured_rig("gate_cancel_mid", SUGGESTION_ANSI) else {
+        return;
+    };
+    let (safe, context) = rig.target_and_context();
+    let token = context.budget.cancellation.clone();
+    *rig.seats.1.lock().unwrap() = Some(Box::new(move || token.cancel()));
+    let error = rig
+        .host
+        .submit_prompt_if_owed(&safe, WAKE, &context, &|| Ok(true))
+        .expect_err("a call cancelled mid-gate is refused");
+    assert_eq!(error.code, ErrorCode::Cancelled, "{error:?}");
+    *rig.seats.1.lock().unwrap() = None;
+    assert_eq!(rig.typed_after_marker(), "Z\n");
+}
+
+// Kills: no budget floor (native refuses `left <= 2 * MIN_PROMPT_MILLIS` before any read): a
+// gate that cannot finish must not start, and must leave the seat's wake block alone.
+#[test]
+fn a_budget_under_the_floor_refuses_before_any_read() {
+    let Some(rig) = captured_rig("gate_floor", SUGGESTION_ANSI) else {
+        return;
+    };
+    assert_eq!(rig.host.wake_block(&rig.seat), None);
+    let error = rig
+        .attempt_with(|_, context| context.budget.deadline = MonoInstant(400))
+        .expect_err("a budget under the floor is refused");
+    assert_eq!(error.code, ErrorCode::DeadlineExceeded, "{error:?}");
+    assert_eq!(rig.host.wake_block(&rig.seat), None);
+    assert_eq!(rig.typed_after_marker(), "Z\n");
 }

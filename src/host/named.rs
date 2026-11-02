@@ -11,8 +11,9 @@ use std::time::Duration;
 pub mod tmux;
 
 use crate::harness::adapter::ComposerPolicy;
-use crate::harness::composer::{ComposerRead, read_composer_in};
-use crate::host::native::{EmptyWindows, focused_empty_ready};
+use crate::harness::composer::{ComposerRead, read_composer_with};
+use crate::harness::sgr;
+use crate::host::native::{EmptyWindows, MIN_PROMPT_MILLIS, focused_empty_ready};
 use crate::host::observation::{HostTopology, SeatHostLabels};
 use crate::ports::{
     AgentComposerState, ArchivalEvidence, BootstrapObserver, BootstrapPaneObservation,
@@ -281,8 +282,11 @@ impl NamedHost {
     /// Every check before a wake is typed, per pane (rule 4): the context fence, one verified pane
     /// for the seat, a pane that delivers keys, every live top-level binding idle (a stale busy is
     /// cleared by the screen rule), a screen that does not read as a running turn (a missed Busy
-    /// edge), a recognised unblocked screen and an empty composer (observed empty for one minute when the pane is focused). Each
-    /// refusal is `TargetUnsafe`: the attempt is retried on the ladder, never `no_wake`.
+    /// edge), a recognised unblocked screen and an empty composer (observed empty for one minute when
+    /// the pane is focused). It follows `native`'s pre-send path step for step: the budget floor
+    /// first, the composer read through the shared `read_composer_with` (plain capture, then one
+    /// `-e` capture when the policy asks), and a cancellation, epoch and budget re-check after each
+    /// read. Each refusal is `TargetUnsafe`: the attempt is retried on the ladder, never `no_wake`.
     fn wake_gate(
         &self,
         target: &SafeWakeTarget,
@@ -298,6 +302,30 @@ impl NamedHost {
         };
         let refuse = |detail: &str| refuse_with(WakeBlock::Unknown, detail);
         let unreadable = |detail: &str| refuse_with(WakeBlock::Unreadable, detail);
+        // Native's floor: a gate that cannot finish is a pre-send refusal, not a half-typed wake.
+        let budget_left = || {
+            context
+                .budget
+                .deadline
+                .0
+                .saturating_sub(self.clock.monotonic_now().0)
+        };
+        // What the steps below spend can end the attempt: each read is followed by this.
+        let still_live = || -> Result<(), ApiError> {
+            if context.budget.cancellation.is_cancelled() {
+                return Err(ApiError::new(ErrorCode::Cancelled, "wake prompt cancelled"));
+            }
+            if self.epoch.load(Ordering::SeqCst) != target.epoch {
+                return Err(refuse("host context changed"));
+            }
+            if context.budget.is_exhausted(self.clock.as_ref()) {
+                return Err(ApiError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "insufficient wake prompt budget",
+                ));
+            }
+            Ok(())
+        };
         // Taking the sample first makes every refusal below restart the window, as in `native`.
         let previous = self
             .empty_windows
@@ -315,6 +343,12 @@ impl NamedHost {
         }
         if context.budget.cancellation.is_cancelled() {
             return Err(ApiError::new(ErrorCode::Cancelled, "wake prompt cancelled"));
+        }
+        if budget_left() <= 2 * MIN_PROMPT_MILLIS {
+            return Err(ApiError::new(
+                ErrorCode::DeadlineExceeded,
+                "insufficient wake prompt budget",
+            ));
         }
         let Some((harness, policy)) = Self::wake_policy(target) else {
             return Err(refuse("no composer policy for the bound harness"));
@@ -362,6 +396,7 @@ impl NamedHost {
         };
         // One capture serves the stale-busy clear, the running-turn check and the composer read.
         let screen = tmux::capture(hint).ok_or_else(|| unreadable("pane unreadable"))?;
+        still_live()?;
         if keys.iter().any(|key| turns.state(key) == TurnState::Busy) {
             let running = policy.screen_turn_running(&screen);
             let now = self.clock.monotonic_now().0;
@@ -381,12 +416,9 @@ impl NamedHost {
             Some(true) => return Err(refuse("screen blocked")),
             None => return Err(unreadable("screen not recognised")),
         }
-        match read_composer_in(
-            crate::harness::registry::builtins(),
-            crate::harness::registry::OccupantHarness::Agent(harness),
-            &screen,
-            Some(facts.width),
-        ) {
+        let composer = pane_composer(harness, hint, &screen, facts.width);
+        still_live()?;
+        match composer {
             ComposerRead::Empty => {}
             ComposerRead::Unreadable => return Err(unreadable("composer is unreadable")),
             _ => return Err(refuse("composer is nonempty")),
@@ -421,7 +453,12 @@ impl NamedHost {
         {
             return Ok(None);
         }
-        if context.budget.is_exhausted(self.clock.as_ref()) {
+        let left = context
+            .budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        if left < MIN_PROMPT_MILLIS {
             return Err(ApiError::new(
                 ErrorCode::DeadlineExceeded,
                 "insufficient wake prompt budget",
@@ -446,12 +483,14 @@ impl NamedHost {
         })??;
         let screen = tmux::capture(&hint)?;
         let width = tmux::pane_facts(&hint).map_or(80, |facts| facts.width);
-        Some(read_composer_in(
-            crate::harness::registry::builtins(),
-            crate::harness::registry::OccupantHarness::Agent(harness),
-            &screen,
-            Some(width),
-        ))
+        let read = pane_composer(harness, &hint, &screen, width);
+        // Native's `reset_empty_windows`: a non-empty read restarts the focused window (one seat to a pane).
+        if !matches!(read, ComposerRead::Empty)
+            && let Ok(mut windows) = self.empty_windows.lock()
+        {
+            windows.remove(&target.seat);
+        }
+        Some(read)
     }
 
     fn observation(&self, name: &SeatName, focused: bool) -> HostObservation {
@@ -506,6 +545,28 @@ impl NamedHost {
     fn live(&self, budget: &CallBudget) -> Result<Vec<(SeatId, SeatName)>, ApiError> {
         self.source.live_named(&self.host_id, budget)
     }
+}
+
+/// The composer on `screen`, refined by one styled capture when the policy asks. A failed or
+/// unparsable capture keeps the detection read, as in `native`.
+fn pane_composer(
+    harness: crate::harness::registry::AgentHarnessId,
+    hint: &tmux::TmuxHint,
+    screen: &str,
+    width: u16,
+) -> ComposerRead {
+    read_composer_with(
+        crate::harness::registry::builtins(),
+        crate::harness::registry::OccupantHarness::Agent(harness),
+        screen,
+        Some(width),
+        || {
+            Ok::<_, std::convert::Infallible>(
+                tmux::capture_styled(hint).and_then(|styled| sgr::parse(&styled)),
+            )
+        },
+    )
+    .unwrap_or_else(|never| match never {})
 }
 
 /// The named host never runs guarded bootstrap: every observation is refused.

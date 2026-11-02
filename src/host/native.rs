@@ -63,7 +63,7 @@ const PROMPT_RECHECK_MILLIS: u64 = 750;
 /// Ceiling of the wake prompt submission itself.
 const PROMPT_SUBMIT_MILLIS: u64 = 2_000;
 /// Smallest budget a wake prompt submission is started with.
-const MIN_PROMPT_MILLIS: u64 = 250;
+pub(crate) const MIN_PROMPT_MILLIS: u64 = 250;
 /// Ceiling of one composer read or composer key/text send.
 const COMPOSER_CALL_MILLIS: u64 = 750;
 /// Clears beyond one per composer line before a stash gives up.
@@ -2374,9 +2374,9 @@ impl NativeCli {
         harness: Harness,
         context: &HostCallContext,
     ) -> Result<ComposerRead, ApiError> {
-        let Some(policy) = self.composer_policy(harness) else {
+        if self.composer_policy(harness).is_none() {
             return Ok(ComposerRead::Unreadable);
-        };
+        }
         let limit = composer_limit(self, context)?;
         let started = Instant::now();
         let raw = self.run_unfenced(
@@ -2399,27 +2399,21 @@ impl NativeCli {
         let text = text("text")
             .ok_or_else(|| error(ErrorCode::InvalidRequest, "composer read has no text"))?;
         self.check_after_parse_unfenced(&context.budget, started, limit)?;
-        let read = composer::read_composer_in(self.registry, harness, text, None);
-        if !policy.wants_styled(&read) {
-            return Ok(read);
-        }
-        // A failed styled read keeps the detection read; an abort still aborts.
-        Ok(self
-            .read_styled_composer(target, policy, context)?
-            .unwrap_or(read))
+        composer::read_composer_with(self.registry, harness, text, None, || {
+            self.read_styled_screen(target, context)
+        })
     }
 
     /// One bounded `agent read --source recent --format ansi` (detection
-    /// text carries no styles), composer-parsed by the policy. `Ok(None)` when
+    /// text carries no styles), parsed. `Ok(None)` when
     /// the read fails, answers another pane, source or format, or carries no
     /// parsable styles: a Herdr that ignores `format` returns plain text.
     /// Cancellation, an exhausted budget or a stale observation is an error.
-    fn read_styled_composer(
+    fn read_styled_screen(
         &self,
         target: &HostTargetId,
-        policy: &dyn ComposerPolicy,
         context: &HostCallContext,
-    ) -> Result<Option<ComposerRead>, ApiError> {
+    ) -> Result<Option<Vec<crate::harness::sgr::StyledLine>>, ApiError> {
         let limit = composer_limit(self, context)?;
         let started = Instant::now();
         let raw = match self.run_unfenced(
@@ -2452,7 +2446,7 @@ impl NativeCli {
             crate::harness::sgr::parse(text("text")?)
         })();
         self.check_after_parse_unfenced(&context.budget, started, limit)?;
-        Ok(screen.and_then(|screen| policy.read_styled(&screen, None)))
+        Ok(screen)
     }
 
     /// Clears the composer with a bounded `ctrl+u` loop until a read shows it
