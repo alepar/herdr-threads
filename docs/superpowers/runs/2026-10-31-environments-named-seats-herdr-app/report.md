@@ -98,7 +98,7 @@ Not measured on this tree. Codex 0 of 60 at the sign-in screen on `codex-2` (no 
 
 ### Unexercised
 
-- zsh is absent on this host. The zsh round-trip tests read PASS in sweep-3 only because 79f633892 (main, ht-esi2) makes them skip with a note when zsh is absent, so 8910/8910 does not cover them. A green run on a host with zsh and tmux is still owed. (`RD/sweep-3-nextest.log` lines 3867, 7368, 8557; `RD/run.md` final gate)
+- zsh is absent on this host. The zsh round-trip tests read PASS in sweep-3 only because 79f633892 (main, ht-esi2) makes them skip with a note when zsh is absent, so 8910/8910 does not cover them. A green run on a host with zsh and tmux is still owed. (`RD/run.md` final gate)
 - The 54 skipped tests are not named in the log. (inv-8)
 - Real herdr-core and macOS paths are unexercised: `PendingRestart` keys, H-C1, L1, Codex `--no-daemon`, `KERN_PROCARGS2`, herdr-app labels. inv-8 also lists live L3; `RD/run.md` records L3 and L2 as live in `scripts/hc-smoke` at ht-kqrt.52 (herdr-core 0.1.15), which is the only real-core evidence and has no recorded re-run at this head. Everything else runs on `fake_hc`.
 
