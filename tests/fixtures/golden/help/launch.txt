@@ -40,6 +40,8 @@ Options:
           A new terminal on a herdr-core host, parented on the calling terminal (no app labels)
       --cooperative-role <COOPERATIVE_ROLE>
           Agent role for the cooperative call [possible values: top-level, subagent]
+      --cwd <DIR>
+          With --new-terminal --space @MACHINE: the absolute working directory on that machine
   -h, --help
           Print help
 
@@ -50,6 +52,7 @@ Target:
   --new-tab LABEL creates a tab in --space, else the caller's workspace, and launches in
   its root pane; a herdr-core needs --space (an app space).
   --new-terminal creates a herdr-core terminal parented on the calling terminal.
+  --new-terminal --space @MACHINE --cwd DIR creates one on another machine (DIR there).
   A herdr-core target runs the launch gate: --harness-binary and --name are refused, the
   preflight below is the argument check alone, and the agent starts idle.
 

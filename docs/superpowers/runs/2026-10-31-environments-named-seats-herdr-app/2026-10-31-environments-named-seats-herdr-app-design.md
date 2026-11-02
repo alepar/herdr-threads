@@ -1733,3 +1733,14 @@ stays pending for a writable one. The historical `watch_loop` fallback drops it 
 (`ModChannelRegistration.readonly`, frozen at registration): otherwise the 10-minute `Stalled` close, which used to free
 a writable sibling's wake, would have become permanent. A seat whose only channels are read-only reads as having no
 channel wake. Keyed on the binding, never on a harness.
+
+### 2026-11-02: the remote new-terminal form (ht-kqrt.225)
+
+`LaunchTarget::NewTerminal` had no production caller: only a test-support switch sent it to a peer. The form is
+`--new-terminal --space @MACHINE --cwd DIR`, on `handoff` and on `launch` (which gains `--cwd`, accepted only with
+`--new-terminal`). The location before the `@` is empty because a terminal lives in no space; `--new-terminal --space
+SPACE@MACHINE` is refused rather than ignoring `SPACE`, and `split_machine` keeps refusing an empty location for every
+other selector (`terminal_machine` reads this one form). The label is the harness id, as on a local core launch. `--cwd`
+must be absolute and is checked only on the peer (TRUST-POLICY N15). `--harness-binary`, `--name`, `--profile-dir`
+and `--summary` stay refused, as for the other remote forms. The wire variant and `peer.launch.terminal.v1` are unchanged,
+and a peer without the cap still refuses the request. `HT_TEST_REMOTE_TERMINAL` is gone.

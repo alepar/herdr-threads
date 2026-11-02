@@ -743,6 +743,56 @@ fn launch_new_flags_parse_and_conflict() {
 }
 
 #[test]
+fn remote_new_terminal_parses_to_a_new_terminal_target() {
+    use crate::sync::frame::LaunchTarget;
+    let launch = |extra: &[&str]| {
+        let mut argv = vec!["herdr-threads", "launch", "--kind", "claude"];
+        argv.extend_from_slice(extra);
+        parse_argv(argv)
+    };
+    let handoff = |extra: &[&str]| {
+        let mut argv = vec!["herdr-threads", "handoff", "--kind", "claude"];
+        argv.extend_from_slice(extra);
+        argv.extend(["--", "x"]);
+        parse_argv(argv)
+    };
+    let form = ["--new-terminal", "--space", "@m", "--cwd", "/tmp"];
+    for (name, parsed) in [("launch", launch(&form)), ("handoff", handoff(&form))] {
+        let CliAction::RemoteLaunch(remote) = parsed.unwrap().action else {
+            panic!("{name}: a remote new terminal parses to RemoteLaunch")
+        };
+        assert_eq!(remote.machine, "m", "{name}");
+        assert!(
+            matches!(&remote.plan.target, LaunchTarget::NewTerminal { label } if label == "claude"),
+            "{name}: {:?}",
+            remote.plan.target
+        );
+        assert_eq!(remote.plan.cwd.as_deref(), Some("/tmp"), "{name}");
+        assert_eq!(remote.then.is_some(), name == "handoff", "{name}");
+    }
+    for extra in [
+        // no --cwd, a relative --cwd
+        vec!["--new-terminal", "--space", "@m"],
+        vec!["--new-terminal", "--space", "@m", "--cwd", "rel"],
+        // an empty machine, a space nothing reads, a path in the machine
+        vec!["--new-terminal", "--space", "@", "--cwd", "/tmp"],
+        vec!["--new-terminal", "--space", "w1@m", "--cwd", "/tmp"],
+        vec!["--new-terminal", "--space", "@a/b", "--cwd", "/tmp"],
+        // unsupported on another machine
+        vec!["--new-terminal", "--space", "@m", "--cwd", "/tmp", "--name", "x"],
+    ] {
+        assert!(launch(&extra).is_err(), "launch {extra:?}");
+        assert!(handoff(&extra).is_err(), "handoff {extra:?}");
+    }
+    // --cwd means nothing to a launch with no machine
+    assert!(launch(&["--new-terminal", "--cwd", "/tmp"]).is_err());
+    assert!(launch(&["--new-tab", "x", "--cwd", "/tmp"]).is_err());
+    assert!(launch(&["--pane", "p", "--cwd", "/tmp"]).is_err());
+    // a local handoff terminal with a space is refused too
+    assert!(handoff(&["--new-terminal", "--space", "s"]).is_err());
+}
+
+#[test]
 fn parser_rejects_operator_and_source_conflicts() {
     for argv in [
         vec!["herdr-threads", "ack", "m1", "--operator"],

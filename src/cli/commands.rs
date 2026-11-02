@@ -2061,8 +2061,11 @@ struct LaunchArgs {
     #[arg(long, value_name = "LABEL", conflicts_with_all = ["new_terminal", "tab", "pane"])]
     new_tab: Option<String>,
     /// A new terminal on a herdr-core host, parented on the calling terminal (no app labels).
-    #[arg(long, conflicts_with_all = ["new_tab", "space", "tab", "pane"])]
+    #[arg(long, conflicts_with_all = ["new_tab", "tab", "pane"])]
     new_terminal: bool,
+    /// With --new-terminal --space @MACHINE: the absolute working directory on that machine.
+    #[arg(long, value_name = "DIR")]
+    cwd: Option<std::path::PathBuf>,
     /// Native agent arguments, kept byte for byte and in order after `--`.
     #[arg(last = true, allow_hyphen_values = true, value_name = "AGENT_ARG")]
     agent_args: Vec<String>,
@@ -2080,7 +2083,7 @@ struct HandoffArgs {
     #[arg(long, conflicts_with_all = ["existing", "tab", "pane", "seat"])]
     new_tab: Option<String>,
     /// A new terminal on a herdr-core host, parented on the calling terminal (no app labels).
-    #[arg(long, conflicts_with_all = ["new_tab", "existing", "space", "tab", "pane", "seat"])]
+    #[arg(long, conflicts_with_all = ["new_tab", "existing", "tab", "pane", "seat"])]
     new_terminal: bool,
     #[arg(long)]
     existing: bool,
@@ -2448,6 +2451,35 @@ fn remote_machine(selector: &super::panes::PaneSelector) -> Option<String> {
         .into_iter()
         .flatten()
         .find_map(|text| super::seat_selector::split_machine(text).map(|(_, m)| m.to_owned()))
+}
+
+/// `--new-terminal --space @MACHINE`: the machine of a new terminal elsewhere. A terminal lives
+/// in no space, so nothing precedes the `@`; `split_machine` keeps refusing that for every other
+/// selector.
+fn terminal_machine(selector: &super::panes::PaneSelector) -> Result<Option<String>, ApiError> {
+    let Some(space) = &selector.space else {
+        return Ok(None);
+    };
+    match space
+        .strip_prefix('@')
+        .filter(|m| !m.is_empty() && !m.contains(['/', '\\', '@']))
+    {
+        Some(machine) => Ok(Some(machine.to_owned())),
+        None => Err(invalid(
+            "--new-terminal takes no space; --space @MACHINE names another machine",
+        )),
+    }
+}
+
+/// The `--cwd` of a new terminal on another machine: absolute, and checked only there
+/// (TRUST-POLICY N15).
+fn remote_terminal_cwd(cwd: Option<std::path::PathBuf>) -> Result<String, ApiError> {
+    match cwd {
+        Some(cwd) if cwd.is_absolute() => Ok(cwd.to_string_lossy().into_owned()),
+        _ => Err(invalid(
+            "a new terminal on another machine needs --cwd DIR (absolute, on that machine)",
+        )),
+    }
 }
 
 /// The remote launch target of `--space/--tab/--pane` with `@MACHINE`: every
@@ -2886,7 +2918,9 @@ fn parse_cli_in_registry(
         }
         // A tab on another machine: `--cwd` names a directory there, which only
         // that machine can check (TRUST-POLICY N15).
-        if remote_machine(&args.selector).is_none() {
+        if remote_machine(&args.selector).is_none()
+            && !(args.new_terminal && args.selector.space.is_some())
+        {
             args.cwd = args
                 .cwd
                 .take()
@@ -2898,6 +2932,14 @@ fn parse_cli_in_registry(
             .take()
             .map(normalize_handoff_directory)
             .transpose()?;
+    }
+    if let Top::Launch(args) = &cli.command
+        && args.cwd.is_some()
+        && !(args.new_terminal && args.selector.space.is_some())
+    {
+        return Err(invalid(
+            "launch --cwd needs --new-terminal --space @MACHINE",
+        ));
     }
     // Normalize before capturing selectors so names, picker eligibility and
     // follow execution share the existing read path.
@@ -3642,10 +3684,32 @@ fn parse_cli_in_registry(
         Top::Me {
             command: MeSub::Init { operator },
         } => CliAction::MeInit { operator },
+        Top::Launch(args) if args.new_terminal && args.selector.space.is_some() => {
+            let machine = terminal_machine(&args.selector)?.expect("a space was given");
+            harness_arg(&args.kind, registry)?;
+            if args.harness_binary.is_some() || args.name.is_some() {
+                return Err(invalid(
+                    "--harness-binary and --name are not supported for a launch on another machine",
+                ));
+            }
+            let cwd = remote_terminal_cwd(args.cwd)?;
+            CliAction::RemoteLaunch(Box::new(super::peer_launch::RemoteLaunch {
+                machine,
+                plan: crate::sync::frame::LaunchPlan {
+                    target: crate::sync::frame::LaunchTarget::NewTerminal {
+                        label: args.kind.clone(),
+                    },
+                    kind: args.kind,
+                    argv: args.agent_args,
+                    cwd: Some(cwd),
+                },
+                then: None,
+            }))
+        }
         Top::Launch(args) if args.new_tab.is_some() || args.new_terminal => {
             if remote_machine(&args.selector).is_some() {
                 return Err(invalid(
-                    "--new-tab and --new-terminal create here; a launch on another machine takes --pane",
+                    "--new-tab creates here; a launch on another machine takes --pane or --new-terminal --space @MACHINE",
                 ));
             }
             if args
@@ -3790,7 +3854,12 @@ fn parse_cli_in_registry(
                     "--existing --pane cannot name another machine; use --seat 'PANE@MACHINE'",
                 ));
             }
-            if !args.existing && remote_machine(&args.selector).is_some() {
+            let terminal = if args.new_terminal {
+                terminal_machine(&args.selector)?
+            } else {
+                None
+            };
+            if !args.existing && (remote_machine(&args.selector).is_some() || terminal.is_some()) {
                 if args.harness_binary.is_some()
                     || args.name.is_some()
                     || args.profile_dir.is_some()
@@ -3815,22 +3884,20 @@ fn parse_cli_in_registry(
                             ));
                         }
                         (machine.to_owned(), {
-                            let tab = crate::sync::frame::LaunchTarget::NewTab {
+                            crate::sync::frame::LaunchTarget::NewTab {
                                 space: space.to_owned(),
                                 label: label.clone(),
-                            };
-                            // Test-support builds: `HT_TEST_REMOTE_TERMINAL` asks for a
-                            // new terminal where the CLI has no flag for one yet.
-                            #[cfg(feature = "test-support")]
-                            let tab = if std::env::var_os("HT_TEST_REMOTE_TERMINAL").is_some() {
-                                crate::sync::frame::LaunchTarget::NewTerminal {
-                                    label: label.clone(),
-                                }
-                            } else {
-                                tab
-                            };
-                            tab
+                            }
                         })
+                    }
+                    None if terminal.is_some() => {
+                        remote_terminal_cwd(args.cwd.clone())?;
+                        (
+                            terminal.expect("checked"),
+                            crate::sync::frame::LaunchTarget::NewTerminal {
+                                label: kind.clone(),
+                            },
+                        )
                     }
                     None => remote_pane_target(&args.selector)?,
                 };
