@@ -12,6 +12,7 @@ pub mod tmux;
 
 use crate::harness::adapter::ComposerPolicy;
 use crate::harness::composer::{ComposerRead, read_composer_in};
+use crate::host::native::{EmptyWindows, focused_empty_ready};
 use crate::host::observation::{HostTopology, SeatHostLabels};
 use crate::ports::{
     AgentComposerState, ArchivalEvidence, BootstrapObserver, BootstrapPaneObservation,
@@ -92,6 +93,8 @@ pub struct NamedHost {
     /// The block each seat's last wake attempt met (`HostPort::wake_block`), with the monotonic
     /// millisecond it was recorded at.
     wake_blocks: Mutex<HashMap<SeatId, (WakeBlock, u64)>>,
+    /// Empty-composer samples of focused panes, per seat: the one-minute hold of A4 *Wake*.
+    empty_windows: EmptyWindows,
 }
 
 /// One verified tmux binding of a seat.
@@ -136,6 +139,7 @@ impl NamedHost {
             tmux: Mutex::new(HashMap::new()),
             turns: OnceLock::new(),
             wake_blocks: Mutex::new(HashMap::new()),
+            empty_windows: Mutex::new(HashMap::new()),
         }
     }
 
@@ -277,7 +281,7 @@ impl NamedHost {
     /// Every check before a wake is typed, per pane (rule 4): the context fence, one verified pane
     /// for the seat, a pane that delivers keys, every live top-level binding idle (a stale busy is
     /// cleared by the screen rule), a screen that does not read as a running turn (a missed Busy
-    /// edge), a recognised unblocked screen and an empty composer. Each
+    /// edge), a recognised unblocked screen and an empty composer (observed empty for one minute when the pane is focused). Each
     /// refusal is `TargetUnsafe`: the attempt is retried on the ladder, never `no_wake`.
     fn wake_gate(
         &self,
@@ -294,6 +298,12 @@ impl NamedHost {
         };
         let refuse = |detail: &str| refuse_with(WakeBlock::Unknown, detail);
         let unreadable = |detail: &str| refuse_with(WakeBlock::Unreadable, detail);
+        // Taking the sample first makes every refusal below restart the window, as in `native`.
+        let previous = self
+            .empty_windows
+            .lock()
+            .map_err(|_| refuse("composer observation lock unavailable"))?
+            .remove(&target.seat);
         if target.basis != WakeTargetBasis::CooperativeAgent {
             return Err(refuse("native execution is unverified"));
         }
@@ -377,10 +387,23 @@ impl NamedHost {
             &screen,
             Some(facts.width),
         ) {
-            ComposerRead::Empty => Ok((hint.clone(), facts.width)),
-            ComposerRead::Unreadable => Err(unreadable("composer is unreadable")),
-            _ => Err(refuse("composer is nonempty")),
+            ComposerRead::Empty => {}
+            ComposerRead::Unreadable => return Err(unreadable("composer is unreadable")),
+            _ => return Err(refuse("composer is nonempty")),
         }
+        if !focused_empty_ready(
+            &self.empty_windows,
+            self.clock.monotonic_now().0,
+            target,
+            facts.focused(),
+            previous,
+        ) {
+            return Err(refuse_with(
+                WakeBlock::Focused,
+                "focused composer has not been observed empty for one minute",
+            ));
+        }
+        Ok((hint.clone(), facts.width))
     }
 
     /// The wake: gate, ask `still_owed`, type the text literally, press Enter.
@@ -431,7 +454,7 @@ impl NamedHost {
         ))
     }
 
-    fn observation(&self, name: &SeatName) -> HostObservation {
+    fn observation(&self, name: &SeatName, focused: bool) -> HostObservation {
         let now = self.clock.monotonic_now();
         let epoch = self.epoch.load(Ordering::SeqCst);
         HostObservation {
@@ -444,7 +467,7 @@ impl NamedHost {
             provenance: ObservationProvenance::FreshCurrentTarget,
             occupant: None,
             ui: HostUiState::Unknown,
-            focused: false,
+            focused,
             terminal: Some(TerminalId::new(format!("named:{}", name.as_str()))),
             occupancy: StructuralOccupancy::Unknown,
             incarnation: IncarnationEvidence::Verified {
@@ -461,6 +484,23 @@ impl NamedHost {
             started_at_mono: now,
             completed_at_mono: now,
         }
+    }
+
+    /// Whether a live verified binding's pane is focused. With no binding there is no pane; an
+    /// unreadable pane answers false, and `wake_gate` refuses it on its own read.
+    fn pane_focused(&self, target: &HostTargetId) -> bool {
+        let hints = self
+            .live_bindings(target, |bindings| {
+                bindings
+                    .iter()
+                    .map(|held| held.hint.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        hints.iter().any(|hint| {
+            tmux::pane_facts(hint)
+                .is_some_and(|facts| facts.server_pid == hint.server_pid && facts.focused())
+        })
     }
 
     fn live(&self, budget: &CallBudget) -> Result<Vec<(SeatId, SeatName)>, ApiError> {
@@ -552,7 +592,7 @@ impl HostPort for NamedHost {
     ) -> Result<HostObservation, ApiError> {
         let name = SeatName::parse(target.as_str())
             .map_err(|_| ApiError::new(ErrorCode::NotFound, "not a seat name"))?;
-        Ok(self.observation(&name))
+        Ok(self.observation(&name, self.pane_focused(target)))
     }
     fn seat_labels(&self, budget: &CallBudget) -> Result<Vec<SeatHostLabels>, ApiError> {
         Ok(self
@@ -592,7 +632,8 @@ impl HostPort for NamedHost {
         let targets = self
             .live(&context.budget)?
             .iter()
-            .map(|(_, name)| self.observation(name))
+            // A store read must not spawn a tmux per seat, and nothing reads `focused` from a snapshot.
+            .map(|(_, name)| self.observation(name, false))
             .collect();
         Ok(HostSnapshot {
             boot: HostBootId::new(self.boot_id.clone()),

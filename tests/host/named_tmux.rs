@@ -1502,3 +1502,216 @@ fn clear_own_wake_text_leaves_a_harness_that_does_not_opt_in() {
     assert!(!rig.host.clear_own_wake_text(&safe, WAKE, &context).unwrap());
     assert_eq!(rig.keys_after_marker(), ["5a"], "no key reached the pane");
 }
+
+// ---- the focused-composer hold (A4 Wake): a focused pane needs a minute of empty samples ----
+
+/// A control-mode client attached to the private server, stdin held open until it is dropped: it
+/// raises `#{session_attached}` without a pty.
+fn attach(tmux: &PrivateTmux) -> crate::test_support::spawn::OwnedChild {
+    use crate::test_support::spawn::SpawnOwned;
+    let mut command = crate::test_support::spawn::command("tmux");
+    command
+        .arg("-S")
+        .arg(tmux.socket_path())
+        .args(["-C", "attach"])
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let client = command.spawn_owned().expect("spawn tmux -C attach");
+    wait_for(|| {
+        let out = tmux.run(&["display", "-p", "#{session_attached}"]);
+        let count: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+        (count > 0).then_some(())
+    });
+    client
+}
+
+/// Makes the rig's pane the one a client looks at: its window current, a client attached.
+fn focus(rig: &WakeRig) -> crate::test_support::spawn::OwnedChild {
+    assert!(
+        rig.tmux
+            .run(&["select-window", "-t", &rig.pane.id])
+            .status
+            .success()
+    );
+    attach(&rig.tmux)
+}
+
+/// A rig whose single idle binding is ready to be woken.
+fn idle_rig(case: &str) -> Option<WakeRig> {
+    let rig = WakeRig::new(case, "claude", IDLE, "manual mode on")?;
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    Some(rig)
+}
+
+// Kills: a focused pane woken at once (the hard-coded `focused: false`), a hold shorter than the
+// minute, and a refusal recorded as anything but the `focused` block.
+#[test]
+fn focused_pane_holds_the_wake_for_one_minute() {
+    let Some(rig) = idle_rig("focused_hold") else {
+        return;
+    };
+    let _client = focus(&rig);
+    for at in [0, 30_000] {
+        rig.clock.set(at);
+        let detail = refused(rig.attempt());
+        assert!(detail.contains("focused composer"), "{at}: {detail}");
+        assert_eq!(rig.host.wake_block(&rig.seat), Some(WakeBlock::Focused));
+        assert_eq!(rig.typed(), "", "nothing typed at {at}");
+    }
+    rig.clock.set(60_000);
+    assert_eq!(rig.attempt().unwrap(), Some(PromptOutcome::Submitted));
+    wait_for(|| (rig.typed() == format!("{WAKE}\n")).then_some(()));
+}
+
+// Kills: samples more than a minute apart counting as one continuous minute.
+#[test]
+fn focused_hold_restarts_after_a_sample_gap() {
+    let Some(rig) = idle_rig("focused_gap") else {
+        return;
+    };
+    let _client = focus(&rig);
+    for at in [0, 60_001] {
+        rig.clock.set(at);
+        refused(rig.attempt());
+    }
+    rig.clock.set(120_001);
+    assert_eq!(rig.attempt().unwrap(), Some(PromptOutcome::Submitted));
+}
+
+// Kills: the sample taken after the turn check, so an attempt refused for a busy turn keeps the
+// minute running.
+#[test]
+fn focused_hold_restarts_on_a_refused_attempt() {
+    let Some(rig) = idle_rig("focused_refusal") else {
+        return;
+    };
+    let _client = focus(&rig);
+    rig.clock.set(0);
+    refused(rig.attempt());
+    rig.clock.set(30_000);
+    rig.bindings(&busy_edges(&[TurnEdge::Busy]));
+    let detail = refused(rig.attempt());
+    assert!(!detail.contains("focused composer"), "{detail}");
+    rig.bindings(&[Some(TurnEdge::Idle)]);
+    rig.clock.set(60_000);
+    refused(rig.attempt());
+    rig.clock.set(120_000);
+    assert_eq!(rig.attempt().unwrap(), Some(PromptOutcome::Submitted));
+}
+
+// Kills: a focus that reads only the client count, or leaves out the window or the pane.
+#[test]
+fn an_attached_pane_out_of_focus_wakes_at_once() {
+    // The window is not the session's current one.
+    let Some(rig) = idle_rig("focus_other_window") else {
+        return;
+    };
+    let _client = attach(&rig.tmux);
+    let out = rig.tmux.run(&[
+        "display",
+        "-p",
+        "-t",
+        &rig.pane.id,
+        "#{window_active}#{session_attached}",
+    ]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "01");
+    assert_eq!(rig.attempt().unwrap(), Some(PromptOutcome::Submitted));
+    // The window is current but another pane of it is.
+    let Some(rig) = idle_rig("focus_other_pane") else {
+        return;
+    };
+    let _client = focus(&rig);
+    let (_, rows) = screen_size(IDLE);
+    let width = screen_size(IDLE).0 + 40;
+    for args in [
+        vec![
+            "resize-window".to_owned(),
+            "-t".to_owned(),
+            rig.pane.id.clone(),
+            "-x".to_owned(),
+            (width + 21).to_string(),
+            "-y".to_owned(),
+            rows.to_string(),
+        ],
+        vec![
+            "split-window".to_owned(),
+            "-h".to_owned(),
+            "-d".to_owned(),
+            "-l".to_owned(),
+            "20".to_owned(),
+            "-t".to_owned(),
+            rig.pane.id.clone(),
+            "sleep 600".to_owned(),
+        ],
+    ] {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        assert!(rig.tmux.run(&args).status.success(), "{args:?}");
+    }
+    let panes = rig.tmux.run(&[
+        "list-panes",
+        "-t",
+        &rig.pane.id,
+        "-F",
+        "#{pane_id} #{pane_active}",
+    ]);
+    let listing = String::from_utf8_lossy(&panes.stdout).into_owned();
+    let other = listing
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .find(|(id, _)| *id != rig.pane.id)
+        .map(|(id, _)| id.to_owned())
+        .expect("a second pane");
+    assert!(
+        rig.tmux
+            .run(&["select-pane", "-t", &other])
+            .status
+            .success()
+    );
+    let out = rig.tmux.run(&[
+        "display",
+        "-p",
+        "-t",
+        &rig.pane.id,
+        "#{pane_active}#{window_active}#{session_attached}",
+    ]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "011");
+    assert_eq!(rig.attempt().unwrap(), Some(PromptOutcome::Submitted));
+}
+
+// Kills: `#{session_attached}` parsed as a 0/1 flag, which turns two clients into an unreadable
+// pane that fails the gate with the wrong reason.
+#[test]
+fn two_attached_clients_still_read_as_focused() {
+    let Some(rig) = idle_rig("focused_two_clients") else {
+        return;
+    };
+    let _first = focus(&rig);
+    let _second = attach(&rig.tmux);
+    let out = rig.tmux.run(&["display", "-p", "#{session_attached}"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "2");
+    let detail = refused(rig.attempt());
+    assert!(detail.contains("focused composer"), "{detail}");
+    assert_eq!(rig.host.wake_block(&rig.seat), Some(WakeBlock::Focused));
+}
+
+// Kills: a hard-coded `focused` in the observation, and a focus reported for a seat with no
+// verified binding.
+#[test]
+fn observation_reports_the_panes_focus() {
+    let Some(rig) = idle_rig("focused_observation") else {
+        return;
+    };
+    let observe = |name: &str| {
+        rig.host
+            .observe_current_target(&target(name), &context())
+            .unwrap()
+            .focused
+    };
+    assert!(!observe("seat-wake"));
+    let _client = focus(&rig);
+    assert!(observe("seat-wake"));
+    assert!(!observe("no-binding"));
+}
