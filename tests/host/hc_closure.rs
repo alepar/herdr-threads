@@ -148,13 +148,9 @@ fn unreadable_state_closes_nothing() {
     let mut t = FakeTerminal::live("t1");
     t.state = "x_future_state".into();
     fake.add_terminal(t);
-    let snapshot = host(&fake).enumerate_targets(&context()).unwrap();
-    assert_eq!(
-        snapshot.enumeration,
-        EnumerationEvidence::CompleteUnverified
-    );
-    assert!(snapshot.targets.is_empty());
-    assert!(!snapshot.authorizes_absence_closure());
+    let error = host(&fake).enumerate_targets(&context()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+    assert!(format!("{error:?}").contains("cannot read"), "{error:?}");
 }
 
 #[test]

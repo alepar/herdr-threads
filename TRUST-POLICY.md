@@ -311,8 +311,11 @@ the core never revives it or reuses its id.
 | `live` with a holder | either | none, or an unknown reason | nothing |
 
 An unknown reason on a `finished` record is final (the core already decided it); on a `live` record it changes
-nothing. A record `state` other than `live` or `finished`, a failed `hello` and a failed snapshot give an unverified
-capture that closes nothing. An agent that exits inside a live shell-rooted terminal is not a terminal finish: it ends
+nothing. A record `state` other than `live` or `finished`, a reply with no usable core id, a failed `hello` and a
+failed snapshot each freeze the observation, which closes nothing and ends no binding. Accepted limit: a record
+state this build cannot read freezes observation of that whole core until an upgrade; its seats keep their state and
+messaging keeps working, the core reads unavailable in Health, and its closures wait. One unknown record is never
+evidence against every seat on the core. An agent that exits inside a live shell-rooted terminal is not a terminal finish: it ends
 only that binding and the seat stays resolved. One capture or several that reach the same final state give one
 outcome. A different core id at a known locator is a new boot: its seats get the C2 restore holds above and are never
 matched by `tN` alone, while a restart, stop+start or update of the same core id (the event sequence begins again) is

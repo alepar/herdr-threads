@@ -33,10 +33,9 @@
 //! - Lifecycle: built by `HostFactory.build(Hc, locator)` on a dialled
 //!   attach, lives as long as its `HostSession`, holds no long-lived
 //!   connection. The observation counter is per-instance mutable state.
-//! - Errors: a failed `hello` or snapshot is `Err` (the observation freezes); a reply
-//!   with no usable core id or an unreadable record is `CompleteUnverified`
-//!   (closes nothing). A
-//!   core id mismatch is a new boot (C2 holds). An RPC error before a launch
+//! - Errors: a failed `hello` or snapshot is `Err` (the observation freezes
+//!   and closes nothing), and so is a reply with no usable core id or a record
+//!   state this build cannot read. A core id mismatch is a new boot (C2 holds). An RPC error before a launch
 //!   record exists is `NotSubmitted`; `spawn_failed`, a timeout or a
 //!   disconnect is `OutcomeUnknown` (H3).
 //! - Role: Adapter (a `HostPort` impl over herdr-core's JSON-RPC).
@@ -375,18 +374,6 @@ impl HcHost {
         }))
     }
 
-    fn unverified(boot: HostBootId, epoch: u64) -> HostSnapshot {
-        HostSnapshot {
-            boot,
-            epoch,
-            observation_sequence: 0,
-            complete: false,
-            enumeration: EnumerationEvidence::CompleteUnverified,
-            incarnation: IncarnationEvidence::Unknown,
-            targets: Vec::new(),
-        }
-    }
-
     /// A present target. `terminal` is `None` for a record waiting for the
     /// core to restart it: the target is shown with no runnable terminal.
     fn target(
@@ -498,10 +485,6 @@ impl HcHost {
 
     fn unavailable(what: &str) -> ApiError {
         ApiError::host_unavailable(format!("hc host: {what} is not served yet"))
-    }
-
-    fn unknown_boot() -> HostBootId {
-        HostBootId::new("unverified-hc-host")
     }
 }
 
@@ -924,8 +907,9 @@ impl HostPort for HcHost {
     /// the present targets; a kept terminal waiting for a restart is shown
     /// with no terminal (its seat becomes unresolved); a `finished` record is
     /// absent (its seat retires through the pane-close fence). A failed
-    /// `hello` or snapshot is `Err`; a reply with no usable core id or a record
-    /// state this build cannot read is `CompleteUnverified` and closes nothing.
+    /// `hello` or snapshot is `Err`, and so is a reply with no usable core id or
+    /// a record state this build cannot read: the observation freezes and closes
+    /// nothing.
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         if context.budget.cancellation.is_cancelled() {
             return Err(ApiError::cancelled("hc enumerate_targets"));
@@ -935,12 +919,16 @@ impl HostPort for HcHost {
         // Taken before the request: an older capture carries the lower sequence.
         let sequence = self.next_observation_sequence();
         let Some(capture) = self.capture_within(&context.budget)? else {
-            return Ok(Self::unverified(Self::unknown_boot(), epoch));
+            return Err(ApiError::host_unavailable(
+                "hc: the reply carries no usable core id",
+            ));
         };
-        let boot = capture.boot.0.clone();
         if !capture.is_readable() {
-            return Ok(Self::unverified(boot, epoch));
+            return Err(ApiError::host_unavailable(
+                "hc: a record state this build cannot read",
+            ));
         }
+        let boot = capture.boot.0.clone();
         let targets = capture
             .records
             .iter()

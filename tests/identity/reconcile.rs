@@ -2693,6 +2693,7 @@ mod fake_port {
     /// unverified-but-readable capture: the real `HcHost` through `observe_and_publish`
     /// freezes, ends no binding, invalidates nothing and marks nothing. Kills: reading a
     /// failed `hello` as `CompleteUnverified`, which invalidates and marks seats unresolved.
+    /// An unreadable record state or core id freezes the same way (below).
     #[cfg(feature = "test-support")]
     #[test]
     fn refused_hc_socket_freezes_and_ends_no_binding() {
@@ -2730,6 +2731,63 @@ mod fake_port {
         assert!(state.invalidated_seats.is_empty());
         assert!(state.actions.is_empty());
         assert_eq!(state.calls, ["admit"]);
+    }
+
+    /// An hc reply this build cannot read says nothing about any seat's terminal:
+    /// the observation freezes like a failed `hello` and ends no binding.
+    #[cfg(feature = "test-support")]
+    fn frozen_by_unreadable_hc(fake: &crate::test_support::fake_hc::FakeHc) {
+        let host = crate::host::hc::HcHost::new(crate::host::hc::rpc::HcClient::new(
+            fake.socket().to_path_buf(),
+        ));
+        let store = Arc::new(FakeStore::new());
+        store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
+        let mut lane = ObservationLane::default();
+        let outcome = observe_and_publish(
+            &host,
+            store.as_ref(),
+            &mut lane,
+            "instance-a",
+            crate::test_support::test_host_id(),
+            &context(),
+            &budget(),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                ObservationOutcome::Frozen {
+                    reason: HostInvalidationReason::HostUnavailable,
+                    cause: Some(_)
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(invalidations(&store), 0);
+        let state = store.state.lock().unwrap();
+        assert!(state.invalidated_seats.is_empty());
+        assert!(state.actions.is_empty());
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn unreadable_hc_state_freezes_and_ends_no_binding() {
+        use crate::test_support::fake_hc::{FakeHc, FakeTerminal};
+        let fake = FakeHc::start();
+        let mut t = FakeTerminal::live("t1");
+        t.state = "x_future_state".into();
+        fake.add_terminal(t);
+        frozen_by_unreadable_hc(&fake);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn unusable_hc_core_id_freezes_and_ends_no_binding() {
+        use crate::test_support::fake_hc::{FakeHc, FakeTerminal};
+        let fake = FakeHc::start();
+        fake.add_terminal(FakeTerminal::live("t1"));
+        fake.rotate_core_id("");
+        frozen_by_unreadable_hc(&fake);
     }
 
     #[test]

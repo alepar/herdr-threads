@@ -243,17 +243,13 @@ fn snapshot_without_terminals_is_err_never_coherent() {
 }
 
 #[test]
-fn unusable_core_id_is_complete_unverified() {
+fn unusable_core_id_is_unavailable() {
     let (fake, host) = host_with_t1();
     fake.rotate_core_id("");
     assert!(host.capture().unwrap().is_none());
-    let snapshot = host.enumerate_targets(&context()).unwrap();
-    assert_eq!(
-        snapshot.enumeration,
-        EnumerationEvidence::CompleteUnverified
-    );
-    assert!(snapshot.targets.is_empty());
-    assert!(!snapshot.authorizes_absence_closure());
+    let error = host.enumerate_targets(&context()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+    assert!(format!("{error:?}").contains("core id"), "{error:?}");
 }
 
 #[test]
