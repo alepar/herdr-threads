@@ -20,7 +20,7 @@
 use super::{
     RunError, agent_evidence, agent_evidence_refusal,
     commands::{CliAction, CooperativeSelection, MutationSpec, ParsedCli},
-    connect, invalid_request, journal, mapping_error, pane_agent, pane_seat, parse_pane, retry,
+    connect, invalid_request, journal, mapping_error, pane_agent, pane_seat_on, parse_pane, retry,
     run_selected, seat_contexts, selected_generation,
 };
 use crate::{
@@ -200,7 +200,17 @@ pub(crate) fn run_me_init<W: Write>(
     }
     let (instance, _, client) = connect(paths, clock)?;
     let host = context.claim_host().map_err(super::context_error)?;
-    let seat = match pane_seat(&client, &parsed.output, &pane, clock.as_ref())? {
+    // Host-scoped like `resolve_seat` below: a bare `tN` would meet another core's seat.
+    let lookup_host = super::site_capability::seats_host(
+        parsed
+            .caller_site
+            .as_ref()
+            .map(super::caller_location::CallerLocator::site),
+        &client,
+        &budget(clock.as_ref(), 5_000),
+    )
+    .map_err(RunError::from)?;
+    let seat = match pane_seat_on(&client, &parsed.output, &pane, lookup_host, clock.as_ref())? {
         Some(seat) => seat,
         None => resolve_seat(&client, paths, instance, &host, &pane, clock.as_ref())?,
     };

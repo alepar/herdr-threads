@@ -259,8 +259,19 @@ pub struct HookEnv {
     /// A valid `HERDR_THREADS_SEAT_NAME`: the Named site. It replaces only the target and needs
     /// no Herdr environment (`herdr_env` and `pane` are then unused for the target).
     pub named: Option<crate::protocol::ids::SeatName>,
+    /// The Terminal site `LocateCaller` verified for a two-family caller, decided once by
+    /// [`run_admitted_hook_since`]; `None` otherwise. `pane` is then the terminal's `tN`.
+    pub terminal_site: Option<super::caller_location::CallerLocator>,
 }
 impl HookEnv {
+    /// The non-Pane site of this hook: the verified terminal, else what the environment says.
+    fn site(&self) -> Option<super::caller_location::CallerLocator> {
+        self.terminal_site.clone().or_else(|| {
+            super::caller_location::CallerEnv::from_process()
+                .non_pane_locator(super::caller_location::EnvMode::Hook)
+        })
+    }
+
     /// The hook is admitted: a Herdr pane the environment marks, or a named seat.
     pub fn located(&self) -> bool {
         self.named.is_some() || (self.herdr_env && self.pane.is_some())
@@ -287,6 +298,7 @@ impl HookEnv {
             pane: env.pane(EnvMode::Hook).or(terminal),
             ambiguous: super::caller_guard::hook_candidates(&env),
             named: env.named(),
+            terminal_site: None,
         }
     }
 }
@@ -1492,7 +1504,7 @@ fn report_parse_failure_to_daemon(
     if !env.herdr_env {
         return;
     }
-    let Ok(context) = hook_runtime_context(args) else {
+    let Ok(context) = hook_runtime_context(args, env.terminal_site.as_ref()) else {
         return;
     };
     let Ok(paths) = NodePaths::resolve(&context.state_dir) else {
@@ -1565,21 +1577,28 @@ fn find_seat(
     deadline: Instant,
     clock: &dyn Clock,
 ) -> Result<PaneSeat, Failure> {
-    find_seat_for(Harness::Claude, client, target, deadline, clock)
+    find_seat_for(
+        Harness::Claude,
+        client,
+        &HookEnv::from_process(),
+        target,
+        deadline,
+        clock,
+    )
 }
 
 /// The pane's seat as the invoking hook's `harness` sees it.
 fn find_seat_for(
     harness: Harness,
     client: &dyn LocalClient,
+    env: &HookEnv,
     target: &HostTargetId,
     deadline: Instant,
     clock: &dyn Clock,
 ) -> Result<PaneSeat, Failure> {
     // A named seat's or terminal's lookup is host-scoped (F9), behind `seat.host_sites_v1` /
     // `seat.terminal_sites_v1` (M13).
-    let site = super::caller_location::CallerEnv::from_process()
-        .non_pane_locator(super::caller_location::EnvMode::Hook);
+    let site = env.site();
     let host = super::site_capability::seats_host(
         site.as_ref()
             .map(super::caller_location::CallerLocator::site),
@@ -1655,12 +1674,13 @@ fn find_seat_for(
 fn locate_seat_for(
     harness: Harness,
     client: &dyn LocalClient,
+    env: &HookEnv,
     context: &RuntimeContext,
     target: &mut HostTargetId,
     deadline: Instant,
     clock: &Arc<dyn Clock>,
 ) -> Result<PaneSeat, Failure> {
-    let seat = find_seat_for(harness, client, target, deadline, clock.as_ref())?;
+    let seat = find_seat_for(harness, client, env, target, deadline, clock.as_ref())?;
     if !matches!(seat, PaneSeat::Unowned) {
         return Ok(seat);
     }
@@ -1670,11 +1690,7 @@ fn locate_seat_for(
     };
     // The reserved named host is never dialled; a named target does not move, and a terminal
     // id (a herdr-core socket, not a Herdr server) is stable.
-    if endpoint == Path::new(crate::protocol::ids::NAMED_HOST_LOCATOR)
-        || super::caller_location::CallerEnv::from_process()
-            .non_pane_locator(super::caller_location::EnvMode::Hook)
-            .is_some()
-    {
+    if endpoint == Path::new(crate::protocol::ids::NAMED_HOST_LOCATOR) || env.site().is_some() {
         return Ok(seat);
     }
     let host = crate::host::native::NativeCli::new(endpoint.to_path_buf(), Arc::clone(clock));
@@ -1684,7 +1700,7 @@ fn locate_seat_for(
         return Ok(seat);
     };
     *target = now;
-    find_seat_for(harness, client, target, deadline, clock.as_ref())
+    find_seat_for(harness, client, env, target, deadline, clock.as_ref())
 }
 
 fn pending_event(pending: &PendingCheckIn) -> LifecycleEvent {
@@ -1844,8 +1860,8 @@ fn connect_pane(
         .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
     let target = HostTargetId::parse(pane)
         .map_err(|_| Failure::Quiet("HERDR_PANE_ID is not a valid target".into()))?;
-    let context =
-        hook_runtime_context(args).map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
+    let context = hook_runtime_context(args, env.terminal_site.as_ref())
+        .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
     // A hook claim binds a pane of the claim host's Herdr server.
     context
         .require_host()
@@ -1905,6 +1921,7 @@ fn enroll_pane(
     if let PaneSeat::HeldOrUnresolved(detail) = locate_seat_for(
         args.harness,
         &client,
+        env,
         &context,
         &mut target,
         deadline,
@@ -1925,7 +1942,14 @@ fn enroll_pane(
     )
     .map_err(|e| api_failure("seat enrollment", &e))?;
     // Operation replay is historical, never current mapping authority.
-    match find_seat_for(args.harness, &client, &target, deadline, clock.as_ref())? {
+    match find_seat_for(
+        args.harness,
+        &client,
+        env,
+        &target,
+        deadline,
+        clock.as_ref(),
+    )? {
         PaneSeat::Resolved(current, _) if current == resolved => Ok(current),
         _ => Err(Failure::Unavailable(
             "enrolled seat mapping changed; retry".into(),
@@ -1967,6 +1991,7 @@ fn check_in(
     let located = locate_seat_for(
         event.harness,
         &client,
+        env,
         &context,
         &mut target,
         deadline,
@@ -2098,7 +2123,14 @@ fn check_in(
         )
         .map_err(|e| api_failure("seat enrollment", &e))?;
         // Operation replay is historical, never current mapping authority.
-        match find_seat_for(event.harness, &client, &target, deadline, clock.as_ref())? {
+        match find_seat_for(
+            event.harness,
+            &client,
+            env,
+            &target,
+            deadline,
+            clock.as_ref(),
+        )? {
             PaneSeat::Resolved(current, generation) if current == resolved => (current, generation),
             _ => {
                 return Err(Failure::Unavailable(
@@ -3640,7 +3672,8 @@ fn adapter_state_dir(
     registration: &Registration,
     create: bool,
 ) -> Option<PathBuf> {
-    let context = hook_runtime_context(args).ok()?;
+    // Only the state directory is read, which the claim host does not change.
+    let context = hook_runtime_context(args, None).ok()?;
     let node_dir = crate::daemon::paths::node_dir(&context.state_dir);
     let dir = node_dir
         .join("adapter-state")
@@ -3692,7 +3725,10 @@ fn run_hook_step(
             )
         })
         .and_then(|context| {
-            let host = hook_runtime_context(args).ok()?.claim_host().ok()?;
+            let host = hook_runtime_context(args, env.terminal_site.as_ref())
+                .ok()?
+                .claim_host()
+                .ok()?;
             bridge::caller_claim(&context, host).ok()
         })
         .map(|mut claim| {
@@ -3701,7 +3737,7 @@ fn run_hook_step(
             claim.liveness = hook_fingerprint(harness).ok();
             claim
         });
-    let connected = hook_runtime_context(args)
+    let connected = hook_runtime_context(args, env.terminal_site.as_ref())
         .ok()
         .and_then(|context| NodePaths::resolve_read_only(&context.state_dir).ok())
         .and_then(|paths| connect_existing(&paths, Arc::new(SystemClock::new())).ok())
@@ -3809,7 +3845,8 @@ fn quiet_outcome(detail: String) -> HookOutcome {
     }
 }
 fn child_endpoint_available(args: &HookArgs) -> bool {
-    let Ok(context) = hook_runtime_context(args) else {
+    // Only the state directory is read, which the claim host does not change.
+    let Ok(context) = hook_runtime_context(args, None) else {
         return false;
     };
     let Ok(paths) = NodePaths::resolve(&context.state_dir) else {
@@ -3831,7 +3868,7 @@ fn pane_context_journal(
     clock: &dyn Clock,
 ) -> Option<(crate::harness::context::ContextJournal, OccupantContext)> {
     let target = env.target()?;
-    let context = hook_runtime_context(args).ok()?;
+    let context = hook_runtime_context(args, env.terminal_site.as_ref()).ok()?;
     let paths = NodePaths::resolve_read_only(&context.state_dir).ok()?;
     let instance = read_node_uuid_hint(&paths).ok()??;
     let entries = std::fs::read_dir(paths.node_dir.join("contexts")).ok()?;
@@ -3921,6 +3958,7 @@ fn report_binding_event(
     let (seat, generation) = match locate_seat_for(
         args.harness,
         &client,
+        env,
         &runtime,
         &mut target,
         deadline,
@@ -3993,41 +4031,49 @@ fn report_binding_event(
 }
 
 /// The two-family guard of one hook: the daemon verifies which family runs this process before
-/// the hook binds to anything. `Ok(None)`: the Herdr pane verified, carry on. `Ok(Some)`: the
-/// terminal verified: the scope makes every environment read this thread does the lone
-/// Terminal site's, and the string is its `tN`. `Err`: no seat binds and nothing is injected; the hook exits 0, with M4 as
-/// its one stderr diagnostic.
-#[allow(clippy::too_many_arguments)]
+/// the hook binds to anything. An unreachable or older daemon is an unverified caller.
 fn two_family_guard(
     args: &HookArgs,
-    decoded: &DecodedEvent,
     env: &HookEnv,
     candidates: &[super::caller_location::CallerLocator],
     deadline: Instant,
     clock: &Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
-) -> Result<Option<(super::caller_location::VerifiedTerminalScope, String)>, Box<HookOutcome>> {
-    use super::caller_guard::{Guard, unasked, verify};
-    let guard = match connect_pane(args, env, deadline, clock, ensure_executable) {
+) -> super::caller_guard::Guard {
+    use super::caller_guard::{unasked, verify};
+    match connect_pane(args, env, deadline, clock, ensure_executable) {
         Ok(connected) => verify(
             &connected.client,
             candidates,
             &budget(deadline, clock.as_ref()),
         ),
         Err(_) => unasked(candidates),
-    };
-    let top_level = matches!(decoded.role, EventRole::TopLevel);
+    }
+}
+
+/// The one decision of a hook about who its caller is, from the guard's answer. `Ok(None)`: the
+/// Herdr pane verified, `env` stands. `Ok(Some)`: the terminal verified, and the returned env is
+/// the swapped one every later use takes (the terminal's `tN` as target, its site, no ambiguity),
+/// the turn edge included. `Err`: no seat binds and nothing is injected, so no turn is reported
+/// either; the hook exits 0, with M4 as its one stderr diagnostic.
+fn caller_env(
+    env: &HookEnv,
+    decoded: &DecodedEvent,
+    guard: super::caller_guard::Guard,
+) -> Result<Option<HookEnv>, Box<HookOutcome>> {
+    use super::caller_guard::Guard;
     match guard {
         Guard::Pane(_) => Ok(None),
-        Guard::Terminal(terminal) => Ok(Some((
-            super::caller_location::enter_verified_terminal(),
-            terminal
-                .site()
-                .moved_target()
-                .map_or_else(String::new, str::to_owned),
-        ))),
+        // The terminal is the host target, and its core the claim host.
+        Guard::Terminal(terminal) => Ok(Some(HookEnv {
+            herdr_env: true,
+            pane: terminal.site().moved_target().map(str::to_owned),
+            ambiguous: None,
+            named: env.named.clone(),
+            terminal_site: Some(terminal),
+        })),
         Guard::Refused(refusal) => Err(Box::new(HookOutcome {
-            diagnostic: top_level.then(|| refusal.m4()),
+            diagnostic: matches!(decoded.role, EventRole::TopLevel).then(|| refusal.m4()),
             ..HookOutcome::default()
         })),
     }
@@ -4076,6 +4122,25 @@ fn run_admitted_hook_since(
     clock: Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> HookOutcome {
+    let bounded = match admitted_deadline(registration, admitted, decoded, &clock, env, deadline) {
+        Ok(bounded) => bounded,
+        Err(outcome) => return *outcome,
+    };
+    // The one decision of this hook: a two-family caller is verified here, once, and the swapped
+    // env (the terminal's `tN` and site) goes to every later use, the turn edge included.
+    let verified;
+    let mut env = env;
+    if let Some(candidates) = &env.ambiguous {
+        let guard = two_family_guard(args, env, candidates, bounded, &clock, ensure_executable);
+        match caller_env(env, decoded, guard) {
+            Ok(Some(swapped)) => {
+                verified = swapped;
+                env = &verified;
+            }
+            Ok(None) => {}
+            Err(outcome) => return *outcome,
+        }
+    }
     let outcome = admitted_hook_outcome(
         args,
         registration,
@@ -4083,7 +4148,7 @@ fn run_admitted_hook_since(
         decoded,
         input,
         env,
-        deadline,
+        bounded,
         started,
         watchdog,
         Arc::clone(&clock),
@@ -4113,7 +4178,6 @@ fn report_turn_edge(
     deadline: Instant,
     clock: &Arc<dyn Clock>,
 ) -> Result<(), Failure> {
-    use crate::protocol::commands::TurnStateReport;
     let Connected {
         context: runtime,
         instance,
@@ -4121,6 +4185,36 @@ fn report_turn_edge(
         client,
         ..
     } = connect_pane(args, env, deadline, clock, None)?;
+    report_turn_edge_on(
+        &client,
+        &runtime,
+        instance,
+        &mut target,
+        args,
+        decoded,
+        edge,
+        env,
+        deadline,
+        clock,
+    )
+}
+
+/// [`report_turn_edge`] after the connection: `env` is the one the hook decided, so a verified
+/// terminal's turn is reported against the terminal's seat on its core.
+#[allow(clippy::too_many_arguments)]
+fn report_turn_edge_on(
+    client: &dyn LocalClient,
+    runtime: &RuntimeContext,
+    instance: crate::node::NodeUuid,
+    target: &mut HostTargetId,
+    args: &HookArgs,
+    decoded: &DecodedEvent,
+    edge: crate::harness::adapter::TurnEdge,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: &Arc<dyn Clock>,
+) -> Result<(), Failure> {
+    use crate::protocol::commands::TurnStateReport;
     if !client.supports_capability(
         crate::protocol::capabilities::TURN_STATE_EDGE,
         &budget(deadline, clock.as_ref()),
@@ -4130,17 +4224,11 @@ fn report_turn_edge(
     let pane = env
         .target()
         .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
-    let (seat, generation) = match locate_seat_for(
-        args.harness,
-        &client,
-        &runtime,
-        &mut target,
-        deadline,
-        clock,
-    )? {
-        PaneSeat::Resolved(seat, generation) => (seat, generation),
-        other => return Err(other.refusal(pane)),
-    };
+    let (seat, generation) =
+        match locate_seat_for(args.harness, client, env, runtime, target, deadline, clock)? {
+            PaneSeat::Resolved(seat, generation) => (seat, generation),
+            other => return Err(other.refusal(pane)),
+        };
     let invalid = |what: &str| Failure::Quiet(format!("turn edge: invalid {what}"));
     let session = decoded
         .native_session
@@ -4180,22 +4268,19 @@ fn report_turn_edge(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn admitted_hook_outcome(
-    args: &HookArgs,
+/// What an admitted hook may spend before anything binds: validates the event, bounds the
+/// deadline by the event's, the native callback's and the qualified turn's budgets, and checks
+/// the environment locates a seat. The refusal is the hook's quiet outcome.
+fn admitted_deadline(
     registration: &'static Registration,
     admitted: &AdmittedHandle,
     decoded: &DecodedEvent,
-    input: Option<&HookInput>,
+    clock: &Arc<dyn Clock>,
     env: &HookEnv,
     deadline: Instant,
-    started: Instant,
-    watchdog: Option<Arc<AtomicU64>>,
-    clock: Arc<dyn Clock>,
-    ensure_executable: Option<&Path>,
-) -> HookOutcome {
+) -> Result<Instant, Box<HookOutcome>> {
     if let Err(error) = registration.validate_event(admitted, decoded) {
-        return quiet_outcome(error.to_string());
+        return Err(Box::new(quiet_outcome(error.to_string())));
     }
     // Every bound of this run is measured on the injected clock: the host's in production, a
     // fixture's in tests (so host load cannot spend a simulated callback's budget).
@@ -4210,7 +4295,7 @@ fn admitted_hook_outcome(
         if let Some(order) = &turn.ordering {
             let now = clock.utc_now().0;
             if let Err(error) = order.validate_deadline(now) {
-                return quiet_outcome(format!("observation: {error:?}"));
+                return Err(Box::new(quiet_outcome(format!("observation: {error:?}"))));
             }
             let remaining =
                 order.observed_at_millis + i64::from(order.callback_budget_millis) - now;
@@ -4222,41 +4307,34 @@ fn admitted_hook_outcome(
         deadline
     };
     if deadline <= clock.instant_now() {
-        return quiet_outcome("hook callback budget expired".into());
+        return Err(Box::new(quiet_outcome(
+            "hook callback budget expired".into(),
+        )));
     }
     if !env.located() {
-        return quiet_outcome("not running inside a Herdr pane".into());
+        return Err(Box::new(quiet_outcome(
+            "not running inside a Herdr pane".into(),
+        )));
     }
-    let verified_env;
-    let mut env = env;
-    let _verified_terminal = match &env.ambiguous {
-        Some(candidates) => {
-            match two_family_guard(
-                args,
-                decoded,
-                env,
-                candidates,
-                deadline,
-                &clock,
-                ensure_executable,
-            ) {
-                Ok(scope) => scope,
-                Err(outcome) => return *outcome,
-            }
-        }
-        None => None,
-    };
-    if let Some((_, terminal)) = &_verified_terminal {
-        // The terminal verified: it is the host target, and the claim host (read through the
-        // scope) is its core.
-        verified_env = HookEnv {
-            herdr_env: true,
-            pane: Some(terminal.clone()),
-            ambiguous: None,
-            named: env.named.clone(),
-        };
-        env = &verified_env;
-    }
+    Ok(deadline)
+}
+
+/// The hook after the caller is decided: `env` is the swapped env of a verified terminal, and
+/// `deadline` the bounded one of [`admitted_deadline`].
+#[allow(clippy::too_many_arguments)]
+fn admitted_hook_outcome(
+    args: &HookArgs,
+    registration: &'static Registration,
+    admitted: &AdmittedHandle,
+    decoded: &DecodedEvent,
+    input: Option<&HookInput>,
+    env: &HookEnv,
+    deadline: Instant,
+    started: Instant,
+    watchdog: Option<Arc<AtomicU64>>,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> HookOutcome {
     if matches!(decoded.intent, EventIntent::DeclaredReset(_)) {
         record_observer_reset(args, decoded, env, deadline, clock.as_ref());
         return HookOutcome::default();
@@ -4599,7 +4677,18 @@ fn same_endpoint(a: &Path, b: &Path) -> bool {
 /// The runtime context a hook serves: the node from the argv or environment, the claim host from
 /// the calling pane (`HERDR_SOCKET_PATH`) before the installed argv's `--host-endpoint`
 /// ([`super::instance::claim_host`]).
-fn hook_runtime_context(args: &HookArgs) -> io::Result<RuntimeContext> {
+fn hook_runtime_context(
+    args: &HookArgs,
+    terminal: Option<&super::caller_location::CallerLocator>,
+) -> io::Result<RuntimeContext> {
+    if let Some(terminal) = terminal {
+        // A two-family caller whose terminal verified: its core is the claim host, ahead of the
+        // Herdr server the environment also names.
+        return hook_runtime_context_with(
+            args,
+            terminal.site().claim_host_locator().map(PathBuf::from),
+        );
+    }
     hook_runtime_context_in(
         args,
         &super::caller_location::CallerEnv::from_process(),

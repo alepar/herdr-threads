@@ -31,15 +31,19 @@ impl Write for ForwardWriter<'_> {
     }
 }
 
-fn runtime(output: &OutputSpec) -> Result<RuntimeContext, RunError> {
+fn runtime(
+    output: &OutputSpec,
+    site: Option<&super::caller_location::CallerLocator>,
+) -> Result<RuntimeContext, RunError> {
     Ok(
-        super::instance::resolve_context(&super::instance::InstanceInputs::from_process(
+        super::instance::resolve_context(&super::instance::InstanceInputs::for_site(
             output
                 .context
                 .state_dir
                 .as_ref()
                 .map(std::path::PathBuf::from),
             output.context.host.as_ref().map(std::path::PathBuf::from),
+            site,
         ))?
         .0,
     )
@@ -607,7 +611,8 @@ pub(crate) fn run(
     let mut sink = ForwardWriter(writer);
     let writer = &mut sink;
     let clock: Arc<dyn Clock> = Arc::new(super::SystemClock::new());
-    let selected = runtime(&parsed.output)?;
+    let site = parsed.caller_site.clone();
+    let selected = runtime(&parsed.output, site.as_ref())?;
     let (instance, _, client) = super::connect(paths, &clock)?;
     agent_claim(&claim)?;
     if let Some(endpoint) = target_endpoint(&parsed, journal)? {
@@ -649,7 +654,7 @@ pub(crate) fn run(
                 .ok_or_else(|| super::invalid_request("invalid bootstrap harness"))?;
             let options =
                 super::launch::native_options_env(registry, harness)?.and_then(std::env::var_os);
-            let mut env = super::setup::SetupEnv::from_process(&output)?;
+            let mut env = super::setup::SetupEnv::from_process(&output, site.as_ref())?;
             env.cwd = request.cwd.clone().unwrap_or_else(|| cwd.clone());
             env.state_dir = Some(selected.state_dir.clone());
             env.host_endpoint = Some(ns.host_endpoint.clone());
@@ -822,7 +827,7 @@ pub(crate) fn run(
             // full frozen Root append input before allocating durable/native work.
             // The new target does not exist yet; input-only preparation never
             // resolves it. Canonical target admission remains after creation.
-            let mut env = super::setup::SetupEnv::from_process(&output)?;
+            let mut env = super::setup::SetupEnv::from_process(&output, site.as_ref())?;
             env.cwd = identity.payload.cwd.clone();
             env.state_dir = Some(selected.state_dir.clone());
             env.host_endpoint = Some(ns.host_endpoint.clone());
@@ -938,7 +943,7 @@ pub(crate) fn run(
                             .clone(),
                     },
                 );
-                let mut env = super::setup::SetupEnv::from_process(&output)?;
+                let mut env = super::setup::SetupEnv::from_process(&output, site.as_ref())?;
                 env.cwd = identity.plan.payload.cwd.clone();
                 env.state_dir = Some(selected.state_dir.clone());
                 env.host_endpoint = Some(ns.host_endpoint.clone());
@@ -1111,7 +1116,7 @@ pub(crate) fn run(
             expected_boot: None,
             expected_epoch: None,
         };
-        let env = super::setup::SetupEnv::from_process(&output)?;
+        let env = super::setup::SetupEnv::from_process(&output, site.as_ref())?;
         Ok(Ok((witness, submission_context, env)))
     })();
     let (witness, submission_context, mut env) = match continuation {

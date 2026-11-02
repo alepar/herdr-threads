@@ -102,6 +102,24 @@ impl Fixture {
 
     /// Pane-form allocation of `pane` through the shared ordinary recipe.
     fn allocate(&mut self, pane: &str, operation: &str) -> Result<CommandResult, ApiError> {
+        self.allocate_on(self.host, pane, operation)
+    }
+
+    /// A herdr-core host at `socket`.
+    fn core(&mut self, socket: &str) -> HostId {
+        let locator = HostLocator::parse(socket).unwrap();
+        crate::store::hosts::attach_host(&mut self.conn, &locator, 0, HostKind::Hc)
+            .unwrap()
+            .0
+    }
+
+    /// [`Self::allocate`] on `host`.
+    fn allocate_on(
+        &mut self,
+        host: HostId,
+        pane: &str,
+        operation: &str,
+    ) -> Result<CommandResult, ApiError> {
         let target = HostTargetId::new(pane);
         let proof = DurableStructuralProof::from_persisted(
             target.clone(),
@@ -115,7 +133,6 @@ impl Fixture {
             1,
         )
         .unwrap();
-        let host = self.host;
         schema::execute_idempotent_transaction(
             &self.context,
             &mut self.conn,
@@ -180,4 +197,31 @@ fn ended_binding_or_retired_seat_no_longer_refuses() {
         )
         .unwrap();
     assert!(g.allocate("w1:p2", "alloc-1").is_ok(), "retired seat");
+}
+
+// Kills: M10 comparing the bare allocation target `tN` with a stored hint that a terminal writes
+// as `<stem>:tN`, so it never fires for a named seat in a herdr-core terminal.
+#[test]
+fn terminal_hint_refuses_allocation_on_its_core() {
+    let mut f = fixture();
+    f.named_seat_on("/run/cores/alpha.sock:t1");
+    let alpha = f.core("/run/cores/alpha.sock");
+    let refused = f.allocate_on(alpha, "t1", "alloc-1").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::TargetAlreadyOwned);
+    assert_eq!(
+        refused.detail,
+        "pane t1 runs named seat reviewer; address it by name"
+    );
+}
+
+// Kills: M10 matching the terminal by target alone, which refuses the same `tN` of another core.
+#[test]
+fn same_tn_on_another_core_still_allocates() {
+    let mut f = fixture();
+    f.named_seat_on("/run/cores/alpha.sock:t1");
+    let beta = f.core("/run/cores/beta.sock");
+    assert!(
+        f.allocate_on(beta, "t1", "alloc-1").is_ok(),
+        "t1 of core beta is not the named seat's terminal"
+    );
 }

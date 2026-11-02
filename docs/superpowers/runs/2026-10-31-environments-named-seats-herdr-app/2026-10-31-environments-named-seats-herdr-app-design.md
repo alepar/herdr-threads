@@ -490,7 +490,10 @@ retirement on heuristics.
 - Auto-creation happens only on seat-acting calls (hooks, send, join, ack), never on reads. Creation prints
   M8. A read (`inbox`, `seat list`, `thread show`) with an unknown name creates nothing.
 - Pane-form allocation of a pane whose current named binding hinted that pane is refused with
-  M10 (SA9).
+  M10 (SA9). M10 compares host plus target: a Herdr pane's hint is the bare pane id and a herdr-core
+  terminal's is `<socket stem>:<tN>`, built from the allocation's host endpoint. Accepted limit: hints store
+  the socket's stem, so two cores with one stem share the form, and the outcome is M10 naming a live seat,
+  never a wrong bind.
 - Handoff into a named seat is refused by the port answer with M11. Handoff out of a named seat into a Herdr pane
   works when a Herdr host is reachable: the Herdr endpoint resolves lazily for non-Pane sites (SA1). The same shared
   point serves every other path that addresses a Herdr server from a non-Pane site (launch, `launch --new-tab`,

@@ -370,15 +370,19 @@ pub fn default_config_roots(
 }
 
 impl SetupEnv {
-    pub(crate) fn from_process(output: &OutputSpec) -> Result<Self, RunError> {
+    pub(crate) fn from_process(
+        output: &OutputSpec,
+        site: Option<&super::caller_location::CallerLocator>,
+    ) -> Result<Self, RunError> {
         let executable = std::env::current_exe()?.canonicalize()?;
         let path = std::env::var_os("PATH");
         let cwd = std::env::current_dir()?;
         let declared_environment =
             capture_declared_environment(crate::harness::registry::builtins());
-        let mut inputs = super::instance::InstanceInputs::from_process(
+        let mut inputs = super::instance::InstanceInputs::for_site(
             output.context.state_dir.as_ref().map(PathBuf::from),
             output.context.host.as_ref().map(PathBuf::from),
+            site,
         );
         inputs.herdr = hook::resolve_on_path("herdr", path.as_deref());
         let mut source = serde_json::Map::new();
@@ -532,10 +536,11 @@ impl SetupEnv {
 pub fn run<W: Write>(
     request: &SetupRequest,
     output: &OutputSpec,
+    site: Option<&super::caller_location::CallerLocator>,
     writer: &mut W,
 ) -> Result<(), RunError> {
     let _backups = crate::harness::setup::BackupSession::start();
-    let env = SetupEnv::from_process(output)?;
+    let env = SetupEnv::from_process(output, site)?;
     let mut report = execute(request, &env)?;
     if request.verb == SetupVerb::Install
         && (request.prompt_suggestions == PromptSuggestionPolicy::Ask
@@ -805,10 +810,11 @@ pub fn run_all<W: Write>(
     permissions: PermissionPolicy,
     pane_env: PaneEnvPolicy,
     output: &OutputSpec,
+    site: Option<&super::caller_location::CallerLocator>,
     writer: &mut W,
 ) -> Result<(), RunError> {
     let _backups = crate::harness::setup::BackupSession::start();
-    let env = SetupEnv::from_process(output)?;
+    let env = SetupEnv::from_process(output, site)?;
     let mut report = execute_all(verb, prompt_suggestions, permissions, pane_env, &env)?;
     if verb == SetupVerb::Install
         && (prompt_suggestions == PromptSuggestionPolicy::Ask

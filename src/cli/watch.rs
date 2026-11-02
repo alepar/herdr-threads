@@ -1136,8 +1136,7 @@ where
     let _origin = super::caller::ActiveGuard::enter(origin.clone());
     // A named seat's watch locates the seat its hook enrolled: `watch` never allocates, so an
     // unknown name is "no binding" before the (resolving) selection runs.
-    let site = super::caller_location::CallerEnv::from_process()
-        .non_pane_locator(super::caller_location::EnvMode::Cli);
+    let site = parsed.caller_site.clone();
     let named = site
         .as_ref()
         .filter(|site| matches!(site, super::caller_location::CallerLocator::Named(_)));

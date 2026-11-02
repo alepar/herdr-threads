@@ -86,7 +86,8 @@ pub fn verify(
 /// The pane a CLI call acts from. One family (or none) is used as is and the daemon is
 /// never asked; an `Ambiguous` caller goes through `verify_with`. When nothing verifies
 /// `report` receives M4 and no pane is returned (nothing binds); a verified terminal returns no
-/// pane here: the caller reads as that lone Terminal site (`enter_verified_terminal`).
+/// pane here: the entry point swaps the env once (`CallerEnv::verified_terminal`) and the caller reads
+/// as that lone Terminal site from then on.
 pub fn cli_pane(
     env: &CallerEnv,
     verify_with: impl FnOnce(&[CallerLocator]) -> Guard,

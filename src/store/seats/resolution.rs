@@ -659,7 +659,15 @@ pub(crate) fn ordinary_resolution_apply(
     if let Some(seat) = owner {
         return Ok((CommandResult::SeatResolved(SeatId::new(seat)), false));
     }
-    refuse_named_seat_pane(tx, target)?;
+    let endpoint: Option<String> = tx
+        .query_row(
+            "SELECT endpoint FROM herdr_hosts WHERE host_id=?1",
+            [host.get()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    refuse_named_seat_pane(tx, endpoint.as_deref(), target)?;
     // TRUST-POLICY C1, moved panes: the observed terminal already belongs to a
     // resolved seat at another target in this Herdr boot and incarnation, so
     // the pane moved (a new id after a move to another workspace) and the
@@ -696,13 +704,26 @@ pub(crate) fn ordinary_resolution_apply(
 /// (`occupant_bindings.locator_hint`) runs a named agent, so pane-form allocation must not mint a
 /// second, ordinary seat for it. The hint is a hint, never authority: it only refuses an
 /// allocation, and the refusal names the seat so the caller addresses it by name.
-fn refuse_named_seat_pane(tx: &Transaction<'_>, pane: &HostTargetId) -> Result<(), ApiError> {
+///
+/// It compares host plus target. A Herdr pane's hint is the bare pane id; a herdr-core terminal's
+/// is `<stem>:<tN>` (see [`stored_hint`]), so the allocation's host endpoint builds that second
+/// form and a `t1` of another core never matches. Accepted limit: hints store the socket's file
+/// stem, so two cores with one stem share the form, and the outcome is M10 naming a live seat,
+/// never a wrong bind.
+fn refuse_named_seat_pane(
+    tx: &Transaction<'_>,
+    host_endpoint: Option<&str>,
+    pane: &HostTargetId,
+) -> Result<(), ApiError> {
+    let terminal_form = host_endpoint
+        .and_then(|endpoint| stored_hint(&format!("{endpoint}:{}", pane.as_str())))
+        .unwrap_or_else(|| pane.as_str().to_owned());
     let name: Option<String> = tx
         .query_row(
             "SELECT s.name FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
-             WHERE b.locator_hint=?1 AND b.ended_at IS NULL AND b.role='top_level' \
+             WHERE b.locator_hint IN (?1, ?2) AND b.ended_at IS NULL AND b.role='top_level' \
              AND s.name IS NOT NULL AND s.state<>'retired' ORDER BY b.ordinal DESC LIMIT 1",
-            [pane.as_str()],
+            [pane.as_str(), terminal_form.as_str()],
             |r| r.get(0),
         )
         .optional()

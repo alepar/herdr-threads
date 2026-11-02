@@ -102,6 +102,22 @@ impl InstanceInputs {
         }
     }
 
+    /// [`Self::from_process`] as the caller site the entry point decided: a verified terminal of
+    /// a two-family caller reads as that lone Terminal site. `None` keeps the environment's own
+    /// reading.
+    pub(crate) fn for_site(
+        state_flag: Option<PathBuf>,
+        host_flag: Option<PathBuf>,
+        site: Option<&super::caller_location::CallerLocator>,
+    ) -> Self {
+        let mut inputs = Self::from_process(state_flag, host_flag);
+        if let Some(site) = site {
+            inputs.non_pane_site = true;
+            inputs.site_host = site.site().claim_host_locator().map(PathBuf::from);
+        }
+        inputs
+    }
+
     /// A Herdr is configured for this process: a pane or session env, or a named server.
     fn herdr_configured(&self) -> bool {
         self.herdr_env || self.non_default_server
