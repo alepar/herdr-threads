@@ -3041,6 +3041,7 @@ authorizes nothing and records nothing. `handoff --new-tab --space`, `--new-term
 (core found by `HcDiscovery`, which only says `hello`; `hc` is never run) take the automatic V3 path only: `--thread`
 and `--new-thread` into a herdr-core target are refused before any creation, and an in-place launch into `tN` is
 refused by the host's `native_launch_capability() == Unsupported`.
+The gate runs the harness under the launching caller's config root, frozen in a handoff's plan; the adapter's root variables are scrubbed, so an autostarted core's root never wins. A peer plan carries no root: the harness runs on the peer user's default root.
 
 Launch closure is the terminal's finality (H3-launch-final). The gate shim `exec`s the harness as the terminal's root, and
 every launch is `keep: false`, so the harness exiting finishes the terminal for good and the D10 row "`finished`, `keep`

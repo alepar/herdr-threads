@@ -370,6 +370,24 @@ fn leaked_claude_config_dir_cannot_win() {
     fs::remove_dir_all(&run.out).unwrap();
 }
 
+// Kills: an adapter that leaves its config-root variable out of `child_scrub_vars`, so an
+// autostarted core's root reaches a launch whose plan carries no `--config-root` (a peer
+// launch). `HOME` stays: core and caller share one user's home.
+#[test]
+fn prepare_removes_every_adapter_root_variable() {
+    let ambient = ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "HOME"].map(OsString::from);
+    let command = prepare(&["/bin/true".to_owned()], &[], ambient).unwrap();
+    let removed: Vec<_> = command
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    for root in ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME"] {
+        assert!(removed.contains(&OsString::from(root)), "{root}");
+    }
+    assert!(!removed.contains(&OsString::from("HOME")));
+}
+
 #[test]
 fn keeps_hc_terminal_id_socket_and_scope() {
     let run = run_gate("authorize", "hc", LEAKED);

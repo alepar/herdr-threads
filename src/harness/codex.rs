@@ -1453,6 +1453,9 @@ fn caller_session(session: &str, env: &dyn Fn(&str) -> Option<String>) -> Caller
 }
 
 impl HarnessAdapter for CodexAdapter {
+    fn child_scrub_vars(&self) -> &'static [&'static str] {
+        &["CODEX_HOME"]
+    }
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
         if provenance == Some(crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE) {
             crate::notification::policy::WAKE_UP

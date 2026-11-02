@@ -94,7 +94,7 @@ pub(super) fn run<W: Write>(
         Some(target) => on_core(
             request,
             target,
-            registration.metadata().id,
+            registration,
             context,
             paths,
             clock,
@@ -210,7 +210,7 @@ fn on_herdr<W: Write>(
 fn on_core<W: Write>(
     request: &LaunchNew,
     target: super::topology_handoff::TargetSelection,
-    harness_id: &'static str,
+    registration: &'static crate::harness::registry::Registration,
     context: &RuntimeContext,
     paths: &NodePaths,
     clock: &Arc<dyn Clock>,
@@ -222,6 +222,7 @@ fn on_core<W: Write>(
             "--harness-binary and --name are not supported for a launch onto a herdr-core",
         ));
     }
+    let harness_id = registration.metadata().id;
     let (_, _, client) = super::connect(paths, clock)?;
     let call_budget = || super::cooperative_budget(clock.as_ref());
     if !client.supports_capability(LOCAL_LAUNCH_GATE_V1, &call_budget()) {
@@ -256,12 +257,21 @@ fn on_core<W: Write>(
         argv: request.launch.argv.clone(),
         cwd: None,
     };
+    // The launching caller's own root: the core may have been autostarted under another profile.
+    let config_root =
+        crate::harness::launch::caller_config_root(registration, |name| std::env::var_os(name))?;
+    if config_root.as_deref().is_some_and(|dir| !dir.is_dir()) {
+        return Err(invalid_request(
+            "selected launch directory disappeared or is not a directory",
+        ));
+    }
     let gate_argv = crate::service::peer_launcher::gate_argv(
         &std::env::current_exe()?,
         &context.state_dir,
         id.as_str(),
         &plan,
         std::env::var_os("PATH").as_deref(),
+        config_root.as_deref(),
     )
     .map_err(|why| invalid_request(&why))?;
     let host = HostLocator::parse(

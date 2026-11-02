@@ -669,13 +669,16 @@ pub fn target_args(
 /// `<program> --state-dir <dir> internal launch-gate --bootstrap <request>:1 -- <executable>
 /// <host args> <plan.argv>`. The executable is resolved on `path` from the plan's kind (the
 /// plan carries arguments only); the core hands a terminal none of the caller's routing, so the
-/// state directory rides the argv. No `--config-root`: a plan carries no profile directory.
+/// state directory rides the argv. `config_root` is the launching caller's config root, pushed
+/// as `--config-root <harness>=<dir>`. A peer plan carries no root (`None`): the gate's scrub
+/// leaves the harness's default root and the core's ambient root cannot win.
 pub fn gate_argv(
     program: &Path,
     state_dir: &Path,
     request: &str,
     plan: &crate::sync::frame::LaunchPlan,
     path: Option<&std::ffi::OsStr>,
+    config_root: Option<&Path>,
 ) -> Result<Vec<String>, String> {
     let text = |p: &Path| {
         p.to_str()
@@ -720,9 +723,13 @@ pub fn gate_argv(
         "launch-gate".into(),
         "--bootstrap".into(),
         format!("{request}:{}", peer_requests::GATE_ATTEMPT),
-        "--".into(),
-        text(&executable)?,
     ];
+    if let Some(root) = config_root {
+        argv.push("--config-root".into());
+        argv.push(format!("{}={}", registration.metadata().id, text(root)?));
+    }
+    argv.push("--".into());
+    argv.push(text(&executable)?);
     argv.extend(harness_argv);
     Ok(argv)
 }
@@ -1036,6 +1043,8 @@ impl Worker {
                         &self.id,
                         plan,
                         std::env::var_os("PATH").as_deref(),
+                        // A peer plan carries no root; the gate's scrub keeps the core's out.
+                        None,
                     ) {
                         Ok(argv) => argv,
                         Err(why) => return self.fail(None, &format!("gate: {why}")),
@@ -1440,6 +1449,7 @@ mod tests {
             "req-1",
             &plan,
             Some(&path),
+            None,
         )
         .unwrap();
         let crate::cli::commands::CliAction::InternalLaunchGate {
@@ -1464,6 +1474,31 @@ mod tests {
         );
     }
 
+    // Kills: a caller's config root dropped from the gate argv, or placed after `--` where the
+    // harness would receive it instead of the gate.
+    #[test]
+    fn gate_argv_carries_the_callers_config_root() {
+        let (_, path) = path_with("claude");
+        let plan = terminal_plan("claude", &[]);
+        let argv = gate_argv(
+            Path::new("/bin/ht"),
+            Path::new("/s"),
+            "req-1",
+            &plan,
+            Some(&path),
+            Some(Path::new("/profiles/b")),
+        )
+        .unwrap();
+        let crate::cli::commands::CliAction::InternalLaunchGate { config_roots, .. } =
+            crate::cli::commands::parse_argv_exact_seats(argv.clone())
+                .unwrap()
+                .action
+        else {
+            panic!("a launch gate: {argv:?}")
+        };
+        assert_eq!(config_roots, ["claude=/profiles/b"]);
+    }
+
     // Kills: an unresolvable harness executable launching a gate that execs nothing.
     #[test]
     fn gate_argv_refuses_an_unresolvable_executable() {
@@ -1475,6 +1510,7 @@ mod tests {
             "r",
             &plan,
             Some(&empty),
+            None,
         )
         .unwrap_err();
         assert!(error.contains("no executable `claude`"), "{error}");
@@ -1492,6 +1528,7 @@ mod tests {
             "r",
             &plan,
             Some(&path),
+            None,
         )
         .unwrap();
         let at = |needle: &str| argv.iter().position(|a| a == needle).unwrap();
