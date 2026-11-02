@@ -99,3 +99,17 @@ fn host_no_wake_tripwire_fails_without_k2() {
     assert!(error.contains("hc"), "{error}");
     assert!(!error.contains("herdr"), "Herdr hosts wake: {error}");
 }
+
+// Kills: `HostKind::wakes_dormant_target` drifting from the host's own answer for a target with no
+// verified wake path: the store would then keep a dormant ladder for a host that refuses (or drop
+// one a host could run).
+#[test]
+fn dormant_wake_matches_each_hosts_target_capability() {
+    for kind in HostKind::IMPLEMENTED {
+        let composer = matches!(
+            build(*kind).target_wake_capability(&HostTargetId::new("w9:p9")),
+            WakeCapability::Composer(_)
+        );
+        assert_eq!(kind.wakes_dormant_target(), composer, "{kind:?}");
+    }
+}
