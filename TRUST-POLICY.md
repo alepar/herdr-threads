@@ -970,7 +970,7 @@ model open work, and summary closure never changes receipt state or installs glo
   item buried under that many silent ones no longer wakes the seat, and still arrives on its next turn. Its pid is stale, so the composer wake takes it on any Herdr-reported foreground
   process of its own pane (no foreground report, no wake) and the native recheck requires Herdr's agent kind there
   to be its harness and awaiting input. An accepted limit: another session of that harness in the pane, which the
-  seat would enroll anyway, gets the wake. An end event never leaves a dormant binding. A target whose mod channel is live and not stalled is woken through that channel
+  seat would enroll anyway, gets the wake. An end event never leaves a dormant binding. A target whose writable mod channel is live and not stalled is woken through that channel
   and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
   only to the one target whose fingerprint pid is among Herdr's pane foreground processes (the non-shell
   entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness
@@ -2056,7 +2056,8 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
   nothing, and no pull of its offers a receipt-bearing row, whether a hook pull, a mod channel's presentation
   pull or the watch fallback's page: they stay pending for a writable binding, and an explicit `ack` is
   unchanged. Its mod channel is never judged stalled and does not suppress the seat's wake, since it cannot
-  discharge the row (a seat whose only channels are read-only has no channel wake).
+  discharge the row (a seat whose only channels are read-only has no channel wake, and a read-only
+  channel does not keep a stalled writable sibling from falling back to the native wake).
   ACK obligations belong to the role and the first writable display discharges them, so a headless
   `claude -p` or `codex exec` session that must not discharge them sets the variable. The marker is a
   cooperative same-user claim like the rest of the caller context; a plain seat-acting call (and the mod's

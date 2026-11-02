@@ -116,6 +116,12 @@ impl Entry {
     fn handling(&self, now: UtcMillis) -> bool {
         self.unexpired(now) && self.state != ModChannelState::RebindGrace
     }
+
+    /// The entry stands in for the native wake of its binding: a handling channel whose policy
+    /// wakes an idle session itself. A read-only channel cannot discharge the row (D3).
+    fn suppresses_wake(&self, now: UtcMillis) -> bool {
+        self.idle_wake == IdleWake::Channel && self.handling(now) && !self.readonly
+    }
 }
 
 /// What an unlocked judgement saw: a close that follows a store read only
@@ -1010,17 +1016,25 @@ impl ModChannels for ModChannelRegistry {
     }
 
     fn wake_suppressed(&self, seat: &SeatId) -> bool {
-        // Per binding (spec §3 Wake): some handling channel of the seat (Live or
-        // ReconnectGrace, as `seat_live`) whose policy wakes an idle session itself.
+        // Per binding (spec §3 Wake): some channel of the seat stands in for the native wake.
         let now = self.clock.utc_now();
         let state = self.lock();
         state.by_seat.get(seat).is_some_and(|bindings| {
             bindings.iter().any(|binding| {
-                state.entries.get(binding).is_some_and(|e| {
-                    e.idle_wake == IdleWake::Channel && e.handling(now) && !e.readonly
-                })
+                state
+                    .entries
+                    .get(binding)
+                    .is_some_and(|e| e.suppresses_wake(now))
             })
         })
+    }
+
+    fn binding_wake_suppressed(&self, seat: &SeatId, binding: &BindingId) -> bool {
+        let now = self.clock.utc_now();
+        self.lock()
+            .entries
+            .get(binding)
+            .is_some_and(|entry| &entry.seat == seat && entry.suppresses_wake(now))
     }
 
     fn record_attention_push(&self, seat: &SeatId, binding: &BindingId, now: UtcMillis) {
@@ -1085,7 +1099,12 @@ impl ModChannels for ModChannelRegistry {
             state
                 .seat_bindings(seat)
                 .into_iter()
-                .filter(|binding| state.entries.get(binding).is_some_and(|e| e.unexpired(now)))
+                .filter(|binding| {
+                    state
+                        .entries
+                        .get(binding)
+                        .is_some_and(|e| e.unexpired(now) && !e.readonly)
+                })
                 .collect()
         };
         !bindings.is_empty()

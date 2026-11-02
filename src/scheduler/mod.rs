@@ -677,15 +677,15 @@ fn mod_suppressed(channels: &dyn ModChannels, seat: &SeatId, now: UtcMillis) -> 
     channels.wake_suppressed(seat) && !channels.stalled(seat, now)
 }
 
-/// Whether the mod channel of `binding` delivers its attention (spec §3 Wake): live for that
-/// binding and not stalled.
+/// Whether the mod channel of `binding` wakes it (spec §3 Wake): the per-binding form of
+/// [`mod_suppressed`], so a read-only channel covers nothing (D3).
 fn binding_covered(
     channels: &dyn ModChannels,
     seat: &SeatId,
     binding: &BindingId,
     now: UtcMillis,
 ) -> bool {
-    channels.binding_live(seat, binding) && !channels.binding_stalled(seat, binding, now)
+    channels.binding_wake_suppressed(seat, binding) && !channels.binding_stalled(seat, binding, now)
 }
 
 /// Per-binding form of [`mod_suppressed`]: native wake and poke are suppressed only when every

@@ -2664,6 +2664,29 @@ fn readonly_channel_does_not_suppress_the_seat_wake() {
     assert!(g.registry.wake_suppressed(&seat("b")));
 }
 
+// Kills: a read-only sibling that is never judged stalled keeping the seat's stalled writable
+// channel suppressing the wake (`stalled` asks that every channel of the seat be stalled).
+#[test]
+fn readonly_sibling_does_not_hide_a_stalled_writable_channel() {
+    let over = MOD_STALL_AFTER_MS as i64 + 1;
+    let f = fixture();
+    let registered = f.now();
+    f.register_readonly("a", 1);
+    f.register("a", 2);
+    f.store.receipts.lock().unwrap().push((registered, 10));
+    f.registry
+        .record_attention_push(&seat("a"), &bid("a", 2), registered);
+    f.advance(over);
+    assert!(
+        f.registry
+            .binding_stalled(&seat("a"), &bid("a", 2), f.now())
+    );
+    assert!(
+        f.registry.stalled(&seat("a"), f.now()),
+        "the read-only channel neither suppresses nor vouches for the seat"
+    );
+}
+
 fn q3_replace_at_final_push_gap(
     active: bool,
     old_mode: ModChannelMode,

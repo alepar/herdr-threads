@@ -582,6 +582,124 @@ fn channel_registered_after_the_precheck_leaves_nothing_to_type() {
     assert!(notifier.typed.lock().unwrap().is_empty());
 }
 
+/// The real registry, so a test sees what its `readonly` flag does to the scheduler's answer.
+fn registry_with(channels: &[(&str, bool)]) -> crate::service::mod_channels::ModChannelRegistry {
+    struct NoReads;
+    impl crate::ports::ModStoreReads for NoReads {
+        fn mod_binding_view(
+            &self,
+            _: &SeatId,
+            _: crate::ports::ModBindingRef<'_>,
+            _: &CallBudget,
+        ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+            Ok(None)
+        }
+        fn mod_stall_oldest(
+            &self,
+            _: &SeatId,
+            _: UtcMillis,
+            _: usize,
+            _: &CallBudget,
+        ) -> Result<Option<UtcMillis>, ApiError> {
+            Ok(None)
+        }
+    }
+    struct NullSink;
+    impl crate::ports::ModChannelSink for NullSink {
+        fn push(&self, _: crate::protocol::watch::WatchFrame) -> bool {
+            true
+        }
+    }
+    let registry = crate::service::mod_channels::ModChannelRegistry::new(
+        Arc::new(FakeClock(AtomicU64::new(0))),
+        Arc::new(NoReads),
+        "instance".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    );
+    for (generation, (binding, readonly)) in channels.iter().enumerate() {
+        registry
+            .register(
+                crate::ports::ModChannelRegistration {
+                    mode: crate::ports::ModChannelMode::Legacy,
+                    seat: due_candidate().seat,
+                    binding: crate::protocol::ids::BindingId::new(*binding),
+                    binding_generation: generation as u64 + 1,
+                    native_session: crate::protocol::ids::NativeSessionId::new("native"),
+                    harness: crate::protocol::authority::Harness::Claude,
+                    idle_wake: crate::harness::adapter::IdleWake::Channel,
+                    readonly: *readonly,
+                    registered_at: UtcMillis(0),
+                },
+                Arc::new(NullSink),
+            )
+            .unwrap();
+    }
+    registry
+}
+
+// Kills: a read-only channel counting as coverage, which left a seat with only such a binding
+// with no wake attempt, so no `wake=` warning either, while `wake_status` called it wakeable.
+#[test]
+fn readonly_channel_leaves_its_binding_to_the_composer() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let store = cooperative(store(&events));
+    let notifier = TargetNotifier::default();
+    let channels = registry_with(&[("a", true)]);
+    let mut runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    runner.mod_channels = &channels;
+    let candidate = candidate_with(vec![target("a", 10)]);
+    assert_eq!(
+        runner.try_candidate(&candidate, &budget()).unwrap(),
+        Some(WakeOutcome::Submitted)
+    );
+    assert_eq!(
+        *notifier.typed.lock().unwrap(),
+        vec![vec![crate::protocol::ids::BindingId::new("a")]],
+    );
+}
+
+// Kills: `without_covered_targets` dropping the read-only binding beside a writable sibling, or
+// the writable channel losing its coverage with it.
+#[test]
+fn readonly_binding_is_typed_to_and_its_writable_sibling_is_not() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let store = cooperative(store(&events));
+    let notifier = TargetNotifier::default();
+    let channels = registry_with(&[("a", true), ("b", false)]);
+    let mut runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    runner.mod_channels = &channels;
+    let candidate = candidate_with(vec![target("a", 10), target("b", 20)]);
+    assert_eq!(
+        runner.try_candidate(&candidate, &budget()).unwrap(),
+        Some(WakeOutcome::Submitted)
+    );
+    assert_eq!(
+        *notifier.typed.lock().unwrap(),
+        vec![vec![crate::protocol::ids::BindingId::new("a")]],
+    );
+}
+
+// Kills: a poke treating a read-only channel as coverage.
+#[test]
+fn readonly_channel_does_not_cover_a_poke() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let wake = PokeStore {
+        inner: store(&events),
+        reserves: Default::default(),
+        targets: vec![target("a", 10)],
+    };
+    let notifier = FakeNotifier {
+        events: events.clone(),
+    };
+    let channels = registry_with(&[("a", true)]);
+    let mut runner = WakeRunner::new(&wake, &notifier, RetryConfig::default(), daemon_boot());
+    runner.mod_channels = &channels;
+    let due = wake.poke_candidates(1, &budget()).unwrap().remove(0);
+    runner.try_poke(&due, &budget()).unwrap();
+    assert_eq!(wake.reserves.load(Ordering::SeqCst), 1);
+}
+
 // Kills: a poke filtered by the seat's channels instead of its target bindings'.
 #[test]
 fn poke_follows_the_same_per_binding_rule() {

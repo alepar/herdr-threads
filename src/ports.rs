@@ -4799,6 +4799,11 @@ pub trait ModChannels: Send + Sync {
     fn wake_suppressed(&self, seat: &SeatId) -> bool {
         self.seat_live(seat)
     }
+    /// Per-binding form of [`Self::wake_suppressed`], what the scheduler asks of each wake
+    /// target. The default is [`Self::binding_live`].
+    fn binding_wake_suppressed(&self, seat: &SeatId, binding: &BindingId) -> bool {
+        self.binding_live(seat, binding)
+    }
     /// Push `Attention{version}` to every Live channel of the seat.
     fn notify(&self, _seat: &SeatId, _attention_version: u64) {}
     /// Successful ordinary or Lazy display/settlement may have changed eligibility.
@@ -4833,8 +4838,9 @@ pub trait ModChannels: Send + Sync {
         let _ = binding;
         self.stalled(seat, now)
     }
-    /// Seat form of [`Self::binding_stalled`]: the seat holds at least one channel and every
-    /// one of them is stalled.
+    /// Seat form of [`Self::binding_stalled`]: the seat holds at least one writable channel and
+    /// every one of them is stalled. A read-only channel is never stalled and vouches for
+    /// nothing (D3), so it does not count.
     fn stalled(&self, _seat: &SeatId, _now: UtcMillis) -> bool {
         false
     }
