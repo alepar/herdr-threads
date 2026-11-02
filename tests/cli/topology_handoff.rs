@@ -8851,7 +8851,7 @@ mod live {
                 &peer,
                 &peer.base.clock,
                 &mut output,
-                |_, _| panic!("not-created assertion must not observe a pane"),
+                |_, _, _| panic!("not-created assertion must not observe a pane"),
             )
             .unwrap();
             assert_eq!(peer.status().attempt.get(), 2);
@@ -8882,14 +8882,13 @@ mod live {
                 &created,
                 &created.base.clock,
                 &mut output,
-                |target, request| {
+                |target, _, saved| {
                     let mut evidence = crate::protocol::handoff::topology_contract_tests::created();
                     assert_eq!(target, &evidence.root_pane);
-                    evidence.correlation = request
-                        .map(|v| v.correlation.clone())
-                        .unwrap_or_else(|| HostCallId::new("operator-observed-creation"));
+                    evidence.correlation =
+                        saved.unwrap_or_else(|| HostCallId::new("operator-observed-creation"));
                     evidence.witness = created.base.witness.clone();
-                    Ok((evidence, HostCallId::new("operator-structural-read")))
+                    Ok((evidence.into(), HostCallId::new("operator-structural-read")))
                 },
             )
             .unwrap();
@@ -8919,7 +8918,7 @@ mod live {
                 &cancelled,
                 &cancelled.base.clock,
                 &mut output,
-                |_, _| panic!("cancellation needs no native pane observation"),
+                |_, _, _| panic!("cancellation needs no native pane observation"),
             )
             .unwrap();
             assert_eq!(cancelled.status().state, BootstrapState::Cancelled);
@@ -8951,7 +8950,7 @@ mod live {
                     &peer,
                     &peer.base.clock,
                     &mut output,
-                    |_, _| panic!("not-created has no pane"),
+                    |_, _, _| panic!("not-created has no pane"),
                 )
                 .is_err()
             );
@@ -9017,7 +9016,7 @@ mod live {
                     &mut || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
                         panic!("actor check before connect")
                     },
-                    &mut |_, _| panic!("no host observation"),
+                    &mut |_, _, _| panic!("no host observation"),
                 )
                 .is_err()
             );
@@ -9033,7 +9032,7 @@ mod live {
                     &mut || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
                         panic!("origin host check before connect")
                     },
-                    &mut |_, _| panic!("no host observation"),
+                    &mut |_, _, _| panic!("no host observation"),
                 )
                 .is_err()
             );
@@ -9062,7 +9061,7 @@ mod live {
                         peer.ns().clone(),
                         Box::new(OperatorTestClient::Unsupported) as Box<dyn LocalClient>
                     )),
-                    &mut |_, _| panic!("unsupported before native observation"),
+                    &mut |_, _, _| panic!("unsupported before native observation"),
                 )
                 .is_err()
             );
@@ -9080,7 +9079,7 @@ mod live {
                         peer.ns().clone(),
                         Box::new(OperatorTestClient::Peer(&peer)) as Box<dyn LocalClient + '_>
                     )),
-                    &mut |_, _| panic!("not-created assertion needs no host observation"),
+                    &mut |_, _, _| panic!("not-created assertion needs no host observation"),
                 )
                 .is_err()
             );
@@ -9108,7 +9107,7 @@ mod live {
                     &mut || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
                         panic!("operator original must refuse before connection")
                     },
-                    &mut |_, _| panic!("operator original has no pane observation"),
+                    &mut |_, _, _| panic!("operator original has no pane observation"),
                 )
                 .is_err()
             );
@@ -9130,7 +9129,7 @@ mod live {
                         peer.ns().clone(),
                         Box::new(OperatorTestClient::Peer(&peer)) as Box<dyn LocalClient + '_>
                     )),
-                    &mut |_, _| panic!("frozen retry never re-observes pane"),
+                    &mut |_, _, _| panic!("frozen retry never re-observes pane"),
                 )
                 .unwrap()
             );
@@ -9266,7 +9265,7 @@ mod live {
                 &peer,
                 &peer.base.clock,
                 &mut Vec::new(),
-                |_, _| panic!("not-created has no host read"),
+                |_, _, _| panic!("not-created has no host read"),
             );
             assert!(first.is_err());
             assert_eq!(peer.status().attempt.get(), 2);

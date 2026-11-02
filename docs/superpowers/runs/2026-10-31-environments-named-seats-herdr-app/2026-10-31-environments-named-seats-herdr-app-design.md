@@ -1744,3 +1744,13 @@ other selector (`terminal_machine` reads this one form). The label is the harnes
 must be absolute and is checked only on the peer (TRUST-POLICY N15). `--harness-binary`, `--name`, `--profile-dir`
 and `--summary` stay refused, as for the other remote forms. The wire variant and `peer.launch.terminal.v1` are unchanged,
 and a peer without the cap still refuses the request. `HT_TEST_REMOTE_TERMINAL` is gone.
+
+### 2026-11-02: `handoff recover --created-pane` of a V3 plan keeps the core terminal (ht-kqrt.227)
+
+On a core-only daemon the CLI built a `NativeCli` on the plan's core endpoint and sent Herdr `ping` to the core, and
+the protocol refused a created-pane disposition on a V3 plan, so the one recovery that keeps a really created terminal
+had no path and `--not-created` left two live terminals. `CreatedPane.evidence` is now an `AutomaticCreation` (V2 tab
+bytes unchanged), checked against the plan by `creation_scope`. The CLI routes a V3 plan to `HcHost::recovered_creation`
+(one `terminal.get` pinned to the core's peer, the creation text `create_target` reports); a Herdr plan keeps the
+`NativeCli` read. A recovery later than the gate shim's 10 s authorization wait finds no terminal and takes
+`--not-created`. TRUST-POLICY.md's V3 limit is rewritten accordingly.

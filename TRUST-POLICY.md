@@ -2975,10 +2975,11 @@ is written. The creation witness is the core id plus the serving process, and th
 deciding read takes the terminal on that same peer (`terminal.get` pinned to the
 `hello`'s witness); a changed core or peer is a stale observation, never a match. The
 launch argv of a V3 plan is frozen at creation and the retained report must equal it.
-Accepted limit: `--created-pane` is refused for a V3 plan, because it names a Herdr
-pane and a core terminal has no such recovery evidence, so an unknown V3 creation
-resolves only through `--not-created` or `--cancel`, and an `ht.bootstrap` label never
-reclassifies it.
+`--created-pane tN` on a V3 plan records the operator's assertion against one fresh
+`terminal.get` pinned to the core's current peer, and the recorded creation carries
+that witness. An `ht.bootstrap` label never reclassifies an unknown creation.
+Accepted limit: the gate shim exits after its 10 s authorization wait, so a recovery
+later than that finds no terminal and resolves through `--not-created` or `--cancel`.
 
 Herdr offers correlation rather than creation idempotency. The product therefore
 sacrifices automatic progress after an uncertain submission. An operator's

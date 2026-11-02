@@ -2042,7 +2042,7 @@ fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current
             attempt: BootstrapAttempt::first(),
             inspection: reserved.status.recovery_inspection().unwrap(),
             disposition: AutomaticBootstrapRecoveryDisposition::CreatedPane {
-                evidence: Box::new(a.created.clone()),
+                evidence: Box::new(a.created.clone().into()),
                 structural_reference: HostCallId::new("operator-correlation"),
             },
         },
@@ -2189,7 +2189,7 @@ fn automatic_linked_created_recovery_refuses_changed_witness_and_lifecycle_witho
                 attempt: BootstrapAttempt::first(),
                 inspection: reserved.status.recovery_inspection().unwrap(),
                 disposition: AutomaticBootstrapRecoveryDisposition::CreatedPane {
-                    evidence: Box::new(evidence),
+                    evidence: Box::new(evidence.into()),
                     structural_reference: HostCallId::new("operator-correlation"),
                 },
             },

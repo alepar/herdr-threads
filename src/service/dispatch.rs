@@ -669,7 +669,7 @@ impl DomainService {
             } = disposition
             {
                 let resolving = crate::protocol::commands::ResolveSeat {
-                    target: evidence.root_pane.clone(),
+                    target: evidence.launch_target().clone(),
                     host: request.identity.claim.host.clone(),
                     operation: request.identity.plan.payload.keys.resolve.clone(),
                     locator_hint: None,

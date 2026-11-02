@@ -481,13 +481,10 @@ impl AutomaticBootstrapMutation {
             } => {
                 inspection.validate()?;
                 disposition.validate()?;
-                if self.identity.plan.placement.is_some()
-                    && matches!(
-                        disposition,
-                        AutomaticBootstrapRecoveryDisposition::CreatedPane { .. }
-                    )
+                if let AutomaticBootstrapRecoveryDisposition::CreatedPane { evidence, .. } =
+                    disposition
                 {
-                    return Err("created-pane recovery names a Herdr pane, not a V3 creation");
+                    self.identity.creation_scope(evidence)?;
                 }
                 if serde_json::to_vec(self)
                     .map_err(|_| "invalid automatic recovery")?
@@ -583,7 +580,7 @@ pub(crate) fn automatic_unknown_key(
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AutomaticBootstrapRecoveryDisposition {
     CreatedPane {
-        evidence: Box<CreatedTab>,
+        evidence: Box<AutomaticCreation>,
         structural_reference: HostCallId,
     },
     NotCreated {
@@ -877,13 +874,10 @@ impl AutomaticBootstrapIdentity {
             digest: "f".repeat(64),
         };
         let mut dispositions = Vec::new();
-        // A V3 plan refuses the created-pane disposition.
-        if let Some(tab) = created.as_tab() {
-            dispositions.push(AutomaticBootstrapRecoveryDisposition::CreatedPane {
-                evidence: Box::new(tab.clone()),
-                structural_reference: HostCallId::new(escaped.clone()),
-            });
-        }
+        dispositions.push(AutomaticBootstrapRecoveryDisposition::CreatedPane {
+            evidence: Box::new(created.clone()),
+            structural_reference: HostCallId::new(escaped.clone()),
+        });
         dispositions.extend([
             AutomaticBootstrapRecoveryDisposition::NotCreated {
                 quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,

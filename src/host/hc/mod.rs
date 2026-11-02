@@ -514,6 +514,41 @@ impl crate::ports::BootstrapObserver for HcBootstrapObserver {
 }
 
 impl HcHost {
+    /// The creation an operator asserts: one fresh terminal read pinned to the peer it names,
+    /// as `create_target` would have reported it. A changed core or an absent terminal is the
+    /// read's own error. Returns the creation and the read's call id (the structural
+    /// reference).
+    pub fn recovered_creation(
+        &self,
+        target: &HostTargetId,
+        placement: ports::Placement,
+        correlation: HostCallId,
+        context: &HostCallContext,
+    ) -> Result<(ports::CreatedTarget, HostCallId), ApiError> {
+        let incoherent = || {
+            api_error(
+                ErrorCode::StaleHostObservation,
+                "incoherent hc terminal creation evidence",
+            )
+        };
+        let pane = self.observe_bootstrap(target, context)?;
+        let ports::HostWitness::HcCore { core_id, peer } = pane.host_witness() else {
+            return Err(incoherent());
+        };
+        let observation = pane.observation();
+        let created = ports::CreatedTarget {
+            correlation,
+            placement,
+            target: observation.target.clone(),
+            root_pane: None,
+            terminal: observation.terminal.clone().ok_or_else(incoherent)?,
+            host_incarnation: creation_incarnation(&core_id, &peer).map_err(|_| incoherent())?,
+            witness: pane.host_witness(),
+        };
+        created.validate().map_err(|_| incoherent())?;
+        Ok((created, observation.call_id.clone()))
+    }
+
     /// One terminal read for a bootstrap attachment. A changed core (boot or peer) is
     /// `StaleHostObservation`; an absent or finished terminal is `NotFound`.
     fn observe_bootstrap(
@@ -571,6 +606,15 @@ impl HcHost {
         )
         .map_err(stale)
     }
+}
+
+/// The boot text a creation records: the core and the serving process, as `create_target`
+/// reports it. Longer than the `hc-core:<id>` a fresh read reports.
+fn creation_incarnation(core_id: &str, peer: &ports::HcPeer) -> Result<HostBootId, &'static str> {
+    HostBootId::parse(format!(
+        "{BOOT_PREFIX}{core_id}:pid={}:start={}:uid={}",
+        peer.pid, peer.start_seconds, peer.uid
+    ))
 }
 
 fn api_error(code: ErrorCode, detail: impl Into<String>) -> ApiError {
@@ -696,10 +740,7 @@ impl ports::CreateTargetPort for HcHost {
         let address = reply.value.address;
         // The record exists now: a result this host cannot vouch for stays unknown. The
         // composed incarnation outgrows the id bound for a core id near its own bound.
-        let Ok(host_incarnation) = HostBootId::parse(format!(
-            "{BOOT_PREFIX}{expected_core}:pid={}:start={}:uid={}",
-            peer.pid, peer.start_seconds, peer.uid
-        )) else {
+        let Ok(host_incarnation) = creation_incarnation(expected_core, &peer) else {
             return OutcomeUnknown(api_error(
                 ErrorCode::StaleHostObservation,
                 "incoherent hc terminal creation evidence",

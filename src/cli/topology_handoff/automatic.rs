@@ -193,17 +193,18 @@ fn load_parent(
     }
     Ok(Some(value))
 }
-pub(super) fn saved_native_request(
+/// The correlation the saved creation request carries, so a recovered creation keeps it.
+pub(super) fn saved_correlation(
     journal: &Journal,
     reference: &IntentRef,
     id: &AutomaticBootstrapIdentity,
-) -> Result<Option<crate::ports::CreateTabRequest>, RunError> {
-    if id.plan.placement.is_some() {
-        // A V3 request is a `CreateTargetRequest`; recovery's created-pane path is refused
-        // for a V3 plan, so nothing reads it.
-        return Ok(None);
-    }
-    Ok(load_parent(journal, reference, id)?.and_then(|value| value.request))
+) -> Result<Option<crate::protocol::ids::HostCallId>, RunError> {
+    Ok(
+        load_local(journal, reference, id)?.and_then(|local| match local {
+            Local::V2(p) => p.request.map(|r| r.correlation),
+            Local::V3(p) => p.request.map(|r| r.correlation),
+        }),
+    )
 }
 fn load_child(
     journal: &Journal,

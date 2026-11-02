@@ -1094,7 +1094,7 @@ pub(crate) fn recover(
             ) {
                 return Err(conflict());
             }
-            let evidence = AutomaticCreation::from(evidence.as_ref().clone());
+            let evidence = evidence.as_ref().clone();
             creation_scope(ns, id, &evidence)?;
             s.creation = Some(evidence);
             validate_guard(
