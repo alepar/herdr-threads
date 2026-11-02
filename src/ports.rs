@@ -4630,6 +4630,9 @@ pub struct ModChannelRegistration {
     /// What wakes an idle seat of this harness, from its delivery policy
     /// (delivery-policy DP7).
     pub idle_wake: crate::harness::adapter::IdleWake,
+    /// The binding is read-only (D3): its channel is never judged stalled and does not
+    /// suppress the seat's wake.
+    pub readonly: bool,
     pub registered_at: UtcMillis,
 }
 
@@ -4787,7 +4790,7 @@ pub trait ModChannels: Send + Sync {
     /// DP7): the mod handles the seat *and* its policy says the channel is what
     /// wakes an idle session (`IdleWake::Channel`). The default is
     /// [`Self::seat_live`]; a registry that records each channel's `idle_wake`
-    /// overrides it.
+    /// overrides it. A read-only binding's channel never suppresses (D3).
     fn wake_suppressed(&self, seat: &SeatId) -> bool {
         self.seat_live(seat)
     }

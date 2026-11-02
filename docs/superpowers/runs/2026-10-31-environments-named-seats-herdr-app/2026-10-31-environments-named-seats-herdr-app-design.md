@@ -1723,3 +1723,13 @@ shim removes an autostarted core's root. `launch --new-terminal` passes the call
 handoff freezes it in the plan's `directory_context` when no `--profile-dir` is given, so a retry from another
 environment keeps it. A peer launch plan carries no root and the wire is unchanged: the harness there runs on the peer
 user's default root, and the requesting side's profile cannot cross without a wire field.
+
+### 2026-11-02: read-only bindings on the V2 delivery path (ht-kqrt.222)
+
+D3's filter was only in the V1 pull. The V2 presentation reader (`pull` in `src/store/invitation_content.rs`: the
+normal walk, the carry re-read and the due re-offer) now withholds a receipt-bearing row from a read-only binding, so it
+stays pending for a writable one. The historical `watch_loop` fallback drops it in `drain`, keyed on the watch's own
+`HERDR_THREADS_SEAT_READONLY`. A read-only mod channel is never judged stalled and does not suppress the seat's wake
+(`ModChannelRegistration.readonly`, frozen at registration): otherwise the 10-minute `Stalled` close, which used to free
+a writable sibling's wake, would have become permanent. A seat whose only channels are read-only reads as having no
+channel wake. Keyed on the binding, never on a harness.

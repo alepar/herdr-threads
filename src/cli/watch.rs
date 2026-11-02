@@ -73,6 +73,9 @@ pub struct WatchAckRequest {
 pub(crate) struct EmitState {
     next_status: u64,
     assembler: Assembler,
+    /// A read-only watch (D3) never shows a receipt-bearing row; it stays pending for a
+    /// writable sibling.
+    readonly: bool,
 }
 
 impl EmitState {
@@ -81,6 +84,11 @@ impl EmitState {
             assembler: Assembler::new(hint_path),
             ..Self::default()
         }
+    }
+
+    fn with_readonly(mut self, readonly: bool) -> Self {
+        self.readonly = readonly;
+        self
     }
 
     fn with_command_prefix(mut self, prefix: Vec<String>) -> Self {
@@ -424,7 +432,9 @@ fn run_session_marked(
     out: &mut dyn Write,
     mut alive: impl FnMut() -> bool,
 ) -> i32 {
-    let mut state = EmitState::new(session.hint_path.clone()).with_command_prefix(command_prefix);
+    let mut state = EmitState::new(session.hint_path.clone())
+        .with_command_prefix(command_prefix)
+        .with_readonly(super::caller_location::CallerEnv::from_process().readonly());
     let (presentation, cursors) =
         match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
             Probe::Supported {
@@ -869,6 +879,7 @@ pub(crate) fn drain(
     };
     let attention_text =
         crate::protocol::watch::attention_marker_for(&state.assembler.command_prefix);
+    let readonly = state.readonly;
     drain_pages(
         &mut source,
         &mut state.assembler,
@@ -876,6 +887,9 @@ pub(crate) fn drain(
         MAX_DRAIN_PAGES,
         |event| {
             let line = match event {
+                DrainEvent::Item(item) if readonly && item.message.ack_required => {
+                    return Ok(Stop::Continue);
+                }
                 DrainEvent::Item(item) => {
                     let id = item.id.as_str().to_owned();
                     WatchLine::new(

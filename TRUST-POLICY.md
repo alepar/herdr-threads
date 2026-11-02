@@ -2047,8 +2047,10 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
   binding recorded `occupant_bindings.readonly = 1` by its check-in (the flag only rises; the CLI sends it,
   the daemon decides). A read-only binding reads, advances its own cursors and sends like any other, but a
   display-like settlement (inbox display ACK, mod or hook delivery confirmation) made under it settles
-  nothing, and its turn-hook pull offers no receipt-bearing row: they stay pending for a writable binding,
-  and an explicit `ack` is unchanged.
+  nothing, and no pull of its offers a receipt-bearing row, whether a hook pull, a mod channel's presentation
+  pull or the watch fallback's page: they stay pending for a writable binding, and an explicit `ack` is
+  unchanged. Its mod channel is never judged stalled and does not suppress the seat's wake, since it cannot
+  discharge the row (a seat whose only channels are read-only has no channel wake).
   ACK obligations belong to the role and the first writable display discharges them, so a headless
   `claude -p` or `codex exec` session that must not discharge them sets the variable. The marker is a
   cooperative same-user claim like the rest of the caller context; a plain seat-acting call (and the mod's

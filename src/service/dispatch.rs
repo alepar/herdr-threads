@@ -1870,6 +1870,7 @@ impl LocalService for DomainService {
                 native_session: claim.native_session.clone(),
                 harness: claim.harness,
                 idle_wake: policy.idle_wake(),
+                readonly: binding.readonly,
                 registered_at: self.clock.utc_now(),
             },
             sink,
