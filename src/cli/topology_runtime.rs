@@ -64,14 +64,19 @@ pub(super) fn herdr_endpoint(
     selected: &RuntimeContext,
     output: &OutputSpec,
 ) -> Result<std::path::PathBuf, RunError> {
-    super::handoff::herdr_endpoint(selected.require_host().ok(), || {
-        super::instance::InstanceInputs::from_process(
-            None,
-            output.context.host.as_ref().map(std::path::PathBuf::from),
-        )
-        .lazy_host_endpoint()
-    })
-    .map_err(super::context_error)
+    herdr_endpoint_io(selected, output).map_err(super::context_error)
+}
+
+/// [`herdr_endpoint`] with the raw error, for a caller that words its own refusal.
+pub(super) fn herdr_endpoint_io(
+    selected: &RuntimeContext,
+    output: &OutputSpec,
+) -> std::io::Result<std::path::PathBuf> {
+    super::instance::InstanceInputs::from_process(
+        None,
+        output.context.host.as_ref().map(std::path::PathBuf::from),
+    )
+    .herdr_endpoint(selected.require_host().ok())
 }
 fn recovery_origin_host_matches(
     semantic: &SemanticMutation,

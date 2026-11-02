@@ -331,6 +331,33 @@ fn claim_host_is_reserved_with_and_without_herdr() {
     );
 }
 
+// Kills: a named caller's pane forms sent at the reserved locator (`invalid seat name`) instead of
+// naming the pane and the missing Herdr host.
+#[test]
+fn pane_form_with_no_herdr_names_the_pane_and_the_host() {
+    let rig = Rig::start("nc-pane-form");
+    let (_alice, _bob) = two_seats(&rig);
+    let created = rig.agent(
+        "alice",
+        "s-alice",
+        &["thread", "create", "--name", "ops", "--topic", "ops"],
+    );
+    assert_eq!(created.code, Some(0), "{created:?}");
+    for args in [
+        &["seat", "resolve", "--pane", "w1:p3"][..],
+        &["invite", "ops", "--pane", "w1:p3"][..],
+    ] {
+        let ran = rig.agent("alice", "s-alice", args);
+        assert_ne!(ran.code, Some(0), "{args:?}: {ran:?}");
+        assert!(
+            ran.stderr
+                .contains("pane w1:p3 has no reachable Herdr host; pass --host-endpoint"),
+            "{args:?}: {ran:?}"
+        );
+        assert!(!ran.stderr.contains("invalid seat name"), "{ran:?}");
+    }
+}
+
 // Kills: a hook lifecycle event that fails to enroll a name with no pane (`service returned no
 // resolved seat`), and a CLI command that is not the hook-enrolled seat.
 #[test]

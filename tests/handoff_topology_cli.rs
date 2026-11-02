@@ -1473,11 +1473,24 @@ fn new_tab_preserves_both_harness_configs_and_caller_workspace() {
 /// `launch --new-tab` against the private Herdr fake: `extra` selects the space, `pane` is the
 /// calling Herdr pane (the environment a real pane carries), if any.
 fn launch_new_tab(f: &Fixture, extra: &[&str], pane: Option<&str>) -> Output {
+    launch_new_tab_as(f, extra, pane, None)
+}
+
+/// [`launch_new_tab`] as the named seat `name` (`HERDR_THREADS_SEAT_NAME`), if any.
+fn launch_new_tab_as(
+    f: &Fixture,
+    extra: &[&str],
+    pane: Option<&str>,
+    name: Option<&str>,
+) -> Output {
     let mut cmd = f.command();
     cmd.args(["launch", "--new-tab", "Peer", "--kind", "claude"])
         .args(extra);
     if let Some(pane) = pane {
         cmd.env("HERDR_PANE_ID", pane);
+    }
+    if let Some(name) = name {
+        cmd.env("HERDR_THREADS_SEAT_NAME", name);
     }
     f.capture(cmd)
 }
@@ -1508,6 +1521,110 @@ fn launch_new_tab_creates_then_starts_in_its_root_pane() {
     f.setup("claude");
     // No --space: the calling pane's workspace.
     assert_tab_launch(&f, launch_new_tab(&f, &[], Some("w4:p1")));
+}
+
+// Kills: `launch --new-tab` from a named seat dialling its claim host, the reserved named-host
+// locator, as a Herdr server.
+#[test]
+fn named_caller_launch_new_tab_reaches_herdr() {
+    let f = Fixture::new();
+    f.setup("claude");
+    assert_tab_launch(
+        &f,
+        launch_new_tab_as(&f, &["--space", "Caller"], None, Some("alice")),
+    );
+}
+
+// Kills: `seat resolve --pane` from a named seat sending ResolveSeat at the reserved locator
+// (refused as an invalid seat name) instead of the Herdr server.
+#[test]
+fn named_caller_seat_resolve_pane_reads_its_server() {
+    let f = Fixture::new();
+    f.setup("claude");
+    let mut cmd = f.command();
+    cmd.args(["seat", "resolve", "--pane", "w4:p2"])
+        .env("HERDR_THREADS_SEAT_NAME", "alice");
+    let out = f.capture(cmd);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let host = f
+        .db()
+        .query_row(
+            "SELECT h.endpoint FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        host,
+        f.context.host_endpoint.clone().unwrap().to_string_lossy()
+    );
+}
+
+// Kills: `invite --pane` from a named seat allocating the recipient at the reserved locator.
+#[test]
+fn named_caller_invite_pane_allocates_on_herdr() {
+    use herdr_threads::test_support::isolation::as_agent;
+    let f = Fixture::new();
+    f.setup("claude");
+    // The named agent `alice`, enrolled by its SessionStart hook (the first observation of a new
+    // named seat lands on the daemon's cadence, so the hook is retried until it enrolls).
+    let alice = |args: &[&str], stdin: Option<&str>| {
+        let mut cmd = f.command();
+        cmd.args(args).env("HERDR_THREADS_SEAT_NAME", "alice");
+        as_agent(&mut cmd, "claude", "s-alice");
+        if stdin.is_some() {
+            cmd.stdin(Stdio::piped());
+        }
+        let mut child = cmd.spawn_owned().unwrap();
+        if let Some(stdin) = stdin {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(stdin.as_bytes())
+                .unwrap();
+        }
+        let out = finish(child);
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+    let start = r#"{"session_id":"s-alice","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"startup"}"#;
+    wait("alice enrolls", || {
+        alice(&["hook", "claude"], Some(start))
+            .1
+            .contains("Your seat")
+    });
+    let (made, text) = alice(
+        &["thread", "create", "--name", "ops", "--topic", "ops"],
+        None,
+    );
+    assert!(made, "{text}");
+    let (_, text) = alice(&["invite", "ops", "--pane", "w4:p2"], None);
+    assert!(!text.contains("invalid seat name"), "{text}");
+    let host: String = f
+        .db()
+        .query_row(
+            "SELECT h.endpoint FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+             WHERE s.target_id='w4:p2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|e| panic!("a seat on w4:p2 on the Herdr host: {e}: {text}"));
+    assert_eq!(
+        host,
+        f.context.host_endpoint.clone().unwrap().to_string_lossy()
+    );
 }
 
 #[test]

@@ -122,6 +122,17 @@ impl InstanceInputs {
             .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error))
     }
 
+    /// The Herdr server this invocation addresses. A Pane or siteless caller's selected host is
+    /// that server. A non-Pane site's selected host is its claim host (the reserved locator, or a
+    /// core socket), which is never dialled or sent as a Herdr server: its endpoint is looked up
+    /// here, lazily (SA1, SA14).
+    pub(crate) fn herdr_endpoint(&self, selected: Option<&Path>) -> io::Result<PathBuf> {
+        match selected {
+            Some(host) if self.site_host.is_none() => Ok(host.to_path_buf()),
+            _ => self.lazy_host_endpoint(),
+        }
+    }
+
     fn detect(&self) -> DetectInputs {
         DetectInputs {
             herdr: self.herdr.clone(),

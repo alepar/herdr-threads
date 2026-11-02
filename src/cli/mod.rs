@@ -460,6 +460,14 @@ pub(crate) fn pane_agent(
     pane: &crate::protocol::ids::HostTargetId,
 ) -> Result<Option<crate::ports::PaneAgentObservation>, ApiError> {
     use crate::ports::HostPort;
+    // A non-Pane site's claim host is a core socket or the reserved locator, never a Herdr
+    // server: nothing to observe (and a failed Herdr read is not evidence anyway).
+    if instance::InstanceInputs::from_process(None, None)
+        .site_host
+        .is_some()
+    {
+        return Ok(None);
+    }
     let host = crate::host::native::NativeCli::new(
         context
             .require_host()
@@ -815,29 +823,18 @@ fn run_parsed_in_pane<W: Write>(
     // a store-only command (sync, peer, daemon, pending-ops) never asks.
     // A named caller has no Herdr server: its claim host is the reserved locator, never dialled.
     // Only a handoff action reads a Herdr endpoint, resolved lazily at that call (SA1, SA14).
-    let named = matches!(site, Some(caller_location::CallerLocator::Named(_)));
-    let host_flag = parsed.output.context.host.as_ref().map(PathBuf::from);
-    let named_handoff = named
-        && matches!(
-            parsed.action,
-            CliAction::Handoff(_) | CliAction::TopologyHandoff(_) | CliAction::RemoteLaunch(_)
-        );
+    // Any non-Pane site's claim host (the reserved locator, a core socket) is never dialled: its
+    // Herdr endpoint comes from the shared point.
+    let host_output = parsed.output.clone();
     let host = || -> Result<crate::host::native::NativeCli, ApiError> {
-        let endpoint = if !named {
+        let endpoint = if site.is_none() {
             context
                 .require_host()
                 .map_err(host_context_error)?
                 .to_path_buf()
-        } else if named_handoff {
-            handoff::herdr_endpoint(context.require_host().ok(), || {
-                instance::InstanceInputs::from_process(None, host_flag.clone()).lazy_host_endpoint()
-            })
-            .map_err(host_context_error)?
         } else {
-            return Err(host_context_error(io::Error::new(
-                io::ErrorKind::NotFound,
-                "Herdr host endpoint not resolved for a named site",
-            )));
+            topology_runtime::herdr_endpoint_io(&context, &host_output)
+                .map_err(host_context_error)?
         };
         Ok(crate::host::native::NativeCli::new(
             endpoint,
@@ -1140,8 +1137,8 @@ fn run_parsed_in_pane<W: Write>(
         let CliAction::Mutation(mutation) = &parsed.action else {
             unreachable!()
         };
-        let semantic =
-            operator_semantic(mutation, &context).expect("operator mutation selected above")?;
+        let semantic = operator_semantic(mutation, &context, &parsed.output)
+            .expect("operator mutation selected above")?;
         return run_operator(semantic, &parsed, &paths, &clock, writer);
     }
     // Retain the requested read bound if caller derivation substitutes a
@@ -1243,7 +1240,7 @@ fn run_parsed_in_pane<W: Write>(
         }
         CliAction::Mutation(MutationSpec::Resolve(target)) => {
             let (instance, _, client) = connect(&paths, &clock)?;
-            let host = context.claim_host().map_err(context_error)?;
+            let host = recipient_host(&context, &parsed.output, &target)?;
             let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
             retry::run_new_api_to_writer_discarding_rejection(
                 &journal,
@@ -3485,6 +3482,27 @@ fn invalid_request(detail: &str) -> RunError {
     RunError::Api(ApiError::invalid_request(detail))
 }
 
+/// M21 (a CLI error, 69 bytes plus the pane): the Herdr server a pane form or a launch addresses
+/// is not reachable from this caller. The claim host identifies the caller and is never dialled.
+fn no_herdr_host(what: &str) -> RunError {
+    invalid_request(&format!(
+        "{what} has no reachable Herdr host; pass --host-endpoint"
+    ))
+}
+
+/// The Herdr server a recipient `target` pane lives on, as the wire locator `ResolveSeat` carries:
+/// the shared endpoint of a Pane caller, the lazily looked up one of a non-Pane site.
+fn recipient_host(
+    context: &RuntimeContext,
+    output: &OutputSpec,
+    target: &crate::protocol::ids::HostTargetId,
+) -> Result<crate::protocol::ids::HostLocator, RunError> {
+    let missing = || no_herdr_host(&format!("pane {}", target.as_str()));
+    let endpoint = topology_runtime::herdr_endpoint_io(context, output).map_err(|_| missing())?;
+    crate::protocol::ids::HostLocator::parse(endpoint.to_string_lossy())
+        .map_err(|detail| invalid_request(&detail.detail))
+}
+
 fn context_error(error: io::Error) -> RunError {
     RunError::Api(host_context_error(error))
 }
@@ -3511,26 +3529,30 @@ fn is_operator_mutation(mutation: &MutationSpec) -> bool {
 fn operator_semantic(
     mutation: &MutationSpec,
     context: &RuntimeContext,
+    output: &OutputSpec,
 ) -> Option<Result<SemanticMutation, RunError>> {
-    let host = || context.claim_host().map_err(context_error);
+    let host =
+        |target: &crate::protocol::ids::HostTargetId| recipient_host(context, output, target);
     Some(match mutation {
-        MutationSpec::FreshSeat(target) => host().map(|host| SemanticMutation::OperatorFreshSeat {
-            target: target.clone(),
-            host,
-        }),
+        MutationSpec::FreshSeat(target) => {
+            host(target).map(|host| SemanticMutation::OperatorFreshSeat {
+                target: target.clone(),
+                host,
+            })
+        }
         MutationSpec::Retire(seat) => Ok(SemanticMutation::OperatorRetire { seat: seat.clone() }),
         MutationSpec::Replace {
             seat,
             pane,
             replace,
-        } => host().map(|host| SemanticMutation::OperatorReplace {
+        } => host(pane).map(|host| SemanticMutation::OperatorReplace {
             seat: seat.clone(),
             target: pane.clone(),
             host,
             replace: replace.clone(),
         }),
         MutationSpec::Rebind { seat, pane } => {
-            host().map(|host| SemanticMutation::OperatorRebind {
+            host(pane).map(|host| SemanticMutation::OperatorRebind {
                 seat: seat.clone(),
                 target: pane.clone(),
                 host,
@@ -3753,7 +3775,10 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
     target: crate::protocol::ids::HostTargetId,
     host: Option<crate::protocol::ids::HostLocator>,
 ) -> Result<crate::protocol::ids::SeatId, RunError> {
-    let host = host.map_or_else(|| context.claim_host().map_err(context_error), Ok)?;
+    let host = match host {
+        Some(host) => host,
+        None => recipient_host(context, output, &target)?,
+    };
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
         &journal,
@@ -4477,7 +4502,10 @@ fn run_launch<W: Write>(
     let mut request = request.clone();
     let mut env = setup::SetupEnv::from_process(&parsed.output)?;
     env.state_dir = Some(context.state_dir.clone());
-    let claim_host = context.require_host().map_err(context_error)?.to_path_buf();
+    let claim_host = topology_runtime::herdr_endpoint_io(context, &parsed.output)
+        .map_err(|_| no_herdr_host(&format!("pane {}", request.target.as_str())))?;
+    let herdr_locator = crate::protocol::ids::HostLocator::parse(claim_host.to_string_lossy())
+        .map_err(|detail| invalid_request(&detail.detail))?;
     env.host_endpoint = Some(claim_host.clone());
     let (instance, _, client) = connect(paths, clock)?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
@@ -4495,13 +4523,8 @@ fn run_launch<W: Write>(
             .ok()
             .and_then(|panes| launch::pane_label(&request.target, &panes));
     }
-    let seats = launch::DaemonSeatResolver::new(
-        &client,
-        &journal,
-        instance,
-        context.claim_host().map_err(context_error)?,
-        clock.as_ref(),
-    );
+    let seats =
+        launch::DaemonSeatResolver::new(&client, &journal, instance, herdr_locator, clock.as_ref());
     let shell_probe = launch::SystemShellProbe::from_process();
     let outcome = launch::execute(
         &request,
