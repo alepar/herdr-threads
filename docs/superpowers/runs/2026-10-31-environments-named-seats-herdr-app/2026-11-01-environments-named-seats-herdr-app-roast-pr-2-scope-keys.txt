@@ -1,0 +1,22 @@
+[Should-fix] src/cli/launch_new.rs:166; src/cli/launch_new.rs:167
+[Should-fix] tests/sync/facts_seat.rs:1203
+[Should-fix] tests/config_smoke.rs:657; tests/config_smoke.rs:501
+[Should-fix] src/main.rs:73
+[Should-fix] src/store/seats/publication.rs:472
+[Should-fix] src/daemon/transport.rs:565
+[Should-fix] src/host/hc/mod.rs:941; TRUST-POLICY.md:315
+[Should-fix] src/cli/mod.rs:3756
+[Should-fix] src/host/probe.rs:66
+[Should-fix] src/cli/me.rs:203
+[Should-fix] tests/integration/trust_policy.rs:347
+[Should-fix] TRUST-POLICY.md:837
+[Should-fix] tests/multinode/peer_launch_terminal.rs:201
+[Should-fix] src/service/dispatch.rs:822
+[Should-fix] src/service/dispatch.rs:1390
+[Should-fix] src/cli/watch.rs:1176
+[Nit] src/store/seats/resolution.rs:699
+[Nit] src/test_support/tmux.rs:69
+[Nit] src/daemon/health.rs:618
+[Nit] src/cli/caller_location.rs:135
+[Nit] src/store/queries.rs:1658
+[Nit] src/cli/launch_new.rs:144
