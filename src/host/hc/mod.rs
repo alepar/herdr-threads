@@ -13,8 +13,8 @@
 //!   `events.subscribe{}` on one connection, finished records kept with their
 //!   `reason` and `keep`, `machine/tN` mirrors dropped), the D10 closure
 //!   decision over it ([`HcClosure`]) and target creation (`CreateTargetPort`
-//!   via `terminal.run`: `no_notify`, `outlive_parent`, `no_parent`,
-//!   `keep: false`, no `caller`, no hc `name`, no `first_message`; the
+//!   via `terminal.run`: `no_notify`, `outlive_parent`, `no_parent` (only without a
+//!   `parent`), `keep: false`, no `caller`, no hc `name`, no `first_message`; the
 //!   `ht.bootstrap` label is written as a hint and never read to classify an
 //!   outcome).
 //! - Discovery ([`HcDiscovery`], `discovery.rs`): lists

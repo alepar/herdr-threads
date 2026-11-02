@@ -231,7 +231,7 @@ fn replies(state: &FakeHcState) -> Vec<(&'static str, Vec<Value>)> {
                 state,
                 "terminal.run",
                 json!({"argv": ["sh"], "cwd": "/", "keep": false, "no_notify": true,
-                       "outlive_parent": true, "no_parent": true,
+                       "outlive_parent": true,
                        "labels": {"ht.bootstrap": "c"}, "parent": "t1"}),
             ),
         ),

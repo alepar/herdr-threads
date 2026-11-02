@@ -3029,7 +3029,7 @@ selected binary, native API/profile inputs and fingerprints of configuration act
 used remain mandatory; incomplete structural observations still refuse submission.
 
 
-herdr-core (hc) launch (H3). `terminal.run` creates the terminal with `no_notify`, `outlive_parent`, `no_parent`,
+herdr-core (hc) launch (H3). `terminal.run` creates the terminal with `no_notify`, `outlive_parent`, `no_parent` (only when it has no `parent`),
 `keep: false`, no `caller`, no hc `name` and no `first_message`. The `ht.bootstrap` label it writes
 (`herdr.space`/`herdr.tab` for a new tab, `ht.label` always) is a recovery hint only: it never classifies an
 outcome and never reclassifies a recorded unknown. A JSON-RPC error other than `spawn_failed` is the only
