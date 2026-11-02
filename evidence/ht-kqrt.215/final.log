@@ -1,0 +1,225 @@
+heavy: slot 1 acquired 20:49:42
+   Compiling herdr-threads v2.8.4 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.215)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 53s
+────────────
+ Nextest run ID 336d75e1-7ac4-4854-93fd-d41e68f9a274 with nextest profile: default
+    Starting 216 tests across 17 binaries (8741 tests skipped)
+        PASS [   0.644s] (  1/216) herdr-threads service::workers::observation_lane_tests::cancellation_stops_lane_in_backoff_within_20ms
+        PASS [   0.014s] (  2/216) herdr-threads identity::reconcile::tests::baseline_holds_every_unclaimed_restored_target_in_bounded_pages
+        PASS [   0.017s] (  3/216) herdr-threads cli::instance::instance_named::named_caller_with_herdr_env_uses_command_group_store
+        PASS [   0.005s] (  4/216) herdr-threads identity::reconcile::tests::discarded_attempt_waits_for_the_pacer_retry_time_but_event_hints_do_not
+        PASS [   0.004s] (  5/216) herdr-threads identity::reconcile::tests::event_during_delayed_snapshot_keeps_lane_dirty_after_apply
+        PASS [   0.007s] (  6/216) herdr-threads identity::reconcile::tests::discarded_late_result_and_wrong_ticket_cannot_apply
+        PASS [   0.007s] (  7/216) herdr-threads identity::reconcile::tests::event_hints_and_periodic_due_never_apply_lifecycle_payloads
+        PASS [   0.007s] (  8/216) herdr-threads identity::reconcile::tests::explicit_capture_request_opens_the_gate_once
+        PASS [   0.005s] (  9/216) herdr-threads identity::reconcile::tests::fake_port::authoritative_absence_commits_only_retirement_fence_and_releases_page
+        PASS [   0.007s] ( 10/216) herdr-threads identity::reconcile::tests::failed_capture_marks_local_lane_unavailable_until_new_publication
+        PASS [   0.007s] ( 11/216) herdr-threads identity::reconcile::tests::fake_port::capture_stages_in_bounded_steps_before_publish_and_discards_failed_stage
+        PASS [   0.005s] ( 12/216) herdr-threads identity::reconcile::tests::fake_port::coherent_capture_stage_failure_freezes_the_old_publication
+        PASS [   0.008s] ( 13/216) herdr-threads identity::reconcile::tests::fake_port::interrupted_first_marking_pass_reruns_from_ordinal_zero
+        PASS [   0.008s] ( 14/216) herdr-threads identity::reconcile::tests::fake_port::different_reason_invalidates_again
+        PASS [   0.008s] ( 15/216) herdr-threads identity::reconcile::tests::fake_port::invalidation_skips_already_unresolved_seats_and_marks_the_rest
+        PASS [   0.008s] ( 16/216) herdr-threads identity::reconcile::tests::fake_port::invalidation_projects_only_bounded_unresolved_transitions
+        PASS [   0.006s] ( 17/216) herdr-threads identity::reconcile::tests::fake_port::invalidation_write_failure_remains_error_and_locally_unavailable
+        PASS [   0.007s] ( 18/216) herdr-threads identity::reconcile::tests::fake_port::late_coherent_result_freezes_without_invalidating
+        PASS [   0.006s] ( 19/216) herdr-threads identity::reconcile::tests::fake_port::older_failed_admission_cannot_invalidate_newer_decision
+        PASS [   0.007s] ( 20/216) herdr-threads identity::reconcile::tests::fake_port::late_success_cannot_publish_after_newer_invalidation
+        PASS [   0.006s] ( 21/216) herdr-threads identity::reconcile::tests::fake_port::partial_capture_never_stages_or_requests_absence_retirement
+        PASS [   0.006s] ( 22/216) herdr-threads identity::reconcile::tests::fake_port::publication_in_between_invalidates_again
+        PASS [   0.007s] ( 23/216) herdr-threads identity::reconcile::tests::fake_port::refused_transition_for_one_seat_does_not_block_another_seats_move
+        PASS [   0.008s] ( 24/216) herdr-threads identity::reconcile::tests::fake_port::refused_hc_socket_freezes_and_ends_no_binding
+        PASS [   0.007s] ( 25/216) herdr-threads identity::reconcile::tests::fake_port::repeat_before_marking_completes_invalidates_again
+        PASS [   0.007s] ( 26/216) herdr-threads identity::reconcile::tests::fake_port::repeat_failure_with_same_reason_after_completed_marking_writes_no_invalidation
+        PASS [   0.008s] ( 27/216) herdr-threads identity::reconcile::tests::fake_port::unavailable_host_freezes_without_invalidating_or_marking
+        PASS [   0.008s] ( 28/216) herdr-threads identity::reconcile::tests::fake_port::skip_returns_invalidation_repeated_and_keeps_health_invalidated
+        PASS [   0.008s] ( 29/216) herdr-threads identity::reconcile::tests::fake_port::unknown_capture_admits_then_invalidates_without_staging_or_retirement
+        PASS [   0.018s] ( 30/216) herdr-threads identity::reconcile::tests::fake_port::unreadable_hc_state_freezes_and_ends_no_binding
+        PASS [   0.018s] ( 31/216) herdr-threads identity::reconcile::tests::fake_port::unusable_hc_core_id_freezes_and_ends_no_binding
+        PASS [   0.665s] ( 32/216) herdr-threads::service composition::store_only_daemon_serves_without_host_workers
+        PASS [   1.324s] ( 33/216) herdr-threads identity::reconcile::tests::carry_forward::carry_forward_requires_bound_epoch_from_a_carried_provenance
+        PASS [   1.350s] ( 34/216) herdr-threads identity::reconcile::tests::carry_forward::native_binding_is_never_planned_for_carry_forward
+        PASS [   1.424s] ( 35/216) herdr-threads identity::reconcile::tests::carry_forward::incarnation_change_still_marks_unresolved_and_carries_nothing
+        PASS [   0.105s] ( 36/216) herdr-threads identity::reconcile::tests::hc_closure::keep_false_exited_retires
+        PASS [   1.335s] ( 37/216) herdr-threads identity::reconcile::tests::hc_closure::core_id_rotation_c2_holds
+        PASS [   1.463s] ( 38/216) herdr-threads identity::reconcile::tests::carry_forward::carry_forward_is_stale_when_binding_changed
+        PASS [   1.466s] ( 39/216) herdr-threads identity::reconcile::tests::carry_forward::operator_human_binding_is_carried_forward_too
+        PASS [   0.148s] ( 40/216) herdr-threads identity::reconcile::tests::hc_closure::hc_restart_publishes_through_the_port
+        PASS [   1.500s] ( 41/216) herdr-threads identity::reconcile::tests::carry_forward::current_binding_epoch_plans_no_carry_forward
+        PASS [   1.516s] ( 42/216) herdr-threads identity::reconcile::tests::carry_forward::resolved_seat_with_lagging_binding_epoch_gets_carry_forward_transition
+        PASS [   1.524s] ( 43/216) herdr-threads identity::reconcile::tests::carry_forward::reconfirm_structure_after_invalidation_resolves_with_no_binding_to_carry
+        PASS [   0.111s] ( 44/216) herdr-threads identity::reconcile::tests::hc_closure::keep_false_holder_lost_retires
+        PASS [   1.536s] ( 45/216) herdr-threads identity::reconcile::tests::carry_forward::carried_binding_writes_availability_anchor_and_timer_job
+        PASS [   0.112s] ( 46/216) herdr-threads identity::reconcile::tests::hc_closure::keep_false_host_shutdown_retires
+        PASS [   0.106s] ( 47/216) herdr-threads identity::reconcile::tests::hc_closure::keep_false_signaled_retires
+        PASS [   0.111s] ( 48/216) herdr-threads identity::reconcile::tests::hc_closure::keep_false_stopped_by_restart_retires
+        PASS [   1.480s] ( 49/216) herdr-threads identity::reconcile::tests::hc_closure::agent_exit_in_live_shell_ends_binding_only
+        PASS [   0.153s] ( 50/216) herdr-threads identity::reconcile::tests::hc_closure::keep_false_killed_retires
+        PASS [   0.117s] ( 51/216) herdr-threads identity::reconcile::tests::hc_closure::keep_true_exited_retires
+        PASS [   0.158s] ( 52/216) herdr-threads identity::reconcile::tests::hc_closure::keep_false_server_stop_retires
+        PASS [   0.106s] ( 53/216) herdr-threads identity::reconcile::tests::hc_closure::keep_true_killed_retires
+        PASS [   0.126s] ( 54/216) herdr-threads identity::reconcile::tests::hc_closure::keep_true_holder_lost_unresolves_and_reattaches
+        PASS [   0.120s] ( 55/216) herdr-threads identity::reconcile::tests::hc_closure::keep_true_host_shutdown_unresolves_and_reattaches
+        PASS [   0.007s] ( 56/216) herdr-threads identity::reconcile::tests::host_invalidated_seat_reconfirms_structurally_from_binding_evidence_with_unknown_occupancy
+        PASS [   0.006s] ( 57/216) herdr-threads identity::reconcile::tests::host_invalidation_never_reconfirms_from_execution_or_prior_empty_shell_evidence
+        PASS [   0.006s] ( 58/216) herdr-threads identity::reconcile::tests::indexed_saved_seat_page_plans_move_without_namespace_scan
+        PASS [   0.007s] ( 59/216) herdr-threads identity::reconcile::tests::live_set_is_published_only_after_promotion
+        PASS [   0.006s] ( 60/216) herdr-threads identity::reconcile::tests::never_registered_host_invalidated_seat_reconfirms_from_its_structural_proof
+        PASS [   0.006s] ( 61/216) herdr-threads identity::reconcile::tests::non_closing_host_absence_yields_no_retirement_or_unresolve
+        PASS [   0.005s] ( 62/216) herdr-threads identity::reconcile::tests::occupant_evidence_never_unseats_or_replaces_the_active_occupant
+        PASS [   0.132s] ( 63/216) herdr-threads identity::reconcile::tests::hc_closure::keep_true_server_stop_unresolves_and_reattaches
+        PASS [   0.116s] ( 64/216) herdr-threads identity::reconcile::tests::hc_closure::keep_true_signaled_unresolves_and_reattaches
+        PASS [   0.121s] ( 65/216) herdr-threads identity::reconcile::tests::hc_closure::keep_true_stopped_by_restart_unresolves_and_reattaches
+        PASS [   0.111s] ( 66/216) herdr-threads identity::reconcile::tests::hc_closure::machine_mirrors_and_finished_retire_nothing_live
+        PASS [   0.007s] ( 67/216) herdr-threads identity::reconcile::tests::refusal_streaks::a_fresh_refusal_beside_a_persistent_one_blocks
+        PASS [   0.007s] ( 68/216) herdr-threads identity::reconcile::tests::refusal_streaks::a_refusal_free_pass_completes_at_once
+        PASS [   0.007s] ( 69/216) herdr-threads identity::reconcile::tests::refusal_streaks::an_excludable_refusal_completes_on_its_third_consecutive_pass
+        PASS [   0.007s] ( 70/216) herdr-threads identity::reconcile::tests::refusal_streaks::a_transient_reason_never_completes
+        PASS [   1.712s] ( 71/216) herdr-threads::integration observation_outage::herdr_stopped_costs_one_commit_per_backoff_step
+        PASS [   0.007s] ( 72/216) herdr-threads identity::reconcile::tests::refusal_streaks::the_run_restarts_on_any_change
+        PASS [   0.007s] ( 73/216) herdr-threads identity::reconcile::tests::refusal_streaks::mark_unresolved_never_completes
+        PASS [   0.007s] ( 74/216) herdr-threads identity::reconcile::tests::snapshot_cadence_is_the_configured_one
+        PASS [   0.007s] ( 75/216) herdr-threads identity::reconcile::tests::skipping_an_unchanged_capture_clears_dirty_only
+        PASS [   0.127s] ( 76/216) herdr-threads identity::reconcile::tests::hc_closure::one_or_several_captures_same_outcome
+        PASS [   0.008s] ( 77/216) herdr-threads protocol::authority::tests::session_binding_provenances_are_defined_in_trust_policy
+        PASS [   0.008s] ( 78/216) herdr-threads protocol::watch::tests::trust_policy_records_mod_provenances_and_decision
+        PASS [   0.106s] ( 79/216) herdr-threads identity::reconcile::tests::hc_closure::unknown_reason_on_finished_keep_true_retires
+        PASS [   0.137s] ( 80/216) herdr-threads identity::reconcile::tests::hc_closure::same_id_restart_carry_forward_zero_transitions
+        PASS [   0.147s] ( 81/216) herdr-threads identity::reconcile::tests::hc_closure::unknown_reason_on_finished_keep_false_retires
+        PASS [   0.105s] ( 82/216) herdr-threads identity::reconcile::tests::real_store_reconfirms_never_registered_seat_from_its_structural_proof
+        PASS [   0.202s] ( 83/216) herdr-threads identity::reconcile::tests::hc_closure::removed_retires_resolved_and_unresolved_alike
+        PASS [   0.167s] ( 84/216) herdr-threads identity::reconcile::tests::ordinary_empty_allocation_survives_a_later_coherent_publication
+        PASS [   0.167s] ( 85/216) herdr-threads identity::reconcile::tests::real_store_reconfirms_host_invalidated_seat_from_production_shaped_publication
+        PASS [   0.131s] ( 86/216) herdr-threads identity::reconcile::tests::s1_named_allocation_race_and_carry_forward
+        PASS [   1.862s] ( 87/216) herdr-threads::named_seats a_new_seat_publishes_within_a_tick
+        PASS [   0.194s] ( 88/216) herdr-threads identity::reconcile::tests::real_store_registered_seat_follows_observed_move_with_unsupported_execution
+        PASS [   0.129s] ( 89/216) herdr-threads store::seats::observation::named_presence_tests::other_named_seat_goes_offline_with_one_unresolved
+        PASS [   0.147s] ( 90/216) herdr-threads store::seats::observation::named_presence_tests::ended_bindings_show_inactive_unavailable_since
+        PASS [   0.159s] ( 91/216) herdr-threads store::seats::observation::named_presence_tests::one_recipient_unavailable_per_episode
+        PASS [   0.147s] ( 92/216) herdr-threads store::seats::observation::named_presence_tests::restart_keeps_live_named_bindings_available
+        PASS [   0.102s] ( 93/216) herdr-threads store::seats::observation::named_presence_tests::s2_first_empty_named_publication_clears_holds
+        PASS [   0.107s] ( 94/216) herdr-threads store::seats::observation::named_presence_tests::unresolved_named_row_does_not_silence_others
+        PASS [   1.471s] ( 95/216) herdr-threads identity::reconcile::tests::hc_closure::failed_hello_closes_nothing
+        PASS [   0.158s] ( 96/216) herdr-threads store::seats::publication::named_restore_tests::collision_with_resolved_inserts_nameless
+        PASS [   0.097s] ( 97/216) herdr-threads store::seats::publication::named_restore_tests::display_name_restores_unresolved_on_named_host
+        PASS [   0.156s] ( 98/216) herdr-threads store::seats::publication::named_restore_tests::collision_with_unresolved_inserts_nameless
+        PASS [   0.099s] ( 99/216) herdr-threads store::seats::publication::named_restore_tests::live_node_retire_echo_changes_nothing
+        PASS [   0.101s] (100/216) herdr-threads store::seats::publication::named_restore_tests::operator_retire_hands_name_to_oldest_held_row
+        PASS [   0.148s] (101/216) herdr-threads store::seats::publication::named_restore_tests::local_retire_of_an_unknown_seat_is_ok
+        PASS [   0.152s] (102/216) herdr-threads store::seats::publication::named_restore_tests::named_restore_parked_for_the_named_row_releases_on_it
+        PASS [   0.127s] (103/216) herdr-threads store::seats::publication::named_restore_tests::replayed_retire_hands_the_name_to_a_held_row
+        PASS [   0.152s] (104/216) herdr-threads store::seats::publication::named_restore_tests::own_log_retire_keeps_the_retired_seat_retired
+        PASS [   0.006s] (105/216) herdr-threads::combined caller_location::a_named_caller_has_no_pane
+        PASS [   0.006s] (106/216) herdr-threads::combined caller_location::tmux_hint_needs_a_named_caller_in_a_tmux_pane
+        PASS [   0.108s] (107/216) herdr-threads store::seats::publication::named_restore_tests::replayed_retire_runs_the_fence_on_an_open_binding
+        PASS [   0.670s] (108/216) herdr-threads service::workers::observation_lane_tests::a_persistently_refused_seat_lets_kept_claims_and_process_continuity_proceed
+        PASS [   0.118s] (109/216) herdr-threads store::seats::publication::named_restore_tests::unnamed_rows_placed_only_on_single_kind_nodes
+        PASS [   0.682s] (110/216) herdr-threads service::workers::observation_lane_tests::a_refused_mark_unresolved_holds_the_marker_however_long_it_lasts
+        PASS [   0.150s] (111/216) herdr-threads store::seats::publication::named_restore_tests::retiring_held_row_leaves_existing_alone
+        PASS [   0.006s] (112/216) herdr-threads::combined host_adapter::cancellation_closes_socket_and_prompt_result_is_unknown
+        PASS [   0.007s] (113/216) herdr-threads::combined host_adapter::answered_ping_is_observed_even_when_the_operation_fails
+        PASS [   0.004s] (114/216) herdr-threads::combined host_adapter::cancelled_before_connect_sends_nothing
+        PASS [   0.011s] (115/216) herdr-threads::combined host_adapter::cancellation_during_ping_closes_socket_without_operation
+        PASS [   0.717s] (116/216) herdr-threads service::workers::observation_lane_tests::a_refusal_on_an_earlier_page_survives_a_clean_last_page
+        PASS [   0.005s] (117/216) herdr-threads::combined host_adapter::dispatcher_submit_budget_comes_from_wake_capability
+        PASS [   0.020s] (118/216) herdr-threads::combined host_adapter::current_target_is_fenced_by_published_server_boot_and_epoch
+        PASS [   0.705s] (119/216) herdr-threads service::workers::observation_lane_tests::explicit_target_read_during_backoff_runs_one_capture
+        PASS [   0.010s] (120/216) herdr-threads::combined host_adapter::duplicate_envelope_keys_and_non_object_branches_fail_closed
+        PASS [   0.162s] (121/216) herdr-threads store::seats::publication::named_restore_tests::s5_unnamed_restored_row_held_unresolved_on_two_kind_node
+        PASS [   0.007s] (122/216) herdr-threads::combined host_adapter::explicit_pane_and_snapshot_use_separate_ping_and_operation_connections
+        PASS [   0.005s] (123/216) herdr-threads::combined host_adapter::host_port_defaults_answer_without_unsupported
+        PASS [   0.005s] (124/216) herdr-threads::combined host_adapter::implemented_kinds_are_herdr_hc_and_named
+        PASS [   0.005s] (125/216) herdr-threads::combined host_adapter::missing_pane_is_typed_not_found_without_epoch_advance
+        PASS [   0.009s] (126/216) herdr-threads::combined host_adapter::malformed_foreign_id_and_partial_frames_fail_closed
+        PASS [   0.008s] (127/216) herdr-threads::combined host_adapter::observed_release_follows_the_latest_answered_ping
+        PASS [   0.007s] (128/216) herdr-threads::combined host_adapter::operation_shapes_are_checked_and_permission_errors_are_typed
+        PASS [   0.037s] (129/216) herdr-threads::combined host_adapter::delayed_extra_response_frame_is_rejected
+        PASS [   0.005s] (130/216) herdr-threads::combined host_adapter::parser_rejects_wrong_explicit_target_and_missing_snapshot_identity
+        PASS [   0.722s] (131/216) herdr-threads service::workers::observation_lane_tests::frozen_capture_marks_host_down_and_publication_kicks_wake_lane
+        PASS [   0.021s] (132/216) herdr-threads::combined host_adapter::native_cli_target_root_process_is_pane_shell_pid
+        PASS [   0.676s] (133/216) herdr-threads service::workers::observation_lane_tests::unchanged_host_cycle_commits_touch_no_wakes_mapped_table
+        PASS [   0.006s] (134/216) herdr-threads::combined host_adapter::prompt_submission_is_transport_only_and_public_native_capabilities_stay_closed
+        PASS [   0.005s] (135/216) herdr-threads::combined host_adapter::relative_endpoint_and_oversized_request_are_rejected_before_connect
+        PASS [   0.017s] (136/216) herdr-threads::combined host_adapter::releases_from_the_floor_allow_transport_and_snapshot_without_claiming_capabilities
+        PASS [   0.006s] (137/216) herdr-threads::combined host_adapter::resume_after_persisted_epoch_starts_a_newer_epoch_only
+        PASS [   0.023s] (138/216) herdr-threads::combined host_adapter::response_limit_counts_lf_and_accepts_exact_boundary
+        PASS [   0.065s] (139/216) herdr-threads::combined host_adapter::failed_ping_never_opens_operation_connection
+        PASS [   0.006s] (140/216) herdr-threads::combined host_adapter::snapshot_contract_is_a_version_floor
+        PASS [   0.005s] (141/216) herdr-threads::combined host_adapter::synchronous_host_port_is_safe_inside_service_runtime
+        PASS [   0.007s] (142/216) herdr-threads::combined host_adapter::unserved_methods_and_rejected_params_are_unsupported_for_that_operation_only
+        PASS [   0.008s] (143/216) herdr-threads::combined host_adapter::witnessed_snapshot_is_a_verified_coherent_server_incarnation
+        PASS [   0.016s] (144/216) herdr-threads::combined host_adapter::stalled_request_write_is_cancellable_and_never_reports_submission
+        PASS [   0.109s] (145/216) herdr-threads::combined host_adapter::ping_and_operation_share_absolute_deadline
+        PASS [   0.105s] (146/216) herdr-threads::combined host_adapter::possible_prompt_submission_with_late_reply_stays_unknown_and_is_not_replayed
+        PASS [   0.876s] (147/216) herdr-threads service::workers::observation_lane_tests::a_persistently_refused_resolved_seat_lets_the_hold_lift
+        PASS [   0.165s] (148/216) herdr-threads::combined host_adapter::oversized_and_continuous_responses_stop_without_unbounded_memory_or_time
+        PASS [   0.189s] (149/216) herdr-threads::combined host_adapter::ping_errors_preserve_permission_and_protocol_details_before_dispatch
+        PASS [   0.505s] (150/216) herdr-threads::combined host_adapter::connected_no_reply_obeys_whole_call_deadline_and_closes_owned_socket
+        PASS [   1.178s] (151/216) herdr-threads service::workers::observation_lane_tests::idle_herdr_up_makes_at_most_one_cycle_per_5s
+        PASS [   0.854s] (152/216) herdr-threads::combined handoff_topology_cli::named_caller_seat_resolve_pane_reads_its_server
+        PASS [   1.001s] (153/216) herdr-threads::combined handoff_topology_cli::named_caller_launch_new_tab_reaches_herdr
+        PASS [   1.016s] (154/216) herdr-threads::combined named_caller::first_text_inbox_prints_m8_once
+        PASS [   3.557s] (155/216) herdr-threads::integration sync_link::store_only_daemon_without_target_idle_exits
+        PASS [   1.321s] (156/216) herdr-threads::combined handoff_topology_cli::named_caller_invite_pane_allocates_on_herdr
+        PASS [   1.130s] (157/216) herdr-threads::combined named_caller::hook_lifecycle_enrolls_then_the_cli_acts_as_that_seat
+        PASS [   0.876s] (158/216) herdr-threads::combined named_caller::no_harness_session_and_no_context_is_refused_with_m15
+        PASS [   0.004s] (159/216) herdr-threads::hc_inherited_name named_caller_hint_carries_socket_and_every_candidate
+        PASS [   1.463s] (160/216) herdr-threads::combined named_caller::claim_host_is_reserved_with_and_without_herdr
+        PASS [   1.477s] (161/216) herdr-threads::combined named_caller::named_join
+        PASS [   4.156s] (162/216) herdr-threads::config_smoke cross_environment_messaging_one_daemon
+        PASS [   1.566s] (163/216) herdr-threads::combined named_caller::named_ack
+        PASS [   2.398s] (164/216) herdr-threads::named_seats a_retired_seat_publishes_at_the_next_tick
+        PASS [   1.597s] (165/216) herdr-threads::combined named_caller::named_send
+        PASS [   1.693s] (166/216) herdr-threads::combined named_caller::known_name_reads_default_to_the_seat_and_mark_self
+        PASS [   1.832s] (167/216) herdr-threads::combined named_caller::named_accept
+        PASS [   1.256s] (168/216) herdr-threads::combined named_caller::plain_commands_under_readonly_never_discharge_an_ack
+        PASS [   1.471s] (169/216) herdr-threads::combined named_caller::pane_form_with_no_herdr_names_the_pane_and_the_host
+        PASS [   1.128s] (170/216) herdr-threads::combined named_caller::second_live_process_with_the_name_is_refused_with_m7
+        PASS [   1.304s] (171/216) herdr-threads::combined named_caller::readonly_watch_records_the_marker_and_the_ack_stays_owed
+        PASS [   1.220s] (172/216) herdr-threads::combined named_caller::reads_under_an_unknown_name_create_no_seat
+        PASS [   2.004s] (173/216) herdr-threads::combined named_caller::no_next_line_carries_the_reserved_locator
+        PASS [   1.059s] (174/216) herdr-threads::integration multi_host::store_only_daemon_stays_store_only_with_a_healthy_builtin
+        PASS [   1.626s] (175/216) herdr-threads::combined named_caller::plain_commands_without_the_variable_stay_writable
+        PASS [   1.677s] (176/216) herdr-threads::integration trust_policy::carried_forward_binding_still_matches_session_after_later_incarnation_change
+        PASS [   1.268s] (177/216) herdr-threads::integration trust_policy::expected_boot_and_carry_forward_give_no_unknown_outcome_across_stop_ensure
+        PASS [   1.446s] (178/216) herdr-threads::integration trust_policy::idle_mod_session_reattaches_through_its_watch_and_is_woken
+        PASS [   1.837s] (179/216) herdr-threads::integration trust_policy::codex_reattachment_without_herdr_hint_then_wake
+        PASS [   1.364s] (180/216) herdr-threads::integration trust_policy::launch_onto_reattached_seat_with_live_agent_is_refused
+        PASS [   2.522s] (181/216) herdr-threads::config_smoke hc_terminal_site_four_harnesses
+        PASS [   1.971s] (182/216) herdr-threads::integration trust_policy::f6_walking_skeleton
+        PASS [   2.715s] (183/216) herdr-threads::integration observation_outage::herdr_restart_resets_backoff_to_5s_cadence
+        PASS [   0.981s] (184/216) herdr-threads::integration trust_policy::restore_with_every_seat_structurally_reconfirmed_leaves_no_hold
+        PASS [   0.005s] (185/216) herdr-threads::integration trust_policy::stand_in_herdr_process_entry
+        PASS [   1.521s] (186/216) herdr-threads::integration trust_policy::me_init_over_reattached_seat_is_refused
+        PASS [   0.971s] (187/216) herdr-threads::integration trust_policy::resume_before_reconciliation_with_daemon_kept_running_is_retried_then_reattaches
+        PASS [   3.282s] (188/216) herdr-threads::named_seats an_idle_named_lane_writes_nothing
+        PASS [   1.339s] (189/216) herdr-threads::integration trust_policy::reboot_with_daemon_down_idle_mod_session_reattaches_through_its_watch
+        PASS [   0.928s] (190/216) herdr-threads::integration trust_policy::resume_on_same_pane_id_before_reconciliation_with_daemon_kept_running_reattaches
+        PASS [   1.126s] (191/216) herdr-threads::integration trust_policy::send_right_after_ensure_before_reconciliation_pass_gives_no_warning_and_a_timer
+        PASS [   7.972s] (192/216) herdr-threads::integration_sweep named_tmux_idle_recipient_wakes_for_p0_not_p1
+        PASS [   1.937s] (193/216) herdr-threads::integration trust_policy::pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics
+        PASS [   1.445s] (194/216) herdr-threads::config_smoke herdr_app_terminal_full_messaging_and_label
+        PASS [   3.891s] (195/216) herdr-threads::integration trust_policy::a_seat_whose_session_claims_during_the_grace_is_never_retired
+        PASS [   0.937s] (196/216) herdr-threads::named_seats first_inbox_prints_m8_once_then_same_seat
+        PASS [   6.615s] (197/216) herdr-threads::integration host_sessions_daemon::store_only_daemon_idle_exits_but_one_with_a_host_stays
+        PASS [   6.172s] (198/216) herdr-threads::integration trust_policy::claude_resume_claim_while_herdr_is_down_is_kept_and_decided
+        PASS [   6.370s] (199/216) herdr-threads::integration trust_policy::codex_resume_claim_while_herdr_is_down_is_kept_and_decided
+        PASS [   6.311s] (200/216) herdr-threads::integration trust_policy::kept_claim_survives_a_daemon_restart
+        PASS [   3.209s] (201/216) herdr-threads::named_seats idle_exit_with_only_named_host
+        PASS [   1.116s] (202/216) herdr-threads::named_seats named_join_accept_backlog
+        PASS [   5.404s] (203/216) herdr-threads::integration trust_policy::unresolved_seat_whose_restored_pane_stays_is_kept_and_reattaches
+        PASS [   4.781s] (204/216) herdr-threads::config_smoke herdr_pane_site_four_harnesses
+        PASS [   8.041s] (205/216) herdr-threads::integration trust_policy::kept_claim_of_another_session_takes_nothing
+        PASS [   6.760s] (206/216) herdr-threads::integration trust_policy::unresolved_seat_retires_when_its_restored_pane_closes_and_the_hold_lifts
+        PASS [   1.581s] (207/216) herdr-threads::named_seats named_pair_with_pane_auto_join_opener
+        PASS [   2.037s] (208/216) herdr-threads::config_smoke live_mod_channel_is_a_wake_on_named_and_hc_sites
+        PASS [  10.832s] (209/216) herdr-threads::integration trust_policy::a_resume_into_another_seats_session_supersedes_the_kept_claim
+        PASS [   1.049s] (210/216) herdr-threads::named_seats named_to_named_send_inbox_ack_hook
+        PASS [   2.215s] (211/216) herdr-threads::config_smoke named_site_four_harnesses
+        PASS [   1.909s] (212/216) herdr-threads::named_seats named_to_pane_in_isolated_herdr
+        PASS [   5.130s] (213/216) herdr-threads::config_smoke named_tmux_site_four_harnesses
+        PASS [   2.148s] (214/216) herdr-threads::config_smoke turn_edge_restores_the_tmux_wake_after_a_daemon_restart
+        PASS [   7.257s] (215/216) herdr-threads::named_seats recovery_hint_round_trip
+        PASS [  35.176s] (216/216) herdr-threads::integration trust_policy::a_wake_with_no_session_contact_before_its_retry_is_unreceived_and_not_retyped
+────────────
+     Summary [  35.855s] 216 tests run: 216 passed, 8741 skipped
+exit 0

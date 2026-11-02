@@ -706,6 +706,17 @@ impl HostPort for NamedHost {
             targets,
         })
     }
+    fn store_enumeration(
+        &self,
+        context: &HostCallContext,
+    ) -> Result<Option<Vec<SeatId>>, ApiError> {
+        Ok(Some(
+            self.live(&context.budget)?
+                .into_iter()
+                .map(|(seat, _)| seat)
+                .collect(),
+        ))
+    }
     /// A cooperative target for a seat with a live verified tmux binding. The composer, turn
     /// state and pane-mode checks run immediately before typing (`wake_gate`).
     fn safe_wake_target(

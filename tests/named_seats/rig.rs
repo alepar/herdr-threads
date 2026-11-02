@@ -162,6 +162,10 @@ impl Rig {
             command.arg("--host-endpoint").arg(endpoint);
         }
         command
+            .env(
+                "HT_TEST_LANE_TICK_MS",
+                herdr_threads::test_support::TEST_DAEMON_LANE_TICK_MS,
+            )
             .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())

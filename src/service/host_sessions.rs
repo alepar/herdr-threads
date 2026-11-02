@@ -903,7 +903,8 @@ impl HostSessions {
                 Arc::clone(&deps.writer),
             )
             .with_service_cancellation(stop.clone())
-            .with_observation_pacer(Arc::clone(&observation_pacer)),
+            .with_observation_pacer(Arc::clone(&observation_pacer))
+            .with_observation_cadence(deps.observation_cadence),
         );
         let bootstrap = deps.state_dir.as_ref().and_then(|state_dir| {
             (port.native_launch_capability() == NativeLaunchCapability::HostGuardedStart).then(
