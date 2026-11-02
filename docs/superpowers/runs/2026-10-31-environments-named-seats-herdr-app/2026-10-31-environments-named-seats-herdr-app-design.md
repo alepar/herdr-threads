@@ -437,6 +437,9 @@ was rejected because it splits a role's threads and obligations.
   the same retire transaction gives the name back to the oldest held row whose `seat.created.display_name` equals
   it (it sets `seats.name`, which the index now allows); named continuity then reattaches that seat on the next
   resolve of the name. Retiring the held row just retires it. No name moves while two candidates are live.
+  A replayed own `seat.retired` of a restored row takes the same transition as the live retire: it ends the row's open
+  bindings (`seat_retired`) with their catch-ups, offers and wake work, since a restored `unresolved` row can open a
+  binding before its fact lands.
 - A row without a name is placed automatically only when every dialled host attached or remembered on the node has
   one kind. Otherwise it is held for the operator.
 - The always-attached named host never satisfies `wait:host`.

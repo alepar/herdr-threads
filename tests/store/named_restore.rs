@@ -591,6 +591,122 @@ fn replayed_retire_hands_the_name_to_a_held_row() {
     assert_eq!(f.row(&b).2.as_deref(), Some("w"), "B takes the name");
 }
 
+// Kills: a replayed own `seat.retired` that retires a restored row with a bare UPDATE: a restored
+// `unresolved` row can open a binding before its fact lands, and the row must not end `retired`
+// with that binding open, its catch-up active, its offers kept or its wake work armed.
+#[test]
+fn replayed_retire_runs_the_fence_on_an_open_binding() {
+    let mut f = fixture();
+    let seat = f.restore(Some("w")).unwrap();
+    let id = seat.as_str();
+    f.conn
+        .execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) \
+             VALUES (?1,1,1,'w','b',1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-w','inc')",
+            [id],
+        )
+        .unwrap();
+    let binding: String = f
+        .conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t',?1,'topic','goal',0,0,0)",
+            [&f.instance],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) VALUES (?1,?2,'t',0,0,'active')",
+            [&binding, &id.to_owned()],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,?2,1)",
+            [&binding, &id.to_owned()],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO in_turn_offer(binding_id,seat_id,item_id) VALUES (?1,?2,'i')",
+            [&binding, &id.to_owned()],
+        )
+        .unwrap();
+    f.conn
+        .execute(
+            "INSERT INTO wake_work(seat_id,reason_bits) VALUES (?1,3)",
+            [id],
+        )
+        .unwrap();
+    let generation = |f: &Fx| -> i64 {
+        f.conn
+            .query_row("SELECT generation FROM seats WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+    let lifecycle = |f: &Fx| -> i64 {
+        f.conn
+            .query_row(
+                "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=?1",
+                [f.named.get()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let (generation_before, lifecycle_before) = (generation(&f), lifecycle(&f));
+
+    f.replay_retired(&seat).unwrap();
+
+    assert_eq!(f.row(&seat).0, "retired");
+    let ended: (Option<i64>, Option<String>) = f
+        .conn
+        .query_row(
+            "SELECT ended_at,disconnect_reason FROM occupant_bindings WHERE binding_id=?1",
+            [&binding],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(ended.0.is_some(), "the open binding ends");
+    assert_eq!(ended.1.as_deref(), Some("seat_retired"));
+    let (state, reason): (String, Option<String>) = f
+        .conn
+        .query_row(
+            "SELECT state,end_reason FROM catch_up WHERE binding_id=?1",
+            [&binding],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (state.as_str(), reason.as_deref()),
+        ("ended", Some("superseded"))
+    );
+    for table in ["warning_offer", "in_turn_offer"] {
+        let rows: i64 = f
+            .conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "{table} rows are deleted");
+    }
+    let bits: i64 = f
+        .conn
+        .query_row(
+            "SELECT reason_bits FROM wake_work WHERE seat_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bits, 0, "wake work resets");
+    assert_eq!(generation(&f), generation_before + 1);
+    assert_eq!(lifecycle(&f), lifecycle_before + 1);
+}
+
 // Kills: a transition that runs again for a row the live retire already retired (a second
 // `retirements` row, or a moved `retired_seq`).
 #[test]

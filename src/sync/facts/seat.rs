@@ -4,7 +4,8 @@
 //! design section 4). The handler checks the origin owns the seat ID's tag,
 //! then calls the one materializer in `store::seats`. `seat.retired` retires a
 //! published seat on every node; its handler checks the origin is the seat's
-//! home, then calls `seats::materialize_seat_retired`.
+//! home, then calls `seats::materialize_seat_retired`. On the authoring node's own replay a local row
+//! takes the retirement fence's whole transition (open bindings end `seat_retired`), not a bare state change.
 
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
