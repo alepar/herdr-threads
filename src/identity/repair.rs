@@ -201,16 +201,26 @@ impl OrdinaryIdentity {
             expected_epoch: None,
         };
         // A store-only host's capture is its own rows: unchanged, there is nothing to publish, and
-        // the pass would write five transactions to say so. A failed read falls through to the capture.
+        // the pass would write five transactions to say so. Only a finished pass with no lane
+        // failure outstanding may be skipped; anything else runs a real capture, which alone
+        // reports recovery. A failed read falls through to the capture.
         lane.clear_staged_live();
+        // A failure the lane never saw (the read gate) counts too.
+        let failing = self
+            .observation_pacer
+            .as_ref()
+            .is_some_and(|pacer| pacer.attempts() > 0);
         if let Ok(Some(live)) = self.host.store_enumeration(&context) {
-            if !lane.explicit_capture_requested() && lane.published_live() == Some(live.as_slice())
+            if !failing
+                && !lane.explicit_capture_requested()
+                && lane.published_live() == Some(live.as_slice())
             {
                 lane.skip_unchanged_capture();
                 return Ok(None);
             }
             lane.stage_live(live);
         }
+        lane.begin_pass();
         let outcome = crate::identity::reconcile::observe_and_publish(
             self.host.as_ref(),
             store,

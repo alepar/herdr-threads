@@ -955,7 +955,8 @@ pub struct ObservationLane {
     completed_captures: u64,
     /// A store-only host's live set, read before the capture now being published.
     staged_live: Option<Vec<crate::protocol::ids::SeatId>>,
-    /// The live set whose publication and reconciliation pass both finished. `None` after a start.
+    /// The live set whose publication and reconciliation pass both finished, with no capture begun
+    /// since. `None` after a start and while a pass is open.
     published_live: Option<Vec<crate::protocol::ids::SeatId>>,
 }
 
@@ -1006,6 +1007,12 @@ impl ObservationLane {
 
     pub fn clear_staged_live(&mut self) {
         self.staged_live = None;
+    }
+
+    /// A capture starts: no set counts as finished until its pass does. A capture, a page or a marker
+    /// that fails and a refused pass all leave this empty, so the next due tick captures again.
+    pub fn begin_pass(&mut self) {
+        self.published_live = None;
     }
 
     /// The staged live set becomes the published one; with nothing staged the published set stays.

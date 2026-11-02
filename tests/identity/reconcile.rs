@@ -4644,3 +4644,19 @@ mod refusal_streaks {
         assert!(!streaks.pass_finished(&publication(2), std::slice::from_ref(&refused)));
     }
 }
+
+#[test]
+fn begin_pass_forgets_the_finished_set() {
+    let mut lane = ObservationLane::default();
+    lane.stage_live(vec![SeatId::new("a")]);
+    lane.promote_live();
+    lane.stage_live(vec![SeatId::new("b")]);
+    lane.begin_pass();
+    assert_eq!(
+        lane.published_live(),
+        None,
+        "an open pass publishes nothing"
+    );
+    lane.promote_live();
+    assert_eq!(lane.published_live(), Some([SeatId::new("b")].as_slice()));
+}
