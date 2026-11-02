@@ -728,6 +728,32 @@ impl DomainService {
             let creation = status
                 .creation
                 .ok_or_else(|| error(ErrorCode::Conflict, "automatic creation unavailable"))?;
+            // TRUST-POLICY `managed_launch`: a host-guarded launch's placeholder, before the
+            // Send that opens its gate, as `launch_gate::allocate_seat` does for peer and local
+            // launch. The seat exists: `Attach` names it.
+            if let (AutomaticBootstrapAction::Attach(attachment), Some(created)) =
+                (&request.action, creation.as_target())
+            {
+                let (session, _) = self.namespace_session(namespace, budget)?.ok_or_else(|| {
+                    ApiError::unsupported("automatic canonical runtime unavailable")
+                })?;
+                let seat = super::launch_gate::GateSeat {
+                    session: &session,
+                    store: self.store.as_ref(),
+                    writer,
+                    clock: self.clock.as_ref(),
+                    budget,
+                    harness: request.identity.plan.payload.launch.harness,
+                    operation: request.identity.plan.payload.keys.resolve.clone(),
+                };
+                let bounded = super::launch_gate::gate_budget(&seat);
+                super::launch_gate::record_placeholder(
+                    &seat,
+                    created,
+                    &attachment.resolved_seat,
+                    &bounded,
+                )?;
+            }
             let resolving = crate::protocol::commands::ResolveSeat {
                 target: creation.launch_target().clone(),
                 host: request.identity.claim.host.clone(),

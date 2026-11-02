@@ -1560,6 +1560,53 @@ mod launch_new {
         );
     }
 
+    /// The one open `managed_launch` binding a V3 handoff leaves before its Send: the shim's
+    /// process, which `exec` kept. The stand-in never checks in, so no other binding replaces it.
+    fn assert_handoff_recorded_its_placeholder(rig: &LaunchRig, placement: &[&str]) {
+        let mut args = vec!["--json", "handoff"];
+        args.extend(placement);
+        args.extend(["--kind", "claude", "--", "do the work"]);
+        let ran = rig.agent("sess-a", &args, None);
+        assert_eq!(
+            ran.code,
+            Some(0),
+            "stdout {} stderr {}",
+            ran.stdout,
+            ran.stderr
+        );
+        let (pid, _) = rig.marker();
+        let rows: Vec<(Option<i64>, Option<i64>)> = {
+            let db = rig.db();
+            let mut statement = db
+                .prepare(
+                    "SELECT liveness_pid, ended_at FROM occupant_bindings \
+                     WHERE observation_provenance='managed_launch'",
+                )
+                .unwrap();
+            statement
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(
+            rows,
+            vec![(Some(i64::from(pid)), None)],
+            "one open managed_launch binding on the exec'd process"
+        );
+    }
+
+    // TRUST-POLICY `managed_launch`: a host-guarded launch records its placeholder before the
+    // Send that opens the gate, for a handoff as for peer and local launch.
+    #[test]
+    fn core_handoff_records_its_managed_launch_binding() {
+        let rig = LaunchRig::start("handoff-core-placeholder");
+        rig.fake
+            .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
+        rig.enroll("sess-a");
+        assert_handoff_recorded_its_placeholder(&rig, &["--new-tab", "worker", "--space", "w1"]);
+    }
+
     const NODE_WIDE_REFUSAL: &str = "daemon lacks automatic handoff capability";
 
     fn assert_routed(ran: &Ran) {

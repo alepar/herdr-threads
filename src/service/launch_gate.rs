@@ -9,7 +9,8 @@
 //!   instead, N15 and H3).
 //!   A plain local launch's gate-only record (`local_launch_gates`, H3) releases the same way.
 //! - Also owns: `allocate_seat`, the seat of a gate-only launch (peer or local), allocated
-//!   before its gate opens.
+//!   before its gate opens, and `record_placeholder`, its `managed_launch` half, which a V3
+//!   handoff (whose seat `Resolve` allocated) records at `Attach`, before its Send.
 //! - Hides: the polling of the canonical view; the wait holds no store turn and no writer
 //!   lane (each poll is one short read).
 //! - Must not: write in the decision (`allocate_seat` is the launchers' shared write, and that
@@ -180,12 +181,7 @@ pub struct GateSeat<'a> {
 /// `managed_launch` binding on the process the gate shim is, which `exec` keeps (L2). No
 /// pid or process record is an error: the gate never opens without its placeholder.
 pub fn allocate_seat(seat: &GateSeat<'_>, created: &CreatedTarget) -> Result<SeatId, ApiError> {
-    let budget = CallBudget {
-        deadline: MonoInstant(
-            (seat.clock.monotonic_now().0 + GATE_SEAT_BUDGET_MS).min(seat.budget.deadline.0),
-        ),
-        cancellation: seat.budget.cancellation.clone(),
-    };
+    let budget = gate_budget(seat);
     let allocated = seat.session.identity().resolve(
         ResolveSeat {
             target: created.target.clone(),
@@ -196,6 +192,29 @@ pub fn allocate_seat(seat: &GateSeat<'_>, created: &CreatedTarget) -> Result<Sea
         },
         &budget,
     )?;
+    record_placeholder(seat, created, &allocated, &budget)?;
+    Ok(allocated)
+}
+
+/// The budget of a gate seat's writes: at most `GATE_SEAT_BUDGET_MS`, inside the request's.
+pub fn gate_budget(seat: &GateSeat<'_>) -> CallBudget {
+    CallBudget {
+        deadline: MonoInstant(
+            (seat.clock.monotonic_now().0 + GATE_SEAT_BUDGET_MS).min(seat.budget.deadline.0),
+        ),
+        cancellation: seat.budget.cancellation.clone(),
+    }
+}
+
+/// The `managed_launch` binding of `allocated` on the process the gate shim is, which `exec`
+/// keeps (L2). No pid or process record is an error: the gate never opens without it. A V3
+/// handoff, whose seat `Resolve` already allocated, calls this half alone.
+pub fn record_placeholder(
+    seat: &GateSeat<'_>,
+    created: &CreatedTarget,
+    allocated: &SeatId,
+    budget: &CallBudget,
+) -> Result<(), ApiError> {
     let context = crate::ports::HostCallContext {
         budget: budget.clone(),
         expected_boot: None,
@@ -232,10 +251,10 @@ pub fn allocate_seat(seat: &GateSeat<'_>, created: &CreatedTarget) -> Result<Sea
     loop {
         let attempt = seat
             .writer
-            .enter_background(&budget, seat.clock)
-            .and_then(|_turn| seat.store.record_managed_launch(command.clone(), &budget));
+            .enter_background(budget, seat.clock)
+            .and_then(|_turn| seat.store.record_managed_launch(command.clone(), budget));
         match attempt {
-            Ok(_) => return Ok(allocated),
+            Ok(_) => return Ok(()),
             // The store decides on its effective observation, which can lag the fresh read.
             Err(error)
                 if error.code == ErrorCode::StaleHostObservation

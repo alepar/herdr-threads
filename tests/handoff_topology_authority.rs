@@ -2564,7 +2564,12 @@ impl HcRig {
         // The capture moved the host to the core's boot; the sender, a Herdr-shaped seat, keeps
         // its current observation on it (the fixture's seat model, not the unit under test).
         f.db.execute_batch("DELETE FROM observed_targets WHERE target_id='p'; INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) SELECT host_id,'p',host_boot,host_epoch,0,observation_sequence+1000,'fresh',0,'term','inc','native_current_target',1,'idle' FROM herdr_hosts WHERE host_id=(SELECT min(host_id) FROM herdr_hosts);").unwrap();
-        fake.add_terminal(FakeTerminal::live("t2"));
+        // The attach records the launch placeholder on the terminal's process, so `t2` runs as
+        // this test process, whose pid the process table observes.
+        fake.add_terminal(FakeTerminal {
+            pid: Some(std::process::id()),
+            ..FakeTerminal::live("t2")
+        });
         Self { f, fake, namespace }
     }
 
@@ -2745,6 +2750,30 @@ fn attach_through_fake_hc() {
     .unwrap();
     assert!(
         matches!(attached, CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Attached && v.attachment.as_ref() == Some(&attachment))
+    );
+    // TRUST-POLICY `managed_launch`: the attach recorded the placeholder, once, on the
+    // terminal's process, before any Send.
+    let placeholders: Vec<(String, Option<i64>)> = {
+        let mut statement = rig
+            .f
+            .db
+            .prepare(
+                "SELECT seat_id, liveness_pid FROM occupant_bindings \
+                 WHERE observation_provenance='managed_launch' AND ended_at IS NULL",
+            )
+            .unwrap();
+        statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(
+        placeholders,
+        vec![(
+            seat.as_str().to_owned(),
+            Some(i64::from(std::process::id()))
+        )]
     );
     // The derived child launches into the terminal, in the core's namespace.
     let AutomaticOriginal::Handoff(plan) = &attachment.child.original else {
