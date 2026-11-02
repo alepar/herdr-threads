@@ -200,7 +200,6 @@ fn herdr_candidate_verifies_nearest_ancestor() {
         None,
         &[host],
         &no_core,
-        0,
         &budget(),
     );
     assert_eq!(reply, LocateReply::Verified { index: 1, root: 10 });
@@ -216,7 +215,6 @@ fn peer_pid_is_the_subject_without_a_fingerprint() {
         Some(30),
         &[host],
         &no_core,
-        0,
         &budget(),
     );
     assert_eq!(reply, LocateReply::Verified { index: 0, root: 10 });
@@ -233,7 +231,6 @@ fn no_candidate_verifies_is_unverified() {
         None,
         &[host],
         &no_core,
-        0,
         &budget(),
     );
     assert_eq!(
@@ -248,14 +245,13 @@ fn no_candidate_verifies_is_unverified() {
         None,
         &[],
         &no_core,
-        0,
         &budget(),
     );
     assert!(matches!(none, LocateReply::Unverified { .. }));
 }
 
-// Kills: an unreachable host answering Verified or panicking, and an unreachable verdict being
-// cached (the next call must ask again once the host is back).
+// Kills: an unreachable host answering Verified or panicking, and an unreachable verdict
+// outliving the outage (the next call must ask again once the host is back).
 #[test]
 fn unreachable_host_counts_unverified() {
     let service = LocateCallerService::new(tree());
@@ -265,7 +261,6 @@ fn unreachable_host_counts_unverified() {
         None,
         std::slice::from_ref(&down),
         &no_core,
-        0,
         &budget(),
     );
     assert_eq!(
@@ -280,7 +275,6 @@ fn unreachable_host_counts_unverified() {
         None,
         &[up],
         &no_core,
-        0,
         &budget(),
     );
     assert_eq!(again, LocateReply::Verified { index: 0, root: 10 });
@@ -290,7 +284,6 @@ fn unreachable_host_counts_unverified() {
         None,
         &[],
         &no_core,
-        0,
         &budget(),
     );
     assert_eq!(
@@ -298,44 +291,6 @@ fn unreachable_host_counts_unverified() {
         LocateReply::Unverified {
             per_candidate: vec![CandidateVerdict::Unreachable],
         }
-    );
-}
-
-// Kills: a cache that never hits (the host is asked twice), one that ignores the epoch, and one
-// that keys on the candidates alone.
-#[test]
-fn cache_hits_same_key() {
-    let service = LocateCallerService::new(tree());
-    let host = Arc::new(Roots {
-        answers: vec![("w1:p1", Ok(Some(10)))],
-        asked: AtomicUsize::new(0),
-        terminals: false,
-    });
-    let port: Arc<dyn HostPort> = host.clone();
-    let ask = |subject: u32, epoch: u64| {
-        service.locate(
-            &request(vec![pane("w1:p1")], Some(subject)),
-            None,
-            std::slice::from_ref(&port),
-            &no_core,
-            epoch,
-            &budget(),
-        )
-    };
-    let first = ask(30, 7);
-    assert_eq!(ask(30, 7), first);
-    assert_eq!(host.asked.load(Ordering::SeqCst), 1);
-    ask(30, 8);
-    assert_eq!(
-        host.asked.load(Ordering::SeqCst),
-        2,
-        "a new epoch asks again"
-    );
-    ask(20, 8);
-    assert_eq!(
-        host.asked.load(Ordering::SeqCst),
-        3,
-        "a new subject asks again"
     );
 }
 
@@ -357,7 +312,6 @@ fn native_cli_candidate_verifies_against_fake_herdr() {
         None,
         std::slice::from_ref(&cli),
         &no_core,
-        0,
         &budget(),
     );
     assert_eq!(inside, LocateReply::Verified { index: 1, root: 1 });
@@ -366,7 +320,6 @@ fn native_cli_candidate_verifies_against_fake_herdr() {
         None,
         &[cli],
         &no_core,
-        0,
         &budget(),
     );
     assert!(matches!(outside, LocateReply::Unverified { .. }));
@@ -420,7 +373,6 @@ fn herdr_verdict(table: Arc<Table>, subject: u32, shell: u32) -> LocateReply {
         None,
         &[herdr_pane_at(shell)],
         &no_core,
-        0,
         &budget(),
     )
 }
@@ -494,9 +446,10 @@ fn root_below_the_wall_still_verifies() {
     );
 }
 
-// Kills: a cache keyed on the pid alone (a reused pid hit another process's verdict).
+// Kills: any verdict cache: two identical calls must each ask the host, and a reused pid (same
+// pid, new parent chain) or a subject that becomes readable must be seen by the next call.
 #[test]
-fn reused_pid_with_new_start_misses_cache() {
+fn identical_calls_each_walk() {
     let table = Table::new(&[(30, Some(10), 100, "a"), (10, None, 1, "sh")]);
     let service = LocateCallerService::new(table.clone());
     let host = Arc::new(Roots {
@@ -511,47 +464,17 @@ fn reused_pid_with_new_start_misses_cache() {
             None,
             std::slice::from_ref(&port),
             &no_core,
-            0,
             &budget(),
         )
     };
     let first = ask();
     assert_eq!(first, LocateReply::Verified { index: 0, root: 10 });
     assert_eq!(ask(), first);
-    assert_eq!(host.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(host.asked.load(Ordering::SeqCst), 2, "walked both times");
     // The pid is reused by a process outside the pane.
     table.set(&[(30, None, 200, "b"), (10, None, 1, "sh")]);
     assert_eq!(ask(), walled());
-    assert_eq!(host.asked.load(Ordering::SeqCst), 2);
-}
-
-// Kills: caching a subject with no readable record (no start stamp to tell it from a reuse).
-#[test]
-fn unstamped_subject_never_cached() {
-    let table = Table::new(&[]);
-    let service = LocateCallerService::new(table.clone());
-    let host = Arc::new(Roots {
-        answers: vec![("w1:p1", Ok(Some(10)))],
-        asked: AtomicUsize::new(0),
-        terminals: false,
-    });
-    let port: Arc<dyn HostPort> = host.clone();
-    let ask = || {
-        service.locate(
-            &request(vec![pane("w1:p1")], Some(30)),
-            None,
-            std::slice::from_ref(&port),
-            &no_core,
-            0,
-            &budget(),
-        )
-    };
-    assert_eq!(ask(), walled());
-    assert_eq!(ask(), walled());
-    assert_eq!(host.asked.load(Ordering::SeqCst), 2, "walked both times");
-    // Once the process is readable the walk sees it, not a cached miss.
-    table.set(&[(30, Some(10), 7, "a"), (10, None, 1, "sh")]);
-    assert_eq!(ask(), LocateReply::Verified { index: 0, root: 10 });
+    assert_eq!(host.asked.load(Ordering::SeqCst), 3);
 }
 
 fn hc_terminal_at(root: u32) -> Arc<dyn HostPort> {
@@ -569,7 +492,6 @@ fn both_verdict(
         None,
         &[herdr_pane_at(pane_shell)],
         &core_of(hc_terminal_at(terminal_root)),
-        0,
         &budget(),
     )
 }
@@ -627,7 +549,6 @@ fn each_family_asks_only_its_own_hosts() {
         None,
         &ports,
         &core_of(hc.clone()),
-        0,
         &budget(),
     );
     assert_eq!(reply, LocateReply::Verified { index: 0, root: 10 });
@@ -644,7 +565,6 @@ fn terminal_without_an_hc_host_is_unsupported() {
         None,
         &[herdr_pane_at(10)],
         &no_core,
-        0,
         &budget(),
     );
     assert_eq!(
@@ -757,7 +677,6 @@ fn two_families_nearest_ancestor_wins() {
             None,
             &ports,
             &core_of(hc.clone()),
-            0,
             &budget(),
         )
     };
@@ -816,7 +735,6 @@ fn two_cores_sharing_tn_select_by_socket() {
         None,
         &[],
         &core,
-        0,
         &budget(),
     );
     assert_eq!(reply, LocateReply::Verified { index: 0, root: 20 });
@@ -825,7 +743,6 @@ fn two_cores_sharing_tn_select_by_socket() {
         None,
         &[],
         &core,
-        1,
         &budget(),
     );
     assert_eq!(
@@ -846,16 +763,15 @@ fn terminal_candidate_attaches_its_core_on_a_miss() {
         None,
         &[],
         &core_of(hc_terminal_at(20)),
-        0,
         &budget(),
     );
     assert_eq!(reply, LocateReply::Verified { index: 0, root: 20 });
 }
 
-// Kills: an attach failure reported as a final verdict or cached: the next call, with the core
-// attachable, verifies.
+// Kills: an attach failure reported as a final verdict: the next call, with the core attachable,
+// verifies.
 #[test]
-fn unattachable_core_is_unreachable_and_uncached() {
+fn unattachable_core_is_unreachable() {
     let table = Table::new(&[(30, Some(20), 5, "claude"), (20, None, 5, "sh")]);
     let service = LocateCallerService::new(table);
     let down = |_: &str| -> Result<Arc<dyn HostPort>, ApiError> {
@@ -866,7 +782,6 @@ fn unattachable_core_is_unreachable_and_uncached() {
         None,
         &[],
         &down,
-        0,
         &budget(),
     );
     assert_eq!(
@@ -880,7 +795,6 @@ fn unattachable_core_is_unreachable_and_uncached() {
         None,
         &[],
         &core_of(hc_terminal_at(20)),
-        0,
         &budget(),
     );
     assert_eq!(second, LocateReply::Verified { index: 0, root: 20 });

@@ -6,9 +6,8 @@
 //!   `HostPort::target_root_process`, the herdr-core terminal-root wall (a
 //!   process whose argv[0] basename is in `host::hc::foreign_terminal_process_names`
 //!   ends the walk: a root above it does not verify; unreadable argv is not a
-//!   wall, an accepted F/N limit), and its cache keyed on (candidates, subject
-//!   pid, subject start stamp, host set epoch) with unstamped subjects
-//!   uncached; the server-environ read for the inherited-name refusal (M6):
+//!   wall, an accepted F/N limit), walking afresh on every call (no verdict
+//!   cache); the server-environ read for the inherited-name refusal (M6):
 //!   [`read_server_environ`] (a plain function with a Linux `/proc` body and a
 //!   macOS `KERN_PROCARGS2` body, `None` on any failure) and
 //!   [`inherited_name`], which asks the host that owns the hinted pane.
@@ -26,11 +25,10 @@
 //!   the nearest ancestor wins, whichever family owns it.
 //! - Where new behaviour goes: a new host candidate verifies through its host's
 //!   `target_root_process` answer, with one arm in `candidate_root`.
-//! - Lifecycle: one per daemon; the cache is its only mutable state, behind a
-//!   mutex.
+//! - Lifecycle: one per daemon; it holds no mutable state.
 //! - Errors: `Verified { index, root }` vs `Unverified { per_candidate }`; an
-//!   unreachable host counts as unverified (and is not cached).
-//! - Role: domain service (stateless apart from a bounded verdict cache).
+//!   unreachable host counts as unverified.
+//! - Role: domain service (stateless).
 
 use crate::{
     host::hc::foreign_terminal_process_names,
@@ -42,11 +40,7 @@ use crate::{
         time::CallBudget,
     },
 };
-use std::{
-    collections::HashMap,
-    ffi::OsString,
-    sync::{Arc, Mutex},
-};
+use std::{ffi::OsString, sync::Arc};
 
 /// One process environment: `(name, value)` pairs in the order the process holds them.
 pub type Environ = Vec<(OsString, OsString)>;
@@ -245,10 +239,6 @@ pub fn inherited_name_host(
 
 /// Longest ancestry the walk follows (a loop or a pathological tree ends it).
 const MAX_WALK: usize = 128;
-/// Verdicts kept; past it the cache starts over.
-const MAX_CACHED: usize = 256;
-
-type CacheKey = (Vec<LocateCandidate>, u32, u64, u64);
 
 /// One pid of the walk and whether it is a herdr-core terminal process (a wall).
 struct Ancestor {
@@ -258,7 +248,6 @@ struct Ancestor {
 
 pub struct LocateCallerService {
     processes: Arc<dyn ProcessInfo>,
-    cache: Mutex<HashMap<CacheKey, LocateReply>>,
 }
 
 /// What asking the hosts about one candidate gave.
@@ -269,27 +258,22 @@ enum Root {
 
 impl LocateCallerService {
     pub fn new(processes: Arc<dyn ProcessInfo>) -> Self {
-        Self {
-            processes,
-            cache: Mutex::default(),
-        }
+        Self { processes }
     }
 
     /// Verifies `request` for a caller whose connection came from `peer_pid`.
     /// `hosts` are the ports of `HostSessions::all_for_reads`, `core` the port of a terminal
-    /// candidate's socket; `epoch` names
-    /// that set (it changes when a host attaches or restarts, dropping every
-    /// cached verdict).
+    /// candidate's socket. Every call walks afresh: the walk is cheap and the one-shot CLI
+    /// caller's pid never repeats.
     pub fn locate(
         &self,
         request: &LocateCaller,
         peer_pid: Option<u32>,
         hosts: &[Arc<dyn HostPort>],
         core: CorePort<'_>,
-        epoch: u64,
         budget: &CallBudget,
     ) -> LocateReply {
-        self.verdict(request, peer_pid, hosts, core, epoch, budget)
+        self.verdict(request, peer_pid, hosts, core, budget)
     }
 
     fn verdict(
@@ -298,7 +282,6 @@ impl LocateCallerService {
         peer_pid: Option<u32>,
         hosts: &[Arc<dyn HostPort>],
         core: CorePort<'_>,
-        epoch: u64,
         budget: &CallBudget,
     ) -> LocateReply {
         let unverified = |verdict| LocateReply::Unverified {
@@ -307,20 +290,6 @@ impl LocateCallerService {
         let Some(subject) = request.subject.map(|f| f.pid).or(peer_pid) else {
             return unverified(CandidateVerdict::NotAncestor);
         };
-        // The start stamp keeps a reused pid off another process's verdict; a subject whose
-        // record is unreadable has none, so it is never cached (its walk is cheap).
-        let key = self
-            .processes
-            .process(subject)
-            .map(|r| (request.candidates.clone(), subject, r.start, epoch));
-        if let Some(hit) = key.as_ref().and_then(|key| {
-            self.cache
-                .lock()
-                .ok()
-                .and_then(|cache| cache.get(key).cloned())
-        }) {
-            return hit;
-        }
         let ancestors = self.ancestry(subject);
         let context = HostCallContext {
             budget: budget.clone(),
@@ -332,19 +301,7 @@ impl LocateCallerService {
             .iter()
             .map(|candidate| candidate_root(candidate, hosts, core, &context))
             .collect();
-        let reply = verify(&ancestors, &roots);
-        let transient = matches!(&reply, LocateReply::Unverified { per_candidate, .. }
-            if per_candidate.contains(&CandidateVerdict::Unreachable));
-        if !transient
-            && let Some(key) = key
-            && let Ok(mut cache) = self.cache.lock()
-        {
-            if cache.len() >= MAX_CACHED {
-                cache.clear();
-            }
-            cache.insert(key, reply.clone());
-        }
-        reply
+        verify(&ancestors, &roots)
     }
 
     /// `subject` and its parents, nearest first, each marked when it is a wall.

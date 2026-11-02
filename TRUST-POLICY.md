@@ -488,9 +488,8 @@ adversarial verification, which this policy does not add. The walk stops at a te
 whose `argv[0]` basename is `herdr-core` or `hc` (`host::hc::foreign_terminal_process_names`), because on
 herdr-core's spawn path the core stays a descendant of the `hc` client and so of the pane shell, and a Herdr
 pane root above the wall must not verify an agent inside an hc terminal; the hc candidate's own root sits
-below the wall and is found first, so the wall changes no outcome for an hc caller. Verdicts are cached by
-(candidates, subject pid, subject start stamp, boot/epoch): a reused pid has another stamp and misses, and a
-subject with no readable start stamp is never cached. Accepted limits: (1) a process whose argv is unreadable
+below the wall and is found first, so the wall changes no outcome for an hc caller. Every call walks afresh;
+no verdict is cached. Accepted limits: (1) a process whose argv is unreadable
 is not a wall; (2) a double-forked process, and a Codex in daemon mode (its process reparented away from the
 terminal), has no ancestor root, so with two families it is unverifiable and refused, and with one family it
 is accepted unverified; (3) a single-family stale environment (a `HERDR_PANE_ID` left in an hc terminal with
