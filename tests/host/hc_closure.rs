@@ -200,11 +200,14 @@ fn status_null_unknown_doctor_only() {
             .all(|t| t.ui == HostUiState::Unknown)
     );
 
-    // The source is shown by doctor, with the target.
-    let report = serde_json::json!({"hosts": {"agent_status": capture.status_rows()}});
-    let text = crate::cli::doctor::render_debug_text(&report);
-    assert!(text.contains("agent_status: t1 source=none\n"), "{text}");
-    assert!(text.contains("agent_status: t2 source=osc7501\n"), "{text}");
+    // The source rows doctor prints (tests/cli/doctor_json.rs reads them from the real report).
+    assert_eq!(
+        capture.status_rows(),
+        vec![
+            serde_json::json!({"target": "t1", "source": "none"}),
+            serde_json::json!({"target": "t2", "source": "osc7501"}),
+        ]
+    );
     // ...and by nothing else: it is not a field of any observation.
     let rows = format!("{:?}", snapshot.targets);
     assert!(!rows.contains("osc7501"), "{rows}");

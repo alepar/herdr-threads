@@ -1708,6 +1708,67 @@ fn held_legacy_lock_shows_live() {
     );
 }
 
+/// Seeds `state`'s store with one `hc` host row at `socket`; returns the report's `hosts`.
+#[cfg(feature = "test-support")]
+fn hc_hosts_report(case: &PathCase, socket: &std::path::Path) -> Value {
+    let state = case.dir.join("state");
+    let node = crate::daemon::paths::node_dir(&state);
+    std::fs::create_dir_all(&node).unwrap();
+    let db = rusqlite::Connection::open(node.join(crate::daemon::paths::DATABASE_FILE)).unwrap();
+    crate::store::schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO herdr_hosts(node_id,endpoint,created_at,kind) \
+         VALUES ((SELECT id FROM local_node),?1,0,'hc')",
+        [socket.to_str().unwrap()],
+    )
+    .unwrap();
+    drop(db);
+    let (report, _) = crate::cli::doctor::report(Some(state), None);
+    report
+}
+
+/// Kills: a doctor whose `report.hosts.agent_status` is never populated, so the status source
+/// of an attached hc host (D21) cannot be shown.
+#[cfg(feature = "test-support")]
+#[test]
+fn agent_status_rows_come_from_the_real_report() {
+    use crate::test_support::fake_hc::{FakeHc, FakeTerminal};
+    let case = PathCase::new("agent-status");
+    let fake = FakeHc::start();
+    fake.add_terminal(FakeTerminal::live("t1"));
+    fake.add_terminal(FakeTerminal::live("t2"));
+    fake.set_status(
+        "t2",
+        Some(json!({"state": "idle", "app": "claude", "msg": "", "title": ""})),
+    );
+    let report = hc_hosts_report(&case, fake.socket());
+    assert_eq!(
+        report["hosts"]["agent_status"],
+        json!([
+            {"target": "t1", "source": "none"},
+            {"target": "t2", "source": "osc7501"},
+        ])
+    );
+    let text = crate::cli::doctor::render_debug_text(&report);
+    assert!(text.contains("agent_status: t1 source=none\n"), "{text}");
+    assert!(text.contains("agent_status: t2 source=osc7501\n"), "{text}");
+}
+
+/// Kills: a doctor that prints status rows for a core that does not answer, or adds the key to
+/// every report.
+#[cfg(feature = "test-support")]
+#[test]
+fn a_silent_core_prints_no_agent_status() {
+    let case = PathCase::new("agent-status-silent");
+    let report = hc_hosts_report(&case, &case.dir.join("no-such.sock"));
+    assert!(report["hosts"].get("agent_status").is_none(), "{report}");
+}
+
 /// Kills: a doctor that stays silent when an implemented-kind row's socket now
 /// answers as another kind (the attach is refused), or names a matching row or a
 /// dead socket.
