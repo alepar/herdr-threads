@@ -346,7 +346,6 @@ fn terminal_run_params_exist_in_vendored_schema() {
     for key in [
         "no_notify",
         "outlive_parent",
-        "no_parent",
         "keep",
         "labels",
         "parent",
@@ -368,4 +367,9 @@ fn terminal_run_params_exist_in_vendored_schema() {
     }
     assert_eq!(params["keep"], json!(false));
     assert!(!params.contains_key("caller") && !params.contains_key("first_message"));
+    assert!(
+        !params.contains_key("no_parent"),
+        "parent and no_parent conflict"
+    );
+    assert!(allowed.contains("no_parent"));
 }

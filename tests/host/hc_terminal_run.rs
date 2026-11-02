@@ -166,6 +166,10 @@ fn new_terminal_no_app_labels_parent_caller() {
     };
     let p = run_params(&fake);
     assert_eq!(p["parent"], "t1");
+    assert!(
+        p.get("no_parent").is_none(),
+        "no_parent contradicts parent: {p}"
+    );
     let labels = p["labels"].as_object().unwrap();
     assert!(!labels.contains_key(LABEL_SPACE) && !labels.contains_key(LABEL_TAB));
     assert!(

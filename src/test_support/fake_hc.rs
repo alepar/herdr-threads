@@ -499,6 +499,14 @@ impl Inner {
                     .collect()
             })
             .unwrap_or_default();
+        if params["no_parent"].as_bool() == Some(true) && params.get("parent").is_some() {
+            return vec![error_line(
+                id,
+                -32602,
+                "invalid_params",
+                "no_parent conflicts with parent",
+            )];
+        }
         let parent = match text("parent") {
             Some(p) if self.find(&p).is_none() => {
                 return vec![error_line(id, -32000, "not_found", &p)];

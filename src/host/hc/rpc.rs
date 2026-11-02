@@ -35,7 +35,8 @@ const MAX_PRELUDE_LINES: usize = 4096;
 
 /// What a launch asks of `terminal.run`. There is deliberately no `caller`,
 /// hc `name`, template or first message here: the fixed parameters
-/// (`no_notify`, `outlive_parent`, `no_parent`, `keep: false`) are set by
+/// (`no_notify`, `outlive_parent`, `keep: false`, and `no_parent` unless a
+/// `parent` is given) are set by
 /// [`HcClient::terminal_run`] itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRequest {
@@ -217,8 +218,8 @@ impl HcClient {
     }
 
     /// Starts a terminal. The parameters are fixed here: `no_notify`,
-    /// `outlive_parent` and `no_parent` true, `keep` false (any finish is
-    /// final), no `caller`, no `name`, no `first_message`. The caller gives
+    /// `outlive_parent` true, `keep` false (any finish is final), `no_parent`
+    /// true only when the request has no `parent` (never both), no `caller`, no `name`, no `first_message`. The caller gives
     /// the client a deadline of at least [`RUN_DEADLINE`] (a spawn may take
     /// that long).
     pub async fn terminal_run(&self, request: &RunRequest) -> Result<HcReply<HcTerminal>, HcError> {
@@ -230,10 +231,11 @@ impl HcClient {
             "keep": false,
             "no_notify": true,
             "outlive_parent": true,
-            "no_parent": true,
         });
-        if let Some(parent) = &request.parent {
-            params["parent"] = json!(parent);
+        // `no_parent` and `parent` contradict each other: send exactly one.
+        match &request.parent {
+            Some(parent) => params["parent"] = json!(parent),
+            None => params["no_parent"] = json!(true),
         }
         self.typed("terminal.run", params).await
     }
