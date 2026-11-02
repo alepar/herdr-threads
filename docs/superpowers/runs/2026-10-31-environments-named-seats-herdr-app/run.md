@@ -166,7 +166,7 @@ graph-pass: depth 18→15 · width 3.8→4.6 · applied 2 · parked 2
 parked:
 - 2026-11-01-environments-named-seats-herdr-app-roast-pr-1.md · escalation · "UNVERIFIED: whether ubuntu-24.04 / macos-15 CI runner images ship tmux; tests in src/test_support/tmux.rs may silently skip in CI"
 - 2026-11-01-environments-named-seats-herdr-app-roast-pr-1.md · degraded-verdict · "code roast r1 is a bounded direct review: review-input provenance unavailable; verdict [low coverage] [review readiness incomplete]; whole-range review acceptance stays open"
-- ht-kqrt.57 · degraded-verdict · "spec deviation left for review: launch has no --space/--new-tab/--new-terminal onto hc (spec lines 849, 1446); handoff --thread/--new-thread into hc is refused (spec silent)"
+- ht-kqrt.57 · degraded-verdict · "spec deviation left for review: handoff --thread/--new-thread into hc is refused (spec silent)"
 - ht-kqrt.30 · degraded-verdict · "golden item still lists delivery from headers; first review rated it minor, left as written"
 - 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md · escalation · "D1 premise unverified: Herdr TUI pane env may not come from the Herdr server process's exec-time environ, so the M6 inherited-name check may read the wrong process (cheapest check: isolated Herdr server without the name, client shell exporting it, compare pane env with /proc/<server pid>/environ)"
 - 2026-10-31-environments-named-seats-herdr-app-roast-design-1.md · escalation · "Codex daemon mode may run hooks with the daemon's env, dropping HERDR_THREADS_SEAT_NAME or folding several named Codex sessions into one seat (cheapest check: two Codex sessions with different names, log env from a hook stand-in)"
