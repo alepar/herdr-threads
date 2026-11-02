@@ -197,18 +197,18 @@ fn assert_gate_launch(
             .as_deref(),
         Some("managed_launch")
     );
-    // The task is authored after `Launched{seat}`, by normal delivery.
-    assert_eq!(
+    // The task is authored after `Launched{seat}`, by normal delivery, and
+    // replicates to node 1: wait for it, then require exactly one.
+    let count = cluster.wait_until("the task to reach node 1", crate::WAIT, || {
         cluster
             .scalar(
                 1,
                 "SELECT count(*) FROM messages WHERE body LIKE '%look at this%'",
-                &[]
+                &[],
             )
-            .as_deref(),
-        Some("1"),
-        "{stdout}"
-    );
+            .filter(|count| count != "0")
+    });
+    assert_eq!(count, "1", "{stdout}");
 }
 
 /// The `terminal.run` params every gate launch sends.
