@@ -1267,7 +1267,7 @@ mod tests {
         assert_eq!(gate_argv, gate);
         // The previous name parses to the same action.
         let mut old = target_args(Some("w1"), "x", "Q0V", "/work", &[]);
-        old[1] = "peer-target-create".into();
+        old[1] = "peer-tab-create".into();
         assert!(matches!(
             parse(old),
             crate::cli::commands::CliAction::InternalPeerTargetCreate { .. }
