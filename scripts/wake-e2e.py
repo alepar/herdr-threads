@@ -177,6 +177,10 @@ WAKE_BLOCK_CASES = ("modal-hold/group",)
 WAKE_BLOCK_HOLD_S = 30
 PICKER_ROW = re.compile(r"^\u203a 1\. ")
 WAKE_BLOCK_WAIT_S = 90
+# Opt-in, Codex at T=0 only (ht-unmk): Codex is killed and resumed in the same pane. A resumed Codex runs no hook until
+# its first turn, so its seat stays unavailable while it sits idle; a p1 still leaves it idle, and a p0 wakes it.
+RESUME_CASES = ("resume-idle/group",)
+RESUME_QUIET_S = 15
 SIDE_DEADLINE_S = 45
 # Opt-in cases (ht-kqrt.61, N2-e2e), never in the default matrix and gated on no version: a named seat
 # (`HERDR_THREADS_SEAT_NAME`, no Herdr pane) runs real Claude (hooks-only installation: the mod's channel would wake it
@@ -231,6 +235,7 @@ WAKE_MARKERS = ("herdr-threads: wake up", "herdr-threads: attention pending", CH
 WAKE_PATTERN = re.compile("|".join(map(re.escape, WAKE_MARKERS)))
 WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0.3-1.1 s)
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
+BUSY_ENTRY_S = 60  # a held tool past this with no throttle to explain it is shown on the report
 TURN_TIMEOUT_MS = 240_000
 IDLE = ("idle", "done")
 
@@ -1424,20 +1429,34 @@ class BusyBarrier:
                           "    time.sleep(.02)\n")
         return shlex.join([sys.executable, str(helper)])
 
-    def wait_entered(self, timeout=60, throttled=None, throttled_timeout=180):
+    def wait_entered(self, timeout=BUSY_ENTRY_S, throttled=None, throttled_timeout=180, idle=None, resubmit=None):
         """Wait for the held tool to start. A provider rate limit backs the agent off before its first tool call (Codex
         waited 58-99 s after a 429 in the 2.5.0 qualification): when `throttled()` names one at `timeout`, the wait
         runs on to `throttled_timeout`, and a tool that still never entered fails as provider throttled. Returns the
         throttle a late entry waited out (row evidence), else None. The tool's watchdog counts from its own start, so a
-        longer entry wait never shortens the hold."""
-        end, cause = time.monotonic() + timeout, None
+        longer entry wait never shortens the hold.
+
+        Entering the tool is this case's setup, not what it asserts. A model can pass `timeout` before its first tool
+        call with no throttle to name (Codex at load 35 in the 2.8.3 qualification): the wait then runs on to
+        `throttled_timeout` too, on what `idle()` observes. A recipient back at idle has no turn that will ever run the
+        tool, so `resubmit()` sends the prompt once, whenever in that wait it is seen idle."""
+        end, cause, late, resent, probe = time.monotonic() + timeout, None, False, False, 0
         while not (self.path / "entered").exists():
             if time.monotonic() >= end:
                 if cause is None and throttled is not None and (cause := throttled()):
                     end += throttled_timeout - timeout
                     continue
+                if idle is not None and cause is None and not late:
+                    late = True
+                    end += throttled_timeout - timeout
+                    continue
                 raise RuntimeError(f"provider throttled ({cause}); busy tool did not enter" if cause
                                    else "busy tool did not enter")
+            if late and not resent and time.monotonic() >= probe:
+                probe = time.monotonic() + 2
+                if idle():
+                    resent = True
+                    resubmit()
             time.sleep(.02)
         self.assert_held()
         return cause
@@ -1478,11 +1497,28 @@ def codex_throttle(codex_home, since):
     return f"429 retry {m.group(1)} in {delay:.0f}s"
 
 
-def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROMPT_END, last=False):
+def late_busy_entries(rows):
+    """Rows whose setup needed more than an on-time prompt with no throttle to explain it: visible, never fatal. A first
+    prompt the recipient swallowed passes on the second, so a run's reader must see that it happened."""
+    return [f"late busy entry: {r['recipient']} {r['case']}: "
+            + json.dumps({k: r["checks"][k] for k in ("entered_after_s", "busy_prompt_resubmitted") if k in r["checks"]})
+            for r in rows
+            if ("busy_prompt_resubmitted" in r.get("checks", {})
+                or ("entered_after_s" in r.get("checks", {}) and "provider_throttled" not in r["checks"]))]
+
+
+def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROMPT_END, last=False, occurrence=0):
     """Split the screen at the busy turn's native boundaries: (in_turn, after_turn, end_seen). `in_turn` runs from
     the busy prompt `anchor` to the agent's done line (the last one with `last`: a continued turn prints it twice),
-    `after_turn` is everything later; None if the prompt is not on screen."""
-    at = text.find(anchor)  # the prompt itself: an agent echoing the tag later must not move it
+    `after_turn` is everything later; None if the prompt is not on screen. `occurrence` picks the anchor's copy, for a
+    held turn that was not the first prompt's."""
+    # The prompt itself: an agent echoing the tag later must not move it.
+    at = -1
+    for _ in range(occurrence + 1):
+        found = text.find(anchor, at + 1)
+        if found < 0:
+            break
+        at = found
     if at < 0:
         return None
     rest = text[at:]
@@ -1829,6 +1865,35 @@ class Recipient:
             return None
         return lambda: codex_throttle(self.run.codex_home, since)
 
+    def idle_settled(self):
+        """Idle on two samples a second apart, as `wait_idle` takes it: a turn starting between tool calls can read idle."""
+        if self.status() not in IDLE:
+            return False
+        time.sleep(1.0)
+        return self.status() in IDLE
+
+    def enter_busy(self, hold, prompt, anchor):
+        """Submit the held turn's `prompt` and wait for its tool to start (`wait_entered` says what a late tool means).
+        Returns (checks, occurrence): the row's evidence of the setup, and which copy of `anchor` is the held turn: the
+        last one on screen when the tool entered, the first unless the prompt went twice."""
+        since, resent = time.time(), []
+
+        def resubmit():
+            resent.append(True)
+            self.run.herdr("agent", "prompt", self.pane, prompt)
+
+        self.run.herdr("agent", "prompt", self.pane, prompt)
+        throttled = hold.wait_entered(throttled=self.throttle_probe(since), idle=self.idle_settled, resubmit=resubmit)
+        waited, checks, occurrence = time.time() - since, {}, 0
+        if throttled:
+            checks["provider_throttled"] = throttled
+        if waited >= BUSY_ENTRY_S:
+            checks["entered_after_s"] = round(waited, 1)
+        if resent:
+            checks["busy_prompt_resubmitted"] = True
+            occurrence = max(self.screen(1000).count(anchor) - 1, 0)
+        return checks, occurrence
+
     # ---------- busy cases ----------
     def busy_case(self, case, record=None):
         action, channel = case.split("/")
@@ -1846,13 +1911,9 @@ class Recipient:
                 prompt = BUSY_TOOL_PROMPT.format(tag=tag, hold=hold.command(), tool=BUSY_TOOL[self.harness].format(dir=hold.path))
             else:
                 prompt = (BUSY_FAIL_PROMPT if fail else BUSY_PROMPT).format(tag=tag, hold=hold.command())
-            since = time.time()
-            self.run.herdr("agent", "prompt", self.pane, prompt)
-            throttled = hold.wait_entered(throttled=self.throttle_probe(since))
+            entry, occurrence = self.enter_busy(hold, prompt, f"Busy-turn test {tag}")
             busy_at_send = self.status()
-            checks = {"busy_at_send": busy_at_send}
-            if throttled:
-                checks["provider_throttled"] = throttled
+            checks = {"busy_at_send": busy_at_send, **entry}
             role = "main"
             if kind == "invite" and channel == "1:1":
                 # First contact from the fresh coordinator, mid-turn: the pair auto-joins (no invitation) and the opener
@@ -1874,7 +1935,7 @@ class Recipient:
         # The quiet window starts at the busy turn's native end (its BUSY-DONE line, then the first idle status),
         # not after a confirmed-idle wait: that wait would absorb a short wake turn typed right after the turn.
         end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
-        while time.time() < end and not (busy_turn_split(self.screen(1000), anchor) or ("", "", False))[2]:
+        while time.time() < end and not (busy_turn_split(self.screen(1000), anchor, occurrence=occurrence) or ("", "", False))[2]:
             idle_since = (idle_since or time.time()) if self.status() in IDLE else None
             if idle_since and time.time() - idle_since > BUSY_END_GRACE_S:
                 break  # recorded below as busy_turn_end_seen False, without waiting out the turn timeout
@@ -1884,7 +1945,7 @@ class Recipient:
         # A wake owed after the turn (even one held by the 30 s per-seat guard) would start a turn in here.
         checks["self_started_turn_after_s"] = self.watch_quiet(BUSY_AFTER_S)
         self.wait_idle()
-        split = busy_turn_split(self.screen(1000), anchor)
+        split = busy_turn_split(self.screen(1000), anchor, occurrence=occurrence)
         if split is None:
             in_turn, after_turn, checks["busy_turn_end_seen"] = "", "", "busy prompt not on screen"
         else:
@@ -1941,17 +2002,14 @@ class Recipient:
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
         with BusyBarrier(self.run.root) as hold:
-            since = time.time()
-            self.run.herdr("agent", "prompt", self.pane, EOT_PROMPT.format(tag=tag, hold=hold.command()))
-            throttled = hold.wait_entered(throttled=self.throttle_probe(since))
+            entry, occurrence = self.enter_busy(hold, EOT_PROMPT.format(tag=tag, hold=hold.command()),
+                                                f"End-of-turn test {tag}")
             busy_at_send = self.status()
-            checks = {"busy_at_send": busy_at_send}
-            if throttled:
-                checks["provider_throttled"] = throttled
+            checks = {"busy_at_send": busy_at_send, **entry}
             mid = self.send("p0", f"{case} {self.run.run_id}", direct=False)
             hold.assert_held()
         anchor = f"End-of-turn test {tag}"
-        split_at = lambda: busy_turn_split(self.screen(1000), anchor, EOT_DONE_LINE, EOT_PROMPT_END, last=True)
+        split_at = lambda: busy_turn_split(self.screen(1000), anchor, EOT_DONE_LINE, EOT_PROMPT_END, occurrence=occurrence, last=True)
         end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
         while time.time() < end:
             idle_since = (idle_since or time.time()) if self.status() in IDLE else None
@@ -2334,10 +2392,81 @@ class Recipient:
                          "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "checks": checks,
                          "ref": {"messages": mids}, "result": "PASS" if passed else "FAIL", "utc": utc()})
 
+    def seat_inspect(self):
+        out = self.run.ht("seat", "inspect", self.seat, pane=self.run.coords["main"]["pane"], human=True)
+        return (json.loads(out).get("result") or {}).get("data") or {}
+
+    def availability(self):
+        return (self.seat_inspect().get("summary") or {}).get("availability", "")
+
+    def resume_case(self, case):
+        """resume-idle: a killed and resumed Codex, idle and unknown to the daemon, wakes on p0 and only on p0."""
+        tag = f"{case} {self.run.run_id}"
+        checks = {}
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)
+        self.wait_idle()
+        bound = [i["data"] for i in self.seat_inspect()["history"]["items"]
+                 if i["kind"] == "binding" and i["data"]["ended_at"] is None]
+        session = max(bound, key=lambda b: b["ordinal"])["native_session"]
+        info = self.run.herdr("pane", "process-info", "--pane", self.pane)["result"]["process_info"]
+        pids = [p["pid"] for p in info["foreground_processes"] if any("codex" in a for a in (p.get("argv") or [])[:2])]
+        if not pids:
+            raise RuntimeError(f"{self.name}: no foreground codex process: {info}")
+        for pid in pids:  # no SessionEnd hook: a process exit, not an end event
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+        end = time.time() + 30
+        while time.time() < end and not self.availability().startswith("unavailable"):
+            time.sleep(0.5)
+        checks["unavailable_after_exit"] = self.availability().startswith("unavailable")
+        self.run.resumes = getattr(self.run, "resumes", 0) + 1
+        line = self.run.launch_line(self.harness) + " resume " + shlex.quote(session)
+        self.run.herdr("pane", "run", self.pane, line)
+        end = time.time() + 120
+        while time.time() < end:
+            agent = (self.run.herdr("agent", "get", self.pane, check=False).get("result") or {}).get("agent") or {}
+            if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE:
+                break
+            time.sleep(0.5)
+        self.wait_idle()
+        checks["unavailable_while_idle"] = self.availability().startswith("unavailable")
+        wakes_before = wake_count(self.screen(1000))
+        pane = self.run.coords["main"]["pane"]
+        def send(*flags):
+            out, _ = self.run.ht_err("send", self.group, "--body", f"{tag} {flags}", *flags, pane=pane, human=True)
+            return (json.loads(out).get("result") or {}).get("data")
+        silent = send()
+        self.run.stopping.wait(RESUME_QUIET_S)
+        checks["wakes_on_p1"] = wake_count(self.screen(1000)) - wakes_before
+        urgent = send("--nudge")
+        t0, t_wake = time.time(), None
+        while time.time() - t0 < WAKE_BLOCK_WAIT_S:
+            if wake_count(self.screen(1000)) > wakes_before:
+                t_wake = round(time.time() - t0, 2)
+                break
+            time.sleep(0.5)
+        woke = t_wake is not None
+        if woke:
+            self.last_wake = time.time()
+            self.wait_idle()
+        checks["delivered"] = all(self.on_screen(m) for m in (silent, urgent) if m)
+        checks["available_after"] = self.availability() == "available"
+        passed = (checks["unavailable_after_exit"] and checks["unavailable_while_idle"]
+                  and checks["wakes_on_p1"] == 0 and woke
+                  and checks["delivered"] and checks["available_after"])
+        self.settled()
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "checks": checks,
+                         "ref": {"messages": [silent, urgent]}, "result": "PASS" if passed else "FAIL", "utc": utc()})
+
     # ---------- one case ----------
     def case(self, case):
         if case in WAKE_BLOCK_CASES:
             return self.wake_block_case(case)
+        if case in RESUME_CASES:
+            return self.resume_case(case)
         if case.startswith("side-"):
             return self.side_case(case)
         if case.startswith("hooks-busy-"):
@@ -2815,7 +2944,7 @@ def applies(recipient, case):
         return getattr(recipient, "hooks_only", False) and case in HOOKS_CASES
     if case in EOT_CASES or case.startswith("busy-tool-"):
         return recipient.harness == "codex" and not getattr(recipient, "plain", False)
-    if case in WAKE_BLOCK_CASES or case in UNRECEIVED_CASES:
+    if case in WAKE_BLOCK_CASES or case in UNRECEIVED_CASES or case in RESUME_CASES:
         return recipient.harness == "codex" and recipient.threshold == 0 and not getattr(recipient, "plain", False)
     if case in CLAUDE_CASES:
         return recipient.harness == "claude"
@@ -2843,6 +2972,7 @@ def summary(run, cases):
     extra = sorted({k for k in seen if k not in expected or seen.count(k) > 1})
     passed = sum(r["result"] == "PASS" for r in rows)
     lines.append(f"\n{passed}/{len(expected)} expected rows passed ({len(rows)} collected)")
+    lines.extend(late_busy_entries(rows))
     if missing:
         lines.append(f"missing rows: {missing}")
     if extra:
@@ -2884,6 +3014,8 @@ def codex_hook_guidance(run):
         counts["rollouts"] += 1
         counts["guidance_contexts"] += guidance
         counts["over_allowance"] += max(0, guidance - 1 - compactions)
+    # A resume is a session start in the same rollout.
+    counts["over_allowance"] = max(0, counts["over_allowance"] - getattr(run, "resumes", 0))
     counts["pass"] = counts["guidance_contexts"] > 0 and counts["over_allowance"] == 0
     return counts
 
@@ -2918,7 +3050,8 @@ def main(argv=None):
                     help="comma-separated: claude,codex; opt-in: agy (credential from %s), hermes "
                          "(--hermes-home)" % AGY_CREDENTIAL_ENV)
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
-                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES)
+                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
+                                                      + RESUME_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES)
                     + "; opt-in, a named seat in a private tmux server (claude): " + ", ".join(TMUX_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
@@ -2958,7 +3091,7 @@ def main(argv=None):
     cases = [c for c in args.cases.split(",") if c]
     unknown = ([c for c in cases
                 if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
-                                 + TMUX_CASES]
+                                 + RESUME_CASES + TMUX_CASES]
                + [h for h in args.harness if h not in HARNESSES])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")

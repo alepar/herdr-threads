@@ -383,6 +383,84 @@ pub struct ReconcilePageProgress {
     /// Guarded per-seat transitions the store refused on this page. They are
     /// skipped, never allowed to abort the other seats' reconciliation.
     pub transitions_refused: u8,
+    /// Each refused transition, in page order.
+    pub refusals: Vec<RefusedTransition>,
+}
+
+/// One guarded transition the store refused (ht-kaw9, ht-wp7n).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedTransition {
+    pub seat: crate::protocol::ids::SeatId,
+    /// The seat generation the transition was planned against.
+    pub generation: u64,
+    pub reason: crate::ports::StaleReason,
+    /// The refused action's kind: a different action is a different refusal.
+    pub action: std::mem::Discriminant<ReconciliationAction>,
+    /// Whether a pass may complete past this refusal once it persists: its
+    /// action was not `MarkUnresolved`, so the seat is already unresolved or
+    /// proven in the current incarnation, and applying it could neither add a
+    /// C1 candidate nor a seat to protect (TRUST-POLICY C2).
+    pub excludable: bool,
+}
+
+/// Consecutive finished passes that must refuse the same seat, generation,
+/// reason and action before a pass completes past it: one pass is a race, a run of them is not.
+pub const PERSISTENT_REFUSAL_PASSES: u32 = 3;
+
+/// In how many consecutive finished passes of one recovery boot and epoch each refusal
+/// has repeated. Daemon memory, like the C1 process declines: a restart forgets
+/// it and the run is proven again. Holds only the latest pass's refusals.
+#[derive(Debug, Default)]
+pub struct RefusalStreaks {
+    recovery: Option<(crate::protocol::ids::HostBootId, u64)>,
+    streaks: std::collections::HashMap<
+        (
+            crate::protocol::ids::SeatId,
+            u64,
+            crate::ports::StaleReason,
+            std::mem::Discriminant<ReconciliationAction>,
+        ),
+        u32,
+    >,
+}
+
+impl RefusalStreaks {
+    /// Feed one finished pass of `published` and its refusals. Returns whether
+    /// the pass counts as complete for the reconciliation marker (TRUST-POLICY
+    /// C2): every refusal is excludable, not transient, and persistent.
+    pub fn pass_finished(
+        &mut self,
+        published: &PublishedSnapshot,
+        refusals: &[RefusedTransition],
+    ) -> bool {
+        let recovery = (published.boot.clone(), published.epoch);
+        if self.recovery.as_ref() != Some(&recovery) {
+            self.recovery = Some(recovery);
+            self.streaks.clear();
+        }
+        let mut complete = true;
+        let mut streaks = std::collections::HashMap::with_capacity(refusals.len());
+        for refusal in refusals {
+            let key = (
+                refusal.seat.clone(),
+                refusal.generation,
+                refusal.reason,
+                refusal.action,
+            );
+            let passes = self
+                .streaks
+                .get(&key)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(1);
+            complete &= refusal.excludable
+                && !refusal.reason.is_transient()
+                && passes >= PERSISTENT_REFUSAL_PASSES;
+            streaks.insert(key, passes);
+        }
+        self.streaks = streaks;
+        complete
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,15 +540,27 @@ pub fn reconcile_published_page_for(
     let mut transitions = 0u8;
     let mut retirements = 0u8;
     let mut refused = 0u8;
+    let mut refusals = Vec::new();
     for transition in plan_page_for(&page, closure)? {
+        let seat = transition.seat.clone();
+        let generation = transition.expected_binding_generation;
+        let action = std::mem::discriminant(&transition.action);
+        let excludable = transition.action.may_complete_past_refusal();
         let result = store.apply_reconciliation_transition(transition, budget)?;
         match result {
             // A refused transition is that seat's alone (D2): its guarded
             // decision changed nothing, so it is recorded and skipped, and
             // the rest of the page still reconciles. The next ordered
             // publication reassesses the refused seat from fresh evidence.
-            ReconciliationOutcome::Stale => {
+            ReconciliationOutcome::Stale(reason) => {
                 refused = refused.saturating_add(1);
+                refusals.push(RefusedTransition {
+                    seat,
+                    generation,
+                    reason,
+                    action,
+                    excludable,
+                });
                 continue;
             }
             ReconciliationOutcome::RetirementStarted(_) => {
@@ -486,6 +576,7 @@ pub fn reconcile_published_page_for(
         transition_count: transitions,
         retirements_started: retirements,
         transitions_refused: refused,
+        refusals,
     })
 }
 
@@ -540,7 +631,7 @@ pub fn reconcile_invalidated_page(
             },
             budget,
         )?;
-        if result == ReconciliationOutcome::Stale {
+        if matches!(result, ReconciliationOutcome::Stale(_)) {
             return Err(ApiError::cursor_stale(
                 "host invalidation or saved seat changed",
             ));
@@ -556,6 +647,7 @@ pub fn reconcile_invalidated_page(
         transition_count: transitions,
         retirements_started: 0,
         transitions_refused: 0,
+        refusals: Vec::new(),
     })
 }
 

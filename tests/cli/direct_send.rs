@@ -1,6 +1,5 @@
 //! Direct CLI composition against the real accountable service/store, with reply loss.
 use herdr_threads::{
-    app::SystemClock,
     cli::{RunError, commands::parse_argv_exact_seats, journal::Journal, run_cooperative},
     harness::context::{ContextJournal, Harness, OccupantContext, Role, SessionReference},
     ports::{LocalClient, LocalService},
@@ -11,6 +10,7 @@ use herdr_threads::{
     },
     service::{dispatch::DomainService, fair_writer::FairWriter},
     store::{SqliteStore, StoreSettings, connection::StoreContext},
+    test_support::slow_clock::SlowMonotonicClock,
 };
 use std::{
     io::{self, Write},
@@ -111,7 +111,9 @@ impl Fixture {
         ));
         std::fs::create_dir(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        // Elapsed time is not this fixture's subject: the production read budgets and the 250 ms
+        // permit raced the host's load and failed sends that had nothing wrong with them.
+        let clock: Arc<dyn Clock> = Arc::new(SlowMonotonicClock::new());
         let instance = herdr_threads::node::NodeUuid::from_u128(1);
         let context = StoreContext::new(root.join("store.db"), clock.clone())
             .with_test_host()
@@ -202,7 +204,7 @@ impl Fixture {
             None,
             Role::TopLevel,
             &self.client,
-            &SystemClock::new(),
+            &SlowMonotonicClock::new(),
             writer,
         )
     }
@@ -1363,7 +1365,7 @@ fn changed_retry_namespace_refuses_before_any_client_call() {
             None,
             Role::TopLevel,
             &f.client,
-            &SystemClock::new(),
+            &SlowMonotonicClock::new(),
             &mut vec![]
         )
         .is_err()

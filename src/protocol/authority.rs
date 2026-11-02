@@ -150,6 +150,9 @@ pub const COOPERATIVE_CONTINUITY_PROVENANCE: &str = "cooperative_continuity";
 /// named seat of that name. Seat history only: it rides `allocation_decisions.operator_label` of
 /// a `cooperative_continuity` row (the `kind` CHECK is closed); never on receipts or bindings.
 pub const COOPERATIVE_NAMED_SEAT_PROVENANCE: &str = "cooperative_named_seat";
+/// TRUST-POLICY C1 process continuity (ht-hsyg): the daemon observed the binding's own process
+/// in the pane's kernel session and controlling terminal. Seat history only, never on receipts.
+pub const STRUCTURAL_PROCESS_CONTINUITY_PROVENANCE: &str = "structural_process_continuity";
 /// TRUST-POLICY A3: Herdr's guarded `agent.start` in this pane was observed
 /// starting the harness and the agent has not checked in. Bindings only (an
 /// unregistered occupant binding the daemon opens after a correlated launch,
@@ -235,6 +238,17 @@ pub enum ObligationRef {
 }
 
 pub const MAX_PERMIT_MILLIS: u64 = 250;
+
+/// [`MAX_PERMIT_MILLIS`] in force in this process: production's value, stretched in a test child
+/// of a loaded suite like every bound that races the scheduler ([`external_bound`]), where a CLI
+/// or daemon losing the CPU between issue and decision otherwise fails an ordinary send.
+/// In-process tests get the production value, so the expiry itself stays pinned.
+///
+/// [`external_bound`]: crate::protocol::time::external_bound
+pub fn permit_lifetime_millis() -> u64 {
+    let bound = std::time::Duration::from_millis(MAX_PERMIT_MILLIS);
+    crate::protocol::time::external_bound(bound).as_millis() as u64
+}
 
 /// Current host state sampled at the transaction decision. A known invalidation
 /// forbids committing even if a preceding observation was fresh.
@@ -401,7 +415,8 @@ impl MutationPermit {
         {
             return Err("cooperative context changed");
         }
-        if fence.now.0 < self.observed_at.0 || fence.now.0 - self.observed_at.0 > MAX_PERMIT_MILLIS
+        if fence.now.0 < self.observed_at.0
+            || fence.now.0 - self.observed_at.0 > permit_lifetime_millis()
         {
             return Err("permit expired");
         }

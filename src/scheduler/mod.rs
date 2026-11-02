@@ -1022,11 +1022,11 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         }
         // Spec §10: when a poke is also due for this seat, one prompt goes out
         // with the poke text. The poke is advisory: no read error blocks the
-        // wake, and an ineligible poke state falls back to the ordinary marker.
-        let due_poke = self
-            .store
-            .poke_for_wake(&seat, budget)
-            .ok()
+        // wake, and an ineligible poke state falls back to the ordinary marker. A dormant
+        // target's grant is the ordinary wake alone (TRUST-POLICY A4 *Wake*).
+        let dormant = reservation.authority.targets().iter().any(|t| t.dormant);
+        let due_poke = (!dormant)
+            .then(|| self.store.poke_for_wake(&seat, budget).ok().flatten())
             .flatten()
             .filter(|due| !due.receipts.is_empty());
         let plan = due_poke
@@ -1060,7 +1060,11 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             )
             .map_err(dispatch_error)?;
         if current {
-            state.dispatch.record_outcome(&seat, outcome, completed_at);
+            if dormant && matches!(outcome, WakeOutcome::Refused(_)) {
+                state.dispatch.record_dormant_refusal(&seat, completed_at);
+            } else {
+                state.dispatch.record_outcome(&seat, outcome, completed_at);
+            }
             if matches!(
                 outcome,
                 WakeOutcome::Submitted | WakeOutcome::OutcomeUnknown

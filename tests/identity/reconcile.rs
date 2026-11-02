@@ -919,7 +919,7 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
                 )
                 .unwrap();
             assert_eq!(live, 0);
-            assert_eq!(
+            assert!(matches!(
                 seats::apply_reconciliation_transition(
                     &context,
                     &mut conn,
@@ -927,8 +927,8 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
                     &budget
                 )
                 .unwrap(),
-                ReconciliationOutcome::Stale
-            );
+                ReconciliationOutcome::Stale(_)
+            ));
         } else {
             assert_eq!(actions[0].action, ReconciliationAction::MarkUnresolved);
             let mut forged = actions[0].clone();
@@ -936,11 +936,11 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
                 target: HostTargetId::new("pane"),
                 terminal: TerminalId::new("terminal-a"),
             };
-            assert_eq!(
+            assert!(matches!(
                 seats::apply_reconciliation_transition(&context, &mut conn, forged, &budget)
                     .unwrap(),
-                ReconciliationOutcome::Stale
-            );
+                ReconciliationOutcome::Stale(_)
+            ));
             assert_eq!(state(&conn), ("unresolved".into(), 2));
         }
         drop(conn);
@@ -1249,7 +1249,7 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
                 )
                 .unwrap();
             assert_eq!(bindings, 0, "reconfirmation registers nothing");
-            assert_eq!(
+            assert!(matches!(
                 seats::apply_reconciliation_transition(
                     &context,
                     &mut conn,
@@ -1257,17 +1257,17 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
                     &budget
                 )
                 .unwrap(),
-                ReconciliationOutcome::Stale
-            );
+                ReconciliationOutcome::Stale(_)
+            ));
         } else {
             assert_eq!(actions[0].action, ReconciliationAction::MarkUnresolved);
             let mut forged = actions[0].clone();
             forged.action = reconfirm;
-            assert_eq!(
+            assert!(matches!(
                 seats::apply_reconciliation_transition(&context, &mut conn, forged, &budget)
                     .unwrap(),
-                ReconciliationOutcome::Stale
-            );
+                ReconciliationOutcome::Stale(_)
+            ));
             assert_eq!(state(&conn), ("unresolved".into(), 2));
         }
         drop(conn);
@@ -1501,7 +1501,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         .unwrap(),
         ReconciliationOutcome::Applied
     );
-    assert_eq!(
+    assert!(matches!(
         seats::apply_reconciliation_transition(
             &context,
             &mut conn,
@@ -1509,8 +1509,8 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
             &budget
         )
         .unwrap(),
-        ReconciliationOutcome::Stale
-    );
+        ReconciliationOutcome::Stale(_)
+    ));
     let moved_saved: (String, i64) = conn
         .query_row(
             "SELECT target_id,generation FROM seats WHERE id=?1",
@@ -1707,10 +1707,12 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
                     terminal: TerminalId::new("terminal-b"),
                 },
             };
-            assert_eq!(
-                seats::apply_reconciliation_transition(&context, &mut conn, forged, &budget)
-                    .unwrap(),
-                crate::ports::ReconciliationOutcome::Stale,
+            assert!(
+                matches!(
+                    seats::apply_reconciliation_transition(&context, &mut conn, forged, &budget)
+                        .unwrap(),
+                    crate::ports::ReconciliationOutcome::Stale(_)
+                ),
                 "a binding on another terminal must not carry the seat"
             );
             let target: String = conn
@@ -2062,7 +2064,9 @@ mod fake_port {
         ) -> Result<ReconciliationOutcome, ApiError> {
             let mut state = self.state.lock().unwrap();
             if state.refuse_seats.contains(&transition.seat) {
-                return Ok(ReconciliationOutcome::Stale);
+                return Ok(ReconciliationOutcome::Stale(
+                    crate::ports::StaleReason::new("test"),
+                ));
             }
             state.actions.push(transition.action.clone());
             if matches!(
@@ -3109,6 +3113,9 @@ mod fake_port {
         );
         let progress = result.expect("a refused seat must not abort the page");
         assert_eq!(progress.transitions_refused, 1);
+        let refused = &progress.refusals[0];
+        assert_eq!(refused.seat, SeatId::new("seat-b"));
+        assert!(refused.excludable, "a refused Move is excludable");
         assert_eq!(progress.transition_count, 1);
         assert_eq!(progress.next_after_ordinal, None);
         assert_eq!(
@@ -3467,7 +3474,10 @@ mod carry_forward {
             target: HostTargetId::new("pane"),
             terminal: TerminalId::new("terminal-a"),
         };
-        assert_eq!(apply(&mut f, forged), ReconciliationOutcome::Stale);
+        assert!(matches!(
+            apply(&mut f, forged),
+            ReconciliationOutcome::Stale(_)
+        ));
     }
 
     #[test]
@@ -3482,10 +3492,10 @@ mod carry_forward {
         f.conn
             .execute("UPDATE seats SET generation=2 WHERE id='s'", [])
             .unwrap();
-        assert_eq!(
+        assert!(matches!(
             apply(&mut f, transitions[0].clone()),
-            ReconciliationOutcome::Stale
-        );
+            ReconciliationOutcome::Stale(_)
+        ));
         let epoch: i64 = f
             .conn
             .query_row(
@@ -4465,4 +4475,122 @@ fn s1_named_allocation_race_and_carry_forward() {
         plan[0].action
     );
     drop(world);
+}
+
+/// ht-wp7n: which passes complete past a refusal (TRUST-POLICY C2).
+mod refusal_streaks {
+    use super::*;
+    use crate::ports::StaleReason;
+    use crate::protocol::ids::SeatId;
+
+    fn publication(epoch: u64) -> PublishedSnapshot {
+        PublishedSnapshot {
+            id: SnapshotGenerationId::store_issued("generation".into()),
+            instance: "instance-a".into(),
+            host_id: crate::test_support::test_host_id(),
+            boot: HostBootId::new("boot"),
+            epoch,
+            observation_sequence: 1,
+            incarnation: "incarnation".into(),
+            target_count: 0,
+            invalidation_revision: 0,
+        }
+    }
+
+    fn refusal(seat: &str, generation: u64, reason: StaleReason) -> RefusedTransition {
+        RefusedTransition {
+            seat: SeatId::new(seat),
+            generation,
+            reason,
+            action: std::mem::discriminant(&ReconciliationAction::WatchRestoredPane),
+            excludable: true,
+        }
+    }
+
+    const REASON: StaleReason = StaleReason::new("structure_target_owned");
+
+    #[test]
+    fn a_refusal_free_pass_completes_at_once() {
+        assert!(RefusalStreaks::default().pass_finished(&publication(1), &[]));
+    }
+
+    /// Kills: a threshold off by one, in either direction.
+    #[test]
+    fn an_excludable_refusal_completes_on_its_third_consecutive_pass() {
+        let mut streaks = RefusalStreaks::default();
+        let refused = [refusal("s", 1, REASON)];
+        for pass in 1..PERSISTENT_REFUSAL_PASSES {
+            assert!(!streaks.pass_finished(&publication(1), &refused), "{pass}");
+        }
+        assert!(streaks.pass_finished(&publication(1), &refused));
+        assert!(streaks.pass_finished(&publication(1), &refused));
+    }
+
+    /// Kills: exclusion that ignores the action, however long the run.
+    #[test]
+    fn mark_unresolved_never_completes() {
+        let mut streaks = RefusalStreaks::default();
+        let refused = [RefusedTransition {
+            excludable: false,
+            ..refusal("s", 1, REASON)
+        }];
+        for _ in 0..PERSISTENT_REFUSAL_PASSES * 3 {
+            assert!(!streaks.pass_finished(&publication(1), &refused));
+        }
+    }
+
+    /// Kills: exclusion of a superseded pass's refusals.
+    #[test]
+    fn a_transient_reason_never_completes() {
+        let mut streaks = RefusalStreaks::default();
+        let refused = [refusal("s", 1, StaleReason::PUBLICATION_SUPERSEDED)];
+        for _ in 0..PERSISTENT_REFUSAL_PASSES * 3 {
+            assert!(!streaks.pass_finished(&publication(1), &refused));
+        }
+    }
+
+    /// One persistent refusal does not excuse a fresh one in the same pass.
+    #[test]
+    fn a_fresh_refusal_beside_a_persistent_one_blocks() {
+        let mut streaks = RefusalStreaks::default();
+        let old = refusal("old", 1, REASON);
+        for _ in 0..PERSISTENT_REFUSAL_PASSES {
+            streaks.pass_finished(&publication(1), std::slice::from_ref(&old));
+        }
+        assert!(!streaks.pass_finished(&publication(1), &[old, refusal("new", 1, REASON)]));
+    }
+
+    /// Kills: a key that drops the generation, reason or action, a run that survives a
+    /// clean pass, and a run carried into a new recovery epoch.
+    #[test]
+    fn the_run_restarts_on_any_change() {
+        let refused = refusal("s", 1, REASON);
+        let run_to_threshold = |streaks: &mut RefusalStreaks| {
+            for _ in 0..PERSISTENT_REFUSAL_PASSES - 1 {
+                streaks.pass_finished(&publication(1), std::slice::from_ref(&refused));
+            }
+        };
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        assert!(!streaks.pass_finished(&publication(1), &[refusal("s", 2, REASON)]));
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        let other = refusal("s", 1, StaleReason::new("move_target_owned"));
+        assert!(!streaks.pass_finished(&publication(1), &[other]));
+        // Refused as one action twice, then as another: its run starts now.
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        let other = RefusedTransition {
+            action: std::mem::discriminant(&ReconciliationAction::NoteRestoredPaneAbsent),
+            ..refused.clone()
+        };
+        assert!(!streaks.pass_finished(&publication(1), &[other]));
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        assert!(streaks.pass_finished(&publication(1), &[]));
+        assert!(!streaks.pass_finished(&publication(1), std::slice::from_ref(&refused)));
+        let mut streaks = RefusalStreaks::default();
+        run_to_threshold(&mut streaks);
+        assert!(!streaks.pass_finished(&publication(2), std::slice::from_ref(&refused)));
+    }
 }

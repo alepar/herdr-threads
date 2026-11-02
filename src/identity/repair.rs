@@ -94,7 +94,22 @@ pub struct OrdinaryIdentity {
     /// The observation lane's Pacer: its backoff gates retries after a failed
     /// capture. Unset (tests, in-process services) means no gate.
     observation_pacer: Option<Arc<Pacer>>,
+    /// C1 process continuity candidates the facts or a definitive C1 refusal ruled out
+    /// (ht-hsyg), by binding, seat generation and fingerprint, with when (monotonic ms): not read
+    /// again for [`PROCESS_DECLINE_TTL_MS`], so a transient answer does not stick for the whole
+    /// generation. In-process only (a daemon restart forgets them); bounded, expired entries
+    /// dropped first, cleared when still full.
+    process_declined: std::sync::Mutex<std::collections::HashMap<ProcessDeclineKey, u64>>,
+    /// The last seat C1 process continuity walked this round; `None` starts over.
+    process_cursor: std::sync::Mutex<Option<SeatId>>,
 }
+
+use crate::identity::process_continuity::DeclineKey as ProcessDeclineKey;
+/// Most C1 process continuity declines remembered before the set is cleared.
+const PROCESS_DECLINED_CAP: usize = 1024;
+/// How long a C1 process continuity decline stands before the candidate is read again.
+const PROCESS_DECLINE_TTL_MS: u64 = 10 * 60 * 1000;
+
 impl OrdinaryIdentity {
     pub fn new(
         instance: String,
@@ -116,6 +131,8 @@ impl OrdinaryIdentity {
             lane_captured: std::sync::Condvar::new(),
             service: Cancellation::default(),
             observation_pacer: None,
+            process_declined: std::sync::Mutex::new(std::collections::HashMap::new()),
+            process_cursor: std::sync::Mutex::new(None),
         }
     }
 
@@ -184,8 +201,8 @@ impl OrdinaryIdentity {
         outcome.map(Some)
     }
 
-    /// Record that `published`'s saved-seat pass ended with no refused
-    /// transition (TRUST-POLICY C2). Taken under the observation lane lock, like
+    /// Record that `published`'s saved-seat pass ended with no refusal that
+    /// holds the marker back (TRUST-POLICY C2). Taken under the observation lane lock, like
     /// a reconciliation page: the marker write can lift the baseline hold and
     /// bump the lifecycle revision, which would otherwise supersede an explicit
     /// target observation (operator repair, resolve) admitted concurrently.
@@ -365,7 +382,12 @@ impl OrdinaryIdentity {
         if let Some(result) = replay {
             return Ok(result);
         }
-        let (result, not_ready) = self.decide_continuity_now(command.clone(), budget, false);
+        let (result, not_ready) = self.decide_continuity_now(
+            command.clone(),
+            budget,
+            false,
+            crate::ports::ContinuityEvidence::Cooperative,
+        );
         // ht-dtx0: a claim refused only because the host evidence is not ready
         // (reconciliation lag, a failed host read) is kept for the observation
         // worker to decide once the epoch has reconciled; a decided claim
@@ -417,7 +439,14 @@ impl OrdinaryIdentity {
                     self.store.replay_continuity(command.clone(), &budget)
                 };
                 replay_settles(&replayed).unwrap_or_else(|| {
-                    !self.decide_continuity_now(command.clone(), &budget, true).1
+                    !self
+                        .decide_continuity_now(
+                            command.clone(),
+                            &budget,
+                            true,
+                            crate::ports::ContinuityEvidence::Cooperative,
+                        )
+                        .1
                 })
             };
             if settled {
@@ -427,6 +456,177 @@ impl OrdinaryIdentity {
             }
         }
         Ok(())
+    }
+
+    /// TRUST-POLICY C1 process continuity (ht-hsyg): after a completed reconciliation pass, on
+    /// the observation lane (after the kept claims, which are the sessions' own), reattach each
+    /// unresolved seat whose top-level harness binding's own process Herdr's pane at the seat's
+    /// saved target still hosts (see [`crate::identity::process_continuity`]). The saved target
+    /// only selects the pane to ask: one quiet `pane process-info` read per seat with a live,
+    /// undeclined candidate. Seats are walked a page at a time from a cursor, so every one is
+    /// reached however many others are declined, and each match is decided at once, before the
+    /// next seat is read. A match is not decided while another seat saved at the same target has
+    /// a live process. The decision is the ordinary C1 transaction, pinned to the judged seat and
+    /// generation, under a daemon operation key per (seat, binding, seat generation), recorded
+    /// `structural_process_continuity`. A candidate the facts rule out, or that a definitive C1
+    /// refusal answers, is remembered for its seat generation and fingerprint; a gone process, an
+    /// unread fact or a not-ready refusal is retried next pass.
+    pub fn decide_process_continuity(&self) -> Result<(), ApiError> {
+        use crate::identity::process_continuity::{decline_key, judge_seat, page_groups};
+        let budget = self.maintenance_budget();
+        let after = self
+            .process_cursor
+            .lock()
+            .ok()
+            .and_then(|cursor| cursor.clone());
+        let rows = {
+            let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
+            self.store.process_continuity_candidates(
+                self.host_id,
+                crate::ports::ProcessContinuityPage {
+                    after,
+                    target: None,
+                },
+                &budget,
+            )?
+        };
+        let (groups, last_page) = page_groups(rows.candidates, rows.full);
+        let processes = crate::host::process_table::HostProcessTable;
+        let now = self.clock.monotonic_now().0;
+        let declined = |key: &ProcessDeclineKey| {
+            self.process_declined.lock().is_ok_and(|declined| {
+                declined
+                    .get(key)
+                    .is_some_and(|at| now.saturating_sub(*at) < PROCESS_DECLINE_TTL_MS)
+            })
+        };
+        let mut walked_all = true;
+        for group in &groups {
+            if budget.is_exhausted(self.clock.as_ref()) {
+                walked_all = false;
+                break;
+            }
+            let worth_reading = group.iter().any(|candidate| {
+                !declined(&decline_key(candidate)) && candidate.liveness.is_alive(&processes)
+            });
+            if worth_reading {
+                let shell = self
+                    .host
+                    .pane_shell_pid(&group[0].target, &self.quiet_read_context(&budget))
+                    .ok()
+                    .flatten();
+                let judged = judge_seat(group, &processes, shell, &declined);
+                for key in judged.declines {
+                    self.decline_process_candidate(key);
+                }
+                if let (Some(candidate), Some(shell)) = (judged.matched, shell) {
+                    self.decide_process_match(candidate, &processes, shell, &budget)?;
+                }
+            }
+            if let Ok(mut cursor) = self.process_cursor.lock() {
+                *cursor = Some(group[0].seat.clone());
+            }
+        }
+        if walked_all
+            && last_page
+            && let Ok(mut cursor) = self.process_cursor.lock()
+        {
+            *cursor = None;
+        }
+        Ok(())
+    }
+
+    /// One judged match: refuse to choose while another seat at the target has a live process,
+    /// else the C1 transaction pinned to the judged seat and generation.
+    fn decide_process_match(
+        &self,
+        candidate: &crate::ports::ProcessContinuityCandidate,
+        processes: &dyn crate::ports::ProcessInfo,
+        shell: u32,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let at_target = {
+            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+            self.store.process_continuity_candidates(
+                self.host_id,
+                crate::ports::ProcessContinuityPage {
+                    after: None,
+                    target: Some(candidate.target.clone()),
+                },
+                budget,
+            )?
+        };
+        if crate::identity::process_continuity::has_rival_in_pane(
+            &at_target.candidates,
+            &candidate.seat,
+            processes,
+            shell,
+        ) {
+            return Ok(());
+        }
+        let Ok(operation) = crate::protocol::ids::OperationId::parse(format!(
+            "process-continuity:{}:{}:{}",
+            candidate.seat.as_str(),
+            candidate.binding_id,
+            candidate.seat_generation
+        )) else {
+            return Ok(());
+        };
+        let command = ContinuityCheckIn {
+            target: candidate.target.clone(),
+            host: candidate.host.clone(),
+            harness: candidate.harness,
+            native_session: candidate.native_session.clone(),
+            source: ContinuityCheckIn::SAME_SESSION_SOURCE.to_owned(),
+            operation,
+            execution: candidate.execution.clone(),
+            liveness: Some(candidate.liveness),
+        };
+        let (result, not_ready) = self.decide_continuity_now(
+            command,
+            budget,
+            true,
+            crate::ports::ContinuityEvidence::Process {
+                seat: candidate.seat.clone(),
+                seat_generation: candidate.seat_generation,
+            },
+        );
+        if result.is_err() && !not_ready {
+            self.decline_process_candidate(crate::identity::process_continuity::decline_key(
+                candidate,
+            ));
+        }
+        Ok(())
+    }
+
+    /// A quiet host read's context: its own short budget within `budget`, no fences.
+    fn quiet_read_context(&self, budget: &CallBudget) -> HostCallContext {
+        HostCallContext {
+            budget: CallBudget {
+                deadline: budget.deadline.min(MonoInstant(
+                    self.clock
+                        .monotonic_now()
+                        .0
+                        .saturating_add(DIAGNOSTIC_READ_MILLIS),
+                )),
+                cancellation: budget.cancellation.clone(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        }
+    }
+
+    fn decline_process_candidate(&self, key: ProcessDeclineKey) {
+        let now = self.clock.monotonic_now().0;
+        if let Ok(mut declined) = self.process_declined.lock() {
+            if declined.len() >= PROCESS_DECLINED_CAP {
+                declined.retain(|_, at| now.saturating_sub(*at) < PROCESS_DECLINE_TTL_MS);
+                if declined.len() >= PROCESS_DECLINED_CAP {
+                    declined.clear();
+                }
+            }
+            declined.insert(key, now);
+        }
     }
 
     /// The daemon's own short budget for kept-claim bookkeeping and decisions,
@@ -456,6 +656,7 @@ impl OrdinaryIdentity {
         command: ContinuityCheckIn,
         budget: &CallBudget,
         quiet: bool,
+        evidence: crate::ports::ContinuityEvidence,
     ) -> (Result<CommandResult, ApiError>, bool) {
         let target = command.target.clone();
         let diagnostic = self.agent_session_diagnostic(&target, &command, budget);
@@ -478,6 +679,7 @@ impl OrdinaryIdentity {
                         command,
                         guard,
                         diagnostic,
+                        evidence,
                     },
                     budget,
                 )

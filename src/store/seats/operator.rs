@@ -579,17 +579,9 @@ pub(crate) fn retire_seat(
         )
         .map_err(store_error)?;
     let target = match target {
-            Some(target) => target,
-            None => tx
-                .query_row(
-                    "SELECT target_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
-                    [seat.as_str()],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(store_error)?
-                .unwrap_or_default(),
-        };
+        Some(target) => target,
+        None => latest_binding(tx, seat.as_str(), "target_id", |r| r.get(0))?.unwrap_or_default(),
+    };
     let boot = boot.unwrap_or_default();
     control::begin_retirement_authored(
         tx,

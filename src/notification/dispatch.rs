@@ -724,6 +724,9 @@ struct SeatAttempt {
     last_attempt_at: Option<MonoInstant>,
 }
 
+/// Longest retry spacing of a refused dormant wake (`DispatchState::record_dormant_refusal`).
+const DORMANT_REFUSAL_CAP_MS: u64 = 300_000;
+
 /// Reconstructed before dispatch on boot. Only a committed store reservation
 /// may call `reserved`; caller proof and receipt state are outside this object.
 pub struct DispatchState {
@@ -844,6 +847,15 @@ impl DispatchState {
             }
             crate::ports::WakeOutcome::Submitted => state.refusal.on_success(),
             _ => {}
+        }
+    }
+
+    /// A refused wake of a dormant target. Unlike a connected seat, nothing else clears the
+    /// condition (a pane left in a shell stays one), so the retry widens to the wake ladder's
+    /// longest spacing; a session resumed meanwhile waits at most that long.
+    pub fn record_dormant_refusal(&mut self, seat: &SeatId, now: MonoInstant) {
+        if let Some(state) = self.seats.get_mut(seat) {
+            state.refusal.on_failure_capped(now, DORMANT_REFUSAL_CAP_MS);
         }
     }
 

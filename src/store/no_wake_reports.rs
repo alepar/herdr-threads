@@ -1,4 +1,4 @@
-//! Persisted no-wake reports (`no_wake_reports`, NodeDelta 0012).
+//! Persisted no-wake reports (`no_wake_reports`, NodeDelta 0013).
 //!
 //! Responsibility: one row per (observer, seat) per no-wake episode, so a sender is told
 //! `wake=no_wake` once across daemon restarts and mod channel flaps. Owns the SQL of the table:

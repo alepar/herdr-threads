@@ -68,6 +68,11 @@ Amended 2026-11-01 for local plain launch onto a herdr-core (ht-kqrt.186): a sec
 (the launch gate paragraph in H3, an accepted limit); no new provenance. New local capability
 `launch.local_gate_v1`; no peer wire change.
 
+Amended 2026-10-31 for persistently refused seats (ht-wp7n): a reconciliation pass records its marker past a
+transition refused on 3 consecutive finished passes unless that transition is an unresolve (`MarkUnresolved`,
+`UnresolveAwaitingTerminal`) (C2), one accepted limit; no new
+provenance or wire value.
+
 Amended 2026-10-27 for remote addresses (`SEAT@MACHINE`, phase 1): a seat name qualified by a machine is resolved
 by that machine's daemon over an authenticated direct link, as a read (N14, the cross-node accepted limit "A
 linked node answers remote resolution"); N13 unchanged; no new provenance value.
@@ -86,6 +91,13 @@ Amended 2026-10-28 for the handoff bootstrap send (ht-fne2): the registered Send
 launches its recipient raises no send-time unavailable-recipient warning for that recipient; its send-time ACK
 deadline (A6) still reports a launch that never checks in (C4); availability is recorded unchanged; no new
 provenance or wire value.
+
+Amended 2026-10-31 for process continuity (ht-hsyg): after a new Herdr incarnation that kept the pane processes
+alive (a live handoff, `herdr server live-handoff` / `herdr update --handoff`), the daemon reattaches a seat whose
+top-level harness binding's own fingerprinted process lives in the session and controlling terminal of the shell
+Herdr reports for the seat's saved target (C1 process continuity, C2); new seat-history provenance
+`structural_process_continuity`; person seats stay under the restore holds; three accepted limits; no new wire
+value.
 
 ## Abstract
 
@@ -178,6 +190,7 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation; for an hc host the same `tN` under the same core id boot (ids are monotonic and never reused, so a finished `tN` never names another terminal), including the `tN` of a seat unresolved while its kept terminal waited for a restart that the core has now done | automatic, no new provenance |
 | Cooperative continuity | A top-level lifecycle or turn event, or a push-channel harness's in-process watch for its own session (ht-dtx0), carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
 | Named continuity | A seat-acting resolve on the built-in named host of a name equal to the name of an unresolved named seat, with no live seat of that name. The seat keeps its id, history and obligations; no new seat is made. Retire ends continuity for good: a retired name mints a new seat | `cooperative_named_seat` (seat history only) |
+| Process continuity (ht-hsyg) | After a new or unknown Herdr incarnation, a top-level harness binding (not human, `managed_launch` or subagent) of an unresolved seat (reason `other`) that its latest unresolve ended while open and connected, placed under an earlier incarnation than the current one, has a live fingerprinted process (same pid and start stamp) that is the shell Herdr reports for the seat's saved target in the current incarnation or belongs to the session that shell leads, on that shell's controlling terminal; no other such binding of another seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, the pane has no resolved owner, and the session's unique C1 match is that seat at the judged generation | `structural_process_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 
 Named rule. The named host is not host evidence and never closes by absence: reconcile plans no
@@ -285,6 +298,21 @@ transaction, so a cold host's first continuity decision can establish a no-match
 a worker iteration. Hosts with saved seats or a hold still require their ordinary reconciliation pass;
 this grants no enrollment around pending recovery and adds no non-resume hook retry.
 
+The reconciliation marker means nothing this pass planned can still add a C1 candidate or a seat to protect; it does
+not mean every planned transition applied (ht-wp7n). A pass records it past a refused transition only if the refusal is
+non-transient, repeated for the same seat, seat generation, reason and action on 3 consecutive finished passes of the recovery
+boot and epoch (a pass cut short by a store error counts for nothing), and its action is anything but an unresolve (`MarkUnresolved`, `UnresolveAwaitingTerminal`). Any other action means the seat is already unresolved, where it
+keeps blocking the hold lift, or proven in the current incarnation, so the pass would not have unresolved it: it adds
+no C1 candidate and no seat to protect. The refused seat is replanned on every pass and stays named in the daemon log
+and Health; an unapplied carry ends in the ordinary unavailable path (C4), and target ownership stays as last applied: after a
+refused `Move` the seat still owns its old target and the destination has no resolved owner, which is what the kept and
+process continuity guards then read at that target. The run is daemon memory: a restart proves
+it again. Health's `last_reconciliation_at` stays refusal-free only, so it can lag the marker. Refused transitions are
+never evidence, so no seat moves or is unresolved because of them. Accepted limit: until the marker first names the
+recovery boot and epoch, a resolved seat whose `MarkUnresolved` keeps being refused holds it back, and with it the hold
+lift, kept and process continuity and the restored-pane grace: it looks resolved on a dead incarnation, so lifting
+holds or finalizing a no-match past it could seat a session twice. The operator repairs that seat.
+
 **Pane-close retirement (ht-54r.14).** A pane absent from a coherent snapshot of the *same* Herdr
 incarnation retires its seat, however many session bindings the seat holds. The retirement fence disconnects
 every connected binding with reason `seat_retired` through the one `store::bindings::disconnect` transition
@@ -323,6 +351,29 @@ the same boot. Accepted limit: the core id is the only boot evidence, so a core 
 with the same id, or a clone of a core's state directory, is indistinguishable from a restart and can show another
 terminal under a saved `tN`.
 
+**Process continuity (ht-hsyg).** A new incarnation can keep the pane processes alive: a Herdr live handoff
+(`herdr server live-handoff`, `herdr update --handoff`) passes each pane's terminal to a new server process, which
+assigns new terminal ids. Old ids still prove nothing. What carries over is the process: after each completed
+reconciliation pass of the current recovery boot and epoch, and after the kept claims (the sessions' own word), the
+daemon walks the unresolved seats (reason `other`) a page at a time. A seat's candidates are the top-level harness
+bindings its latest unresolve ended while open and connected (`seat_unresolved`, placed at the generation that unresolve
+bumped from) that carry a liveness fingerprint and were placed under an earlier Herdr incarnation than the published
+one, so a same-incarnation unresolve is never this path's. If a candidate's fingerprinted process is still the same
+process (pid and start stamp) and is the shell Herdr reports for the pane at the seat's saved target, or belongs to the
+session that shell leads, with that shell's controlling terminal, the seat's newest such binding is reattached there
+through the C1 transaction: provenance `structural_process_continuity` in seat history, the pane's hold released, the
+binding reopened under its own session and fingerprint. The saved target only selects the pane to ask (one `pane
+process-info` read per seat, no scan); the kernel session and terminal are the evidence. A cold restart cannot satisfy
+it: the old shells are gone, and a process that survived the hangup lost its controlling terminal. Nothing is decided
+while a candidate of another seat saved at the same target has its process in that pane or cannot be read (the pane's
+process could be either's; every such seat is listed, never a bounded page), while a kept C1 claim names the target,
+when the pane has an owner, or when the session's unique C1 match is not the judged seat at its judged generation; nor
+on an unreadable fact. A candidate the facts rule out, or that a definitive C1 refusal answers, is not read again for
+10 minutes for that seat generation and fingerprint; that memory is the daemon process's own (a restart forgets it).
+A gone process, an unread fact or a not-ready refusal is retried next pass. Person seats, named seats (their continuity
+is their name) and `managed_launch` bindings are not covered, and a host with no pane shell read (named, herdr-core)
+decides nothing here. The decision is the C1 transaction, so the cross-kind rebind refusal holds.
+
 **Restored-pane retirement (ht-wpq4).** A seat that a new incarnation left unresolved (reason `other`) keeps a
 saved target from the old one, which proves nothing (C2), so its absence never retires the seat. What retires it
 is structural, same-incarnation evidence about the pane the current incarnation shows at that target:
@@ -334,8 +385,8 @@ is structural, same-incarnation evidence about the pane the current incarnation 
   keeps T, see Moved panes, and is not a close).
 - *No claim.* No kept continuity claim (C1) on that server, of any age, names the harness and native session of
   any of the seat's top-level bindings, and no other seat's structural proof or binding names T. Expired kept
-  claims are pruned only after a refusal-free pass, so while passes are refused an old row may be a live
-  session's only claim; it blocks. A decided claim rebinds the seat and bumps its generation, which voids the
+  claims are pruned only after a pass that records the marker, so while a refusal holds it back an old row may be
+  a live session's only claim; it blocks. A decided claim rebinds the seat and bumps its generation, which voids the
   watch.
 - *Observed grace.* The daemon has observed the closure for 10 minutes of its own running time while the
   server's reconciliation marker names the current recovery boot and epoch (C1 claims are being decided): each
@@ -365,6 +416,14 @@ top-level lifecycle/turn event with a usable native session attempts C1 when tha
 resolved mapping; this is same-session recovery, not permission for a tool event to allocate.
 Pending recovery, ambiguous matches and unusable recovery evidence stop enrollment. A confirmed no-match may proceed
 only through ordinary guards; a resume without a usable native session cannot allocate a seat.
+Recovery is pending for a claim only while the host's reconciliation marker lags and the pass could still change
+its answer: the target has a resolved owner the pass may unresolve, or some local seat, resolved or unresolved, has a
+binding that matches the C1 candidate predicate for the claim's harness and native session. A pass unresolves,
+reconfirms, moves, carries or retires seats, but adds no binding, so a session no seat's binding names is a confirmed
+no-match even while the marker lags (ht-kaw9): one seat whose transition the store keeps refusing must not keep every
+new pane on the host unseated. Restore holds still apply to its ordinary enrollment.
+A pass that completes past a persistently refused seat (C2) ends the lag: by then the pass cannot unresolve that seat,
+so it adds no candidate for its sessions.
 Resolution and check-in retain their separate durable operation journals: concurrent/replayed startup
 and response loss cannot split a pane's role; an uncertain resolution remains explicitly retryable.
 A historical resolution result is revalidated against the current pane mapping before check-in.
@@ -480,6 +539,7 @@ records there are replay machinery, never its identity.
 | `cooperative_hook_context` | receipt action observation and lazy completion claim | A top-level standard native hook **of a harness whose adapter declares no hook-pull delivery** wrote and flushed output whose context carried the message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`; its exact receipt candidates, source and original caller claim are frozen into the accountable payload digest. Receipt observations preserve binding provenance separately. Lazy rows store no per-row source. Not proof that the harness ingested it or the model read it. A prefix never carries it. The daemon refuses this claim from a hook-pull binding. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because the same native harness session id matched (C1). Never on receipts. |
+| `structural_process_continuity` | seat rebinds only | The seat's top-level binding process (same fingerprint) was observed as, or in the session of, the shell Herdr reports for the pane, on that shell's controlling terminal, after a new incarnation (C1 process continuity, ht-hsyg). The reopened binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. Also covers `sync clone-cleared` and the other mutating sync, peer and legacy commands (`sync resync`, `peer add`, `peer forget`, `legacy purge`). |
 | `replicated_from:<node_uuid>` | receipts, invitation answers (the accept and reject rows) and events applied from another node's fact (bindings never) | Applied as given from a fact authored and signed by node `<node_uuid>`; the authoring node's own provenance travels inside the fact. Never written for a locally authored fact. |
 | `local_journal` | receipts, invitation answers and events materialized from an own old incarnation's entry with no staged local attribution | A wipe or restore pull-back re-applied this node's own earlier fact; the original binding is not known here. Never on bindings. |
@@ -890,7 +950,19 @@ model open work, and summary closure never changes receipt state or installs glo
   non-human bindings placed on the observed terminal that have something to act on (seat-level attention
   such as an invitation, receipt or warning reaches every one of them; otherwise the binding's own unread
   mail). Subagent, disconnected, ended and human bindings are never targets, and a seat that holds a human
-  binding is never woken. A target whose mod channel is live and not stalled is woken through that channel
+  binding is never woken. One exception, the *dormant* binding (ht-unmk): a harness may run no hook until its first
+  turn, so a session resumed in the pane sits idle unknown to the daemon. With no top-level binding of the seat
+  connected, the last disconnected top-level agent binding (not a fork, `concurrent_session`) is a target when a
+  process exit disconnected it (`liveness_process_exit`) and it has something to act on at the seat's threshold,
+  placed on the observed terminal and seat generation like any target. It authorizes nothing but an ordinary wake
+  prompt (never a soft-deadline poke, whose text names threads): no binding, seat, cursor, receipt or availability
+  changes, and the session reconnects only through its own later check-in. A session that connects voids a wake
+  still reserved for the dormant target, and a refused one retries at up to 5 minutes, since nothing else clears a
+  pane that stays in a shell. Only the seat's newest 4096 pending rows are read for it, an accepted limit: an admitted
+  item buried under that many silent ones no longer wakes the seat, and still arrives on its next turn. Its pid is stale, so the composer wake takes it on any Herdr-reported foreground
+  process of its own pane (no foreground report, no wake) and the native recheck requires Herdr's agent kind there
+  to be its harness and awaiting input. An accepted limit: another session of that harness in the pane, which the
+  seat would enroll anyway, gets the wake. An end event never leaves a dormant binding. A target whose mod channel is live and not stalled is woken through that channel
   and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
   only to the one target whose fingerprint pid is among Herdr's pane foreground processes (the non-shell
   entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness
@@ -1405,7 +1477,8 @@ cursors, the one cursorless readable scope (a pending direct-pair invitation) an
 that lets a binding join a thread without a cursor must extend the seed in the same commit. No seat-level view reads a
 disconnected binding's view: the wake frontier and discovery, the seat inbox filter, the digest's pending
 count and the mod fingerprint, kick count and stall rule consider connected top-level bindings only (plus
-legacy seat-pending rows). The seat-wide `displayed` mark (set once no top-level binding that still owes the
+legacy seat-pending rows; the wake frontier and discovery also read a dormant binding's unread rows from the
+seat's pending rows, A4 *Wake*). The seat-wide `displayed` mark (set once no top-level binding that still owes the
 row, connected or disconnected by process exit, finds it unread) is kept only as the join frontier's "no
 completion has displayed" fact below and the binding-less completion state; no delivery or wake decision reads
 it (the served-in-turn recheck asks the woken binding's own cursor and marks). Accepted limit: a disconnected binding
@@ -2461,6 +2534,18 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   the PID within the same start tick would read as the same incarnation. On Linux a wall-clock step moves
   the boot time, so the same server then reads as a new incarnation: holds (C2), never a false match.
   Other platforms have no witness: every observation is unverified and host-observed flows refuse.
+- **Process continuity trusts Herdr's shell pid and the kernel session (ht-hsyg).** The pane's `shell_pid` is
+  Herdr-reported, like terminal ids. Session and controlling terminal come from procfs (Linux) or `getsid` and
+  `proc_pidinfo` (macOS); elsewhere the path is off and C2 applies. A harness that leaves the pane's session
+  (setsid, tmux, screen) is not matched.
+- **Process continuity proves the process, not its current session (ht-hsyg).** The reopened binding keeps the
+  session the process last claimed; a process that switched sessions without a hook firing is corrected by its
+  next claim (supersede rules unchanged).
+- **Unavailability window after a live handoff (ht-hsyg).** Between the new incarnation's first reconciliation
+  pass and the process continuity decision that follows it, the seat is unresolved: sends warn and wakes wait, and
+  the rebind bumps the seat generation. Person seats and launched agents that have not checked in stay unresolved
+  until `me init`, a check-in or the operator. A Herdr that does not carry the agent state across the handoff
+  reports it `unknown` until the agent redraws, and wakes wait for that (delivery contract rule 4).
 - **Mod delivery claims are cooperative.** A same-user process could run `herdr-threads watch ack` and settle
   receipts as `cooperative_mod_delivery`; the daemon checks the canonical binding the claim's key names and that binding's live
   channel, not the process.
@@ -2677,6 +2762,17 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   against one of them applies as before.
 
 ## Decision record
+
+### Process continuity across a Herdr live handoff (2026-10-31, ht-hsyg)
+
+A live handoff gives every pane a new terminal id under a new server process, so C2 unresolved every seat and idle
+agents could not be woken until their next turn. Herdr exposes no handoff lineage and no stable terminal identity,
+and none was requested upstream. The harness session id alone gives only the hook path C1 already had: the daemon
+cannot observe it without the agent's claim. The kernel can: the agent process and the pane's shell survive the
+handoff, Herdr still reports the shell's pid, and session plus controlling terminal tie the process to that pane's
+terminal. That is structural evidence of the same kind as a terminal id, decided per seat with every C1 guard,
+applied after the reconciliation pass rather than inside it (the invalidation path is unchanged). Design and the
+rejected alternatives (Herdr lineage, the successor's `--handoff-import` argv token) are in the bead ht-hsyg.
 
 ### Cross-node sync trust model (2026-10-14, ht-5fr)
 

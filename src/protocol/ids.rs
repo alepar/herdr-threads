@@ -379,7 +379,7 @@ impl<'de> Deserialize<'de> for HostLocator {
 /// SeatName: the durable name of a named seat.
 ///
 /// Owns: the grammar (1..=64 bytes of `[A-Za-z0-9._-]`, no leading `-` or `.`,
-/// not shaped like a public seat id) and string serde. The 0012 migration's
+/// not shaped like a public seat id) and string serde. The 0013 migration's
 /// CHECK is a superset of it (length and charset); the other two rules are
 /// decided here only.
 /// Hides: nothing; a validated string.

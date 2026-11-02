@@ -939,6 +939,12 @@ mod archival_actual_producer_base_fixture {
         }
     }
 
+    /// The peer's worker counts from before the test builds its store: under load that setup
+    /// outran a 5 s bound, the worker dropped the listener, and the first host call read
+    /// `server not running: Connection refused` (ht-vpaz). A guard against a hung test only:
+    /// `settle` stops the worker as soon as the test is done with it.
+    const PEER_HANG_GUARD: Duration = Duration::from_secs(120);
+
     // No child process, native executable, daemon or real Herdr. The actual
     // NativeCli witnesses this test process's socket peer PID/start/UID.
     struct OwnedPeer {
@@ -985,7 +991,7 @@ mod archival_actual_producer_base_fixture {
             let errors = owned.errors.clone();
             let methods = owned.methods.clone();
             owned.worker = Some(thread::spawn(move || {
-                let until = Instant::now() + Duration::from_secs(5);
+                let until = Instant::now() + PEER_HANG_GUARD;
                 while !stop.load(Ordering::Acquire) && Instant::now() < until {
                     let (mut stream, _) = match listener.accept() {
                         Ok(pair) => pair,
@@ -1018,7 +1024,7 @@ mod archival_actual_producer_base_fixture {
                     errors
                         .lock()
                         .unwrap()
-                        .push("owned server reached five-second bound".into());
+                        .push("owned server reached its hang guard".into());
                 }
             }));
             owned

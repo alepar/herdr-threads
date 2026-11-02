@@ -3855,6 +3855,7 @@ fn v10_allocation_decisions_accepts_b5_kinds() {
         "operator_retire",
         "operator_human_override",
         "cooperative_continuity",
+        "structural_process_continuity",
     ] {
         insert(kind, None).unwrap();
     }
@@ -6358,6 +6359,75 @@ fn sibling_delivery_upgrade_preserves_rows_and_refuses_schema3_binary() {
     assert_eq!(user_version(&db), 4);
 }
 
+/// Node schema 12 (ht-hsyg) rebuilds `allocation_decisions` to admit the
+/// `structural_process_continuity` kind. Kills: losing or renumbering rows, restarting the
+/// AUTOINCREMENT sequence, dropping either index, or still refusing the new kind.
+#[test]
+fn process_continuity_upgrade_preserves_allocation_decisions() {
+    let db = Connection::open_in_memory().unwrap();
+    let old = &schema::NODE_DELTAS[..10];
+    open_with(&db, old).unwrap();
+    assert_eq!(user_version(&db), 11);
+    crate::test_support::attach_test_host_to_connection(&db);
+    let insert = |ordinal: i64, kind: &str| {
+        db.execute(
+            "INSERT INTO allocation_decisions(ordinal,host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) VALUES (?1,(SELECT min(host_id) FROM herdr_hosts),'t'||?1,'s'||?1,?2,?1,'b',1,2,'op',NULL)",
+            params![ordinal, kind],
+        )
+    };
+    insert(3, "ordinary").unwrap();
+    insert(9, "cooperative_continuity").unwrap();
+    assert!(insert(10, "structural_process_continuity").is_err());
+    open_with(&db, &schema::NODE_DELTAS[..11]).unwrap();
+    assert_eq!(user_version(&db), 12);
+    let rows: Vec<(i64, String, String, String, i64, Option<String>)> = db
+        .prepare("SELECT ordinal,target_id,seat_id,kind,decided_at,operator_label FROM allocation_decisions ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                3,
+                "t3".into(),
+                "s3".into(),
+                "ordinary".into(),
+                3,
+                Some("op".into())
+            ),
+            (
+                9,
+                "t9".into(),
+                "s9".into(),
+                "cooperative_continuity".into(),
+                9,
+                Some("op".into())
+            ),
+        ]
+    );
+    db.execute(
+        "INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ((SELECT min(host_id) FROM herdr_hosts),'t','s','structural_process_continuity',1,'b',1,2)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.last_insert_rowid(),
+        10,
+        "the sequence continues past the copied rows"
+    );
+    for index in [
+        "allocation_decisions_target",
+        "allocation_decisions_seat_history",
+    ] {
+        assert!(object_exists(&db, "index", index), "{index} missing");
+    }
+    assert!(!object_exists(&db, "table", "allocation_decisions_new"));
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+}
+
 /// Node schema 5, the bytes-first journal (ht-76u6): the delta rebuilds
 /// `journal` / `journal_forked` with `raw` as truth and a nullable projection.
 mod bytes_first {
@@ -7076,11 +7146,11 @@ mod bytes_first {
     }
 }
 
-fn delta_0012_index() -> usize {
+fn delta_0013_index() -> usize {
     schema::NODE_DELTAS
         .iter()
         .position(|delta| delta.sql.contains("herdr_hosts_one_named"))
-        .expect("the 0012 host environments delta is registered")
+        .expect("the 0013 host environments delta is registered")
 }
 
 fn column(db: &Connection, table: &str, name: &str) -> Option<(String, bool, Option<String>)> {
@@ -7116,11 +7186,11 @@ fn host_seat_row(db: &Connection, id: &str, host: i64, state: &str, name: Option
 }
 
 #[test]
-fn delta_0012_applies_on_populated_store() {
+fn delta_0013_applies_on_populated_store() {
     let db = Connection::open_in_memory().unwrap();
-    let before = &schema::NODE_DELTAS[..delta_0012_index()];
+    let before = &schema::NODE_DELTAS[..delta_0013_index()];
     open_with(&db, before).unwrap();
-    assert_eq!(user_version(&db), 11);
+    assert_eq!(user_version(&db), 12);
     crate::test_support::attach_test_host_to_connection(&db);
     db.execute_batch(
         "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id)
@@ -7153,7 +7223,7 @@ fn delta_0012_applies_on_populated_store() {
 }
 
 #[test]
-fn delta_0012_columns_indexes_tables() {
+fn delta_0013_columns_indexes_tables() {
     let db = Connection::open_in_memory().unwrap();
     open_with(&db, schema::NODE_DELTAS).unwrap();
     assert_eq!(
@@ -7209,7 +7279,7 @@ fn delta_0012_columns_indexes_tables() {
 }
 
 #[test]
-fn delta_0012_indexes_enforce_their_scope() {
+fn delta_0013_indexes_enforce_their_scope() {
     let db = Connection::open_in_memory().unwrap();
     open_with(&db, schema::NODE_DELTAS).unwrap();
     crate::test_support::attach_test_host_to_connection(&db);
@@ -7282,21 +7352,21 @@ fn seats_name_check_sample() {
 
 const RAW: &str = "x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'";
 
-/// A store at schema version 11 (every delta before 0012).
-pub(super) fn store_before_0012() -> Connection {
+/// A store at schema version 12 (every delta before 0013).
+pub(super) fn store_before_0013() -> Connection {
     let db = Connection::open_in_memory().unwrap();
     let before: Vec<schema::NodeDelta> = schema::NODE_DELTAS
         .iter()
-        .filter(|d| d.version < 12)
+        .filter(|d| d.version < 13)
         .copied()
         .collect();
-    assert_eq!(before.len() + 1, 11);
+    assert_eq!(before.len() + 1, 12);
     open_with(&db, &before).unwrap();
-    assert_eq!(user_version(&db), 11);
+    assert_eq!(user_version(&db), 12);
     db
 }
 
-/// A remote seat row (version 11 shape) and, when `payload` is given, its `seat.created` journal row.
+/// A remote seat row (version 12 shape) and, when `payload` is given, its `seat.created` journal row.
 pub(super) fn remote_with_created(db: &Connection, seat: &str, payload: Option<&[u8]>) {
     db.execute(
         "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
@@ -7320,12 +7390,12 @@ pub(super) fn remote_with_created(db: &Connection, seat: &str, payload: Option<&
     .unwrap();
 }
 
-// Kills: a 0012 without the backfill (a valid name stays NULL), a backfill that copies an invalid
+// Kills: a 0013 without the backfill (a valid name stays NULL), a backfill that copies an invalid
 // value (the CHECK aborts the migration, or a leading dot survives), one that rewrites a local
 // row, and one that aborts on a non-JSON payload.
 #[test]
-fn delta_0012_backfills_remote_seat_names() {
-    let db = store_before_0012();
+fn delta_0013_backfills_remote_seat_names() {
+    let db = store_before_0013();
     let long = format!(r#"{{"display_name":"{}"}}"#, "a".repeat(65));
     let cases: [(&str, Option<&[u8]>); 8] = [
         ("valid", Some(br#"{"display_name":"reviewer.1"}"#)),

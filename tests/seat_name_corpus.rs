@@ -1,4 +1,4 @@
-//! `SeatName` against the 0012 migration's `seats.name` CHECK. The CHECK is a
+//! `SeatName` against the 0013 migration's `seats.name` CHECK. The CHECK is a
 //! superset of the grammar (length and charset); code adds the leading `-`/`.`
 //! and seat-id-shaped rules. So: whatever `SeatName` accepts the CHECK accepts,
 //! and whatever the CHECK rejects `SeatName` rejects.
@@ -9,10 +9,10 @@ use rusqlite::Connection;
 /// An in-memory `seats` stub that gains its `name` column from the migration's
 /// own statement, so the CHECK under test is the shipped one.
 fn seats_with_name_column() -> Connection {
-    let migration = include_str!("../migrations/node/0012_host_environments.sql");
+    let migration = include_str!("../migrations/node/0013_host_environments.sql");
     let start = migration
         .find("ALTER TABLE seats ADD COLUMN name")
-        .expect("0012 adds seats.name");
+        .expect("0013 adds seats.name");
     let statement = &migration[start..start + migration[start..].find(';').unwrap() + 1];
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch("CREATE TABLE seats (ordinal INTEGER PRIMARY KEY);")

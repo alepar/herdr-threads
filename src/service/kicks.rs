@@ -203,7 +203,7 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "binding_pending",
     "delivery_observations",
     "digest_notice_offer",
-    // Once-per-episode no-wake report marks (NodeDelta 0012): written by the sender-side
+    // Once-per-episode no-wake report marks (NodeDelta 0013): written by the sender-side
     // `wake_status` read, they only suppress a repeat report and create no work for a lane.
     "no_wake_reports",
     // A plain local launch's gate-only record (H3): read only by the gate's own polling.

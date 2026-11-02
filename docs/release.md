@@ -2,6 +2,53 @@
 
 ## Current release status
 
+[v2.8.4 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.4) from source `b279e4c60`, a patch release. No schema change (node schema stays 12) and no peer wire change: `scripts/freeze-peer-wire 2.4.0 --at v2.8.4 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It carries two merged branches, each with a fixer roast and an independent review, and each with a TRUST-POLICY amendment the user approved:
+- ht-unmk: a resumed idle agent wakes again. The durak coordinator reported a p0 that did not wake an idle Codex; the investigation found the process had exited and been resumed, and a resumed Codex runs no hooks until its first turn. The seat's last binding, if a process exit ended it, is now a dormant target for an ordinary content-free wake, only while Herdr reports the same harness idle in that pane (A4/A8, wake prompt only). The review caught a soft-deadline poke riding along with such a wake; fixed before merge. A clean quit gets no wake, by design. Accepted limit: an admitted item buried under 4096 newer pending rows arrives on the next turn.
+- ht-wp7n: a transition refused for the same seat, action and reason on 3 consecutive passes no longer stalls a host's reconciliation marker, unless it is a MarkUnresolved (C2).
+
+**Qualification** on `b279e4c60`, evidence in `~/.cache/herdr-threads-release/2.8.4`. The session restart killed the first wake e2e run (kept as `wake-interrupted`); it was rerun from the start with the claude-2 token and the codex-2 credential, followed by the remaining steps.
+- Static checks, builds, the Herdr matrix 0.9.1-0.9.5, package gate (622 s), installer suites and every leak check pass.
+- The full suite passed 8170/8173; the 3 failures are the zsh round-trip tests.
+- The wake e2e passed 120/120 with no Codex credential refresh.
+
+**CI** (run 41284748806) passed on the first attempt, as did the [release run 41290393619](https://github.com/alepar/herdr-threads/actions/runs/41290393619). The archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 2.8.4, the right TARGET, modes and licenses; `scripts/install.sh` equals the tag's; the credential scan is clean.
+
+**Installed on blacky with `herdr-threads update`** on the first try: "updated 2.8.3 -> 2.8.4 (sha256 verified twice; backup pre-v2.8.4-20261101T090023Z)". The daemon's `/proc` exe hash `a7d7a25b…` equals the archive binary, the daemon is healthy, and the Herdr plugin link is unchanged. The laptop (Q0V) took 2.8.4 with `herdr-threads update` on the first try (backup pre-v2.8.4-20261101T090109Z); its daemon is healthy and the nSG link reports v=2.8.4.
+
+[v2.8.3 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.3) from source `6a1b698c6`, a patch release. No schema change (node schema stays 12) and no peer wire change: `scripts/freeze-peer-wire 2.4.0 --at v2.8.3 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It carries ht-kaw9, which had a fixer roast and an independent review: new panes on the laptop (Q0V) got no seat because one seat's open binding, reopened in place, was read from the wrong row and refused Stale on every reconciliation pass. Reconciliation now reads the open binding first; while reconciliation lags, a session no seat could claim enrolls normally (TRUST-POLICY "Startup enrollment", which the review checked against C1/C2 and found does not weaken an invariant); and refusals are logged and named in Health. Also: the peer stdio test's timeout no longer counts the daemon start.
+
+**Qualification** on `6a1b698c6` (claude-1 token, codex-2 credential), evidence in `~/.cache/herdr-threads-release/2.8.3`:
+- Static checks, builds, the package gate, installer suites and every leak check pass. The full suite passed 8150/8153, with only the 3 zsh failures.
+- Herdr matrix: 0.9.1-0.9.4 passed. On 0.9.5 the live-handoff case failed once under load 32 ("p0 wake held for an agent Herdr reports not awaiting input: ... status unknown"); two reruns of 0.9.5 passed every case.
+- Wake e2e: the first run aborted on a transient `No space left on device`. The rerun passed 119/120. The FAIL was `busy-send-p0/group` on Codex at T=0, "busy tool did not enter": the model did not start the sleep tool, a driver precondition, so no product assertion was evaluated. That case passed 3/3 when rerun alone (`wake-busy-rerun`). **The user accepted this failure for 2.8.3 on 2026-11-01** and asked for every flake seen in this qualification to be fixed in a separate tab.
+
+**CI** on the prep commit (run 41272157131) failed only on time: shard 1/6 ran 309 s against its 300 s budget, with every test passing (ht-b4rn). The [release run 41277847455](https://github.com/alepar/herdr-threads/actions/runs/41277847455) passed, and the archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 2.8.3, the right TARGET, modes and licenses; `scripts/install.sh` equals the tag's; the credential scan is clean.
+
+**Installed on blacky with `herdr-threads update`** on the first try: "updated 2.8.2 -> 2.8.3 (sha256 verified twice; backup pre-v2.8.3-20261101T055337Z)". The daemon's `/proc` exe hash `15af9431…` equals the archive binary, the daemon is healthy, and the Herdr plugin link is unchanged. The laptop (Q0V) took 2.8.3 with `herdr-threads update` on the first try, passing through the schema-12 migration (backup pre-v2.8.3-20261101T055422Z). Its health shows `last_reconciliation_at` set, and new Codex and Claude tabs both got seats, which confirms the ht-kaw9 fix.
+
+[v2.8.2 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.2) from source `b86202243`, a patch release. It carries a one-way store upgrade to node schema 12: migration 0012 rebuilds `allocation_decisions` for the new rebind kind. The peer wire is unchanged: `scripts/freeze-peer-wire 2.4.0 --at v2.8.2 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It carries two merged branches, each with a fixer roast and an independent review:
+- ht-hsyg, at the user's request through the tui-defects tab: seats survive a Herdr live handoff by kernel-observed process continuity (new provenance `structural_process_continuity`, TRUST-POLICY C1/C2 amended). The user chose the design: no Herdr change, session ids alone rejected because the daemon cannot observe them, application after the reconciliation pass. The independent review's six findings were fixed before merge: an uncapped rival check, in-pane rivals only, paging, episode-keyed bindings, incarnation-restricted scope, and expiring declines.
+- ht-mf0w: named Herdr sessions resolve the state dir and registry from the XDG home without a `herdr` call (verified against Herdr 0.9.1-0.9.5 source).
+
+**Qualification** on `b86202243` (claude-1 token, codex-2 credential), evidence in `~/.cache/herdr-threads-release/2.8.2`:
+- Static checks, builds, the Herdr matrix 0.9.1-0.9.5 (including the new live-handoff case on all five), package gate (700 s), installer suites and every leak check pass.
+- The full suite passed 8143/8146; the 3 failures are the zsh round-trip tests.
+- The wake e2e passed 120/120.
+
+**CI.** The prep commit's CI failed twice (runs 41268997150 and 41270681423, the second triggered by the tag), both on flakes rather than defects; the commits from main up to `fca7a10ab` were green:
+- `peer_stdio::idle_pump_stdout_never_blocks_a_nonblocking_reader` failed at 5.1 s against a 5 s bound; it passed at 4.6 s in the previous green run and at about 1 s locally. The only change between those commits is the version bump.
+- Shard 6/6 ran 321 s against its 300 s budget, with all of its tests passing.
+
+Both are filed as flakes. The tag was pushed before the first result had been read, a process slip; the flakes do not block a release, so the release stands. The [release run 41270681464](https://github.com/alepar/herdr-threads/actions/runs/41270681464) passed, and the archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 2.8.2, the right TARGET, modes and licenses; the credential scan is clean.
+
+**Installed on blacky with `herdr-threads update`** on the first try: "updated 2.8.1 -> 2.8.2 (sha256 verified twice; backup pre-v2.8.2-20261101T041044Z)". The daemon's `/proc` exe hash `51e4ffdf…` equals the archive binary, the store is at user_version 12, the daemon is healthy, and the Herdr plugin link is unchanged.
+
 [v2.8.1 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.1) from source `4eab5c0b0`, a patch release. No schema change (node schema stays 11) and no peer wire change: `scripts/freeze-peer-wire 2.4.0 --at v2.8.1 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 It carries two merged branches, each with a fixer roast and an independent review:
@@ -15,7 +62,7 @@ It carries two merged branches, each with a fixer roast and an independent revie
 
 **CI** passed on `a9baeb9cf`, `a617faf90`, `cb70a2339` and the prep commit `4eab5c0b0`, and the [release run 41245443843](https://github.com/alepar/herdr-threads/actions/runs/41245443843) passed. The archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 2.8.1, the right TARGET, modes and licenses; `scripts/install.sh` equals the tag's; the credential scan is clean.
 
-**Installed on blacky with `herdr-threads update`.** The first attempt rolled back to 2.8.0 cleanly: the Herdr host API had been timing out since 21:18Z (load 15), and the new daemon attached 12 s after start, past the 5 s readiness limit (filed as ht-lob0; a restart-time `snapshot_generations` UNIQUE conflict seen in the log is ht-x6j5). The retry minutes later succeeded ("updated 2.8.0 -> 2.8.1 (sha256 verified twice; backup pre-v2.8.1-20261031T220657Z)"). The daemon's `/proc` exe hash `065f9ca3…` equals the archive binary, the daemon is healthy, and the Herdr plugin link is unchanged.
+**Installed on blacky with `herdr-threads update`.** The first attempt rolled back to 2.8.0 cleanly: the Herdr host API had been timing out since 21:18Z (load 15), and the new daemon attached 12 s after start, past the 5 s readiness limit (filed as ht-lob0; a restart-time `snapshot_generations` UNIQUE conflict seen in the log is ht-x6j5). The retry minutes later succeeded ("updated 2.8.0 -> 2.8.1 (sha256 verified twice; backup pre-v2.8.1-20261031T220657Z)"). The daemon's `/proc` exe hash `065f9ca3…` equals the archive binary, the daemon is healthy, and the Herdr plugin link is unchanged. The laptop (Q0V, macOS) took 2.8.1 with `herdr-threads update` on the first try (backup pre-v2.8.1-20261101T005710Z); its daemon is healthy and the nSG link reports v=2.8.1.
 
 [v2.8.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.0) from source `ebdd821f2`, a minor release. It carries a one-way store upgrade to node schema 11: migration 0011 adds `sync_forgotten_nodes` and `sync_link_events`. The peer wire is unchanged: `scripts/freeze-peer-wire 2.4.0 --at v2.8.0 --check` differs only in the MANIFEST's `at`/`commit` lines.
 

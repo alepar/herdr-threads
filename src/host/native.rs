@@ -1402,6 +1402,22 @@ impl HostPort for NativeCli {
             .unwrap_or_default())
     }
 
+    fn pane_shell_pid(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        self.check_context(context)?;
+        let raw = self.run_unfenced(
+            &["pane", "process-info", target.as_str()],
+            &context.budget,
+            Duration::from_millis(750),
+        )?;
+        Ok(serde_json::from_str(&raw)
+            .ok()
+            .and_then(|response: serde_json::Value| pane_shell_pid(&response)))
+    }
+
     fn observe_current_target_for_archival(
         &self,
         target: &HostTargetId,
@@ -2717,6 +2733,16 @@ fn started_process_pid(response: &serde_json::Value) -> Option<u32> {
 /// native child (npm `codex`: `node` plus the native binary) are both foreground, so the set,
 /// not a single pid, is the evidence. Zero and overflowing pids are dropped; a malformed
 /// response gives no pids, and the composer wake then does not fire.
+/// The pid Herdr reports as the pane's own process (`shell_pid`); `None` when absent, zero or
+/// out of range.
+fn pane_shell_pid(response: &serde_json::Value) -> Option<u32> {
+    response
+        .pointer("/result/process_info/shell_pid")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
+}
+
 fn foreground_process_pids(response: &serde_json::Value) -> Vec<u32> {
     let Some(info) = response.pointer("/result/process_info") else {
         return Vec::new();
@@ -5581,6 +5607,30 @@ pub(crate) mod tests {
         bound_harness_wake_refused("codex", None);
     }
 
+    /// A dormant target (TRUST-POLICY A4 *Wake*) has no pid to match, so this recheck alone keeps
+    /// the wake off a busy agent; another harness is `cooperative_wake_refuses_codex_bound_seat_with_claude_agent`.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn cooperative_wake_refuses_a_busy_agent_of_the_bound_harness() {
+        for status in ["working", "blocked", "unknown"] {
+            let (result, methods) = cooperative_wake_with(
+                vec![recheck_exchange(wake_agent(
+                    status,
+                    Some("codex"),
+                    "term_1",
+                ))],
+                None,
+                |target, _| target.bound_harness = Some("codex".into()),
+            );
+            assert_eq!(
+                result.unwrap_err().code,
+                ErrorCode::TargetUnsafe,
+                "{status}"
+            );
+            assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+        }
+    }
+
     /// A cooperative target with no bound harness is refused, never compared
     /// with the detected agent kind as "any recognized kind".
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -6906,6 +6956,23 @@ pub(crate) mod tests {
             None
         );
         assert_eq!(started_process_pid(&serde_json::json!({"error":{}})), None);
+    }
+
+    #[test]
+    fn pane_shell_pid_is_the_reported_nonzero_shell_pid() {
+        let info = |shell: serde_json::Value| {
+            serde_json::json!({"result":{"type":"pane_process_info","process_info":{
+                "pane_id":"w1:p1","shell_pid":shell,"foreground_processes":[]
+            }}})
+        };
+        assert_eq!(pane_shell_pid(&info(serde_json::json!(42))), Some(42));
+        assert_eq!(pane_shell_pid(&info(serde_json::json!(0))), None);
+        assert_eq!(
+            pane_shell_pid(&info(serde_json::json!(u64::from(u32::MAX) + 1))),
+            None
+        );
+        assert_eq!(pane_shell_pid(&info(serde_json::Value::Null)), None);
+        assert_eq!(pane_shell_pid(&serde_json::json!({"error":{}})), None);
     }
 
     /// Live 2026-10-11 (ht-54r.89, evidence/ht-54r.89): `codex` installed with npm is a `node`

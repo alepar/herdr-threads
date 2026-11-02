@@ -993,6 +993,9 @@ fn snippet_boundary_counts_terminal_escaped_bytes() {
 
 #[test]
 fn emitted_command_round_trips_exact_argv_through_zsh() {
+    if !crate::test_support::zsh_present("emitted_command_round_trips_exact_argv_through_zsh") {
+        return;
+    }
     let argv = vec![
         "capture".to_string(),
         "--state-dir".into(),

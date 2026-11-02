@@ -179,7 +179,18 @@ ih_start() { # ROOT CASE
 
 ih_stop() { # ROOT
     pid=$(ih_pid "$1"); [ -n "$pid" ] || return 0
-    if kill -0 "$pid" 2>/dev/null; then
+    if ! kill -0 "$pid" 2>/dev/null && [ -S "$1/h.sock" ]; then
+        # A live handoff (`herdr server live-handoff`) replaced the recorded server with a
+        # successor process serving the same socket: stop it gracefully through that socket,
+        # bounded to 5 s.
+        # shellcheck disable=SC2046
+        ( IFS='
+'; exec env $(ih_env_args "$1") "$IH_HERDR" server stop ) >/dev/null 2>&1 &
+        stopper=$!; i=0
+        while [ -S "$1/h.sock" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+        kill -0 "$stopper" 2>/dev/null && kill -TERM "$stopper" 2>/dev/null
+        wait "$stopper" 2>/dev/null || true
+    elif kill -0 "$pid" 2>/dev/null; then
         ih_owned "$pid" "$1" || { echo "isolated-herdr: refusing to signal $pid (not this root's server)" >&2; return 1; }
         if [ -S "$1/h.sock" ]; then # graceful first, inside the private env, bounded to 5 s
             # shellcheck disable=SC2046

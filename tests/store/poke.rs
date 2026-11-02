@@ -310,6 +310,37 @@ fn bound_store() -> (crate::store::SqliteStore, PathBuf) {
     (store, path)
 }
 
+/// Kills: a soft-deadline poke, whose text names threads, typed for a dormant binding: its grant
+/// is an ordinary wake prompt only (TRUST-POLICY A4 *Wake*).
+#[test]
+fn a_dormant_binding_is_never_poked() {
+    use crate::ports::StorePort;
+    let (store, path) = bound_store();
+    StoreContext::new(path.clone(), Arc::new(FixedClock))
+        .with_test_host()
+        .open_writer()
+        .unwrap()
+        .execute(
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='liveness_process_exit'",
+            [],
+        )
+        .unwrap();
+    let due =
+        StorePort::poke_candidates(&store, crate::test_support::test_host_id(), 16, &budget())
+            .unwrap();
+    assert!(due[0].targets.is_empty());
+    assert!(
+        StorePort::reserve_poke(
+            &store,
+            crate::test_support::test_host_id(),
+            &due[0],
+            &budget()
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+
 /// Kills: a poke aimed at "the" open binding, a subagent or a disconnected one: the due poke and
 /// its reservation carry exactly the connected top-level bindings, the targets the composer
 /// rule chooses among (spec §3 Wake).

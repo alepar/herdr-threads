@@ -135,7 +135,15 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
     },
     NodeDelta {
         version: 12,
-        sql: include_str!("../../migrations/node/0012_host_environments.sql"),
+        sql: include_str!("../../migrations/node/0012_process_continuity.sql"),
+        rebuild: Some(Rebuild {
+            copy: super::seats::copy_allocation_decisions,
+            sql_after: include_str!("../../migrations/node/0012_process_continuity_after.sql"),
+        }),
+    },
+    NodeDelta {
+        version: 13,
+        sql: include_str!("../../migrations/node/0013_host_environments.sql"),
         rebuild: None,
     },
 ];

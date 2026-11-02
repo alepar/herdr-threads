@@ -809,6 +809,7 @@ fn production_health_builder_pins_every_elected_field() {
         log_path: _,
         degraded_lanes,
         transitions_refused,
+        refused_seats,
         harness_version_lines,
         since_start_ms,
         hosts,
@@ -823,6 +824,7 @@ fn production_health_builder_pins_every_elected_field() {
     assert!(hosts.is_empty());
     assert!(degraded_lanes.is_empty());
     assert_eq!(transitions_refused, 0);
+    assert!(refused_seats.is_empty());
     assert_eq!(got_instance, instance_id);
     assert_eq!(got_boot, boot);
     assert_eq!(database, ComponentStatus::Ready);

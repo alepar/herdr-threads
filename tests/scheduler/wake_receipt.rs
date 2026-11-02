@@ -62,6 +62,7 @@ impl LadderStore {
                 binding: BindingId::new(*binding),
                 harness: "codex".into(),
                 fingerprint_pid: None,
+                dormant: false,
             })
             .collect();
         if reserved > 0 {

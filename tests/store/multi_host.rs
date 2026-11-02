@@ -290,12 +290,12 @@ fn snapshot_of_h1_unresolves_only_h1_seat() {
         expected_terminal: None,
         action: ReconciliationAction::MarkUnresolved,
     };
-    assert_eq!(
+    assert!(matches!(
         f.store
             .apply_reconciliation_transition(foreign, &budget())
             .unwrap(),
-        ReconciliationOutcome::Stale
-    );
+        ReconciliationOutcome::Stale(_)
+    ));
     assert_eq!(untouched_by_other_host(&f.db, b), before);
 
     // The planned page unresolves the first server's seat and keeps its host.

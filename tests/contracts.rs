@@ -1607,7 +1607,13 @@ fn action_formatter_round_trips_unicode_separators_through_bash_and_zsh() {
         "set -- {}; printf '%s\\0' \"$@\"",
         format_command_argv(&argv)
     );
+    let zsh = herdr_threads::test_support::zsh_present(
+        "action_formatter_round_trips_unicode_separators_through_bash_and_zsh",
+    );
     for shell in ["bash", "zsh"] {
+        if shell == "zsh" && !zsh {
+            continue;
+        }
         let output = std::process::Command::new(shell)
             .arg("-c")
             .arg(&script)

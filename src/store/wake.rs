@@ -347,8 +347,10 @@ pub fn load_candidate(
 /// The connected top-level non-human bindings of `seat` a wake may reach (spec §3 Wake): those
 /// with unread mail per `read_cursors::has_unread`, or all of them while the seat itself holds
 /// attention (invitations, receipts, warnings), which any binding can act on. Subagents,
-/// disconnected, ended and human bindings are never targets. One indexed query per seat; the
-/// per-binding unread probe only runs for a seat with no seat-level attention.
+/// disconnected, ended and human bindings are never targets, with one exception: with nothing
+/// connected, the seat's dormant binding (`lazy_delivery::dormant_top_level`) stands for the
+/// session a harness may have resumed in the pane. One indexed query per seat; the per-binding
+/// unread probe only runs for a seat with no seat-level attention.
 pub fn wake_targets(
     db: &Connection,
     seat: &SeatId,
@@ -375,15 +377,21 @@ fn wake_target_rows(
     seat: &SeatId,
     seat_attention: bool,
 ) -> Result<Vec<TargetRow>, ApiError> {
-    let mut statement = db
-        .prepare_cached(
-            "SELECT binding_id,harness,liveness_pid,generation,target_generation,target_id,terminal_id,incarnation,registered_at IS NOT NULL,observation_provenance \
-             FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' \
-             AND role='top_level' AND harness<>'human' ORDER BY ordinal",
-        )
-        .map_err(store_error)?;
+    const COLUMNS: &str = "SELECT binding_id,harness,liveness_pid,generation,target_generation,target_id,terminal_id,incarnation,registered_at IS NOT NULL,observation_provenance FROM occupant_bindings";
+    let dormant = super::lazy_delivery::dormant_top_level(db, seat.as_str())?;
+    let (sql, key) = match &dormant {
+        Some(binding) => (format!("{COLUMNS} WHERE binding_id=?1"), binding.as_str()),
+        None => (
+            format!(
+                "{COLUMNS} WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' \
+                 AND role='top_level' AND harness<>'human' ORDER BY ordinal"
+            ),
+            seat.as_str(),
+        ),
+    };
+    let mut statement = db.prepare_cached(&sql).map_err(store_error)?;
     let rows = statement
-        .query_map([seat.as_str()], |r| {
+        .query_map([key], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -416,7 +424,20 @@ fn wake_target_rows(
     ) in rows
     {
         let binding = BindingId::parse(binding).map_err(corrupt)?;
-        if !seat_attention && !super::read_cursors::has_unread(db, &binding)? {
+        // A dormant binding holds no pending view for `has_unread` to read, and only what its
+        // threshold admits may wake it.
+        let owed = seat_attention
+            || if dormant.is_some() {
+                super::lazy_delivery::wake_frontier(
+                    db,
+                    seat.as_str(),
+                    super::seats::nudge_threshold(db, seat)?,
+                )?
+                .is_some()
+            } else {
+                super::read_cursors::has_unread(db, &binding)?
+            };
+        if !owed {
             continue;
         }
         targets.push(TargetRow {
@@ -425,6 +446,7 @@ fn wake_target_rows(
                 binding,
                 harness,
                 fingerprint_pid: pid.and_then(|pid| u32::try_from(pid).ok()),
+                dormant: dormant.is_some(),
             },
             generation,
             target_generation,
@@ -560,7 +582,8 @@ fn current_authority(
 /// input. The seat needs at least one open, connected, top-level, non-human
 /// binding (none: no authority; TRUST-POLICY A4) whose placement is the
 /// seat's current generation on this target and names that same terminal and
-/// incarnation; the matching bindings that have something to read are the
+/// incarnation, or, with nothing connected, a dormant one placed the same way
+/// (`wake_target_rows`); the matching bindings that have something to read are the
 /// wake's targets, and no target means no wake. Whether the occupant is a
 /// recognized idle harness (never a shell or unknown harness) is the host
 /// adapter's recheck immediately before prompting.
@@ -996,10 +1019,13 @@ pub fn validate_reservation(
             || candidate.actionable_warning_seq.is_some(),
     )?;
     // The target list is the frozen delivery plan: a binding reading its mail since the
-    // reservation does not void it (the scope, not the list, is the fence).
-    Ok(current
-        .as_ref()
-        .is_some_and(|current| current.same_scope(&reservation.authority)))
+    // reservation does not void it (the scope, not the list, is the fence). One exception: a
+    // session that connected since replaced a dormant target, and its own frontier decides.
+    let dormant = |authority: &ReservedWakeAuthority| authority.targets().iter().any(|t| t.dormant);
+    Ok(current.as_ref().is_some_and(|current| {
+        current.same_scope(&reservation.authority)
+            && dormant(current) == dormant(&reservation.authority)
+    }))
 }
 
 /// Settles one reservation. For `Refused` with a `refused_restore`, the same
@@ -1190,6 +1216,7 @@ pub fn reserve_poke(
         let boot=HostBootId::new(boot);
         // A due receipt is seat-level attention: every connected top-level binding can act on it.
         let Some(authority)=current_authority(tx,host,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,true)? else {return Ok(None)};
+        if authority.targets().iter().any(|t|t.dormant) {return Ok(None)}
         let witness=WakeAttentionWitness::from_complete(instance.into(),seat.clone(),nonnegative(decision_seq)?,false,true,None,nonnegative(episode)?,open!=0,LogicalAttentionFrontier::default());
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current,witness,receipts)))
     },|tx,at,prepared|{

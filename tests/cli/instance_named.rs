@@ -79,14 +79,14 @@ fn default_dir_not_created_with_stub_herdr_on_path() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// Kills: a named caller with Herdr env landing in the default dir instead of the command
-/// group's store that `herdr plugin list` names (here the XDG plugin state root).
+/// Kills: a named caller beside a Herdr creating the default dir instead of asking `herdr plugin
+/// list` for the command group's store (here the XDG plugin state root), or, once that store
+/// exists, skipping the state-directory fast default a Herdr session keeps.
 #[test]
 fn named_caller_with_herdr_env_uses_command_group_store() {
     let root = scratch("beside");
     let xdg = root.join("st");
     let store = xdg.join("herdr/plugins/herdr-threads");
-    fs::create_dir_all(store.join("node")).unwrap();
     let inputs = InstanceInputs {
         home: Some(root.join("home")),
         xdg_state_home: Some(xdg),
@@ -101,6 +101,10 @@ fn named_caller_with_herdr_env_uses_command_group_store() {
     assert_eq!(found, store);
     assert!(how.starts_with("herdr plugin list"), "{how}");
     assert!(!root.join("home").join(DEFAULT).exists());
+    fs::create_dir_all(store.join("node")).unwrap();
+    let (found, how) = resolve_state_dir(&inputs).unwrap();
+    assert_eq!(found, store);
+    assert!(how.starts_with("default"), "{how}");
     fs::remove_dir_all(&root).unwrap();
 }
 

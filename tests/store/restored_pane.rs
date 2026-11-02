@@ -185,7 +185,11 @@ impl Fx {
                     .unwrap()
             })
             .collect::<Vec<_>>();
-        if self.record_marker && !outcomes.contains(&ReconciliationOutcome::Stale) {
+        if self.record_marker
+            && !outcomes
+                .iter()
+                .any(|outcome| matches!(outcome, ReconciliationOutcome::Stale(_)))
+        {
             record_reconciliation_pass(&self.context, &mut self.conn, publication, &budget)
                 .unwrap();
         }
@@ -443,7 +447,10 @@ fn the_applier_refuses_a_retirement_whose_evidence_changed_after_the_page() {
         "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),'w1:p7','claude','SA','{}',?1)",
         [now],
     ).unwrap();
-    assert_eq!(apply(&mut fx, retire.clone()), ReconciliationOutcome::Stale);
+    assert!(matches!(
+        apply(&mut fx, retire.clone()),
+        ReconciliationOutcome::Stale(_)
+    ));
     assert_eq!(fx.state(), "unresolved");
     // Decided or pruned, the claim no longer holds it off.
     fx.conn
@@ -455,14 +462,20 @@ fn the_applier_refuses_a_retirement_whose_evidence_changed_after_the_page() {
     elsewhere.action = ReconciliationAction::RetireRestoredPane {
         absent_target: HostTargetId::new("w1:p2"),
     };
-    assert_eq!(apply(&mut fx, elsewhere), ReconciliationOutcome::Stale);
+    assert!(matches!(
+        apply(&mut fx, elsewhere),
+        ReconciliationOutcome::Stale(_)
+    ));
     assert_eq!(fx.state(), "unresolved");
 
     // The seat's generation moved (a rebind or unresolve meanwhile).
     fx.conn
         .execute("UPDATE seats SET generation=generation+1 WHERE id='s1'", [])
         .unwrap();
-    assert_eq!(apply(&mut fx, retire.clone()), ReconciliationOutcome::Stale);
+    assert!(matches!(
+        apply(&mut fx, retire.clone()),
+        ReconciliationOutcome::Stale(_)
+    ));
     assert_eq!(fx.state(), "unresolved");
     fx.conn
         .execute("UPDATE seats SET generation=generation-1 WHERE id='s1'", [])

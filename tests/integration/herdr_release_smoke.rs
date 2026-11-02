@@ -34,6 +34,10 @@
 //!   daemon follows both seats, in-turn delivery, the agent's own `inbox` and
 //!   `send`, the person's inbox and the p0 wake keep working, labels follow
 //!   renames, and resolving a just-moved pane never allocates a second seat.
+//! - `herdr_release_live_handoff`: `herdr server live-handoff` (new server, new terminal ids,
+//!   the same pane processes): the agent's seat reattaches by C1 process continuity with no turn
+//!   of its own and an idle p0 wakes it; a person seat stays unresolved; after a cold restart a
+//!   seat stays unresolved.
 use herdr_threads::test_support::isolated_herdr::IsolatedHerdr;
 use serde_json::Value;
 use std::{
@@ -1671,4 +1675,200 @@ fn herdr_release_move() {
         "{seats}"
     );
     println!("herdr {}: move matrix passed", m.version);
+}
+
+/// TRUST-POLICY C1 process continuity (ht-hsyg). `herdr server live-handoff` passes every pane's
+/// terminal to a new server process (a new incarnation, new terminal ids) while the agent and
+/// shell processes keep running: the daemon reattaches the agent's seat from its own process in
+/// the pane's session (`structural_process_continuity`) with no turn from the agent, so an idle
+/// agent is woken by a p0; a person seat (no harness process) stays unresolved (C2). A cold
+/// restart kills the panes' processes, so nothing matches and the seat stays unresolved.
+#[test]
+#[ignore = "run per release by scripts/herdr-release-smoke (official binary on PATH)"]
+fn herdr_release_live_handoff() {
+    let m = Matrix::new("herdr-matrix-live-handoff");
+    m.setup("codex");
+    let (person_pane, person) = m.person_seat("handoff-person");
+    let agent_pane = m.workspace("handoff-agent");
+    let agent = m.launch_codex(&agent_pane);
+    let row = |seat: &str| -> Value {
+        let list = m.ht(&["seat", "list"]);
+        data(&list)["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["seat"] == seat)
+            .cloned()
+            .unwrap_or_else(|| panic!("seat {seat} missing: {list}"))
+    };
+    let terminal = |pane: &str| -> String {
+        m.herdr(&["pane", "get", pane])["result"]["pane"]["terminal_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let decisions = |seat: &str| -> Vec<String> {
+        let db = rusqlite::Connection::open_with_flags(
+            m.host
+                .root()
+                .join("st/herdr/plugins/herdr-threads/node/herdr-threads.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        db.prepare("SELECT kind FROM allocation_decisions WHERE seat_id=?1 ORDER BY ordinal")
+            .unwrap()
+            .query_map([seat], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let wakes = || {
+        m.log_of(&agent_pane)
+            .iter()
+            .filter(|e| e["kind"] == "prompt" && WAKE_TEXTS.iter().any(|t| e["text"] == *t))
+            .count()
+    };
+    assert_eq!(row(&agent)["continuity"], "resolved");
+    let before = terminal(&agent_pane);
+
+    // The live handoff: same panes and processes, a new server and new terminal ids.
+    let handoff = m
+        .host
+        .command("herdr")
+        .args(["server", "live-handoff"])
+        .output()
+        .unwrap();
+    assert!(
+        handoff.status.success(),
+        "live-handoff failed: {}{}",
+        String::from_utf8_lossy(&handoff.stdout),
+        String::from_utf8_lossy(&handoff.stderr)
+    );
+    wait_for(
+        "the successor serves the pane under a new terminal id",
+        Duration::from_secs(30),
+        || {
+            let after = terminal(&agent_pane);
+            if after != before { Ok(()) } else { Err(after) }
+        },
+    );
+
+    // The agent's seat comes back at its pane with no turn of its own.
+    let turns_before = m
+        .log_of(&agent_pane)
+        .iter()
+        .filter(|e| e["kind"] == "hook")
+        .count();
+    wait_for(
+        "the agent seat reattached by process continuity",
+        Duration::from_secs(60),
+        || {
+            let row = row(&agent);
+            let decided = decisions(&agent);
+            if row["continuity"] == "resolved"
+                && row["target"] == agent_pane.as_str()
+                && decided.last().map(String::as_str) == Some("structural_process_continuity")
+            {
+                Ok(())
+            } else {
+                Err(format!("{row} decisions: {decided:?}"))
+            }
+        },
+    );
+    assert_eq!(
+        m.log_of(&agent_pane)
+            .iter()
+            .filter(|e| e["kind"] == "hook")
+            .count(),
+        turns_before,
+        "the reattachment needed a hook of the agent's own"
+    );
+    // A person seat has no harness process: it stays under the restore holds (C2).
+    assert_eq!(row(&person)["continuity"], "unresolved", "{}", row(&person));
+    let _ = person_pane;
+
+    // The idle agent is wakeable: a p0 from a fresh person (a pane created after the
+    // handoff, so not held) is typed into its composer. A wake needs Herdr to report the agent
+    // awaiting input; a Herdr that does not carry the agent state across the import reports it
+    // `unknown` until the agent redraws, and the wake is then rightly held (delivery contract
+    // rule 4). Keyed on what this Herdr reports, never on its version.
+    let (sender_pane, _sender) = m.person_seat("handoff-sender");
+    let status = m.status(&agent_pane);
+    let woken = wakes();
+    let sent = Instant::now();
+    m.person(
+        &sender_pane,
+        &[
+            "send",
+            "--seat",
+            &agent,
+            "--nudge",
+            "--body",
+            "after-handoff-p0",
+        ],
+    );
+    if matches!(status.as_str(), "idle" | "done") {
+        wait_for("p0 wake after the handoff", Duration::from_secs(30), || {
+            if wakes() > woken {
+                Ok(())
+            } else {
+                Err(format!(
+                    "daemon: {:?} log: {:?}",
+                    m.wake_lane_log(),
+                    m.log_of(&agent_pane)
+                ))
+            }
+        });
+    } else {
+        wait_for(
+            "the p0 wake held for an agent Herdr reports not awaiting input",
+            // Usually under a second. When the first attempt logs no refusal the next chance is the
+            // wake ladder's retry, at 30 s or later, so a 30 s wait raced it (ht-caa5).
+            Duration::from_secs(90),
+            || {
+                let lane = m.wake_lane_log();
+                if lane
+                    .iter()
+                    .any(|line| line.contains(&agent) && line.contains("not awaiting input"))
+                {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "status {status}; wakes since the send: {}; daemon: {lane:?}",
+                        wakes() - woken
+                    ))
+                }
+            },
+        );
+        assert_eq!(wakes(), woken, "a wake was typed into a non-idle agent");
+        println!(
+            "herdr {}: agent status `{status}` after the handoff; wake held until it redraws ({:?} after the send)",
+            m.version,
+            sent.elapsed()
+        );
+    }
+
+    // A cold restart: the panes' processes die with the server. A seat of the old incarnation
+    // stays unresolved; no process continuity decision is recorded for it.
+    let cold_pane = m.workspace("handoff-cold");
+    let cold = m.launch_codex(&cold_pane);
+    let recorded = decisions(&cold).len();
+    m.host.restart();
+    wait_for(
+        "the cold-restarted seat is unresolved",
+        Duration::from_secs(60),
+        || {
+            let row = row(&cold);
+            if row["continuity"] == "unresolved" {
+                Ok(())
+            } else {
+                Err(format!("{row}"))
+            }
+        },
+    );
+    // Several observation passes of the new incarnation.
+    thread::sleep(Duration::from_secs(15));
+    assert_eq!(row(&cold)["continuity"], "unresolved", "{}", row(&cold));
+    assert_eq!(decisions(&cold).len(), recorded, "{:?}", decisions(&cold));
+    println!("herdr {}: live handoff matrix passed", m.version);
 }

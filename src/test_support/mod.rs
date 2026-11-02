@@ -50,6 +50,26 @@ use rusqlite::Connection;
 
 /// The ed25519 seed of the node every fixture store is created with.
 pub const TEST_NODE_SEED: [u8; 32] = [1; 32];
+/// Whether zsh is here for a shell round-trip test: zsh is optional on a developer host, so `case`
+/// skips with a printed note when it is absent. CI installs it, so a missing zsh fails there
+/// instead of quietly dropping the coverage.
+pub fn zsh_present(case: &str) -> bool {
+    let probe = std::process::Command::new("zsh")
+        .args(["-fc", ":"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if probe.is_ok() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "{case}: CI must install zsh ({probe:?})"
+    );
+    println!("skipped: no zsh: {case}");
+    false
+}
 
 /// The node a test store belongs to: the uuid of [`TEST_NODE_SEED`]'s key,
 /// its tag at `k = 0`. A `StoreContext` built in a test build is created with

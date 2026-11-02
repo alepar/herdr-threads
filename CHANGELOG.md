@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.8.4
+
+No schema or peer wire change (node schema stays 12). No setup re-run is needed.
+
+### Fixed
+
+- **A resumed idle agent wakes again.** When an agent's process exits and is resumed (for example `codex resume`), the resumed session runs no hooks until its first turn, so its seat had no connected binding and urgent messages never woke it. The seat's last binding, if it was ended by a process exit, now receives the ordinary content-free wake for items at or under the seat's threshold, only while Herdr reports that pane's agent as the same harness and idle (TRUST-POLICY A4/A8, wake prompt only: no seat, binding or receipt change, and no soft-deadline pokes).
+- **One persistently refused reconciliation step no longer stalls a host.** A pass now completes past a transition refused for the same seat, action and reason on 3 consecutive passes, unless it is an unresolve. Held panes lift, kept claims decide and live-handoff recovery runs for the other seats (TRUST-POLICY C2).
+
+## v2.8.3
+
+No schema or peer wire change (node schema stays 12). No setup re-run is needed.
+
+### Fixed
+
+- **New panes get a seat again when one seat's reconciliation keeps failing.** A seat whose open binding had been reopened in place was read from the wrong binding row, so reconciliation refused it as stale on every pass. The pass never completed, so every new pane on that host was told to retry and never got a seat. Reconciliation now reads the open binding first, then the most recently ended one. While reconciliation lags, a session that no seat could claim enrolls normally instead of waiting (TRUST-POLICY "Startup enrollment").
+- Each refused reconciliation transition is logged with its seat and reason (rate-limited), and `daemon health` names the most-refused seats with a true count of the rest. Transient refusals from a superseded publication are not listed.
+- **Tests:** the peer stdio non-blocking test no longer counts the daemon's start against its 5 s timeout.
+
+## v2.8.2
+
+One-way store upgrade to node schema 12 (migration 0012 rebuilds `allocation_decisions` for the new rebind kind). Binaries before 2.8.2 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. No peer wire change and no setup re-run needed.
+
+### Fixed
+
+- **Seats survive a Herdr live handoff** (`herdr server live-handoff`, `herdr update --handoff`). The successor server reallocates terminal ids, so every seat used to go unresolved and idle agents could not be woken until their next turn. After each reconciliation pass the daemon now rebinds a seat when its agent process is provably the same: the bound process is alive with the same start time and is the pane's shell, or in that shell's session on its controlling tty. The new provenance is `structural_process_continuity` (TRUST-POLICY C1/C2). Person seats, managed launches and harnesses under tmux/screen/setsid still need re-init, as before.
+- A named Herdr session (`HERDR_SESSION`) resolves the plugin state dir and registry from the XDG home without an extra `herdr` call, as Herdr itself does.
+
 ## v2.8.1
 
 No schema or peer wire change (node schema stays 11). Restart the daemon after upgrading (`herdr-threads daemon stop && herdr-threads daemon ensure`) so handoffs can use the summary prompt; an older daemon keeps the previous launch prompt.
