@@ -435,6 +435,117 @@ fn elected_health_evidence_follows_the_guarded_host_attached_later() {
     }
 }
 
+// Kills: Health reading refusals from the never-written fallback only. A refusal recorded on a
+// dialled session and one on the built-in named session must both reach Health and doctor.
+#[test]
+fn refusals_of_every_session_reach_health_and_doctor() {
+    use crate::{
+        ports::StaleReason, protocol::time::UtcMillis, service::host_evidence::HostEvidenceStatus,
+    };
+    let rig = Rig::new("audit-refusals-health");
+    let fallback = Arc::new(HostEvidenceStatus::default());
+    let named = rig.builtin(AuditHost::NAMED);
+    let herdr = rig.dial_seatless("/herdr/refusals.sock", AuditHost::HERDR);
+    let refusal = |seat: &str| crate::identity::reconcile::RefusedTransition {
+        seat: SeatId::new(seat),
+        generation: 1,
+        reason: StaleReason::new("test_reason"),
+        action: std::mem::discriminant(&crate::ports::ReconciliationAction::MarkUnresolved),
+        excludable: false,
+    };
+    herdr
+        .evidence()
+        .record_reconcile_page(&[refusal("sdialled01")], true, UtcMillis(1));
+    named
+        .evidence()
+        .record_reconcile_page(&[refusal("snamed0001")], true, UtcMillis(2));
+    let provider = crate::app::elected_health_provider(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        crate::service::config::ServiceConfig::default().health_settings(),
+        Arc::clone(&rig.clock),
+        Arc::clone(&rig.store) as Arc<dyn StorePort>,
+        Vec::<Arc<crate::service::workers::WorkerStatus>>::new(),
+        crate::app::ElectedHostEvidence::of_sessions(
+            &rig.sessions,
+            None,
+            fallback,
+            Default::default(),
+        ),
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(rig.clock.monotonic_now().0 + 10_000),
+        cancellation: Cancellation::default(),
+    };
+    let inputs = provider(&budget);
+    assert_eq!(inputs.transitions_refused, 2);
+    let seats: Vec<&str> = inputs
+        .refused_seats
+        .iter()
+        .map(|r| r.seat.as_str())
+        .collect();
+    assert!(
+        seats.contains(&"sdialled01") && seats.contains(&"snamed0001"),
+        "{seats:?}"
+    );
+    let notes = inputs.assemble().notes;
+    let note = notes
+        .iter()
+        .find(|note| note.starts_with("reconciliation:"))
+        .expect("the refusal note is emitted");
+    assert!(
+        note.contains("sdialled01") && note.contains("snamed0001"),
+        "{note}"
+    );
+    let text =
+        crate::cli::doctor::render_debug_text(&serde_json::json!({"daemon": {"notes": notes}}));
+    assert!(
+        text.contains("sdialled01") && text.contains("snamed0001"),
+        "{text}"
+    );
+}
+
+// Kills: a merge that exceeds the bound, double-lists a shared pair, or orders by anything but count.
+#[test]
+fn merged_refusals_bounds_and_sums() {
+    use crate::{
+        ports::StaleReason,
+        protocol::time::UtcMillis,
+        service::host_evidence::{HostEvidenceStatus, MAX_REFUSED_SEATS, merged_refusals},
+    };
+    let refuse = |ledger: &HostEvidenceStatus, seat: String, times: usize| {
+        let one = crate::identity::reconcile::RefusedTransition {
+            seat: SeatId::new(seat),
+            generation: 1,
+            reason: StaleReason::new("test_reason"),
+            action: std::mem::discriminant(&crate::ports::ReconciliationAction::MarkUnresolved),
+            excludable: false,
+        };
+        for _ in 0..times {
+            ledger.record_reconcile_page(std::slice::from_ref(&one), true, UtcMillis(1));
+        }
+    };
+    let (a, b) = (
+        Arc::new(HostEvidenceStatus::default()),
+        Arc::new(HostEvidenceStatus::default()),
+    );
+    for n in 0..MAX_REFUSED_SEATS {
+        refuse(&a, format!("a{n}"), 1);
+        refuse(&b, format!("b{n}"), 1);
+    }
+    refuse(&a, "shared".into(), 2);
+    refuse(&b, "shared".into(), 3);
+    let (total, pairs) = merged_refusals(&[a, b]);
+    assert_eq!(total, 2 * MAX_REFUSED_SEATS as u64 + 5);
+    assert_eq!(pairs.len(), MAX_REFUSED_SEATS);
+    assert_eq!((pairs[0].seat.as_str(), pairs[0].count), ("shared", 5));
+    assert_eq!(
+        pairs.iter().filter(|p| p.seat.as_str() == "shared").count(),
+        1
+    );
+    assert!(pairs.windows(2).all(|w| w[0].count >= w[1].count));
+}
+
 // The two-host half of the audit: an hc core is dialled first (the lowest host id) and a Herdr
 // TUI second, so a consumer that takes "the first dialled host" mis-picks.
 

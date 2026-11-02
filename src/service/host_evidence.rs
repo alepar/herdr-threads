@@ -68,6 +68,28 @@ pub struct RefusedSeat {
     pub last_seen: u64,
 }
 
+/// What Health reports over `ledgers`: the summed refusals and their (seat, reason) pairs,
+/// merged, most refused first, at most [`MAX_REFUSED_SEATS`]. `last_seen` orders one ledger
+/// only, so equal counts keep ledger order.
+pub fn merged_refusals(ledgers: &[std::sync::Arc<HostEvidenceStatus>]) -> (u64, Vec<RefusedSeat>) {
+    let total = ledgers.iter().fold(0u64, |sum, ledger| {
+        sum.saturating_add(ledger.transitions_refused())
+    });
+    let mut pairs: Vec<RefusedSeat> = Vec::new();
+    for pair in ledgers.iter().flat_map(|ledger| ledger.refused_seats()) {
+        match pairs
+            .iter_mut()
+            .find(|known| known.seat == pair.seat && known.reason == pair.reason)
+        {
+            Some(known) => known.count = known.count.saturating_add(pair.count),
+            None => pairs.push(pair),
+        }
+    }
+    pairs.sort_by_key(|pair| std::cmp::Reverse(pair.count));
+    pairs.truncate(MAX_REFUSED_SEATS);
+    (total, pairs)
+}
+
 /// Shared between the observation worker (writer) and the Health producer.
 #[derive(Debug, Default)]
 pub struct HostEvidenceStatus {
