@@ -1664,3 +1664,39 @@ slots, archival start and the startup log line stay as they were. Delivery into 
 (`handoff_delivery::require_automatic_capability`) still gates on the node-wide flag; it creates no target. Every path
 over a journaled V3 bootstrap (fresh, crash retry, operator recovery and its retry, with or without a profile
 directory) gates on the plan's route through `require_bootstrap_route_capability`, never on the node-wide flag.
+
+### 2026-11-01: tmux wake gate parity (ht-kqrt.214)
+
+This amends line 583 (the composer read is `capture-pane -p` alone) and line 1317 (the tmux client's `capture-pane -p`),
+which stay as written: the composer is read from the plain capture and, when the harness's `ComposerPolicy::wants_styled`
+asks, from one more `capture-pane -p -e`, through the same `read_composer_with` that `native` uses over Herdr's
+`agent read`. A capture that fails, carries no SGR or is past its 1 MiB limit keeps the detection read. A default hooks-only
+Claude seat showing a dim prompt suggestion therefore wakes (the plain text cannot tell it from a draft); the captured
+suggestion, draft and plain screens of `docs/evidence/ansi-composer/` are the tmux tests' fixtures. This adds no accepted limit.
+
+The walk of `native`'s `submit_prompt_mode`, one step at a time:
+
+| # | Native | tmux |
+|---|---|---|
+| 1 | take the empty-window sample | adopted |
+| 2 | basis is `CooperativeAgent` | adopted |
+| 3 | `safe_prompt_capability` | does not apply: it says the platform can witness a server incarnation; tmux's witness is `#{pid}` against the hint (step 7) |
+| 4 | boot and epoch of the context | adopted |
+| 5 | cancellation | adopted |
+| 6 | budget floor `left <= 2 * MIN_PROMPT_MILLIS` | adopted |
+| 7 | `agent get` with incarnation witness | `pane_facts` with `server_pid`, adopted |
+| 8 | `cooperative_wake_ready` (status idle) | does not apply: Herdr's status has no tmux source; turn state, `screen_turn_running` and `screen_blocked` stand in |
+| 9 | focus read | `facts.focused()`, adopted |
+| 10 | composer read, styled refinement | adopted, fail-safe to the detection read |
+| 11 | a non-`Empty` read resets the empty window, on every read path | adopted on `read_pane_composer` (the read-back and the clear loop) |
+| 12 | `check_epoch`, `check_context` after the read | adopted with cancellation and budget, after the capture and after the composer read |
+| 13 | `focused_empty_ready` | adopted |
+| 14 | cancellation again | adopted through step 12 |
+| 15 | `still_owed` | adopted |
+| 16 | `left < MIN_PROMPT_MILLIS` | adopted in `type_wake` |
+| 17 | a refusal notes its wake block | adopted (`refuse_with`) |
+
+Step 8 keeps one consequence: a detection read of `Unreadable` makes Claude's `screen_blocked` answer `None`, so an
+uncaptured placeholder is refused as `screen not recognised` before the styled read could vouch for it, where Herdr's
+status answers for the pane. The refusal retries on the ladder as `wake=unreadable`. This is today's behaviour, not a new
+limit; letting a styled `Empty` override `None` would also pass a recognizer-less harness through that arm.

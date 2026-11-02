@@ -920,7 +920,7 @@ model open work, and summary closure never changes receipt state or installs glo
   the process table and tmux itself (A2); anything that can run as the seat's process in that pane can obtain wake.
 - *tmux composer wake (named seats, N2-wake)*: a named seat with a live verified tmux binding is woken by the
   built-in host's own wake lane (pacer, reachability, Health) like a Herdr pane: `send-keys -t <pane> -l <wake text>`
-  then `Enter`, read back with `capture-pane` through the bound harness's composer policy, and `C-u` only when the
+  then `Enter`, read back with `capture-pane -p` through the bound harness's composer policy (and, when the policy asks for it, one `capture-pane -p -e` as Herdr's styled read, keeping the detection read when that one fails), and `C-u` only when the
   harness opts in and the composer holds exactly the wake. The wake is decided per pane (rule 4): over every live
   connected top-level binding of the seat the pane is idle only when all are idle; one busy binding, or one `Unknown`
   (a daemon restart, a binding that has not reported), gives no typing for that attempt. The same holds when

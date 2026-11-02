@@ -1,5 +1,7 @@
 //! The composer reader shared by the host observation and the composer stash,
-//! so the classification of a pane and the stash can never disagree.
+//! so the classification of a pane and the stash can never disagree. One read
+//! over a host's screens (`read_composer_with`: the detection text, then a
+//! styled screen when the policy asks) serves Herdr panes and tmux panes alike.
 //!
 //! Extraction rules come from the poke spike
 //! (`docs/evidence/poke-spike/findings.md`, Q2), applied to the text of
@@ -75,6 +77,35 @@ pub fn read_composer_in(
         .map_or(ComposerRead::Unreadable, |policy| {
             policy.read(detection, pane_width)
         })
+}
+
+/// One composer read over a host's screens, for every host: `detection` through the harness's
+/// policy, then, when the policy asks (`ComposerPolicy::wants_styled`), `styled` fetched. `Ok(None)`
+/// from `styled` (no trustworthy styled screen) keeps the detection read; an `Err` aborts the read.
+pub fn read_composer_with<E>(
+    registry: &crate::harness::registry::Registry,
+    harness: Harness,
+    detection: &str,
+    pane_width: Option<u16>,
+    styled: impl FnOnce() -> Result<Option<Vec<super::sgr::StyledLine>>, E>,
+) -> Result<ComposerRead, E> {
+    let Harness::Agent(id) = harness else {
+        return Ok(ComposerRead::Unreadable);
+    };
+    let Some(policy) = registry
+        .by_id(id)
+        .ok()
+        .and_then(|registration| registration.composer_policy())
+    else {
+        return Ok(ComposerRead::Unreadable);
+    };
+    let read = policy.read(detection, pane_width);
+    if !policy.wants_styled(&read) {
+        return Ok(read);
+    }
+    Ok(styled()?
+        .and_then(|screen| policy.read_styled(&screen, pane_width))
+        .unwrap_or(read))
 }
 
 /// Shared conservative width, whitespace and lossy-placeholder safety checks.
@@ -216,6 +247,54 @@ mod tests {
                 ".read-detection.txt"
             ))
         };
+    }
+
+    const SUGGESTION_PLAIN: &str = include_str!(
+        "../../docs/evidence/ansi-composer/captures/claude-2.1.309-suggestion.read-detection.txt"
+    );
+    const SUGGESTION_ANSI: &str = include_str!(
+        "../../docs/evidence/ansi-composer/captures/claude-2.1.309-suggestion.recent-ansi.txt"
+    );
+
+    fn with_styled(
+        styled: impl FnOnce() -> Result<Option<Vec<crate::harness::sgr::StyledLine>>, &'static str>,
+    ) -> Result<ComposerRead, &'static str> {
+        read_composer_with(
+            crate::harness::registry::builtins(),
+            Harness::Claude,
+            SUGGESTION_PLAIN,
+            Some(119),
+            styled,
+        )
+    }
+
+    // Catches a styled screen that is ignored, or one that replaces the detection read when it
+    // has nothing: the suggestion is `Unsafe` in detection and `Empty` in the styled read.
+    #[test]
+    fn read_composer_with_keeps_detection_when_styled_has_nothing() {
+        let styled = crate::harness::sgr::parse(SUGGESTION_ANSI).unwrap();
+        assert_eq!(with_styled(|| Ok(Some(styled))), Ok(ComposerRead::Empty));
+        assert!(matches!(
+            with_styled(|| Ok(None)),
+            Ok(ComposerRead::Unsafe { .. })
+        ));
+        // A policy that does not ask for a styled read never fetches one.
+        let empty = read_composer_with(
+            crate::harness::registry::builtins(),
+            Harness::Claude,
+            include_str!(
+                "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
+            ),
+            None,
+            || -> Result<_, &'static str> { Err("fetched") },
+        );
+        assert_eq!(empty, Ok(ComposerRead::Empty));
+    }
+
+    // Catches an abort of the styled fetch (cancellation, budget) swallowed into the detection read.
+    #[test]
+    fn read_composer_with_propagates_an_abort() {
+        assert_eq!(with_styled(|| Err("aborted")), Err("aborted"));
     }
 
     const CLAUDE_WIDTH: Option<u16> = Some(80);

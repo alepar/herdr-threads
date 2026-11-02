@@ -184,6 +184,17 @@ pub fn capture(hint: &TmuxHint) -> Option<String> {
     run(hint, &["capture-pane", "-p", "-t", &hint.pane], 256 * 1024)
 }
 
+/// The pane's visible screen with its styles: `capture-pane -p -e -t <pane>`. Every cell can carry
+/// a colour, so the limit is wider than `capture`'s; past it the read fails and the caller keeps
+/// the detection read.
+pub fn capture_styled(hint: &TmuxHint) -> Option<String> {
+    run(
+        hint,
+        &["capture-pane", "-p", "-e", "-t", &hint.pane],
+        1024 * 1024,
+    )
+}
+
 /// `send-keys -t <pane> -l -- <text>`: the text typed literally, no key names, no Enter.
 pub fn type_text(hint: &TmuxHint, text: &str) -> bool {
     run(hint, &["send-keys", "-t", &hint.pane, "-l", "--", text], 0).is_some()
