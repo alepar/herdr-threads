@@ -226,8 +226,14 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         ids::{HostTargetId, OperationId},
     };
     let fail = super::invalid_request;
+    let new_terminal = request.target.as_ref().is_some_and(|target| {
+        matches!(
+            target.placement,
+            crate::ports::Placement::NewTerminal { .. }
+        )
+    });
     if !request.automatic
-        || request.new_tab.is_none()
+        || (request.new_tab.is_none() && !new_terminal)
         || request.existing
         || request.seat.is_some()
         || request.selector.tab.is_some()
@@ -239,16 +245,18 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
     {
         return Err(fail("invalid automatic bootstrap target or channel"));
     }
-    let label = request.new_tab.as_ref().unwrap();
     // Any launch-capable adapter whose composition launches the caller arguments unchanged
     // (checked after preflight below): the automatic plan freezes the adapter's own startup input.
-    let harness = request
+    let (kind, harness) = request
         .kind
         .as_deref()
         .and_then(|kind| {
             crate::harness::launch::bootstrap_target(crate::harness::registry::builtins(), kind)
+                .map(|harness| (kind, harness))
         })
         .ok_or_else(|| fail("invalid bootstrap harness"))?;
+    // `--new-terminal` takes no label: the harness kind, as `launch` and the remote branch use.
+    let label = request.new_tab.as_deref().unwrap_or(kind);
     let cwd = request.cwd.as_deref().unwrap_or(inputs.invocation_cwd);
     if !cwd.is_absolute() || !cwd.is_dir() {
         return Err(fail("--cwd must be an absolute existing directory"));
@@ -430,7 +438,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
                 keys: AutomaticBootstrapKeys::new(compound),
                 workspace: workspace_id,
                 cwd,
-                label: label.clone(),
+                label: label.to_owned(),
                 focus: false,
                 env: directory_context.map(|c| c.env).unwrap_or_default(),
                 launch: BootstrapLaunch {

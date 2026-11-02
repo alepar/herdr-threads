@@ -1551,12 +1551,13 @@ mod launch_new {
         let (_, terminal) = rig.marker();
         assert_ne!(terminal, "t1", "the stand-in runs in the created terminal");
         assert_eq!(run_params(&rig.fake)["labels"]["ht.label"], "worker");
-        let ran = handoff(&["--new-terminal"]);
-        assert!(
-            !ran.stderr
-                .contains("daemon lacks automatic handoff capability"),
-            "{}",
-            ran.stderr
+        assert_routed(&handoff(&["--new-terminal"]));
+        let calls = rig.fake.calls_to("terminal.run");
+        let terminal = &calls.last().expect("a terminal.run").params;
+        assert_eq!(terminal["parent"], "t1", "parented on the calling terminal");
+        assert_eq!(
+            terminal["labels"]["ht.label"], "claude",
+            "the harness kind labels a terminal that takes no --new-tab label"
         );
     }
 
@@ -1605,6 +1606,15 @@ mod launch_new {
             .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
         rig.enroll("sess-a");
         assert_handoff_recorded_its_placeholder(&rig, &["--new-tab", "worker", "--space", "w1"]);
+    }
+
+    #[test]
+    fn core_new_terminal_handoff_records_its_managed_launch_binding() {
+        let rig = LaunchRig::start("handoff-core-terminal-placeholder");
+        rig.fake
+            .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
+        rig.enroll("sess-a");
+        assert_handoff_recorded_its_placeholder(&rig, &["--new-terminal"]);
     }
 
     const NODE_WIDE_REFUSAL: &str = "daemon lacks automatic handoff capability";
