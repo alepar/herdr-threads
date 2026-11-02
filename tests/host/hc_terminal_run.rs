@@ -157,7 +157,7 @@ fn new_tab_labels() {
 }
 
 #[test]
-fn new_terminal_no_app_labels_parent_caller() {
+fn new_terminal_labels_and_parent_caller() {
     let (fake, host, witness) = setup();
     let CreateTargetOutcome::Created(created) =
         host.create_target(&new_terminal(witness), &context())
@@ -172,10 +172,14 @@ fn new_terminal_no_app_labels_parent_caller() {
     );
     let labels = p["labels"].as_object().unwrap();
     assert!(!labels.contains_key(LABEL_SPACE) && !labels.contains_key(LABEL_TAB));
-    assert!(
-        labels.is_empty(),
-        "NewTerminal sends no app labels: {labels:?}"
-    );
+    // No app labels, but the two recovery hints a new tab also carries.
+    let mut keys: Vec<&str> = labels.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let mut want = vec![LABEL_BOOTSTRAP, LABEL_HT];
+    want.sort_unstable();
+    assert_eq!(keys, want, "{labels:?}");
+    assert_eq!(labels[LABEL_BOOTSTRAP], "corr-1");
+    assert_eq!(labels[LABEL_HT], "worker");
     // The new terminal is a child of t1 in the core and the witness validates.
     let t = HcHost::run(HcClient::new(fake.socket()).terminal_get(created.target.as_str()))
         .unwrap()
@@ -263,6 +267,33 @@ fn recorded_unknown_never_reclassified_by_bootstrap_label() {
         Some("corr-1")
     );
     // ... and the host neither looked for it nor changed its answer.
+    let methods: Vec<String> = fake.calls().into_iter().map(|c| c.method).collect();
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|m| *m != "hello" && *m != "terminal.get")
+            .collect::<Vec<_>>(),
+        ["terminal.run"],
+        "{methods:?}"
+    );
+}
+
+/// Kills: a NewTerminal arm that writes no ht.* labels, so a lost reply leaves nothing to find
+/// the terminal by.
+#[test]
+fn new_terminal_unknown_outcome_is_findable_by_its_labels() {
+    let (fake, host, witness) = setup();
+    fake.fail_next_run(RunFailure::Disconnect);
+    let outcome = host.create_target(&new_terminal(witness), &context());
+    assert!(matches!(outcome, CreateTargetOutcome::OutcomeUnknown(_)));
+    let t = HcHost::run(HcClient::new(fake.socket()).terminal_get("t2"))
+        .unwrap()
+        .value;
+    assert_eq!(
+        t.labels.get(LABEL_BOOTSTRAP).map(String::as_str),
+        Some("corr-1")
+    );
+    assert_eq!(t.labels.get(LABEL_HT).map(String::as_str), Some("worker"));
     let methods: Vec<String> = fake.calls().into_iter().map(|c| c.method).collect();
     assert_eq!(
         methods

@@ -715,7 +715,14 @@ impl ports::CreateTargetPort for HcHost {
                 "hc core changed before launch",
             ));
         }
-        let mut labels = std::collections::BTreeMap::new();
+        // Both arms: a recovery hint only, never read to classify an outcome (TRUST-POLICY H3).
+        let mut labels = std::collections::BTreeMap::from([
+            (
+                labels::LABEL_BOOTSTRAP.to_owned(),
+                request.correlation.as_str().to_owned(),
+            ),
+            (labels::LABEL_HT.to_owned(), request.label.clone()),
+        ]);
         let parent = match &request.placement {
             ports::Placement::NewTab { space } => {
                 labels.insert(labels::LABEL_SPACE.to_owned(), space.as_str().to_owned());
@@ -723,11 +730,6 @@ impl ports::CreateTargetPort for HcHost {
                     labels::LABEL_TAB.to_owned(),
                     format!("ht-{}", uuid::Uuid::new_v4().simple()),
                 );
-                labels.insert(
-                    labels::LABEL_BOOTSTRAP.to_owned(),
-                    request.correlation.as_str().to_owned(),
-                );
-                labels.insert(labels::LABEL_HT.to_owned(), request.label.clone());
                 None
             }
             ports::Placement::NewTerminal { parent } => {
