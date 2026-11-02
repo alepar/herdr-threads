@@ -514,8 +514,9 @@ impl HostPort for NamedHost {
     fn wake_armed_bindings(&self) -> usize {
         self.wake_armed()
     }
-    /// `Composer` only for a target with a live binding whose tmux hint verified; any other named
-    /// seat has no wake path.
+    /// `Composer` only for a target with a live binding whose tmux hint verified and whose gate can
+    /// ever type (`gate_never_types`: a harness with no blocked-screen recognizer cannot); any
+    /// other named seat has no wake path and answers `None`.
     fn target_wake_capability(&self, target: &HostTargetId) -> WakeCapability {
         if self.has_live_tmux_binding(target) && !self.gate_never_types(target) {
             WakeCapability::Composer(ComposerTraits::TMUX)

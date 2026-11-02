@@ -1,0 +1,61 @@
+heavy: slot 1 acquired 17:04:32
+   Compiling herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.202)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 17s
+────────────
+ Nextest run ID 8759a033-03aa-46c7-9b81-2e591c6cf8a3 with nextest profile: default
+    Starting 52 tests across 17 binaries (8777 tests skipped)
+        PASS [   0.007s] ( 1/52) herdr-threads scheduler::tests::one_process_served_in_turn_by_any_binding_owes_no_wake
+        PASS [   0.008s] ( 2/52) herdr-threads cli::wake_warning::tests::only_a_first_no_wake_is_a_warning_line
+        PASS [   0.008s] ( 3/52) herdr-threads cli::skill::tests::skill_explains_no_wake_and_the_none_meaning
+        PASS [   0.008s] ( 4/52) herdr-threads service::dispatch::wake_status_hosts_tests::old_shape_wake_status_decodes
+        PASS [   0.020s] ( 5/52) herdr-threads cli::nudge_threshold::tests::set_on_a_no_wake_seat_records_and_prints_m12
+        PASS [   0.564s] ( 6/52) herdr-threads service::dispatch::wake_status_hosts_tests::a_no_recognizer_named_seat_reports_no_wake
+        PASS [   0.560s] ( 7/52) herdr-threads service::dispatch::wake_status_hosts_tests::a_refused_wake_renders_through_wake_status
+        PASS [   0.570s] ( 8/52) herdr-threads service::dispatch::no_wake_reports_tests::live_mod_claude_named_seat_reports_no_block
+        PASS [   0.561s] ( 9/52) herdr-threads service::dispatch::wake_status_hosts_tests::wake_rows_classified_against_their_own_host
+        PASS [   0.578s] (10/52) herdr-threads service::dispatch::no_wake_rest_tests::offline_named_seat_reads_no_wake_offline
+        PASS [   0.606s] (11/52) herdr-threads service::dispatch::no_wake_reports_tests::one_no_wake_per_sender_seat_across_restart_and_channel_flap
+        PASS [   0.623s] (12/52) herdr-threads service::dispatch::no_wake_reports_tests::row_deleted_on_retire_of_either_seat
+        PASS [   0.848s] (13/52) herdr-threads service::dispatch::no_wake_reports_tests::per_target_none_composer_none_reports_once_per_episode
+        PASS [   0.916s] (14/52) herdr-threads service::host_sessions::tests::no_wake_lane_for_wake_none
+        PASS [   0.945s] (15/52) herdr-threads service::dispatch::wake_status_hosts_tests::a_row_without_a_known_host_keeps_the_herdr_classification
+        PASS [   0.954s] (16/52) herdr-threads service::dispatch::wake_status_hosts_tests::a_live_channel_lifts_no_wake_only_for_a_self_waking_harness
+        PASS [   0.005s] (17/52) herdr-threads::combined host_no_wake_tripwire::host_no_wake_tripwire_passes_with_k2_in_the_skill
+        PASS [   0.006s] (18/52) herdr-threads::combined host_no_wake_tripwire::host_no_wake_tripwire_fails_without_k2
+        PASS [   0.971s] (19/52) herdr-threads service::dispatch::no_wake_rest_tests::s6_doctor_on_never_settled_wake_work
+        PASS [   0.976s] (20/52) herdr-threads service::dispatch::no_wake_reports_tests::hooks_only_claude_named_seat_is_none
+        PASS [   0.985s] (21/52) herdr-threads service::dispatch::no_wake_reports_tests::row_deleted_when_read_finds_composer
+        PASS [   0.562s] (22/52) herdr-threads store::lazy_delivery::binding_lazy_tests::stale_superseded_and_end_event_siblings_owe_nothing_and_hold_no_wake_frontier
+        PASS [   0.575s] (23/52) herdr-threads store::lazy_delivery::binding_lazy_tests::rejoin_with_only_self_mail_owes_no_wake
+        PASS [   0.584s] (24/52) herdr-threads service::workers::observation_lane_tests::unchanged_host_cycle_commits_touch_no_wakes_mapped_table
+        PASS [   0.780s] (25/52) herdr-threads::combined fact_convergence_invitation::crossed_direct_pair_one_thread_both_joined_no_invitation_no_wake
+        PASS [   0.924s] (26/52) herdr-threads::combined fact_convergence_invitation::wiped_store_reingesting_own_answer_no_wake
+        PASS [   0.856s] (27/52) herdr-threads::combined fact_convergence_message::suppressed_ack_recipient_keeps_receipt_but_no_wake
+        PASS [   0.898s] (28/52) herdr-threads::combined lazy_config_smoke::lazy_config_json_machine_explicit_seat_are_readonly
+        PASS [   0.940s] (29/52) herdr-threads::combined lazy_config_smoke::lazy_config_inbox_v1_client_current_daemon_ordinary_shapes
+        PASS [   1.076s] (30/52) herdr-threads::combined lazy_config_smoke::lazy_config_lost_completion_reply_frozen_retry
+        PASS [   0.986s] (31/52) herdr-threads::combined lazy_config_smoke::lazy_config_multichunk_restart_printed_continuations
+        PASS [   1.256s] (32/52) herdr-threads::combined lazy_config_smoke::lazy_config_default_text_settles
+        PASS [   1.210s] (33/52) herdr-threads::combined priority_config_smoke::priority_config_smoke_threshold_minus_one
+        PASS [   1.297s] (34/52) herdr-threads::combined priority_config_smoke::priority_config_smoke_threshold_three
+        PASS [   1.592s] (35/52) herdr-threads::combined lazy_config_smoke::lazy_config_postjoin_human_unavailable_restart
+        PASS [   1.020s] (36/52) herdr-threads::hc_messaging live_mod_claude_no_no_wake_hooks_only_once
+        PASS [   1.132s] (37/52) herdr-threads::integration config_smoke::herdr_never_started
+        PASS [   0.977s] (38/52) herdr-threads::integration config_smoke::herdr_stale_socket_dead_server
+        PASS [   1.092s] (39/52) herdr-threads::integration config_smoke::herdr_up_linked
+        PASS [   1.301s] (40/52) herdr-threads::integration config_smoke::herdr_stopped_while_daemon_runs
+        PASS [   1.101s] (41/52) herdr-threads::integration config_smoke::p0_to_a_harness_without_idle_wake_warns_each_sender_once_and_doctor_lists_it
+        PASS [   1.722s] (42/52) herdr-threads::combined priority_config_smoke::priority_config_smoke_threshold_zero
+        PASS [   1.741s] (43/52) herdr-threads::integration config_smoke::herdr_restarted_under_running_daemon
+        PASS [   1.405s] (44/52) herdr-threads::integration config_smoke::synthetic_four_adapter_hook_configuration_and_canonical_replay
+        PASS [   4.472s] (45/52) herdr-threads service::delivery_pull::tests::a_pending_notice_reserves_no_wake
+        PASS [   3.926s] (46/52) herdr-threads store::cooperative_checkin_tests::human_seat_receipt_waivers_and_no_wake_hold
+        PASS [   3.953s] (47/52) herdr-threads store::wake_tests::human_bound_seat_with_a_later_disconnected_agent_binding_gets_no_wake
+        PASS [   4.545s] (48/52) herdr-threads service::dispatch::no_wake_rest_tests::deadline_to_offline_no_wake_seat_no_poke_no_reminder
+        PASS [   3.962s] (49/52) herdr-threads store::wake_tests::human_bound_seat_with_agent_in_pane_gets_no_wake_authority
+        PASS [   3.643s] (50/52) herdr-threads::combined lazy_attention::lazy_attention_no_wake_poke_prompt_retry_deadline_warning
+        PASS [  12.784s] (51/52) herdr-threads::integration_sweep named_tmux_idle_recipient_wakes_for_p0_not_p1
+        PASS [  19.013s] (52/52) herdr-threads::config_smoke named_tmux_site_four_harnesses
+────────────
+     Summary [  19.045s] 52 tests run: 52 passed, 8777 skipped
+exit 0
