@@ -522,6 +522,7 @@ pub fn run<W: Write>(
     confirm_missing: bool,
     without_permissions: bool,
     output: &OutputSpec,
+    site: Option<&super::caller_location::CallerLocator>,
     writer: &mut W,
 ) -> Result<(), RunError> {
     let _backups = crate::harness::setup::BackupSession::start();

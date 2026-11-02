@@ -42,6 +42,9 @@ pub struct ParsedCli {
     /// by `run_parsed_in_pane`, read by the consumers that resolve the instance context. Never
     /// parsed from argv, never journaled.
     pub caller_site: Option<super::caller_location::CallerLocator>,
+    /// `--host-endpoint` as given. `output.context.host` also carries the pin a continuation line
+    /// needs; a Herdr reader takes only this.
+    pub host_flag: Option<String>,
 }
 
 /// Raw `--space`/`--tab` values that narrow a seat name or verify an exact seat's location.
@@ -355,6 +358,13 @@ fn collect_seat_selectors(command: &Top) -> Vec<SeatSelectorArg> {
 }
 
 impl ParsedCli {
+    /// `output` for a Herdr reader: the explicit flag, never a pin.
+    pub(crate) fn herdr_output(&self) -> OutputSpec {
+        let mut output = self.output.clone();
+        output.context.host = self.host_flag.clone();
+        output
+    }
+
     /// Carry `--agent-id` into a cooperative claim (spec §1). Leaves the claim's role alone.
     /// Call sites belong to ht-54r.5 (client claim construction).
     pub fn stamp_agent_id(
@@ -2994,6 +3004,7 @@ fn parse_cli_in_registry(
         .agent_id
         .map(|value| id(value, crate::protocol::ids::AgentId::parse))
         .transpose()?;
+    let host_flag = single_global("--host-endpoint", cli.host_endpoint)?;
     let output = OutputSpec {
         format: if cli.json {
             OutputFormat::Json
@@ -3002,7 +3013,7 @@ fn parse_cli_in_registry(
         },
         context: ContinuationContext {
             state_dir: single_global("--state-dir", cli.state_dir)?,
-            host: single_global("--host-endpoint", cli.host_endpoint)?,
+            host: host_flag.clone(),
         },
     };
     output.validate().map_err(invalid)?;
@@ -4262,6 +4273,7 @@ fn parse_cli_in_registry(
         seat_selectors,
         seat_narrowing,
         caller_site: None,
+        host_flag,
     })
 }
 

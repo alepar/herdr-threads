@@ -1145,7 +1145,8 @@ fn two_family_pane_forms_never_dial_the_core() {
         &["thread", "create", "--name", "ops", "--topic", "ops"],
     );
     assert_eq!(created.code, Some(0), "{created:?}");
-    let forms: [&[&str]; 5] = [
+    let forms: [&[&str]; 6] = [
+        &["send", "--seat", "w1:p3", "--body", "hi"],
         &["seat", "resolve", "--pane", "w1:p3"],
         &["invite", "ops", "--pane", "w1:p3"],
         &["launch", "--pane", "w1:p3", "--kind", "codex"],
@@ -1173,6 +1174,87 @@ fn two_family_pane_forms_never_dial_the_core() {
         );
         assert_core_never_dialled_as_herdr(&rig);
     }
+}
+
+// Kills: a `recipient_host` that discards an explicit `--host-endpoint` on a Terminal site (so the
+// pane form refuses with M21, whose remedy is that flag), or a pane form that sends a Herdr call
+// to the core.
+#[test]
+fn terminal_site_pane_forms_with_host_endpoint_reach_the_herdr_path() {
+    let rig = Rig::start("hcm-host-flag", &["t1"]);
+    assert_eq!(rig.session_start("t1", "s-t1").code, Some(0));
+    let herdr = rig.isolation.path("herdr.sock");
+    let fake = herdr_threads::test_support::fake_herdr::FakeHerdr::start("hcm", &herdr, &["w1:p3"]);
+    let endpoint = herdr.to_string_lossy().into_owned();
+    let created = rig.agent(
+        "t1",
+        "s-t1",
+        &["thread", "create", "--name", "ops", "--topic", "ops"],
+        None,
+    );
+    assert_eq!(created.code, Some(0), "{created:?}");
+    let forms: [&[&str]; 2] = [
+        &["seat", "resolve", "--pane", "w1:p3"],
+        &["invite", "ops", "--pane", "w1:p3"],
+    ];
+    for args in forms {
+        let mut full = vec!["--host-endpoint", endpoint.as_str()];
+        full.extend_from_slice(args);
+        let ran = rig.agent("t1", "s-t1", &full, None);
+        assert!(
+            !ran.stderr.contains("has no reachable Herdr host"),
+            "{args:?}: {ran:?}"
+        );
+        assert_core_never_dialled_as_herdr(&rig);
+    }
+    let _ = &fake;
+    let on_herdr: i64 = rig
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+             WHERE s.target_id='w1:p3' AND h.endpoint=?1",
+            [herdr.to_string_lossy()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(on_herdr, 1, "a seat for w1:p3 on the Herdr server");
+}
+
+// Kills: `send --seat NAME` whose topology read takes the pin of the direct send, so the core
+// receives a Herdr `ping`, from a lone Terminal site and from a verified two-family one.
+#[test]
+fn send_seat_name_never_dials_the_core() {
+    let rig = Rig::start("hcm-send-name", &["t1"]);
+    assert_eq!(rig.session_start("t1", "s-t1").code, Some(0));
+    let ran = rig.agent("t1", "s-t1", &["send", "--seat", "nobody", "--body", "hi"], None);
+    assert_ne!(ran.code, Some(0), "{ran:?}");
+    assert_core_never_dialled_as_herdr(&rig);
+
+    let rig = verified_two_family("hcm-2f-send-name");
+    let ran = two_family_in(&rig, None, &["send", "--seat", "nobody", "--body", "hi"]);
+    assert_ne!(ran.code, Some(0), "{ran:?}");
+    assert_core_never_dialled_as_herdr(&rig);
+}
+
+// Kills: `installer::run` that ignores the decided site, so the internal installer step fails from
+// a verified two-family terminal where `setup claude` succeeds.
+#[test]
+fn two_family_installer_integrations_passes() {
+    let rig = verified_two_family("hcm-2f-installer");
+    // An escalating command leads its words, so the caller is the terminal's person, not an agent.
+    let mut command = rig.isolation.command(BIN);
+    command
+        .args(["internal", "installer-integrations"])
+        .env("HC_TERMINAL_ID", "t1")
+        .env("HC_TERMINAL_SOCKET", rig.socket())
+        .env("HERDR_PANE_ID", "w9:p9")
+        .env("HERDR_ENV", "1")
+        .env_remove("HERDR_SOCKET_PATH")
+        .env("PATH", no_herdr_dir(&rig));
+    let ran = finish(command);
+    assert!(!ran.stderr.contains("host endpoint unknown"), "{ran:?}");
+    assert!(!ran.stderr.contains("no reachable Herdr"), "{ran:?}");
+    assert_eq!(ran.code, Some(0), "{ran:?}");
 }
 
 // Kills: the endpoint of a verified two-family terminal read as a raw pane environment (the core
@@ -1320,4 +1402,41 @@ fn two_family_watch_marker_pins_no_core() {
         !text.contains(&format!("--host-endpoint {}", socket.display())),
         "{text}"
     );
+}
+
+// Kills: `retry` of a journaled non-topology intent that computes the Herdr namespace first, so
+// a Terminal site with no Herdr is refused before the original is even looked at.
+#[test]
+fn retry_of_a_journaled_intent_needs_no_herdr() {
+    use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
+    use herdr_threads::protocol::ids::{HostLocator, HostTargetId};
+    let rig = Rig::start("hcm-retry", &["t1"]);
+    assert_eq!(rig.session_start("t1", "s-t1").code, Some(0));
+    let herdr = rig.isolation.path("herdr.sock");
+    let fake = herdr_threads::test_support::fake_herdr::FakeHerdr::start("hcm", &herdr, &["w1:p3"]);
+    let node_dir = rig.state.join("node");
+    let instance = herdr_threads::node::json::read_hint(&node_dir.join("node.json"))
+        .expect("node hint")
+        .node_uuid
+        .to_string();
+    let journal = Journal::open(node_dir.join("intents")).unwrap();
+    let target = HostTargetId::new("w1:p3");
+    let item = journal
+        .record(
+            IntentScope::ServiceAllocation {
+                instance,
+                target: target.clone(),
+            },
+            SemanticMutation::ResolveSeat {
+                host: HostLocator::parse(herdr.to_string_lossy()).unwrap(),
+                target,
+            },
+            0,
+        )
+        .unwrap();
+    let ran = rig.agent("t1", "s-t1", &["retry", &item.recovery_ref()], None);
+    let _ = &fake;
+    assert_eq!(ran.code, Some(0), "{ran:?}");
+    assert!(!ran.stderr.contains("Herdr"), "{ran:?}");
+    assert_core_never_dialled_as_herdr(&rig);
 }

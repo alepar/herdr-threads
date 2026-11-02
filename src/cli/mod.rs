@@ -660,6 +660,7 @@ fn run_parsed_in_pane<W: Write>(
             *confirm_missing,
             *without_permissions,
             &parsed.output,
+            parsed.caller_site.as_ref(),
             writer,
         );
     }
@@ -853,7 +854,7 @@ fn run_parsed_in_pane<W: Write>(
     // Only a handoff action reads a Herdr endpoint, resolved lazily at that call (SA1, SA14).
     // Any non-Pane site's claim host (the reserved locator, a core socket) is never dialled: its
     // Herdr endpoint comes from the shared point.
-    let host_output = parsed.output.clone();
+    let host_output = parsed.herdr_output();
     let host = || -> Result<crate::host::native::NativeCli, ApiError> {
         let endpoint = if site.is_none() {
             context
@@ -1168,7 +1169,7 @@ fn run_parsed_in_pane<W: Write>(
         let semantic = operator_semantic(
             mutation,
             &context,
-            &parsed.output,
+            &parsed.herdr_output(),
             parsed.caller_site.as_ref(),
         )
         .expect("operator mutation selected above")?;
@@ -1209,6 +1210,7 @@ fn run_parsed_in_pane<W: Write>(
     let Some(parsed) = outcome else {
         return Ok(());
     };
+    let herdr_output = parsed.herdr_output();
     let result = match parsed.action {
         CliAction::Wire(_) => unreachable!("wire reads run in run_caller_scoped"),
         CliAction::Daemon(DaemonAction::Health) => {
@@ -1275,7 +1277,7 @@ fn run_parsed_in_pane<W: Write>(
             let (instance, _, client) = connect(&paths, &clock)?;
             let host = recipient_host(
                 &context,
-                &parsed.output,
+                &herdr_output,
                 parsed.caller_site.as_ref(),
                 &target,
             )?;
@@ -3538,14 +3540,8 @@ fn recipient_host(
     target: &crate::protocol::ids::HostTargetId,
 ) -> Result<crate::protocol::ids::HostLocator, RunError> {
     let missing = || no_herdr_host(&format!("pane {}", target.as_str()));
-    // A direct send pins its claim host on `output` for its continuation lines. On a non-Pane
-    // site that host is the site's own, never the recipient pane's server.
-    let mut output = output.clone();
-    if site.is_some() && output.context.host == pinned_host(context) {
-        output.context.host = None;
-    }
     let endpoint =
-        topology_runtime::herdr_endpoint_io(context, &output, site).map_err(|_| missing())?;
+        topology_runtime::herdr_endpoint_io(context, output, site).map_err(|_| missing())?;
     crate::protocol::ids::HostLocator::parse(endpoint.to_string_lossy())
         .map_err(|detail| invalid_request(&detail.detail))
 }
@@ -3898,6 +3894,7 @@ where
             "requesting invitation confirmation policy",
         )?;
     }
+    let herdr_output = parsed.herdr_output();
     let allocate = |target: crate::protocol::ids::HostTargetId| {
         allocate_recipient_seat(
             context,
@@ -3905,7 +3902,7 @@ where
             instance,
             client,
             clock.as_ref(),
-            &parsed.output,
+            &herdr_output,
             parsed.caller_site.as_ref(),
             target,
             None,
