@@ -789,6 +789,29 @@ fn drain_pages_until_exhausted_with_schema_kind_and_stable_ids() {
     assert!(again.is_empty());
 }
 
+// Kills: the historical watch fallback showing a read-only watch (D3) a receipt-bearing row.
+#[test]
+fn readonly_drain_withholds_receipt_rows_and_shows_the_rest() {
+    let client = paged_client(vec![vec![
+        whole("m-ack", "needs an ack"),
+        lazy("m-lazy", "plain"),
+    ]]);
+    let mut state = EmitState::default().with_readonly(true);
+    let (result, got) = run_drain(&client, 4, &mut state);
+    assert!(result.is_ok());
+    assert_eq!(
+        got.iter().map(|line| line.id.as_str()).collect::<Vec<_>>(),
+        vec!["m-lazy"]
+    );
+    // A writable watch still shows both.
+    let client = paged_client(vec![vec![
+        whole("m-ack", "needs an ack"),
+        lazy("m-lazy", "plain"),
+    ]]);
+    let (_, got) = run_drain(&client, 4, &mut EmitState::default());
+    assert_eq!(got.len(), 2);
+}
+
 #[test]
 fn body_over_8_kib_is_truncated_with_marker_and_hint_file_records_id() {
     let dir = temp_dir("trunc");

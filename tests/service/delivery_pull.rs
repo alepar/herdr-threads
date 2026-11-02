@@ -2868,6 +2868,132 @@ fn the_hook_pull_outlook_waits_for_every_target_binding() {
     assert_eq!(outlook(&f, &[]), outlook(&f, &[bind_a, bind_b]));
 }
 
+/// A second, read-only top-level binding of seat `s` (D3), beside `pull_seat`'s writable one.
+fn readonly_second_binding(f: &Fixture) -> CallerClaim {
+    let mut second = claim("s", "p", fourth(), "n2", 1);
+    second.liveness = Some(crate::protocol::authority::LivenessFingerprint {
+        pid: 4242,
+        start: 1,
+    });
+    let context = match f
+        .service
+        .handle(
+            Command::CheckIn(CheckIn {
+                readonly: true,
+                mode: CheckInMode::Lifecycle {
+                    expected_binding_generation: 1,
+                },
+                claim: fresh_execution(second, 9),
+                operation: OperationId::new("ci-ro"),
+                lineage_parent: None,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    {
+        CommandResult::CheckedIn(result) => result.context,
+        other => panic!("unexpected {other:?}"),
+    };
+    assert!(crate::store::bindings::is_readonly(&f.db, &binding_for_claim(f, &context)).unwrap());
+    context
+}
+
+/// One hook presentation pull and, when it carries a page, its confirmation: the offered ids.
+fn presentation_hook_offered(f: &Fixture, claim: &CallerClaim) -> (Vec<MessageId>, bool) {
+    match presentation_test_pull(f, claim) {
+        crate::protocol::delivery::DeliveryPullReplyV2::Page(page) => {
+            presentation_test_confirm(f, claim, &page);
+            (page.offered, page.more)
+        }
+        other => {
+            assert!(
+                matches!(
+                    other,
+                    crate::protocol::delivery::DeliveryPullReplyV2::Unchanged { .. }
+                ),
+                "unexpected {other:?}"
+            );
+            (Vec::new(), false)
+        }
+    }
+}
+
+// Kills: a read-only binding (D3) offered a receipt-bearing row by the V2 presentation reader
+// (Hook consumer); the row must stay pending for the writable sibling, which settles it.
+#[test]
+fn presentation_hook_pull_readonly_binding_skips_receipt_rows() {
+    let f = fixture(0);
+    let writable = pull_seat(&f);
+    let readonly = readonly_second_binding(&f);
+    ordinary_message(&f, "m-ack", "needs an ack");
+    lazy_message(&f, "msg-plain", "plain");
+    bump_wake_attention(&f);
+    let (ro_offered, _) = presentation_hook_offered(&f, &readonly);
+    assert_eq!(ro_offered, ids(&["msg-plain"]), "no receipt-bearing row");
+    assert_eq!(receipt_state(&f, "m-ack"), "pending");
+    let (rw_offered, _) = presentation_hook_offered(&f, &writable);
+    assert!(
+        rw_offered.contains(&MessageId::new("m-ack")),
+        "{rw_offered:?}"
+    );
+}
+
+// Kills: the exact-key (due re-offer) route offering a row that the binding was shown while
+// writable and that has since become read-only.
+#[test]
+fn presentation_readonly_due_offer_is_not_replayed() {
+    let f = fixture(0);
+    let claim = pull_seat(&f);
+    ordinary_message(&f, "m-ack", "needs an ack");
+    bump_wake_attention(&f);
+    let (first, _) = presentation_hook_offered(&f, &claim);
+    assert_eq!(first, ids(&["m-ack"]));
+    f.db.execute("UPDATE occupant_bindings SET readonly=1", [])
+        .unwrap();
+    advance(&f, crate::delivery::ledger::REOFFER_AFTER_MS + 1);
+    bump_wake_attention(&f);
+    let (again, _) = presentation_hook_offered(&f, &claim);
+    assert!(again.is_empty(), "{again:?}");
+    assert_eq!(receipt_state(&f, "m-ack"), "pending");
+}
+
+// Kills: `more` promising work a read-only page can never show, or a full page of receipt rows
+// hiding the plain row behind it.
+#[test]
+fn presentation_readonly_walks_past_a_full_page_of_receipt_rows() {
+    let f = fixture(0);
+    let claim = pull_seat(&f);
+    for n in 0..33 {
+        ordinary_message(&f, &format!("m-ack{n:02}"), "needs an ack");
+    }
+    lazy_message(&f, "msg-plain", "plain");
+    bump_wake_attention(&f);
+    f.db.execute("UPDATE occupant_bindings SET readonly=1", [])
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        let (offered, _) = presentation_hook_offered(&f, &claim);
+        seen.extend(offered);
+        if seen.contains(&MessageId::new("msg-plain")) {
+            break;
+        }
+    }
+    assert_eq!(seen, ids(&["msg-plain"]));
+    // The rescan walks the filtered pages one pull at a time (`more` is progress), then settles:
+    // `more` must not promise work the page can never show.
+    let mut settled = false;
+    for _ in 0..4 {
+        let (offered, more) = presentation_hook_offered(&f, &claim);
+        assert!(offered.is_empty(), "{offered:?}");
+        if !more {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "`more` stayed true across four empty pulls");
+}
+
 // Kills: same-seat, same-generation D state aliasing across two connected bindings.
 // Real pulls populate both ledgers and withheld carry; foreign hints/tokens cannot advance either.
 #[test]
@@ -12880,6 +13006,7 @@ fn presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work()
                 native_session: window.recipient.native_session.clone(),
                 harness: window.recipient.harness,
                 idle_wake: crate::harness::adapter::IdleWake::Native,
+                readonly: false,
                 registered_at: now,
             },
             Arc::new(Sink),

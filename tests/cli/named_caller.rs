@@ -709,8 +709,9 @@ impl Rig {
 
 // Kills: a readonly `watch` that registers its channel without recording the marker
 // (`mark_readonly_caller` removed): bob is enrolled writable by his hook and only the watch
-// carries the variable, so a missing marker leaves the binding writable and the mod's
-// `watch ack` for the displayed row discharges the ACK.
+// carries the variable, so a missing marker leaves the binding writable and the daemon offers
+// the receipt-bearing row to the watch. A readonly watch is never shown it (D3): the row stays
+// owed, for a writable sibling.
 #[test]
 fn readonly_watch_records_the_marker_and_the_ack_stays_owed() {
     let rig = Rig::start("nc-ro-watch");
@@ -740,27 +741,28 @@ fn readonly_watch_records_the_marker_and_the_ack_stays_owed() {
     );
     assert_eq!(sent.code, Some(0), "{sent:?} from {alice}");
     let id = sent_message(&sent);
-    watch.until("the displayed row", |v| v["body"] == "ack me");
-
-    // The mod acknowledges the row it displayed; the daemon decides on the binding's marker.
-    let acked = rig.agent(
-        "bob",
-        "s-bob",
-        &[
-            "watch",
-            "ack",
-            "--session",
-            "s-bob",
-            "--via",
-            "context",
-            &id,
-        ],
+    // A later plain row is shown; the ACK request (p0, so ahead of it) must not have been.
+    let sent = rig.agent(
+        "alice",
+        "s-alice",
+        &["send", "--seat", &bob, "--body", "plain row"],
     );
-    assert_eq!(acked.code, Some(0), "{acked:?}");
+    assert_eq!(sent.code, Some(0), "{sent:?}");
+    let shown_ack = std::cell::Cell::new(false);
+    watch.until("the plain row", |v| {
+        if v["body"] == "ack me" {
+            shown_ack.set(true);
+        }
+        v["body"] == "plain row"
+    });
+    assert!(
+        !shown_ack.get(),
+        "a readonly watch is shown no receipt-bearing row"
+    );
     let owed = rig.agent("bob", "s-bob", &["pending-receipts", "--machine"]);
     assert!(
         owed.stdout.contains(&id),
-        "a readonly display leaves the ACK owed: {owed:?}"
+        "a readonly watch leaves the ACK owed: {owed:?}"
     );
     let flags = rig.readonly_flags(&bob);
     assert!(

@@ -85,6 +85,8 @@ struct Entry {
     native_session: String,
     harness: Harness,
     idle_wake: IdleWake,
+    /// The binding is read-only (D3): it never discharges a receipt-bearing row.
+    readonly: bool,
     connected_since: UtcMillis,
     state: ModChannelState,
     grace_until: Option<UtcMillis>,
@@ -561,10 +563,13 @@ impl ModChannelRegistry {
         let (seat, channel, judged_ack, pushed) = {
             let state = self.lock();
             let entry = state.entries.get(binding)?;
-            if !matches!(
-                entry.state,
-                ModChannelState::Live | ModChannelState::ReconnectGrace
-            ) {
+            // A read-only channel never discharges a row, so silence is not a stall (D3).
+            if entry.readonly
+                || !matches!(
+                    entry.state,
+                    ModChannelState::Live | ModChannelState::ReconnectGrace
+                )
+            {
                 return None;
             }
             if now.0.saturating_sub(entry.last_ack_or_registration.0) <= MOD_STALL_AFTER_MS as i64 {
@@ -873,6 +878,7 @@ impl ModChannels for ModChannelRegistry {
                     native_session: registration.native_session.as_str().to_owned(),
                     harness: registration.harness,
                     idle_wake: registration.idle_wake,
+                    readonly: registration.readonly,
                     connected_since: now,
                     state: ModChannelState::Live,
                     grace_until: None,
@@ -1010,10 +1016,9 @@ impl ModChannels for ModChannelRegistry {
         let state = self.lock();
         state.by_seat.get(seat).is_some_and(|bindings| {
             bindings.iter().any(|binding| {
-                state
-                    .entries
-                    .get(binding)
-                    .is_some_and(|e| e.idle_wake == IdleWake::Channel && e.handling(now))
+                state.entries.get(binding).is_some_and(|e| {
+                    e.idle_wake == IdleWake::Channel && e.handling(now) && !e.readonly
+                })
             })
         })
     }

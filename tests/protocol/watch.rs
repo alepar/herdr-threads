@@ -639,6 +639,7 @@ fn no_mod_channels_is_inert() {
         native_session: NativeSessionId::new("n1"),
         harness: Harness::Claude,
         idle_wake: crate::harness::adapter::IdleWake::Channel,
+        readonly: false,
         registered_at: UtcMillis(0),
     };
     assert_eq!(

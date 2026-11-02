@@ -78,6 +78,7 @@ fn register(registry: &ModChannelRegistry, seat: &str, idle_wake: IdleWake) {
                 native_session: NativeSessionId::new("native"),
                 harness: Harness::Claude,
                 idle_wake,
+                readonly: false,
                 registered_at: UtcMillis(1_000),
             },
             Arc::new(NullSink),
