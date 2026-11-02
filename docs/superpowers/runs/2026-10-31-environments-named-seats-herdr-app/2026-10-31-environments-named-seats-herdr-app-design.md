@@ -719,8 +719,9 @@ finished `tN` never names another terminal, and finished records are pruned past
   finish. It ends only that binding (`ProcessExit`); the seat stays resolved on the live terminal.
 - An agent that is the terminal's root (the H3 gate shim `exec`s the harness) finishes the terminal when it exits.
   With `keep: false` that finish is final and retires the seat. This is the terminal's closure, not the agent's.
-- A failed `hello`, or a core id that differs from the seat's boot, gives `CompleteUnverified` (or C2 holds), which
-  closes nothing.
+- A failed `hello`, a reply with no usable core id or a record state this build cannot read is an `Err` (the
+  observation freezes), and a core id that differs from the seat's boot holds under C2; none of them closes anything.
+  Accepted limit: an unreadable record state freezes observation of that whole core until an upgrade.
 - The reason vocabulary is herdr-core's: `exited`, `killed`, `signaled`, `server_stop`, `host_shutdown`,
   `holder_lost`, `stopped_by_restart`. An unknown reason on a `finished` record is final (the core already decided
   it); on a `live` record it changes nothing. This follows the version rule: no reason list gates anything, the
@@ -1568,7 +1569,7 @@ M6 wording, `LocateCaller` cache key) must not change:
 - Hides: the hc protocol, the socket path rules, and which of hc's methods it must never call (`terminal.list`, `doc.set`, `caller`).
 - Must not: spawn `hc`, treat agent exit as closure, keep `machine/tN` mirrors, or attach on a diagnostic scan.
 - Lifecycle: built by `HostFactory.build(Hc, locator)` on a dialled attach. It lives as long as its `HostSession`. It holds no long-lived connection. The observation counter and the doc-name cache are per-instance mutable state.
-- Errors: a failed `hello` gives `CompleteUnverified` (closes nothing). A core id mismatch is a new boot (C2 holds). An RPC error before a launch record exists is `NotSubmitted`; `spawn_failed`, a timeout or a disconnect is `OutcomeUnknown` (H3).
+- Errors: a failed `hello`, a reply with no usable core id or an unreadable record state is `Err` (the observation freezes and closes nothing). A core id mismatch is a new boot (C2 holds). An RPC error before a launch record exists is `NotSubmitted`; `spawn_failed`, a timeout or a disconnect is `OutcomeUnknown` (H3).
 
 **CallerEnv → Located → CallerSite** (src/cli/caller_location.rs): a new module with closed enums. It is the CLI's only reader of caller-location env.
 - Owns: reading and empty-filtering the env (names come from each host module's `ENV_VARS`), the precedence (valid name, then one family, then `Ambiguous`, then refusal), M14/M16/M17, the tmux hint (N2), and the per-site answers (`moved_target`, `relative_pane`, `sent_scope`, `required_capability`, `locate_candidate`, `terminal_address`, `claim_host_locator`, `env_assignments`).
