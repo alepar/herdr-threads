@@ -455,6 +455,24 @@ fn registry_wake(harness: &str, composer: bool) -> Wake {
     }
 }
 
+/// What the sender of a tmux seat of `harness` sees: Composer only for a harness the wake gate can
+/// ever type into, which takes a blocked-screen recognizer (`gate_never_types`); the rest answer
+/// None and report `wake=no_wake`.
+fn tmux_wake(harness: &str) -> Wake {
+    let registry = herdr_threads::harness::registry::builtins();
+    let recognizes = registry
+        .agent(harness)
+        .ok()
+        .and_then(|id| registry.by_id(id).ok())
+        .and_then(|adapter| adapter.composer_policy())
+        .is_some_and(|policy| policy.recognizes_blocked_screens());
+    if recognizes {
+        registry_wake(harness, true)
+    } else {
+        Wake::None
+    }
+}
+
 /// One cell: `recipient` of `harness` at the site, messaged by `sender` (an enrolled claude of the
 /// same site). Returns the printed cell line.
 fn cell(world: &World, site: &str, sender: &Caller, recipient: &Caller, expect: Wake) -> String {
@@ -648,14 +666,14 @@ fn named_tmux_site_four_harnesses() {
     for harness in HARNESSES {
         let pane = world.tmux_pane();
         let who = recipient(harness, Loc::Tmux(format!("rcpt-{harness}"), pane));
-        // Composer wherever the harness has a composer policy; claude and codex also report turn
-        // edges, which make the wake gate's idle check answer (the other two retry on the ladder).
+        // Composer only where the harness has a blocked-screen recognizer (the gate can then type);
+        // the rest answer None and their sender reads `wake=no_wake`.
         cells.push(cell(
             &world,
             "named+tmux",
             &sender,
             &who,
-            registry_wake(harness, true),
+            tmux_wake(harness),
         ));
     }
     print_cells("named+tmux", &cells);

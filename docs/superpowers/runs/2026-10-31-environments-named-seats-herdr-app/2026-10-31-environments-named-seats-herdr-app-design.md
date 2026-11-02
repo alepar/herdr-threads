@@ -521,6 +521,8 @@ registration `h` and both `c` (`has_idle_wake` at :1447 stays as the `pub(crate)
 | unregistered (`human`, `pi`) | None | None | None | None |
 
 Claude with `c=false` on Herdr is hooks-only Claude, which wakes by the native prompt today, hence Composer.
+On a tmux seat the per-target answer is `Composer(TMUX)` only for a harness with a blocked-screen recognizer (claude, agy)
+and `None` otherwise (codex, hermes), whose sender reads `wake=no_wake` (`gate_never_types`).
 
 `wake_status` (src/service/dispatch.rs:252) changes three
 ways:
@@ -570,8 +572,8 @@ of `NamedHost`.
   that binding. It never moves a seat.
 - **Capability.** `NamedHost::wake_capability()` becomes `Composer(ComposerTraits::TMUX{submit_budget: 2 s})`, so
   the lane starts. A new defaulted `HostPort::target_wake_capability(&HostTargetId) -> WakeCapability` (default
-  `self.wake_capability()`) returns `Composer` only when the seat's current top-level binding has a verified hint,
-  else `None`. `wake_status` and `no_wake_reports` read the per-target answer.
+  `self.wake_capability()`) returns `Composer` only when the seat's current top-level binding has a verified hint
+  and its harness has a blocked-screen recognizer, else `None` (reported `wake=no_wake`). `wake_status` and `no_wake_reports` read the per-target answer.
 - **Composer read.** `capture-pane -p -t <pane>` at `#{pane_width}`, fed to the harness's existing `ComposerPolicy`
   (src/harness/adapter.rs:1379). Focus = `pane_active && window_active && session_attached`, under the existing
   focused-composer hold.
