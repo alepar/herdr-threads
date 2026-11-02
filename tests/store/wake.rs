@@ -4289,3 +4289,31 @@ fn codex_new_plain_sibling_after_reservation_keeps_the_inbox_hint() {
     drop(store);
     let _ = std::fs::remove_file(path);
 }
+
+// Kills: a cancelled wake walk reported as `ReadBudgetExhausted` (cancellation read as an
+// exhausted budget), and a passed deadline reported as anything else.
+#[test]
+fn wake_discovery_budget_check_separates_cancellation_from_the_deadline() {
+    let live = CallBudget {
+        deadline: MonoInstant(2_000),
+        cancellation: Cancellation::default(),
+    };
+    assert!(wake_discovery_budget_check(&live, &WakeClock).is_ok());
+    live.cancellation.cancel();
+    assert_eq!(
+        wake_discovery_budget_check(&live, &WakeClock)
+            .unwrap_err()
+            .code,
+        ErrorCode::Cancelled
+    );
+    let late = CallBudget {
+        deadline: MonoInstant(1_000),
+        cancellation: Cancellation::default(),
+    };
+    assert_eq!(
+        wake_discovery_budget_check(&late, &WakeClock)
+            .unwrap_err()
+            .code,
+        ErrorCode::ReadBudgetExhausted
+    );
+}

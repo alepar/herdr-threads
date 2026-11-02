@@ -1274,6 +1274,21 @@ pub(crate) fn discover_wake_candidates(
     })
 }
 
+/// The wake walk's per-seat budget check. A Stop is `Cancelled`, not an exhausted budget: only
+/// the deadline is `ReadBudgetExhausted`.
+fn wake_discovery_budget_check(budget: &CallBudget, clock: &dyn Clock) -> Result<(), ApiError> {
+    if budget.cancellation.is_cancelled() {
+        return Err(ApiError::cancelled("wake discovery"));
+    }
+    if budget.deadline_passed(clock) {
+        return Err(api_error(
+            ErrorCode::ReadBudgetExhausted,
+            "wake discovery budget exhausted",
+        ));
+    }
+    Ok(())
+}
+
 fn wake_candidates_page(
     context: &StoreContext,
     instance: &str,
@@ -1316,15 +1331,7 @@ fn wake_candidates_page(
         cursor.as_ref().map_or(0, |c| c.after_ordinal),
         high_water,
         usize::from(page.limit),
-        &|| {
-            if budget.is_exhausted(context.clock()) {
-                return Err(api_error(
-                    ErrorCode::ReadBudgetExhausted,
-                    "wake discovery budget exhausted",
-                ));
-            }
-            Ok(())
-        },
+        &|| wake_discovery_budget_check(budget, context.clock()),
     )?;
     page_fit::fit_internal(
         page.max_bytes as usize,

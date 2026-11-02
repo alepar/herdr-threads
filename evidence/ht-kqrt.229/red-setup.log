@@ -1,0 +1,43 @@
+heavy: slot 1 acquired 00:56:39
+   Compiling herdr-threads v2.8.4 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.229)
+warning: unused variable: `site`
+   --> src/cli/setup.rs:539:5
+    |
+539 |     site: Option<&super::caller_location::CallerLocator>,
+    |     ^^^^ help: if this is intentional, prefix it with an underscore: `_site`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `herdr-threads` (lib) generated 1 warning (run `cargo fix --lib -p herdr-threads` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 58.95s
+────────────
+ Nextest run ID 034ce3aa-f830-45bc-afed-9f4d7fb2888f with nextest profile: default
+    Starting 1 test across 1 binary (20 tests skipped)
+        FAIL [   0.806s] (1/1) herdr-threads::hc_messaging two_family_setup_does_not_need_a_herdr_endpoint
+  stdout ───
+
+    running 1 test
+    test two_family_setup_does_not_need_a_herdr_endpoint ... FAILED
+
+    failures:
+
+    failures:
+        two_family_setup_does_not_need_a_herdr_endpoint
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.80s
+
+  stderr ───
+
+    thread 'two_family_setup_does_not_need_a_herdr_endpoint' (4171313) panicked at tests/hc_messaging.rs:1280:5:
+    assertion `left == right` failed: exit Some(2)
+    stdout: 
+    stderr: herdr-threads: Herdr host endpoint unknown: `herdr status server --json` failed or did not answer within 2000 ms; run inside Herdr, or pass --host-endpoint (invalid_request)
+
+      left: Some(2)
+     right: Some(0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.806s] 1 test run: 0 passed, 1 failed, 20 skipped
+        FAIL [   0.806s] (1/1) herdr-threads::hc_messaging two_family_setup_does_not_need_a_herdr_endpoint
+error: test run failed

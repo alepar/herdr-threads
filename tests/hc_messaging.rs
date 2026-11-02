@@ -1074,7 +1074,12 @@ fn no_herdr_dir(rig: &Rig) -> PathBuf {
 /// A rig whose terminal `t1` is a verified ancestor (this process), so a caller naming both `t1`
 /// and a Herdr pane acts as the terminal.
 fn verified_two_family(label: &str) -> Rig {
-    let rig = Rig::start(label, &["t1"]);
+    verified_two_family_with(label, &["t1"])
+}
+
+/// [`verified_two_family`] on a core with more terminals (`t1` first, the verified one).
+fn verified_two_family_with(label: &str, terminals: &[&str]) -> Rig {
+    let rig = Rig::start(label, terminals);
     let stand_in = no_herdr_dir(&rig).join("herdr");
     std::fs::create_dir_all(no_herdr_dir(&rig)).unwrap();
     std::fs::write(&stand_in, "#!/bin/sh\nexit 1\n").unwrap();
@@ -1094,6 +1099,21 @@ fn verified_two_family(label: &str) -> Rig {
 fn two_family_in(rig: &Rig, herdr_socket: Option<&Path>, args: &[&str]) -> Ran {
     let mut command = rig.isolation.command(BIN);
     command.arg("--state-dir").arg(&rig.state).args(args);
+    two_family_run(rig, herdr_socket, command)
+}
+
+/// [`two_family_in`] with `args` exactly as given (any `--state-dir` is the caller's).
+fn two_family_with(rig: &Rig, herdr_socket: Option<&Path>, args: &[&str]) -> Ran {
+    let mut command = rig.isolation.command(BIN);
+    command.args(args);
+    two_family_run(rig, herdr_socket, command)
+}
+
+fn two_family_run(
+    rig: &Rig,
+    herdr_socket: Option<&Path>,
+    mut command: std::process::Command,
+) -> Ran {
     as_agent(&mut command, "claude", "s-t1");
     command
         .env("HC_TERMINAL_ID", "t1")
@@ -1246,23 +1266,56 @@ fn two_family_doctor_selects_the_core() {
 }
 
 // Pins `SetupEnv::from_process`: a verified two-family `setup` with no Herdr socket does not fail
-// on an unknown host endpoint.
+// on an unknown host endpoint, and the hook argv it writes names the core as the host.
 #[test]
 fn two_family_setup_does_not_need_a_herdr_endpoint() {
     let rig = verified_two_family("hcm-2f-setup");
-    let ran = two_family_in(&rig, None, &["setup", "claude", "--json"]);
+    let state = rig.state.to_string_lossy().into_owned();
+    // `--state-dir` follows the subcommand: a leading one is refused at parse time.
+    let ran = two_family_with(
+        &rig,
+        None,
+        &["setup", "claude", "--json", "--state-dir", &state],
+    );
+    assert_eq!(ran.code, Some(0), "{ran:?}");
     assert!(!ran.stderr.contains("host endpoint unknown"), "{ran:?}");
     assert!(!ran.stdout.contains("host_endpoint_error"), "{ran:?}");
+    let settings = std::fs::read_to_string(rig.isolation.home().join(".claude/settings.json"))
+        .unwrap_or_else(|e| panic!("settings written: {e}: {ran:?}"));
+    assert!(
+        settings.contains(&format!("'--host-endpoint' '{}'", rig.socket().display())),
+        "the hook argv names the core socket: {settings}"
+    );
 }
 
 // Pins `watch`'s marker prefix: no `--host-endpoint <core>` selector for a verified terminal.
 #[test]
 fn two_family_watch_marker_pins_no_core() {
-    let rig = verified_two_family("hcm-2f-watch");
+    let rig = verified_two_family_with("hcm-2f-watch", &["t1", "t2"]);
+    let hook = rig.session_start("t2", "s-t2");
+    assert_eq!(hook.code, Some(0), "{hook:?}");
+    let seat = rig.seat_on(rig.socket(), "t1");
     let socket = rig.socket().to_owned();
     let watch = rig.watch_in(&socket, Some("w9:p9"), "t1", "s-t1");
-    let line = watch.until("a marker", |_| true);
+    watch.until("connected", |v| {
+        v["kind"] == "status" && v["state"] == "connected"
+    });
+    let body = "x".repeat(herdr_threads::protocol::watch::WATCH_BODY_LIMIT_BYTES + 1);
+    let sent = rig.agent(
+        "t2",
+        "s-t2",
+        &["send", "--seat", &seat, "--body", &body],
+        None,
+    );
+    assert_eq!(sent.code, Some(0), "{sent:?}");
+    let id = sent_message(&sent);
+    let line = watch.until("a truncation marker", |v| v["truncated"] == true);
     let text = line.to_string();
+    assert!(text.contains(&id), "the line names the message: {text}");
+    assert!(
+        text.contains("truncated; next: ") && text.contains(" inbox"),
+        "the marker names the command: {text}"
+    );
     assert!(
         !text.contains(&format!("--host-endpoint {}", socket.display())),
         "{text}"
