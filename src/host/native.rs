@@ -1259,7 +1259,8 @@ impl NativeCli {
 /// when the connection or the credentials are unavailable.
 fn socket_peer_pid(socket: &std::path::Path) -> Option<u32> {
     use std::os::fd::AsRawFd;
-    let stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    let stream =
+        crate::host::probe::connect_until(socket, Instant::now() + Duration::from_secs(1)).ok()?;
     let fd = stream.as_raw_fd();
     #[cfg(target_os = "linux")]
     let pid = {

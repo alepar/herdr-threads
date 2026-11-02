@@ -43,6 +43,37 @@ use tokio::{
 pub const MAX_FRAME_BYTES: usize = MAX_WIRE_FRAME_BYTES - 4;
 pub const MAX_CONNECTIONS: usize = 32;
 const ORDINARY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a request may run when its handler declares a wait longer than
+/// [`ORDINARY_TIMEOUT`]: at least what the handler waits, so its typed answer is never cut off
+/// (`None`: the ordinary bound). Read before `validate`, so an oversized declared wait is
+/// clamped to the cap `validate` enforces.
+fn request_bound(command: &Command) -> Option<Duration> {
+    use crate::service::launch_gate::{GATE_REPLY_SLACK, GATE_SEAT_BUDGET_MS};
+    match command {
+        // `@MACHINE` resolution waits for another node and then for replication (spec 4.3).
+        Command::Sync(
+            crate::protocol::sync_admin::SyncCommand::ResolveAddress { .. }
+            | crate::protocol::sync_admin::SyncCommand::CheckRemoteSeat { .. }
+            | crate::protocol::sync_admin::SyncCommand::RemoteLaunch { .. },
+        ) => Some(Duration::from_millis(
+            crate::service::sync_admin::REMOTE_ADDRESS_DAEMON_BOUND_MS,
+        )),
+        // The handler waits `timeout_ms`, then answers.
+        Command::AuthorizeLaunchGate(request) => Some(
+            Duration::from_millis(u64::from(
+                request
+                    .timeout_ms
+                    .min(crate::protocol::handoff::LAUNCH_GATE_MAX_TIMEOUT_MS),
+            )) + GATE_REPLY_SLACK,
+        ),
+        // `Record` allocates the seat under its own budget.
+        Command::LocalLaunchGate(_) => {
+            Some(Duration::from_millis(GATE_SEAT_BUDGET_MS) + GATE_REPLY_SLACK)
+        }
+        _ => None,
+    }
+}
+
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(250);
 
 /// Count of live local-client connection tasks (ordinary, watch and service),
@@ -558,20 +589,9 @@ async fn serve_connection(
     }
     // `@MACHINE` resolution waits for another node and then for replication
     // (spec 4.3): its own bound, so its typed answer is never cut off.
-    let expires = if matches!(
-        request.command,
-        Command::Sync(
-            crate::protocol::sync_admin::SyncCommand::ResolveAddress { .. }
-                | crate::protocol::sync_admin::SyncCommand::CheckRemoteSeat { .. }
-                | crate::protocol::sync_admin::SyncCommand::RemoteLaunch { .. }
-        )
-    ) {
-        tokio::time::Instant::now()
-            + crate::protocol::time::external_bound(Duration::from_millis(
-                crate::service::sync_admin::REMOTE_ADDRESS_DAEMON_BOUND_MS,
-            ))
-    } else {
-        expires
+    let expires = match request_bound(&request.command) {
+        Some(bound) => tokio::time::Instant::now() + crate::protocol::time::external_bound(bound),
+        None => expires,
     };
     let automatic_response = crate::protocol::wire::automatic_response_request(&request.command);
     let is_search = matches!(request.command, Command::Search(_));

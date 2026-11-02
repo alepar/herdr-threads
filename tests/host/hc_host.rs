@@ -361,3 +361,115 @@ fn bootstrap_observer_refuses_a_changed_core() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::StaleHostObservation);
 }
+
+/// A monotonic origin an hour older than a fresh `SystemClock`'s: a host that read budgets on a
+/// private `SystemClock` instead of this one would see them as an hour away.
+struct OlderClock(std::time::Instant);
+impl crate::protocol::time::Clock for OlderClock {
+    fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+        crate::protocol::time::UtcMillis(0)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(3_600_000 + self.0.elapsed().as_millis() as u64)
+    }
+}
+
+/// A socket that accepts and never answers, until dropped.
+struct SilentServer {
+    path: std::path::PathBuf,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl SilentServer {
+    fn start() -> Self {
+        let path =
+            crate::test_support::scratch::temp_path(format!("hc-silent-{}", std::process::id()));
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => held.push(stream),
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        Self {
+            path,
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+impl Drop for SilentServer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[test]
+fn production_factory_measures_hc_budgets_on_its_clock() {
+    let server = SilentServer::start();
+    let clock: Arc<dyn crate::protocol::time::Clock> =
+        Arc::new(OlderClock(std::time::Instant::now()));
+    let factory = crate::app::production_host_factory(Arc::clone(&clock));
+    let locator = crate::protocol::ids::HostLocator::parse(server.path.to_string_lossy()).unwrap();
+    let (host, _observer) = (factory.build)(HostKind::Hc, &locator);
+    let budget = CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 200),
+        cancellation: Cancellation::default(),
+    };
+    let started = std::time::Instant::now();
+    let error = host.live_topology(&budget).unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "a 200 ms budget on the daemon clock took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn probe_connect_honours_its_budget_on_a_full_backlog() {
+    use crate::host::probe::{connect_until, probe_kind};
+    let path =
+        crate::test_support::scratch::temp_path(format!("hc-backlog-{}", std::process::id()));
+    // Never accepts: the accept backlog fills and a plain `connect` then blocks.
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    // `bind` listens with the system maximum; a backlog of one fills in a few connects.
+    // SAFETY: `listen(2)` on the listener's own descriptor takes no pointers.
+    assert_eq!(
+        unsafe { libc::listen(std::os::fd::AsRawFd::as_raw_fd(&listener), 1) },
+        0
+    );
+    let mut held = Vec::new();
+    loop {
+        match connect_until(&path, std::time::Instant::now() + Duration::from_millis(50)) {
+            Ok(stream) => held.push(stream),
+            Err(_) => break,
+        }
+        assert!(held.len() < 4096, "the backlog never filled");
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let probe_path = path.clone();
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let result = probe_kind(&probe_path, Duration::from_millis(300));
+        let _ = sender.send((result, started.elapsed()));
+    });
+    // The watchdog makes a regression (a blocked connect) a failure, not a hang.
+    let (result, elapsed) = receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("probe_kind blocked on a full backlog");
+    assert_eq!(result.unwrap_err().code, ErrorCode::HostUnavailable);
+    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+    drop(held);
+    let _ = std::fs::remove_file(&path);
+}

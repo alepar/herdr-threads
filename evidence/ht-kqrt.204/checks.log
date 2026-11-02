@@ -1,0 +1,11 @@
+heavy: slot 2 acquired 18:03:10
+    Blocking waiting for file lock on build directory
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.24s
+clippy 0
+heavy: slot 2 acquired 18:03:51
+defaults 0
+check-harness-neutral: ok — 0 violations, 84 allowlisted (to-migrate 0, frozen-wire 49, history 0, registration 35), 51 entries
+neutral 0
+check-wire-compat: ok — 0 violations, 0 stale, 416 fields, 24 variants, 268 baseline entries
+wire 0
+done

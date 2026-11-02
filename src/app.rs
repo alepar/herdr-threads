@@ -20,7 +20,7 @@ use crate::{
         dispatch::DomainService,
         fair_writer::FairWriter,
         host_evidence::HostEvidenceStatus,
-        host_sessions::{HostAttachPlan, HostSession, HostSessions, SessionDeps},
+        host_sessions::{HostAttachPlan, HostFactory, HostSession, HostSessions, SessionDeps},
         kicks::{CommitKicks, Lane},
         mod_channels::ModChannelRegistry,
         pacer::Pacer,
@@ -38,6 +38,41 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
+
+/// The production [`HostFactory`]: every host it builds measures call budgets on `clock`, the
+/// daemon's one clock, so a budget read on the daemon clock is never checked against another
+/// origin. `main` calls this; tests that exercise the wiring call it too.
+pub fn production_host_factory(clock: Arc<dyn Clock>) -> HostFactory {
+    HostFactory {
+        build: Arc::new(move |kind, locator| match kind {
+            crate::ports::HostKind::Hc => {
+                let client = crate::host::hc::HcClient::new(locator.as_path());
+                let host = Arc::new(crate::host::hc::HcHost::with_clock(
+                    client,
+                    Arc::clone(&clock),
+                ));
+                (
+                    host.clone(),
+                    Arc::new(crate::host::hc::HcBootstrapObserver::new(host)),
+                )
+            }
+            _ => {
+                let host = Arc::new(crate::host::native::NativeCli::new(
+                    locator.as_path().to_path_buf(),
+                    Arc::clone(&clock),
+                ));
+                (host.clone(), host)
+            }
+        }),
+        probe: Arc::new(|locator, budget| {
+            crate::host::probe::probe_kind(locator.as_path(), budget)
+        }),
+        exists: Arc::new(|path| {
+            use std::os::unix::fs::FileTypeExt;
+            std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket())
+        }),
+    }
+}
 
 /// UTC is used for durable deadlines; monotonic elapsed time is used for
 /// request budgets and wake spacing. Neither domain is derived from the other.

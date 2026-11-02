@@ -520,7 +520,10 @@ pub(crate) fn run_target(
                 .ok_or_else(|| super::invalid_request("invalid bootstrap harness"))?;
             let options =
                 super::launch::native_options_env(registry, harness)?.and_then(std::env::var_os);
-            let hc = crate::host::hc::HcHost::new(crate::host::hc::HcClient::new(&endpoint));
+            let hc = crate::host::hc::HcHost::with_clock(
+                crate::host::hc::HcClient::new(&endpoint),
+                Arc::clone(clock),
+            );
             let handled = try_run_automatic_new_with_ports(
                 parsed,
                 claim,

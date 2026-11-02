@@ -269,6 +269,9 @@ pub struct HcHost {
 }
 
 impl HcHost {
+    /// Test fixtures only: production passes the daemon's clock (`with_clock`), or a budget
+    /// read on it would be measured from another origin.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(client: HcClient) -> Self {
         Self::with_clock(client, Arc::new(crate::app::SystemClock::new()))
     }

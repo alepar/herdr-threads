@@ -939,12 +939,20 @@ impl Worker {
             crate::harness::registry::OccupantHarness::Agent(registry.agent(&plan.kind).map_err(
                 |_| ApiError::new(ErrorCode::UnsupportedHarness, "harness not registered"),
             )?);
+        // The seat's own budget: nothing above this call bounds it shorter.
+        let budget = CallBudget {
+            deadline: MonoInstant(
+                self.clock.monotonic_now().0 + super::launch_gate::GATE_SEAT_BUDGET_MS,
+            ),
+            cancellation: Cancellation::default(),
+        };
         super::launch_gate::allocate_seat(
             &super::launch_gate::GateSeat {
                 session: &self.session,
                 store: self.store.as_ref(),
                 writer: &self.writer,
                 clock: self.clock.as_ref(),
+                budget: &budget,
                 harness,
                 operation: crate::protocol::ids::OperationId::new(format!(
                     "peer-launch:{}",
