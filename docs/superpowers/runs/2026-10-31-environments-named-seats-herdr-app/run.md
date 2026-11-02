@@ -31,7 +31,7 @@ codeBuckets:
   parked: ht-kqrt.24, ht-kqrt.56, ht-kqrt.64, ht-kqrt.181
   stalled: false
   review: not ready (unreviewed: whole-epic coverage and omission provenance remain incomplete)
-  sweep: SWEEP DEFERRED (caller-owned)
+  sweep: SWEEP PASS 8910/8910 (54 skipped), 250 s, leak check clean @ 6ebe15eab
   slowness: inv-2 stopped recovery-held on the inv-1 merge-lane hold (cleared by the orchestrator after restoring the worktree); integration blocked by an orchestrator-removed task worktree (ht-kqrt.14; restored); disk-driven unplanned stop and relaunch at concurrency 3
   worktreesKept: task worktrees under .worktrees/ (process cleanup exit 4 on an uninspectable root sshd-session; reaped by the orchestrator loop)
   processSweep: stopped 0 · survived 0 · unknown 1 · kept 0 — unknown: pid 1709587/3080385 (root-owned, uninspectable; not run-owned)
@@ -114,7 +114,7 @@ scopeFilter-round-2: [Nit] src/cli/launch_new.rs:144 in-scope — Missing test f
 stepBackCode-round-3: local — decisions hold, no mechanical trigger (ledger degraded); recurring shapes are raw env reads after the site decision and a tmux gate that copies the native gate piecemeal; no redesign cycle spent
 roastCodeExit: capped
 baseAbsorbed: de5af6736 → f454aa5a2, 24 conflicted files (migration renumbered to 0013)
-sweepFix: sweep-1 @ 9296918db: 8903/8906, 3 failed (2 lane health, 1 test-defect); leaks clean; 341 s; fix pass inv-8
+sweepFix: sweep-1 @ 9296918db: 8903/8906, 3 failed (2 lane health, 1 test-defect); leaks clean; 341 s; fix pass inv-8; re-run @ d838b955b: 8909/8910, one regression (spawn-site scan) fixed by regression-only ht-kqrt.221 (applied by the orchestrator, two comment lines); final re-run @ 6ebe15eab 8910/8910
 finalReviewFixRound: inv-7 — site-decision, core-recovery, tmux-gate-parity (Must-fix correctness, skill exception); plus dormant-wake-hosts (merge residue), named-publish-cadence (user's SSD rule outranks the cap default), scan allowlist and test-edge-ordering (known-red pre-empted from the sweep); post-cap audit covers what lands
 userAccepted: launch gate exceptions .143 and .186 including the idle-launch limit (relayed by coordinator, mnSGz27x89j5); ht-8lem atomic remote handoff stays out of scope
 scope-filter: 19 in-scope · 3 punch-listed
