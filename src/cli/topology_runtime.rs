@@ -201,6 +201,21 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
     writer: &mut dyn Write,
 ) -> Result<bool, RunError> {
+    let CliAction::Retry(recovery) = &parsed.action else {
+        return Ok(false);
+    };
+    // Only these kinds read the namespace: a journaled `send` from a site with no Herdr needs none.
+    let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+    if !matches!(
+        original_kind(&original.semantic),
+        SemanticMutation::AutomaticDelivery(_)
+            | SemanticMutation::AutomaticHandoff(_)
+            | SemanticMutation::AutomaticBootstrap(_)
+            | SemanticMutation::HandoffBootstrap(_)
+            | SemanticMutation::HandoffDelivery(_)
+    ) {
+        return Ok(false);
+    }
     let ns = match target_endpoint(parsed, journal)? {
         Some(host_endpoint) => HandoffNamespace {
             instance: instance.to_string(),

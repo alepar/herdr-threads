@@ -445,6 +445,42 @@ fn recovery_hint_round_trip() {
     assert_eq!(rig.seat_of("alice"), alice, "the same seat");
 }
 
+// Kills: `retry` of a journaled non-topology intent that computes the Herdr namespace first, so
+// a Named site with no Herdr on its `PATH` is refused before the original is looked at.
+#[test]
+fn retry_of_a_journaled_intent_needs_no_herdr() {
+    use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
+    use herdr_threads::protocol::ids::{HostLocator, HostTargetId};
+    let rig = Rig::standalone("ns-retry");
+    rig.enroll("alice", "s-alice");
+    let herdr = rig.isolation.path("retry-herdr.sock");
+    let fake = herdr_threads::test_support::fake_herdr::FakeHerdr::start("ns", &herdr, &["w1:p3"]);
+    let node_dir = rig.state.join("node");
+    let instance = herdr_threads::node::json::read_hint(&node_dir.join("node.json"))
+        .expect("node hint")
+        .node_uuid
+        .to_string();
+    let journal = Journal::open(node_dir.join("intents")).unwrap();
+    let target = HostTargetId::new("w1:p3");
+    let item = journal
+        .record(
+            IntentScope::ServiceAllocation {
+                instance,
+                target: target.clone(),
+            },
+            SemanticMutation::ResolveSeat {
+                host: HostLocator::parse(herdr.to_string_lossy()).unwrap(),
+                target,
+            },
+            0,
+        )
+        .unwrap();
+    let ran = rig.agent("alice", "s-alice", &["retry", &item.recovery_ref()]);
+    let _ = &fake;
+    assert_eq!(ran.code, Some(0), "{ran:?}");
+    assert!(!ran.stderr.contains("Herdr"), "{ran:?}");
+}
+
 // Kills: a daemon that never idle-exits because the named host is attached (only a dialled host
 // or a wake-armed binding keeps it up), and an exit while a client is still connected.
 #[test]

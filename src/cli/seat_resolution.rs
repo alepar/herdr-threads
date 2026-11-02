@@ -442,7 +442,7 @@ where
                     instance,
                     client,
                     clock.as_ref(),
-                    &parsed.output,
+                    &parsed.herdr_output(),
                     parsed.caller_site.as_ref(),
                     entry.pane.clone(),
                     entry.host.clone(),
