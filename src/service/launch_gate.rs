@@ -36,13 +36,16 @@ use crate::{
         handoff::{AuthorizeLaunchGate, LaunchGateRefusal, LaunchGateReply},
         ids::{OperationId, SeatId},
         results::{ApiError, ErrorCode},
-        time::{CallBudget, Cancellation, Clock, MonoInstant},
+        time::{CallBudget, Clock, MonoInstant},
     },
 };
 
 /// Budget of the seat allocation of a gate-only launch (ms), under the gate shim's own wait
 /// (`launch_gate::GATE_TIMEOUT_MS`) so the shim is still waiting when the gate opens.
-const GATE_SEAT_BUDGET_MS: u64 = 6_000;
+pub const GATE_SEAT_BUDGET_MS: u64 = 6_000;
+/// How long the daemon's request bound outlasts a gate handler's declared wait, so its answer
+/// is written before the shim's own call gives up (`launch_gate::CALL_SLACK_MS`, 2 s).
+pub const GATE_REPLY_SLACK: Duration = Duration::from_secs(1);
 /// How often a stale host observation is retried within that budget.
 const GATE_SEAT_RETRY: Duration = Duration::from_millis(100);
 
@@ -166,6 +169,8 @@ pub struct GateSeat<'a> {
     pub store: &'a dyn StorePort,
     pub writer: &'a FairWriter,
     pub clock: &'a dyn Clock,
+    /// The request's budget: the allocation ends with it and stops when its caller is gone.
+    pub budget: &'a CallBudget,
     pub harness: OccupantHarness,
     pub operation: OperationId,
 }
@@ -176,8 +181,10 @@ pub struct GateSeat<'a> {
 /// pid or process record is an error: the gate never opens without its placeholder.
 pub fn allocate_seat(seat: &GateSeat<'_>, created: &CreatedTarget) -> Result<SeatId, ApiError> {
     let budget = CallBudget {
-        deadline: MonoInstant(seat.clock.monotonic_now().0 + GATE_SEAT_BUDGET_MS),
-        cancellation: Cancellation::default(),
+        deadline: MonoInstant(
+            (seat.clock.monotonic_now().0 + GATE_SEAT_BUDGET_MS).min(seat.budget.deadline.0),
+        ),
+        cancellation: seat.budget.cancellation.clone(),
     };
     let allocated = seat.session.identity().resolve(
         ResolveSeat {

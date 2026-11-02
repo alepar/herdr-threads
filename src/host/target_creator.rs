@@ -36,7 +36,7 @@ pub fn connect(
 ) -> Result<TargetCreator, ApiError> {
     match super::probe::probe_kind(endpoint, super::probe::PROBE_BUDGET)? {
         HostKind::Hc => {
-            let host = super::hc::HcHost::new(super::hc::HcClient::new(endpoint))
+            let host = super::hc::HcHost::with_clock(super::hc::HcClient::new(endpoint), clock)
                 .with_gate_argv(gate_argv);
             let witness = host.core_witness()?;
             Ok(TargetCreator {

@@ -4485,3 +4485,123 @@ async fn connection_exposes_peer_pid() {
     assert_eq!(peer.pid(), Some(std::process::id()));
     assert_eq!(peer.effective_uid(), client.peer_cred().unwrap().uid());
 }
+
+/// Records how long its request may run: `budget.deadline - clock.now` at the handler.
+struct BoundRecordingService(std::sync::Mutex<Option<Duration>>);
+impl LocalService for BoundRecordingService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
+    fn handle(
+        &self,
+        _: Command,
+        _: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let left = budget
+            .deadline
+            .0
+            .saturating_sub(TestClock.monotonic_now().0);
+        *self.0.lock().unwrap() = Some(Duration::from_millis(left));
+        Err(api_error(ErrorCode::Unsupported, "recorded"))
+    }
+}
+
+/// The time the handler of `command` is given, through `serve_connection` as the daemon runs it.
+async fn handler_bound(command: Command) -> Duration {
+    let (listener, path, root, instance) = guarded_listener();
+    let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+    let shutdown = Cancellation::default();
+    let service = Arc::new(BoundRecordingService(std::sync::Mutex::new(None)));
+    let server = tokio::spawn(serve(
+        listener,
+        instance_id(&instance),
+        service.clone(),
+        Arc::new(TestClock),
+        uid,
+        shutdown.clone(),
+    ));
+    let mut stream = UnixStream::connect(&path).await.unwrap();
+    let request = WireRequest {
+        version: PROTOCOL_VERSION,
+        request_id: "bound".into(),
+        expected_instance: instance_id(&instance).to_string(),
+        expected_boot: None,
+        output: None,
+        command,
+    };
+    write_frame(&mut stream, &serde_json::to_vec(&request).unwrap())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), read_frame(&mut stream))
+        .await
+        .unwrap()
+        .unwrap();
+    shutdown.cancel();
+    let _ = server.await;
+    let recorded = service.0.lock().unwrap().take();
+    std::fs::remove_file(path).ok();
+    std::fs::remove_dir_all(root).ok();
+    recorded.expect("the handler ran")
+}
+
+fn gate_request(timeout_ms: u32) -> crate::protocol::handoff::AuthorizeLaunchGate {
+    crate::protocol::handoff::AuthorizeLaunchGate {
+        compound: crate::protocol::ids::OperationId::new("compound"),
+        attempt: crate::protocol::handoff::BootstrapAttempt::new(1).unwrap(),
+        core_id: "core".into(),
+        terminal: "t1".into(),
+        timeout_ms,
+        socket: None,
+    }
+}
+
+#[tokio::test]
+async fn authorize_launch_gate_runs_under_its_declared_wait() {
+    let timeout_ms = crate::cli::launch_gate::GATE_TIMEOUT_MS;
+    let bound = handler_bound(Command::AuthorizeLaunchGate(Box::new(gate_request(
+        timeout_ms,
+    ))))
+    .await;
+    assert!(
+        bound >= Duration::from_millis(u64::from(timeout_ms)),
+        "the handler waits {timeout_ms} ms but is given {bound:?}"
+    );
+}
+
+#[tokio::test]
+async fn local_launch_gate_runs_under_its_seat_budget() {
+    let command = Command::LocalLaunchGate(Box::new(crate::protocol::handoff::LocalLaunchGate {
+        id: crate::protocol::ids::OperationId::new("gate-op"),
+        host: crate::protocol::ids::HostLocator::parse("/run/herdr/core.sock").unwrap(),
+        action: crate::protocol::handoff::LocalLaunchGateAction::Open,
+    }));
+    let bound = handler_bound(command).await;
+    assert!(
+        bound >= Duration::from_millis(crate::service::launch_gate::GATE_SEAT_BUDGET_MS),
+        "the seat allocation takes up to its budget but is given {bound:?}"
+    );
+}
+
+#[tokio::test]
+async fn ordinary_command_keeps_the_ordinary_bound() {
+    let bound = handler_bound(Command::Health).await;
+    let ordinary = crate::protocol::time::external_bound(ORDINARY_TIMEOUT);
+    assert!(bound <= ordinary, "{bound:?} exceeds {ordinary:?}");
+    assert!(bound > ordinary / 2, "{bound:?} is far under {ordinary:?}");
+}
+
+#[test]
+fn oversized_gate_timeout_keeps_the_cap() {
+    let cap = Duration::from_millis(u64::from(
+        crate::protocol::handoff::LAUNCH_GATE_MAX_TIMEOUT_MS,
+    )) + crate::service::launch_gate::GATE_REPLY_SLACK;
+    let bound = request_bound(&Command::AuthorizeLaunchGate(Box::new(gate_request(
+        u32::MAX,
+    ))))
+    .unwrap();
+    assert_eq!(bound, cap);
+}

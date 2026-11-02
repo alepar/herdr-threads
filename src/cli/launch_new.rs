@@ -224,7 +224,10 @@ fn on_core<W: Write>(
     let handle = LaunchHandle::probed(&target.endpoint, Arc::clone(clock), &call_budget())?;
     let placement = match target.placement {
         Placement::NewTab { space } => {
-            let hc = crate::host::hc::HcHost::new(crate::host::hc::HcClient::new(&target.endpoint));
+            let hc = crate::host::hc::HcHost::with_clock(
+                crate::host::hc::HcClient::new(&target.endpoint),
+                Arc::clone(clock),
+            );
             let topology = hc.live_topology(&budget(clock.as_ref()))?;
             Placement::NewTab {
                 space: super::topology_handoff::select_space(&topology, space.as_str())?,
@@ -257,14 +260,28 @@ fn on_core<W: Write>(
             .to_str()
             .ok_or_else(|| invalid_request("the herdr-core socket path is not UTF-8"))?,
     )?;
-    let gate = |action| {
+    // `Record` allocates the seat under the daemon's seat budget, which outlives a plain call.
+    let record_budget = || {
+        let mut budget = call_budget();
+        budget.deadline = crate::protocol::time::MonoInstant(
+            budget.deadline.0
+                + crate::service::launch_gate::GATE_SEAT_BUDGET_MS
+                + crate::service::launch_gate::GATE_REPLY_SLACK.as_millis() as u64,
+        );
+        budget
+    };
+    let gate = |action: LocalLaunchGateAction| {
+        let budget = match action {
+            LocalLaunchGateAction::Record { .. } => record_budget(),
+            LocalLaunchGateAction::Open => call_budget(),
+        };
         client.call(
             Command::LocalLaunchGate(Box::new(LocalLaunchGate {
                 id: id.clone(),
                 host: host.clone(),
                 action,
             })),
-            &call_budget(),
+            &budget,
         )
     };
     gate(LocalLaunchGateAction::Open)?;

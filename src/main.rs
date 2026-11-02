@@ -1,15 +1,12 @@
 use herdr_threads::{
-    app::{SystemClock, run_elected_guarded},
+    app::{SystemClock, production_host_factory, run_elected_guarded},
     cli,
     daemon::paths::{NodePaths, RuntimeContext},
     protocol::{
         ids::HostLocator,
         time::{Cancellation, Clock},
     },
-    service::{
-        config::ServiceConfig,
-        host_sessions::{HostAttachPlan, HostFactory},
-    },
+    service::{config::ServiceConfig, host_sessions::HostAttachPlan},
 };
 use std::{
     ffi::OsString,
@@ -63,35 +60,9 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
         ),
         None => None,
     };
-    let factory_clock = Arc::clone(&clock);
     let plan = HostAttachPlan {
         hint,
-        factory: HostFactory {
-            build: Arc::new(move |kind, locator| match kind {
-                herdr_threads::ports::HostKind::Hc => {
-                    let client = herdr_threads::host::hc::HcClient::new(locator.as_path());
-                    let host = Arc::new(herdr_threads::host::hc::HcHost::new(client));
-                    (
-                        host.clone(),
-                        Arc::new(herdr_threads::host::hc::HcBootstrapObserver::new(host)),
-                    )
-                }
-                _ => {
-                    let host = Arc::new(herdr_threads::host::native::NativeCli::new(
-                        locator.as_path().to_path_buf(),
-                        Arc::clone(&factory_clock),
-                    ));
-                    (host.clone(), host)
-                }
-            }),
-            probe: Arc::new(|locator, budget| {
-                herdr_threads::host::probe::probe_kind(locator.as_path(), budget)
-            }),
-            exists: Arc::new(|path| {
-                use std::os::unix::fs::FileTypeExt;
-                std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket())
-            }),
-        },
+        factory: production_host_factory(Arc::clone(&clock)),
     };
     runtime.block_on(run_elected_guarded(
         &paths,

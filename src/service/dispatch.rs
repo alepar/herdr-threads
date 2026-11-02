@@ -857,6 +857,7 @@ impl DomainService {
                         store: self.store.as_ref(),
                         writer,
                         clock: self.clock.as_ref(),
+                        budget,
                         harness: *harness,
                         operation: crate::protocol::ids::OperationId::new(format!(
                             "local-launch:{}",
