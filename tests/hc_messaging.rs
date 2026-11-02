@@ -214,10 +214,7 @@ impl Rig {
             command
                 .env("HERDR_PANE_ID", pane)
                 .env("HERDR_ENV", "1")
-                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"))
-                // The CLI's two-family guard finds the daemon from the environment, not from
-                // `--state-dir`.
-                .env("HERDR_PLUGIN_STATE_DIR", &self.state);
+                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"));
         }
         if stdin.is_some() {
             command.stdin(Stdio::piped());
@@ -264,8 +261,7 @@ impl Rig {
             command
                 .env("HERDR_PANE_ID", pane)
                 .env("HERDR_ENV", "1")
-                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"))
-                .env("HERDR_PLUGIN_STATE_DIR", &self.state);
+                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"));
         }
         run_with_stdin(command, None)
     }
@@ -289,8 +285,7 @@ impl Rig {
             command
                 .env("HERDR_PANE_ID", pane)
                 .env("HERDR_ENV", "1")
-                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"))
-                .env("HERDR_PLUGIN_STATE_DIR", &self.state);
+                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"));
         }
         command
             .stdin(Stdio::null())
@@ -1066,4 +1061,191 @@ fn two_cores_watch_continuity_stays_on_its_core() {
     assert_eq!(seen_a["body"], "for a1", "{seen_a}");
     let seen_b = watch_b.until("b1's message", |v| v["body"].is_string());
     assert_eq!(seen_b["body"], "for b1", "{seen_b}");
+}
+
+// ---- two-family callers: the site is decided after the routing flags ----
+
+/// A rig whose terminal `t1` is a verified ancestor (this process), so a caller naming both `t1`
+/// and a Herdr pane acts as the terminal.
+fn verified_two_family(label: &str) -> Rig {
+    let rig = Rig::start(label, &["t1"]);
+    rig.fake.set_pid("t1", Some(std::process::id()));
+    let socket = rig.socket().to_owned();
+    let hook = rig.session_start_in(&socket, Some("w9:p9"), "t1", "s-t1");
+    assert_eq!(hook.code, Some(0), "{hook:?}");
+    rig
+}
+
+/// `args` as the verified two-family agent of `s-t1`, with `HERDR_SOCKET_PATH` at
+/// `herdr_socket` or left out; the daemon is reached through `--state-dir` alone.
+fn two_family_in(rig: &Rig, herdr_socket: Option<&Path>, args: &[&str]) -> Ran {
+    let mut command = rig.isolation.command(BIN);
+    command.arg("--state-dir").arg(&rig.state).args(args);
+    as_agent(&mut command, "claude", "s-t1");
+    command
+        .env("HC_TERMINAL_ID", "t1")
+        .env("HC_TERMINAL_SOCKET", rig.socket())
+        .env("HERDR_PANE_ID", "w9:p9")
+        .env("HERDR_ENV", "1");
+    match herdr_socket {
+        Some(socket) => command.env("HERDR_SOCKET_PATH", socket),
+        None => command.env_remove("HERDR_SOCKET_PATH"),
+    };
+    finish(command)
+}
+
+// Kills: a pane form, `launch` or `handoff --pane` / `--existing` of a verified two-family
+// terminal that takes its core socket for the Herdr server (the endpoint read from the raw
+// environment), instead of refusing with M21 when no Herdr host is reachable.
+#[test]
+fn two_family_pane_forms_never_dial_the_core() {
+    let rig = verified_two_family("hcm-2f-pane-forms");
+    let created = two_family_in(
+        &rig,
+        None,
+        &["thread", "create", "--name", "ops", "--topic", "ops"],
+    );
+    assert_eq!(created.code, Some(0), "{created:?}");
+    let forms: [&[&str]; 5] = [
+        &["seat", "resolve", "--pane", "w1:p3"],
+        &["invite", "ops", "--pane", "w1:p3"],
+        &["launch", "--pane", "w1:p3", "--kind", "codex"],
+        &["handoff", "--pane", "w1:p3", "--kind", "claude", "--", "x"],
+        &["handoff", "--existing", "--pane", "w1:p3", "--", "x"],
+    ];
+    for args in forms {
+        let ran = two_family_in(&rig, None, args);
+        assert_ne!(ran.code, Some(0), "{args:?}: {ran:?}");
+        // M21, or (the handoff forms) the Herdr lookup's own failure: either way no Herdr host
+        // was found and the core was not taken for one.
+        assert!(
+            ran.stderr
+                .contains("has no reachable Herdr host; pass --host-endpoint")
+                || ran.stderr.contains("`herdr status server --json` failed"),
+            "{args:?}: {ran:?}"
+        );
+        assert!(
+            !ran.stderr.contains("no such terminal"),
+            "{args:?}: {ran:?}"
+        );
+        assert!(
+            !ran.stderr.contains("neither is an ancestor"),
+            "{args:?}: {ran:?}"
+        );
+        assert_core_never_dialled_as_herdr(&rig);
+    }
+}
+
+// Kills: the endpoint of a verified two-family terminal read as a raw pane environment (the core
+// socket selected as the Herdr server) instead of the Herdr server `HERDR_SOCKET_PATH` names.
+#[test]
+fn two_family_pane_form_reaches_the_herdr_server() {
+    let rig = verified_two_family("hcm-2f-herdr");
+    let herdr = rig.isolation.path("herdr.sock");
+    let fake = herdr_threads::test_support::fake_herdr::FakeHerdr::start("hcm", &herdr, &["w1:p3"]);
+    let ran = two_family_in(&rig, Some(&herdr), &["seat", "resolve", "--pane", "w1:p3"]);
+    let _ = &fake;
+    assert!(!ran.stderr.contains("no such terminal"), "{ran:?}");
+    assert!(!ran.stderr.contains("neither is an ancestor"), "{ran:?}");
+    assert_core_never_dialled_as_herdr(&rig);
+    let on_herdr: i64 = rig
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
+             WHERE s.target_id='w1:p3' AND h.endpoint=?1",
+            [herdr.to_string_lossy()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(on_herdr, 1, "a seat for w1:p3 on the Herdr server: {ran:?}");
+}
+
+// Kills: `me init` of a verified two-family terminal that reads the pane agent through its core.
+#[test]
+fn two_family_me_init_never_dials_the_core() {
+    // No agent seat on the terminal: `me init` would refuse to replace one.
+    let rig = Rig::start("hcm-2f-me-init", &["t1"]);
+    rig.fake.set_pid("t1", Some(std::process::id()));
+    let socket = rig.socket().to_owned();
+    let ran = rig.person_in(&socket, Some("w9:p9"), "t1", &["human", "me", "init"]);
+    assert_eq!(ran.code, Some(0), "{ran:?}");
+    assert_core_never_dialled_as_herdr(&rig);
+}
+
+// Kills: a guard that finds its daemon from the environment instead of the routing flags.
+#[test]
+fn two_family_guard_asks_the_flags_daemon() {
+    let rig = verified_two_family("hcm-2f-guard");
+    let elsewhere = rig.isolation.path("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let mut command = rig.isolation.command(BIN);
+    command.arg("--state-dir").arg(&rig.state).arg("inbox");
+    as_agent(&mut command, "claude", "s-t1");
+    command
+        .env("HC_TERMINAL_ID", "t1")
+        .env("HC_TERMINAL_SOCKET", rig.socket())
+        .env("HERDR_PANE_ID", "w9:p9")
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PLUGIN_STATE_DIR", &elsewhere);
+    let ran = finish(command);
+    assert_eq!(ran.code, Some(0), "{ran:?}");
+    assert!(!ran.stderr.contains("neither is an ancestor"), "{ran:?}");
+}
+
+// Kills: a guard that runs before the parse, so a usage error pays the daemon call and prints M4.
+#[test]
+fn usage_error_never_asks_the_daemon() {
+    let isolation = TestIsolation::new("hcm-2f-usage");
+    let mut command = isolation.command(BIN);
+    command
+        .arg("--no-such-flag")
+        .env("HC_TERMINAL_ID", "t1")
+        .env("HC_TERMINAL_SOCKET", isolation.path("core.sock"))
+        .env("HERDR_PANE_ID", "w9:p9")
+        .env("HERDR_ENV", "1");
+    let ran = finish(command);
+    assert_ne!(ran.code, Some(0), "{ran:?}");
+    assert!(!ran.stderr.contains("neither is an ancestor"), "{ran:?}");
+}
+
+// Pins `report_base`: a verified two-family `doctor` names the core as its host.
+#[test]
+fn two_family_doctor_selects_the_core() {
+    let rig = verified_two_family("hcm-2f-doctor");
+    let ran = two_family_in(&rig, None, &["doctor", "--json"]);
+    let report: serde_json::Value =
+        serde_json::from_str(&ran.stdout).unwrap_or_else(|e| panic!("{e}: {ran:?}"));
+    assert_eq!(
+        report["doctor"]["context"]["host_endpoint"],
+        rig.socket().to_string_lossy().as_ref(),
+        "{report}"
+    );
+    assert_eq!(
+        report["doctor"]["context"]["source"]["host_endpoint"], "the terminal site core socket",
+        "{report}"
+    );
+}
+
+// Pins `SetupEnv::from_process`: a verified two-family `setup` with no Herdr socket does not fail
+// on an unknown host endpoint.
+#[test]
+fn two_family_setup_does_not_need_a_herdr_endpoint() {
+    let rig = verified_two_family("hcm-2f-setup");
+    let ran = two_family_in(&rig, None, &["setup", "claude", "--json"]);
+    assert!(!ran.stderr.contains("host endpoint unknown"), "{ran:?}");
+    assert!(!ran.stdout.contains("host_endpoint_error"), "{ran:?}");
+}
+
+// Pins `watch`'s marker prefix: no `--host-endpoint <core>` selector for a verified terminal.
+#[test]
+fn two_family_watch_marker_pins_no_core() {
+    let rig = verified_two_family("hcm-2f-watch");
+    let socket = rig.socket().to_owned();
+    let watch = rig.watch_in(&socket, Some("w9:p9"), "t1", "s-t1");
+    let line = watch.until("a marker", |_| true);
+    let text = line.to_string();
+    assert!(
+        !text.contains(&format!("--host-endpoint {}", socket.display())),
+        "{text}"
+    );
 }

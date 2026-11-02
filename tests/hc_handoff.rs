@@ -1563,6 +1563,39 @@ mod launch_new {
         assert_routed(&ran);
     }
 
+    // Pins `runtime()`: a verified two-family terminal (its core an ancestor, a Herdr pane in
+    // its environment, no Herdr socket) hands off onto its core; the context resolves as the
+    // terminal site, not as a pane that needs a Herdr server.
+    #[test]
+    fn two_family_terminal_hands_off_onto_its_core() {
+        let rig = LaunchRig::start("handoff-two-family");
+        rig.fake.set_pid("t1", Some(std::process::id()));
+        rig.fake
+            .set_labels("t1", &[("herdr.space", "w1"), ("herdr.tab", "x")]);
+        rig.enroll("sess-a");
+        let mut command = rig.command(&[
+            "--json",
+            "handoff",
+            "--new-tab",
+            "worker",
+            "--space",
+            "w1",
+            "--kind",
+            "claude",
+            "--",
+            "do the work",
+        ]);
+        herdr_threads::test_support::isolation::as_agent(&mut command, "claude", "sess-a");
+        command
+            .env("HC_TERMINAL_ID", "t1")
+            .env("HC_TERMINAL_SOCKET", rig.fake.socket())
+            .env("HERDR_PANE_ID", "w9:p9")
+            .env("HERDR_ENV", "1")
+            .env_remove("HERDR_SOCKET_PATH");
+        let ran = rig.finish(command);
+        assert_eq!(ran.code, Some(0), "{}{}", ran.stdout, ran.stderr);
+    }
+
     #[test]
     fn launch_new_terminal_runs_the_harness_through_the_gate() {
         let rig = LaunchRig::start("launch-new-terminal");

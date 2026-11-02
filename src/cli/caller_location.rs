@@ -3,10 +3,12 @@
 //! Pattern: a value type with closed enums (`CallerEnv` -> `Located` ->
 //! `CallerSite`), built once per CLI or hook invocation and immutable. `from_process` reads
 //! the process environment and nothing else: a two-family caller whose terminal the daemon
-//! verified is decided once at the entry point (`run`, `run_admitted_hook_since`), which swaps
-//! the env with `verified_terminal()` and hands the resulting site (or `HookEnv`) to every later
-//! use. Readers of the name, tmux or readonly variables may keep `from_process()`: dropping
-//! `HERDR_PANE_ID` changes none of them.
+//! verified is decided once at the entry point (`run`, `run_admitted_hook_since`), after the
+//! routing flags (`--state-dir`, `--host-endpoint`) are known and against the daemon the command
+//! will use. It swaps the env with `verified_terminal()` and hands the resulting site (or
+//! `HookEnv`) to every later use (`CallerEnv::for_site`, `InstanceInputs::for_site`). Readers of
+//! the name, tmux or readonly variables keep `from_process()`: dropping `HERDR_PANE_ID` changes
+//! none of them.
 //!
 //! Owns: reading and empty-filtering the caller-location variables (the names
 //! come from each host module's env consts, never from a literal here), the
@@ -141,6 +143,16 @@ impl CallerEnv {
     pub fn verified_terminal(mut self) -> Self {
         self.vars.remove(native::ENV_PANE_ID);
         self
+    }
+
+    /// This process's environment as the entry point decided it: a verified terminal reads as
+    /// that lone site. Readers of the name, tmux or readonly variables keep `from_process()`.
+    pub fn for_site(site: Option<&CallerLocator>) -> Self {
+        let env = Self::from_process();
+        match site {
+            Some(CallerLocator::Terminal { .. }) => env.verified_terminal(),
+            _ => env,
+        }
     }
 
     pub fn from_process() -> Self {

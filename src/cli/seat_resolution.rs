@@ -443,6 +443,7 @@ where
                     client,
                     clock.as_ref(),
                     &parsed.output,
+                    parsed.caller_site.as_ref(),
                     entry.pane.clone(),
                     entry.host.clone(),
                 )?;

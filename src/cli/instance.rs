@@ -82,15 +82,7 @@ fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
 }
 
 impl InstanceInputs {
-    pub fn from_process(state_flag: Option<PathBuf>, host_flag: Option<PathBuf>) -> Self {
-        Self::from_caller(
-            state_flag,
-            host_flag,
-            &super::caller_location::CallerEnv::from_process(),
-        )
-    }
-
-    /// [`Self::from_process`] over a caller environment the entry point already read.
+    /// The inputs over a caller environment the entry point already read.
     pub(crate) fn from_caller(
         state_flag: Option<PathBuf>,
         host_flag: Option<PathBuf>,
@@ -116,15 +108,19 @@ impl InstanceInputs {
         }
     }
 
-    /// [`Self::from_process`] as the caller site the entry point decided: a verified terminal of
-    /// a two-family caller reads as that lone Terminal site. `None` keeps the environment's own
-    /// reading.
-    pub(crate) fn for_site(
+    /// This process's inputs as the site the entry point decided. `None` is no site: a Pane
+    /// caller, `peer --stdio`, or the guard before it decides, where the environment's own
+    /// reading stands.
+    pub fn for_site(
         state_flag: Option<PathBuf>,
         host_flag: Option<PathBuf>,
         site: Option<&super::caller_location::CallerLocator>,
     ) -> Self {
-        let mut inputs = Self::from_process(state_flag, host_flag);
+        let mut inputs = Self::from_caller(
+            state_flag,
+            host_flag,
+            &super::caller_location::CallerEnv::from_process(),
+        );
         if let Some(site) = site {
             inputs.non_pane_site = true;
             inputs.site_host = site.site().claim_host_locator().map(PathBuf::from);

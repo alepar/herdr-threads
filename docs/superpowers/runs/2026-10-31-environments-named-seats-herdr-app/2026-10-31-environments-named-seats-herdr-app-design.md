@@ -1700,3 +1700,14 @@ Step 8 keeps one consequence: a detection read of `Unreadable` makes Claude's `s
 uncaptured placeholder is refused as `screen not recognised` before the styled read could vouch for it, where Herdr's
 status answers for the pane. The refusal retries on the ladder as `wake=unreadable`. This is today's behaviour, not a new
 limit; letting a styled `Empty` override `None` would also pass a recognizer-less harness through that arm.
+
+### 2026-11-01: the caller site is decided after the routing flags (ht-kqrt.212)
+
+A verified two-family terminal took its core socket for the Herdr server: the endpoint reads
+(`herdr_endpoint_io`, `pane_agent`, the watch marker prefix, `run_legacy_purge`) rebuilt their inputs from the raw
+environment, where the pane id still reads `Ambiguous`, so pane forms, `launch` and `handoff --pane` or `--existing`
+failed on a reachable Herdr. `run` now parses first, then asks the guard with the routing flags' daemon, then decides
+the site once. `InstanceInputs::from_process` is gone: `InstanceInputs::for_site` is the one process constructor and
+every caller names the decided site (`None` only for the guard and `peer --stdio`); `CallerEnv::for_site` reads a
+verified terminal as its lone site. A direct send's `recipient_host` drops the claim-host pin on a non-Pane site so a
+recipient pane's server is never the core. `--help` and usage errors no longer pay the guard's daemon call or print M4.

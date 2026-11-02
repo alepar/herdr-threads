@@ -193,8 +193,9 @@ pub(crate) fn run_me_init<W: Write>(
     // effort; the daemon refuses a person's check-in over an agent binding).
     // `--operator` is the local account's explicit override.
     if !operator
-        && let Some(evidence) =
-            agent_evidence(std::env::vars(), || pane_agent(context, clock, &pane))
+        && let Some(evidence) = agent_evidence(std::env::vars(), || {
+            pane_agent(context, clock, parsed.caller_site.as_ref(), &pane)
+        })
     {
         return Err(agent_evidence_refusal(pane.as_str(), &evidence));
     }

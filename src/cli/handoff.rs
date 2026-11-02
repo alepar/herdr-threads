@@ -2441,7 +2441,11 @@ pub(crate) fn run<W: Write>(
             parsed.caller_site.as_ref(),
         ))?;
     env.state_dir = Some(runtime.state_dir.clone());
-    let claim_host = super::topology_runtime::herdr_endpoint(&runtime, &parsed.output)?;
+    let claim_host = super::topology_runtime::herdr_endpoint(
+        &runtime,
+        &parsed.output,
+        parsed.caller_site.as_ref(),
+    )?;
     env.host_endpoint = Some(claim_host.clone());
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(runtime.state_dir.display().to_string());
