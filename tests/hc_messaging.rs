@@ -771,6 +771,64 @@ done
     assert_eq!(named, 0, "no named seat t2");
 }
 
+/// The core's own methods; any other request on its socket is a Herdr one.
+const HC_METHODS: &[&str] = &[
+    "hello",
+    "server.status",
+    "terminal.get",
+    "doc.get",
+    "events.subscribe",
+    "terminal.run",
+];
+
+fn assert_core_never_dialled_as_herdr(rig: &Rig) {
+    let herdr: Vec<String> = rig
+        .fake
+        .calls()
+        .into_iter()
+        .map(|call| call.method)
+        .filter(|method| !HC_METHODS.contains(&method.as_str()))
+        .collect();
+    assert!(
+        herdr.is_empty(),
+        "Herdr methods sent to the core: {herdr:?}"
+    );
+}
+
+// Kills: a Terminal site's pane form dialling its core socket as a Herdr server, or sending
+// ResolveSeat for a Herdr pane at the core, instead of refusing with M21.
+#[test]
+fn terminal_site_pane_form_never_dials_the_core() {
+    let rig = Rig::start("hcm-pane-form", &["t1"]);
+    assert_eq!(rig.session_start("t1", "s-t1").code, Some(0));
+    let ran = rig.agent("t1", "s-t1", &["seat", "resolve", "--pane", "w1:p3"], None);
+    assert_ne!(ran.code, Some(0), "{ran:?}");
+    assert!(
+        ran.stderr
+            .contains("pane w1:p3 has no reachable Herdr host; pass --host-endpoint"),
+        "{ran:?}"
+    );
+    assert_core_never_dialled_as_herdr(&rig);
+}
+
+// Kills: `human me init` from a Terminal site reading the pane agent through its core socket
+// as a Herdr server.
+#[test]
+fn terminal_me_init_never_dials_the_core() {
+    let rig = Rig::start("hcm-me-init", &["t1"]);
+    let mut command = rig.isolation.command(BIN);
+    command
+        .arg("human")
+        .arg("--state-dir")
+        .arg(&rig.state)
+        .args(["me", "init"])
+        .env("HC_TERMINAL_ID", "t1")
+        .env("HC_TERMINAL_SOCKET", rig.socket());
+    let ran = finish(command);
+    assert_eq!(ran.code, Some(0), "{ran:?}");
+    assert_core_never_dialled_as_herdr(&rig);
+}
+
 /// A daemon that advertises only the Named-site capability and records what it is sent.
 struct NamedOnlyDaemon {
     sent: std::sync::Mutex<usize>,

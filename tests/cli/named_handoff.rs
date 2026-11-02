@@ -146,32 +146,34 @@ fn named_recovery_hint_round_trip() {
     );
 }
 
-// Kills: resolving the Herdr endpoint eagerly (a Pane caller paying the `herdr` query), a
-// named-host claim path taken as a Herdr server, and a named caller left with no endpoint.
+// Kills: a non-Pane site's claim host (the named locator, or a core socket) taken as a Herdr
+// server, a Pane caller's endpoint changed by the lookup, and a non-Pane site left with no endpoint.
 #[test]
-fn handoff_from_named_seat_resolves_herdr_endpoint_lazily() {
-    let calls = std::cell::Cell::new(0);
-    let lazy = || {
-        calls.set(calls.get() + 1);
-        Ok(std::path::PathBuf::from("/run/herdr-test/herdr.sock"))
+fn handoff_from_a_non_pane_site_resolves_herdr_endpoint_lazily() {
+    use crate::cli::instance::InstanceInputs;
+    let site = |host: &str| InstanceInputs {
+        site_host: Some(host.into()),
+        non_pane_site: true,
+        host_flag: Some("/run/herdr-test/herdr.sock".into()),
+        ..InstanceInputs::default()
     };
-    let pane = herdr_endpoint(Some(std::path::Path::new("/run/herdr/herdr.sock")), lazy).unwrap();
+    let pane = InstanceInputs::default()
+        .herdr_endpoint(Some(std::path::Path::new("/run/herdr/herdr.sock")))
+        .unwrap();
     assert_eq!(pane, std::path::Path::new("/run/herdr/herdr.sock"));
-    assert_eq!(
-        calls.get(),
-        0,
-        "a pane caller's endpoint is never looked up"
-    );
-    for none in [None, Some(std::path::Path::new(NAMED_HOST_LOCATOR))] {
-        let host = herdr_endpoint(none, lazy).unwrap();
-        assert_eq!(host, std::path::Path::new("/run/herdr-test/herdr.sock"));
+    for claim in [NAMED_HOST_LOCATOR, "/run/hc/core.sock"] {
+        let host = site(claim).herdr_endpoint(Some(std::path::Path::new(claim)));
+        assert_eq!(
+            host.unwrap(),
+            std::path::Path::new("/run/herdr-test/herdr.sock"),
+            "{claim}"
+        );
     }
-    assert_eq!(calls.get(), 2);
 }
 
-// Kills: the topology runtime (`handoff --existing`, recover, retry) taking a named caller's
-// selected host, the reserved locator, as the Herdr server it dials, and a pane caller's
-// endpoint changed by the lazy lookup.
+// Kills: a pane caller's endpoint changed by the lazy lookup. The non-Pane half (the selected host
+// ignored, the endpoint looked up) is `handoff_from_a_non_pane_site_resolves_herdr_endpoint_lazily`;
+// the process environment of this in-crate test carries no site.
 #[test]
 fn named_existing_handoff_uses_the_lazy_endpoint() {
     use crate::{cli::topology_runtime::herdr_endpoint, daemon::paths::RuntimeContext};
@@ -184,9 +186,4 @@ fn named_existing_handoff_uses_the_lazy_endpoint() {
     output.context.host = Some("/run/herdr-test/herdr.sock".into());
     let pane = herdr_endpoint(&context(base.join("herdr.sock")), &output).unwrap();
     assert_eq!(pane, base.join("herdr.sock"));
-    // The named caller's locator is never the endpoint: it is resolved from the environment (or
-    // reported as unresolvable), as `handoff::run` does.
-    if let Ok(endpoint) = herdr_endpoint(&context(NAMED_HOST_LOCATOR.into()), &output) {
-        assert_ne!(endpoint, std::path::Path::new(NAMED_HOST_LOCATOR));
-    }
 }

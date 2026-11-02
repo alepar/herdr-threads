@@ -774,8 +774,9 @@ impl MutationSpec {
                 | Self::FreshSeat(_)
                 | Self::Invite { operator: true, .. }
         );
-        // The target-bearing commands carry the caller's Herdr server next to their target; they
-        // need no claim of their own, so the invocation's claim supplies it.
+        // The target-bearing commands carry the claim's host next to their target and need no
+        // claim of their own. For a Pane caller that is its Herdr server; a non-Pane site's claim
+        // host is never one, so its pane forms are built by `recipient_host` instead.
         let host = claim.as_ref().map(|claim| claim.host.clone());
         let claim = if needs_claim {
             Some(claim.ok_or_else(|| invalid("native caller context required"))?)

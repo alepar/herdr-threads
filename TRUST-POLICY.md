@@ -631,7 +631,12 @@ model open work, and summary closure never changes receipt state or installs glo
   Herdr endpoint, resolved at that call only, as the namespace host: the seat acts through the named host,
   the launch runs on the namespace's host, and neither is inferred from the other. A claim may differ from
   the namespace host only when it sits at the reserved locator (`HostLocator::fronts_namespace`); every other
-  claim must still equal it. The recipient's seat is resolved on the Herdr host.
+  claim must still equal it. The recipient's seat is resolved on the Herdr host. The claim host identifies the
+  caller and is never dialled or sent as a Herdr server: every path that addresses a Herdr server or pane from a
+  non-Pane site (a named seat's pane forms, `launch`, `launch --new-tab`, handoff, invite and
+  `seat resolve --pane`) takes the endpoint from the one shared point (`InstanceInputs::herdr_endpoint`), which
+  ignores a non-Pane site's selected host; a lone Terminal site's claim host is a core socket, so its `me init`
+  reads no pane agent. With no Herdr host reachable the command refuses with M21 naming the pane.
 - *Inherited-name refusal (named seats, D1, SA2, N4-inherit)*: a named resolve whose caller also carries
   a Herdr pane (`ResolveSeat.locator_hint`, the pane id beside `HERDR_THREADS_SEAT_NAME`) is checked
   against the environment of the server that owns the pane: the daemon reads the pid the host answers

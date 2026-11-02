@@ -492,7 +492,10 @@ retirement on heuristics.
 - Pane-form allocation of a pane whose current named binding hinted that pane is refused with
   M10 (SA9).
 - Handoff into a named seat is refused by the port answer with M11. Handoff out of a named seat into a Herdr pane
-  works when a Herdr host is reachable: the Herdr endpoint resolves lazily for non-Pane sites (SA1).
+  works when a Herdr host is reachable: the Herdr endpoint resolves lazily for non-Pane sites (SA1). The same shared
+  point serves every other path that addresses a Herdr server from a non-Pane site (launch, `launch --new-tab`,
+  invite and `seat resolve --pane`, `me init`'s pane read): the claim host (the reserved locator, or a core socket)
+  is never dialled or sent as a Herdr server, and with no Herdr host reachable the pane form is refused with M21.
 - `thread show`, delivery `from` headers, `seat list`, participants and `seat inspect` render the name through the
   pane label; workspace and tab render `-` (SA17 fix (d)).
 
@@ -966,6 +969,7 @@ re-entry. Acceptance criteria cite these rows by id, and a golden test per row p
 | M18 | `herdr-threads: seat <seat> has another connected binding: <bindings>; use --force` | 65 + fields | CLI error | N |
 | M19 | overdue suffix ` offline` after `wake=no_wake` (named and hc seats only) | 8 | overdue warning | N |
 | M20 | `herdr-threads: seat retire --self is for named seats only` | 57 | CLI error | N |
+| M21 | `herdr-threads: pane <pane> has no reachable Herdr host; pass --host-endpoint` (`a new tab` for `launch --new-tab`) | 69 + pane | CLI error | N |
 | — | `seat retire --self` rows: one compact row per abandoned item plus `retired <seat>` | about 30 each | CLI | N |
 | K1 | SKILL.md: ``Outside Herdr, set `HERDR_THREADS_SEAT_NAME=<name>` per command, never in a shell profile or a server env.`` | 106 | skill, once per session | N |
 | K2 | SKILL.md Warnings, after the `none` entry: `` `no_wake`: the seat's host cannot wake it; it sees the item on its next turn.`` | 77 (+1 space) | skill | N |

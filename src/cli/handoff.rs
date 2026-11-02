@@ -2349,21 +2349,6 @@ fn retry_automatic_live<C: LocalClient + ?Sized, W: Write>(
     Ok(true)
 }
 /// Called only after the shared caller mapping/context checks in run_selected.
-/// The Herdr server a handoff creates its target on. A pane caller has it already; a caller
-/// outside Herdr (a named seat) has none until now, so it is looked up here, lazily (SA1, SA14).
-/// The reserved named-host path is a claim host, never a Herdr server.
-pub(super) fn herdr_endpoint(
-    resolved: Option<&std::path::Path>,
-    lazy: impl FnOnce() -> io::Result<std::path::PathBuf>,
-) -> io::Result<std::path::PathBuf> {
-    match resolved {
-        Some(host) if host != std::path::Path::new(crate::protocol::ids::NAMED_HOST_LOCATOR) => {
-            Ok(host.to_path_buf())
-        }
-        _ => lazy(),
-    }
-}
-
 /// M11: a handoff whose launch target names a live named seat is refused before anything is
 /// created. The host's own answer decides (`named::NATIVE_LAUNCH`); a target that is no seat name
 /// or names no named seat is left to the Herdr launch as before.
@@ -2445,18 +2430,7 @@ pub(crate) fn run<W: Write>(
                 .map(std::path::PathBuf::from),
         ))?;
     env.state_dir = Some(runtime.state_dir.clone());
-    let claim_host = herdr_endpoint(runtime.require_host().ok(), || {
-        super::instance::InstanceInputs::from_process(
-            None,
-            parsed
-                .output
-                .context
-                .host
-                .as_ref()
-                .map(std::path::PathBuf::from),
-        )
-        .lazy_host_endpoint()
-    })?;
+    let claim_host = super::topology_runtime::herdr_endpoint(&runtime, &parsed.output)?;
     env.host_endpoint = Some(claim_host.clone());
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(runtime.state_dir.display().to_string());
