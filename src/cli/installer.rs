@@ -526,7 +526,7 @@ pub fn run<W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     let _backups = crate::harness::setup::BackupSession::start();
-    let env = SetupEnv::from_process(output, None)?;
+    let env = SetupEnv::from_process(output, site)?;
     // The controlling terminal works with curl | bash; redirected stdout never prompts.
     let terminal = io::stdout().is_terminal() && output.format != OutputFormat::Json;
     let mut tty = terminal

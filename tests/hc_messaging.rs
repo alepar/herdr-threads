@@ -1226,7 +1226,12 @@ fn terminal_site_pane_forms_with_host_endpoint_reach_the_herdr_path() {
 fn send_seat_name_never_dials_the_core() {
     let rig = Rig::start("hcm-send-name", &["t1"]);
     assert_eq!(rig.session_start("t1", "s-t1").code, Some(0));
-    let ran = rig.agent("t1", "s-t1", &["send", "--seat", "nobody", "--body", "hi"], None);
+    let ran = rig.agent(
+        "t1",
+        "s-t1",
+        &["send", "--seat", "nobody", "--body", "hi"],
+        None,
+    );
     assert_ne!(ran.code, Some(0), "{ran:?}");
     assert_core_never_dialled_as_herdr(&rig);
 
