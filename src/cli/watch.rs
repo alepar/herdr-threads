@@ -1282,6 +1282,7 @@ where
         env.harness,
         session,
         Arc::clone(clock),
+        super::caller_location::CallerEnv::from_process(),
     )
 }
 
@@ -1389,7 +1390,7 @@ where
     let command_prefix = super::hook::cli_prefix(&super::hook::pane_selectors(
         Some(&context.state_dir),
         context.host_endpoint.as_deref(),
-        &super::hook::pane_inputs(),
+        &super::hook::pane_inputs(&super::caller_location::CallerEnv::from_process()),
     ));
     let code = run_session_marked(
         WatchSession {

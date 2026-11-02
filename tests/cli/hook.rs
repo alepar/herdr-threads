@@ -119,7 +119,7 @@ fn pane_env_wins_over_installed_host_and_not_foreign() {
             pane: None,
             ambiguous: None,
             named: None,
-            terminal_site: None,
+            caller: Default::default(),
         }),
         Some("HERDR_PANE_ID missing")
     );
@@ -129,7 +129,7 @@ fn pane_env_wins_over_installed_host_and_not_foreign() {
             pane: Some("w1:p1".into()),
             ambiguous: None,
             named: None,
-            terminal_site: None,
+            caller: Default::default(),
         }),
         Some("not running inside a Herdr pane")
     );
@@ -2000,7 +2000,7 @@ fn herdr() -> HookEnv {
         pane: Some("w9:p1".into()),
         ambiguous: None,
         named: None,
-        terminal_site: None,
+        caller: Default::default(),
     }
 }
 
@@ -2015,14 +2015,14 @@ fn hook_parse_error_outside_herdr_is_quiet() {
         pane: None,
         ambiguous: None,
         named: None,
-        terminal_site: None,
+        caller: Default::default(),
     };
     let no_pane = HookEnv {
         herdr_env: true,
         pane: None,
         ambiguous: None,
         named: None,
-        terminal_site: None,
+        caller: Default::default(),
     };
     for env in [&outside, &no_pane] {
         assert_eq!(
@@ -2085,7 +2085,7 @@ fn unknown_payload_and_non_herdr_process_are_quiet() {
             pane: None,
             ambiguous: None,
             named: None,
-            terminal_site: None,
+            caller: Default::default(),
         },
     ] {
         let outcome = run_hook(
@@ -2179,7 +2179,10 @@ fn unavailable_daemon_is_reported_only_for_top_level_lifecycle() {
     // the pane would not detect (pane agents do not inherit
     // HERDR_PLUGIN_STATE_DIR). The host endpoint is repeated only when the
     // pane's HERDR_SOCKET_PATH would not reach it by itself.
-    let diagnose = diagnose_argv(&args(&root), &pane_inputs());
+    let diagnose = diagnose_argv(
+        &args(&root),
+        &pane_inputs(&crate::cli::caller_location::CallerEnv::default()),
+    );
     assert_eq!(diagnose[1], "--state-dir");
     assert!(diagnose[2].ends_with("/state"), "{diagnose:?}");
     assert!(diagnose.ends_with(&["daemon".into(), "health".into()]));
@@ -3100,7 +3103,7 @@ mod parse_failure_report {
             pane: Some("w1:p1".into()),
             ambiguous: None,
             named: None,
-            terminal_site: None,
+            caller: Default::default(),
         };
         let outcome = run_hook(
             &args,
@@ -3347,6 +3350,7 @@ mod continuity_gate {
                 clock: clock(),
                 retry,
                 turn_end: false,
+                caller: Default::default(),
             }
         }
         fn saved_context(&self, seat: &str) -> Option<OccupantContext> {
@@ -6068,6 +6072,7 @@ mod mod_channel_live {
                 clock: clock(),
                 retry: Arc::new(Window),
                 turn_end: false,
+                caller: Default::default(),
             }
         }
     }
@@ -7436,7 +7441,7 @@ mod enum_callback {
                 pane: None,
                 ambiguous: None,
                 named: None,
-                terminal_site: None,
+                caller: Default::default(),
             },
             Instant::now() + TOOL_BUDGET,
             clock(),
@@ -9415,6 +9420,7 @@ mod registered_resume {
             clock: clock(),
             retry: Arc::new(HookDeadline(Instant::now() + TOOL_BUDGET)),
             turn_end: false,
+            caller: Default::default(),
         };
         let ev = LifecycleEvent {
             harness: Harness::Human,
@@ -9934,7 +9940,7 @@ mod registered_resume {
                         pane: Some("w9:p2".into()),
                         ambiguous: None,
                         named: None,
-                        terminal_site: None,
+                        caller: Default::default(),
                     },
                     Instant::now() + LIFECYCLE_BUDGET,
                     Arc::new(SystemClock::new()),
@@ -10883,7 +10889,7 @@ mod registered_resume {
             pane: None,
             ambiguous: None,
             named: None,
-            terminal_site: None,
+            caller: Default::default(),
         };
         for input in [
             hermes_cli_start("cli-a", 1),
@@ -11322,6 +11328,7 @@ fn watch_continuity_sends_nothing_to_an_older_daemon() {
         crate::protocol::authority::Harness::Claude,
         "sess-1",
         clock,
+        Default::default(),
     ));
     let sent = client.0.lock().unwrap();
     assert!(
@@ -11626,6 +11633,7 @@ mod two_family_guard {
                     crate::protocol::results::CapabilityList {
                         capabilities: vec![
                             crate::protocol::capabilities::LOCATE_CALLER_V1.to_owned(),
+                            crate::protocol::capabilities::TERMINAL_SITES_V1.to_owned(),
                         ],
                     },
                 )),
@@ -11760,7 +11768,7 @@ mod two_family_guard {
             pane: Some("w1:p1".into()),
             ambiguous: crate::cli::caller_guard::hook_candidates(&marked),
             named: None,
-            terminal_site: None,
+            caller: marked,
         }
     }
 
@@ -11877,18 +11885,26 @@ mod two_family_guard {
             &claude_payload("SessionStart", Some("startup")),
         );
         // The verified terminal acts as its Terminal site: no refusal, and the hook goes on to
-        // look up the terminal's seat host-scoped, which this scripted daemon (it advertises no
-        // `seat.terminal_sites_v1`) refuses at the M13 gate before sending anything.
+        // look up the terminal's seat host-scoped on the terminal's core (the scripted daemon
+        // advertises `seat.terminal_sites_v1` and refuses the lookup itself), never on the core
+        // the runner's own `HC_TERMINAL_SOCKET` names.
         assert_ne!(outcome.diagnostic.as_deref(), Some(M4), "{outcome:?}");
         assert!(
             outcome
                 .diagnostic
                 .as_deref()
-                .is_some_and(|d| d.starts_with("seat lookup:")
-                    && d.contains("predates named/terminal seats")),
+                .is_some_and(|d| d.starts_with("seat lookup:")),
             "{outcome:?}"
         );
-        assert!(daemon.other_commands().is_empty());
+        let commands = daemon.other_commands();
+        let [Command::Seats(query)] = commands.as_slice() else {
+            panic!("the hook looked up exactly the terminal's seat: {commands:?}");
+        };
+        assert_eq!(query.target, Some(HostTargetId::new("t3")));
+        assert_eq!(
+            query.host,
+            Some(crate::protocol::ids::HostLocator::parse("/hc.sock").unwrap())
+        );
         drop(daemon);
         // Another isolation: the first daemon's socket is still being torn down.
         let iso = crate::test_support::isolation::TestIsolation::new("guard-terminal-refused");
@@ -11930,8 +11946,9 @@ mod two_family_guard {
 mod terminal_turn_edge {
     use super::*;
     use crate::cli::caller_guard::{Guard, Refusal};
-    use crate::cli::caller_location::CallerLocator;
+    use crate::cli::caller_location::{CallerEnv, CallerLocator, EnvMode};
     use crate::harness::adapter::TurnEdge;
+    use crate::host::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV, native};
     use crate::protocol::{
         commands::TurnStateReport,
         ids::SeatId,
@@ -11955,7 +11972,13 @@ mod terminal_turn_edge {
             pane: Some("w1:p1".into()),
             ambiguous: Some(vec![CallerLocator::pane("w1:p1"), terminal(core)]),
             named: None,
-            terminal_site: None,
+            caller: CallerEnv::from_lookup(|name| match name {
+                native::ENV_HERDR => Some("1".into()),
+                native::ENV_PANE_ID => Some("w1:p1".into()),
+                HC_TERMINAL_ID_ENV => Some("t3".into()),
+                HC_TERMINAL_SOCKET_ENV => Some(core.into()),
+                _ => None,
+            }),
         }
     }
 
@@ -12091,10 +12114,13 @@ mod terminal_turn_edge {
             .unwrap_or_else(|_| panic!("the terminal verified"))
             .expect("a swapped env");
         assert_eq!(swapped.target(), Some("t3"));
-        assert_eq!(swapped.terminal_site, Some(terminal(&core)));
+        assert_eq!(
+            swapped.caller.non_pane_locator(EnvMode::Hook),
+            Some(terminal(&core))
+        );
         assert!(swapped.ambiguous.is_none());
         let args = args(&state);
-        let runtime = hook_runtime_context(&args, swapped.terminal_site.as_ref()).unwrap();
+        let runtime = hook_runtime_context(&args, &swapped.caller).unwrap();
         let daemon = Daemon {
             core: core.clone(),
             reports: Mutex::new(Vec::new()),

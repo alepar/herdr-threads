@@ -171,7 +171,7 @@ fn herdr() -> HookEnv {
         pane: Some("w9:p1".into()),
         ambiguous: None,
         named: None,
-        terminal_site: None,
+        caller: Default::default(),
     }
 }
 

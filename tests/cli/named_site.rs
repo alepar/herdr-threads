@@ -112,7 +112,7 @@ fn named_hook_env_is_located_without_herdr_env() {
         pane: None,
         ambiguous: None,
         named: Some(herdr_threads::protocol::ids::SeatName::parse("worker-1").unwrap()),
-        terminal_site: None,
+        caller: Default::default(),
     };
     assert!(named.located());
     assert_eq!(named.target(), Some("worker-1"));

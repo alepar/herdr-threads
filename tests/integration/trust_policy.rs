@@ -344,8 +344,7 @@ impl World {
         args: &[&str],
         env: &[(&str, &str)],
     ) -> Output {
-        let mut command = Command::new(BIN); // leak-guard: tagged on the next line via spawn::tag
-        herdr_threads::test_support::spawn::tag(&mut command);
+        let mut command = herdr_threads::test_support::spawn::command(BIN);
         let args = if args.first() == Some(&"human") {
             command.arg("human");
             &args[1..]
@@ -370,12 +369,6 @@ impl World {
                 "top-level",
             ]);
         }
-        // The runner's own agent environment must not reach the A4 guard.
-        for (key, _) in std::env::vars() {
-            if key.starts_with("CODEX_") {
-                command.env_remove(key);
-            }
-        }
         // A stand-in seat is an agent: it acts as a harness session (decision 15).
         if let Some(caller) = &caller {
             herdr_threads::test_support::isolation::as_agent(
@@ -391,12 +384,6 @@ impl World {
         }
         command
             .args(args)
-            .env_remove("CLAUDECODE")
-            .env_remove("HERDR_PLUGIN_STATE_DIR")
-            .env_remove("HERDR_SOCKET_PATH")
-            .env_remove("HERDR_PANE_ID")
-            .env_remove("HERDR_BIN_PATH")
-            .env_remove("HERDR_ENV")
             .env("PATH", self.path())
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"));
         if let Some(pane) = pane {

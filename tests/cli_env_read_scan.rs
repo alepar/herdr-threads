@@ -78,3 +78,29 @@ fn matcher_fails_on_a_planted_literal() {
     assert!(offending_lines("\"run it inside the pane (HERDR_PANE_ID)\"").is_empty());
     assert!(offending_lines("// \"HERDR_ENV\"").is_empty());
 }
+
+/// A hook reads the caller environment once, at its entry (`HookEnv::from_process`), and swaps it
+/// once when the guard verifies a terminal; every later use goes through `HookEnv::caller`. This
+/// process's env cannot be set in a test (clippy.toml bans it), so a source check holds the rule.
+#[test]
+fn hook_reads_caller_env_at_its_entry_only() {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/hook.rs")).unwrap();
+    let count = |needle: &str| {
+        source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(needle))
+            .count()
+    };
+    assert_eq!(
+        count("CallerEnv::from_process()"),
+        1,
+        "src/cli/hook.rs reads the process caller env once (HookEnv::from_process)"
+    );
+    assert_eq!(
+        count("InstanceInputs::from_process"),
+        0,
+        "the hook's selector detection reads HookEnv::caller (InstanceInputs::from_caller)"
+    );
+}

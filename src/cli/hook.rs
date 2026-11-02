@@ -259,17 +259,17 @@ pub struct HookEnv {
     /// A valid `HERDR_THREADS_SEAT_NAME`: the Named site. It replaces only the target and needs
     /// no Herdr environment (`herdr_env` and `pane` are then unused for the target).
     pub named: Option<crate::protocol::ids::SeatName>,
-    /// The Terminal site `LocateCaller` verified for a two-family caller, decided once by
-    /// [`run_admitted_hook_since`]; `None` otherwise. `pane` is then the terminal's `tN`.
-    pub terminal_site: Option<super::caller_location::CallerLocator>,
+    /// The caller environment read once at the entry point, swapped by [`caller_env`] when the
+    /// guard verifies the terminal of a two-family caller. Every later caller-location read in
+    /// the hook goes through it; an in-process test builds it with `CallerEnv::from_lookup`, and
+    /// `Default` is an environment that names nothing.
+    pub caller: super::caller_location::CallerEnv,
 }
 impl HookEnv {
-    /// The non-Pane site of this hook: the verified terminal, else what the environment says.
+    /// The non-Pane site of this hook: what the (possibly swapped) caller environment says.
     fn site(&self) -> Option<super::caller_location::CallerLocator> {
-        self.terminal_site.clone().or_else(|| {
-            super::caller_location::CallerEnv::from_process()
-                .non_pane_locator(super::caller_location::EnvMode::Hook)
-        })
+        self.caller
+            .non_pane_locator(super::caller_location::EnvMode::Hook)
     }
 
     /// The hook is admitted: a Herdr pane the environment marks, or a named seat.
@@ -298,7 +298,7 @@ impl HookEnv {
             pane: env.pane(EnvMode::Hook).or(terminal),
             ambiguous: super::caller_guard::hook_candidates(&env),
             named: env.named(),
-            terminal_site: None,
+            caller: env,
         }
     }
 }
@@ -1314,10 +1314,10 @@ pub const CLI_ARGV0: &str = "herdr-threads";
 /// Only the fast filesystem default is consulted, never the slow `herdr`
 /// query (the hook budget cannot afford it); a missing default therefore
 /// keeps the explicit form.
-pub fn pane_inputs() -> InstanceInputs {
+pub fn pane_inputs(caller: &super::caller_location::CallerEnv) -> InstanceInputs {
     InstanceInputs {
         herdr: None,
-        ..InstanceInputs::from_process(None, None)
+        ..InstanceInputs::from_caller(None, None, caller)
     }
 }
 
@@ -1504,7 +1504,7 @@ fn report_parse_failure_to_daemon(
     if !env.herdr_env {
         return;
     }
-    let Ok(context) = hook_runtime_context(args, env.terminal_site.as_ref()) else {
+    let Ok(context) = hook_runtime_context(args, &env.caller) else {
         return;
     };
     let Ok(paths) = NodePaths::resolve(&context.state_dir) else {
@@ -1860,7 +1860,7 @@ fn connect_pane(
         .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
     let target = HostTargetId::parse(pane)
         .map_err(|_| Failure::Quiet("HERDR_PANE_ID is not a valid target".into()))?;
-    let context = hook_runtime_context(args, env.terminal_site.as_ref())
+    let context = hook_runtime_context(args, &env.caller)
         .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
     // A hook claim binds a pane of the claim host's Herdr server.
     context
@@ -2027,6 +2027,7 @@ fn check_in(
         clock: Arc::clone(&clock),
         retry: Arc::new(HookDeadline(deadline)),
         turn_end,
+        caller: env.caller.clone(),
     };
     // Daemon check order for a lifecycle check-in (TRUST-POLICY A4, C1):
     // (1) A4 agent-to-human refusal, (2) C1 reattachment on a held or
@@ -2189,6 +2190,9 @@ struct PaneCall<'a> {
     retry: Arc<dyn RetryWindow>,
     /// A turn-end event: it checks in only when the daemon says a continuation is due.
     turn_end: bool,
+    /// The caller environment the entry point read (swapped for a verified terminal); the
+    /// selectors the hook tells the agent to run are detected from it.
+    caller: super::caller_location::CallerEnv,
 }
 
 /// How a continuity intent's submission ended.
@@ -2238,6 +2242,7 @@ pub(super) fn watch_continuity(
     harness: crate::protocol::authority::Harness,
     session: &str,
     clock: Arc<dyn Clock>,
+    caller: super::caller_location::CallerEnv,
 ) -> bool {
     let deadline = Instant::now() + WATCH_CONTINUITY_BUDGET;
     let call = PaneCall {
@@ -2254,6 +2259,7 @@ pub(super) fn watch_continuity(
         clock,
         retry: Arc::new(HookDeadline(deadline)),
         turn_end: false,
+        caller,
     };
     let event = LifecycleEvent {
         harness: harness.into(),
@@ -2679,7 +2685,7 @@ impl PaneCall<'_> {
         let selectors = pane_selectors(
             Some(&self.context.state_dir),
             self.context.host_endpoint.as_deref(),
-            &pane_inputs(),
+            &pane_inputs(&self.caller),
         );
         let mut fallback = cli_prefix(&selectors);
         fallback.extend([
@@ -2710,7 +2716,7 @@ impl PaneCall<'_> {
         let deadline = self.deadline;
         let clock = Arc::clone(&self.clock);
         let lifecycle = event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
-        let pane = pane_inputs();
+        let pane = pane_inputs(&self.caller);
         let selectors = pane_selectors(
             Some(&context.state_dir),
             context.host_endpoint.as_deref(),
@@ -3673,7 +3679,7 @@ fn adapter_state_dir(
     create: bool,
 ) -> Option<PathBuf> {
     // Only the state directory is read, which the claim host does not change.
-    let context = hook_runtime_context(args, None).ok()?;
+    let context = hook_runtime_context_with(args, None).ok()?;
     let node_dir = crate::daemon::paths::node_dir(&context.state_dir);
     let dir = node_dir
         .join("adapter-state")
@@ -3725,7 +3731,7 @@ fn run_hook_step(
             )
         })
         .and_then(|context| {
-            let host = hook_runtime_context(args, env.terminal_site.as_ref())
+            let host = hook_runtime_context(args, &env.caller)
                 .ok()?
                 .claim_host()
                 .ok()?;
@@ -3737,7 +3743,7 @@ fn run_hook_step(
             claim.liveness = hook_fingerprint(harness).ok();
             claim
         });
-    let connected = hook_runtime_context(args, env.terminal_site.as_ref())
+    let connected = hook_runtime_context(args, &env.caller)
         .ok()
         .and_then(|context| NodePaths::resolve_read_only(&context.state_dir).ok())
         .and_then(|paths| connect_existing(&paths, Arc::new(SystemClock::new())).ok())
@@ -3747,7 +3753,7 @@ fn run_hook_step(
         clock,
         deadline,
     });
-    let pane = pane_inputs();
+    let pane = pane_inputs(&env.caller);
     let state = args.state_dir.clone().or_else(|| pane.env_state.clone());
     let host = super::instance::claim_host(
         None,
@@ -3846,7 +3852,7 @@ fn quiet_outcome(detail: String) -> HookOutcome {
 }
 fn child_endpoint_available(args: &HookArgs) -> bool {
     // Only the state directory is read, which the claim host does not change.
-    let Ok(context) = hook_runtime_context(args, None) else {
+    let Ok(context) = hook_runtime_context_with(args, None) else {
         return false;
     };
     let Ok(paths) = NodePaths::resolve(&context.state_dir) else {
@@ -3868,7 +3874,7 @@ fn pane_context_journal(
     clock: &dyn Clock,
 ) -> Option<(crate::harness::context::ContextJournal, OccupantContext)> {
     let target = env.target()?;
-    let context = hook_runtime_context(args, env.terminal_site.as_ref()).ok()?;
+    let context = hook_runtime_context(args, &env.caller).ok()?;
     let paths = NodePaths::resolve_read_only(&context.state_dir).ok()?;
     let instance = read_node_uuid_hint(&paths).ok()??;
     let entries = std::fs::read_dir(paths.node_dir.join("contexts")).ok()?;
@@ -4070,7 +4076,7 @@ fn caller_env(
             pane: terminal.site().moved_target().map(str::to_owned),
             ambiguous: None,
             named: env.named.clone(),
-            terminal_site: Some(terminal),
+            caller: env.caller.clone().verified_terminal(),
         })),
         Guard::Refused(refusal) => Err(Box::new(HookOutcome {
             diagnostic: matches!(decoded.role, EventRole::TopLevel).then(|| refusal.m4()),
@@ -4254,7 +4260,7 @@ fn report_turn_edge_on(
     let mut claim = bridge::caller_claim(&context, host).map_err(|_| invalid("session"))?;
     // The harness process, not this short-lived hook, is what the tmux hint is verified for.
     claim.liveness = hook_fingerprint(args.harness).ok();
-    let tmux_hint = super::caller_location::CallerEnv::from_process().tmux_hint();
+    let tmux_hint = env.caller.tmux_hint();
     client
         .call(
             Command::TurnState(TurnStateReport {
@@ -4629,8 +4635,11 @@ fn admitted_hook_outcome(
             HookOutcome {
                 stdout: if report {
                     let policy = registration.output_policy();
-                    let unavailable =
-                        unavailable_text(&policy, &reason, &diagnose_argv(args, &pane_inputs()));
+                    let unavailable = unavailable_text(
+                        &policy,
+                        &reason,
+                        &diagnose_argv(args, &pane_inputs(&env.caller)),
+                    );
                     // A compact re-entry is the only restatement of the fixed
                     // section until the next lifecycle event: keep it on failure.
                     let text = if compact {
@@ -4679,21 +4688,11 @@ fn same_endpoint(a: &Path, b: &Path) -> bool {
 /// ([`super::instance::claim_host`]).
 fn hook_runtime_context(
     args: &HookArgs,
-    terminal: Option<&super::caller_location::CallerLocator>,
+    caller: &super::caller_location::CallerEnv,
 ) -> io::Result<RuntimeContext> {
-    if let Some(terminal) = terminal {
-        // A two-family caller whose terminal verified: its core is the claim host, ahead of the
-        // Herdr server the environment also names.
-        return hook_runtime_context_with(
-            args,
-            terminal.site().claim_host_locator().map(PathBuf::from),
-        );
-    }
-    hook_runtime_context_in(
-        args,
-        &super::caller_location::CallerEnv::from_process(),
-        std::env::var_os("HERDR_SOCKET_PATH"),
-    )
+    // A two-family caller whose terminal verified is a lone Terminal site in `caller`: its core
+    // is the claim host, ahead of the Herdr server the environment also names.
+    hook_runtime_context_in(args, caller, std::env::var_os("HERDR_SOCKET_PATH"))
 }
 
 /// [`hook_runtime_context`] for a given caller environment and the pane's `HERDR_SOCKET_PATH`.
