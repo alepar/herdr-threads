@@ -102,6 +102,13 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          watcher; not a periodic daemon loop",
     ),
     (
+        "src/host/probe.rs",
+        "std::thread::sleep(",
+        "the probe's nonblocking connect on a full backlog: 10 ms steps ending at \
+         the caller's budget, once per probe on the caller's thread; a one-shot \
+         bounded wait with no cadence to pace, not a lane",
+    ),
+    (
         "src/host/native.rs",
         "thread::sleep(Duration::from_millis(2))",
         "a unit-test fixture inside native.rs: the fake Herdr socket's accept \

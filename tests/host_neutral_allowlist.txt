@@ -15,7 +15,7 @@ src/service/peer_launcher.rs::gate_argv # permitted reader: the gate argv is by 
 src/harness/codex.rs::host_launch_argv # permitted reader: the adapter's launch argv per host kind (H3)
 src/store/hosts.rs::attachable # permitted reader: the G4 reattach check; the built-in named host is implemented but never dialled
 src/store/seats/operator.rs::refuse_cross_kind_rebind # permitted reader: the G4 rebind check refuses a named to pane or terminal rebind
-src/main.rs::detached_child # host registration: the production HostFactory::build chooses the host by kind
+src/app.rs::production_host_factory # host registration: the production HostFactory::build chooses the host by kind
 src/app.rs::run_elected_impl # host registration: the single source of the built-in named host's kind
 src/host/probe.rs # the kind probe: the one place a server's kind is classified
 src/host/target_creator.rs # host construction by probed kind (H3)
