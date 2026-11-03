@@ -2801,7 +2801,8 @@ class TmuxRecipient(Recipient):
 
     def status(self):
         text = self.visible()
-        if DIALOG.search(text):
+        # LINUX_DIALOG: its case-sensitive "Allow" does not match the auto-mode banner's "allow ... to run".
+        if LINUX_DIALOG.search(text):
             return "blocked"
         return "working" if TMUX_RUNNING.search(text) else "idle"
 
@@ -2833,7 +2834,7 @@ class TmuxRecipient(Recipient):
                 text = self.visible()
                 if AUTH_REJECTED.search(text) or LINUX_LOGIN.search(text):
                     raise RuntimeError(f"{self.name}: {self.harness} is not logged in or its auth was rejected: {self.tail()}")
-                if DIALOG.search(text):
+                if LINUX_DIALOG.search(text):
                     raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
                 if COMPOSER_UP.search(text) and self.status() == "idle":
                     break
