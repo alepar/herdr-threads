@@ -4952,6 +4952,11 @@ pub trait NotificationPort: Send + Sync {
     fn take_refusal(&self, _seat: &SeatId) -> Option<String> {
         None
     }
+    /// Why the last wake for `seat` typed the `inbox` marker instead of its harness's
+    /// content-free text, taken once (ht-i5w2). Notifiers that do not say report nothing.
+    fn take_text_fallback(&self, _seat: &SeatId) -> Option<String> {
+        None
+    }
 }
 
 /// Local client and service share the same typed command/result envelope.

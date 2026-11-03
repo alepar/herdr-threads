@@ -79,6 +79,9 @@ pub struct NativeWakeDispatcher<'a, H: HostPort + ?Sized, C: ReservationCheck + 
     /// Why the last wake attempt per seat was refused before sending, taken
     /// by the scheduler drive.
     refusals: Mutex<HashMap<SeatId, String>>,
+    /// Why the last wake per seat typed the `inbox` marker instead of its harness's
+    /// content-free text, taken by the scheduler drive (ht-i5w2).
+    text_fallbacks: Mutex<HashMap<SeatId, String>>,
 }
 
 static NO_HOOK_PULL: crate::ports::NoHookPullOutlook = crate::ports::NoHookPullOutlook;
@@ -91,6 +94,7 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
             hook_pull: &NO_HOOK_PULL,
             verifications: Mutex::new(HashMap::new()),
             refusals: Mutex::new(HashMap::new()),
+            text_fallbacks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -532,6 +536,9 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             expected_epoch: Some(reservation.host_epoch),
         };
         let mut default_text = MARKER;
+        // Why a wake whose harness has a content-free text still types the `inbox` marker, for the
+        // daemon log (ht-i5w2); `None` when nothing fell back.
+        let mut fell_back: Option<String> = None;
         let text = match (&poke, using_poke) {
             (Some(request), true) => request.plan.text.as_str(),
             // The hook path is what failed for a recovery hint: it must name `inbox`.
@@ -569,34 +576,63 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 if generation
                     .is_some_and(|g| self.hook_pull.holds_parked(&reservation.seat, &targets, g))
                 {
+                    fell_back = Some("ids parked for inbox".to_owned());
                     MARKER
                 } else {
                     let registry = crate::harness::registry::builtins();
                     default_text = registry.wake_text(id);
                     // Every possible recipient of this composer turn must support the same
                     // text. An unobserved sibling keeps the inbox hint for the process.
-                    reservation
+                    let woken: Vec<_> = reservation
                         .authority
                         .targets()
                         .iter()
                         .filter(|t| targets.contains(&t.binding))
+                        .collect();
+                    let text = woken
+                        .iter()
                         .map(|t| registry.binding_wake_text(id, Some(&t.provenance)))
                         .reduce(|a, b| if a == b { a } else { MARKER })
-                        .unwrap_or_else(|| registry.wake_text(id))
+                        .unwrap_or_else(|| registry.wake_text(id));
+                    if text == MARKER {
+                        let bindings: Vec<String> = woken
+                            .iter()
+                            .map(|t| format!("{} {}", t.binding.as_str(), t.provenance))
+                            .collect();
+                        fell_back = Some(if bindings.is_empty() {
+                            format!("no woken binding among {} target(s)", targets.len())
+                        } else {
+                            format!("binding provenance: {}", bindings.join(", "))
+                        });
+                    }
+                    text
                 }
             }),
         };
-        let text = if !using_poke
-            && text != default_text
-            && !self
+        let text = if !using_poke && text != default_text {
+            match self
                 .check
                 .wake_text_evidence_current(&reservation, &context.budget)
-                .unwrap_or(false)
-        {
-            default_text
+            {
+                Ok(true) => text,
+                Ok(false) => {
+                    fell_back = Some("targets changed between reserve and submit".to_owned());
+                    default_text
+                }
+                Err(error) => {
+                    fell_back = Some(format!("evidence check failed: {}", error.detail));
+                    default_text
+                }
+            }
         } else {
             text
         };
+        if text == MARKER
+            && let Some(why) = fell_back
+            && let Ok(mut fallbacks) = self.text_fallbacks.lock()
+        {
+            fallbacks.insert(reservation.seat.clone(), why);
+        }
         // Unsolicited attention never queues into an active turn. The owed check above ran
         // before the host's idle recheck; a turn still running then can serve the attention
         // and end before that recheck, so the host asks again right before typing.
@@ -685,6 +721,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
 
     fn take_refusal(&self, seat: &SeatId) -> Option<String> {
         self.refusals.lock().ok()?.remove(seat)
+    }
+
+    fn take_text_fallback(&self, seat: &SeatId) -> Option<String> {
+        self.text_fallbacks.lock().ok()?.remove(seat)
     }
 }
 

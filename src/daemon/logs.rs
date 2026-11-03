@@ -41,6 +41,10 @@ pub trait LaneErrorLog: Send + Sync {
     /// detail. The default records nothing.
     fn record_wake_refusal(&self, _seat: &crate::protocol::ids::SeatId, _detail: &str) {}
 
+    /// A sent wake that typed the `inbox` marker instead of its harness's content-free text,
+    /// with why (ht-i5w2). The default records nothing.
+    fn record_wake_text_fallback(&self, _seat: &crate::protocol::ids::SeatId, _why: &str) {}
+
     /// A reconciliation transition the store refused for `seat`, with the
     /// refusing check (ht-kaw9). The default records nothing.
     fn record_reconciliation_refusal(
@@ -265,6 +269,17 @@ impl LaneErrorLog for RateLimitedLaneLog {
             "lane wakes".to_owned(),
             format!("refused {} ({})", seat.as_str(), one_line(&check)),
             detail,
+            0,
+        );
+    }
+
+    /// One line per seat, then one summary per window while its wakes keep falling back:
+    /// `lane wakes: SEAT wake text inbox marker: WHY`.
+    fn record_wake_text_fallback(&self, seat: &crate::protocol::ids::SeatId, why: &str) {
+        self.note(
+            "lane wakes".to_owned(),
+            format!("{} wake text inbox marker", seat.as_str()),
+            why,
             0,
         );
     }

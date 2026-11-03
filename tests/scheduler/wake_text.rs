@@ -523,3 +523,91 @@ fn hook_evidence_keeps_recovery_and_parked_inbox_hints() {
         );
     }
 }
+
+/// Evidence that went stale between reserve and submit.
+struct StaleText;
+impl ReservationCheck for StaleText {
+    fn wake_text_evidence_current(
+        &self,
+        _: &WakeReservation,
+        _: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+    fn is_current(&self, _: &WakeReservation, _: &CallBudget) -> Result<bool, ApiError> {
+        Ok(true)
+    }
+}
+
+/// The text typed and the recorded fallback reason of one hook-evidenced Claude wake.
+fn claude_fallback(
+    provenance: &str,
+    parked: bool,
+    check: &dyn ReservationCheck,
+) -> (Vec<String>, Option<String>) {
+    let authority = ReservedWakeAuthority::Cooperative {
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation: Some(1),
+        harness: Some("claude".into()),
+        targets: vec![crate::ports::WakeTarget {
+            binding: BindingId::new("binding"),
+            harness: "claude".into(),
+            provenance: provenance.into(),
+            fingerprint_pid: Some(111),
+            dormant: false,
+        }],
+    };
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    let host = TextRecordingHost {
+        observation: observation(false),
+        host_bound_harness: None,
+        foreground: vec![111],
+        typed: Mutex::new(vec![]),
+    };
+    let outlook = FakeOutlook { parked, only: None };
+    let dispatch = NativeWakeDispatcher::new(&host, check, &FixedClock).with_hook_pull(&outlook);
+    assert_eq!(
+        dispatch
+            .attempt_wake(reservation(authority), &context)
+            .unwrap(),
+        WakeOutcome::Submitted
+    );
+    let why = dispatch.take_text_fallback(&SeatId::new("seat"));
+    assert_eq!(
+        dispatch.take_text_fallback(&SeatId::new("seat")),
+        None,
+        "taken once"
+    );
+    (host.typed.into_inner().unwrap(), why)
+}
+
+/// Kills: a marker fallback the daemon log cannot explain (ht-i5w2): each cause records why, and a
+/// content-free wake records nothing.
+#[test]
+fn a_marker_fallback_records_why() {
+    let (typed, why) = claude_fallback("cooperative_top_level", false, &CurrentReservation);
+    assert_eq!((typed, why), (vec![WAKE_UP.to_owned()], None));
+    let (typed, why) = claude_fallback("cooperative_top_level", false, &StaleText);
+    assert_eq!(typed, [MARKER]);
+    assert_eq!(
+        why.as_deref(),
+        Some("targets changed between reserve and submit")
+    );
+    let (typed, why) = claude_fallback("cooperative_top_level", true, &CurrentReservation);
+    assert_eq!(typed, [MARKER]);
+    assert_eq!(why.as_deref(), Some("ids parked for inbox"));
+    let (typed, why) = claude_fallback("cooperative_env_session", false, &CurrentReservation);
+    assert_eq!(typed, [MARKER]);
+    assert_eq!(
+        why.as_deref(),
+        Some("binding provenance: binding cooperative_env_session")
+    );
+}

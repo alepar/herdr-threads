@@ -177,6 +177,9 @@ pub struct WakeDriveOutcome {
     /// Per-drive reasons the notifier gave for wakes it refused before
     /// sending (nothing for a wake that was no longer owed).
     pub refusals: Vec<(SeatId, String)>,
+    /// Per-drive reasons a sent wake typed the `inbox` marker instead of its harness's
+    /// content-free text (ht-i5w2).
+    pub text_fallbacks: Vec<(SeatId, String)>,
     /// Earliest instant a seat in refusal backoff (or waiting on its ladder)
     /// can be tried again; the deadline/wake lane sleeps until then.
     pub next_due_at: Option<MonoInstant>,
@@ -462,6 +465,9 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             let verification = self.wakes.notifier.take_verification(&candidate.seat);
             if let Some(detail) = self.wakes.notifier.take_refusal(&candidate.seat) {
                 outcome.refusals.push((candidate.seat.clone(), detail));
+            }
+            if let Some(why) = self.wakes.notifier.take_text_fallback(&candidate.seat) {
+                outcome.text_fallbacks.push((candidate.seat.clone(), why));
             }
             if verification == Some(SubmissionVerification::Unsubmitted) {
                 self.wakes.arm_unsubmitted(&candidate.seat)?;

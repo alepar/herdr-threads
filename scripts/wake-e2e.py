@@ -1229,6 +1229,17 @@ class Run:
                 continue
             if not gone:
                 problems.append(f"tmux server {name} still running after kill-server")
+                continue
+            # kill-server leaves the socket file behind.
+            env = self.tmux_env()
+            socket = os.path.join(env.get("TMUX_TMPDIR") or "/tmp", f"tmux-{os.getuid()}", name)
+            try:
+                os.unlink(socket)
+                steps.append({"tmux_socket_removed": socket})
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                problems.append(f"tmux server {name}: socket {socket} not removed: {clip(e, 200, getattr(self, 'secrets', None))}")
 
     def drain(self):
         """Stop admitting helpers, terminate the in-flight ones (each in its own process group), then join the
