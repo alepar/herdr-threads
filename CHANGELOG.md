@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.9.0
+
+One-way store upgrade to node schema 14 (migrations 0013, host environments, and 0014, the binding's locator host). Binaries before 2.9.0 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. Restart the daemon after upgrading: an older daemon refuses named and terminal seats. Run `herdr-threads update --setup` so the skill, the Claude mod and the Hermes bridge refresh. Peer wire: two new capabilities, `seat.terminal_sites_v1` and `peer.launch.terminal.v1`; older peers work without them. See [Outside a Herdr pane](docs/environments.md).
+
+### Added
+
+- **Named seats outside Herdr.** `HERDR_THREADS_SEAT_NAME=<name>` gives a process a durable seat, on a machine with or without Herdr; the same name is the same seat across sessions. `HERDR_THREADS_SEAT_READONLY=1` reads without acknowledging; `seat retire --self` ends a name. Install works without Herdr.
+- **tmux wake for named seats.** An idle Claude or agy named seat inside tmux is woken in its pane, never over typed text.
+- **herdr-core terminals.** Agents in `hc` terminals and Herdr desktop app panes get seats and message like pane seats.
+- **launch and handoff onto a core:** `--new-terminal`, `--new-tab LABEL --space SPACE`, and `--new-terminal --space @MACHINE --cwd DIR` on another machine.
+
+### Known limits
+
+- A named seat without the Claude mod or tmux, and any herdr-core seat without the mod, has no idle wake: ACK requests arrive on its next turn and the sender sees `wake=no_wake` once.
+- A core started with `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `OPENAI_API_KEY` in its environment passes it to every launch in that core.
+- A launch requested by another machine with no profile starts the harness in its default mode.
+
 ## v2.8.4
 
 No schema or peer wire change (node schema stays 12). No setup re-run is needed.
