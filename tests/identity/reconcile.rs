@@ -166,11 +166,61 @@ fn discarded_attempt_waits_for_the_pacer_retry_time_but_event_hints_do_not() {
     lane.mark_unavailable();
     lane.discard(ticket).unwrap();
     // Gated by the Pacer's next_retry_at(), not immediately due.
-    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
-    assert!(lane.snapshot_due_gated(MonoInstant(400), Some(MonoInstant(400))));
+    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
+    assert!(lane.snapshot_due_gated(MonoInstant(400), Some(MonoInstant(400)), 5_000));
     // Host-event hints still set dirty and bypass the gate.
     lane.mark_event_dirty();
-    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
+}
+
+// Kills: a cadence hard-coded at 5_000 whatever the daemon is configured with.
+#[test]
+fn snapshot_cadence_is_the_configured_one() {
+    for cadence in [300_u64, 7_000] {
+        let mut lane = ObservationLane::default();
+        let ticket = lane.begin_observation().unwrap();
+        lane.accept_applied(&snapshot(2, vec![]), ticket, MonoInstant(1_000))
+            .unwrap();
+        assert!(!lane.snapshot_due_gated(MonoInstant(1_000 + cadence - 1), None, cadence));
+        assert!(lane.snapshot_due_gated(MonoInstant(1_000 + cadence), None, cadence));
+    }
+}
+
+// Kills: a promotion that publishes a set whose pass never finished, and one that forgets the
+// published set when nothing was staged.
+#[test]
+fn live_set_is_published_only_after_promotion() {
+    let mut lane = ObservationLane::default();
+    assert_eq!(lane.published_live(), None);
+    lane.stage_live(vec![SeatId::new("a")]);
+    assert_eq!(lane.published_live(), None, "staged is not published");
+    lane.promote_live();
+    assert_eq!(lane.published_live(), Some([SeatId::new("a")].as_slice()));
+    lane.promote_live();
+    assert_eq!(lane.published_live(), Some([SeatId::new("a")].as_slice()));
+    lane.stage_live(vec![SeatId::new("b")]);
+    lane.clear_staged_live();
+    lane.promote_live();
+    assert_eq!(lane.published_live(), Some([SeatId::new("a")].as_slice()));
+}
+
+// Kills: a skipped capture that leaves the dirty mark set, due forever.
+#[test]
+fn skipping_an_unchanged_capture_clears_dirty_only() {
+    let mut lane = ObservationLane::default();
+    let ticket = lane.begin_observation().unwrap();
+    lane.accept_applied(&snapshot(2, vec![]), ticket, MonoInstant(10))
+        .unwrap();
+    lane.mark_event_dirty();
+    assert!(lane.snapshot_due_gated(MonoInstant(11), None, 5_000));
+    lane.skip_unchanged_capture();
+    assert!(!lane.snapshot_due_gated(MonoInstant(11), None, 5_000));
+    lane.request_explicit_capture();
+    lane.skip_unchanged_capture();
+    assert!(
+        lane.explicit_capture_requested(),
+        "an explicit request is kept"
+    );
 }
 
 #[test]
@@ -179,15 +229,15 @@ fn explicit_capture_request_opens_the_gate_once() {
     let ticket = lane.begin_observation().unwrap();
     lane.mark_unavailable();
     lane.discard(ticket).unwrap();
-    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
     lane.request_explicit_capture();
-    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
     assert!(!lane.is_available(), "a request is not evidence");
     // Consumed by the next observation's start.
     let ticket = lane.begin_observation().unwrap();
     lane.mark_unavailable();
     lane.discard(ticket).unwrap();
-    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400)), 5_000));
 }
 
 #[test]
@@ -1368,6 +1418,8 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         host: crate::test_support::test_host_locator(),
         target: fresh.target.clone(),
         operation: OperationId::new("allocate-shell"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     let guard = || OrdinaryResolutionGuard::try_new(&request, fresh.clone(), &admission).unwrap();
     let OrdinaryResolutionOutcome::Resolved(seat) = seats::resolve_seat(
@@ -1812,6 +1864,8 @@ mod fake_port {
         actions: Vec<ReconciliationAction>,
         invalidated_seats: Vec<SeatId>,
         fail_offset: Option<u64>,
+        /// Staging fails as a Stop would end it (`Cancelled`) instead of as a stale write.
+        fail_offset_cancelled: bool,
         admission_sequence: u64,
         decided_sequence: u64,
         invalidation_revision: u64,
@@ -1974,6 +2028,9 @@ mod fake_port {
                 .calls
                 .push(format!("stage:{}:{}", offset, targets.len()));
             if state.fail_offset == Some(offset) {
+                if state.fail_offset_cancelled {
+                    return Err(ApiError::cancelled("injected stop"));
+                }
                 return Err(stale("injected staging failure"));
             }
             state.staged += targets.len() as u64;
@@ -2328,39 +2385,37 @@ mod fake_port {
     }
 
     #[test]
-    fn late_coherent_result_freezes_without_invalidating() {
-        let store = Arc::new(FakeStore::new());
-        let host = FakeHost {
-            store: store.clone(),
-            capture: Ok(snapshot(2, vec![])),
-            cancel_on_return: true,
-        };
-        let mut lane = ObservationLane::default();
-        let outcome = observe_and_publish(
-            &host,
-            store.as_ref(),
-            &mut lane,
-            "instance-a",
-            crate::test_support::test_host_id(),
-            &HostCallContext {
-                budget: budget(),
-                expected_boot: None,
-                expected_epoch: None,
-            },
-            &budget(),
-        )
-        .unwrap();
-        // A coherent answer past its budget is unavailability: frozen, not
-        // invalidated (ht-yms).
-        assert!(matches!(
-            outcome,
-            ObservationOutcome::Frozen {
-                reason: HostInvalidationReason::HostUnavailable,
-                ..
-            }
-        ));
-        assert!(!lane.is_available());
-        assert_eq!(store.state.lock().unwrap().calls, ["admit"]);
+    fn cancelled_capture_is_no_frozen_outcome() {
+        // A Stop that cancels the capture is not a host outage: whether the host answered or
+        // failed, the outcome is `Cancelled` (which the lane takes as no error), never `Frozen`.
+        for capture in [
+            Ok(snapshot(2, vec![])),
+            Err(ApiError::host_unavailable("down")),
+        ] {
+            let store = Arc::new(FakeStore::new());
+            let host = FakeHost {
+                store: store.clone(),
+                capture,
+                cancel_on_return: true,
+            };
+            let mut lane = ObservationLane::default();
+            let error = observe_and_publish(
+                &host,
+                store.as_ref(),
+                &mut lane,
+                "instance-a",
+                crate::test_support::test_host_id(),
+                &HostCallContext {
+                    budget: budget(),
+                    expected_boot: None,
+                    expected_epoch: None,
+                },
+                &budget(),
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Cancelled, "{error:?}");
+            assert_eq!(store.state.lock().unwrap().calls, ["admit"]);
+        }
     }
 
     #[test]
@@ -2400,6 +2455,33 @@ mod fake_port {
                 .iter()
                 .any(|call| call.starts_with("invalidate:"))
         );
+    }
+
+    #[test]
+    fn cancelled_publication_is_no_frozen_outcome() {
+        let store = Arc::new(FakeStore::new());
+        {
+            let mut state = store.state.lock().unwrap();
+            state.fail_offset = Some(0);
+            state.fail_offset_cancelled = true;
+        }
+        let host = FakeHost {
+            store: store.clone(),
+            capture: Ok(snapshot(2, vec![target("p", "t", None, 2)])),
+            cancel_on_return: false,
+        };
+        let mut lane = ObservationLane::default();
+        let error = observe_and_publish(
+            &host,
+            store.as_ref(),
+            &mut lane,
+            "instance-a",
+            crate::test_support::test_host_id(),
+            &context(),
+            &budget(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Cancelled, "{error:?}");
     }
 
     #[test]
@@ -2689,6 +2771,107 @@ mod fake_port {
         assert_eq!(invalidations(&store), 0);
         assert!(store.state.lock().unwrap().invalidated_seats.is_empty());
         assert_eq!(store.state.lock().unwrap().calls, ["admit", "admit"]);
+    }
+
+    /// A herdr-core whose socket is gone (the fake dropped) is unavailability, not an
+    /// unverified-but-readable capture: the real `HcHost` through `observe_and_publish`
+    /// freezes, ends no binding, invalidates nothing and marks nothing. Kills: reading a
+    /// failed `hello` as `CompleteUnverified`, which invalidates and marks seats unresolved.
+    /// An unreadable record state or core id freezes the same way (below).
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn refused_hc_socket_freezes_and_ends_no_binding() {
+        let socket = {
+            let fake = crate::test_support::fake_hc::FakeHc::start();
+            fake.socket().to_path_buf()
+        };
+        let host = crate::host::hc::HcHost::new(crate::host::hc::rpc::HcClient::new(socket));
+        let store = Arc::new(FakeStore::new());
+        store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
+        let mut lane = ObservationLane::default();
+        let outcome = observe_and_publish(
+            &host,
+            store.as_ref(),
+            &mut lane,
+            "instance-a",
+            crate::test_support::test_host_id(),
+            &context(),
+            &budget(),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                ObservationOutcome::Frozen {
+                    reason: HostInvalidationReason::HostUnavailable,
+                    cause: Some(_)
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert!(!lane.is_available());
+        assert_eq!(invalidations(&store), 0);
+        let state = store.state.lock().unwrap();
+        assert!(state.invalidated_seats.is_empty());
+        assert!(state.actions.is_empty());
+        assert_eq!(state.calls, ["admit"]);
+    }
+
+    /// An hc reply this build cannot read says nothing about any seat's terminal:
+    /// the observation freezes like a failed `hello` and ends no binding.
+    #[cfg(feature = "test-support")]
+    fn frozen_by_unreadable_hc(fake: &crate::test_support::fake_hc::FakeHc) {
+        let host = crate::host::hc::HcHost::new(crate::host::hc::rpc::HcClient::new(
+            fake.socket().to_path_buf(),
+        ));
+        let store = Arc::new(FakeStore::new());
+        store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
+        let mut lane = ObservationLane::default();
+        let outcome = observe_and_publish(
+            &host,
+            store.as_ref(),
+            &mut lane,
+            "instance-a",
+            crate::test_support::test_host_id(),
+            &context(),
+            &budget(),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                ObservationOutcome::Frozen {
+                    reason: HostInvalidationReason::HostUnavailable,
+                    cause: Some(_)
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(invalidations(&store), 0);
+        let state = store.state.lock().unwrap();
+        assert!(state.invalidated_seats.is_empty());
+        assert!(state.actions.is_empty());
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn unreadable_hc_state_freezes_and_ends_no_binding() {
+        use crate::test_support::fake_hc::{FakeHc, FakeTerminal};
+        let fake = FakeHc::start();
+        let mut t = FakeTerminal::live("t1");
+        t.state = "x_future_state".into();
+        fake.add_terminal(t);
+        frozen_by_unreadable_hc(&fake);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn unusable_hc_core_id_freezes_and_ends_no_binding() {
+        use crate::test_support::fake_hc::{FakeHc, FakeTerminal};
+        let fake = FakeHc::start();
+        fake.add_terminal(FakeTerminal::live("t1"));
+        fake.rotate_core_id("");
+        frozen_by_unreadable_hc(&fake);
     }
 
     #[test]
@@ -3570,6 +3753,810 @@ mod carry_forward {
     }
 }
 
+/// D10 over a real store: `HcHost` captures a `FakeHc` (which applies
+/// herdr-core's `Registry::finish`), the capture is staged and published, and
+/// the planned transitions are applied to a seat bound to terminal `t1`.
+#[cfg(feature = "test-support")]
+mod hc_closure {
+    use super::*;
+    use crate::host::hc::{HcClient, HcHost};
+    use crate::ports::{
+        DurableWorkAdmission, GuardedSeatTransition, HostCallContext, HostPort, PublishedSnapshot,
+        ReconciliationOutcome, SnapshotHeader,
+    };
+    use crate::protocol::time::{CallBudget, Cancellation, Clock};
+    use crate::store::{connection::StoreContext, seats};
+    use crate::test_support::fake_hc::{FakeHc, FakeTerminal};
+    use std::sync::Arc;
+
+    const INSTANCE: &str = "34750f98bd59fcfc946da45aaabe933b";
+    const BOOT: &str = "hc-core:core-0001";
+
+    struct FixedClock;
+    impl Clock for FixedClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(100)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(100)
+        }
+    }
+
+    struct Env {
+        fake: FakeHc,
+        host: HcHost,
+        context: StoreContext,
+        conn: rusqlite::Connection,
+        budget: CallBudget,
+        path: std::path::PathBuf,
+    }
+    impl Drop for Env {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn call_context() -> HostCallContext {
+        HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(10_000),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        }
+    }
+
+    /// A kept or unkept terminal `t1` on core-0001 and a resolved seat `s`
+    /// bound to it, registered, in the core's boot. `registered` false
+    /// leaves the seat with its structural proof only.
+    fn env(keep: bool, registered: bool) -> Env {
+        let fake = FakeHc::start();
+        let mut t1 = FakeTerminal::live("t1");
+        t1.keep = keep;
+        fake.add_terminal(t1);
+        let host = HcHost::with_clock(HcClient::new(fake.socket()), Arc::new(FixedClock));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-hc-closure-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
+        let conn = context.open_writer().unwrap();
+        conn.execute("UPDATE herdr_hosts SET host_boot=?1,host_epoch=1", [BOOT])
+            .unwrap();
+        let kind = crate::ports::EvidenceKind::CoherentEnumeration
+            .structural_storage_spelling()
+            .unwrap();
+        conn.execute(
+            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_open,home_node,is_local,host_id) VALUES ('s',?1,'resolved',NULL,'native','t1',1,1,'t1',?2,?3,?2,1,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+            rusqlite::params![INSTANCE, BOOT, kind],
+        )
+        .unwrap();
+        if registered {
+            conn.execute(
+                "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'t1',?1,1,'claude','plugin_context:x','exec-x','cooperative_top_level',7,8,'t1',?1)",
+                [BOOT],
+            )
+            .unwrap();
+        }
+        Env {
+            fake,
+            host,
+            context,
+            conn,
+            budget: CallBudget {
+                deadline: MonoInstant(1_000),
+                cancellation: Cancellation::default(),
+            },
+            path,
+        }
+    }
+
+    impl Env {
+        /// Captures the fake core, publishes it and plans the saved seats.
+        fn capture(&mut self) -> (PublishedSnapshot, Vec<GuardedSeatTransition>) {
+            let snapshot = self.host.enumerate_targets(&call_context()).unwrap();
+            assert!(snapshot.authorizes_absence_closure(), "{snapshot:?}");
+            let admission = seats::begin_host_observation(
+                &self.context,
+                &mut self.conn,
+                INSTANCE,
+                crate::test_support::test_host_id(),
+                &self.budget,
+            )
+            .unwrap();
+            let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
+            let stage =
+                seats::begin_snapshot_stage(&self.context, &mut self.conn, header, &self.budget)
+                    .unwrap();
+            if !snapshot.targets.is_empty() {
+                crate::test_support::snapshot::stage_all(&snapshot.targets, |offset, targets| {
+                    seats::stage_snapshot_targets(
+                        &self.context,
+                        &mut self.conn,
+                        &stage.id,
+                        offset,
+                        targets,
+                        DurableWorkAdmission::new(16).unwrap(),
+                        &self.budget,
+                    )
+                })
+                .unwrap();
+            }
+            seats::seal_snapshot_stage(&self.context, &mut self.conn, &stage.id, &self.budget)
+                .unwrap();
+            let published = seats::publish_snapshot_stage(
+                &self.context,
+                &mut self.conn,
+                &stage.id,
+                &self.budget,
+            )
+            .unwrap();
+            let page = seats::saved_seats_page(
+                &self.context,
+                &self.conn,
+                &published.id,
+                0,
+                None,
+                16,
+                &self.budget,
+            )
+            .unwrap();
+            (published, plan_page(&page).unwrap())
+        }
+
+        fn apply(&mut self, transitions: &[GuardedSeatTransition]) {
+            for transition in transitions {
+                let outcome = seats::apply_reconciliation_transition(
+                    &self.context,
+                    &mut self.conn,
+                    transition.clone(),
+                    &self.budget,
+                )
+                .unwrap();
+                assert!(
+                    matches!(
+                        outcome,
+                        ReconciliationOutcome::Applied
+                            | ReconciliationOutcome::RetirementStarted(_)
+                    ),
+                    "{transition:?}: {outcome:?}"
+                );
+            }
+        }
+
+        /// Captures and applies; returns the planned actions.
+        fn settle(&mut self) -> Vec<ReconciliationAction> {
+            let (_, transitions) = self.capture();
+            self.apply(&transitions);
+            transitions.into_iter().map(|t| t.action).collect()
+        }
+
+        fn seat(&self) -> (String, Option<String>) {
+            self.conn
+                .query_row(
+                    "SELECT state,unresolved_reason FROM seats WHERE id='s'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        }
+
+        fn open_bindings(&self) -> i64 {
+            self.conn
+                .query_row(
+                    "SELECT count(*) FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        }
+
+        fn disconnect_reasons(&self) -> Vec<String> {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT disconnect_reason FROM occupant_bindings WHERE seat_id='s' AND disconnect_reason IS NOT NULL")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        }
+    }
+
+    fn assert_retired(env: &Env) {
+        assert_eq!(env.seat().0, "retired");
+    }
+
+    fn assert_unresolved_for_restart(env: &Env) {
+        assert_eq!(
+            env.seat(),
+            (
+                "unresolved".to_owned(),
+                Some("host_invalidation".to_owned())
+            )
+        );
+        assert_eq!(env.open_bindings(), 0);
+        assert_eq!(env.disconnect_reasons(), ["seat_unresolved"]);
+    }
+
+    #[test]
+    fn hc_restart_publishes_through_the_port() {
+        let env = env(true, true);
+        let record = |snapshot: crate::ports::HostSnapshot| {
+            let mut conn = env.context.open_writer().unwrap();
+            seats::record_snapshot(
+                &env.context,
+                &mut conn,
+                INSTANCE,
+                crate::test_support::test_host_id(),
+                snapshot,
+            )
+        };
+        let first = env.host.enumerate_targets(&call_context()).unwrap();
+        record(first.clone()).unwrap();
+        // A restarted daemon builds the host as the factory does, behind the port, and
+        // resumes after the persisted epoch: its first snapshot (sequence 1) is accepted.
+        let restarted: Arc<dyn HostPort> = Arc::new(HcHost::with_clock(
+            HcClient::new(env.fake.socket()),
+            Arc::new(FixedClock),
+        ));
+        restarted.resume_after_epoch(first.epoch);
+        let after = restarted.enumerate_targets(&call_context()).unwrap();
+        assert_eq!(after.observation_sequence, 1);
+        assert!(after.epoch > first.epoch);
+        record(after).unwrap();
+    }
+
+    #[test]
+    fn same_id_restart_carry_forward_zero_transitions() {
+        let mut env = env(true, true);
+        assert!(
+            env.settle().is_empty(),
+            "a present terminal changes nothing"
+        );
+        // The core restarts: same id, its event sequence begins again.
+        env.fake.reset_seq();
+        let (published, transitions) = env.capture();
+        assert_eq!(published.boot.as_str(), BOOT);
+        assert!(transitions.is_empty(), "{transitions:?}");
+        assert_eq!(env.seat().0, "resolved");
+        assert_eq!(env.open_bindings(), 1);
+    }
+
+    #[test]
+    fn core_id_rotation_c2_holds() {
+        let mut env = env(true, true);
+        assert!(env.settle().is_empty());
+        // A wipe: a new permanent core id; even a terminal also named t1 is
+        // another terminal (`tN` alone never matches across a core id).
+        env.fake.rotate_core_id("core-0002");
+        env.fake.add_terminal(FakeTerminal::live("t1"));
+        let (published, transitions) = env.capture();
+        assert_eq!(published.boot.as_str(), "hc-core:core-0002");
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].action, ReconciliationAction::MarkUnresolved);
+        env.apply(&transitions);
+        assert_eq!(
+            env.seat(),
+            ("unresolved".to_owned(), Some("other".to_owned()))
+        );
+        assert_eq!(env.open_bindings(), 0);
+        let (baseline, unclaimed): (Option<String>, i64) = env
+            .conn
+            .query_row(
+                "SELECT recovery_baseline_generation_id,baseline_hold_unclaimed FROM herdr_hosts",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(baseline.as_deref(), Some(published.id.as_str()));
+        assert_eq!(
+            unclaimed, 1,
+            "the new core's targets are held for repair (C2)"
+        );
+        // The next capture neither retires nor reattaches it.
+        let (_, again) = env.capture();
+        assert!(
+            again
+                .iter()
+                .all(|t| !matches!(t.action, ReconciliationAction::BeginRetirement { .. })),
+            "{again:?}"
+        );
+        assert_eq!(env.seat().0, "unresolved");
+    }
+
+    macro_rules! final_finish {
+        ($name:ident, $keep:expr, $reason:expr) => {
+            #[test]
+            fn $name() {
+                let mut env = env($keep, true);
+                assert!(env.settle().is_empty());
+                env.fake.finish("t1", $reason, None, None);
+                let actions = env.settle();
+                assert!(
+                    matches!(actions[..], [ReconciliationAction::BeginRetirement { .. }]),
+                    "{actions:?}"
+                );
+                assert_retired(&env);
+                assert_eq!(env.disconnect_reasons(), ["seat_retired"]);
+            }
+        };
+    }
+    final_finish!(keep_false_exited_retires, false, "exited");
+    final_finish!(keep_false_killed_retires, false, "killed");
+    final_finish!(keep_false_signaled_retires, false, "signaled");
+    final_finish!(keep_false_server_stop_retires, false, "server_stop");
+    final_finish!(keep_false_host_shutdown_retires, false, "host_shutdown");
+    final_finish!(keep_false_holder_lost_retires, false, "holder_lost");
+    final_finish!(
+        keep_false_stopped_by_restart_retires,
+        false,
+        "stopped_by_restart"
+    );
+    final_finish!(keep_true_exited_retires, true, "exited");
+    final_finish!(keep_true_killed_retires, true, "killed");
+    final_finish!(
+        unknown_reason_on_finished_keep_false_retires,
+        false,
+        "vanished"
+    );
+    final_finish!(
+        unknown_reason_on_finished_keep_true_retires,
+        true,
+        "vanished"
+    );
+
+    macro_rules! pending_restart {
+        ($name:ident, $reason:expr) => {
+            #[test]
+            fn $name() {
+                let mut env = env(true, true);
+                assert!(env.settle().is_empty());
+                env.fake.finish("t1", $reason, None, None);
+                let actions = env.settle();
+                assert_eq!(actions, [ReconciliationAction::UnresolveAwaitingTerminal]);
+                assert_unresolved_for_restart(&env);
+                // Still waiting: the same final state changes nothing more.
+                let (_, waiting) = env.capture();
+                assert!(
+                    waiting
+                        .iter()
+                        .all(|t| t.action == ReconciliationAction::MarkUnresolved),
+                    "{waiting:?}"
+                );
+                assert_unresolved_for_restart(&env);
+                // The core restarts the same tN: C1 reattaches the seat.
+                env.fake.restart("t1");
+                let actions = env.settle();
+                assert!(
+                    matches!(
+                        actions[..],
+                        [ReconciliationAction::ReconfirmStructure { .. }]
+                    ),
+                    "{actions:?}"
+                );
+                assert_eq!(env.seat().0, "resolved");
+            }
+        };
+    }
+    pending_restart!(
+        keep_true_holder_lost_unresolves_and_reattaches,
+        "holder_lost"
+    );
+    pending_restart!(
+        keep_true_stopped_by_restart_unresolves_and_reattaches,
+        "stopped_by_restart"
+    );
+    pending_restart!(
+        keep_true_server_stop_unresolves_and_reattaches,
+        "server_stop"
+    );
+    pending_restart!(
+        keep_true_host_shutdown_unresolves_and_reattaches,
+        "host_shutdown"
+    );
+    pending_restart!(keep_true_signaled_unresolves_and_reattaches, "signaled");
+
+    #[test]
+    fn removed_retires_resolved_and_unresolved_alike() {
+        // Resolved seat: its finished record is pruned.
+        let mut resolved = env(false, true);
+        assert!(resolved.settle().is_empty());
+        resolved.fake.prune("t1");
+        assert!(matches!(
+            resolved.settle()[..],
+            [ReconciliationAction::BeginRetirement { .. }]
+        ));
+        assert_retired(&resolved);
+
+        // Unresolved seat (kept terminal waiting): the record is pruned.
+        for registered in [true, false] {
+            let mut waiting = env(true, registered);
+            assert!(waiting.settle().is_empty());
+            waiting.fake.finish("t1", "server_stop", None, None);
+            waiting.settle();
+            assert_eq!(waiting.seat().0, "unresolved");
+            waiting.fake.prune("t1");
+            let actions = waiting.settle();
+            assert!(
+                matches!(actions[..], [ReconciliationAction::BeginRetirement { .. }]),
+                "registered={registered}: {actions:?}"
+            );
+            assert_retired(&waiting);
+        }
+    }
+
+    #[test]
+    fn one_or_several_captures_same_outcome() {
+        let mut one = env(false, true);
+        one.fake.finish("t1", "exited", None, None);
+        one.settle();
+
+        let mut several = env(false, true);
+        several.fake.finish("t1", "exited", None, None);
+        several.fake.prune("t1");
+        several.settle();
+        several.settle();
+        several.settle();
+        assert_eq!(several.seat(), one.seat());
+        assert_retired(&one);
+        assert_eq!(several.disconnect_reasons(), one.disconnect_reasons());
+        // Later captures of the same state plan nothing.
+        assert!(one.settle().is_empty());
+    }
+
+    #[test]
+    fn agent_exit_in_live_shell_ends_binding_only() {
+        let mut env = env(false, true);
+        assert!(env.settle().is_empty());
+        // The agent exited; the terminal's shell is still the foreground.
+        env.fake.set_foreground(
+            "t1",
+            Some(serde_json::json!({"pid": 4242, "name": "sh", "argv": ["sh"], "cwd": "/"})),
+        );
+        env.fake.set_status("t1", None);
+        assert!(env.settle().is_empty());
+        assert_eq!(env.seat().0, "resolved");
+        // The binding ends on its own evidence (process exit), not through
+        // the terminal; the seat stays resolved on the live terminal.
+        env.conn
+            .execute(
+                "UPDATE occupant_bindings SET ended_at=9,liveness='disconnected',disconnect_reason='process_exit' WHERE seat_id='s'",
+                [],
+            )
+            .unwrap();
+        assert!(env.settle().is_empty());
+        assert_eq!(env.seat().0, "resolved");
+    }
+
+    #[test]
+    fn machine_mirrors_and_finished_retire_nothing_live() {
+        let mut env = env(false, true);
+        env.fake.add_terminal(FakeTerminal::live("machine/t1"));
+        env.fake.add_terminal(FakeTerminal::live("t2"));
+        env.fake.finish("t2", "exited", None, None);
+        assert!(
+            env.settle().is_empty(),
+            "t1 is live; t2 and the mirror are not seats"
+        );
+        assert_eq!(env.seat().0, "resolved");
+        assert_eq!(env.open_bindings(), 1);
+    }
+
+    #[test]
+    fn failed_hello_closes_nothing() {
+        let mut env = env(false, true);
+        assert!(env.settle().is_empty());
+        let dead = HcHost::with_clock(HcClient::new("/nonexistent/hc.sock"), Arc::new(FixedClock));
+        let error = dead.enumerate_targets(&call_context()).unwrap_err();
+        assert_eq!(
+            error.code,
+            crate::protocol::results::ErrorCode::HostUnavailable
+        );
+        // A failed capture is never staged as a coherent publication;
+        // the seat is untouched.
+        assert_eq!(env.seat().0, "resolved");
+        assert_eq!(env.open_bindings(), 1);
+    }
+}
+
+/// Kills: absence closure applied to a `NonClosing` host, which would retire or
+/// unresolve a live named seat that one enumeration happened not to show.
+#[test]
+fn non_closing_host_absence_yields_no_retirement_or_unresolve() {
+    use crate::ports::{
+        ClosureAuthority, PublishedSnapshot, SeatState, SnapshotGenerationId, SnapshotSavedSeat,
+        SnapshotSeatPage,
+    };
+    let seat =
+        |ordinal: u64, state: SeatState, target: Option<&str>, proof: bool| SnapshotSavedSeat {
+            restored_pane: Default::default(),
+            ordinal,
+            seat: SeatId::new(format!("seat-{ordinal}")),
+            state,
+            unresolved_reason: None,
+            prior_published_observation: None,
+            structural_proof: proof.then(|| structural_proof("old-address", "terminal-a", 1)),
+            target: target.map(HostTargetId::new),
+            terminal: target.map(|_| TerminalId::new("terminal-a")),
+            binding_generation: 1,
+            binding_execution: None,
+            active_binding_execution: None,
+            bound_epoch: None,
+            bound_boot: None,
+            bound_incarnation: None,
+            latest_binding_evidence: None,
+            observed_match: None,
+        };
+    let page = SnapshotSeatPage {
+        publication: PublishedSnapshot {
+            id: SnapshotGenerationId::store_issued("named".into()),
+            instance: "instance-a".into(),
+            host_id: crate::test_support::test_host_id(),
+            boot: HostBootId::new("boot-a"),
+            epoch: 1,
+            observation_sequence: 3,
+            incarnation: "inc-a".into(),
+            target_count: 0,
+            invalidation_revision: 0,
+        },
+        high_water_ordinal: 2,
+        after_ordinal: 2,
+        visited: 2,
+        has_more: false,
+        // Seat 1: a proven target the enumeration does not show. Seat 2: no
+        // proof at all.
+        seats: vec![
+            seat(1, SeatState::Resolved, Some("old-address"), true),
+            seat(2, SeatState::Resolved, None, false),
+        ],
+    };
+    // The same page on a closing host does close: the assertion has teeth.
+    let closing = plan_page_for(&page, ClosureAuthority::Closing).unwrap();
+    assert!(
+        closing
+            .iter()
+            .any(|t| matches!(t.action, ReconciliationAction::BeginRetirement { .. }))
+    );
+    assert!(
+        closing
+            .iter()
+            .any(|t| matches!(t.action, ReconciliationAction::MarkUnresolved))
+    );
+    assert!(
+        plan_page_for(&page, ClosureAuthority::NonClosing)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+// S1 (named host): allocation racing an enumeration under the lifecycle fence, and a restart.
+// The enumeration is a store read, so one taken before an allocation simply lacks the new seat;
+// the allocation's lifecycle-revision bump is what lets the next publication supersede it, and a
+// `NonClosing` plan over the stale publication must not unresolve or retire the new seat. After a
+// restart (a higher host epoch) the same seat is carried forward, not unresolved.
+// Kills: reconcile treating a missing row as absence on the named host, and a restart that
+// unresolves named seats instead of carrying their binding to the new epoch.
+#[test]
+fn s1_named_allocation_race_and_carry_forward() {
+    use crate::host::named::NamedHost;
+    use crate::ports::{
+        ClosureAuthority, DurableStructuralProof, HostCallContext, HostId, HostKind, HostPort,
+        PublishedSnapshot, SeatState, SnapshotGenerationId, SnapshotSavedSeat, SnapshotSeatPage,
+        SnapshotTargetMatch,
+    };
+    use crate::protocol::{
+        commands::ResolveSeat,
+        ids::{HostLocator, NAMED_HOST_LOCATOR, OperationId, SeatName},
+        results::{ApiError, CommandResult},
+        time::{CallBudget, Cancellation, Clock},
+    };
+    use crate::store::{connection::StoreContext, named_seats::NamedSeatSource, seats};
+    use crate::test_support::fake_hosts::FakeHostWorld;
+    use std::sync::Arc;
+
+    struct FixedClock;
+    impl Clock for FixedClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(100)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(100)
+        }
+    }
+    /// The production read (`store::named_seats::live_named`) over a fresh connection per call,
+    /// so it sees each allocation the moment it commits.
+    struct DbSource(std::path::PathBuf);
+    impl NamedSeatSource for DbSource {
+        fn live_named(
+            &self,
+            host: &HostId,
+            _: &CallBudget,
+        ) -> Result<Vec<(SeatId, SeatName)>, ApiError> {
+            let db = rusqlite::Connection::open(&self.0).unwrap();
+            crate::store::named_seats::live_named(&db, host)
+        }
+    }
+
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-named-s1-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
+    let mut conn = context.open_writer().unwrap();
+    let locator = HostLocator::parse(NAMED_HOST_LOCATOR).unwrap();
+    let (host_id, _) =
+        crate::store::hosts::attach_host(&mut conn, &locator, 0, HostKind::Named).unwrap();
+    let budget = CallBudget {
+        deadline: MonoInstant(10_000),
+        cancellation: Cancellation::default(),
+    };
+    let call = HostCallContext {
+        budget: budget.clone(),
+        expected_boot: None,
+        expected_epoch: None,
+    };
+    let node = "0123456789abcdef0123456789abcdef";
+    let named = |source: &Arc<DbSource>| -> Arc<dyn HostPort> {
+        Arc::new(NamedHost::new(
+            node,
+            host_id,
+            source.clone(),
+            Arc::new(FixedClock),
+        ))
+    };
+    let source = Arc::new(DbSource(path.clone()));
+    let world = FakeHostWorld::new();
+    let first_host = named(&source);
+    world.add(&locator, first_host.clone());
+    assert_eq!(first_host.closure_authority(), ClosureAuthority::NonClosing);
+
+    let revision = |conn: &rusqlite::Connection| -> i64 {
+        conn.query_row(
+            "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=?1",
+            [host_id.get()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    // The enumeration that raced the allocation: taken first, so it lacks the seat.
+    let stale = first_host.enumerate_targets(&call).unwrap();
+    assert!(stale.targets.is_empty());
+    let before = revision(&conn);
+    let request = ResolveSeat {
+        target: HostTargetId::new("worker"),
+        host: locator.clone(),
+        operation: OperationId::new("s1-op"),
+        locator_hint: None,
+        tmux_hint: None,
+    };
+    let seat = match seats::resolve_named_seat(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        host_id,
+        &request,
+        &budget,
+    )
+    .unwrap()
+    {
+        CommandResult::NamedSeatResolved { seat, created, .. } => {
+            assert!(created);
+            seat
+        }
+        other => panic!("unexpected result {other:?}"),
+    };
+    assert!(
+        revision(&conn) > before,
+        "the allocation moves the lifecycle fence a stale enumeration was taken under"
+    );
+    let publication = |snapshot: &crate::ports::HostSnapshot| PublishedSnapshot {
+        id: SnapshotGenerationId::store_issued(format!("s1-{}", snapshot.epoch)),
+        instance: "instance-a".into(),
+        host_id,
+        boot: snapshot.boot.clone(),
+        epoch: snapshot.epoch,
+        observation_sequence: snapshot.observation_sequence,
+        incarnation: snapshot.boot.as_str().to_owned(),
+        target_count: snapshot.targets.len() as u64,
+        invalidation_revision: 0,
+    };
+    let saved = |snapshot: &crate::ports::HostSnapshot, proof: Option<DurableStructuralProof>| {
+        SnapshotSavedSeat {
+            restored_pane: Default::default(),
+            ordinal: 1,
+            seat: seat.clone(),
+            state: SeatState::Resolved,
+            unresolved_reason: None,
+            prior_published_observation: None,
+            structural_proof: proof,
+            target: Some(HostTargetId::new("worker")),
+            terminal: Some(TerminalId::new("named:worker")),
+            binding_generation: 1,
+            binding_execution: None,
+            active_binding_execution: Some(ExecutionId::new("exec-a")),
+            bound_epoch: Some(1),
+            bound_boot: Some(snapshot.boot.clone()),
+            bound_incarnation: Some(snapshot.boot.as_str().to_owned()),
+            latest_binding_evidence: None,
+            observed_match: snapshot.targets.iter().find_map(|t| {
+                (t.target.as_str() == "worker").then(|| SnapshotTargetMatch {
+                    target: t.target.clone(),
+                    terminal: t.terminal.clone(),
+                    structural_generation: t.generation,
+                    observation_sequence: t.observation_sequence,
+                    connection_epoch: Some(t.connection_epoch),
+                    incarnation_source: Some(EvidenceKind::NativeCurrentTarget),
+                    occupancy: StructuralOccupancy::Unknown,
+                    verified_execution: None,
+                    top_level_occupant: false,
+                })
+            }),
+        }
+    };
+    let page = |snapshot: &crate::ports::HostSnapshot, seat: SnapshotSavedSeat| SnapshotSeatPage {
+        publication: publication(snapshot),
+        high_water_ordinal: 1,
+        after_ordinal: 0,
+        visited: 1,
+        has_more: false,
+        seats: vec![seat],
+    };
+
+    // The stale publication does not show the new seat. A closing host would unresolve it; the
+    // named host plans nothing.
+    let stale_page = page(&stale, saved(&stale, None));
+    assert!(
+        plan_page_for(&stale_page, ClosureAuthority::NonClosing)
+            .unwrap()
+            .is_empty(),
+        "a missing row on the named host is not absence"
+    );
+    assert!(
+        matches!(
+            plan_page_for(&stale_page, ClosureAuthority::Closing).unwrap()[0].action,
+            ReconciliationAction::MarkUnresolved
+        ),
+        "the same page does unresolve on a closing host: the guard is the authority"
+    );
+    // The next enumeration shows it.
+    let fresh = first_host.enumerate_targets(&call).unwrap();
+    let names: Vec<_> = fresh.targets.iter().map(|t| t.target.as_str()).collect();
+    assert_eq!(names, ["worker"]);
+
+    // Restart: a new host over the same store resumes after the persisted epoch.
+    let restarted = named(&source);
+    restarted.resume_after_epoch(fresh.epoch);
+    let after = restarted.enumerate_targets(&call).unwrap();
+    assert!(after.epoch > fresh.epoch);
+    let proof = DurableStructuralProof::from_persisted(
+        HostTargetId::new("worker"),
+        TerminalId::new("named:worker"),
+        after.boot.as_str().to_owned(),
+        EvidenceKind::NativeCurrentTarget,
+        after.boot.clone(),
+        fresh.epoch,
+        fresh.epoch,
+        1,
+        1,
+    )
+    .unwrap();
+    let restart_page = page(&after, saved(&after, Some(proof)));
+    let plan = plan_page_for(&restart_page, ClosureAuthority::NonClosing).unwrap();
+    assert_eq!(plan.len(), 1);
+    assert!(
+        matches!(
+            &plan[0].action,
+            ReconciliationAction::CarryForward { target, terminal }
+                if target.as_str() == "worker" && terminal.as_str() == "named:worker"
+        ),
+        "{:?}",
+        plan[0].action
+    );
+    drop(world);
+}
+
 /// ht-wp7n: which passes complete past a refusal (TRUST-POLICY C2).
 mod refusal_streaks {
     use super::*;
@@ -3686,4 +4673,20 @@ mod refusal_streaks {
         run_to_threshold(&mut streaks);
         assert!(!streaks.pass_finished(&publication(2), std::slice::from_ref(&refused)));
     }
+}
+
+#[test]
+fn begin_pass_forgets_the_finished_set() {
+    let mut lane = ObservationLane::default();
+    lane.stage_live(vec![SeatId::new("a")]);
+    lane.promote_live();
+    lane.stage_live(vec![SeatId::new("b")]);
+    lane.begin_pass();
+    assert_eq!(
+        lane.published_live(),
+        None,
+        "an open pass publishes nothing"
+    );
+    lane.promote_live();
+    assert_eq!(lane.published_live(), Some([SeatId::new("b")].as_slice()));
 }

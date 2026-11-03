@@ -1142,6 +1142,8 @@ fn claude_declared_groups_are_the_single_source_for_the_hook_object() {
             "SessionStart",
             "PreToolUse",
             "UserPromptSubmit",
+            "Stop",
+            "StopFailure",
             "SubagentStart",
             "SubagentStop"
         ]

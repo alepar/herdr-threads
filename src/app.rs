@@ -20,7 +20,7 @@ use crate::{
         dispatch::DomainService,
         fair_writer::FairWriter,
         host_evidence::HostEvidenceStatus,
-        host_sessions::{HostAttachPlan, HostSession, HostSessions, SessionDeps},
+        host_sessions::{HostAttachPlan, HostFactory, HostSession, HostSessions, SessionDeps},
         kicks::{CommitKicks, Lane},
         mod_channels::ModChannelRegistry,
         pacer::Pacer,
@@ -38,6 +38,41 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
+
+/// The production [`HostFactory`]: every host it builds measures call budgets on `clock`, the
+/// daemon's one clock, so a budget read on the daemon clock is never checked against another
+/// origin. `main` calls this; tests that exercise the wiring call it too.
+pub fn production_host_factory(clock: Arc<dyn Clock>) -> HostFactory {
+    HostFactory {
+        build: Arc::new(move |kind, locator| match kind {
+            crate::ports::HostKind::Hc => {
+                let client = crate::host::hc::HcClient::new(locator.as_path());
+                let host = Arc::new(crate::host::hc::HcHost::with_clock(
+                    client,
+                    Arc::clone(&clock),
+                ));
+                (
+                    host.clone(),
+                    Arc::new(crate::host::hc::HcBootstrapObserver::new(host)),
+                )
+            }
+            _ => {
+                let host = Arc::new(crate::host::native::NativeCli::new(
+                    locator.as_path().to_path_buf(),
+                    Arc::clone(&clock),
+                ));
+                (host.clone(), host)
+            }
+        }),
+        probe: Arc::new(|locator, budget| {
+            crate::host::probe::probe_kind(locator.as_path(), budget)
+        }),
+        exists: Arc::new(|path| {
+            use std::os::unix::fs::FileTypeExt;
+            std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket())
+        }),
+    }
+}
 
 /// UTC is used for durable deadlines; monotonic elapsed time is used for
 /// request budgets and wake spacing. Neither domain is derived from the other.
@@ -151,57 +186,81 @@ pub(crate) fn elected_health_provider(
 
 /// The host evidence the elected Health provider reports: the status the
 /// observation worker records into, and the adapter's static incarnation
-/// witness (`HostPort::incarnation_witness`), read once at composition.
+/// witness (`HostPort::incarnation_witness`). A composed daemon reads both
+/// per Health call from the startup primary (`HostReleaseSource::primary`);
+/// these fields are the answer while there is none.
 pub(crate) struct ElectedHostEvidence {
     pub(crate) status: Arc<HostEvidenceStatus>,
     pub(crate) incarnation_witness: CapabilityState,
     /// The adapter's static cooperative wake-prompt capability
-    /// (`HostPort::safe_prompt_capability`), read once at composition.
+    /// (`HostPort::safe_prompt_capability`), the answer while there is no primary.
     pub(crate) safe_prompt: CapabilityState,
     /// The installed `claude` and `codex` observed on the daemon's `PATH`
     /// at boot; Unknown until the bounded background observation completes.
     pub(crate) harnesses: Arc<Mutex<HarnessObservations>>,
-    /// The adapter, read on each Health for the Herdr release it last saw.
+    /// The attached sessions, read on each Health.
     pub(crate) release: HostReleaseSource,
 }
 
 impl ElectedHostEvidence {
-    /// The evidence of a composed daemon: the startup session's evidence
-    /// status and static adapter capabilities (`fallback` and the neutral
-    /// answers when no server is attached), and a release source over every
-    /// attached session.
+    /// The evidence of a composed daemon: `fallback` and the neutral answers
+    /// until a guarded-start session leads startup (`hint` names the one
+    /// startup was asked to attach), then that session's evidence status and
+    /// static adapter capabilities, read per Health call so a host attached
+    /// later is reported; and a release source over every attached session.
     pub(crate) fn of_sessions(
         sessions: &Arc<HostSessions>,
-        primary: Option<&HostSession>,
+        hint: Option<crate::protocol::ids::HostLocator>,
         fallback: Arc<HostEvidenceStatus>,
         harnesses: Arc<Mutex<HarnessObservations>>,
     ) -> Self {
-        let (status, incarnation_witness, safe_prompt) = match primary {
+        Self {
+            status: fallback,
+            incarnation_witness: CapabilityState::Unknown,
+            safe_prompt: CapabilityState::Unsupported,
+            harnesses,
+            release: HostReleaseSource(Some(HostSource {
+                sessions: Arc::clone(sessions),
+                hint,
+            })),
+        }
+    }
+
+    /// Refusals over the fallback and every session, the built-in named one included.
+    pub(crate) fn refusals(&self) -> (u64, Vec<crate::service::host_evidence::RefusedSeat>) {
+        let mut ledgers = self.release.evidences();
+        ledgers.push(Arc::clone(&self.status));
+        crate::service::host_evidence::merged_refusals(&ledgers)
+    }
+
+    /// The status, incarnation witness and safe-prompt capability Health
+    /// reports now.
+    pub(crate) fn current(&self) -> (Arc<HostEvidenceStatus>, CapabilityState, CapabilityState) {
+        match self.release.primary() {
             Some(session) => (
                 Arc::clone(session.evidence()),
                 session.port().incarnation_witness(),
                 session.port().safe_prompt_capability(),
             ),
             None => (
-                fallback,
-                CapabilityState::Unknown,
-                CapabilityState::Unsupported,
+                Arc::clone(&self.status),
+                self.incarnation_witness,
+                self.safe_prompt,
             ),
-        };
-        Self {
-            status,
-            incarnation_witness,
-            safe_prompt,
-            harnesses,
-            release: HostReleaseSource(Some(Arc::clone(sessions))),
         }
     }
 }
 
-/// Where Health reads the attached Herdr servers and their observed release;
-/// the default has none.
+/// Where Health reads the attached Herdr servers, their observed release and
+/// the startup primary; the default has none.
 #[derive(Default)]
-pub(crate) struct HostReleaseSource(Option<Arc<HostSessions>>);
+pub(crate) struct HostReleaseSource(Option<HostSource>);
+
+pub(crate) struct HostSource {
+    sessions: Arc<HostSessions>,
+    /// The startup hint `HostSessions::startup_primary` prefers.
+    hint: Option<crate::protocol::ids::HostLocator>,
+}
 
 impl HostReleaseSource {
     /// One Health entry per attached server, read on every Health call;
@@ -209,16 +268,36 @@ impl HostReleaseSource {
     fn entries(&self) -> Vec<crate::service::host_sessions::HostHealthEntry> {
         self.0
             .as_ref()
-            .map_or_else(Vec::new, |sessions| sessions.health_entries())
+            .map_or_else(Vec::new, |source| source.sessions.health_entries())
+    }
+
+    /// Every session's evidence ledger, the built-in one last; empty with no source.
+    fn evidences(&self) -> Vec<Arc<HostEvidenceStatus>> {
+        self.0.as_ref().map_or_else(Vec::new, |source| {
+            source
+                .sessions
+                .all_for_reads()
+                .iter()
+                .map(|session| Arc::clone(session.evidence()))
+                .collect()
+        })
     }
 
     fn observed(&self) -> Option<crate::host::compatibility::HostRelease> {
-        self.0.as_ref().and_then(|sessions| {
-            sessions
+        self.0.as_ref().and_then(|source| {
+            source
+                .sessions
                 .attached()
                 .iter()
                 .find_map(|session| session.port().observed_release())
         })
+    }
+
+    /// The guarded-start session Health follows now; `None` while none is attached.
+    fn primary(&self) -> Option<Arc<HostSession>> {
+        self.0
+            .as_ref()
+            .and_then(|source| source.sessions.startup_primary(source.hint.as_ref()))
     }
 }
 
@@ -296,7 +375,8 @@ impl ElectedHealth {
         }
         // Host reachability, coherent enumeration and reconciliation
         // time come only from evidence the observation lane observed.
-        let observed = self.host.status.health(self.host.incarnation_witness);
+        let (status, incarnation_witness, safe_prompt) = self.host.current();
+        let observed = status.health(incarnation_witness);
         inputs.host = observed.host;
         inputs.coherent_enumeration = observed.coherent_enumeration;
         inputs.last_reconciliation_at = observed.last_reconciliation_at;
@@ -320,7 +400,7 @@ impl ElectedHealth {
             Err(_) => degrade(&mut inputs, "unresolved seat status unavailable"),
         }
         inputs.current_execution = CapabilityState::Unsupported;
-        inputs.safe_prompt = self.host.safe_prompt;
+        inputs.safe_prompt = safe_prompt;
         inputs.receipt_registration = CapabilityState::Unsupported;
         if let Some(release) = self.host.release.observed() {
             inputs.host_version = Some(release.summary());
@@ -335,23 +415,20 @@ impl ElectedHealth {
         // (the shared slots above stay untouched when sessions exist); they
         // degrade the scheduler like any lane, the first one through its
         // component line.
-        let (hosts, session_lanes): (Vec<_>, Vec<_>) = self
-            .host
-            .release
-            .entries()
-            .into_iter()
-            .map(|entry| (entry.input, entry.lanes))
-            .unzip();
-        inputs.hosts = hosts;
-        let session_lanes: Vec<_> = session_lanes.into_iter().flatten().collect();
+        let mut session_lanes = Vec::new();
+        for entry in self.host.release.entries() {
+            if entry.aggregated {
+                inputs.hosts.push(entry.input);
+            }
+            session_lanes.extend(entry.lanes);
+        }
         if inputs.scheduler == ComponentStatus::Ready
             && let Some(first) = session_lanes.first()
         {
             inputs.scheduler = ComponentStatus::Degraded(first.summary.clone());
         }
         inputs.degraded_lanes.extend(session_lanes);
-        inputs.transitions_refused = self.host.status.transitions_refused();
-        inputs.refused_seats = self.host.status.refused_seats();
+        (inputs.transitions_refused, inputs.refused_seats) = self.host.refusals();
         inputs.last_scheduler_tick_at = self.workers.first().and_then(|status| status.last_tick());
         if let Ok(observed) = self.host.harnesses.lock() {
             // A harness with a legacy contract always reports (`Unknown` until
@@ -1056,18 +1133,14 @@ impl LaneProbe {
         let session = self.session_of(locator)?;
         match lane {
             Lane::Observation => Some(Arc::clone(session.observation().pacer())),
-            Lane::Wakes => Some(Arc::clone(session.wake().pacer())),
+            Lane::Wakes => session.wake().map(|wake| Arc::clone(wake.pacer())),
             _ => None,
         }
     }
     /// The first attached server's Pacer for a host lane.
     fn first_host_pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
-        let session = self.host_sessions()?.attached().into_iter().next()?;
-        match lane {
-            Lane::Observation => Some(Arc::clone(session.observation().pacer())),
-            Lane::Wakes => Some(Arc::clone(session.wake().pacer())),
-            _ => None,
-        }
+        // Dialled-only: the built-in host has no observation Pacer to follow (07 §5.3).
+        self.host_sessions()?.first_pacer(lane)
     }
     /// The daemon's host registry while the daemon lives (the probe holds it
     /// weakly, so a stopped daemon's hosts are released).
@@ -1077,6 +1150,7 @@ impl LaneProbe {
     /// Whether the first attached server's observation lane has it marked
     /// down (its wake lane is frozen); false before the daemon is attached.
     pub fn host_down(&self) -> bool {
+        // Dialled-only: the built-in host is never marked down by reachability (07 §5.3).
         self.host_sessions()
             .and_then(|sessions| sessions.attached().into_iter().next())
             .is_some_and(|session| session.reachability().is_down())
@@ -1224,18 +1298,23 @@ impl LaneProbe {
     }
     /// How many passes `lane`'s registered Pacer has finished (entered a wait).
     pub fn registered_idle_events(&self, lane: Lane) -> u64 {
-        let registry = self.state().registry.clone();
-        registry
-            .and_then(|kicks| kicks.pacer(lane))
+        self.registered_pacer(lane)
             .map_or(0, |pacer| pacer.idle_events())
+    }
+    /// The Pacer a test follows for `lane`: a dialled host's own for the host lanes (the
+    /// built-in host registers first and is never the one under test, 07 §5.3), else the
+    /// first the commit-kick registry holds.
+    fn registered_pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
+        let dialled = match lane {
+            Lane::Observation | Lane::Wakes => self.first_host_pacer(lane),
+            _ => None,
+        };
+        dialled.or_else(|| self.state().registry.clone()?.pacer(lane))
     }
     /// Observe a completed pass before the registered worker evaluates its
     /// next wait. The callback must not reenter or replace its own idle hook.
     pub fn set_registered_idle_hook(&self, lane: Lane, hook: Box<dyn Fn(u64) + Send + Sync>) {
-        let registry = self.state().registry.clone();
-        let pacer = registry
-            .and_then(|kicks| kicks.pacer(lane))
-            .expect("registered lane");
+        let pacer = self.registered_pacer(lane).expect("registered lane");
         pacer.set_idle_hook(hook);
     }
     /// Observe each pass start (a wait ending) of the registered worker, with
@@ -1245,10 +1324,7 @@ impl LaneProbe {
         lane: Lane,
         hook: Box<dyn Fn(crate::service::pacer::Wake) + Send + Sync>,
     ) {
-        let registry = self.state().registry.clone();
-        let pacer = registry
-            .and_then(|kicks| kicks.pacer(lane))
-            .expect("registered lane");
+        let pacer = self.registered_pacer(lane).expect("registered lane");
         pacer.set_wake_hook(hook);
     }
     /// Kicks `lane` through the commit-kick registry, as a store commit does.
@@ -1276,9 +1352,7 @@ impl LaneProbe {
     }
     /// Consecutive failed passes `lane`'s registered Pacer is backing off from.
     pub fn registered_attempts(&self, lane: Lane) -> u32 {
-        let registry = self.state().registry.clone();
-        registry
-            .and_then(|kicks| kicks.pacer(lane))
+        self.registered_pacer(lane)
             .map_or(0, |pacer| pacer.attempts())
     }
     /// Ends an injected failure.
@@ -1413,6 +1487,36 @@ where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
     run_elected_impl(paths, clock, shutdown, config, plan, None, probe, on_ready).await
+}
+
+/// [`run_elected_guarded`] with a [`LaneProbe`]: the production guarded composition (the handoff
+/// state directory reaches every session's bootstrap runtime) a test can inspect.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_elected_guarded_probed<R>(
+    paths: &NodePaths,
+    state_dir: std::path::PathBuf,
+    clock: Arc<dyn Clock>,
+    shutdown: Cancellation,
+    config: ServiceConfig,
+    plan: HostAttachPlan,
+    probe: LaneProbe,
+    on_ready: R,
+) -> io::Result<bool>
+where
+    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
+{
+    run_elected_impl(
+        paths,
+        clock,
+        shutdown,
+        config,
+        plan,
+        Some(state_dir),
+        probe,
+        on_ready,
+    )
+    .await
 }
 
 /// Production native composition: `plan.factory` builds each attached host,
@@ -1890,6 +1994,7 @@ where
             );
             factory_probe.attach_store(&sqlite);
             let remembered_store = Arc::clone(&sqlite);
+            let seated_store = Arc::clone(&sqlite);
             let bootstrap_store = sqlite.clone();
             let apply_store = sqlite.clone();
             let apply_identity = Arc::clone(&identity);
@@ -1899,6 +2004,7 @@ where
             let publisher_store = sqlite.clone();
             let first_attach_store = sqlite.clone();
             let apply_node_json = identity_paths.node_json_path.clone();
+            let named_seats: Arc<dyn crate::store::named_seats::NamedSeatSource> = sqlite.clone();
             let store: Arc<dyn StorePort> = sqlite;
             // The manifest policy, logged after election (stderr is the daemon
             // log from here on).
@@ -1991,6 +2097,9 @@ where
             let mod_channels: Arc<dyn crate::ports::ModChannels> = mod_registry.clone();
             let delivery_pull =
                 Arc::new(crate::service::delivery_pull::DeliveryPullState::default());
+            // Hook turn state per binding: the service records into it, the named host's tmux
+            // wake lane reads it.
+            let turn_state = Arc::new(crate::service::turn_state::TurnStateBook::default());
             // Binding liveness (spec §3, decision 9): the host process table backs
             // both the periodic re-check thread and the re-check before each
             // wake decision of every session's wake worker.
@@ -2047,6 +2156,10 @@ where
                         let db = remembered_store.context().open_query(budget.clone())?;
                         crate::store::hosts::remembered(&db, usize::MAX)
                     }),
+                    seated: Arc::new(move |budget: &CallBudget| {
+                        let db = seated_store.context().open_query(budget.clone())?;
+                        crate::store::hosts::hosts_with_resolved_seat(&db)
+                    }),
                     sweep_interval: factory_probe.host_sweep_period(),
                     wake_safety_tick: config.lane_tick(Duration::from_millis(
                         crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
@@ -2066,6 +2179,29 @@ where
                     _links: links,
                 });
             factory_probe.attach_host_sessions(&host_sessions);
+            // The built-in named host: never dialled, in its own slot (not in
+            // `attached()`); a failure is one log line and never fatal.
+            match crate::protocol::ids::HostLocator::parse(
+                crate::protocol::ids::NAMED_HOST_LOCATOR,
+            )
+            .and_then(|locator| {
+                let kind = crate::ports::HostKind::Named;
+                let host_id = host_sessions.reserve_host_id(&locator, kind)?;
+                let port = Arc::new(crate::host::named::NamedHost::new(
+                    &instance.to_string(),
+                    host_id,
+                    Arc::clone(&named_seats),
+                    Arc::clone(&factory_clock),
+                ));
+                port.set_turn_state(Arc::clone(&turn_state));
+                host_sessions.attach_builtin(kind, port, Arc::new(crate::host::named::NoBootstrap), &locator)
+            }) {
+                Ok(_) => {}
+                Err(error) => rate_limited_log.write_line(&format!(
+                    "named host not attached: {:?}: {}",
+                    error.code, error.detail
+                )),
+            }
             host_sessions.attach_startup(factory_hint.as_ref())?;
             // The service routes by claim host (`DomainService::attached_host`);
             // Health and archival still follow the startup session (`None`
@@ -2556,10 +2692,13 @@ where
             // host lanes report the startup session's (per-host Health: ht-5fr.2.10).
             let lane_statuses = vec![
                 factory_status.clone(),
-                primary.as_ref().map_or_else(
-                    || factory_wake_status.clone(),
-                    |session| Arc::clone(session.wake().status()),
-                ),
+                primary
+                    .as_ref()
+                    .and_then(|session| session.wake())
+                    .map_or_else(
+                        || factory_wake_status.clone(),
+                        |wake| Arc::clone(wake.status()),
+                    ),
                 primary.as_ref().map_or_else(
                     || factory_observation_status.clone(),
                     |session| Arc::clone(session.observation().status()),
@@ -2591,13 +2730,8 @@ where
                 .with_mod_channels(Arc::clone(&mod_channels))
                 .with_sync_admin(sync_admin)
                 .with_delivery_pull(Arc::clone(&delivery_pull))
+                .with_turn_state(Arc::clone(&turn_state))
                 .with_bootstrap_store(bootstrap_store);
-            // Guarded bootstrap is advertised when the startup server has a
-            // bootstrap runtime.
-            let guarded_host = primary
-                .as_ref()
-                .filter(|session| session.bootstrap().is_some())
-                .map(|session| session.locator().clone());
             let stop = StopController::new(instance, boot, cancellation);
             let provider = elected_health_provider(
                 instance,
@@ -2608,7 +2742,7 @@ where
                 health_lanes,
                 ElectedHostEvidence::of_sessions(
                     &host_sessions,
-                    primary.as_deref(),
+                    factory_hint.clone(),
                     factory_host_evidence.clone(),
                     harnesses,
                 ),
@@ -2675,12 +2809,10 @@ where
                 .with_rich_manifest_source(Arc::clone(&manifest)
                     as Arc<dyn crate::daemon::harness_evidence::RichManifestSource>),
             );
-            let control = if let Some(locator) = &guarded_host {
-                ControlService::new_guarded(stop, health, domain, locator)
-                    .map_err(|error| io::Error::other(error.detail))?
-            } else {
-                ControlService::new(stop, health, domain)
-            };
+            // Guarded capabilities are answered per `Capabilities` call from
+            // the hosts attached then, so a Herdr server attached after
+            // startup is served.
+            let control = ControlService::new_guarded(stop, health, domain);
             Ok(Arc::new(
                 control
                     .with_hook_parse_failures(factory_parse_failures)

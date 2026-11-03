@@ -390,6 +390,7 @@ fn scoped_labels(index: usize, workspace: &str, tab: &str) -> SeatHostLabels {
         tab_id: tab.into(),
         tab_label: Some("tryout".into()),
         pane_label: Some("alice".into()),
+        session: None,
     }
 }
 
@@ -989,4 +990,69 @@ fn display_context_unknown_human_or_wrong_generation_never_grants_agent_names() 
             registration.metadata().id
         );
     }
+}
+
+// Kills (F6): a header that looks the seat's target up in the pooled topology
+// of every host. Two seats on two hosts both own target `t1`; the pooled
+// topology holds one `t1` row, yet each header shows the labels the daemon
+// resolved for the seat's own host.
+#[test]
+fn agent_headers_of_two_hosts_owning_the_same_target_differ() {
+    let root = NickScratch::new();
+    let shared = HostTargetId::new("t1");
+    let entry = |workspace: &str, pane: &str| {
+        Box::new(crate::protocol::results::SeatDirectory {
+            node: "n".into(),
+            machine: None,
+            state: "idle".into(),
+            since: None,
+            harness: None,
+            activity_at: None,
+            seen_at: None,
+            workspace: Some(workspace.into()),
+            tab: Some("tab".into()),
+            pane: Some(pane.into()),
+            name: None,
+        })
+    };
+    let mut daemon = standard_daemon(vec![message(1, seat(0)), message(2, seat(1))]);
+    daemon.seats = vec![
+        SeatSummary {
+            directory: Some(entry("alpha", "pane-a")),
+            ..seat_summary(seat(0), Some(shared.clone()))
+        },
+        SeatSummary {
+            directory: Some(entry("beta", "pane-b")),
+            ..seat_summary(seat(1), Some(shared.clone()))
+        },
+    ];
+    daemon.participants = vec![seat(0), seat(1)];
+    let mut fx = fixture(daemon);
+    agent_contexts(&mut fx, &root.0);
+    let mut pooled = scoped_labels(0, "w1", "t1");
+    pooled.target = shared;
+    fx.cache.host = Box::new(ScopedPanes {
+        labels: Arc::new(Mutex::new(Some(vec![pooled]))),
+    });
+    let shown = read_page(&mut fx);
+    assert!(shown.contains("<alpha/pane-a/seat-Author00>"), "{shown}");
+    assert!(shown.contains("<beta/pane-b/seat-Author01>"), "{shown}");
+    assert!(!shown.contains("project/alice"), "{shown}");
+}
+
+// Kills: a CLI that errors (or invents labels) when it has no daemon label
+// read: no client, like a daemon without `topology.host_topologies_v1`, gives
+// an empty topology, so every label is `-` and the read goes on.
+#[test]
+fn daemon_panes_without_a_label_read_are_empty_not_an_error() {
+    let source = DaemonPanes {
+        client: None,
+        resolver: None,
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    assert_eq!(source.seat_labels(&budget).unwrap(), Some(Vec::new()));
+    assert!(source.pane_names(&budget).unwrap().is_empty());
 }

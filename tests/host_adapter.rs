@@ -1,10 +1,11 @@
 use herdr_threads::host::native::{NativeCli, PromptOutcome};
 use herdr_threads::host::observation::{normalize_pane, normalize_snapshot};
 use herdr_threads::ports::{
-    HostCallContext, HostPort, IncarnationEvidence, NativeLaunchCapability,
+    ArchivalEvidence, ClosureAuthority, ComposerTraits, HostCallContext, HostKind, HostPort,
+    IncarnationEvidence, NativeLaunchCapability, WakeCapability,
 };
 use herdr_threads::protocol::ids::HostTargetId;
-use herdr_threads::protocol::results::ErrorCode;
+use herdr_threads::protocol::results::{ApiError, ErrorCode};
 use herdr_threads::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis};
 use serde_json::{Value, json};
 use std::{
@@ -1549,4 +1550,151 @@ fn observed_release_follows_the_latest_answered_ping() {
     assert_eq!(third.code, ErrorCode::Unsupported);
     assert!(third.detail.contains("older than the minimum 0.9.1"));
     assert_eq!(refused, None);
+}
+
+/// A port that implements only the required methods: every capability answer is a default.
+struct BarePort;
+impl HostPort for BarePort {
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        NativeLaunchCapability::Unsupported
+    }
+    fn observe_current_target(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::HostObservation, ApiError> {
+        unreachable!("not called")
+    }
+    fn live_topology(
+        &self,
+        _budget: &CallBudget,
+    ) -> Result<herdr_threads::host::observation::HostTopology, ApiError> {
+        unreachable!("not called")
+    }
+    fn observe_current_target_for_archival(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::ComposerObservation, ApiError> {
+        unreachable!("not called")
+    }
+    fn enumerate_targets(
+        &self,
+        _context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::HostSnapshot, ApiError> {
+        unreachable!("not called")
+    }
+    fn safe_wake_target(
+        &self,
+        _seat: &herdr_threads::protocol::ids::SeatId,
+        _observation: &herdr_threads::ports::HostObservation,
+    ) -> Option<herdr_threads::ports::SafeWakeTarget> {
+        unreachable!("not called")
+    }
+    fn submit_prompt(
+        &self,
+        _target: &herdr_threads::ports::SafeWakeTarget,
+        _text: &str,
+        _context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::PromptOutcome, ApiError> {
+        unreachable!("not called")
+    }
+    fn launch_native(
+        &self,
+        _request: herdr_threads::ports::NativeLaunchRequest,
+        _context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::NativeLaunchOutcome, ApiError> {
+        unreachable!("not called")
+    }
+    fn pane_agent_state(
+        &self,
+        _target: &herdr_threads::ports::SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::AgentComposerState, ApiError> {
+        unreachable!("not called")
+    }
+    fn send_submit_key(
+        &self,
+        _target: &herdr_threads::ports::SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        unreachable!("not called")
+    }
+}
+
+fn call_context(ms: u64) -> HostCallContext {
+    HostCallContext {
+        budget: budget(ms),
+        expected_boot: None,
+        expected_epoch: None,
+    }
+}
+
+#[test]
+fn host_port_defaults_answer_without_unsupported() {
+    let port = BarePort;
+    assert_eq!(port.kind(), HostKind::Herdr);
+    assert_eq!(
+        port.wake_capability(),
+        WakeCapability::Composer(ComposerTraits::HERDR_TUI)
+    );
+    assert_eq!(port.closure_authority(), ClosureAuthority::Closing);
+    assert_eq!(port.archival_evidence(), ArchivalEvidence::Supported);
+    assert_eq!(port.server_process(), None);
+    match port.target_root_process(&HostTargetId::new("w1:p1"), &call_context(5000)) {
+        Ok(_) => {}
+        Err(error) => assert_ne!(error.code, ErrorCode::Unsupported),
+    }
+}
+
+#[test]
+fn native_cli_target_root_process_is_pane_shell_pid() {
+    let socket = socket_path();
+    let fake = herdr_threads::test_support::fake_herdr::FakeHerdr::start("t", &socket, &["w1:p1"]);
+    let cli = NativeCli::new(socket, Arc::new(TestClock(Instant::now())));
+    let context = call_context(5000);
+    // fake_herdr's pane.process_info reports shell_pid 1.
+    assert_eq!(
+        cli.target_root_process(&HostTargetId::new("w1:p1"), &context)
+            .unwrap(),
+        Some(1)
+    );
+    drop(fake);
+}
+
+#[test]
+fn implemented_kinds_are_herdr_hc_and_named() {
+    assert_eq!(
+        HostKind::IMPLEMENTED,
+        &[HostKind::Herdr, HostKind::Hc, HostKind::Named]
+    );
+    assert!(HostKind::Hc.is_implemented());
+    assert!(!HostKind::IMPLEMENTED.contains(&HostKind::Unknown));
+    assert!(HostKind::Herdr.is_implemented());
+    assert!(HostKind::Named.is_implemented());
+    assert_eq!(HostKind::from_stored("named"), HostKind::Named);
+    assert!(!HostKind::Unknown.is_implemented());
+}
+
+#[test]
+fn dispatcher_submit_budget_comes_from_wake_capability() {
+    struct Check;
+    impl herdr_threads::notification::dispatch::ReservationCheck for Check {
+        fn is_current(
+            &self,
+            _reservation: &herdr_threads::ports::WakeReservation,
+            _budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            Ok(true)
+        }
+    }
+    let clock = TestClock(Instant::now());
+    let dispatcher =
+        herdr_threads::notification::dispatch::NativeWakeDispatcher::new(&BarePort, &Check, &clock);
+    // Today's Herdr prompt budget, unchanged.
+    assert_eq!(dispatcher.submit_budget_millis(), 2_000);
+    assert_eq!(
+        ComposerTraits::HERDR_TUI.submit_budget,
+        Duration::from_millis(2_000)
+    );
 }

@@ -48,6 +48,18 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn caller_env(&self) -> Option<CallerEnvShape> {
         None
     }
+    /// Environment variables of this harness (beyond its `CallerEnvShape` session and pid
+    /// variables) that the launch-gate shim removes before it `exec`s the harness, so a leaked
+    /// one cannot win over the launched caller's own. Each config-root variable goes here: an
+    /// autostarted core's leaked root must not win. Default: none.
+    fn child_scrub_vars(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// Extra argv the harness takes when a host of `kind` launches it (the launch-gate shim
+    /// appends them after the harness argv). Default: none.
+    fn host_launch_argv(&self, _kind: crate::ports::HostKind) -> Vec<String> {
+        Vec::new()
+    }
     /// How the daemon and the client treat this harness's subagent and child sessions.
     fn binding_policy(&self) -> BindingPolicy {
         BindingPolicy::default()
@@ -228,6 +240,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     }
     /// A step the runner runs for a top-level `Observer` event in place of the neutral output.
     fn hook_step(&self) -> Option<&dyn HookStep> {
+        None
+    }
+    /// The turn edge this decoded hook event reports: the harness's turn start is
+    /// [`TurnEdge::Busy`], every event that ends a turn is [`TurnEdge::Idle`]. `None` (the
+    /// default): the event says nothing about the turn, and a harness that never reports an
+    /// edge gets no turn-state wake.
+    fn turn_state_edge(&self, _: &DecodedEvent) -> Option<TurnEdge> {
         None
     }
     /// `None`: hooks deliver and the native wake applies (delivery-policy DP1).
@@ -689,6 +708,17 @@ pub struct EventMetadata {
     /// A turn-end check-in (end-of-turn delivery): it checks in like a tool boundary only when
     /// the daemon says the seat holds an item that would wake it idle, else renders nothing.
     pub turn_end: bool,
+}
+/// A change of a binding's hook turn state (N2-turn), reported by a harness's hook events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnEdge {
+    /// A turn started.
+    Busy,
+    /// A turn ended (a `Stop` that ended it, or a failure that ended it).
+    Idle,
+    /// Composer reads showed no running turn for a stale busy; never sent by a harness.
+    ScreenIdle,
 }
 #[derive(Clone)]
 pub enum DeliveryEligibility {
@@ -1399,6 +1429,24 @@ pub trait ComposerPolicy: Send + Sync {
     /// when a fresh read holds exactly that prompt. Default: never.
     fn clears_unsubmitted_wake(&self) -> bool {
         false
+    }
+    /// Whether a screen shows an approval or question prompt that a typed wake would answer:
+    /// `Some(true)` blocked, `Some(false)` a recognized idle or busy composer, `None` cannot tell.
+    /// `None` (the default) means no wake.
+    fn screen_blocked(&self, _screen: &str) -> Option<bool> {
+        None
+    }
+    /// Whether `screen_blocked` ever answers `Some`: a harness without a recognizer can never
+    /// pass a gate that requires `Some(false)`. Default: no.
+    fn recognizes_blocked_screens(&self) -> bool {
+        false
+    }
+    /// Whether a screen shows the harness's running-turn status line: `Some(true)` a turn is
+    /// running, `Some(false)` a recognized screen with no running turn, `None` cannot tell. A
+    /// stale busy turn state is cleared only by `Some(false)` reads; `None` (the default) keeps
+    /// it until the binding's next hook.
+    fn screen_turn_running(&self, _screen: &str) -> Option<bool> {
+        None
     }
 }
 /// Pure local metadata. Providers must not observe installations or invoke native code.

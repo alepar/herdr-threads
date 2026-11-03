@@ -1,0 +1,11 @@
+[Should-fix] src/cli/mod.rs:3544
+[Should-fix] src/cli/topology_runtime.rs:1252; src/cli/topology_runtime.rs:1251
+[FYI] src/cli/mod.rs:855
+[Should-fix] src/app.rs:413
+[FYI] src/cli/installer.rs:528
+[Should-fix] tests/service/composition.rs:1605; tests/service/composition.rs:1608
+[FYI] src/cli/topology_runtime.rs:203
+[Should-fix] tests/hc_handoff.rs:1502
+[Should-fix] src/cli/mod.rs:3543
+[Should-fix] tests/hc_messaging.rs:1264
+[Should-fix] tests/hc_messaging.rs:1253

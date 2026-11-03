@@ -127,6 +127,17 @@ pub fn agent_seat_nick(
     )
 }
 
+/// [`agent_seat_nick`] from the daemon's already-resolved workspace and pane
+/// labels of the seat's own host (label, else id).
+pub fn agent_seat_nick_named(seat: &SeatId, workspace: &str, pane: &str) -> String {
+    format!(
+        "{}/{}/{}",
+        nick_label(&None, workspace),
+        nick_label(&None, pane),
+        seat.as_str()
+    )
+}
+
 fn nick_label(name: &Option<String>, id: &str) -> String {
     let raw = name
         .as_deref()

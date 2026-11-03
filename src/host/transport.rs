@@ -458,6 +458,9 @@ fn request_inner_response(
                         return Err(error);
                     }
                     let expected = match method {
+                        // A bare witness (`target_creator::connect`): the first ping already
+                        // proved the server; this one is the operation the witnesses compare.
+                        "ping" => Some("pong"),
                         "pane.get" => Some("pane_info"),
                         "pane.current" => Some("pane_current"),
                         "pane.read" => Some("pane_read"),

@@ -11,8 +11,15 @@ use std::{
 /// Inherited variables removed from every spawned binary's environment, so
 /// the suite behaves the same inside a Herdr pane or a harness session.
 /// `ZDOTDIR` too: shell startup files then resolve under the test's HOME, never
-/// the developer's own zsh directory.
-pub const SCRUBBED_PREFIXES: &[&str] = &["HERDR_", "CLAUDE", "CODEX", "ZDOTDIR"];
+/// the developer's own zsh directory. Every caller-location variable (`HC_*` of a
+/// herdr-core terminal, `TMUX` and `TMUX_PANE` of a tmux pane) is listed here, in
+/// this one place, never scrubbed per test. `scrub_env` removes them, and so does
+/// `spawn::tag` (hence `spawn_owned`) for a command built with a bare `Command::new`; a test
+/// that wants one sets it on the command with `.env(..)`, and that explicit value wins.
+/// Spawned children are scrubbed here; in-process callers of `cli::run` are covered by
+/// `CallerEnv::from_process`, which hides the seat name and read-only variables unless the
+/// process entrypoint ran.
+pub const SCRUBBED_PREFIXES: &[&str] = &["HERDR_", "CLAUDE", "CODEX", "ZDOTDIR", "HC_", "TMUX"];
 /// `sockaddr_un.sun_path` capacity (macOS 104, Linux 108; the smaller wins).
 pub const SUN_PATH_MAX: usize = 104;
 
@@ -231,14 +238,17 @@ fn is_config_dir_var(name: &str) -> bool {
     name.ends_with("_HOME") || name.ends_with("_CONFIG_DIR")
 }
 
-/// `env_remove` every ambient harness variable of `inherited` that `command` does not already
-/// set or remove explicitly (an explicit choice wins). Config-dir variables are never removed by
-/// prefix ([`is_config_dir_var`]).
-pub(super) fn remove_ambient_harness_env(
+/// `env_remove` every ambient variable of `inherited` that `command` does not already set or
+/// remove explicitly (an explicit choice wins): the harness variables
+/// ([`ambient_harness_vars`]) and everything [`SCRUBBED_PREFIXES`] names, so every tagged child
+/// (`spawn::tag`, hence `spawn_owned`) gets the one scrub. Config-dir variables are never removed
+/// by prefix ([`is_config_dir_var`]).
+pub(super) fn remove_ambient_env(
     command: &mut Command,
     inherited: impl IntoIterator<Item = OsString>,
 ) {
-    let (names, prefixes) = ambient_harness_vars();
+    let (names, mut prefixes) = ambient_harness_vars();
+    prefixes.extend(SCRUBBED_PREFIXES.iter().map(|prefix| (*prefix).to_owned()));
     let explicit: std::collections::HashSet<OsString> =
         command.get_envs().map(|(key, _)| key.to_owned()).collect();
     for name in names {
@@ -526,7 +536,7 @@ mod tests {
     fn tag_removes_ambient_harness_env_unless_set_explicitly() {
         let mut cmd = Command::new("/usr/bin/env");
         cmd.env("CLAUDE_CODE_SESSION_ID", "explicit");
-        remove_ambient_harness_env(
+        remove_ambient_env(
             &mut cmd,
             [
                 "CODEX_THREAD_ID",
@@ -566,6 +576,70 @@ mod tests {
         // must reach the child, never be dropped so it falls back to the real user config.
         for kept in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "HERMES_HOME"] {
             assert!(!envs.contains_key(kept), "{kept} kept");
+        }
+    }
+
+    #[test]
+    fn tag_removes_caller_location_env_unless_set_explicitly() {
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("HC_TERMINAL_ID", "t9");
+        remove_ambient_env(
+            &mut cmd,
+            [
+                "HC_TERMINAL_ID",
+                "HC_TERMINAL_SOCKET",
+                "TMUX",
+                "TMUX_PANE",
+                "HERDR_PANE_ID",
+                "ZDOTDIR",
+                "CLAUDE_CONFIG_DIR",
+                "CODEX_HOME",
+                "PATH",
+            ]
+            .map(OsString::from),
+        );
+        let envs: std::collections::HashMap<_, _> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_str().unwrap().to_owned(), v.map(|v| v.to_owned())))
+            .collect();
+        assert_eq!(
+            envs.get("HC_TERMINAL_ID"),
+            Some(&Some(OsString::from("t9"))),
+            "an explicit value survives"
+        );
+        for removed in [
+            "HC_TERMINAL_SOCKET",
+            "TMUX",
+            "TMUX_PANE",
+            "HERDR_PANE_ID",
+            "ZDOTDIR",
+        ] {
+            assert_eq!(envs.get(removed), Some(&None), "{removed} removed");
+        }
+        for untouched in ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "PATH"] {
+            assert!(!envs.contains_key(untouched), "{untouched} untouched");
+        }
+    }
+
+    /// Live only where the runner itself carries scrubbed variables (the proof run sets
+    /// `HC_TERMINAL_*`, `TMUX` and `TMUX_PANE`); it still checks the plumbing everywhere.
+    #[test]
+    fn tagged_child_env_has_no_scrubbed_vars() {
+        use crate::test_support::spawn::SpawnOwned;
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.stdout(std::process::Stdio::piped());
+        crate::test_support::spawn::tag(&mut cmd);
+        let out = cmd.spawn_owned().unwrap().wait_with_output().unwrap();
+        let text = String::from_utf8(out.stdout).unwrap();
+        for line in text.lines() {
+            let key = line.split('=').next().unwrap();
+            if key == crate::daemon::lifecycle::TEST_OWNER_PID_ENV || is_config_dir_var(key) {
+                continue;
+            }
+            assert!(
+                !SCRUBBED_PREFIXES.iter().any(|p| key.starts_with(p)),
+                "{key} leaked into a tagged child"
+            );
         }
     }
 

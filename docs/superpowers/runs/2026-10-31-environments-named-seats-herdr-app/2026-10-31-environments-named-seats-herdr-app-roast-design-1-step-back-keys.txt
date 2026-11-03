@@ -1,0 +1,11 @@
+r1 [Should-fix] tmux wake for named seats → Lane registration ("a tmux-hinted named binding never keeps the daemon up"), Hint ("The daemon keeps it in memory per binding"); TRUST-POLICY N2 row; N2 acceptance "Idle exit with only the named host exits"
+r1 [Should-fix] Restore (SA4, D12): "A row with display_name goes onto the named host, unresolved, at target = name. If a live seat with that name exists, the restored row stays unresolved for operator repair"; Store: seats_live_name "over non-retired local rows, unresolved rows included"
+r1 [Should-fix] hc host (H1) → JSON-RPC client: "enumerate_targets ... keeps local state=="live" addresses, and drops finished ones"; Finish-reason closure (D10): "closure uses only the publication-absence path" plus the row "program exit, signal, server_stop, host_shutdown → unresolved"
+r1 [Should-fix] tmux wake "Busy or idle (D21)": "UserPromptSubmit → busy, Stop → idle ... Claude gains a report-only Stop registration"; TRUST-POLICY N2 accepted limit "a missed Stop means no wake until the next hook"
+r1 [Nit] Inherited-name refusal (SA2, D1): "If the environ carries the same name, the daemon refuses with M6 and never falls back"; M6 text "set it per command or restart the server without it"; N acceptance "A name set per command inside that server's pane is honoured"
+r1 [Should-fix] Env scrub (K5, SA2 scrub): "hc sweeps every process carrying the terminal's HC_SCOPE (06 K5), so this is a correctness fix"; Phase F acceptance checks only /proc/<pid>/environ
+r1 [Should-fix] Finish-reason closure (D10) table; H1 acceptance "Finish reasons: ... lost and restarted change nothing"; H3 "sets keep: false"
+r1 [Should-fix] Finish-reason closure table ("killed, or removed of a still-resolved seat → retired"; "program exit ... → unresolved; C1 resume reattaches it"); "Only shell-rooted terminals give continuity across sessions"
+r1 [Should-fix] tmux wake → Composer read ("capture-pane -p -t <pane>"), Wake condition ("turn state idle, screen_blocked == Some(false), and an empty composer read"), Typing ("send-keys -l <wake text> then send-keys Enter")
+r1 [Nit] LocateCaller: "The cache is keyed (candidates, subject, boot/epoch)"; subject = "the claim's liveness pid, else the connection's peer pid"
+r1 [Should-fix] TUI leak guard (F): "F verifies only the Herdr candidate. If it verifies, the pane wins"

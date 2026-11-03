@@ -1268,6 +1268,7 @@ fn presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap() {
             .service
             .handle(
                 Command::CheckIn(CheckIn {
+                    readonly: false,
                     mode: CheckInMode::Lifecycle {
                         expected_binding_generation: a.binding_generation,
                     },
@@ -1765,8 +1766,11 @@ fn bump(db: &Connection, sequence: i64) {
     .unwrap();
 }
 fn ordinary_message(f: &Fixture, id: &str, body: &str) {
+    ordinary_message_from(f, id, body, None);
+}
+fn ordinary_message_from(f: &Fixture, id: &str, body: &str, actor: Option<&str>) {
     let sequence = next_sequence(&f.db);
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4)", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,actor_seat_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4,?5)", params![id, sequence, body, sequence + 2, actor]).unwrap();
     f.db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','s','pending',300000)", [id]).unwrap();
     bump(&f.db, sequence);
 }
@@ -1857,6 +1861,7 @@ fn fresh_execution(mut claim: CallerClaim, n: u8) -> CallerClaim {
 /// Lifecycle check-in; returns the claim the daemon hands back.
 fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: claim.binding_generation,
         },
@@ -2204,6 +2209,7 @@ fn a_plain_call_enrolled_hook_pull_binding_is_served() {
     // A plain (non-lifecycle) check-in enrolls the session: its binding keeps the honest
     // `cooperative_env_session` provenance and is still served (role + liveness + harness).
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         mode: CheckInMode::Current,
         claim: claim("s", "p", fourth(), "n1", 1),
         operation: OperationId::new("plain-1"),
@@ -2862,6 +2868,132 @@ fn the_hook_pull_outlook_waits_for_every_target_binding() {
     assert_eq!(outlook(&f, &[]), outlook(&f, &[bind_a, bind_b]));
 }
 
+/// A second, read-only top-level binding of seat `s` (D3), beside `pull_seat`'s writable one.
+fn readonly_second_binding(f: &Fixture) -> CallerClaim {
+    let mut second = claim("s", "p", fourth(), "n2", 1);
+    second.liveness = Some(crate::protocol::authority::LivenessFingerprint {
+        pid: 4242,
+        start: 1,
+    });
+    let context = match f
+        .service
+        .handle(
+            Command::CheckIn(CheckIn {
+                readonly: true,
+                mode: CheckInMode::Lifecycle {
+                    expected_binding_generation: 1,
+                },
+                claim: fresh_execution(second, 9),
+                operation: OperationId::new("ci-ro"),
+                lineage_parent: None,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    {
+        CommandResult::CheckedIn(result) => result.context,
+        other => panic!("unexpected {other:?}"),
+    };
+    assert!(crate::store::bindings::is_readonly(&f.db, &binding_for_claim(f, &context)).unwrap());
+    context
+}
+
+/// One hook presentation pull and, when it carries a page, its confirmation: the offered ids.
+fn presentation_hook_offered(f: &Fixture, claim: &CallerClaim) -> (Vec<MessageId>, bool) {
+    match presentation_test_pull(f, claim) {
+        crate::protocol::delivery::DeliveryPullReplyV2::Page(page) => {
+            presentation_test_confirm(f, claim, &page);
+            (page.offered, page.more)
+        }
+        other => {
+            assert!(
+                matches!(
+                    other,
+                    crate::protocol::delivery::DeliveryPullReplyV2::Unchanged { .. }
+                ),
+                "unexpected {other:?}"
+            );
+            (Vec::new(), false)
+        }
+    }
+}
+
+// Kills: a read-only binding (D3) offered a receipt-bearing row by the V2 presentation reader
+// (Hook consumer); the row must stay pending for the writable sibling, which settles it.
+#[test]
+fn presentation_hook_pull_readonly_binding_skips_receipt_rows() {
+    let f = fixture(0);
+    let writable = pull_seat(&f);
+    let readonly = readonly_second_binding(&f);
+    ordinary_message(&f, "m-ack", "needs an ack");
+    lazy_message(&f, "msg-plain", "plain");
+    bump_wake_attention(&f);
+    let (ro_offered, _) = presentation_hook_offered(&f, &readonly);
+    assert_eq!(ro_offered, ids(&["msg-plain"]), "no receipt-bearing row");
+    assert_eq!(receipt_state(&f, "m-ack"), "pending");
+    let (rw_offered, _) = presentation_hook_offered(&f, &writable);
+    assert!(
+        rw_offered.contains(&MessageId::new("m-ack")),
+        "{rw_offered:?}"
+    );
+}
+
+// Kills: the exact-key (due re-offer) route offering a row that the binding was shown while
+// writable and that has since become read-only.
+#[test]
+fn presentation_readonly_due_offer_is_not_replayed() {
+    let f = fixture(0);
+    let claim = pull_seat(&f);
+    ordinary_message(&f, "m-ack", "needs an ack");
+    bump_wake_attention(&f);
+    let (first, _) = presentation_hook_offered(&f, &claim);
+    assert_eq!(first, ids(&["m-ack"]));
+    f.db.execute("UPDATE occupant_bindings SET readonly=1", [])
+        .unwrap();
+    advance(&f, crate::delivery::ledger::REOFFER_AFTER_MS + 1);
+    bump_wake_attention(&f);
+    let (again, _) = presentation_hook_offered(&f, &claim);
+    assert!(again.is_empty(), "{again:?}");
+    assert_eq!(receipt_state(&f, "m-ack"), "pending");
+}
+
+// Kills: `more` promising work a read-only page can never show, or a full page of receipt rows
+// hiding the plain row behind it.
+#[test]
+fn presentation_readonly_walks_past_a_full_page_of_receipt_rows() {
+    let f = fixture(0);
+    let claim = pull_seat(&f);
+    for n in 0..33 {
+        ordinary_message(&f, &format!("m-ack{n:02}"), "needs an ack");
+    }
+    lazy_message(&f, "msg-plain", "plain");
+    bump_wake_attention(&f);
+    f.db.execute("UPDATE occupant_bindings SET readonly=1", [])
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        let (offered, _) = presentation_hook_offered(&f, &claim);
+        seen.extend(offered);
+        if seen.contains(&MessageId::new("msg-plain")) {
+            break;
+        }
+    }
+    assert_eq!(seen, ids(&["msg-plain"]));
+    // The rescan walks the filtered pages one pull at a time (`more` is progress), then settles:
+    // `more` must not promise work the page can never show.
+    let mut settled = false;
+    for _ in 0..4 {
+        let (offered, more) = presentation_hook_offered(&f, &claim);
+        assert!(offered.is_empty(), "{offered:?}");
+        if !more {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "`more` stayed true across four empty pulls");
+}
+
 // Kills: same-seat, same-generation D state aliasing across two connected bindings.
 // Real pulls populate both ledgers and withheld carry; foreign hints/tokens cannot advance either.
 #[test]
@@ -3140,6 +3272,7 @@ fn current_check_in(
     operation: &str,
 ) -> crate::protocol::results::CheckInResult {
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         mode: CheckInMode::Current,
         claim,
         operation: OperationId::new(operation),
@@ -6110,6 +6243,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
             let sender = Some(SeatId::parse("\"".repeat(128)).unwrap());
             let item = if lazy {
                 InboxBatchV2Item::LazyMessage {
+                    sender_label: None,
                     priority: None,
                     thread: ThreadId::parse("t").unwrap(),
                     topic_data: topic.clone(),
@@ -6128,6 +6262,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
                 }
             } else {
                 InboxBatchV2Item::Message {
+                    sender_label: None,
                     priority: None,
                     thread: ThreadId::parse("t").unwrap(),
                     topic_data: topic.clone(),
@@ -12871,6 +13006,7 @@ fn presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work()
                 native_session: window.recipient.native_session.clone(),
                 harness: window.recipient.harness,
                 idle_wake: crate::harness::adapter::IdleWake::Native,
+                readonly: false,
                 registered_at: now,
             },
             Arc::new(Sink),
@@ -14449,4 +14585,47 @@ fn presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled() {
             .remaining
             .is_empty()
     );
+}
+
+// Kills: a pulled message header that shows the sender's seat id for a named sender, or one that
+// loses the id of an unnamed one.
+#[test]
+fn a_named_sender_reads_as_its_name_in_a_pulled_message_header() {
+    let f = fixture(0);
+    f.db.execute("UPDATE seats SET name='reviewer' WHERE id='x'", [])
+        .unwrap();
+    ordinary_message_from(&f, "m1", "named body", Some("x"));
+    ordinary_message_from(&f, "m2", "unnamed body", Some("c"));
+    let context = pull_seat(&f);
+    let page = page(pull(&f, &context, None));
+    assert!(
+        page.text
+            .contains("message m1 in t \"topic\" from reviewer [p0]:"),
+        "{}",
+        page.text
+    );
+    assert!(
+        page.text.contains("message m2 in t \"topic\" from c [p0]:"),
+        "{}",
+        page.text
+    );
+    assert!(!page.text.contains("from x"), "{}", page.text);
+}
+
+// Kills: a notice block whose author is shown by seat id although it is a named seat.
+#[test]
+fn a_named_author_reads_as_its_name_in_a_pulled_notice_header() {
+    let f = fixture(0);
+    f.db.execute("UPDATE seats SET name='reviewer' WHERE id='x'", [])
+        .unwrap();
+    let context = pull_seat(&f);
+    rejection_notice(&f, "w-r");
+    let page = page(pull(&f, &context, None));
+    let header = page
+        .text
+        .lines()
+        .find(|l| l.starts_with("[herdr-threads] notice w-r "))
+        .unwrap_or_else(|| panic!("{}", page.text));
+    assert!(header.contains(" from reviewer"), "{header}");
+    assert!(!page.text.contains("from x"), "{}", page.text);
 }

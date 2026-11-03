@@ -817,6 +817,9 @@ fn is_hermes_launcher(record: &crate::ports::ProcessRecord) -> bool {
 }
 
 impl HarnessAdapter for HermesAdapter {
+    fn child_scrub_vars(&self) -> &'static [&'static str] {
+        &["HERMES_HOME"]
+    }
     /// A hook-registered binding's `pre_llm_call` injects the pending items on the woken turn, so
     /// its native wake is content-free; other evidence keeps the `inbox` marker.
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
@@ -2051,6 +2054,9 @@ mod adapter_tests {
                 &crate::cli::hook::HookEnv {
                     herdr_env: true,
                     pane: Some("w1:p1".into()),
+                    ambiguous: None,
+                    named: None,
+                    caller: Default::default(),
                 },
                 Instant::now() + Duration::from_secs(1),
                 Arc::clone(&clock),
@@ -2162,6 +2168,9 @@ mod adapter_tests {
             &crate::cli::hook::HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
+                ambiguous: None,
+                named: None,
+                caller: Default::default(),
             },
             Instant::now() + Duration::from_secs(1),
             clock,
@@ -2257,6 +2266,9 @@ mod adapter_tests {
             &crate::cli::hook::HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
+                ambiguous: None,
+                named: None,
+                caller: Default::default(),
             },
             Instant::now() + Duration::from_secs(1),
             clock,
@@ -2674,7 +2686,10 @@ mod adapter_tests {
                 Ok(args),
                 &crate::cli::hook::HookEnv {
                     herdr_env: true,
-                    pane: Some("w1:p1".into())
+                    pane: Some("w1:p1".into()),
+                    ambiguous: None,
+                    named: None,
+                    caller: Default::default(),
                 },
                 std::io::Cursor::new(input.bytes)
             ),
@@ -3321,6 +3336,9 @@ mod adapter_tests {
             &crate::cli::hook::HookEnv {
                 herdr_env: true,
                 pane: Some("w1:p1".into()),
+                ambiguous: None,
+                named: None,
+                caller: Default::default(),
             },
             Instant::now() + Duration::from_secs(1),
             clock,

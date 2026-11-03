@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 use super::*;
 use crate::sync::frame::{
     LaunchReply, LaunchRequest, LaunchState, LaunchTarget, MAX_LAUNCH_ARGS, MAX_LAUNCH_TEXT_BYTES,
-    PEER_LAUNCH_CAP,
+    PEER_LAUNCH_CAP, PEER_LAUNCH_TERMINAL_CAP,
 };
 
 /// Launch requests one peer may have in flight here (answering is quick:
@@ -45,9 +45,11 @@ pub enum LaunchAnswer {
     Answered(LaunchState),
     /// No established active link to the node.
     NotLinked,
-    /// The link does not carry [`PEER_LAUNCH_CAP`]; the peer's version.
+    /// The link does not carry [`PEER_LAUNCH_CAP`] (or, for a new terminal,
+    /// [`PEER_LAUNCH_TERMINAL_CAP`]); the peer's version and the missing cap.
     NoCap {
         version: Option<String>,
+        cap: &'static str,
     },
     /// The link ended before the answer.
     LinkLost,
@@ -105,6 +107,7 @@ fn malformed(request: &LaunchRequest) -> Option<&'static str> {
         LaunchTarget::NewTab { space, label } => {
             space.is_empty() || label.trim().is_empty() || long(space) || long(label)
         }
+        LaunchTarget::NewTerminal { label } => label.trim().is_empty() || long(label),
         LaunchTarget::Unknown => return Some("unsupported launch target"),
     };
     if target
@@ -147,15 +150,22 @@ impl Actor {
             return;
         };
         let entry = &self.links[&link_id];
-        if !entry
-            .handle
-            .peer()
-            .caps
-            .iter()
-            .any(|c| c == PEER_LAUNCH_CAP)
+        let caps = &entry.handle.peer().caps;
+        // A new terminal is sent only to a peer that advertised it: an older
+        // peer would read the target as `unknown`.
+        let missing = if !caps.iter().any(|c| c == PEER_LAUNCH_CAP) {
+            Some(PEER_LAUNCH_CAP)
+        } else if matches!(request.plan.target, LaunchTarget::NewTerminal { .. })
+            && !caps.iter().any(|c| c == PEER_LAUNCH_TERMINAL_CAP)
         {
+            Some(PEER_LAUNCH_TERMINAL_CAP)
+        } else {
+            None
+        };
+        if let Some(cap) = missing {
             let _ = reply.send(LaunchAnswer::NoCap {
                 version: entry.peer_version.clone(),
+                cap,
             });
             return;
         }

@@ -3905,7 +3905,10 @@ pub(crate) mod legacy {
         // setup runs first. An explicit one must already have its parent.
         if env.instance_source["state_dir"]
             .as_str()
-            .is_some_and(|source| source.starts_with("herdr plugin list"))
+            .is_some_and(|source| {
+                source.starts_with("herdr plugin list")
+                    || source == crate::cli::instance::STANDALONE_HOW
+            })
             && let Some(parent) = state.parent()
         {
             use std::os::unix::fs::DirBuilderExt;
@@ -3916,6 +3919,9 @@ pub(crate) mod legacy {
         }
         ensure_owned_state_root(state)?;
         ensure_private_dir(&state.join("setup"))?;
+        if env.instance_source["state_dir"].as_str() == Some(crate::cli::instance::STANDALONE_HOW) {
+            crate::cli::instance::write_standalone_marker(state)?;
+        }
         Ok(state)
     }
 

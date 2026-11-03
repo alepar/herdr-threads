@@ -1,0 +1,11 @@
+[Should-fix] src/cli/doctor.rs:1250
+[Nit] src/host/hc/mod.rs:733; src/host/hc/mod.rs:438
+[Nit] src/store/topology_handoff/runtime.rs:168
+[Nit] src/store/seats/resolution.rs:699
+[Nit] src/cli/caller_guard.rs:70
+[Nit] src/service/dispatch.rs:190; src/service/dispatch.rs:197
+[Nit] src/service/dispatch.rs:1848
+[Nit] src/test_support/isolation.rs:15
+[Nit] src/service/launch_gate.rs:100
+[Nit] tests/multinode/hc_seats.rs:250
+[FYI] docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/profile-inv-3.json:11

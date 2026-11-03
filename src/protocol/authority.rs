@@ -146,6 +146,10 @@ pub const CARRIED_BINDING_PROVENANCES: [&str; 4] = [
 /// and never the provenance of a binding (the binding the reattached seat
 /// opens stays `cooperative_top_level`).
 pub const COOPERATIVE_CONTINUITY_PROVENANCE: &str = "cooperative_continuity";
+/// TRUST-POLICY A3/C1 "named continuity": an ordinary resolve of a name reattached the unresolved
+/// named seat of that name. Seat history only: it rides `allocation_decisions.operator_label` of
+/// a `cooperative_continuity` row (the `kind` CHECK is closed); never on receipts or bindings.
+pub const COOPERATIVE_NAMED_SEAT_PROVENANCE: &str = "cooperative_named_seat";
 /// TRUST-POLICY C1 process continuity (ht-hsyg): the daemon observed the binding's own process
 /// in the pane's kernel session and controlling terminal. Seat history only, never on receipts.
 pub const STRUCTURAL_PROCESS_CONTINUITY_PROVENANCE: &str = "structural_process_continuity";
@@ -174,10 +178,24 @@ pub const AGENT_BINDING_PROVENANCES: [&str; 4] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerIdentity {
     effective_uid: u32,
+    /// The connection's peer pid (`SO_PEERCRED`), when the kernel gave one.
+    pid: Option<u32>,
 }
 impl PeerIdentity {
+    /// A peer with no pid (fixtures; the transport always supplies one).
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn from_kernel(effective_uid: u32) -> Self {
-        Self { effective_uid }
+        Self {
+            effective_uid,
+            pid: None,
+        }
+    }
+    pub(crate) fn from_kernel_with_pid(effective_uid: u32, pid: Option<u32>) -> Self {
+        Self { effective_uid, pid }
+    }
+    /// The calling process, as the transport saw it at connect time.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
     pub fn effective_uid(&self) -> u32 {
         self.effective_uid

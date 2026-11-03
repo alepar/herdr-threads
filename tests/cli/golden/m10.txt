@@ -1,0 +1,1 @@
+herdr-threads: pane w1:p2 runs named seat reviewer; address it by name

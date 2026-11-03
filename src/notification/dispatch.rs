@@ -14,7 +14,8 @@ use crate::{
         AgentComposerState, ComposerChoice, EvidenceKind, ExecutionEvidence, HostCallContext,
         HostPort, HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance,
         PokeAttempt, PokeCapabilitySource, PokeMode, PokePlan, PromptOutcome, RefusalCause,
-        ReservedWakeAuthority, StructuralOccupancy, WakeOutcome, WakeReservation, WakeTargetBasis,
+        ReservedWakeAuthority, StructuralOccupancy, WakeCapability, WakeOutcome, WakeReservation,
+        WakeTargetBasis,
     },
     protocol::{
         authority::Harness,
@@ -36,7 +37,6 @@ pub enum DispatchError {
 }
 
 const TARGET_READ_MILLIS: u64 = 750;
-const PROMPT_MILLIS: u64 = 2_000;
 
 /// Implemented by the store's final bounded attempt/boot/fence check. It is
 /// invoked after a fresh native read and immediately before prompt submission.
@@ -94,6 +94,17 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
         }
     }
 
+    /// The prompt-submission budget, from the host's wake capability. A host with no wake
+    /// capability never reaches the submit path; it gets no budget.
+    pub fn submit_budget_millis(&self) -> u64 {
+        match self.host.wake_capability() {
+            WakeCapability::Composer(traits) => {
+                u64::try_from(traits.submit_budget.as_millis()).unwrap_or(u64::MAX)
+            }
+            WakeCapability::None => 0,
+        }
+    }
+
     /// Supplies the hook-pull outlook: a seat holding ids parked for `inbox` is woken with the marker.
     pub fn with_hook_pull(mut self, outlook: &'a dyn crate::ports::HookPullOutlook) -> Self {
         self.hook_pull = outlook;
@@ -107,11 +118,12 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
         target: &crate::ports::SafeWakeTarget,
         context: &HostCallContext,
     ) -> SubmissionVerification {
-        let deadline = context
-            .budget
-            .deadline
-            .0
-            .min(self.clock.monotonic_now().0.saturating_add(PROMPT_MILLIS));
+        let deadline = context.budget.deadline.0.min(
+            self.clock
+                .monotonic_now()
+                .0
+                .saturating_add(self.submit_budget_millis()),
+        );
         let verify_context = HostCallContext {
             budget: CallBudget {
                 deadline: MonoInstant(deadline),
@@ -505,11 +517,12 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 Some("budget spent before prompt"),
             );
         }
-        let prompt_deadline = context
-            .budget
-            .deadline
-            .0
-            .min(self.clock.monotonic_now().0.saturating_add(PROMPT_MILLIS));
+        let prompt_deadline = context.budget.deadline.0.min(
+            self.clock
+                .monotonic_now()
+                .0
+                .saturating_add(self.submit_budget_millis()),
+        );
         let prompt_context = HostCallContext {
             budget: CallBudget {
                 deadline: MonoInstant(prompt_deadline),

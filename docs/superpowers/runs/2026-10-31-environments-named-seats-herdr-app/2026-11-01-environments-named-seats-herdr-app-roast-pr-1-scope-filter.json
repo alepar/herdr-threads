@@ -1,0 +1,203 @@
+{
+ "findings": [
+  {
+   "key": "[Should-fix] src/store/apply.rs:985",
+   "disposition": "in-scope",
+   "reason": "named seat parked restore never drains; goal-named durable named seats"
+  },
+  {
+   "key": "[Should-fix] src/store/seats/publication.rs:245",
+   "disposition": "in-scope",
+   "reason": "retired named seat resurrected after restore; wrong behavior for named seats"
+  },
+  {
+   "key": "[Should-fix] src/host/hc/mod.rs:877; src/host/hc/mod.rs:878",
+   "disposition": "in-scope",
+   "reason": "hc enumerate_targets ends bindings on capture failure; hc seat correctness"
+  },
+  {
+   "key": "[Should-fix] src/service/turn_state.rs:35",
+   "disposition": "in-scope",
+   "reason": "shared turn-state key lets wake type into a running session; named wake/rule 4 wrong"
+  },
+  {
+   "key": "[Should-fix] src/cli/mod.rs:3940",
+   "disposition": "in-scope",
+   "reason": "terminal CLI seat lookup not host-scoped; hc terminal messaging wrong with two cores"
+  },
+  {
+   "key": "[Should-fix] src/service/locate.rs:376",
+   "disposition": "in-scope",
+   "reason": "LocateCaller picks wrong core for terminal; hc cross-core addressing wrong"
+  },
+  {
+   "key": "[Should-fix] src/cli/caller_location.rs:143",
+   "disposition": "in-scope",
+   "reason": "suite results depend on HC_ env; missing isolation for hc caller path tests"
+  },
+  {
+   "key": "[Should-fix] src/host/named/tmux.rs:221",
+   "disposition": "in-scope",
+   "reason": "tmux hint anchored on hook process so named tmux wake silently absent; goal-named wake"
+  },
+  {
+   "key": "[Should-fix] src/host/hc/mod.rs:320",
+   "disposition": "in-scope",
+   "reason": "HcHost resume_after_epoch never called via HostPort; hc behavior wrong"
+  },
+  {
+   "key": "[Should-fix] src/cli/caller_guard.rs:98",
+   "disposition": "in-scope",
+   "reason": "verified hc terminal in two-family env gets no seat; goal-named hc messaging fails"
+  },
+  {
+   "key": "[Should-fix] scripts/wake-e2e.py:2767",
+   "disposition": "in-scope",
+   "reason": "tmux-named wake e2e reports false wake; misleading result for named wake"
+  },
+  {
+   "key": "[Should-fix] src/store/local_seat_status.rs:92",
+   "disposition": "in-scope",
+   "reason": "untested daemon rule for seat labels on reused target; missing test for goal-named behavior"
+  },
+  {
+   "key": "[Should-fix] src/service/launch_gate.rs:89",
+   "disposition": "in-scope",
+   "reason": "cancelled-bootstrap refusal untested in hc launch authorization; missing test"
+  },
+  {
+   "key": "[Should-fix] src/service/host_sessions.rs:627",
+   "disposition": "in-scope",
+   "reason": "named-host wake lane degradation never reaches Health; misleading result"
+  },
+  {
+   "key": "[Should-fix] src/cli/doctor.rs:1250",
+   "disposition": "punch-list",
+   "reason": "doctor status-source display is observability for a feature the goal does not name",
+   "clusterOverride": "doctor display is not goal-named, unlike the Health lane defect"
+  },
+  {
+   "key": "[Nit] src/host/hc/rpc.rs:115",
+   "disposition": "in-scope",
+   "reason": "missing terminals decodes as complete empty enumeration, retiring seats; hc correctness"
+  },
+  {
+   "key": "[Nit] src/service/dispatch.rs:212",
+   "disposition": "in-scope",
+   "reason": "inherited-name check skipped for unattached hc core; cross-environment identity"
+  },
+  {
+   "key": "[Nit] src/service/launch_gate.rs:100; src/service/launch_gate.rs:48",
+   "disposition": "in-scope",
+   "reason": "transient hc failure becomes permanent WitnessMismatch refusal; incorrect hc launch behavior"
+  },
+  {
+   "key": "[Nit] src/host/named.rs:283; src/cli/hook.rs:4093",
+   "disposition": "in-scope",
+   "reason": "wake gate can type into running turn on missed Busy edge; violates wake rule 4 for named seats"
+  },
+  {
+   "key": "[Nit] src/service/turn_state.rs:175",
+   "disposition": "in-scope",
+   "reason": "turn-state clear race overwrites fresh Busy; incorrect wake gating"
+  },
+  {
+   "key": "[Nit] src/host/hc/mod.rs:733; src/host/hc/mod.rs:438",
+   "disposition": "punch-list",
+   "reason": "per-call rpc deadline hardening; latency only, no incorrect result",
+   "clusterOverride": "latency hardening only, not an incorrect result"
+  },
+  {
+   "key": "[Nit] src/store/topology_handoff/runtime.rs:168",
+   "disposition": "punch-list",
+   "reason": "writer-lock use in launch-gate poll vs doc comment; performance/doc quality"
+  },
+  {
+   "key": "[Nit] src/store/seats/resolution.rs:699",
+   "disposition": "punch-list",
+   "reason": "unverified hint refusing allocation is TRUST-POLICY wording plus hardening; specified M10 behavior"
+  },
+  {
+   "key": "[Nit] src/store/apply.rs:986",
+   "disposition": "in-scope",
+   "reason": "named restore parked on wrong readiness; same defect as parked-readiness Should-fix"
+  },
+  {
+   "key": "[Nit] src/store/seats/publication.rs:197",
+   "disposition": "in-scope",
+   "reason": "named seat names not backfilled for peers after upgrade; cross-node named seats wrong"
+  },
+  {
+   "key": "[Nit] src/cli/caller_location.rs:184",
+   "disposition": "in-scope",
+   "reason": "hint drops terminal when pane env also present; hc inherited-name check misses"
+  },
+  {
+   "key": "[Nit] src/host/hc/mod.rs:884",
+   "disposition": "in-scope",
+   "reason": "hc observation sequence ordering can be defeated; hc correctness"
+  },
+  {
+   "key": "[Nit] src/cli/commands.rs:929",
+   "disposition": "in-scope",
+   "reason": "readonly field breaks older daemon with deny_unknown_fields; named readonly seat wrong under skew"
+  },
+  {
+   "key": "[Nit] src/cli/caller_guard.rs:70",
+   "disposition": "punch-list",
+   "reason": "verdict cache never hits; dead optimisation, verdicts still correct"
+  },
+  {
+   "key": "[Nit] src/service/dispatch.rs:190; src/service/dispatch.rs:197",
+   "disposition": "punch-list",
+   "reason": "cache epoch wording/hardening; no incorrect result in a goal path"
+  },
+  {
+   "key": "[Nit] src/service/dispatch.rs:1848",
+   "disposition": "punch-list",
+   "reason": "extra host label reads per page; performance only"
+  },
+  {
+   "key": "[Nit] src/test_support/isolation.rs:15",
+   "disposition": "punch-list",
+   "reason": "TMUX scrub is source-risk hardening; no observed failure",
+   "clusterOverride": "hardening only; no TMUX-attributable failure observed, unlike the HC_ failures"
+  },
+  {
+   "key": "[Nit] src/host/named.rs:323",
+   "disposition": "in-scope",
+   "reason": "missing test for NamedHost still_owed re-check; goal-named wake guard"
+  },
+  {
+   "key": "[Nit] src/host/named.rs:260",
+   "disposition": "in-scope",
+   "reason": "missing test for wake-time server-pid re-check; goal-named wake guard"
+  },
+  {
+   "key": "[Nit] src/host/named.rs:637",
+   "disposition": "in-scope",
+   "reason": "missing test for clear_own_wake_text stale-target guard; goal-named wake guard"
+  },
+  {
+   "key": "[Nit] integrations/skill/SKILL.md:3",
+   "disposition": "in-scope",
+   "reason": "skill still says Herdr pane required, misleading for named and hc callers"
+  },
+  {
+   "key": "[Nit] src/service/launch_gate.rs:100",
+   "disposition": "punch-list",
+   "reason": "hung-core latency in launch gate observers; hardening, fail-closed",
+   "clusterOverride": "latency hardening, unlike the WitnessMismatch misreport"
+  },
+  {
+   "key": "[Nit] tests/multinode/hc_seats.rs:250",
+   "disposition": "punch-list",
+   "reason": "slow multinode test cost; not goal behavior"
+  },
+  {
+   "key": "[FYI] docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/profile-inv-3.json:11",
+   "disposition": "punch-list",
+   "reason": "committed run artifacts path scrubbing; unrelated to goal"
+  }
+ ]
+}

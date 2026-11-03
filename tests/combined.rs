@@ -15,10 +15,16 @@ mod adapter_smoke;
 mod archival_legacy;
 #[path = "store/archival_worker.rs"]
 mod archival_worker;
+#[path = "cli/caller_location.rs"]
+mod caller_location;
 #[path = "canary_manifest_writer.rs"]
 mod canary_manifest_writer;
 #[path = "store/channel_archival.rs"]
 mod channel_archival;
+#[path = "cli_env_read_scan.rs"]
+mod cli_env_read_scan;
+#[path = "cli_native_sites_scan.rs"]
+mod cli_native_sites_scan;
 #[path = "contracts.rs"]
 mod contracts;
 #[path = "store/deadline_scope.rs"]
@@ -63,8 +69,12 @@ mod handoff_fences;
 mod handoff_topology_authority;
 #[path = "handoff_topology_cli.rs"]
 mod handoff_topology_cli;
+#[path = "protocol/handoff_v3.rs"]
+mod handoff_v3;
 #[path = "host_adapter.rs"]
 mod host_adapter;
+#[path = "host_neutral_scan.rs"]
+mod host_neutral_scan;
 #[path = "cli/inbox_continuation_context.rs"]
 mod inbox_continuation_context;
 #[path = "sync/incarnations_scenarios.rs"]
@@ -93,6 +103,10 @@ mod local_endpoint;
 mod multi_host;
 #[path = "store/multi_host_wake.rs"]
 mod multi_host_wake;
+#[path = "cli/named_caller.rs"]
+mod named_caller;
+#[path = "cli/named_site.rs"]
+mod named_site;
 #[path = "sync/opaque_relay.rs"]
 mod opaque_relay;
 #[path = "sync/opaque_wire.rs"]
@@ -105,6 +119,8 @@ mod peer_wire_freeze;
 mod read_picker_pty;
 #[path = "store/remote_seats.rs"]
 mod remote_seats;
+#[path = "seat_name_corpus.rs"]
+mod seat_name_corpus;
 #[path = "setup_cli.rs"]
 mod setup_cli;
 #[path = "store/sync_contacts.rs"]
@@ -196,6 +212,12 @@ mod legacy_purge;
 #[path = "integration/priority_config_smoke.rs"]
 mod priority_config_smoke;
 
+#[path = "host/hc_contract.rs"]
+mod hc_contract;
+#[path = "host/hc_schema_conformance.rs"]
+mod hc_schema_conformance;
+#[path = "host_no_wake_tripwire.rs"]
+mod host_no_wake_tripwire;
 #[path = "integration/priority_sweep.rs"]
 mod priority_sweep;
 #[path = "update/update_cli.rs"]

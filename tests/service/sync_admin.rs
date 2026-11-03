@@ -1755,6 +1755,8 @@ fn seats_of(
                 target: None,
                 include_retired: false,
                 filter,
+
+                host: None,
             }),
             &ReadContext {
                 instance: rig
@@ -1902,6 +1904,7 @@ fn seat_list_carries_the_directory_and_filters_it() {
                 node: Some("zq7".into()),
                 ..SeatFilter::default()
             },
+            host: None,
         })
     };
     let instance: String = rig
@@ -1958,6 +1961,7 @@ fn directory_rows_render_compactly() {
         workspace: Some("office".into()),
         tab: Some("main".into()),
         pane: Some("claude".into()),
+        name: None,
     };
     let summary = |seat: &str, d: SeatDirectory| SeatSummary {
         seat: crate::protocol::ids::SeatId::new(seat),
@@ -2042,6 +2046,7 @@ fn seat_filter_matches_each_criterion() {
         workspace: Some("Office".into()),
         tab: None,
         pane: None,
+        name: None,
     };
     let f = |filter: SeatFilter| matches(&filter, Some(&entry), false, None);
     assert!(f(SeatFilter::default()));
@@ -2137,6 +2142,7 @@ fn local_rows_participant_suffix_and_location_hint() {
         workspace: None,
         tab: None,
         pane: None,
+        name: None,
     };
     let summary = |continuity, d: SeatDirectory| SeatSummary {
         seat: crate::protocol::ids::SeatId::new("snSGbl096JZZ"),

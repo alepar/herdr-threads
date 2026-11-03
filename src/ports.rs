@@ -9,6 +9,7 @@
 //! requested page/output bounds. No client supplies a decision timestamp or actor.
 
 use serde::Serialize;
+use std::time::Duration;
 
 use crate::protocol::ids::ServiceAuthorId;
 use crate::protocol::{
@@ -1258,7 +1259,7 @@ impl ReconciliationAction {
     /// protect. A new action must make this judgment, so nothing here defaults.
     pub fn may_complete_past_refusal(&self) -> bool {
         match self {
-            Self::MarkUnresolved => false,
+            Self::MarkUnresolved | Self::UnresolveAwaitingTerminal => false,
             Self::ReconfirmStructure { .. }
             | Self::CarryForward { .. }
             | Self::Move { .. }
@@ -1302,6 +1303,12 @@ pub enum ReconciliationAction {
         terminal: TerminalId,
     },
     MarkUnresolved,
+    /// The host shows the seat's target but no runnable terminal behind it
+    /// (an hc terminal kept for a restart, D10): the seat is unresolved as
+    /// recoverable (`host_invalidation`), its bindings end `seat_unresolved`,
+    /// and the same terminal showing again in the same boot and incarnation
+    /// reconfirms it (C1) while the target's absence retires it.
+    UnresolveAwaitingTerminal,
     BeginRetirement {
         absent_target: HostTargetId,
     },
@@ -1423,6 +1430,8 @@ pub struct BootstrapPaneObservation {
     witness: crate::host::continuity::LocalEndpointWitness,
     workspace: HostTargetId,
     tab: HostTargetId,
+    /// The core id of a herdr-core terminal read; `None` for a Herdr pane.
+    core_id: Option<String>,
 }
 impl BootstrapPaneObservation {
     /// Publish this same response before deriving its canonical attachment guard.
@@ -1471,16 +1480,71 @@ impl BootstrapPaneObservation {
             witness,
             workspace,
             tab,
+            core_id: None,
+        })
+    }
+
+    /// The same-response rules for one herdr-core `terminal.get`: a fresh current target with
+    /// a verified structural proof, a transport peer, and the boot and the proof's incarnation
+    /// both `hc-core:<core_id>`. `workspace` and `tab` both hold the target, because an hc
+    /// terminal has neither; only the Herdr tab arm of the attachment check reads them.
+    pub(crate) fn try_new_terminal(
+        observation: HostObservation,
+        core_id: String,
+        witness: crate::host::continuity::LocalEndpointWitness,
+    ) -> Result<Self, &'static str> {
+        let boot = format!("hc-core:{core_id}");
+        let proof = observation
+            .verified_structural_proof()
+            .ok_or("bootstrap requires qualified same-response terminal scope")?;
+        if observation.provenance != ObservationProvenance::FreshCurrentTarget
+            || core_id.is_empty()
+            || witness.peer_pid == 0
+            || witness.start_seconds == 0
+            || observation.host_boot.as_str() != boot
+            || proof.incarnation() != boot
+        {
+            return Err("bootstrap witness does not qualify the same-response terminal");
+        }
+        let target = observation.target.clone();
+        Ok(Self {
+            observation,
+            witness,
+            workspace: target.clone(),
+            tab: target,
+            core_id: Some(core_id),
         })
     }
     pub fn witness(&self) -> &crate::host::continuity::LocalEndpointWitness {
         &self.witness
+    }
+    /// The creation witness this read corresponds to: the core and its serving process for a
+    /// terminal read, the socket witness for a Herdr pane.
+    pub fn host_witness(&self) -> HostWitness {
+        host_witness_of(self.core_id.as_deref(), &self.witness)
     }
     pub fn workspace(&self) -> &HostTargetId {
         &self.workspace
     }
     pub fn tab(&self) -> &HostTargetId {
         &self.tab
+    }
+}
+
+fn host_witness_of(
+    core_id: Option<&str>,
+    witness: &crate::host::continuity::LocalEndpointWitness,
+) -> HostWitness {
+    match core_id {
+        Some(core_id) => HostWitness::HcCore {
+            core_id: core_id.to_owned(),
+            peer: HcPeer {
+                pid: witness.peer_pid,
+                start_seconds: witness.start_seconds,
+                uid: witness.peer_uid,
+            },
+        },
+        None => HostWitness::HerdrSocket(witness.clone()),
     }
 }
 
@@ -1501,6 +1565,7 @@ pub struct BootstrapAttachmentGuard {
     ordinary: OrdinaryResolutionGuard,
     workspace: HostTargetId,
     tab: HostTargetId,
+    core_id: Option<String>,
 }
 impl BootstrapAttachmentGuard {
     pub(crate) fn try_new(
@@ -1514,10 +1579,16 @@ impl BootstrapAttachmentGuard {
             witness: pane.witness,
             workspace: pane.workspace,
             tab: pane.tab,
+            core_id: pane.core_id,
         })
     }
     pub fn witness(&self) -> &crate::host::continuity::LocalEndpointWitness {
         &self.witness
+    }
+    /// The creation witness this read corresponds to: the core and its serving process for a
+    /// terminal read, the socket witness for a Herdr pane.
+    pub fn host_witness(&self) -> HostWitness {
+        host_witness_of(self.core_id.as_deref(), &self.witness)
     }
     pub fn ordinary(&self) -> &OrdinaryResolutionGuard {
         &self.ordinary
@@ -2970,6 +3041,8 @@ pub struct ModBindingView {
     pub ended_at: Option<UtcMillis>,
     /// Why the binding is disconnected (`superseded`, `migrated`, ...); `None` while connected.
     pub disconnect_reason: Option<String>,
+    /// The binding is read-only (D3): its hooks offer no receipt-bearing rows.
+    pub readonly: bool,
 }
 
 impl ModBindingView {
@@ -3041,6 +3114,21 @@ pub struct PulledNotice {
     pub notice: crate::protocol::results::WarningRef,
     pub topic: String,
     pub author: Option<SeatId>,
+    /// The author's header label when it is a named seat (`seat_directory::sender_label`).
+    pub author_label: Option<String>,
+}
+
+/// What the launch gate reads of one bootstrap. Daemon-side only; never on a wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchGateView {
+    /// The current attempt's V3 creation; `None` before RecordCreated or for a V2 record.
+    pub created: Option<CreatedTarget>,
+    /// The asked attempt is the bootstrap's current one.
+    pub current_attempt: bool,
+    pub cancelled: bool,
+    /// The bootstrap Send is published (`handoff::automatic::published_send`), or for a peer
+    /// launch's or a plain launch's gate-only record the creation is recorded (N15, H3).
+    pub send_staged: bool,
 }
 
 /// Store implementations inject a clock at construction and sample UTC inside each
@@ -3084,6 +3172,36 @@ pub trait BootstrapStorePort: Send + Sync {
         Err(ApiError::unsupported(
             "automatic bootstrap runtime unavailable",
         ))
+    }
+    /// What the launch gate reads of one automatic bootstrap; `None` for an unknown or
+    /// ambiguous compound. Read-only.
+    fn automatic_launch_gate_view(
+        &self,
+        _instance: &str,
+        _compound: &crate::protocol::ids::OperationId,
+        _attempt: crate::protocol::handoff::BootstrapAttempt,
+        _budget: &CallBudget,
+    ) -> Result<Option<LaunchGateView>, ApiError> {
+        Err(ApiError::unsupported("launch gate view unavailable"))
+    }
+    /// Opens a plain local launch's gate-only record before its terminal exists (H3).
+    fn local_launch_gate_open(
+        &self,
+        _id: &crate::protocol::ids::OperationId,
+        _budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        Err(ApiError::unsupported("local launch gate unavailable"))
+    }
+    /// Records the creation and seat of an open gate-only record in one write; false for no
+    /// open record.
+    fn local_launch_gate_record(
+        &self,
+        _id: &crate::protocol::ids::OperationId,
+        _created: &CreatedTarget,
+        _seat: &crate::protocol::ids::SeatId,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Err(ApiError::unsupported("local launch gate unavailable"))
     }
     fn automatic_bootstrap_recovery_replay(
         &self,
@@ -3227,6 +3345,18 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         _budget: &CallBudget,
     ) -> Result<usize, ApiError> {
         Ok(0)
+    }
+    /// Persists one `wake_status` read for `observer`: a row for each `persist` seat, none for
+    /// each `clear` seat. Returns the `persist` seats whose row is new, or `None` when the
+    /// store keeps no such rows (the caller falls back to its in-memory set).
+    fn no_wake_reports_apply(
+        &self,
+        _observer: &SeatId,
+        _persist: &[SeatId],
+        _clear: &[SeatId],
+        _budget: &CallBudget,
+    ) -> Result<Option<Vec<SeatId>>, ApiError> {
+        Ok(None)
     }
     fn archival_pass(
         &self,
@@ -3391,6 +3521,17 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         attempt: OrdinaryResolutionAttempt,
         budget: &CallBudget,
     ) -> Result<OrdinaryResolutionOutcome, ApiError>;
+    /// Seat-acting resolve under a name on the built-in named host (`host`): the live seat of
+    /// that name, allocated when none exists, as `CommandResult::NamedSeatResolved` with the
+    /// creation flag. Replays by the request's operation key; reads never call it.
+    fn resolve_named_seat(
+        &self,
+        _request: ResolveSeat,
+        _host: HostId,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("named seat allocation"))
+    }
     /// Never replays, allocates or replaces the expected seat.
     fn check_resolved_target(
         &self,
@@ -3497,7 +3638,27 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         locator: &crate::protocol::ids::HostLocator,
         now: i64,
         budget: &CallBudget,
+    ) -> Result<(HostId, i64), ApiError> {
+        self.attach_host_of_kind(locator, now, HostKind::Herdr, budget)
+    }
+    /// `attach_host` for a probed `kind`: stamps `kind` and `kind_probed_at`, and
+    /// refuses a row whose stored kind is another implemented kind.
+    fn attach_host_of_kind(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        kind: HostKind,
+        budget: &CallBudget,
     ) -> Result<(HostId, i64), ApiError>;
+    /// `attach_host` for a startup hint whose probe got no answer: a new row takes
+    /// the default kind with `kind_probed_at` NULL, an existing row keeps both;
+    /// returns the kind the row holds.
+    fn attach_host_unprobed(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        budget: &CallBudget,
+    ) -> Result<(HostId, i64, HostKind), ApiError>;
     /// Reserve durable ordering before a host capture. This sequence fences
     /// late failed reads; it does not certify coherent enumeration.
     fn begin_host_observation(
@@ -4023,7 +4184,202 @@ pub struct RegisteredComposerEvidence {
     pub basis: ComposerEvidenceBasis,
 }
 
+/// Which environment a host is. Persisted per host row; `Unknown` is any kind
+/// this build does not know (fail-closed, see [`HostKind::IMPLEMENTED`]).
+///
+/// Responsibility
+/// - Owns: the closed set of host environments and, beside it, the static set
+///   of kinds this build can construct ([`HostKind::IMPLEMENTED`], G4). It
+///   grows one variant per phase.
+/// - Hides: phase skew between binaries and stored rows.
+/// - Must not: be bypassed by reattach, restore or rebind. A row whose kind is
+///   outside the set is skipped and named by `doctor`, never dialled as Herdr.
+/// - Where new behaviour goes: a new kind is added here, in the phase that
+///   builds it, together with its entry in `IMPLEMENTED`.
+/// - Role: closed enum plus capability set (fail-closed registry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostKind {
+    Herdr,
+    Hc,
+    Named,
+    Unknown,
+}
+
+impl HostKind {
+    /// The kinds this build can construct. `Unknown` is never in it.
+    pub const IMPLEMENTED: &'static [HostKind] = &[HostKind::Herdr, HostKind::Hc, HostKind::Named];
+
+    /// Whether this build can construct a host of this kind.
+    pub fn is_implemented(self) -> bool {
+        Self::IMPLEMENTED.contains(&self)
+    }
+
+    /// Whether this host can wake a target with no live process of ours in it (the dormant binding,
+    /// TRUST-POLICY A4 *Wake*): its wake needs no binding, only the target. Read by the store, which
+    /// holds the stored kind and no host port; `tests/host_no_wake_tripwire.rs` holds it equal to
+    /// each host's own `target_wake_capability`.
+    pub fn wakes_dormant_target(self) -> bool {
+        matches!(self, HostKind::Herdr)
+    }
+
+    /// A host of this kind reports where each target's agent status came from (D21).
+    pub fn reports_status_source(self) -> bool {
+        matches!(self, HostKind::Hc)
+    }
+
+    /// The text a host row stores for this kind (`herdr_hosts.kind`).
+    /// `Unknown` has none: it is only ever the reading of a foreign value.
+    pub fn stored_name(self) -> Option<&'static str> {
+        match self {
+            HostKind::Herdr => Some("herdr"),
+            HostKind::Hc => Some("hc"),
+            HostKind::Named => Some("named"),
+            HostKind::Unknown => None,
+        }
+    }
+
+    /// The kind a stored `herdr_hosts.kind` text names; any text this build
+    /// does not know is `Unknown`.
+    pub fn from_stored(text: &str) -> HostKind {
+        match text {
+            "herdr" => HostKind::Herdr,
+            "hc" => HostKind::Hc,
+            "named" => HostKind::Named,
+            _ => HostKind::Unknown,
+        }
+    }
+}
+
+/// What a host's composer needs from a wake submission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComposerTraits {
+    /// Time the dispatcher spends submitting a wake prompt.
+    pub submit_budget: Duration,
+}
+
+impl ComposerTraits {
+    /// Herdr's TUI composer: today's 2 000 ms prompt submission budget.
+    pub const HERDR_TUI: ComposerTraits = ComposerTraits {
+        submit_budget: Duration::from_millis(2_000),
+    };
+    /// A tmux pane typed into with `send-keys`: the same 2 000 ms budget.
+    pub const TMUX: ComposerTraits = ComposerTraits {
+        submit_budget: Duration::from_millis(2_000),
+    };
+}
+
+/// Whether and how a host can wake an idle session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeCapability {
+    /// No wake path; the submit path is never reached.
+    None,
+    /// Wake by typing into a composer with these traits.
+    Composer(ComposerTraits),
+}
+
+/// Whether the host can supply archival evidence for a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchivalEvidence {
+    Supported,
+    NoEvidence,
+}
+
+/// Whether the host's targets may be closed by this system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosureAuthority {
+    Closing,
+    NonClosing,
+}
+
+/// A host's port to the environment that runs seats.
+///
+/// Responsibility (HostPort capability answers: [`HostKind`],
+/// [`WakeCapability`]/[`ComposerTraits`], [`ClosureAuthority`],
+/// [`ArchivalEvidence`])
+/// - Owns: one defaulted answer per policy question: kind, wake, closure
+///   authority, archival evidence, target root pid and server pid. Every
+///   default reproduces today's Herdr behaviour.
+/// - Hides: which environment a host is. Delivery, closure, wake, archival,
+///   placement and binding policy branch on the answer, never on the kind.
+/// - Must not: be read by [`HostPort::kind`] outside the four permitted
+///   readers: `any_reachable`, the G4 implemented-kinds check and probe
+///   comparison, adapter `host_launch_argv`, and doctor/diagnostics. A default
+///   must never return `ErrorCode::Unsupported`; a method a built-in host
+///   cannot serve returns a non-`Unsupported` `Err` that a capability answer
+///   refuses before it is reached.
+/// - Where new behaviour goes: a different answer in that host's impl.
+/// - Errors: only `target_root_process` is fallible (`ApiError`, i.e. host
+///   unreachable); the others are plain values.
+/// - Role: port (hexagonal) with defaulted capability methods, so existing
+///   impls compile unchanged.
 pub trait HostPort: Send + Sync {
+    /// The environment this host is. Read only by the four permitted readers
+    /// listed on the trait.
+    fn kind(&self) -> HostKind {
+        HostKind::Herdr
+    }
+    /// Whether this host creates targets through `CreateTargetPort` and starts
+    /// the gate itself (no pane to read, no `launch --pane`). Default: no.
+    fn creates_targets_itself(&self) -> bool {
+        false
+    }
+    /// Whether `live_topology` can answer for this host (workspaces, tabs and panes to read
+    /// addresses against). A host whose seats are addressed by replicated names alone holds no
+    /// pane match and is not an unreadable host. Default: yes.
+    fn reads_live_topology(&self) -> bool {
+        true
+    }
+    /// Host-level wake capability. Default: Herdr's TUI composer.
+    fn wake_capability(&self) -> WakeCapability {
+        WakeCapability::Composer(ComposerTraits::HERDR_TUI)
+    }
+    /// Wake capability of one target. `wake_status`, the persisted no-wake reports and the
+    /// host-side tripwire read this answer, so a host whose wake path depends on the target
+    /// (a named seat with or without a verified tmux hint) answers per target. Default: the
+    /// host-level answer.
+    fn target_wake_capability(&self, _target: &HostTargetId) -> WakeCapability {
+        self.wake_capability()
+    }
+    /// A caller's wake hint for `target`, from a seat-acting call whose process is `subject_pid`
+    /// (a tmux pane, `tmux:<socket>:<server_pid>:<pane>`). The host verifies it and holds the
+    /// result in memory per binding; a hint that does not verify only disables wake for that
+    /// binding. Default: ignored.
+    fn note_wake_hint(&self, _target: &HostTargetId, _subject_pid: u32, _hint: &str) {}
+    /// How many wake-armed named bindings this host holds (verified wake hint, live process): the
+    /// daemon's idle exit counts them as a liveness input. Default: none.
+    fn wake_armed_bindings(&self) -> usize {
+        0
+    }
+    /// The root process of a target (a pane's shell). Default: none known.
+    fn target_root_process(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        Ok(None)
+    }
+    /// Whether `target_root_process` answers for a herdr-core terminal id (`tN`) rather than a
+    /// Herdr pane id: `LocateCaller` asks a terminal candidate only these hosts, and a pane
+    /// candidate only the others. Default: no.
+    fn answers_terminal_ids(&self) -> bool {
+        false
+    }
+    /// How M6 names this host's server.
+    fn server_label(&self) -> &'static str {
+        "Herdr"
+    }
+    /// The host server's own process, when it has one this system can name.
+    fn server_process(&self) -> Option<u32> {
+        None
+    }
+    /// Default: archival evidence is supported.
+    fn archival_evidence(&self) -> ArchivalEvidence {
+        ArchivalEvidence::Supported
+    }
+    /// Default: this system closes targets it launched.
+    fn closure_authority(&self) -> ClosureAuthority {
+        ClosureAuthority::Closing
+    }
     /// Adapter-owned, verified support; callers cannot assert a launch capability.
     fn native_launch_capability(&self) -> NativeLaunchCapability;
     fn observe_current_target(
@@ -4094,6 +4450,16 @@ pub trait HostPort: Send + Sync {
         context: &HostCallContext,
     ) -> Result<ComposerObservation, ApiError>;
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError>;
+    /// The seats a host whose only input is this node's store would enumerate, ordered as
+    /// `enumerate_targets` reports them. The lane compares it with the set it last finished
+    /// publishing and skips an unchanged capture, so a store-only host adds no store writes of its
+    /// own. `None` (default): the host has input of its own, and every due capture runs.
+    fn store_enumeration(
+        &self,
+        _context: &HostCallContext,
+    ) -> Result<Option<Vec<SeatId>>, ApiError> {
+        Ok(None)
+    }
     fn safe_wake_target(
         &self,
         seat: &SeatId,
@@ -4269,6 +4635,9 @@ pub struct ModChannelRegistration {
     /// What wakes an idle seat of this harness, from its delivery policy
     /// (delivery-policy DP7).
     pub idle_wake: crate::harness::adapter::IdleWake,
+    /// The binding is read-only (D3): its channel is never judged stalled and does not
+    /// suppress the seat's wake.
+    pub readonly: bool,
     pub registered_at: UtcMillis,
 }
 
@@ -4426,9 +4795,14 @@ pub trait ModChannels: Send + Sync {
     /// DP7): the mod handles the seat *and* its policy says the channel is what
     /// wakes an idle session (`IdleWake::Channel`). The default is
     /// [`Self::seat_live`]; a registry that records each channel's `idle_wake`
-    /// overrides it.
+    /// overrides it. A read-only binding's channel never suppresses (D3).
     fn wake_suppressed(&self, seat: &SeatId) -> bool {
         self.seat_live(seat)
+    }
+    /// Per-binding form of [`Self::wake_suppressed`], what the scheduler asks of each wake
+    /// target. The default is [`Self::binding_live`].
+    fn binding_wake_suppressed(&self, seat: &SeatId, binding: &BindingId) -> bool {
+        self.binding_live(seat, binding)
     }
     /// Push `Attention{version}` to every Live channel of the seat.
     fn notify(&self, _seat: &SeatId, _attention_version: u64) {}
@@ -4464,8 +4838,9 @@ pub trait ModChannels: Send + Sync {
         let _ = binding;
         self.stalled(seat, now)
     }
-    /// Seat form of [`Self::binding_stalled`]: the seat holds at least one channel and every
-    /// one of them is stalled.
+    /// Seat form of [`Self::binding_stalled`]: the seat holds at least one writable channel and
+    /// every one of them is stalled. A read-only channel is never stalled and vouches for
+    /// nothing (D3), so it does not count.
     fn stalled(&self, _seat: &SeatId, _now: UtcMillis) -> bool {
         false
     }
@@ -5012,6 +5387,8 @@ mod allocation_tests {
             host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("resolve"),
+            locator_hint: None,
+            tmux_hint: None,
         };
         let admission = HostObservationAdmission {
             instance: "i".into(),
@@ -5316,6 +5693,8 @@ mod allocation_tests {
             host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
+            locator_hint: None,
+            tmux_hint: None,
         };
         let observation = HostObservation {
             focused: false,
@@ -5623,6 +6002,8 @@ mod contract_adapter_tests {
             host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
+            locator_hint: None,
+            tmux_hint: None,
         };
         let observation = adapter
             .observe_current_target(&request.target, &context)
@@ -5733,6 +6114,230 @@ impl CreatedTab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateTabOutcome {
     Created(Box<CreatedTab>),
+    /// Transport-proven zero submission, never inferred from a guessed error.
+    NotSubmitted(ApiError),
+    OutcomeUnknown(ApiError),
+}
+
+/// CreateTargetPort owns creating a host target for launch and handoff (a new tab or a new
+/// terminal) and validating the witness that proves where it was created. It does not own
+/// the host-specific transport (the `tab.create` call, a core's `terminal.run`), the journal,
+/// or any decision about whether to create at all. A new host's creation is one more impl of
+/// this port, and launch and handoff code stays generic over it and never branches on the host
+/// type. Pattern: port with a witness-dispatching value type (`CreatedTarget::validate`);
+/// `NativeCli` is the first impl and delegates to [`CreateTabPort`].
+///
+/// The launch gate rides the same seam: a launched harness waits in `internal launch-gate` for
+/// the daemon to authorize its `(core, tN)` witness against the bootstrap `<compound>:<attempt>`.
+/// The creator stages the bootstrap Send before that reply, so an authorized gate never
+/// `exec`s a harness whose first message does not yet exist.
+pub trait CreateTargetPort: Send + Sync {
+    fn create_target(
+        &self,
+        request: &CreateTargetRequest,
+        context: &HostCallContext,
+    ) -> CreateTargetOutcome;
+}
+/// A Herdr socket creates tabs, so every [`CreateTabPort`] (`NativeCli` and the test fakes of
+/// the frozen tab seam) is a [`CreateTargetPort`] by delegation: the request narrows to the
+/// frozen `create_tab` call and the correlated [`CreatedTab`] widens back to a
+/// [`CreatedTarget`]. Any other placement or witness is refused before submission.
+impl<T: CreateTabPort + ?Sized> CreateTargetPort for T {
+    fn create_target(
+        &self,
+        request: &CreateTargetRequest,
+        context: &HostCallContext,
+    ) -> CreateTargetOutcome {
+        let (Placement::NewTab { space }, HostWitness::HerdrSocket(witness)) =
+            (&request.placement, &request.expected_witness)
+        else {
+            return CreateTargetOutcome::NotSubmitted(ApiError::invalid_request(
+                "native host creates tabs against a Herdr socket witness only",
+            ));
+        };
+        let tab_request = CreateTabRequest {
+            correlation: request.correlation.clone(),
+            workspace: space.clone(),
+            cwd: request.cwd.clone(),
+            label: request.label.clone(),
+            focus: request.focus,
+            env: request.env.clone(),
+            directory_context: request.directory_context.clone(),
+            expected_witness: witness.clone(),
+        };
+        match self.create_tab(&tab_request, context) {
+            CreateTabOutcome::Created(tab) => {
+                let tab = *tab;
+                CreateTargetOutcome::Created(Box::new(CreatedTarget {
+                    correlation: tab.correlation,
+                    placement: request.placement.clone(),
+                    target: tab.tab,
+                    root_pane: Some(tab.root_pane),
+                    terminal: tab.terminal,
+                    host_incarnation: tab.host_incarnation,
+                    witness: HostWitness::HerdrSocket(tab.witness),
+                }))
+            }
+            CreateTabOutcome::NotSubmitted(e) => CreateTargetOutcome::NotSubmitted(e),
+            CreateTabOutcome::OutcomeUnknown(e) => CreateTargetOutcome::OutcomeUnknown(e),
+        }
+    }
+}
+
+/// Creates a Herdr tab through any [`CreateTargetPort`]: the frozen tab request becomes a
+/// `NewTab` target request and the correlated target narrows back to the frozen
+/// [`CreatedTab`] the V1/V2 journal records. A creation that is not a Herdr-socket tab cannot
+/// be recorded there and is `OutcomeUnknown`, never silently dropped.
+pub fn create_tab_through<P: CreateTargetPort + ?Sized>(
+    port: &P,
+    request: &CreateTabRequest,
+    context: &HostCallContext,
+) -> CreateTabOutcome {
+    let target_request = CreateTargetRequest {
+        correlation: request.correlation.clone(),
+        placement: Placement::NewTab {
+            space: request.workspace.clone(),
+        },
+        cwd: request.cwd.clone(),
+        label: request.label.clone(),
+        focus: request.focus,
+        env: request.env.clone(),
+        directory_context: request.directory_context.clone(),
+        expected_witness: HostWitness::HerdrSocket(request.expected_witness.clone()),
+        gate_argv: Vec::new(),
+    };
+    match port.create_target(&target_request, context) {
+        CreateTargetOutcome::Created(target) => match target.as_created_tab() {
+            Some(tab) => CreateTabOutcome::Created(Box::new(tab)),
+            None => CreateTabOutcome::OutcomeUnknown(ApiError::new(
+                crate::protocol::results::ErrorCode::StaleHostObservation,
+                "creation is not a Herdr tab the V1 journal can record",
+            )),
+        },
+        CreateTargetOutcome::NotSubmitted(e) => CreateTabOutcome::NotSubmitted(e),
+        CreateTargetOutcome::OutcomeUnknown(e) => CreateTabOutcome::OutcomeUnknown(e),
+    }
+}
+/// Where a new target goes: a new tab in a space, or a new terminal under a parent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Placement {
+    NewTab { space: HostTargetId },
+    NewTerminal { parent: HostTargetId },
+}
+impl Placement {
+    /// The space or parent the placement is anchored on.
+    pub fn anchor(&self) -> &HostTargetId {
+        match self {
+            Self::NewTab { space } => space,
+            Self::NewTerminal { parent } => parent,
+        }
+    }
+}
+/// Process identity of a herdr-core server (`hc`), derived from the transport peer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HcPeer {
+    pub pid: u32,
+    pub start_seconds: u64,
+    pub uid: u32,
+}
+/// What proves where a target was created, per host kind.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HostWitness {
+    HerdrSocket(crate::host::continuity::LocalEndpointWitness),
+    HcCore { core_id: String, peer: HcPeer },
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CreateTargetRequest {
+    pub correlation: HostCallId,
+    pub placement: Placement,
+    pub cwd: std::path::PathBuf,
+    pub label: String,
+    pub focus: bool,
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_context: Option<crate::protocol::handoff::LaunchDirectoryContext>,
+    pub expected_witness: HostWitness,
+    /// What a host that starts its target itself runs (the launch gate shim, per attempt).
+    /// Empty: the host's own constructor-time argv. A host that only creates a tab ignores it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_argv: Vec<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CreatedTarget {
+    pub correlation: HostCallId,
+    pub placement: Placement,
+    /// The new tab (`NewTab`) or the new terminal's target (`NewTerminal`).
+    pub target: HostTargetId,
+    /// The tab's root pane; present exactly for a Herdr socket tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_pane: Option<HostTargetId>,
+    pub terminal: TerminalId,
+    /// Derived from transport peer/process/socket, never a response field.
+    pub host_incarnation: HostBootId,
+    pub witness: HostWitness,
+}
+impl CreatedTarget {
+    /// The boot a fresh read of this target reports: `hc-core:<core id>` for a core (the
+    /// `host_incarnation` also names the serving process), the incarnation itself for a
+    /// Herdr socket.
+    pub fn observed_boot(&self) -> HostBootId {
+        match &self.witness {
+            HostWitness::HcCore { core_id, .. } => HostBootId::new(format!("hc-core:{core_id}")),
+            HostWitness::HerdrSocket(_) => self.host_incarnation.clone(),
+        }
+    }
+    /// The Herdr-socket creation as the frozen tab record, or `None` for another witness.
+    pub fn as_created_tab(&self) -> Option<CreatedTab> {
+        let (HostWitness::HerdrSocket(witness), Placement::NewTab { space }) =
+            (&self.witness, &self.placement)
+        else {
+            return None;
+        };
+        Some(CreatedTab {
+            correlation: self.correlation.clone(),
+            workspace: space.clone(),
+            tab: self.target.clone(),
+            root_pane: self.root_pane.clone()?,
+            terminal: self.terminal.clone(),
+            host_incarnation: self.host_incarnation.clone(),
+            witness: witness.clone(),
+        })
+    }
+    pub fn validate(&self) -> Result<(), &'static str> {
+        const INVALID: &str = "invalid correlated creation evidence";
+        match (&self.witness, &self.placement) {
+            (HostWitness::HerdrSocket(_), Placement::NewTab { .. }) => {
+                self.as_created_tab().ok_or(INVALID)?.validate()
+            }
+            (
+                HostWitness::HcCore { core_id, peer },
+                Placement::NewTerminal { parent: anchor } | Placement::NewTab { space: anchor },
+            ) => {
+                let incarnation = format!(
+                    "hc-core:{core_id}:pid={}:start={}:uid={}",
+                    peer.pid, peer.start_seconds, peer.uid
+                );
+                if core_id.is_empty()
+                    || peer.pid == 0
+                    || peer.start_seconds == 0
+                    || self.host_incarnation.as_str() != incarnation
+                    || self.root_pane.is_some()
+                    || self.target.as_str().is_empty()
+                    || &self.target == anchor
+                {
+                    return Err(INVALID);
+                }
+                Ok(())
+            }
+            _ => Err(INVALID),
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateTargetOutcome {
+    Created(Box<CreatedTarget>),
     /// Transport-proven zero submission, never inferred from a guessed error.
     NotSubmitted(ApiError),
     OutcomeUnknown(ApiError),

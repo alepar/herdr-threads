@@ -1199,9 +1199,11 @@ fn seat_retired_remote_row_and_replicated_job_row() {
             None
         )]
     );
-    // B's own row is untouched by its own fact (the fence retires it, not the handler).
-    assert_eq!(b.seat(&seat).unwrap().0, "resolved");
-    assert!(retirement_rows(&b).is_empty());
+    // B's own row, retired by its own fact (`author_retired` authors the fact alone, no fence behind
+    // it), takes the fence's transition on replay: retired, with one `replicated` retirement row.
+    assert_eq!(b.seat(&seat).unwrap().0, "retired");
+    assert_eq!(retirement_rows(&b).len(), 1);
+    assert_eq!(retirement_rows(&b)[0].1, "replicated");
 }
 
 #[test]
@@ -1317,4 +1319,122 @@ fn seat_retired_home_origin_applies() {
         assert!(retired_failures(node).is_empty());
     }
     assert!(retired_failures(&b).is_empty());
+}
+
+// ---- display_name (named seats across nodes, N7) ----------------------------
+
+/// `seats.name` of `seat` on `node` (`None`: no row, or a NULL name).
+fn seat_name(node: &Node, seat: &SeatId) -> Option<String> {
+    let sql = format!("SELECT name FROM seats WHERE id='{}'", seat.as_str());
+    node.query(&sql, |r| r.get::<_, Option<String>>(0))
+        .into_iter()
+        .next()
+        .flatten()
+}
+
+/// Authors a `seat.created` for `seat` carrying `display_name` verbatim, as a peer of any
+/// version could.
+fn author_created_named(node: &Node, seat: &SeatId, display_name: &str) {
+    node.run(|tx, d| {
+        journal::author::<SeatCreated>(
+            tx,
+            node.ctx(),
+            d,
+            &SeatCreatedPayload {
+                seat: seat.clone(),
+                kind: SeatKind::Agent,
+                display_name: Some(display_name.to_owned()),
+            },
+        )
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+// Kills: `ensure_published` still authoring `display_name: null` for a named seat; a receiver
+// that drops the name, or fails on the older node's `null` / absent field.
+#[test]
+fn old_node_fixture_decodes_display_name() {
+    // The v1 shapes of an older node: `null`, an absent field, and a name.
+    let seat = "snSGbl096JZZ";
+    let null: SeatCreatedPayload = serde_json::from_str(&format!(
+        r#"{{"seat":"{seat}","kind":"agent","display_name":null}}"#
+    ))
+    .unwrap();
+    let absent: SeatCreatedPayload =
+        serde_json::from_str(&format!(r#"{{"seat":"{seat}","kind":"human"}}"#)).unwrap();
+    let named: SeatCreatedPayload = serde_json::from_str(&format!(
+        r#"{{"seat":"{seat}","kind":"agent","display_name":"reviewer"}}"#
+    ))
+    .unwrap();
+    assert_eq!(null.display_name, None);
+    assert_eq!(absent.display_name, None);
+    assert_eq!(named.display_name.as_deref(), Some("reviewer"));
+
+    // End to end: the published name is the seat's `seats.name`; an unnamed seat publishes null.
+    let reg = registry();
+    let (a, b) = (Node::with(70, reg), Node::with(71, reg));
+    let (named_seat, plain_seat) = (a.mint_seat(0), a.mint_seat(0));
+    a.add_local_seat(&named_seat);
+    a.add_local_seat(&plain_seat);
+    a.raw()
+        .execute(
+            "UPDATE seats SET name='reviewer' WHERE id=?1",
+            [named_seat.as_str()],
+        )
+        .unwrap();
+    assert!(a.publish(&named_seat).unwrap());
+    assert!(a.publish(&plain_seat).unwrap());
+    let names: Vec<_> = a
+        .seat_created_payloads()
+        .into_iter()
+        .map(|p| (p.seat, p.display_name))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            (named_seat.clone(), Some("reviewer".to_owned())),
+            (plain_seat.clone(), None)
+        ]
+    );
+    fact_exchange::sync(&a.store, &b.store);
+    assert_eq!(seat_name(&b, &named_seat).as_deref(), Some("reviewer"));
+    assert_eq!(seat_name(&b, &plain_seat), None);
+    assert_eq!(b.seat(&named_seat).unwrap().0, "remote");
+}
+
+// Kills: a receiver that stores an unvalidated name, or that rejects the fact (the seat then
+// never materializes and every later fact about it parks).
+#[test]
+fn invalid_received_name_stored_null() {
+    let reg = registry();
+    let (a, b) = (Node::with(72, reg), Node::with(73, reg));
+    let invalid = [
+        "has space",
+        "-lead",
+        ".dot",
+        "snSGbl096JZZ", // shaped like a seat id
+        "",
+        &"x".repeat(65),
+    ];
+    let seats: Vec<SeatId> = invalid.iter().map(|_| a.mint_seat(0)).collect();
+    for (seat, name) in seats.iter().zip(invalid) {
+        a.add_local_seat(seat);
+        author_created_named(&a, seat, name);
+    }
+    fact_exchange::sync(&a.store, &b.store);
+    for (seat, name) in seats.iter().zip(invalid) {
+        let row = b
+            .seat(seat)
+            .unwrap_or_else(|| panic!("{name:?} was rejected"));
+        assert_eq!(row.0, "remote", "{name:?}");
+        assert_eq!(seat_name(&b, seat), None, "{name:?}");
+    }
+    assert!(
+        b.journal()
+            .iter()
+            .all(|(_, state, error)| error.is_none() && state != "failed"),
+        "{:?}",
+        b.journal()
+    );
 }

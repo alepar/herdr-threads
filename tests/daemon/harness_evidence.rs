@@ -1345,7 +1345,7 @@ impl RichManifestSource for CachedExactDomain {
             && identity.source == "native_transcript"
             && domain == "native_payload"
             && origin == crate::harness::evidence::EvidenceOrigin::NativePayload
-            && contract_id == "fc1e3270060b4b87"
+            && contract_id == "de803558d66158f3"
     }
 }
 #[test]
@@ -2199,13 +2199,22 @@ mod publication_order {
         ) -> Result<CommandResult, ApiError> {
             self.inner.register_available(request, permit, budget)
         }
-        fn attach_host(
+        fn attach_host_of_kind(
+            &self,
+            locator: &crate::protocol::ids::HostLocator,
+            now: i64,
+            kind: crate::ports::HostKind,
+            budget: &CallBudget,
+        ) -> Result<(crate::ports::HostId, i64), ApiError> {
+            self.inner.attach_host_of_kind(locator, now, kind, budget)
+        }
+        fn attach_host_unprobed(
             &self,
             locator: &crate::protocol::ids::HostLocator,
             now: i64,
             budget: &CallBudget,
-        ) -> Result<(crate::ports::HostId, i64), ApiError> {
-            self.inner.attach_host(locator, now, budget)
+        ) -> Result<(crate::ports::HostId, i64, crate::ports::HostKind), ApiError> {
+            self.inner.attach_host_unprobed(locator, now, budget)
         }
         fn begin_host_observation(
             &self,

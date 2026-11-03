@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const AUTOMATIC_PLAN_VERSION: u32 = 2;
+/// The plan version of an automatic bootstrap that creates its target through a
+/// `CreateTargetPort` (`placement` set); an `AutomaticHandoffPlan` of this version is the
+/// derived child of such a plan. Older daemons refuse it.
+pub const AUTOMATIC_TARGET_PLAN_VERSION: u32 = 3;
 pub(crate) const MAX_AUTOMATIC_ORIGINAL_BYTES: usize = 524288;
 
 /// Automatic selection has one Ensure child and no independent invitation.
@@ -164,7 +168,7 @@ pub struct AutomaticHandoffPlan {
 }
 impl AutomaticHandoffPlan {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.version != AUTOMATIC_PLAN_VERSION {
+        if self.version != AUTOMATIC_PLAN_VERSION && self.version != AUTOMATIC_TARGET_PLAN_VERSION {
             return Err("unsupported automatic handoff version");
         }
         self.delivery.validate()?;
@@ -287,6 +291,11 @@ impl AutomaticDeliveryMutation {
     pub fn plan(&self) -> &AutomaticDeliveryPlan {
         self.original.delivery()
     }
+    /// The child of a V3 bootstrap: its launch target may be a core terminal, so the
+    /// claim's host need not be the namespace endpoint.
+    pub fn targets_own_host(&self) -> bool {
+        matches!(&self.original, AutomaticOriginal::Handoff(plan) if plan.version == AUTOMATIC_TARGET_PLAN_VERSION)
+    }
     pub fn begin(&self) -> Self {
         let mut request = self.clone();
         request.action = AutomaticDeliveryAction::Begin {
@@ -376,27 +385,34 @@ impl AutomaticDeliveryMutation {
         let thread = ThreadId::new("\\".repeat(128));
         let mut summaries = Vec::new();
         if let AutomaticOriginal::Handoff(plan) = &self.original {
-            let template = plan
-                .startup_input
-                .as_ref()
-                .ok_or("modern automatic origin lacks startup template")?;
-            for prompt in crate::cli::handoff::bootstrap_v1::retained_prompts(
-                thread.as_str(),
-                &plan.context,
-                &self.claim.instance,
-            ) {
-                let (argv, _) = template
-                    .apply(&plan.launch.argv, &prompt)
-                    .map_err(|_| "automatic future startup input exceeds bounds")?;
-                let argv = crate::harness::launch::compose_native_argv(
-                    plan.launch.harness.into(),
-                    argv,
-                    vec![],
-                )
-                .map_err(|_| "automatic future native argv exceeds bounds")?;
-                crate::ports::NativeLaunchRequest::validate_argv(&argv)?;
-                let report = serde_json::json!({"outcome":"started","pane":"\\".repeat(128),"seat":plan.delivery.recipient,"harness":plan.launch.harness.as_str(),"argv":argv});
+            if plan.version == AUTOMATIC_TARGET_PLAN_VERSION {
+                // The argv of a V3 plan is frozen at creation: no prompt substitution.
+                crate::ports::NativeLaunchRequest::validate_argv(&plan.launch.argv)?;
+                let report = serde_json::json!({"outcome":"started","pane":"\\".repeat(128),"seat":plan.delivery.recipient,"harness":plan.launch.harness.as_str(),"argv":plan.launch.argv});
                 summaries.push(super::automatic_launch_summary(&report, &"f".repeat(64))?);
+            } else {
+                let template = plan
+                    .startup_input
+                    .as_ref()
+                    .ok_or("modern automatic origin lacks startup template")?;
+                for prompt in crate::cli::handoff::bootstrap_v1::retained_prompts(
+                    thread.as_str(),
+                    &plan.context,
+                    &self.claim.instance,
+                ) {
+                    let (argv, _) = template
+                        .apply(&plan.launch.argv, &prompt)
+                        .map_err(|_| "automatic future startup input exceeds bounds")?;
+                    let argv = crate::harness::launch::compose_native_argv(
+                        plan.launch.harness.into(),
+                        argv,
+                        vec![],
+                    )
+                    .map_err(|_| "automatic future native argv exceeds bounds")?;
+                    crate::ports::NativeLaunchRequest::validate_argv(&argv)?;
+                    let report = serde_json::json!({"outcome":"started","pane":"\\".repeat(128),"seat":plan.delivery.recipient,"harness":plan.launch.harness.as_str(),"argv":argv});
+                    summaries.push(super::automatic_launch_summary(&report, &"f".repeat(64))?);
+                }
             }
         }
         if summaries.is_empty() {
@@ -428,7 +444,13 @@ impl AutomaticDeliveryMutation {
         if self.version != AUTOMATIC_PLAN_VERSION
             || self.claim.role != CallerRole::TopLevel
             || self.claim.instance != plan.payload.namespace.instance
-            || self.claim.host.as_path() != plan.payload.namespace.host_endpoint.as_path()
+            // A named seat's claim sits at the reserved named host while the launch namespace is
+            // the Herdr server it creates the recipient on; no other claim has a reserved host.
+            || (!self.targets_own_host()
+                && !self
+                    .claim
+                    .host
+                    .fronts_namespace(&plan.payload.namespace.host_endpoint))
             || self.claim.seat == plan.recipient
             || self.digest != self.original.digest(&self.claim)?
             || classify_original_actor(&self.scope, &self.original.semantic(self.claim.clone()))

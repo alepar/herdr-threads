@@ -102,6 +102,13 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          watcher; not a periodic daemon loop",
     ),
     (
+        "src/host/probe.rs",
+        "std::thread::sleep(",
+        "the probe's nonblocking connect on a full backlog: 10 ms steps ending at \
+         the caller's budget, once per probe on the caller's thread; a one-shot \
+         bounded wait with no cadence to pace, not a lane",
+    ),
+    (
         "src/host/native.rs",
         "thread::sleep(Duration::from_millis(2))",
         "a unit-test fixture inside native.rs: the fake Herdr socket's accept \
@@ -229,6 +236,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "one peer-requested launch's worker retrying its outcome write, three times (RECORD_RETRIES, 6.2 s in all); not a periodic daemon loop",
     ),
     (
+        "src/service/launch_gate.rs",
+        "std::thread::sleep(GATE_SEAT_RETRY)",
+        "one gate-seat record write retrying a stale host observation until the launch budget deadline; not a periodic daemon loop",
+    ),
+    (
         "src/service/peer_launcher.rs",
         "std::thread::sleep(CHILD_POLL)",
         "one peer-requested launch's worker thread waiting for its child to exit, bounded by CHILD_TIMEOUT; not a periodic daemon loop",
@@ -242,6 +254,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "src/sync/coordinator.rs",
         "tokio::time::sleep(Duration::from_millis(5)).await",
         "unit test polling until eight remote address requests are held, 10 s cap; not daemon code",
+    ),
+    (
+        "src/service/launch_gate.rs",
+        "std::thread::sleep(POLL)",
+        "one launch-gate request polling the canonical view, on its own handler thread, for the bootstrap Send to be staged; bounded by the request's timeout_ms and the call's deadline; not a periodic daemon loop",
     ),
     (
         "src/service/sync_admin.rs",
@@ -397,6 +414,26 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "src/sync/dialer.rs",
         "sleep(Duration::from_millis(50))",
         "dialer unit test: polls a condition or lets reloads settle; not daemon code",
+    ),
+    (
+        "src/daemon/lifecycle.rs",
+        "receiver.recv_timeout(DETACH_REPORT_WAIT)",
+        "the starter's one bounded wait (DETACH_REPORT_WAIT) for the detach intermediate's pid report; runs in the starting CLI process, never in the daemon, and kills the intermediate on expiry",
+    ),
+    (
+        "src/host/named/tmux.rs",
+        "std::thread::sleep(Duration::from_millis(5))",
+        "bounded poll of one `tmux display` child inside `tmux::verify` (COMMAND_DEADLINE, 2 s); ends with the call, not a lane. Caller check: verify is reached only through NamedHost::record_tmux_hint, called from HostPort::note_wake_hint by the Command::ResolveSeat named-host branch in src/service/dispatch.rs, after resolve_named has returned (no store transaction or writer-lane work is held). That branch runs on a tokio spawn_blocking worker (src/daemon/transport.rs), one per request, not the single-threaded writer lane; the 2 s worst case delays only that one ResolveSeat reply and occupies one blocking-pool thread",
+    ),
+    (
+        "src/test_support/fake_hc.rs",
+        "std::thread::sleep(Duration::from_millis(5))",
+        "test-support only: the in-process fake hc's accept loop backs off 5 ms between nonblocking polls (both the WouldBlock and error arms) and ends on `stop`; never in a release daemon",
+    ),
+    (
+        "src/test_support/tmux.rs",
+        "std::thread::sleep(Duration::from_millis(20))",
+        "test-support only: PrivateTmux::wait_gone's bounded wait (its `within` argument) for a private test tmux server to exit; never in a release daemon",
     ),
 ];
 

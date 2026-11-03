@@ -265,9 +265,7 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
             panic!("health outside capability probe")
         },
         f.service,
-        &herdr_threads::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
-    )
-    .unwrap();
+    );
     let CommandResult::Capabilities(caps) = control
         .handle(Command::Capabilities, peer, &budget)
         .unwrap()
@@ -1921,6 +1919,7 @@ fn automatic_canonical_send_publishes_once_and_completed_replay_is_historical() 
 fn automatic_parent_identity() -> AutomaticBootstrapIdentity {
     let old = super::topology_handoff::identity();
     let plan = AutomaticBootstrapPlan {
+        placement: None,
         version: 2,
         payload: AutomaticBootstrapPayload {
             directory_context: None,
@@ -2015,7 +2014,7 @@ fn automatic_canonical_bootstrap_public_begin_reserve_and_record_created() {
     ));
     request.action = AutomaticBootstrapAction::RecordCreated {
         attempt: next,
-        evidence: super::topology_handoff::created(),
+        evidence: super::topology_handoff::created().into(),
     };
     let created = f
         .call(Command::AutomaticBootstrap(Box::new(request)))
@@ -2206,9 +2205,7 @@ fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
             ),
             |_| -> herdr_threads::daemon::health::HealthInputs { panic!("health") },
             f.service,
-            &herdr_threads::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
-        )
-        .unwrap();
+        );
         let CommandResult::Capabilities(caps) = service
             .handle(
                 Command::Capabilities,
@@ -2464,4 +2461,446 @@ fn automatic_canonical_first_begin_admits_future_startup_before_any_effect() {
         herdr_threads::protocol::results::ErrorCode::InvalidRequest
     );
     assert_eq!(counts(), before);
+}
+
+// ---- V3 automatic bootstrap into a herdr-core terminal (ht-kqrt.133) ----
+
+use herdr_threads::{
+    host::hc::{HcBootstrapObserver, HcClient, HcHost},
+    ports::{CreatedTarget, HcPeer, HostWitness, Placement},
+    protocol::ids::{HostBootId, HostCallId, HostLocator, HostTargetId, OperationId, TerminalId},
+    test_support::fake_hc::{FakeHc, FakeTerminal},
+};
+
+/// A service over a fake core with the live terminals `t1` (before the first capture) and `t2`: the core's `HcHost` is the
+/// session's port and `HcBootstrapObserver` its bootstrap observer. The caller's claim keeps the
+/// fixture's Herdr host, so the namespace endpoint (the core socket) is not the claim's host:
+/// the handoff-from-a-pane shape.
+struct HcRig {
+    f: Fixture,
+    fake: FakeHc,
+    namespace: HandoffNamespace,
+}
+
+impl HcRig {
+    fn new() -> Self {
+        let fake = FakeHc::start();
+        // `t2` is the terminal the launch creates: it exists after the first capture, so it
+        // is not a baseline-held target.
+        fake.add_terminal(FakeTerminal::live("t1"));
+        let directory =
+            super::handoff_fences::Directory(herdr_threads::test_support::scratch::temp_path(
+                format!("ht-authority-hc-{}", uuid::Uuid::new_v4()),
+            ));
+        std::fs::create_dir(&directory.0).unwrap();
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let context =
+            StoreContext::new(directory.0.join("store.db"), clock.clone()).with_test_host();
+        let db = rusqlite::Connection::open(directory.0.join("store.db")).unwrap();
+        herdr_threads::store::schema::initialize(
+            &db,
+            || clock.utc_now(),
+            &herdr_threads::test_support::test_node_seed(),
+        )
+        .unwrap();
+        herdr_threads::test_support::attach_test_host_to_connection(&db);
+        super::channel_archival::thread(&db);
+        super::channel_archival::joined_agent(&db);
+        drop(db);
+        let db = context.open_writer().unwrap();
+        let concrete = Arc::new(
+            SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        let store: Arc<dyn StorePort> = concrete.clone();
+        let host = Arc::new(HcHost::new(HcClient::new(fake.socket())));
+        let writer = Arc::new(FairWriter::new(32));
+        let identity = Arc::new(herdr_threads::identity::repair::OrdinaryIdentity::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            herdr_threads::test_support::test_host_id(),
+            store.clone(),
+            host.clone(),
+            clock.clone(),
+            writer.clone(),
+        ));
+        let mut namespace = super::topology_handoff::namespace();
+        namespace.host_endpoint = fake.socket().to_path_buf();
+        let service = DomainService::with_identity(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store.clone(),
+            clock.clone(),
+            identity.clone(),
+        )
+        .with_operator_owner(501)
+        .with_cooperative_owner(501, writer)
+        .with_prebuilt_bootstrap(
+            namespace.clone(),
+            Arc::new(HcBootstrapObserver::new(host)),
+            concrete.clone(),
+        )
+        .unwrap();
+        let f = Fixture {
+            service,
+            store: concrete,
+            db,
+            clock: clock.clone(),
+            directory,
+        };
+        // The first read of a core needs a published boot.
+        herdr_threads::test_support::capture_host_observation(
+            &identity,
+            store,
+            herdr_threads::test_support::test_host_id(),
+            &CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
+                cancellation: Cancellation::default(),
+            },
+        )
+        .unwrap();
+        // The capture moved the host to the core's boot; the sender, a Herdr-shaped seat, keeps
+        // its current observation on it (the fixture's seat model, not the unit under test).
+        f.db.execute_batch("DELETE FROM observed_targets WHERE target_id='p'; INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) SELECT host_id,'p',host_boot,host_epoch,0,observation_sequence+1000,'fresh',0,'term','inc','native_current_target',1,'idle' FROM herdr_hosts WHERE host_id=(SELECT min(host_id) FROM herdr_hosts);").unwrap();
+        // The attach records the launch placeholder on the terminal's process, so `t2` runs as
+        // this test process, whose pid the process table observes.
+        fake.add_terminal(FakeTerminal {
+            pid: Some(std::process::id()),
+            ..FakeTerminal::live("t2")
+        });
+        Self { f, fake, namespace }
+    }
+
+    fn locator(&self) -> HostLocator {
+        HostLocator::parse(self.fake.socket().to_string_lossy().into_owned()).unwrap()
+    }
+
+    fn placement() -> Placement {
+        Placement::NewTerminal {
+            parent: HostTargetId::new("t1"),
+        }
+    }
+
+    /// The V3 plan: the fixture's caller, the core as the namespace endpoint.
+    fn identity(&self) -> AutomaticBootstrapIdentity {
+        let old = super::topology_handoff::identity();
+        let placement = Self::placement();
+        let plan = AutomaticBootstrapPlan {
+            placement: Some(placement.clone()),
+            version: AUTOMATIC_TARGET_PLAN_VERSION,
+            payload: AutomaticBootstrapPayload {
+                directory_context: None,
+                handoff: AutomaticHandoffPayload::new(
+                    self.namespace.clone(),
+                    OperationId::new("automatic-child"),
+                    "work".into(),
+                )
+                .unwrap(),
+                keys: AutomaticBootstrapKeys::new(OperationId::new("automatic-parent")),
+                workspace: placement.anchor().clone(),
+                cwd: old.payload.cwd,
+                label: old.payload.label,
+                focus: false,
+                env: Default::default(),
+                launch: old.payload.launch,
+                startup_input: None,
+            },
+        };
+        AutomaticBootstrapIdentity::new(old.scope, old.claim, plan).unwrap()
+    }
+
+    /// What `terminal.run` would have returned for `t2`: the witness is the core's own `hello`.
+    fn created(&self) -> CreatedTarget {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        let hello = runtime
+            .block_on(HcClient::new(self.fake.socket()).hello())
+            .unwrap();
+        let (core_id, witness) = (hello.value.core.id, hello.witness);
+        let peer = HcPeer {
+            pid: witness.peer_pid,
+            start_seconds: witness.start_seconds,
+            uid: witness.peer_uid,
+        };
+        CreatedTarget {
+            correlation: HostCallId::new("hc-correlation"),
+            placement: Self::placement(),
+            target: HostTargetId::new("t2"),
+            root_pane: None,
+            terminal: TerminalId::new("t2"),
+            host_incarnation: HostBootId::new(format!(
+                "hc-core:{core_id}:pid={}:start={}:uid={}",
+                peer.pid, peer.start_seconds, peer.uid
+            )),
+            witness: HostWitness::HcCore { core_id, peer },
+        }
+    }
+
+    fn seats(&self) -> i64 {
+        self.f
+            .db
+            .query_row("SELECT count(*) FROM seats", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Begin, Reserve and RecordCreated.
+    fn through_created(&self, id: &AutomaticBootstrapIdentity, created: &CreatedTarget) {
+        let attempt = BootstrapAttempt::first();
+        parent_call(&self.f, id, AutomaticBootstrapAction::Begin).unwrap();
+        parent_call(&self.f, id, AutomaticBootstrapAction::Reserve { attempt }).unwrap();
+        let recorded = parent_call(
+            &self.f,
+            id,
+            AutomaticBootstrapAction::RecordCreated {
+                attempt,
+                evidence: created.clone().into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(recorded, CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Created && v.creation == Some(created.clone().into()))
+        );
+    }
+
+    fn resolve(&self, id: &AutomaticBootstrapIdentity) -> herdr_threads::protocol::ids::SeatId {
+        match parent_call(
+            &self.f,
+            id,
+            AutomaticBootstrapAction::Resolve {
+                attempt: BootstrapAttempt::first(),
+            },
+        )
+        .unwrap()
+        {
+            CommandResult::SeatResolved(seat) => seat,
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
+fn resolve_allocates_the_core_terminal_seat_through_the_observer() {
+    let rig = HcRig::new();
+    let (id, created) = (rig.identity(), rig.created());
+    rig.through_created(&id, &created);
+    let before = rig.seats();
+    let seat = rig.resolve(&id);
+    assert_eq!(rig.seats(), before + 1, "one seat for (core, t2)");
+    // The seat is the one for the terminal, on the host's current boot.
+    let target: String = rig
+        .f
+        .db
+        .query_row(
+            "SELECT target_id FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(target, "t2");
+    // Resolving again is the same seat, with no allocation.
+    assert_eq!(rig.resolve(&id), seat);
+    assert_eq!(rig.seats(), before + 1);
+}
+
+#[test]
+fn later_terminal_caller_resolves_the_same_seat() {
+    use herdr_threads::protocol::commands::ResolveSeat;
+    let rig = HcRig::new();
+    let (id, created) = (rig.identity(), rig.created());
+    rig.through_created(&id, &created);
+    let seat = rig.resolve(&id);
+    let seats = rig.seats();
+    let later = rig
+        .f
+        .call(Command::ResolveSeat(ResolveSeat {
+            host: rig.locator(),
+            target: HostTargetId::new("t2"),
+            operation: OperationId::new("terminal-site-caller"),
+            locator_hint: None,
+            tmux_hint: None,
+        }))
+        .unwrap();
+    assert_eq!(later, CommandResult::SeatResolved(seat));
+    assert_eq!(rig.seats(), seats, "never a second seat for the terminal");
+}
+
+#[test]
+fn attach_through_fake_hc() {
+    let rig = HcRig::new();
+    let (id, created) = (rig.identity(), rig.created());
+    rig.through_created(&id, &created);
+    let seat = rig.resolve(&id);
+    let attachment = AutomaticBootstrapAttachment::derive(
+        &id,
+        BootstrapAttempt::first(),
+        created.clone(),
+        seat.clone(),
+    )
+    .unwrap();
+    let attached = parent_call(
+        &rig.f,
+        &id,
+        AutomaticBootstrapAction::Attach(Box::new(attachment.clone())),
+    )
+    .unwrap();
+    assert!(
+        matches!(attached, CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Attached && v.attachment.as_ref() == Some(&attachment))
+    );
+    // TRUST-POLICY `managed_launch`: the attach recorded the placeholder, once, on the
+    // terminal's process, before any Send.
+    let placeholders: Vec<(String, Option<i64>)> = {
+        let mut statement = rig
+            .f
+            .db
+            .prepare(
+                "SELECT seat_id, liveness_pid FROM occupant_bindings \
+                 WHERE observation_provenance='managed_launch' AND ended_at IS NULL",
+            )
+            .unwrap();
+        statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(
+        placeholders,
+        vec![(
+            seat.as_str().to_owned(),
+            Some(i64::from(std::process::id()))
+        )]
+    );
+    // The derived child launches into the terminal, in the core's namespace.
+    let AutomaticOriginal::Handoff(plan) = &attachment.child.original else {
+        panic!("handoff child")
+    };
+    assert_eq!(plan.launch.target, created.target);
+    assert_eq!(plan.version, AUTOMATIC_TARGET_PLAN_VERSION);
+    // The child's own phases reach the core's runtime, not the Herdr one.
+    automatic_call(&rig.f, attachment.child.begin()).unwrap();
+    let ensured = automatic_call(&rig.f, attachment.child.ensure()).unwrap();
+    assert!(automatic_selected_thread(&ensured).is_ok());
+    // A changed core is refused at the guard: the creation's peer is not the core's.
+    let mut other = created;
+    other.witness = HostWitness::HcCore {
+        core_id: "core-0001".into(),
+        peer: HcPeer {
+            pid: 1,
+            start_seconds: 1,
+            uid: 1,
+        },
+    };
+    assert!(other.validate().is_err());
+}
+
+#[test]
+fn created_pane_recovery_of_a_v3_plan_refuses_a_tab_and_cancelled_works() {
+    let rig = HcRig::new();
+    let (id, created) = (rig.identity(), rig.created());
+    rig.through_created(&id, &created);
+    let CommandResult::AutomaticBootstrap(status) =
+        parent_call(&rig.f, &id, AutomaticBootstrapAction::Status).unwrap()
+    else {
+        panic!("status")
+    };
+    let attempt = BootstrapAttempt::first();
+    let inspection = status.recovery_inspection().unwrap();
+    let tab = super::topology_handoff::created();
+    let refused = parent_call(
+        &rig.f,
+        &id,
+        AutomaticBootstrapAction::Recover {
+            attempt,
+            inspection: inspection.clone(),
+            disposition: AutomaticBootstrapRecoveryDisposition::CreatedPane {
+                evidence: Box::new(tab.into()),
+                structural_reference: HostCallId::new("ref"),
+            },
+        },
+    );
+    assert!(refused.is_err());
+    let CommandResult::AutomaticBootstrap(after) =
+        parent_call(&rig.f, &id, AutomaticBootstrapAction::Status).unwrap()
+    else {
+        panic!("status")
+    };
+    assert_eq!(
+        (after.state, after.administrative_revision, after.attempt),
+        (status.state, status.administrative_revision, status.attempt)
+    );
+    let cancelled = parent_call(
+        &rig.f,
+        &id,
+        AutomaticBootstrapAction::Recover {
+            attempt,
+            inspection,
+            disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                reason: "inspected quiescence".into(),
+                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                attached_child: None,
+            },
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(cancelled, CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Cancelled)
+    );
+}
+
+// An operator who asserts a really created core terminal keeps it: the V3 plan takes a target
+// creation, read through the core's observer, and the attempt moves to Created with it.
+#[test]
+fn created_pane_recovery_of_a_v3_plan_keeps_the_created_target() {
+    let rig = HcRig::new();
+    let (id, created) = (rig.identity(), rig.created());
+    let attempt = BootstrapAttempt::first();
+    parent_call(&rig.f, &id, AutomaticBootstrapAction::Begin).unwrap();
+    parent_call(&rig.f, &id, AutomaticBootstrapAction::Reserve { attempt }).unwrap();
+    let CommandResult::AutomaticBootstrap(status) =
+        parent_call(&rig.f, &id, AutomaticBootstrapAction::Status).unwrap()
+    else {
+        panic!("status")
+    };
+    let recovered = parent_call(
+        &rig.f,
+        &id,
+        AutomaticBootstrapAction::Recover {
+            attempt,
+            inspection: status.recovery_inspection().unwrap(),
+            disposition: AutomaticBootstrapRecoveryDisposition::CreatedPane {
+                evidence: Box::new(created.clone().into()),
+                structural_reference: HostCallId::new("ref"),
+            },
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(recovered, CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Created && v.creation == Some(created.into())),
+        "{recovered:?}"
+    );
+}
+
+#[test]
+fn core_session_keeps_its_v1_v2_answers() {
+    let rig = HcRig::new();
+    let session = rig
+        .f
+        .service
+        .attached_host(
+            &rig.locator(),
+            &CallBudget {
+                deadline: MonoInstant(rig.f.clock.monotonic_now().0 + 5_000),
+                cancellation: Cancellation::default(),
+            },
+        )
+        .unwrap();
+    // `bootstrap_available`, Send preparation and the advertised guarded capabilities read this
+    // slot only: a core has none, and its V3 runtime sits in the other one.
+    assert!(session.bootstrap().is_none());
+    assert!(session.target_bootstrap().is_some());
 }

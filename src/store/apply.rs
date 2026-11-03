@@ -41,7 +41,7 @@ use crate::store::connection::{DecisionInstant, StoreContext, SyncState, api_err
 use crate::store::journal;
 use crate::store::seats;
 use crate::sync::envelope::Deps;
-use crate::sync::facts::{FactError, FactKind};
+use crate::sync::facts::{FactError, FactKind, WaitFor};
 use crate::sync::hlc::HlcStamp;
 use crate::sync::journal_port::ApplyProgress;
 use crate::sync::{EntityKey, LogKey};
@@ -750,7 +750,7 @@ impl ApplyState {
 pub enum ReplayScope<'a> {
     /// Daemon start: `parked_unknown` entries the registry now knows, plus
     /// `parked_dep` entries whose creator has applied or that wait for a host
-    /// while one is attached.
+    /// while the host their park waits for is attached.
     Startup,
     /// `sync unapplied replay`: every entry in the named states.
     Unapplied { states: &'a [ApplyState] },
@@ -979,25 +979,55 @@ fn next_ready_head(tx: &Transaction<'_>, only_self_log: bool) -> Result<Option<i
     Ok(None)
 }
 
-/// A `parked_dep` row `p` may be re-attempted: its creator applied, or it
-/// waits for a host and `herdr_hosts` holds a row (the materializer's own
-/// condition, so a re-attempt never re-parks on the host).
-const PARKED_READY: &str = "(EXISTS(SELECT 1 FROM journal c WHERE c.creates=p.parked_on AND c.apply_state='applied') \
-     OR (p.parked_on='wait:host' AND EXISTS(SELECT 1 FROM herdr_hosts)))";
+/// `p.payload`'s `display_name` passes the `SeatName` grammar (`SeatName::parse`, less the
+/// seat-id-shaped rule, which SQL cannot state: such a row is caught by the attempted-set guard in
+/// [`next_reattemptable`]). `json_valid` guards the extraction, so a non-JSON payload is not named
+/// and raises no SQL error.
+macro_rules! park_named {
+    () => {
+        "COALESCE(CASE WHEN json_valid(CAST(p.payload AS TEXT)) THEN \
+     (json_type(CAST(p.payload AS TEXT),'$.display_name')='text' \
+      AND length(CAST(json_extract(CAST(p.payload AS TEXT),'$.display_name') AS BLOB)) BETWEEN 1 AND 64 \
+      AND json_extract(CAST(p.payload AS TEXT),'$.display_name') NOT GLOB '*[^A-Za-z0-9._-]*' \
+      AND json_extract(CAST(p.payload AS TEXT),'$.display_name') NOT GLOB '[-.]*') \
+     ELSE 0 END, 0)"
+    };
+}
 
-/// The `parked_dep` entry with the smallest `ingest_seq` that may be
-/// re-attempted ([`PARKED_READY`]).
-fn next_reattemptable(tx: &Transaction<'_>) -> Result<Option<i64>, ApiError> {
-    tx.query_row(
-        &format!(
-            "SELECT p.ingest_seq FROM journal p WHERE p.apply_state='parked_dep' AND {PARKED_READY} \
-             ORDER BY p.ingest_seq LIMIT 1"
-        ),
-        [],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(store_error)
+/// A `parked_dep` row `p` may be re-attempted: its creator applied, or it waits for a host and the
+/// host its park waits for is attached (the materializer's own condition per park, so a re-attempt
+/// never re-parks on the host). A `wait:host` park of a payload with a valid `display_name` waits
+/// for the `kind='named'` row; any other waits for exactly one non-named kind
+/// (`restore_own_seat`).
+const PARKED_READY: &str = concat!(
+    "(EXISTS(SELECT 1 FROM journal c WHERE c.creates=p.parked_on AND c.apply_state='applied') ",
+    "OR (p.parked_on='wait:host' AND CASE WHEN ",
+    park_named!(),
+    " THEN EXISTS(SELECT 1 FROM herdr_hosts WHERE kind='named') ",
+    "ELSE (SELECT count(DISTINCT kind)=1 FROM herdr_hosts WHERE kind<>'named') END))"
+);
+
+/// The `parked_dep` entry with the smallest `ingest_seq` that may be re-attempted
+/// ([`PARKED_READY`]), skipping a `wait:host` row already attempted in this run: a row the SQL calls
+/// ready and the materializer re-parks on the host costs one attempt per pass, never a spin. (A
+/// creator-parked row may be attempted again: it is re-parked on a different, later creator.)
+fn next_reattemptable(tx: &Transaction<'_>, run: &Run<'_>) -> Result<Option<i64>, ApiError> {
+    let mut statement = tx
+        .prepare(&format!(
+            "SELECT p.ingest_seq,p.parked_on FROM journal p WHERE p.apply_state='parked_dep' AND {PARKED_READY} \
+             ORDER BY p.ingest_seq"
+        ))
+        .map_err(store_error)?;
+    let mut rows = statement.query([]).map_err(store_error)?;
+    while let Some(row) = rows.next().map_err(store_error)? {
+        let ingest_seq: i64 = row.get(0).map_err(store_error)?;
+        let parked_on: Option<String> = row.get(1).map_err(store_error)?;
+        let host_wait = parked_on.as_deref() == Some(WaitFor::Host.parked_on());
+        if !(host_wait && run.attempted.contains(&ingest_seq)) {
+            return Ok(Some(ingest_seq));
+        }
+    }
+    Ok(None)
 }
 
 /// Re-attempts `parked_dep` entries whose creator applied, until none is
@@ -1008,7 +1038,7 @@ fn reattempt_parked(
     decision: DecisionInstant,
     run: &mut Run<'_>,
 ) -> Result<bool, ApiError> {
-    while let Some(ingest_seq) = next_reattemptable(tx)? {
+    while let Some(ingest_seq) = next_reattemptable(tx, run)? {
         if run.exhausted() {
             return Ok(true);
         }
@@ -1025,7 +1055,7 @@ fn reattempt_parked(
 /// While the own-history hold is active ([`crate::store::connection::OwnHistoryHold`]) only the active
 /// self log's head is considered; other heads stay `pending`.
 /// Between heads, `parked_dep` entries whose creator has applied (or that
-/// wait for a host, once one is attached) are re-attempted. Stops when nothing is ready, or at `limits` with
+/// wait for a host, once the host their park waits for is attached) are re-attempted. Stops when nothing is ready, or at `limits` with
 /// `has_more` set. A `Store` error aborts the pass: the caller rolls the whole
 /// quantum back. `applied` counts every entry that applied, `replayed` the
 /// re-attempts among all outcomes.

@@ -1,0 +1,9 @@
+heavy: slot 2 acquired 18:22:04
+   Compiling herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.205)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 09s
+────────────
+ Nextest run ID e65b58dc-5d75-4579-a134-41fe081557bd with nextest profile: default
+    Starting 528 tests across 17 binaries (8324 tests skipped)
+────────────
+     Summary [  35.918s] 528 tests run: 528 passed, 8324 skipped
+exit 0

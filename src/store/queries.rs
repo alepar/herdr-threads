@@ -402,7 +402,7 @@ fn query_inner(
         }
         Command::Participants(q) => participants(&db, instance, q, store.clock().utc_now(), output),
         Command::ParticipantLocations(q) => {
-            participant_locations(&db, instance, q, store.clock().utc_now())
+            participant_locations(&db, instance, q, store.clock().utc_now(), local_labels)
         }
         Command::WakeStatus(q) => wake_status_seats(&db, instance, q),
         Command::Seats(q) => seats(
@@ -1193,11 +1193,9 @@ fn seat_inspect(
     type SeatRow = (String, Option<String>, i64, i64, Option<i64>);
     let row:SeatRow=db.query_row("SELECT state,target_id,generation,created_at,retired_at FROM seats WHERE id=?1 AND instance_id=?2",params![q.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"seat not found"))?;
     // A remote seat's entry (ht-xg88); a local seat's state is the summary's.
-    let directory = if row.0 == "remote" {
-        super::seat_directory::directory(db, q.seat.as_str(), now)?
-    } else {
-        None
-    };
+    // A named seat's entry carries its name (SA14); other local seats have none.
+    let directory = super::seat_directory::directory(db, q.seat.as_str(), now)?
+        .filter(|d| row.0 == "remote" || d.name.is_some());
     let summary = seat_summary(
         q.seat.as_str(),
         &row.0,
@@ -1224,6 +1222,26 @@ fn seat_inspect(
         db.query_row("SELECT reason FROM recovery_holds WHERE host_id=(SELECT host_id FROM seats WHERE id=?1) AND target_id=?2 AND released_at IS NULL",params![q.seat.as_str(),target.as_str()],|r|r.get::<_,String>(0)).optional().map_err(|e|db.map_error(e))?.map(|reason|HoldSummary{target:target.clone(),reason_data:reason,detail_argv:vec!["herdr-threads".into(),"seat".into(),"inspect".into(),q.seat.as_str().into()]})
     } else {
         None
+    };
+    // D12: a restored named seat that lost its name to a live seat shows the name it waits for.
+    let hold = match hold {
+        Some(hold) => Some(hold),
+        None => match (
+            crate::store::seats::held_name(db, q.seat.as_str())?,
+            &summary.target,
+        ) {
+            (Some(name), Some(target)) => Some(HoldSummary {
+                target: target.clone(),
+                reason_data: format!("held_name:{name}"),
+                detail_argv: vec![
+                    "herdr-threads".into(),
+                    "seat".into(),
+                    "inspect".into(),
+                    q.seat.as_str().into(),
+                ],
+            }),
+            _ => None,
+        },
     };
     type Job = (String, i64, String, i64, String, Option<String>);
     let job:Option<Job>=db.query_row("SELECT id,cutover_at,phase,processed_units,status,last_error FROM retirements WHERE seat_id=?1",[q.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
@@ -1334,8 +1352,9 @@ fn seat_inspect(
             Option<i64>,
             Option<i64>,
             String,
+            Option<String>,
         );
-        let binding:Option<BindingRow>=db.query_row("SELECT ordinal,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,native_session,execution_id,observed_at,registered_at,ended_at,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![q.seat.as_str(),last as i64,binding_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?))).optional().map_err(|e|db.map_error(e))?;
+        let binding:Option<BindingRow>=db.query_row("SELECT ordinal,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,native_session,execution_id,observed_at,registered_at,ended_at,observation_provenance,locator_hint FROM occupant_bindings WHERE seat_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![q.seat.as_str(),last as i64,binding_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?))).optional().map_err(|e|db.map_error(e))?;
         type RepairRow = (
             i64,
             String,
@@ -1371,6 +1390,7 @@ fn seat_inspect(
                 registered,
                 ended,
                 provenance,
+                locator_hint,
             ) = binding.unwrap();
             (
                 ordinal as u64,
@@ -1389,6 +1409,7 @@ fn seat_inspect(
                     registered_at: registered.map(UtcMillis),
                     ended_at: ended.map(UtcMillis),
                     provenance,
+                    locator_hint,
                 }),
             )
         } else {
@@ -1502,19 +1523,25 @@ fn seats(
 ) -> Result<CommandResult, ApiError> {
     // The pre-directory digest when no directory filter is set, so a cursor
     // of an older CLI page stays valid.
-    let filter = if q.filter.is_empty() {
-        digest(&(
+    let filter = match (q.filter.is_empty(), &q.host) {
+        (true, None) => digest(&(
             "seats",
             q.target.as_ref().map(HostTargetId::as_str),
             q.include_retired,
-        ))?
-    } else {
-        digest(&(
+        ))?,
+        (false, None) => digest(&(
             "seats",
             q.target.as_ref().map(HostTargetId::as_str),
             q.include_retired,
             &q.filter,
-        ))?
+        ))?,
+        (_, Some(host)) => digest(&(
+            "seats",
+            q.target.as_ref().map(HostTargetId::as_str),
+            q.include_retired,
+            &q.filter,
+            host.as_str(),
+        ))?,
     };
     let target = q.target.as_ref().map(|t| t.as_str().to_owned());
     let cursor = decode_cursor(
@@ -1611,17 +1638,27 @@ fn seats(
                 r.get(0)
             })
             .map_err(|e| db.map_error(e))?;
-        let directory = if q.target.is_none() && !(q.filter.local && !local) {
+        // Host scope (F9): a seat on another host is skipped like a directory mismatch.
+        if let Some(host) = &q.host
+            && !seat_on_host(db, &id, host)?
+        {
+            last = ordinal as u64;
+            continue;
+        }
+        let mut directory = if q.target.is_none() && !(q.filter.local && !local) {
             super::seat_directory::directory(db, &id, now)?
         } else {
             None
         };
         let host_labels = match local_labels {
-            Some(labels) if local && q.filter.label.is_some() => {
-                super::local_seat_status::labels_of(db, &id, labels)?
-            }
+            Some(labels) if local => super::local_seat_status::labels_of(db, &id, labels)?,
             _ => None,
         };
+        // A local seat's entry carries its target's current labels, read
+        // from its own host (F6).
+        if let (Some(entry), Some(labels)) = (directory.as_mut(), host_labels) {
+            super::seat_directory::set_labels(entry, labels);
+        }
         if !super::seat_directory::matches(&q.filter, directory.as_deref(), local, host_labels) {
             last = ordinal as u64;
             continue;
@@ -2715,6 +2752,20 @@ fn literal_contains_bounded(
     Ok(false)
 }
 
+/// Whether `seat` sits on the Herdr host attached at `host` (F9).
+fn seat_on_host(
+    db: &QueryConnection,
+    seat: &str,
+    host: &crate::protocol::ids::HostLocator,
+) -> Result<bool, ApiError> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND h.endpoint=?2)",
+        params![seat, host.as_str()],
+        |r| r.get::<_, bool>(0),
+    )
+    .map_err(|e| db.map_error(e))
+}
+
 /// Exact IDs win, then the first nonempty joined/active/history name tier.
 /// Each indexed tier returns at most nine matches; the ninth proves omissions.
 fn resolve_thread(
@@ -2743,8 +2794,21 @@ fn resolve_thread(
             )
             .optional()
             .map_err(|e| db.map_error(e))?,
+        // Host-scoped (F9): target ids are per host, so the target resolves on the caller's host only.
+        (None, Some(target)) if q.caller_host.is_some() => db
+            .query_row(
+                "SELECT s.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.instance_id=?1 AND s.target_id=?2 AND s.state='resolved' AND h.endpoint=?3",
+                params![instance, target.as_str(), q.caller_host.as_ref().map(|h| h.as_str())],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| db.map_error(e))?,
         (None, Some(target)) => db.query_row("SELECT id FROM seats INDEXED BY seats_live_target WHERE instance_id=?1 AND target_id=?2 AND state='resolved' AND target_id IS NOT NULL", params![instance,target.as_str()], |r|r.get::<_,String>(0)).optional().map_err(|e|db.map_error(e))?,
         _ => None,
+    };
+    let caller = match (caller, &q.caller_host) {
+        (Some(id), Some(host)) if !seat_on_host(db, &id, host)? => None,
+        (caller, _) => caller,
     };
     for (tier, sql) in [
         (
@@ -5922,12 +5986,17 @@ fn inbox_batch(
                                     "inbox body changed",
                                 ));
                             }
+                            let sender_label = match sender.as_deref() {
+                                Some(s) => crate::store::seat_directory::sender_label(db, s)?,
+                                None => None,
+                            };
                             let complete = InboxBatchItem::Message {
                                 thread: ThreadId::new(thread.clone()),
                                 topic_data: batch_topic(db, &thread)?,
                                 message: MessageId::new(&receipt.message_id),
                                 sequence: sequence as u64,
                                 sender: sender.clone().map(SeatId::new),
+                                sender_label: sender_label.clone(),
                                 author_role,
                                 relays_user,
                                 user_intent,
@@ -5977,6 +6046,7 @@ fn inbox_batch(
                                         message: MessageId::new(&receipt.message_id),
                                         sequence: sequence as u64,
                                         sender: sender.clone().map(SeatId::new),
+                                        sender_label: sender_label.clone(),
                                         author_role,
                                         relays_user,
                                         user_intent,
@@ -6554,33 +6624,53 @@ fn wake_status_seats(
         {
             continue;
         }
-        let local: bool = db
+        let Some((host, target)) = db
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND is_local=1)",
+                "SELECT host_id,target_id FROM seats WHERE id=?1 AND instance_id=?2 AND is_local=1",
                 rusqlite::params![seat, instance],
-                |r| r.get(0),
+                |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
             )
-            .map_err(|e| db.map_error(e))?;
-        if !local {
+            .optional()
+            .map_err(|e| db.map_error(e))?
+        else {
             continue;
+        };
+        let mut harness = open_binding(db, &seat)?.map(|binding| binding.harness);
+        // A named seat whose bindings ended is `offline` (M19): classified by its last binding.
+        let mut offline = false;
+        if harness.is_none() {
+            harness = db
+                .query_row(
+                    "SELECT b.harness FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
+                     WHERE b.seat_id=?1 AND s.name IS NOT NULL ORDER BY b.ordinal DESC LIMIT 1",
+                    [&seat],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| db.map_error(e))?;
+            offline = harness.is_some();
         }
-        let harness = open_binding(db, &seat)?.map(|binding| binding.harness);
         rows.push(crate::protocol::results::SeatWakeStatus {
             seat: SeatId::new(seat),
             harness,
             wake: None,
             first: false,
+            offline,
+            host: host.map(crate::ports::HostId::from_row),
+            target: target.map(crate::protocol::ids::HostTargetId::new),
         });
     }
     Ok(CommandResult::WakeStatus(rows))
 }
 
-/// One bounded query under the canonical read transaction; no host labels or client hints.
+/// One bounded query under the canonical read transaction. `local_labels`
+/// (the daemon's host read) fill a local resolved seat's `remote` entry.
 fn participant_locations(
     db: &QueryConnection,
     instance: &str,
     q: &crate::protocol::commands::ParticipantLocationsQuery,
     now: UtcMillis,
+    local_labels: Option<&super::local_seat_status::LabelMap>,
 ) -> Result<CommandResult, ApiError> {
     if q.seats.is_empty() || q.seats.len() > crate::protocol::commands::MAX_BATCH_ITEMS {
         return Err(api_error(
@@ -6628,6 +6718,14 @@ fn participant_locations(
             super::seat_directory::directory(db, &seat, now)?
                 .filter(|d| d.has_labels())
                 .map(|d| *d)
+        } else if continuity == crate::protocol::results::ContinuityStatus::Resolved
+            && let Some(labels) = local_labels
+            && let Some(current) = super::local_seat_status::labels_of(db, &seat, labels)?
+        {
+            super::seat_directory::directory(db, &seat, now)?.map(|mut entry| {
+                super::seat_directory::set_labels(&mut entry, current);
+                *entry
+            })
         } else {
             None
         };

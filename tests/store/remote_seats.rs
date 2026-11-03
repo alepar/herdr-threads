@@ -128,8 +128,12 @@ fn fixture_at(clock: Arc<dyn Clock>) -> Fixture {
 
 fn local_seat(db: &Connection, seat: &str, pane: &str) {
     let host: i64 = db
-        .query_row("SELECT host_id FROM herdr_hosts", [], |r| r.get(0))
+        .query_row("SELECT min(host_id) FROM herdr_hosts", [], |r| r.get(0))
         .unwrap();
+    local_seat_on(db, seat, pane, host);
+}
+
+fn local_seat_on(db: &Connection, seat: &str, pane: &str, host: i64) {
     db.execute(
         "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,?4)",
         params![seat, NODE, pane, host],
@@ -610,6 +614,8 @@ fn reads_render_remote_state_and_null_panes() {
             target: None,
             include_retired: false,
             filter: Default::default(),
+
+            host: None,
         }),
     );
     let CommandResult::Seats(listing) = &seats else {
@@ -660,6 +666,8 @@ fn pane_listings_omit_remote() {
             target: Some(HostTargetId::new("pane")),
             include_retired: true,
             filter: Default::default(),
+
+            host: None,
         }),
     ) else {
         panic!("wrong result")
@@ -1026,6 +1034,7 @@ fn label_filter_matches_resolved_local_seats_by_host_labels() {
                 label: Some(label.into()),
                 ..Default::default()
             },
+            host: None,
         });
         let CommandResult::Seats(page) = f
             .store
@@ -1044,4 +1053,319 @@ fn label_filter_matches_resolved_local_seats_by_host_labels() {
     };
     assert_eq!(listed("office"), ["local"]);
     assert!(listed("nowhere").is_empty());
+}
+
+// Kills (F6): labels keyed by target alone. Two servers both own pane `pane`;
+// each local seat shows the labels of its own server in `seat list`, and the
+// participant location of each carries its own server's labels, never the
+// other's. A seat whose server reported no labels shows none.
+#[test]
+fn local_seat_labels_are_keyed_by_host_and_target() {
+    use herdr_threads::store::local_seat_status::{LabelMap, TargetLabels};
+    let f = fixture();
+    let second = f
+        .store
+        .attach_host(
+            &HostLocator::parse("/tmp/ht-remote-seats-b.sock").unwrap(),
+            1,
+            &budget(),
+        )
+        .unwrap()
+        .0;
+    let second_row: i64 =
+        f.db.query_row(
+            "SELECT host_id FROM herdr_hosts WHERE endpoint='/tmp/ht-remote-seats-b.sock'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    f.db.execute(
+        "UPDATE herdr_hosts SET host_boot='host',host_epoch=1 WHERE host_id=?1",
+        [second_row],
+    )
+    .unwrap();
+    local_seat_on(&f.db, "second", "pane", second_row);
+    pending_invitation(&f.db, "second");
+    f.db.execute(
+        "UPDATE seats SET structural_terminal_id='term-pane',structural_incarnation='inc',\
+         structural_incarnation_kind='coherent_enumeration',structural_host_boot='host',\
+         structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1 \
+         WHERE is_local=1",
+        [],
+    )
+    .unwrap();
+    let labels_of = |workspace: &str| TargetLabels {
+        terminal: "term-pane".into(),
+        incarnation: None,
+        workspace: workspace.into(),
+        tab: format!("tab-{workspace}"),
+        pane: format!("pane-{workspace}"),
+    };
+    let mut labels = LabelMap::new();
+    labels.insert((f.host, "pane".to_owned()), labels_of("alpha"));
+    labels.insert((second, "pane".to_owned()), labels_of("beta"));
+    let CommandResult::Seats(listed) = f
+        .store
+        .seats_read(
+            &Command::Seats(SeatsQuery {
+                page: page(),
+                target: None,
+                include_retired: false,
+                filter: Default::default(),
+                host: None,
+            }),
+            &labels,
+            &read(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong result")
+    };
+    let shown = |seat: &str| {
+        let item = listed
+            .items
+            .iter()
+            .find(|s| s.seat.as_str() == seat)
+            .unwrap();
+        let d = item.directory.as_ref().unwrap();
+        (d.workspace.clone(), d.tab.clone(), d.pane.clone())
+    };
+    assert_eq!(
+        shown("local"),
+        (
+            Some("alpha".into()),
+            Some("tab-alpha".into()),
+            Some("pane-alpha".into())
+        )
+    );
+    assert_eq!(
+        shown("second"),
+        (
+            Some("beta".into()),
+            Some("tab-beta".into()),
+            Some("pane-beta".into())
+        )
+    );
+    let location = |labels: &LabelMap, thread: &str, seat: &str| {
+        let CommandResult::ParticipantLocations(rows) = f
+            .store
+            .seats_read(
+                &Command::ParticipantLocations(ParticipantLocationsQuery {
+                    thread: ThreadId::new(thread),
+                    seats: vec![SeatId::new(seat)],
+                }),
+                labels,
+                &read(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("wrong result")
+        };
+        rows.into_iter().next().unwrap().remote
+    };
+    assert_eq!(
+        location(&labels, "t-second", "second")
+            .unwrap()
+            .workspace
+            .as_deref(),
+        Some("beta")
+    );
+    assert_eq!(
+        location(&labels, "t-local", "local")
+            .unwrap()
+            .workspace
+            .as_deref(),
+        Some("alpha")
+    );
+    // The second server reported nothing: its seat shows no labels, and the
+    // first server's `pane` labels are not borrowed.
+    labels.remove(&(second, "pane".to_owned()));
+    assert!(location(&labels, "t-second", "second").is_none());
+}
+
+/// Seats `local` (and any other local seat) structurally mapped to the
+/// terminal `term-<pane>` with incarnation `inc`, as the label tests need.
+fn map_structurally(db: &Connection) {
+    db.execute(
+        "UPDATE seats SET structural_terminal_id='term-'||target_id,structural_incarnation='inc',\
+         structural_incarnation_kind='coherent_enumeration',structural_host_boot='host',\
+         structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1 \
+         WHERE is_local=1",
+        [],
+    )
+    .unwrap();
+}
+
+fn target_labels(
+    terminal: &str,
+    incarnation: Option<&str>,
+    workspace: &str,
+) -> herdr_threads::store::local_seat_status::TargetLabels {
+    herdr_threads::store::local_seat_status::TargetLabels {
+        terminal: terminal.into(),
+        incarnation: incarnation.map(str::to_owned),
+        workspace: workspace.into(),
+        tab: format!("tab-{workspace}"),
+        pane: format!("pane-{workspace}"),
+    }
+}
+
+/// The workspace label `seat` shows through `seat list` (the `queries.rs`
+/// directory path) and through `ParticipantLocations`, for `labels`.
+fn shown_workspaces(
+    f: &Fixture,
+    seat: &str,
+    labels: &herdr_threads::store::local_seat_status::LabelMap,
+) -> (Option<String>, Option<String>) {
+    let CommandResult::Seats(listed) = f
+        .store
+        .seats_read(
+            &Command::Seats(SeatsQuery {
+                page: page(),
+                target: None,
+                include_retired: false,
+                filter: Default::default(),
+                host: None,
+            }),
+            labels,
+            &read(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong result")
+    };
+    let in_list = listed
+        .items
+        .iter()
+        .find(|s| s.seat.as_str() == seat)
+        .and_then(|s| s.directory.as_ref())
+        .and_then(|d| d.workspace.clone());
+    let CommandResult::ParticipantLocations(rows) = f
+        .store
+        .seats_read(
+            &Command::ParticipantLocations(ParticipantLocationsQuery {
+                thread: ThreadId::new(format!("t-{seat}")),
+                seats: vec![SeatId::new(seat)],
+            }),
+            labels,
+            &read(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong result")
+    };
+    let located = rows
+        .into_iter()
+        .next()
+        .and_then(|r| r.remote)
+        .and_then(|d| d.workspace);
+    (in_list, located)
+}
+
+fn labels_for_pane(
+    host: HostId,
+    labels: herdr_threads::store::local_seat_status::TargetLabels,
+) -> herdr_threads::store::local_seat_status::LabelMap {
+    let mut map = herdr_threads::store::local_seat_status::LabelMap::new();
+    map.insert((host, "pane".to_owned()), labels);
+    map
+}
+
+// Kills (ht-kqrt.179): `labels_of` without its `fits` terminal check. The
+// target now shows another terminal, so the seat that held the old one takes
+// none of its labels, in `seat list` and in participant locations. The
+// matching-terminal control shows the labels, so only the terminal differs.
+#[test]
+fn labels_of_refuses_a_mismatched_terminal() {
+    let f = fixture();
+    map_structurally(&f.db);
+    let same = labels_for_pane(f.host, target_labels("term-pane", Some("inc"), "alpha"));
+    assert_eq!(
+        shown_workspaces(&f, "local", &same),
+        (Some("alpha".into()), Some("alpha".into()))
+    );
+    let reused = labels_for_pane(f.host, target_labels("term-other", Some("inc"), "alpha"));
+    assert_eq!(shown_workspaces(&f, "local", &reused), (None, None));
+}
+
+// Kills (ht-kqrt.179): `labels_of` without its `fits` incarnation check. The
+// host reports another incarnation of the same terminal.
+#[test]
+fn labels_of_refuses_a_mismatched_incarnation() {
+    let f = fixture();
+    map_structurally(&f.db);
+    let same = labels_for_pane(f.host, target_labels("term-pane", Some("inc"), "alpha"));
+    assert_eq!(
+        shown_workspaces(&f, "local", &same),
+        (Some("alpha".into()), Some("alpha".into()))
+    );
+    let reused = labels_for_pane(f.host, target_labels("term-pane", Some("other"), "alpha"));
+    assert_eq!(shown_workspaces(&f, "local", &reused), (None, None));
+}
+
+// Kills (ht-kqrt.179): `labels_of` without its `state='resolved'` filter. The
+// seat's mapping and the target's labels agree; only its state differs, so a
+// seat that lost its pane takes no labels in `seat list`.
+#[test]
+fn labels_of_ignores_an_unresolved_seat() {
+    let f = fixture();
+    map_structurally(&f.db);
+    let labels = labels_for_pane(f.host, target_labels("term-pane", Some("inc"), "alpha"));
+    assert_eq!(
+        shown_workspaces(&f, "local", &labels).0,
+        Some("alpha".into())
+    );
+    f.db.execute("UPDATE seats SET state='unresolved' WHERE id='local'", [])
+        .unwrap();
+    assert_eq!(shown_workspaces(&f, "local", &labels).0, None);
+}
+
+// Kills (ht-kqrt.179): `labels_of` looking a target up by `target` alone, or
+// by the wrong host. Labels exist for the pane name on another host only.
+#[test]
+fn labels_of_keeps_a_host_scoped_key() {
+    let f = fixture();
+    map_structurally(&f.db);
+    let other_host = f
+        .store
+        .attach_host(
+            &HostLocator::parse("/tmp/ht-remote-seats-c.sock").unwrap(),
+            1,
+            &budget(),
+        )
+        .unwrap()
+        .0;
+    let elsewhere = labels_for_pane(other_host, target_labels("term-pane", Some("inc"), "alpha"));
+    assert_eq!(shown_workspaces(&f, "local", &elsewhere), (None, None));
+    let here = labels_for_pane(f.host, target_labels("term-pane", Some("inc"), "alpha"));
+    assert_eq!(
+        shown_workspaces(&f, "local", &here),
+        (Some("alpha".into()), Some("alpha".into()))
+    );
+}
+
+// Kills (ht-kqrt.179): `fits` accepting an absent side. Each side's `None`
+// terminal and `None` incarnation, against the labels' own optionality.
+#[test]
+fn fits_table_covers_absent_terminal_and_incarnation() {
+    let inc = "inc".to_owned();
+    let other = "other".to_owned();
+    let with = target_labels("term", Some("inc"), "w");
+    let without = target_labels("term", None, "w");
+    // Seat terminal absent: never fits.
+    assert!(!with.fits(None, Some(&inc)));
+    assert!(!without.fits(None, None));
+    // Seat terminal differs: never fits.
+    assert!(!without.fits(Some("x"), None));
+    // Labels carry an incarnation: the seat must hold the same one.
+    assert!(with.fits(Some("term"), Some(&inc)));
+    assert!(!with.fits(Some("term"), None));
+    assert!(!with.fits(Some("term"), Some(&other)));
+    // Labels carry none: the seat's incarnation (or lack of one) is not asked.
+    assert!(without.fits(Some("term"), None));
+    assert!(without.fits(Some("term"), Some(&inc)));
 }

@@ -701,6 +701,98 @@ fn mutation_is_not_submitted_without_durable_operation_key() {
 }
 
 #[test]
+fn launch_new_flags_parse_and_conflict() {
+    let launch = |extra: &[&str]| {
+        let mut argv = vec!["herdr-threads", "launch", "--kind", "claude"];
+        argv.extend_from_slice(extra);
+        parse_argv(argv)
+    };
+    let CliAction::LaunchNew(tab) = launch(&["--new-tab", "x"]).unwrap().action else {
+        panic!("--new-tab parses to LaunchNew")
+    };
+    assert_eq!(tab.new_tab.as_deref(), Some("x"));
+    assert!(!tab.new_terminal && tab.space.is_none());
+    let CliAction::LaunchNew(terminal) = launch(&["--new-terminal"]).unwrap().action else {
+        panic!("--new-terminal parses to LaunchNew")
+    };
+    assert!(terminal.new_terminal && terminal.new_tab.is_none());
+    let CliAction::LaunchNew(spaced) = launch(&["--new-tab", "x", "--space", "w1"])
+        .unwrap()
+        .action
+    else {
+        panic!("--new-tab with --space parses to LaunchNew")
+    };
+    assert_eq!(spaced.space.as_deref(), Some("w1"));
+    for extra in [
+        vec!["--new-tab", "x", "--pane", "p"],
+        vec!["--new-tab", "x", "--tab", "t"],
+        vec!["--new-terminal", "--space", "s"],
+        vec!["--new-terminal", "--new-tab", "x"],
+        vec!["--new-tab", " "],
+        vec!["--new-tab", "x", "--space", "w1@m"],
+    ] {
+        assert!(launch(&extra).is_err(), "{extra:?}");
+    }
+    let Err(error) = launch(&["--space", "w1"]) else {
+        panic!("--space alone is refused")
+    };
+    assert!(
+        format!("{error:?}").contains("require --pane PANE"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn remote_new_terminal_parses_to_a_new_terminal_target() {
+    use crate::sync::frame::LaunchTarget;
+    let launch = |extra: &[&str]| {
+        let mut argv = vec!["herdr-threads", "launch", "--kind", "claude"];
+        argv.extend_from_slice(extra);
+        parse_argv(argv)
+    };
+    let handoff = |extra: &[&str]| {
+        let mut argv = vec!["herdr-threads", "handoff", "--kind", "claude"];
+        argv.extend_from_slice(extra);
+        argv.extend(["--", "x"]);
+        parse_argv(argv)
+    };
+    let form = ["--new-terminal", "--space", "@m", "--cwd", "/tmp"];
+    for (name, parsed) in [("launch", launch(&form)), ("handoff", handoff(&form))] {
+        let CliAction::RemoteLaunch(remote) = parsed.unwrap().action else {
+            panic!("{name}: a remote new terminal parses to RemoteLaunch")
+        };
+        assert_eq!(remote.machine, "m", "{name}");
+        assert!(
+            matches!(&remote.plan.target, LaunchTarget::NewTerminal { label } if label == "claude"),
+            "{name}: {:?}",
+            remote.plan.target
+        );
+        assert_eq!(remote.plan.cwd.as_deref(), Some("/tmp"), "{name}");
+        assert_eq!(remote.then.is_some(), name == "handoff", "{name}");
+    }
+    for extra in [
+        // no --cwd, a relative --cwd
+        vec!["--new-terminal", "--space", "@m"],
+        vec!["--new-terminal", "--space", "@m", "--cwd", "rel"],
+        // an empty machine, a space nothing reads, a path in the machine
+        vec!["--new-terminal", "--space", "@", "--cwd", "/tmp"],
+        vec!["--new-terminal", "--space", "w1@m", "--cwd", "/tmp"],
+        vec!["--new-terminal", "--space", "@a/b", "--cwd", "/tmp"],
+        // unsupported on another machine
+        vec!["--new-terminal", "--space", "@m", "--cwd", "/tmp", "--name", "x"],
+    ] {
+        assert!(launch(&extra).is_err(), "launch {extra:?}");
+        assert!(handoff(&extra).is_err(), "handoff {extra:?}");
+    }
+    // --cwd means nothing to a launch with no machine
+    assert!(launch(&["--new-terminal", "--cwd", "/tmp"]).is_err());
+    assert!(launch(&["--new-tab", "x", "--cwd", "/tmp"]).is_err());
+    assert!(launch(&["--pane", "p", "--cwd", "/tmp"]).is_err());
+    // a local handoff terminal with a space is refused too
+    assert!(handoff(&["--new-terminal", "--space", "s"]).is_err());
+}
+
+#[test]
 fn parser_rejects_operator_and_source_conflicts() {
     for argv in [
         vec!["herdr-threads", "ack", "m1", "--operator"],
@@ -4904,4 +4996,27 @@ fn every_help_page_is_harness_neutral() {
         "harness-specific or design-reference help text:\n{}",
         violations.join("\n")
     );
+}
+
+// Kills: `seat retire --self` parsing as the operator retire, `--force` accepted alone, a seat
+// beside --self, or --operator beside --self.
+#[test]
+fn seat_retire_self_parses_and_rejects_combinations() {
+    let own = parse_argv(["herdr-threads", "seat", "retire", "--self"]).unwrap();
+    assert!(matches!(own.action, CliAction::SelfRetire { force: false }));
+    let forced = parse_argv(["herdr-threads", "seat", "retire", "--self", "--force"]).unwrap();
+    assert!(matches!(forced.action, CliAction::SelfRetire { force: true }));
+    let operator = parse_argv(["herdr-threads", "human", "seat", "retire", "s1", "--operator"]).unwrap();
+    assert!(matches!(
+        operator.action,
+        CliAction::Mutation(MutationSpec::Retire(_))
+    ));
+    for bad in [
+        vec!["herdr-threads", "seat", "retire", "--force"],
+        vec!["herdr-threads", "seat", "retire", "s1", "--self"],
+        vec!["herdr-threads", "seat", "retire", "--self", "--operator"],
+        vec!["herdr-threads", "seat", "retire"],
+    ] {
+        assert!(parse_argv(bad.clone()).is_err(), "{bad:?}");
+    }
 }

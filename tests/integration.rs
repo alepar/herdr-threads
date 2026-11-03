@@ -51,6 +51,10 @@ mod herdr_down_log;
 mod herdr_release_smoke;
 /// ht-p03.10: never-started and stale-socket Herdr report "server not running".
 #[cfg(feature = "test-support")]
+#[path = "integration/named_handoff.rs"]
+mod named_handoff;
+
+#[cfg(feature = "test-support")]
 #[path = "integration/herdr_states.rs"]
 mod herdr_states;
 /// ht-4ne.3: bare Hermes bridge enrollment, the installed bridge driven with

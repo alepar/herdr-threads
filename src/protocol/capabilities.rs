@@ -33,6 +33,24 @@ pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 pub const SEATS_DIRECTORY_V1: &str = "seats.directory_v1";
 /// `Command::WakeStatus`: per-seat wake blocks for the send warning and doctor.
 pub const WAKE_STATUS_V1: &str = "seat.wake_status_v1";
+/// `Command::HostTopologies`: every readable host's workspace, tab and pane
+/// labels, keyed by host. A CLI sends it only to a daemon that advertises
+/// this and renders labels as `-` otherwise.
+pub const HOST_TOPOLOGIES_V1: &str = "topology.host_topologies_v1";
+
+/// Named caller sites: `SeatsQuery.host` and `ResolveThreadQuery.caller_host` carry the reserved
+/// named-host locator with the seat name as target. A CLI sends a Named site only to a daemon that
+/// advertises this (`cli::site_capability`, M13).
+pub const HOST_SITES_V1: &str = "seat.host_sites_v1";
+/// Terminal caller sites (a herdr-core terminal): the same request fields as [`HOST_SITES_V1`],
+/// carrying the core's socket as the host locator and the terminal id as target. A CLI sends a
+/// Terminal site only to a daemon that advertises this, so a daemon that only knows Named sites
+/// gets one clear refusal (`cli::site_capability`, M13).
+pub const TERMINAL_SITES_V1: &str = "seat.terminal_sites_v1";
+/// V3 automatic bootstrap records (ht-kqrt H3f1): an `AutomaticBootstrapPlan` of version 3 with a
+/// `placement`, a `CreatedTarget` creation and the derived V3 child. A daemon without it refuses
+/// them at decode, before any row is written. A local capability: no peer wire carries it.
+pub const AUTOMATIC_TARGET_V1: &str = "handoff.automatic_target_v1";
 /// `SyncCommand::PeerPrune` and `SyncCommand::PeerUnforget` (TRUST-POLICY
 /// N16). The CLI sends them only to a daemon that advertises this, so an
 /// older daemon gets one clear refusal instead of an unknown-variant error.
@@ -64,6 +82,9 @@ pub const INVITATION_REJECT: &str = "invitation.reject_v1";
 pub const LAZY_SEND: &str = "send.lazy_v1";
 pub const INBOX_BATCH_V2: &str = "inbox.batch_v2";
 pub const SEAT_WAKE_ON_V1: &str = "seat.wake_on_v1";
+/// `CheckIn.readonly` (D3): the daemon records the binding read-only. A CLI sends the field only
+/// to a daemon that advertises this; `CheckIn` is `deny_unknown_fields`.
+pub const SEAT_READONLY_V1: &str = "seat.readonly_v1";
 pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
 /// Lazy rows in the attention digest (`AttentionDigestQuery.lazy`) and
 /// `CompleteInboxDelivery.via = hook_context` (standard hook inbox pages).
@@ -93,6 +114,11 @@ pub const IN_TURN_OFFER: &str = "inbox.in_turn_offer_v1";
 /// seat a continuation (an item that would wake it idle). Without it a turn end never continues.
 pub const TURN_END_DUE: &str = "turn_end.due_v1";
 
+/// Hook turn state: `Command::TurnState` reports a binding's turn start or end to the daemon, and
+/// `TurnEndDue` records whether a `Stop` was answered with a continuation. Without it the daemon
+/// keeps no turn state.
+pub const TURN_STATE_EDGE: &str = "turn_state.edge_v1";
+
 /// Thread-scoped lazy page: `InboxQuery.thread` on an `InboxBatchV2` first page selects only the
 /// reader's unread lazy rows of that thread (ht-br0: a text `accept` shows the joined thread's
 /// opening lazy mail in its own output).
@@ -102,6 +128,16 @@ pub const INBOX_THREAD_SCOPE: &str = "inbox.thread_scope_v1";
 /// hold (spec section 7) to the page, as the attention digest does (a hook's inbox check-in
 /// offer). An explicit `inbox` read never sets it.
 pub const INBOX_PUSHED_HOLD: &str = "inbox.pushed_hold_v1";
+
+/// `Command::LocateCaller`: nearest-ancestor verification of a two-family caller (ht-kqrt F8).
+pub const LOCATE_CALLER_V1: &str = "caller.locate_v1";
+
+/// `Command::AuthorizeLaunchGate`: a launched terminal asks the daemon to authorize its `exec`
+/// (ht-kqrt H3). Served by `service::launch_gate`.
+pub const LAUNCH_GATE_V1: &str = "launch.gate_v1";
+
+/// `Command::LocalLaunchGate`: a plain `launch` onto a herdr-core records its gate-only record.
+pub const LOCAL_LAUNCH_GATE_V1: &str = "launch.local_gate_v1";
 
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
@@ -171,6 +207,7 @@ pub const ADVERTISED: &[&str] = &[
     MOD_WATCH_PRESENTATION_V2,
     MOD_ACK_ROW_V1,
     SEAT_WAKE_ON_V1,
+    SEAT_READONLY_V1,
     DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,
     HOOK_CONTEXT_RECEIPTS_V1,
@@ -188,6 +225,14 @@ pub const ADVERTISED: &[&str] = &[
     WAKE_STATUS_V1,
     PEER_PRUNE_V1,
     PEER_EVENTS_V1,
+    LOCATE_CALLER_V1,
+    HOST_TOPOLOGIES_V1,
+    HOST_SITES_V1,
+    TURN_STATE_EDGE,
+    TERMINAL_SITES_V1,
+    AUTOMATIC_TARGET_V1,
+    LAUNCH_GATE_V1,
+    LOCAL_LAUNCH_GATE_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

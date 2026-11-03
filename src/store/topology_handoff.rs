@@ -93,6 +93,7 @@ pub fn compare_identity(
 mod attachment;
 pub mod attempts;
 pub(crate) mod automatic;
+pub(crate) mod local_gate;
 mod persistence;
 mod runtime;
 pub use attachment::{attach_created, attach_pending, complete_linked_pending};

@@ -19,6 +19,9 @@ fn herdr() -> HookEnv {
     HookEnv {
         herdr_env: true,
         pane: Some("w9:p1".into()),
+        ambiguous: None,
+        named: None,
+        caller: Default::default(),
     }
 }
 
@@ -201,6 +204,7 @@ impl crate::ports::LocalService for Service {
                 let mut page = empty();
                 page.items
                     .push(crate::protocol::results::InboxBatchV2Item::LazyMessage {
+                        sender_label: None,
                         priority: None,
                         thread: ThreadId::new("t-lazy"),
                         topic_data: "lazy topic".into(),

@@ -109,6 +109,10 @@ fn collect(
             "receipts_required_poke"
         };
         let reservable = wake::reservable_seat_sql(&format!("{table}.seat_id"));
+        let not_offline_named = format!(
+            "(EXISTS(SELECT 1 FROM occupant_bindings ob WHERE ob.seat_id={table}.seat_id AND ob.ended_at IS NULL) \
+             OR (SELECT name FROM seats WHERE id={table}.seat_id) IS NULL)"
+        );
         let mut statement = conn
             .prepare_cached(&format!(
                 "SELECT message_id, seat_id FROM {table} INDEXED BY {index} \
@@ -116,6 +120,7 @@ fn collect(
                  AND deadline_at IS NOT NULL AND available_at IS NOT NULL \
                  AND soft_poked_at IS NULL AND (?3 IS NULL OR seat_id=?3) \
                  AND (?4 IS NULL OR (SELECT host_id FROM seats WHERE id=seat_id)=?4) AND {reservable} \
+                 AND {not_offline_named} \
                  AND deadline_at - (1.0-?1)*(deadline_at-available_at) - 1.0 <= ?2 \
                  ORDER BY deadline_at, message_id, seat_id LIMIT {SCAN_ROWS}"
             ))

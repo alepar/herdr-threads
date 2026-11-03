@@ -75,7 +75,7 @@ pub fn run_delivery_retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Wr
 #[allow(clippy::too_many_arguments)]
 pub fn run_bootstrap_retry<
     C: crate::ports::LocalClient + ?Sized,
-    N: crate::ports::CreateTabPort + ?Sized,
+    N: crate::ports::CreateTargetPort + ?Sized,
 >(
     journal: &Journal,
     reference: &IntentRef,
@@ -106,7 +106,7 @@ pub fn run_bootstrap_retry<
 #[allow(clippy::too_many_arguments)]
 pub fn run_bootstrap_retry_to_writer<
     C: crate::ports::LocalClient + ?Sized,
-    N: crate::ports::CreateTabPort + ?Sized,
+    N: crate::ports::CreateTargetPort + ?Sized,
     W: Write,
 >(
     journal: &Journal,
@@ -143,7 +143,7 @@ pub fn run_bootstrap_retry_to_writer<
 #[allow(clippy::too_many_arguments)]
 pub fn run_automatic_bootstrap_retry_to_writer<
     C: crate::ports::LocalClient + ?Sized,
-    N: crate::ports::CreateTabPort + ?Sized,
+    N: crate::ports::CreateTargetPort + ?Sized,
     W: Write,
 >(
     journal: &Journal,
@@ -531,7 +531,7 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
         (request, result),
         (
             SemanticMutation::ResolveSeat { .. },
-            CommandResult::SeatResolved(_)
+            CommandResult::SeatResolved(_) | CommandResult::NamedSeatResolved { .. }
         ) | (
             SemanticMutation::ContinuityCheckIn { .. },
             CommandResult::ContinuityReattached(_)

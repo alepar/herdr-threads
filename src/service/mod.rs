@@ -9,14 +9,17 @@ pub mod host_evidence;
 pub mod host_reachability;
 pub mod host_sessions;
 pub mod kicks;
+pub mod launch_gate;
 pub mod live_gate;
 pub mod liveness;
+pub mod locate;
 pub mod mod_channels;
 pub mod pacer;
 pub mod peer_launcher;
 pub mod remote_resolver;
 pub mod seat_publisher;
 pub mod sync_admin;
+pub mod turn_state;
 pub mod workers;
 
 #[cfg(test)]

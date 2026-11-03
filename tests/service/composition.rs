@@ -710,6 +710,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let next_result = herdr_threads::ports::LocalClient::call(
         &client,
         Command::CheckIn(herdr_threads::protocol::commands::CheckIn {
+            readonly: false,
             lineage_parent: None,
             mode: herdr_threads::protocol::commands::CheckInMode::Lifecycle {
                 expected_binding_generation: 1,
@@ -1558,18 +1559,27 @@ fn store_only_daemon_serves_without_host_workers() {
         CommandResult::Health(_)
     ));
     assert!(lanes.registered(Lane::Deadlines));
-    for host_lane in [Lane::Wakes, Lane::Observation, Lane::Archival] {
-        assert!(
-            !lanes.registered(host_lane),
-            "{host_lane:?} must not run without a host"
+    // The built-in named host runs its own wake and observation lanes (one Pacer each) even
+    // with no Herdr server; no dialled host is attached, and archival stays off.
+    for host_lane in [Lane::Wakes, Lane::Observation] {
+        assert_eq!(
+            lanes.registered_count(host_lane),
+            1,
+            "{host_lane:?}: only the built-in host's lane runs without a Herdr host"
         );
     }
+    assert!(
+        !lanes.registered(Lane::Archival),
+        "Archival must not run without a host"
+    );
     let refused = herdr_threads::ports::LocalClient::call(
         &client,
         Command::ResolveSeat(ResolveSeat {
             host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("p"),
             operation: OperationId::new("op"),
+            locator_hint: None,
+            tmux_hint: None,
         }),
         &budget(),
     )
@@ -1589,7 +1599,7 @@ fn store_only_daemon_serves_without_host_workers() {
     assert!(daemon.join().unwrap().unwrap());
     let log = fs::read_to_string(paths.node_dir.join("daemon.log")).unwrap_or_default();
     assert!(log.contains("store-only"), "{log}");
-    // Every lane that runs is healthy: no lane error lines in the log.
+    // Every lane that runs is healthy; a Stop mid-pass is a cancellation, which no lane logs.
     assert!(!log.contains("lane "), "{log}");
 }
 
@@ -2115,6 +2125,8 @@ impl ActualNativeFixture {
                 host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new(pane),
                 operation: herdr_threads::protocol::ids::OperationId::new(operation),
+                locator_hint: None,
+                tmux_hint: None,
             }),
             &self.budget(),
         )
@@ -2574,6 +2586,8 @@ fn request_with_previous_boot_after_restart_is_daemon_boot_changed() {
             host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("w4:p1"),
             operation: herdr_threads::protocol::ids::OperationId::new("stale-boot"),
+            locator_hint: None,
+            tmux_hint: None,
         })
     };
     let definite = stale
@@ -2622,7 +2636,7 @@ fn restart_keeps_registered_seat_available(provenance: &str) {
             herdr_threads::test_support::isolation::stand_in_fingerprint("claude", "x");
         let db = fixture.db();
         db.execute(
-            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation,?3,?4 FROM seats s JOIN herdr_hosts h ON h.node_id=s.instance_id WHERE s.id=?1",
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation,?3,?4 FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
             // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
             rusqlite::params![
                 seat.as_str(),
@@ -2647,7 +2661,7 @@ fn restart_keeps_registered_seat_available(provenance: &str) {
     assert_eq!(available(&db).as_deref(), Some(provenance));
     let (binding_epoch, host_epoch, ended): (i64, i64, Option<i64>) = db
         .query_row(
-            "SELECT b.host_epoch,h.host_epoch,b.ended_at FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id JOIN herdr_hosts h ON h.node_id=s.instance_id WHERE b.seat_id=?1",
+            "SELECT b.host_epoch,h.host_epoch,b.ended_at FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id JOIN herdr_hosts h ON h.host_id=s.host_id WHERE b.seat_id=?1",
             [seat.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -2678,13 +2692,20 @@ fn elected_shutdown_joins_idle_monitor_before_releasing_native_host() {
         real: SystemClock,
         entered: std::sync::mpsc::SyncSender<()>,
         release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        /// Only the idle-exit thread's first sample is held; later samples (the monitor reads
+        /// the clock more than once a tick) pass once the sample is released.
+        held_once: std::sync::atomic::AtomicBool,
     }
     impl Clock for SampleClock {
         fn utc_now(&self) -> UtcMillis {
             self.real.utc_now()
         }
         fn monotonic_now(&self) -> MonoInstant {
-            if std::thread::current().name() == Some("idle-exit") {
+            if std::thread::current().name() == Some("idle-exit")
+                && !self
+                    .held_once
+                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
                 self.entered.send(()).unwrap();
                 self.release
                     .lock()
@@ -2701,6 +2722,7 @@ fn elected_shutdown_joins_idle_monitor_before_releasing_native_host() {
         real: SystemClock::new(),
         entered,
         release: std::sync::Mutex::new(held),
+        held_once: std::sync::atomic::AtomicBool::new(false),
     });
     let mut fixture = ActualNativeFixture::start_configured(
         false,

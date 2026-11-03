@@ -230,8 +230,9 @@ fn different_herdr_socket_paths_reach_the_same_descriptor() {
     node.stop();
 }
 
-/// A Unix socket standing in for a Herdr server that exists but answers
-/// nothing: it accepts and drops every connection until dropped.
+/// A Unix socket standing in for a Herdr server that answers the kind probe's `ping` (the
+/// daemon refuses to attach a server it cannot classify, H1b) and nothing else: every other
+/// connection is dropped until the server is dropped.
 struct SilentServer {
     stop: Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -246,7 +247,18 @@ impl SilentServer {
         let thread = std::thread::spawn(move || {
             while !flag.load(std::sync::atomic::Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((connection, _)) => drop(connection),
+                    Ok((mut connection, _)) => {
+                        use std::io::{BufRead, Write};
+                        let _ = connection.set_nonblocking(false);
+                        let _ = connection.set_read_timeout(Some(Duration::from_millis(200)));
+                        let mut line = String::new();
+                        let read = std::io::BufReader::new(&connection).read_line(&mut line);
+                        if read.is_ok() && line.contains("\"ping\"") {
+                            let _ = connection.write_all(
+                                b"{\"id\":\"hello-probe\",\"result\":{\"type\":\"pong\"}}\n",
+                            );
+                        }
+                    }
                     Err(_) => std::thread::sleep(Duration::from_millis(10)),
                 }
             }
@@ -329,6 +341,8 @@ fn second_claim_host_attaches_lazily() {
             host: HostLocator::parse(second.to_string_lossy().into_owned()).unwrap(),
             target: HostTargetId::new("p"),
             operation: OperationId::new("op"),
+            locator_hint: None,
+            tmux_hint: None,
         }),
         &budget,
     );
@@ -421,6 +435,8 @@ fn host_needing_request_on_store_only_is_host_unavailable() {
                 host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
+                locator_hint: None,
+                tmux_hint: None,
             }),
             &budget(),
         )

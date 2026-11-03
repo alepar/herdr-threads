@@ -1,0 +1,31 @@
+heavy: slot 1 acquired 21:00:17
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.43)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 39s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-c08af7214c360d3c)
+
+running 18 tests
+test cli::seat_resolution::hc_selector_tests::other_readings_fall_through ... ok
+test cli::seat_resolution::hc_selector_tests::bare_t1_with_two_cores_is_refused_with_both ... ok
+test host::hc::label_tests::doc_unknown_fields_tolerated ... ok
+test host::hc::tests::address_format ... ok
+test host::hc::tests::env_vars_are_the_scrub_set ... ok
+test host::hc::tests::hc_boot_from_hello ... ok
+test host::hc::label_tests::bare_tn_ok_with_one_core ... ok
+test host::hc::tests::answers_wake_none_closing_no_evidence ... ok
+test host::hc::tests::hc_in_implemented_set ... ok
+test host::hc::tests::observation_sequence_is_its_own_counter ... ok
+test host::hc::label_tests::bare_t1_ambiguous_refused_with_both_candidates ... ok
+test host::hc::tests::target_root_process_works_inside_a_runtime ... ok
+test host::hc::tests::enumerate_targets_failed_hello_closes_nothing ... ok
+test host::hc::label_tests::title_never_used ... ok
+test host::hc::tests::target_root_process_is_terminal_get_pid ... ok
+test host::hc::label_tests::unnamed_tab_shows_position ... ok
+test host::hc::label_tests::two_cores_t1_labels_never_cross ... ok
+test host::hc::label_tests::doc_cache_invalidated_by_version ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 6480 filtered out; finished in 0.03s
+
+done 0

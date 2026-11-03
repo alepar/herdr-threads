@@ -191,6 +191,20 @@ impl Fixture {
         generation: u64,
         mode: ModChannelMode,
     ) -> Result<(ModChannelId, Arc<RecordingSink>), WatchRefusalReason> {
+        self.try_register_flagged(seat, generation, mode, false)
+    }
+    fn register_readonly(&self, seat: &str, generation: u64) -> Arc<RecordingSink> {
+        self.try_register_flagged(seat, generation, ModChannelMode::Legacy, true)
+            .unwrap()
+            .1
+    }
+    fn try_register_flagged(
+        &self,
+        seat: &str,
+        generation: u64,
+        mode: ModChannelMode,
+        readonly: bool,
+    ) -> Result<(ModChannelId, Arc<RecordingSink>), WatchRefusalReason> {
         let sink = Arc::new(RecordingSink::default());
         let id = self.registry.register(
             ModChannelRegistration {
@@ -201,6 +215,7 @@ impl Fixture {
                 native_session: NativeSessionId::new("native"),
                 harness: Harness::Claude,
                 idle_wake: IdleWake::Channel,
+                readonly,
                 registered_at: self.now(),
             },
             sink.clone(),
@@ -220,6 +235,7 @@ impl Fixture {
             native_session: NativeSessionId::new("native"),
             harness: Harness::Claude,
             idle_wake: IdleWake::Channel,
+            readonly: false,
             registered_at: self.now(),
         };
         let hook_sink = sink.clone();
@@ -264,6 +280,7 @@ fn view(seat_name: &str, generation: u64, fingerprint: ModFingerprint) -> ModSea
             connected: true,
             ended_at: None,
             disconnect_reason: None,
+            readonly: false,
         }),
         attention_version: fingerprint.attention_version,
         fingerprint: ModFingerprint {
@@ -1697,6 +1714,54 @@ mod domain {
         .unwrap();
     }
 
+    /// The ids a Watch presentation pull offers.
+    fn q3_offered(rig: &Rig, claim: &CallerClaim, lease: &str) -> Vec<String> {
+        match q3_pull(rig, claim, lease) {
+            crate::protocol::delivery::DeliveryPullReplyV2::Page(page) => page
+                .offered
+                .iter()
+                .map(|id| id.as_str().to_owned())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    // Kills: a read-only binding (D3) offered a receipt-bearing row by the V2 presentation
+    // reader (Watch consumer); the row stays offered to the writable sibling.
+    #[test]
+    fn presentation_watch_pull_readonly_binding_skips_receipt_rows() {
+        let rig = rig();
+        rig.add_binding("native2");
+        // A row is receipt-bearing for a registered, connected top-level agent binding.
+        db(&rig)
+            .execute(
+                "UPDATE occupant_bindings SET registered_at=0, liveness='connected'",
+                [],
+            )
+            .unwrap();
+        db(&rig)
+            .execute(
+                "UPDATE occupant_bindings SET readonly=1 WHERE native_session='native'",
+                [],
+            )
+            .unwrap();
+        let ro = q3_request_for(&rig, "native", true);
+        let rw = q3_request_for(&rig, "native2", true);
+        let (ro_channel, _) = register(&rig, &ro).unwrap();
+        let (rw_channel, _) = register(&rig, &rw).unwrap();
+        deliver(&db(&rig), "m1", 1);
+        let ro_lease = rig.registry.presentation_lease(ro_channel).unwrap();
+        let rw_lease = rig.registry.presentation_lease(rw_channel).unwrap();
+        assert!(
+            q3_offered(&rig, &ro.claim, &ro_lease).is_empty(),
+            "a read-only watch offers no receipt-bearing row"
+        );
+        assert_eq!(
+            q3_offered(&rig, &rw.claim, &rw_lease),
+            vec!["m1".to_owned()]
+        );
+    }
+
     #[test]
     fn two_claude_bindings_hold_two_live_channels() {
         let rig = rig();
@@ -2128,6 +2193,7 @@ fn q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop() {
                 native_session: NativeSessionId::new("native"),
                 harness: Harness::Claude,
                 idle_wake: IdleWake::Channel,
+                readonly: false,
                 registered_at: f.now(),
             },
             sink.clone(),
@@ -2270,6 +2336,7 @@ fn presentation_owner_permit_serializes_replacement() {
                     native_session: NativeSessionId::new("native"),
                     harness: Harness::Claude,
                     idle_wake: IdleWake::Channel,
+                    readonly: false,
                     registered_at: now,
                 },
                 Arc::new(RecordingSink::default()),
@@ -2555,6 +2622,71 @@ fn seat_stalled_needs_every_channel_stalled() {
     assert!(!f.registry.stalled(&seat("a"), f.now()));
 }
 
+#[test]
+fn readonly_channel_is_never_judged_stalled() {
+    let over = MOD_STALL_AFTER_MS as i64 + 1;
+    let f = fixture();
+    let registered = f.now();
+    f.register_readonly("a", 1);
+    f.store.receipts.lock().unwrap().push((registered, 10));
+    f.registry
+        .record_attention_push(&seat("a"), &bid("a", 1), registered);
+    f.advance(over);
+    let now = f.now();
+    assert!(!f.registry.stalled(&seat("a"), now));
+    assert!(!f.registry.binding_stalled(&seat("a"), &bid("a", 1), now));
+    f.registry.sweep(now);
+    assert!(
+        f.registry.is_live(&seat("a"), &bid("a", 1)),
+        "no Stalled close"
+    );
+    assert_eq!(
+        f.try_register("a", 1).map(|_| ()),
+        Ok(()),
+        "no cooldown was started"
+    );
+}
+
+#[test]
+fn readonly_channel_does_not_suppress_the_seat_wake() {
+    let f = fixture();
+    f.register_readonly("a", 1);
+    assert!(
+        !f.registry.wake_suppressed(&seat("a")),
+        "a read-only channel cannot discharge the row"
+    );
+    // A writable sibling on the same seat suppresses as before.
+    f.register("a", 2);
+    assert!(f.registry.wake_suppressed(&seat("a")));
+    // A writable channel alone suppresses.
+    let g = fixture();
+    g.register("b", 1);
+    assert!(g.registry.wake_suppressed(&seat("b")));
+}
+
+// Kills: a read-only sibling that is never judged stalled keeping the seat's stalled writable
+// channel suppressing the wake (`stalled` asks that every channel of the seat be stalled).
+#[test]
+fn readonly_sibling_does_not_hide_a_stalled_writable_channel() {
+    let over = MOD_STALL_AFTER_MS as i64 + 1;
+    let f = fixture();
+    let registered = f.now();
+    f.register_readonly("a", 1);
+    f.register("a", 2);
+    f.store.receipts.lock().unwrap().push((registered, 10));
+    f.registry
+        .record_attention_push(&seat("a"), &bid("a", 2), registered);
+    f.advance(over);
+    assert!(
+        f.registry
+            .binding_stalled(&seat("a"), &bid("a", 2), f.now())
+    );
+    assert!(
+        f.registry.stalled(&seat("a"), f.now()),
+        "the read-only channel neither suppresses nor vouches for the seat"
+    );
+}
+
 fn q3_replace_at_final_push_gap(
     active: bool,
     old_mode: ModChannelMode,
@@ -2610,6 +2742,7 @@ fn q3_replace_at_final_push_gap(
                         native_session: NativeSessionId::new("native"),
                         harness: Harness::Claude,
                         idle_wake: IdleWake::Channel,
+                        readonly: false,
                         registered_at: now,
                     },
                     sink.clone(),
@@ -2821,6 +2954,7 @@ fn q3_failed_hint_work(replacement_mode: Option<ModChannelMode>) {
                         native_session: NativeSessionId::new("native"),
                         harness: Harness::Claude,
                         idle_wake: IdleWake::Channel,
+                        readonly: false,
                         registered_at: now,
                     },
                     sink.clone(),

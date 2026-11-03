@@ -254,6 +254,7 @@ impl Matrix {
     fn check_in_again(&self, claim: &CallerClaim) -> CallerClaim {
         let n = self.executions.fetch_add(1, Ordering::SeqCst);
         self.handle(Command::CheckIn(CheckIn {
+            readonly: false,
             lineage_parent: None,
             mode: CheckInMode::Current,
             claim: claim.clone(),
@@ -278,6 +279,7 @@ impl Matrix {
         claim.binding_generation = current as u64;
         match self
             .handle(Command::CheckIn(CheckIn {
+                readonly: false,
                 lineage_parent: None,
                 mode: CheckInMode::Lifecycle {
                     expected_binding_generation: claim.binding_generation,
@@ -1889,6 +1891,8 @@ impl Matrix {
                     host: crate::test_support::test_host_locator(),
                     target: HostTargetId::new(pane),
                     operation: OperationId::new(format!("resolve-{pane}")),
+                    locator_hint: None,
+                    tmux_hint: None,
                 }))
                 .unwrap()
             else {
@@ -2505,6 +2509,8 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
             host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("pane-u"),
             operation: OperationId::new("resolve-pane-u"),
+            locator_hint: None,
+            tmux_hint: None,
         }))
         .unwrap()
     else {

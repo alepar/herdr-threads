@@ -2,6 +2,8 @@
 pub mod accept_delivery;
 pub mod actor_route;
 pub mod caller;
+pub mod caller_guard;
+pub mod caller_location;
 pub mod commands;
 pub mod direct_send;
 pub mod doctor;
@@ -9,10 +11,12 @@ pub mod exit;
 pub mod follow;
 pub mod handoff;
 pub mod handoff_delivery;
+pub mod hc_target;
 pub mod help;
 pub mod hook;
 pub mod hook_evidence;
 pub mod hook_inbox;
+pub mod host_client;
 pub mod human;
 pub mod input;
 pub mod installer;
@@ -22,6 +26,8 @@ pub mod internal;
 pub mod irc;
 pub mod journal;
 pub mod launch;
+pub mod launch_gate;
+pub mod launch_new;
 pub mod lazy_display;
 pub(crate) mod legacy;
 pub mod me;
@@ -35,6 +41,8 @@ mod picker;
 pub mod pre_upgrade_backup;
 pub mod retry;
 mod seat_resolution;
+pub(crate) mod self_retire;
+pub mod site_capability;
 pub mod update;
 pub use crate::protocol::address as seat_selector;
 pub mod peer_launch;
@@ -48,7 +56,7 @@ pub mod topology_handoff;
 pub mod topology_recover;
 mod topology_runtime;
 pub mod wake_on;
-mod wake_warning;
+pub(crate) mod wake_warning;
 pub mod watch;
 
 use crate::{
@@ -302,14 +310,98 @@ impl ViewReader for SocketViewReader {
     }
 }
 
+/// The pane the CLI acts from ([`caller_guard::cli_pane`]): a two-family caller is verified by
+/// the daemon first, and an unverified one prints M4 and binds nothing. The flag is set when the
+/// daemon verified the terminal: [`run`] then swaps the env once and passes the resulting site on.
+fn cli_caller_pane(
+    env: &caller_location::CallerEnv,
+    output: &OutputSpec,
+) -> (Option<String>, bool) {
+    let mut terminal = false;
+    let pane = caller_guard::cli_pane(
+        env,
+        |candidates| {
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+            let budget = CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
+                cancellation: Cancellation::default(),
+            };
+            // Nothing is decided yet: the guard resolves as the environment reads, with the
+            // routing flags.
+            let guard = instance::resolve_context(&instance::InstanceInputs::for_site(
+                output.context.state_dir.as_ref().map(PathBuf::from),
+                output.context.host.as_ref().map(PathBuf::from),
+                None,
+            ))
+            .ok()
+            .and_then(|(context, _)| NodePaths::resolve_read_only(&context.state_dir).ok())
+            .and_then(|paths| connect(&paths, &clock).ok())
+            .map_or_else(
+                || caller_guard::unasked(candidates),
+                |(_, _, client)| caller_guard::verify(&client, candidates, &budget),
+            );
+            terminal = matches!(guard, caller_guard::Guard::Terminal(_));
+            guard
+        },
+        |line| eprintln!("{line}"),
+    );
+    (pane, terminal)
+}
+
+/// The argv is the launch-gate shim's (`internal launch-gate`).
+fn is_launch_gate(argv: &[OsString]) -> bool {
+    matches!(
+        commands::parse_argv_or_informational(argv.iter().cloned()),
+        Ok(commands::ParsedCli {
+            action: CliAction::InternalLaunchGate { .. },
+            ..
+        })
+    )
+}
+
 pub fn run<I, T, W>(argv: I, writer: &mut W) -> Result<(), RunError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
     W: Write,
 {
-    let pane = std::env::var("HERDR_PANE_ID").ok();
-    run_in_pane(argv, pane.as_deref(), writer)
+    let argv: Vec<OsString> = argv.into_iter().map(Into::into).collect();
+    let mut env = caller_location::CallerEnv::from_process();
+    // The launch-gate shim decides first (below): it reads only the terminal variables, so a
+    // leaked seat name or pane never refuses it.
+    if let Err(error) = env.locate(caller_location::EnvMode::Cli)
+        && let Some(line) = error.refusal()
+        && !is_launch_gate(&argv)
+    {
+        return Err(invalid_request(line));
+    }
+    // Parse first: the routing flags pick the daemon the guard asks, and a usage error or
+    // `--help` pays no daemon call.
+    let Some(parsed) = parse_cli(argv, writer)? else {
+        return Ok(());
+    };
+    if let CliAction::InternalLaunchGate { .. } = &parsed.action {
+        // No two-family guard: the shim is no seat, and its authorization is the daemon's call
+        // against the terminal witness. Its site is the terminal alone, as the shim reads it.
+        let site = launch_gate::terminal_env(|name| std::env::var_os(name))
+            .non_pane_locator(caller_location::EnvMode::Cli);
+        return run_parsed(parsed, None, site.as_ref(), writer);
+    }
+    let (guarded_pane, verified_terminal) = cli_caller_pane(&env, &parsed.output);
+    if verified_terminal {
+        // The guard verified the terminal: from here the caller is that lone site, decided once.
+        env = env.verified_terminal();
+    }
+    let site = env.non_pane_locator(caller_location::EnvMode::Cli);
+    // A lone herdr-core terminal acts as its `tN` target: it has no pane, and its seat lookup
+    // is the same target lookup a pane's is.
+    let pane = guarded_pane.or_else(|| match &site {
+        Some(terminal @ caller_location::CallerLocator::Terminal { .. }) => {
+            terminal.site().moved_target().map(str::to_owned)
+        }
+        _ => None,
+    });
+    run_parsed(parsed, pane.as_deref(), site.as_ref(), writer)
 }
 
 /// Process entrypoint: like [`run`], recording whether stdout is a terminal so
@@ -392,9 +484,15 @@ pub(crate) fn agent_evidence_refusal(pane: &str, evidence: &str) -> RunError {
 pub(crate) fn pane_agent(
     context: &RuntimeContext,
     clock: &Arc<dyn Clock>,
+    site: Option<&caller_location::CallerLocator>,
     pane: &crate::protocol::ids::HostTargetId,
 ) -> Result<Option<crate::ports::PaneAgentObservation>, ApiError> {
     use crate::ports::HostPort;
+    // A non-Pane site's claim host is a core socket or the reserved locator, never a Herdr
+    // server: nothing to observe (and a failed Herdr read is not evidence anyway).
+    if site.is_some() {
+        return Ok(None);
+    }
     let host = crate::host::native::NativeCli::new(
         context
             .require_host()
@@ -428,20 +526,59 @@ where
     T: Into<OsString> + Clone,
     W: Write,
 {
-    let parsed = match commands::parse_argv_or_informational(argv) {
-        Ok(parsed) => parsed,
+    run_in_site(argv, caller_pane, None, writer)
+}
+
+/// [`run_in_pane`] with the caller's located site: a `Named` or `Terminal` site (no pane) sends
+/// its host scope with thread resolution, behind the daemon's `seat.host_sites_v1` /
+/// `seat.terminal_sites_v1` (M13).
+pub fn run_in_site<I, T, W>(
+    argv: I,
+    caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
+    writer: &mut W,
+) -> Result<(), RunError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+    W: Write,
+{
+    let Some(parsed) = parse_cli(argv, writer)? else {
+        return Ok(());
+    };
+    run_parsed(parsed, caller_pane, site, writer)
+}
+
+/// `Ok(None)`: an informational parse (help, version) already written.
+fn parse_cli<I, T, W>(argv: I, writer: &mut W) -> Result<Option<commands::ParsedCli>, RunError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+    W: Write,
+{
+    match commands::parse_argv_or_informational(argv) {
+        Ok(parsed) => Ok(Some(parsed)),
         Err(commands::ParseFailure::Informational(text)) => {
             writer.write_all(text.as_bytes())?;
             writer.flush()?;
-            return Ok(());
+            Ok(None)
         }
-        Err(commands::ParseFailure::Usage(text)) => return Err(RunError::Usage(text)),
-        Err(commands::ParseFailure::Invalid(error)) => return Err(error.into()),
-    };
+        Err(commands::ParseFailure::Usage(text)) => Err(RunError::Usage(text)),
+        Err(commands::ParseFailure::Invalid(error)) => Err(error.into()),
+    }
+}
+
+/// The body of [`run_in_site`] after the parse: the namespace scope and the error mapping.
+fn run_parsed<W: Write>(
+    parsed: commands::ParsedCli,
+    caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
+    writer: &mut W,
+) -> Result<(), RunError> {
     let _namespace = human::invocation_scope(parsed.actor);
     let retry = matches!(parsed.action, CliAction::Retry(_));
     let watch = matches!(parsed.action, CliAction::Watch(_));
-    run_parsed_in_pane(parsed, caller_pane, writer).map_err(|mut error| {
+    run_parsed_in_pane(parsed, caller_pane, site, writer).map_err(|mut error| {
         if !retry && let RunError::Api(api) = &mut error {
             crate::protocol::output::namespace_error(api);
         }
@@ -464,16 +601,37 @@ pub(crate) fn resolve_automatic_new_selectors<C: LocalClient + ?Sized>(
     Ok(())
 }
 
+/// The claim host a continuation line pins (`--host-endpoint`): the Herdr server or core socket
+/// the caller attaches to. A named caller's reserved locator names no server, so it is never
+/// pinned (44 bytes saved on every `next:` line) and re-derives from the name.
+fn pinned_host(context: &RuntimeContext) -> Option<String> {
+    context
+        .host_endpoint
+        .as_deref()
+        .filter(|host| host.as_os_str() != crate::protocol::ids::NAMED_HOST_LOCATOR)
+        .map(|host| host.to_string_lossy().into_owned())
+}
+
 fn run_parsed_in_pane<W: Write>(
     mut parsed: commands::ParsedCli,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     writer: &mut W,
 ) -> Result<(), RunError> {
     let _presentation = output::PresentationGuard::enter(parsed.presentation, &parsed.output);
+    parsed.caller_site = site.cloned();
     if let CliAction::Skill = &parsed.action {
         writer.write_all(skill::SKILL_MD.as_bytes())?;
         writer.flush()?;
         return Ok(());
+    }
+    if let Some(caller_location::CallerLocator::Named(_)) = site {
+        if matches!(parsed.action, CliAction::MeInit { .. }) {
+            return Err(invalid_request(caller_location::M15));
+        }
+        if parsed.cooperative.is_some() {
+            return Err(invalid_request(&caller_location::m14("--cooperative-seat")));
+        }
     }
     if handoff::launch_lacks_summary(&parsed.action) {
         eprintln!("{}", handoff::SUMMARY_HINT);
@@ -500,7 +658,7 @@ fn run_parsed_in_pane<W: Write>(
                 .ok()
                 .as_deref(),
             caller_pane,
-            parsed.cooperative.is_some(),
+            parsed.cooperative.is_some() || site.is_some(),
             matches!(&parsed.action, CliAction::Watch(_)),
             writer,
         )?;
@@ -524,6 +682,7 @@ fn run_parsed_in_pane<W: Write>(
             *confirm_missing,
             *without_permissions,
             &parsed.output,
+            parsed.caller_site.as_ref(),
             writer,
         );
     }
@@ -533,23 +692,26 @@ fn run_parsed_in_pane<W: Write>(
         io::Read::read_to_end(&mut io::stdin().lock(), &mut input)?;
         return internal::json_field_bytes(&input, path, *keys, writer);
     }
-    if let CliAction::InternalPeerTabCreate {
-        workspace,
+    if let CliAction::InternalDaemonDetach { program, args } = &parsed.action {
+        return internal::daemon_detach(program, args, writer);
+    }
+    if let CliAction::InternalPeerTargetCreate {
+        spec,
         label,
         cwd,
+        gate_argv,
     } = &parsed.action
     {
-        let endpoint = parsed
-            .output
-            .context
-            .host
-            .as_deref()
-            .ok_or_else(|| invalid_request("internal peer-tab-create needs --host-endpoint"))?;
-        return peer_launch::create_tab(
+        let endpoint =
+            parsed.output.context.host.as_deref().ok_or_else(|| {
+                invalid_request("internal peer-target-create needs --host-endpoint")
+            })?;
+        return peer_launch::create_target(
             std::path::Path::new(endpoint),
-            workspace,
+            spec,
             label,
             cwd,
+            gate_argv.clone(),
             Arc::new(crate::app::SystemClock::new()),
             writer,
         );
@@ -582,7 +744,7 @@ fn run_parsed_in_pane<W: Write>(
         return run_legacy_purge(&parsed, *confirm, *operator, writer);
     }
     if let CliAction::Setup(request) = &parsed.action {
-        return setup::run(request, &parsed.output, writer);
+        return setup::run(request, &parsed.output, site, writer);
     }
     if let CliAction::SetupAll(verb, prompt_suggestions, permissions, pane_env) = &parsed.action {
         return setup::run_all(
@@ -591,6 +753,7 @@ fn run_parsed_in_pane<W: Write>(
             *permissions,
             *pane_env,
             &parsed.output,
+            site,
             writer,
         );
     }
@@ -604,11 +767,15 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::Handoff(request) => {
             request.launch = request.launch.clone().with_process_options()?;
         }
+        CliAction::LaunchNew(request) => {
+            request.launch = request.launch.clone().with_process_options()?;
+        }
         _ => {}
     }
-    let (context, _) = instance::resolve_context(&instance::InstanceInputs::from_process(
+    let (context, _) = instance::resolve_context(&instance::InstanceInputs::for_site(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
         parsed.output.context.host.as_ref().map(PathBuf::from),
+        site,
     ))
     .map_err(context_error)?;
     if matches!(
@@ -617,10 +784,7 @@ fn run_parsed_in_pane<W: Write>(
     ) {
         parsed.output.context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-            host: context
-                .host_endpoint
-                .as_ref()
-                .map(|host| host.to_string_lossy().into_owned()),
+            host: pinned_host(&context),
         };
     }
     let original_actor = if let CliAction::Retry(recovery) = &parsed.action {
@@ -632,10 +796,7 @@ fn run_parsed_in_pane<W: Write>(
         if direct_send::plan(&original.semantic).is_some() {
             parsed.output.context = crate::protocol::output::ContinuationContext {
                 state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-                host: context
-                    .host_endpoint
-                    .as_ref()
-                    .map(|host| host.to_string_lossy().into_owned()),
+                host: pinned_host(&context),
             };
         }
         Some(retry::preflight_original_actor(
@@ -644,10 +805,7 @@ fn run_parsed_in_pane<W: Write>(
             parsed.actor,
             &crate::protocol::output::ContinuationContext {
                 state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-                host: context
-                    .host_endpoint
-                    .as_ref()
-                    .map(|host| host.to_string_lossy().into_owned()),
+                host: pinned_host(&context),
             },
         )?)
     } else {
@@ -665,6 +823,15 @@ fn run_parsed_in_pane<W: Write>(
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
         cancellation: Cancellation::default(),
     };
+    if let CliAction::InternalLaunchGate {
+        bootstrap,
+        config_roots,
+        argv,
+    } = &parsed.action
+    {
+        let (_, _, client) = connect(&paths, &clock)?;
+        return launch_gate::run(&client, &clock, bootstrap, config_roots, argv);
+    }
     if topology_runtime::run_operator(&parsed, &context, &paths, &clock, writer)? {
         return Ok(());
     }
@@ -705,12 +872,23 @@ fn run_parsed_in_pane<W: Write>(
     }
     // The claim host's adapter, built only when a pane selector needs the host:
     // a store-only command (sync, peer, daemon, pending-ops) never asks.
+    // A named caller has no Herdr server: its claim host is the reserved locator, never dialled.
+    // Only a handoff action reads a Herdr endpoint, resolved lazily at that call (SA1, SA14).
+    // Any non-Pane site's claim host (the reserved locator, a core socket) is never dialled: its
+    // Herdr endpoint comes from the shared point.
+    let host_output = parsed.herdr_output();
     let host = || -> Result<crate::host::native::NativeCli, ApiError> {
-        Ok(crate::host::native::NativeCli::new(
+        let endpoint = if site.is_none() {
             context
                 .require_host()
                 .map_err(host_context_error)?
-                .to_path_buf(),
+                .to_path_buf()
+        } else {
+            topology_runtime::herdr_endpoint_io(&context, &host_output, site)
+                .map_err(host_context_error)?
+        };
+        Ok(crate::host::native::NativeCli::new(
+            endpoint,
             Arc::clone(&clock),
         ))
     };
@@ -727,10 +905,7 @@ fn run_parsed_in_pane<W: Write>(
         let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
         let selected_context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-            host: context
-                .host_endpoint
-                .as_ref()
-                .map(|host| host.to_string_lossy().into_owned()),
+            host: pinned_host(&context),
         };
         if topology_runtime::try_completed(
             parsed,
@@ -757,9 +932,23 @@ fn run_parsed_in_pane<W: Write>(
     if historical_retry && try_completed(&parsed, writer)? {
         return Ok(());
     }
+    // A herdr-core target (a Terminal-site caller, or a plain shell with a discovered core) is
+    // a V3 plan: it reads no Herdr topology and names its own host.
+    let mut hc_selected = false;
+    if let CliAction::TopologyHandoff(request) = &mut parsed.action
+        && let Some(target) =
+            hc_target::select(request, site, context.host_endpoint.is_some(), &|name| {
+                std::env::var_os(name)
+            })?
+    {
+        request.target = Some(target);
+        hc_selected = true;
+    }
     let automatic_new = matches!(&parsed.action, CliAction::TopologyHandoff(request)
         if request.automatic && request.new_tab.is_some() && !request.existing);
-    let resolved_targets = if automatic_new {
+    let resolved_targets = if hc_selected {
+        Ok(())
+    } else if automatic_new {
         let (_, _, client) = connect(&paths, &clock)?;
         resolve_automatic_new_selectors(
             &mut parsed,
@@ -838,17 +1027,21 @@ fn run_parsed_in_pane<W: Write>(
             writer,
         );
     }
+    // A cooperative selection names its own target; a Named site scopes the lookup otherwise.
+    let named_site = site.filter(|_| parsed.cooperative.is_none());
     threads::resolve_cli_threads(&mut parsed, |selector| {
         let (_, client) = connection.get()?;
+        let query = site_capability::resolve_thread_query(
+            named_site.map(caller_location::CallerLocator::site),
+            selector,
+            thread_caller.clone(),
+            thread_caller_target.clone(),
+            client,
+            &budget(),
+        )
+        .map_err(|error| threads::selector_error(error, selector))?;
         let result = client
-            .call(
-                Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
-                    selector: selector.to_owned(),
-                    caller: thread_caller.clone(),
-                    caller_target: thread_caller_target.clone(),
-                }),
-                &budget(),
-            )
+            .call(Command::ResolveThread(query), &budget())
             .map_err(|error| threads::selector_error(error, selector))?;
         match result {
             CommandResult::ThreadResolved(thread) => Ok(thread),
@@ -896,6 +1089,18 @@ fn run_parsed_in_pane<W: Write>(
     if let CliAction::Launch(request) = &parsed.action {
         return run_launch(request, &parsed, &context, &paths, &clock, writer);
     }
+    if let CliAction::LaunchNew(request) = &parsed.action {
+        return launch_new::run(
+            request,
+            &parsed,
+            caller_pane,
+            site,
+            &context,
+            &paths,
+            &clock,
+            writer,
+        );
+    }
     if let CliAction::Picker(request) = &parsed.action {
         picker::require_terminal(&parsed)?;
         let (_, client) = connection.get()?;
@@ -932,6 +1137,12 @@ fn run_parsed_in_pane<W: Write>(
         };
         parsed.action = request.selected(thread);
     }
+    // The invoking pane's live target, for caller-relative nicks (pane
+    // observation of the claim host, the one site here that reads it).
+    let caller_resolver = host().ok().map(|host| {
+        Arc::new(move |pane: &str, budget: &CallBudget| host.current_pane(pane, budget))
+            as follow::CallerResolver
+    });
     if let CliAction::Follow(request) = &parsed.action {
         return follow::run(
             request,
@@ -940,6 +1151,7 @@ fn run_parsed_in_pane<W: Write>(
             &context,
             &paths,
             &clock,
+            caller_resolver,
             writer,
         );
     }
@@ -949,7 +1161,7 @@ fn run_parsed_in_pane<W: Write>(
         && output::human_active()
     {
         let (instance, _, client) = connect(&paths, &clock)?;
-        let mut cache = follow::NickCache::new(&context, &paths, instance, &clock)
+        let mut cache = follow::NickCache::new(&context, &paths, instance, &clock, caller_resolver)
             .map_err(context_error)?
             .with_caller(caller_pane);
         return follow::render_history(&client, query.clone(), &parsed.output, &mut cache, writer);
@@ -976,26 +1188,15 @@ fn run_parsed_in_pane<W: Write>(
         let CliAction::Mutation(mutation) = &parsed.action else {
             unreachable!()
         };
-        let semantic =
-            operator_semantic(mutation, &context).expect("operator mutation selected above")?;
+        let semantic = operator_semantic(
+            mutation,
+            &context,
+            &parsed.herdr_output(),
+            parsed.caller_site.as_ref(),
+        )
+        .expect("operator mutation selected above")?;
         return run_operator(semantic, &parsed, &paths, &clock, writer);
     }
-    // Labels and peer locations are host data: with no host they are absent.
-    let seat_labels = match &context.host_endpoint {
-        Some(endpoint)
-            if matches!(&parsed.action, CliAction::Wire(Command::Seats(_)))
-                && output::human_active() =>
-        {
-            crate::host::native::NativeCli::new(endpoint.clone(), Arc::clone(&clock))
-                .seat_labels(&budget())
-                .unwrap_or_default()
-        }
-        _ => Vec::new(),
-    };
-    let peer_source = context
-        .host_endpoint
-        .as_ref()
-        .map(|endpoint| crate::host::native::NativeCli::new(endpoint.clone(), Arc::clone(&clock)));
     // Retain the requested read bound if caller derivation substitutes a
     // recovery Health report for an unmapped pane's diagnostics.
     let max_bytes = match &parsed.action {
@@ -1008,27 +1209,30 @@ fn run_parsed_in_pane<W: Write>(
         _ => crate::protocol::pagination::MAX_PAGE_BYTES,
     };
     let run = || {
-        human::with_seat_labels(seat_labels, || {
-            run_caller_scoped_deferred(
-                parsed,
-                deferred,
-                caller_pane,
-                &context,
-                &paths,
-                &connection,
-                &clock,
-                &budget,
-                writer,
-            )
-        })
+        run_caller_scoped_deferred(
+            parsed,
+            deferred,
+            caller_pane,
+            site,
+            &context,
+            &paths,
+            &connection,
+            &clock,
+            &budget,
+            writer,
+        )
     };
-    let outcome = match peer_source {
-        Some(source) => peer_locations::with_source(source, run),
-        None => run(),
+    // Labels and peer locations are host data, read by the daemon: with no
+    // host they are absent.
+    let outcome = if pinned_host(&context).is_some() {
+        peer_locations::with_active(run)
+    } else {
+        run()
     }?;
     let Some(parsed) = outcome else {
         return Ok(());
     };
+    let herdr_output = parsed.herdr_output();
     let result = match parsed.action {
         CliAction::Wire(_) => unreachable!("wire reads run in run_caller_scoped"),
         CliAction::Daemon(DaemonAction::Health) => {
@@ -1093,7 +1297,12 @@ fn run_parsed_in_pane<W: Write>(
         }
         CliAction::Mutation(MutationSpec::Resolve(target)) => {
             let (instance, _, client) = connect(&paths, &clock)?;
-            let host = context.claim_host().map_err(context_error)?;
+            let host = recipient_host(
+                &context,
+                &herdr_output,
+                parsed.caller_site.as_ref(),
+                &target,
+            )?;
             let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
             retry::run_new_api_to_writer_discarding_rejection(
                 &journal,
@@ -1193,10 +1402,13 @@ fn run_parsed_in_pane<W: Write>(
         | CliAction::InternalPreUpgradeBackup { .. }
         | CliAction::Update(_)
         | CliAction::InternalStoreCheck
-        | CliAction::InternalPeerTabCreate { .. } => {
+        | CliAction::InternalPeerTargetCreate { .. }
+        | CliAction::InternalDaemonDetach { .. }
+        | CliAction::InternalLaunchGate { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
         CliAction::Launch(_)
+        | CliAction::LaunchNew(_)
         | CliAction::RemoteLaunch(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
@@ -1210,6 +1422,9 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::WakeOn(_) => unreachable!("wake-on always derives a caller selection"),
         CliAction::NudgeThreshold(_) => {
             unreachable!("nudge-threshold always derives a caller selection")
+        }
+        CliAction::SelfRetire { .. } => {
+            unreachable!("seat retire --self always derives a caller selection")
         }
         CliAction::View { once, page } => {
             if !once {
@@ -1391,6 +1606,7 @@ where
         parsed,
         seat_resolution::DeferredSeats::none(),
         caller_pane,
+        None,
         context,
         paths,
         connection,
@@ -1407,6 +1623,7 @@ fn run_caller_scoped_deferred<C, F, W>(
     mut parsed: commands::ParsedCli,
     deferred: seat_resolution::DeferredSeats,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     context: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
@@ -1430,10 +1647,7 @@ where
             .state_dir
             .get_or_insert_with(|| context.state_dir.to_string_lossy().into_owned());
         if parsed.output.context.host.is_none() {
-            parsed.output.context.host = context
-                .host_endpoint
-                .as_ref()
-                .map(|host| host.to_string_lossy().into_owned());
+            parsed.output.context.host = pinned_host(context);
         }
     }
     // Who is calling comes from the environment (decision 15): an agent without a session id is
@@ -1471,7 +1685,15 @@ where
     // Capture omission before default_seat resolves the caller read. The second
     // guard below adds the canonical selected seat while retaining that choice.
     let _origin_inbox = output::InboxInvocationGuard::enter(&parsed, None);
-    let selected = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock);
+    let selected = derive_caller(
+        &mut parsed,
+        caller_pane,
+        site,
+        context,
+        paths,
+        connection,
+        clock,
+    );
     let selection =
         selected.map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
     // Pass 2 of the seat stage: the journaled allocations, now that the caller is derived and
@@ -1525,6 +1747,7 @@ where
                 body_reader_claim(
                     &parsed.output,
                     caller_pane,
+                    site,
                     context,
                     paths,
                     connection,
@@ -1615,6 +1838,15 @@ fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
             "seat binding details unavailable; daemon requires seat.binding_details_v1",
         ));
     }
+    if matches!(&command, Command::AuthorizeLaunchGate(_))
+        && !client.supports_capability(crate::protocol::capabilities::LAUNCH_GATE_V1, &budget())
+    {
+        return Err(invalid_request(&older_daemon_refusal(
+            client,
+            "launch gate authorization",
+            budget,
+        )));
+    }
     // Peer hygiene (2.8.0): an older daemon cannot decode these, so they go
     // only to one that advertises them.
     if let Command::Sync(sync) = &command {
@@ -1697,13 +1929,7 @@ fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
     let (result, modes) = fit_annotated_read(command, result, output_spec, client, budget)?;
     let peer_hints = if output_spec.format == OutputFormat::Text && peer_locations::active() {
         let location_budget = budget();
-        peer_locations::prepare(
-            &result,
-            participant_thread,
-            client,
-            &location_budget,
-            || peer_locations::snapshot(&location_budget),
-        )
+        peer_locations::prepare(&result, participant_thread, client, &location_budget)
     } else {
         peer_locations::Prepared::default()
     };
@@ -1795,6 +2021,7 @@ fn advance_over_body_read<C: LocalClient + ?Sized>(
 fn body_reader_claim<C, F>(
     output: &OutputSpec,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     context: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
@@ -1809,7 +2036,15 @@ where
     };
     let pane = parse_pane(caller_pane.filter(|pane| !pane.is_empty())?).ok()?;
     let (_, client) = connection.get().ok()?;
-    let seat = pane_seat(client, output, &pane, clock).ok().flatten()?;
+    let host = site_capability::seats_host(
+        site.map(caller_location::CallerLocator::site),
+        client,
+        &cooperative_budget(clock),
+    )
+    .ok()?;
+    let seat = pane_seat_on(client, output, &pane, host, clock)
+        .ok()
+        .flatten()?;
     let instance = read_node_uuid_hint(paths).ok().flatten()?;
     let selection = CooperativeSelection {
         seat,
@@ -2675,6 +2910,172 @@ fn replay_selection(
     })
 }
 
+/// D3 on a plain path: a seat-acting call under `HERDR_THREADS_SEAT_READONLY=1` first sends the
+/// check-in that records it, so nothing this call displays can settle a receipt. A failure refuses
+/// the call: a readonly caller must not fall back to writable. A subagent (its role already
+/// forbids settlement), a person, a replay (it carries its original claim) and a check-in (which
+/// stamps the marker itself) are skipped.
+pub(crate) fn mark_readonly_caller<C: LocalClient + ?Sized>(
+    parsed: &commands::ParsedCli,
+    selection: &CooperativeSelection,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    let readonly = caller_location::CallerEnv::from_process().readonly();
+    mark_readonly(
+        readonly, parsed, selection, paths, instance, host, client, clock,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mark_readonly<C: LocalClient + ?Sized>(
+    readonly: bool,
+    parsed: &commands::ParsedCli,
+    selection: &CooperativeSelection,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    if !readonly
+        || selection.role != crate::harness::context::Role::TopLevel
+        || selection.harness == crate::harness::context::Harness::Human
+        || matches!(
+            &parsed.action,
+            CliAction::Retry(_)
+                | CliAction::Mutation(
+                    MutationSpec::CheckIn | MutationSpec::CheckInLifecycle { .. }
+                )
+        )
+    {
+        return Ok(());
+    }
+    let mut check_in = parsed.clone();
+    check_in.action = CliAction::Mutation(MutationSpec::CheckIn);
+    run_selected(
+        check_in,
+        selection,
+        paths,
+        instance,
+        host,
+        client,
+        clock,
+        &mut io::sink(),
+    )
+}
+
+#[cfg(test)]
+mod readonly_caller_tests {
+    use super::*;
+    use crate::protocol::{
+        ids::{HostTargetId, SeatId},
+        results::{ApiError, ErrorCode},
+        time::{CallBudget, MonoInstant, UtcMillis},
+    };
+    use std::sync::Mutex;
+
+    /// Refuses every command and records how many it was sent.
+    struct Refusing(Mutex<usize>);
+    impl LocalClient for Refusing {
+        fn call(&self, _: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            *self.0.lock().unwrap() += 1;
+            Err(ApiError::new(ErrorCode::Unsupported, "refused"))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+
+    struct Zero;
+    impl Clock for Zero {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(0)
+        }
+    }
+
+    fn run(readonly: bool, role: crate::harness::context::Role, argv: &[&str]) -> (bool, usize) {
+        let parsed = commands::parse_argv(argv.iter().copied()).unwrap();
+        let selection = CooperativeSelection {
+            seat: SeatId::new("snSGreadonly1"),
+            target: HostTargetId::new("reviewer"),
+            harness: crate::harness::context::Harness::Claude,
+            role,
+        };
+        let dir = std::path::PathBuf::from("/nonexistent/readonly-caller");
+        let paths = NodePaths {
+            state_dir: dir.clone(),
+            node_dir: dir.clone(),
+            key_path: dir.clone(),
+            node_json_path: dir.clone(),
+            database_path: dir.clone(),
+            lock_path: dir.clone(),
+            descriptor_path: dir.clone(),
+            socket_path: dir,
+        };
+        let host =
+            crate::protocol::ids::HostLocator::parse(crate::protocol::ids::NAMED_HOST_LOCATOR)
+                .unwrap();
+        let client = Refusing(Mutex::new(0));
+        let outcome = mark_readonly(
+            readonly,
+            &parsed,
+            &selection,
+            &paths,
+            crate::node::NodeUuid::new_v4(),
+            &host,
+            &client,
+            &Zero,
+        );
+        let calls = *client.0.lock().unwrap();
+        (outcome.is_err(), calls)
+    }
+
+    // Kills: a readonly caller whose failed check-in falls back to a writable command.
+    #[test]
+    fn readonly_failure_refuses_the_command() {
+        let (refused, calls) = run(
+            true,
+            crate::harness::context::Role::TopLevel,
+            &["ht", "inbox"],
+        );
+        assert!(refused, "the refused check-in must refuse the call");
+        assert!(calls >= 1, "the check-in reached the daemon");
+    }
+
+    // Kills: a check-in sent without the variable, and one sent for a subagent.
+    #[test]
+    fn no_check_in_without_the_variable_or_for_a_subagent() {
+        assert_eq!(
+            run(
+                false,
+                crate::harness::context::Role::TopLevel,
+                &["ht", "inbox"]
+            ),
+            (false, 0)
+        );
+        assert_eq!(
+            run(
+                true,
+                crate::harness::context::Role::Subagent,
+                &["ht", "inbox"]
+            ),
+            (false, 0)
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     parsed: commands::ParsedCli,
@@ -2690,6 +3091,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         harness::context::{OccupantContext, SessionReference},
         protocol::{commands::SeatInspectQuery, pagination::PageRequest, results::CommandResult},
     };
+    mark_readonly_caller(&parsed, selection, paths, instance, host, client, clock)?;
     let replay = ordinary_retry_claim(&parsed, &paths.node_dir.join("intents"))?;
     let historical = replay
         .as_ref()
@@ -2720,6 +3122,12 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         let value = *value;
         return nudge_threshold::run(
             &parsed, value, selection, paths, instance, host, client, clock, writer,
+        );
+    }
+    if let CliAction::SelfRetire { force } = &parsed.action {
+        let force = *force;
+        return self_retire::run(
+            &parsed, force, selection, paths, instance, host, client, clock, writer,
         );
     }
     if historical.is_some()
@@ -3093,9 +3501,10 @@ fn run_legacy_purge<W: Write>(
     operator: bool,
     writer: &mut W,
 ) -> Result<(), RunError> {
-    let inputs = instance::InstanceInputs::from_process(
+    let inputs = instance::InstanceInputs::for_site(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
         parsed.output.context.host.as_ref().map(PathBuf::from),
+        parsed.caller_site.as_ref(),
     );
     let (context, ..) = instance::resolve_context_with_selected_paths(&inputs)
         .map_err(|error| invalid_request(&error.to_string()))?;
@@ -3136,6 +3545,29 @@ fn invalid_request(detail: &str) -> RunError {
     RunError::Api(ApiError::invalid_request(detail))
 }
 
+/// M21 (a CLI error, 69 bytes plus the pane): the Herdr server a pane form or a launch addresses
+/// is not reachable from this caller. The claim host identifies the caller and is never dialled.
+fn no_herdr_host(what: &str) -> RunError {
+    invalid_request(&format!(
+        "{what} has no reachable Herdr host; pass --host-endpoint"
+    ))
+}
+
+/// The Herdr server a recipient `target` pane lives on, as the wire locator `ResolveSeat` carries:
+/// the shared endpoint of a Pane caller, the lazily looked up one of a non-Pane site.
+fn recipient_host(
+    context: &RuntimeContext,
+    output: &OutputSpec,
+    site: Option<&caller_location::CallerLocator>,
+    target: &crate::protocol::ids::HostTargetId,
+) -> Result<crate::protocol::ids::HostLocator, RunError> {
+    let missing = || no_herdr_host(&format!("pane {}", target.as_str()));
+    let endpoint =
+        topology_runtime::herdr_endpoint_io(context, output, site).map_err(|_| missing())?;
+    crate::protocol::ids::HostLocator::parse(endpoint.to_string_lossy())
+        .map_err(|detail| invalid_request(&detail.detail))
+}
+
 fn context_error(error: io::Error) -> RunError {
     RunError::Api(host_context_error(error))
 }
@@ -3162,26 +3594,31 @@ fn is_operator_mutation(mutation: &MutationSpec) -> bool {
 fn operator_semantic(
     mutation: &MutationSpec,
     context: &RuntimeContext,
+    output: &OutputSpec,
+    site: Option<&caller_location::CallerLocator>,
 ) -> Option<Result<SemanticMutation, RunError>> {
-    let host = || context.claim_host().map_err(context_error);
+    let host =
+        |target: &crate::protocol::ids::HostTargetId| recipient_host(context, output, site, target);
     Some(match mutation {
-        MutationSpec::FreshSeat(target) => host().map(|host| SemanticMutation::OperatorFreshSeat {
-            target: target.clone(),
-            host,
-        }),
+        MutationSpec::FreshSeat(target) => {
+            host(target).map(|host| SemanticMutation::OperatorFreshSeat {
+                target: target.clone(),
+                host,
+            })
+        }
         MutationSpec::Retire(seat) => Ok(SemanticMutation::OperatorRetire { seat: seat.clone() }),
         MutationSpec::Replace {
             seat,
             pane,
             replace,
-        } => host().map(|host| SemanticMutation::OperatorReplace {
+        } => host(pane).map(|host| SemanticMutation::OperatorReplace {
             seat: seat.clone(),
             target: pane.clone(),
             host,
             replace: replace.clone(),
         }),
         MutationSpec::Rebind { seat, pane } => {
-            host().map(|host| SemanticMutation::OperatorRebind {
+            host(pane).map(|host| SemanticMutation::OperatorRebind {
                 seat: seat.clone(),
                 target: pane.clone(),
                 host,
@@ -3313,6 +3750,7 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller
         | CliAction::Summary(_)
         | CliAction::WakeOn(_)
         | CliAction::NudgeThreshold(_)
+        | CliAction::SelfRetire { .. }
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::Watch(_)
@@ -3391,6 +3829,8 @@ pub(crate) fn require_handoff_capabilities<C: LocalClient + ?Sized>(
 /// Guarded recipient-seat allocation: one journaled `ResolveSeat` under the
 /// `ServiceAllocation` scope. Gates (session refusal, p0 receipts capability, invitation
 /// confirmation capability) are the caller's job and must run before this.
+// Allowed: the allocation's full address (context, store, client, clock, output, target, host).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
     context: &RuntimeContext,
     paths: &NodePaths,
@@ -3398,9 +3838,14 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
     output: &OutputSpec,
+    site: Option<&caller_location::CallerLocator>,
     target: crate::protocol::ids::HostTargetId,
+    host: Option<crate::protocol::ids::HostLocator>,
 ) -> Result<crate::protocol::ids::SeatId, RunError> {
-    let host = context.claim_host().map_err(context_error)?;
+    let host = match host {
+        Some(host) => host,
+        None => recipient_host(context, output, site, &target)?,
+    };
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
         &journal,
@@ -3471,6 +3916,7 @@ where
             "requesting invitation confirmation policy",
         )?;
     }
+    let herdr_output = parsed.herdr_output();
     let allocate = |target: crate::protocol::ids::HostTargetId| {
         allocate_recipient_seat(
             context,
@@ -3478,8 +3924,10 @@ where
             instance,
             client,
             clock.as_ref(),
-            &parsed.output,
+            &herdr_output,
+            parsed.caller_site.as_ref(),
             target,
+            None,
         )
     };
     if let Some(selector) = selector {
@@ -3541,6 +3989,7 @@ where
 fn derive_caller<C, F>(
     parsed: &mut commands::ParsedCli,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     context: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
@@ -3575,12 +4024,14 @@ where
                 (Some(selection), _) => Some(selection.seat.clone()),
                 (None, Some(pane)) => parse_pane(pane).ok().and_then(|pane| {
                     let (_, client) = connection.get().ok()?;
-                    located_pane_seat(client, &parsed.output, &pane, context, clock)
+                    located_pane_seat(client, &parsed.output, &pane, site, context, clock)
                         .ok()
                         .flatten()
                         .map(|located| located.seat)
                 }),
-                (None, None) => None,
+                (None, None) => named_site_seat(site, connection, &parsed.output, clock)
+                    .ok()
+                    .flatten(),
             };
             if let Some(seat) = seat {
                 default_seat(&mut parsed.action, seat);
@@ -3589,9 +4040,8 @@ where
         }
         CallerNeed::Selection => match parsed.cooperative.clone() {
             Some(selection) => Ok(Some(selection)),
-            None => {
-                derive_selection(parsed, caller_pane, context, paths, connection, clock).map(Some)
-            }
+            None => derive_selection(parsed, caller_pane, site, context, paths, connection, clock)
+                .map(Some),
         },
         CallerNeed::SeatDefault { required } => {
             let seat = match (&parsed.cooperative, caller_pane.filter(|p| !p.is_empty())) {
@@ -3599,7 +4049,7 @@ where
                 (None, Some(pane)) => {
                     let pane = parse_pane(pane)?;
                     let (_, client) = connection.get()?;
-                    match located_pane_seat(client, &parsed.output, &pane, context, clock)? {
+                    match located_pane_seat(client, &parsed.output, &pane, site, context, clock)? {
                         Some(located) => Some(located.seat),
                         None if parsed.caller_read_default
                             && matches!(&parsed.action, CliAction::Wire(Command::Diagnostics(q)) if q.page.cursor.is_none()) =>
@@ -3614,13 +4064,16 @@ where
                         None => None,
                     }
                 }
-                (None, None) if required => {
-                    return Err(caller_not_located(
-                        "this read defaults to the caller's seat: pass --seat SEAT, or run it \
-                         inside the agent's own Herdr pane (HERDR_PANE_ID)",
-                    ));
-                }
-                (None, None) => None,
+                (None, None) => match named_site_seat(site, connection, &parsed.output, clock)? {
+                    Some(seat) => Some(seat),
+                    None if required => {
+                        return Err(caller_not_located(
+                            "this read defaults to the caller's seat: pass --seat SEAT, or run it \
+                             inside the agent's own Herdr pane (HERDR_PANE_ID)",
+                        ));
+                    }
+                    None => None,
+                },
             };
             if let Some(seat) = seat {
                 default_seat(&mut parsed.action, seat);
@@ -3681,6 +4134,16 @@ pub(crate) const PANE_SEAT_PAGE_LIMIT: u16 = 8;
 /// resolved seat away.
 pub(crate) fn collect_pane_seats(
     pane: &crate::protocol::ids::HostTargetId,
+    call: impl FnMut(Command) -> Result<CommandResult, ApiError>,
+) -> Result<PaneSeats, PaneSeatsError> {
+    collect_seats_on(pane, None, call)
+}
+
+/// [`collect_pane_seats`] scoped to `host` (`SeatsQuery.host`, F9): a Named site's lookup sends
+/// its reserved named-host locator; `None` is the unchanged Pane request.
+pub(crate) fn collect_seats_on(
+    pane: &crate::protocol::ids::HostTargetId,
+    host: Option<crate::protocol::ids::HostLocator>,
     mut call: impl FnMut(Command) -> Result<CommandResult, ApiError>,
 ) -> Result<PaneSeats, PaneSeatsError> {
     use crate::protocol::{
@@ -3699,6 +4162,7 @@ pub(crate) fn collect_pane_seats(
             target: Some(pane.clone()),
             include_retired: false,
             filter: Default::default(),
+            host: host.clone(),
         }))
         .map_err(PaneSeatsError::Api)?;
         let CommandResult::Seats(page) = result else {
@@ -3733,7 +4197,18 @@ fn pane_seat<C: LocalClient + ?Sized>(
     pane: &crate::protocol::ids::HostTargetId,
     clock: &dyn Clock,
 ) -> Result<Option<crate::protocol::ids::SeatId>, RunError> {
-    let seats = collect_pane_seats(pane, |command| {
+    pane_seat_on(client, output, pane, None, clock)
+}
+
+/// [`pane_seat`] scoped to `host` (`SeatsQuery.host`) when given.
+fn pane_seat_on<C: LocalClient + ?Sized>(
+    client: &C,
+    output: &OutputSpec,
+    pane: &crate::protocol::ids::HostTargetId,
+    host: Option<crate::protocol::ids::HostLocator>,
+    clock: &dyn Clock,
+) -> Result<Option<crate::protocol::ids::SeatId>, RunError> {
+    let seats = collect_seats_on(pane, host, |command| {
         client.call_with_output(command, output, &cooperative_budget(clock))
     })
     .map_err(|error| match error {
@@ -3766,21 +4241,32 @@ struct LocatedSeat {
 /// when that id maps to no resolved seat, one Herdr read asks for the current
 /// id of that exact pane ([`moved_pane`]); the lookup is repeated there. The
 /// daemon's mapping still decides the seat. Steady state costs nothing extra.
-fn located_pane_seat<C: LocalClient + ?Sized>(
+fn located_pane_seat<C: LocalClient>(
     client: &C,
     output: &OutputSpec,
     pane: &crate::protocol::ids::HostTargetId,
+    site: Option<&caller_location::CallerLocator>,
     runtime: &RuntimeContext,
     clock: &Arc<dyn Clock>,
 ) -> Result<Option<LocatedSeat>, RunError> {
-    if let Some(seat) = pane_seat(client, output, pane, clock.as_ref())? {
+    // A non-pane site (a terminal) looks its seat up on its own core: two cores may each seat `t1`.
+    let host = site_capability::seats_host(
+        site.map(caller_location::CallerLocator::site),
+        client,
+        &cooperative_budget(clock.as_ref()),
+    )?;
+    if let Some(seat) = pane_seat_on(client, output, pane, host, clock.as_ref())? {
         return Ok(Some(LocatedSeat {
             seat,
             pane: pane.clone(),
             moved_from: None,
         }));
     }
-    // The caller's own Herdr host (the claim host); a moved pane stays on it.
+    // The caller's own Herdr host (the claim host); a moved pane stays on it. A terminal's
+    // host is a herdr-core socket, not a Herdr server, and its id does not move.
+    if site.is_some() {
+        return Ok(None);
+    }
     let Ok(endpoint) = runtime.require_host() else {
         return Ok(None);
     };
@@ -3797,6 +4283,96 @@ fn located_pane_seat<C: LocalClient + ?Sized>(
             moved_from: Some(pane.clone()),
         }),
     )
+}
+
+/// The existing seat of a Named site (host-scoped lookup behind `seat.host_sites_v1`, M13):
+/// `None` for another site or an unknown name. A read: it allocates nothing.
+fn named_site_seat<C, F>(
+    site: Option<&caller_location::CallerLocator>,
+    connection: &LazyConnection<C, F>,
+    output: &OutputSpec,
+    clock: &Arc<dyn Clock>,
+) -> Result<Option<crate::protocol::ids::SeatId>, RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
+{
+    let Some(site @ caller_location::CallerLocator::Named(name)) = site else {
+        return Ok(None);
+    };
+    let (_, client) = connection.get()?;
+    let host = site_capability::seats_host(
+        Some(site.site()),
+        client,
+        &cooperative_budget(clock.as_ref()),
+    )?;
+    pane_seat_on(
+        client,
+        output,
+        &crate::protocol::ids::HostTargetId::new(name.as_str()),
+        host,
+        clock.as_ref(),
+    )
+}
+
+/// The seat of a Named site for a seat-acting command: always the journaled `ResolveSeat` at the
+/// reserved locator (the request the hook and `seat resolve` send), so the daemon's M6/M7 guards
+/// and the first-use allocation run on the CLI path and a repeat call binds the same seat.
+/// Harness and role come from the same two sources a pane caller has: the agent session, else
+/// the context a hook saved; a caller with neither is refused (M15) before anything is created.
+fn named_located_seat<C: LocalClient>(
+    name: &crate::protocol::ids::SeatName,
+    paths: &NodePaths,
+    runtime: &RuntimeContext,
+    client: &C,
+    clock: &Arc<dyn Clock>,
+) -> Result<LocatedSeat, RunError> {
+    let locator = caller_location::CallerLocator::Named(name.clone());
+    site_capability::require_site(locator.site(), client, &cooperative_budget(clock.as_ref()))?;
+    let instance = read_node_uuid_hint(paths)?.ok_or_else(daemon_unavailable)?;
+    let host = runtime.claim_host().map_err(context_error)?;
+    let target = crate::protocol::ids::HostTargetId::new(name.as_str());
+    if !matches!(caller::active(), Some(caller::CallerOrigin::Agent(_))) {
+        let known = pane_seat_on(
+            client,
+            &OutputSpec::default(),
+            &target,
+            Some(host.clone()),
+            clock.as_ref(),
+        )?;
+        let saved = match known {
+            Some(seat) => {
+                let contexts = seat_contexts(paths, instance, &host, &seat)?;
+                contexts.current().map_err(context_run_error)?.is_some()
+                    || contexts.pending().map_err(context_run_error)?.is_some()
+            }
+            None => false,
+        };
+        if !saved {
+            return Err(invalid_request(caller_location::M15));
+        }
+    }
+    let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
+    let resolved = launch::resolve_named(
+        client,
+        &journal,
+        instance,
+        &host,
+        &target,
+        clock.as_ref(),
+        &cooperative_budget(clock.as_ref()),
+    )?;
+    if resolved.created {
+        eprint!("{}", human::m8(&resolved.seat, &resolved.name));
+    }
+    if let Some((earlier, new)) = &resolved.second_locator {
+        eprint!("{}", human::m9(&resolved.name, earlier, new));
+    }
+    Ok(LocatedSeat {
+        seat: resolved.seat,
+        pane: target,
+        moved_from: None,
+    })
 }
 
 /// The current id Herdr reports for `pane` when it differs (the pane moved to
@@ -3818,6 +4394,7 @@ pub(crate) fn moved_pane(
 fn derive_selection<C, F>(
     parsed: &commands::ParsedCli,
     caller_pane: Option<&str>,
+    site: Option<&caller_location::CallerLocator>,
     runtime: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
@@ -3828,17 +4405,25 @@ where
     F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
 {
     let replay = ordinary_retry_claim(parsed, &paths.node_dir.join("intents"))?;
-    let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
-        caller_not_located(&format!("this command acts as a seat: {CALLER_HELP}"))
-    })?;
-    let pane = parse_pane(pane)?;
-    let (_, client) = connection.get()?;
     let LocatedSeat {
         seat,
         pane,
         moved_from,
-    } = located_pane_seat(client, &parsed.output, &pane, runtime, clock)?
-        .ok_or_else(|| no_seat_for_pane(&pane))?;
+    } = match site {
+        Some(caller_location::CallerLocator::Named(name)) => {
+            let (_, client) = connection.get()?;
+            named_located_seat(name, paths, runtime, client, clock)?
+        }
+        _ => {
+            let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
+                caller_not_located(&format!("this command acts as a seat: {CALLER_HELP}"))
+            })?;
+            let pane = parse_pane(pane)?;
+            let (_, client) = connection.get()?;
+            located_pane_seat(client, &parsed.output, &pane, site, runtime, clock)?
+                .ok_or_else(|| no_seat_for_pane(&pane))?
+        }
+    };
     let instance = read_node_uuid_hint(paths)?.ok_or_else(daemon_unavailable)?;
     let origin = caller::active();
     if let Some(caller::CallerOrigin::Agent(env)) = &origin {
@@ -3909,7 +4494,7 @@ where
         &context,
         operator_override,
         std::env::vars(),
-        |pane| pane_agent(runtime, clock, pane),
+        |pane| pane_agent(runtime, clock, parsed.caller_site.as_ref(), pane),
     )
 }
 
@@ -3984,13 +4569,18 @@ fn run_launch<W: Write>(
         ));
     }
     let mut request = request.clone();
-    let mut env = setup::SetupEnv::from_process(&parsed.output)?;
+    let mut env = setup::SetupEnv::from_process(&parsed.output, parsed.caller_site.as_ref())?;
     env.state_dir = Some(context.state_dir.clone());
-    let claim_host = context.require_host().map_err(context_error)?.to_path_buf();
+    let claim_host =
+        topology_runtime::herdr_endpoint_io(context, &parsed.output, parsed.caller_site.as_ref())
+            .map_err(|_| no_herdr_host(&format!("pane {}", request.target.as_str())))?;
+    let herdr_locator = crate::protocol::ids::HostLocator::parse(claim_host.to_string_lossy())
+        .map_err(|detail| invalid_request(&detail.detail))?;
     env.host_endpoint = Some(claim_host.clone());
     let (instance, _, client) = connect(paths, clock)?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
-    let host = crate::host::native::NativeCli::new(claim_host, Arc::clone(clock));
+    let handle = host_client::LaunchHandle::herdr(claim_host, Arc::clone(clock));
+    let host = handle.host()?;
     // Without `--name`, the agent is named after the pane's Herdr label. Best
     // effort: an unreadable snapshot leaves the short-seat-id fallback.
     if request.name.is_none() {
@@ -4003,19 +4593,14 @@ fn run_launch<W: Write>(
             .ok()
             .and_then(|panes| launch::pane_label(&request.target, &panes));
     }
-    let seats = launch::DaemonSeatResolver::new(
-        &client,
-        &journal,
-        instance,
-        context.claim_host().map_err(context_error)?,
-        clock.as_ref(),
-    );
+    let seats =
+        launch::DaemonSeatResolver::new(&client, &journal, instance, herdr_locator, clock.as_ref());
     let shell_probe = launch::SystemShellProbe::from_process();
     let outcome = launch::execute(
         &request,
         &launch::LaunchParts {
             env: &env,
-            host: &host,
+            host,
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),

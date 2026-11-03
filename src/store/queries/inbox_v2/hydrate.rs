@@ -34,6 +34,10 @@ pub(in crate::store::queries) fn hydrate_message(
     let thread_id = ThreadId::new(&thread);
     let topic_data = batch_topic(db, &thread)?;
     let message = MessageId::new(id);
+    let sender_label = match sender.as_deref() {
+        Some(s) => crate::store::seat_directory::sender_label(db, s)?,
+        None => None,
+    };
     let sender = sender.map(SeatId::new);
     let author_role = role
         .as_deref()
@@ -57,6 +61,7 @@ pub(in crate::store::queries) fn hydrate_message(
             message,
             sequence,
             sender,
+            sender_label,
             author_role,
             relays_user,
             user_intent,
@@ -75,6 +80,7 @@ pub(in crate::store::queries) fn hydrate_message(
             message: message.clone(),
             sequence,
             sender,
+            sender_label,
             author_role,
             relays_user,
             user_intent,

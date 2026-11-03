@@ -9,9 +9,9 @@
 //!   node's snapshot through the one freshness rule
 //!   (`remote_seat_status::presence_of`).
 //! - Must not: feed any decision. Every value is a display hint (TRUST-POLICY
-//!   C1, N13). A local seat's entry carries no labels (the CLI shows its own
-//!   host read); `--label` matches it by the daemon's host read, the one the
-//!   seat publisher makes (ht-hldp).
+//!   C1, N13). A local seat's entry carries no labels from here: the daemon
+//!   adds its host read, keyed `(host, target)` ([`set_labels`], F6), and
+//!   `--label` matches it by that read (ht-hldp).
 //! - Role: read by `store::queries`.
 
 use rusqlite::{Connection, OptionalExtension};
@@ -36,15 +36,15 @@ pub fn directory(
     seat: &str,
     now: UtcMillis,
 ) -> Result<Option<Box<SeatDirectory>>, ApiError> {
-    let row: Option<(String, bool)> = db
+    let row: Option<(String, bool, Option<String>)> = db
         .query_row(
-            "SELECT home_node, is_local FROM seats WHERE id=?1",
+            "SELECT home_node, is_local, name FROM seats WHERE id=?1",
             [seat],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(store_error)?;
-    let Some((home, is_local)) = row else {
+    let Some((home, is_local, name)) = row else {
         return Ok(None);
     };
     let home_uuid: Option<NodeUuid> = home.parse().ok();
@@ -72,6 +72,8 @@ pub fn directory(
             workspace: None,
             tab: None,
             pane: None,
+            // A named seat's name; the label rendering shows it once (SA14).
+            name,
         })));
     }
     let now_ms = u64::try_from(now.0).unwrap_or(0);
@@ -104,7 +106,45 @@ pub fn directory(
         workspace: stored.as_ref().and_then(|row| row.seat.workspace.clone()),
         tab: stored.as_ref().and_then(|row| row.seat.tab.clone()),
         pane: stored.as_ref().and_then(|row| row.seat.pane.clone()),
+        // A remote named seat's replicated `display_name`.
+        name,
     })))
+}
+
+/// What a delivery header shows for a named sender: `reviewer`, or `reviewer@B` for a remote
+/// seat (its replicated `display_name`, `seats.name` here, and its node's tag). `None` for
+/// any other seat, which keeps its id. Store data only: no delivery path asks a host.
+pub fn sender_label(db: &Connection, seat: &str) -> Result<Option<String>, ApiError> {
+    let row: Option<(String, bool, Option<String>)> = db
+        .query_row(
+            "SELECT home_node, is_local, name FROM seats WHERE id=?1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((home, is_local, Some(name))) = row else {
+        return Ok(None);
+    };
+    if is_local {
+        return Ok(Some(name));
+    }
+    let node_row = match home.parse::<NodeUuid>() {
+        Ok(uuid) => node_directory::get(db, uuid).map_err(store_error)?,
+        Err(_) => None,
+    };
+    let tag = node_label(
+        node_row.as_ref().map(|r| r.tag.to_string()).as_deref(),
+        &home,
+    );
+    Ok(Some(format!("{name}@{tag}")))
+}
+
+/// Show `labels` as `entry`'s workspace, tab and pane.
+pub fn set_labels(entry: &mut SeatDirectory, labels: &TargetLabels) {
+    entry.workspace = Some(labels.workspace.clone());
+    entry.tab = Some(labels.tab.clone());
+    entry.pane = Some(labels.pane.clone());
 }
 
 /// Whether `entry` (of a local seat when `local`, whose current host labels

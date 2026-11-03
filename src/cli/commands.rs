@@ -38,6 +38,13 @@ pub struct ParsedCli {
     /// `--space`/`--tab` given with `--seat`: only the seat stage reads them; never a pane
     /// selector, never journaled (spec D3 Narrowing).
     pub seat_narrowing: Option<SeatNarrowing>,
+    /// The caller site the entry point decided (`run`, a verified terminal included); set once
+    /// by `run_parsed_in_pane`, read by the consumers that resolve the instance context. Never
+    /// parsed from argv, never journaled.
+    pub caller_site: Option<super::caller_location::CallerLocator>,
+    /// `--host-endpoint` as given. `output.context.host` also carries the pin a continuation line
+    /// needs; a Herdr reader takes only this.
+    pub host_flag: Option<String>,
 }
 
 /// Raw `--space`/`--tab` values that narrow a seat name or verify an exact seat's location.
@@ -337,7 +344,7 @@ fn collect_seat_selectors(command: &Top) -> Vec<SeatSelectorArg> {
         }
         Top::Seat { command } => match command {
             SeatSub::Inspect { seat, .. } => record(SeatSlot::InspectSeat, &Some(seat.clone())),
-            SeatSub::Retire { seat, .. } => record(SeatSlot::RetireSeat, &Some(seat.clone())),
+            SeatSub::Retire { seat, .. } => record(SeatSlot::RetireSeat, seat),
             SeatSub::Rebind { seat, replace, .. } => {
                 record(SeatSlot::RebindSeat, &Some(seat.clone()));
                 record(SeatSlot::RebindReplace, replace);
@@ -351,6 +358,13 @@ fn collect_seat_selectors(command: &Top) -> Vec<SeatSelectorArg> {
 }
 
 impl ParsedCli {
+    /// `output` for a Herdr reader: the explicit flag, never a pin.
+    pub(crate) fn herdr_output(&self) -> OutputSpec {
+        let mut output = self.output.clone();
+        output.context.host = self.host_flag.clone();
+        output
+    }
+
     /// Carry `--agent-id` into a cooperative claim (spec §1). Leaves the claim's role alone.
     /// Call sites belong to ht-54r.5 (client claim construction).
     pub fn stamp_agent_id(
@@ -471,10 +485,23 @@ pub enum CliAction {
     InternalStoreCheck,
     /// A launch (and, with `then`, a handoff) on another machine (remote launch).
     RemoteLaunch(Box<super::peer_launch::RemoteLaunch>),
-    InternalPeerTabCreate {
-        workspace: String,
+    /// `launch --new-tab` or `--new-terminal`: the target is created, then the harness started.
+    LaunchNew(Box<super::launch_new::LaunchNew>),
+    InternalPeerTargetCreate {
+        spec: super::peer_launch::TargetSpec,
         label: String,
         cwd: std::path::PathBuf,
+        gate_argv: Vec<String>,
+    },
+    InternalDaemonDetach {
+        program: std::path::PathBuf,
+        args: Vec<String>,
+    },
+    /// `internal launch-gate`: authorize with the daemon, then `exec` the harness argv.
+    InternalLaunchGate {
+        bootstrap: String,
+        config_roots: Vec<String>,
+        argv: Vec<String>,
     },
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
@@ -491,6 +518,11 @@ pub enum CliAction {
     /// `nudge-threshold [N]`: read or set the invoking seat's nudge threshold; same
     /// caller rules as `wake-on`.
     NudgeThreshold(Option<NudgeThreshold>),
+    /// `seat retire --self [--force]`: the invoking named seat retires itself; acts as the seat
+    /// (cooperative claim), never journaled.
+    SelfRetire {
+        force: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -632,6 +664,7 @@ pub fn dispatch<B: CliBackend>(
         CliAction::Setup(_)
         | CliAction::SetupAll(..)
         | CliAction::Launch(_)
+        | CliAction::LaunchNew(_)
         | CliAction::RemoteLaunch(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
@@ -649,12 +682,15 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::InternalPreUpgradeBackup { .. }
         | CliAction::Update(_)
         | CliAction::InternalStoreCheck
-        | CliAction::InternalPeerTabCreate { .. }
+        | CliAction::InternalPeerTargetCreate { .. }
+        | CliAction::InternalDaemonDetach { .. }
+        | CliAction::InternalLaunchGate { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
         | CliAction::Summary(_)
         | CliAction::WakeOn(_)
-        | CliAction::NudgeThreshold(_) => {
+        | CliAction::NudgeThreshold(_)
+        | CliAction::SelfRetire { .. } => {
             return Err(ApiError::unsupported(
                 "setup, launch and skill are local compositions without a daemon backend",
             ));
@@ -752,8 +788,9 @@ impl MutationSpec {
                 | Self::FreshSeat(_)
                 | Self::Invite { operator: true, .. }
         );
-        // The target-bearing commands carry the caller's Herdr server next to their target; they
-        // need no claim of their own, so the invocation's claim supplies it.
+        // The target-bearing commands carry the claim's host next to their target and need no
+        // claim of their own. For a Pane caller that is its Herdr server; a non-Pane site's claim
+        // host is never one, so its pane forms are built by `recipient_host` instead.
         let host = claim.as_ref().map(|claim| claim.host.clone());
         let claim = if needs_claim {
             Some(claim.ok_or_else(|| invalid("native caller context required"))?)
@@ -762,11 +799,16 @@ impl MutationSpec {
         };
         let target_host = || host.clone().ok_or_else(|| invalid("host locator required"));
         let command = match self {
-            Self::Resolve(target) => WireCommand::ResolveSeat(ResolveSeat {
-                target,
-                host: target_host()?,
-                operation,
-            }),
+            Self::Resolve(target) => {
+                let host = target_host()?;
+                WireCommand::ResolveSeat(ResolveSeat {
+                    target,
+                    locator_hint: super::caller_location::resolve_hint(&host),
+                    tmux_hint: super::caller_location::resolve_tmux_hint(&host),
+                    host,
+                    operation,
+                })
+            }
             Self::Create { name, topic, goal } => WireCommand::CreateThread(CreateThread {
                 name,
                 topic,
@@ -902,6 +944,7 @@ impl MutationSpec {
             }
             Self::CheckIn => WireCommand::CheckIn(CheckIn {
                 lineage_parent: None,
+                readonly: super::caller_location::CallerEnv::from_process().readonly(),
                 mode: crate::protocol::commands::CheckInMode::Current,
                 claim: claim.unwrap(),
                 operation,
@@ -1165,8 +1208,8 @@ enum Top {
     Retry { recovery_ref: String },
     /// Show a local attention view of threads and actions.
     View(ViewArgs),
-    /// Start a registered agent harness in one explicit existing empty shell pane with
-    /// the owned hooks, after resolving the pane's seat. Launch never
+    /// Start a registered agent harness in an existing empty shell pane, a new tab or a new
+    /// terminal, with the owned hooks, after resolving the seat. Launch never
     /// registers, accepts or ACKs: the handoff is read through the hooks.
     #[command(after_help = super::help::launch_help())]
     Launch(LaunchArgs),
@@ -1383,15 +1426,41 @@ enum InternalSub {
     /// Open the existing node store of --state-dir at this build's schema, applying its
     /// migrations, without a daemon (`update` judges a store this way).
     StoreCheck,
-    /// Create the tab of a peer-requested launch on --host-endpoint (run only by this
-    /// node's daemon for a recorded request; prints the root pane).
-    PeerTabCreate {
-        #[arg(long, value_name = "WORKSPACE_ID")]
-        workspace: String,
+    /// Create the tab or terminal of a peer-requested launch on --host-endpoint (run only
+    /// by this node's daemon for a recorded request; prints the root pane or the terminal).
+    /// `peer-tab-create` is the previous name, kept for one release.
+    #[command(alias = "peer-tab-create")]
+    PeerTargetCreate {
+        #[arg(long, value_name = "WORKSPACE_ID", conflicts_with = "new_terminal")]
+        workspace: Option<String>,
+        #[arg(long, requires = "gate_argv")]
+        new_terminal: bool,
         #[arg(long)]
         label: String,
         #[arg(long, value_name = "DIR")]
         cwd: std::path::PathBuf,
+        /// What a herdr-core terminal starts (a Herdr tab takes none).
+        #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+        gate_argv: Vec<String>,
+    },
+    /// Start PROGRAM ARGS... as a daemon in its own session, print its pid and exit at
+    /// once (run only by the daemon launcher: the daemon is reparented off the launcher).
+    DaemonDetach {
+        program: std::path::PathBuf,
+        #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run in a herdr-core terminal by `terminal.run`: blank the leaked environment, wait for
+    /// the daemon to authorize this terminal for the bootstrap, then `exec` ARGV (same pid).
+    LaunchGate {
+        /// `<compound>:<attempt>` of the bootstrap this terminal was created for.
+        #[arg(long, value_name = "COMPOUND:ATTEMPT")]
+        bootstrap: String,
+        /// The caller's config root for a harness (repeatable; DIR absolute).
+        #[arg(long = "config-root", value_name = "HARNESS=DIR")]
+        config_root: Vec<String>,
+        #[arg(num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        argv: Vec<String>,
     },
 }
 
@@ -1634,9 +1703,19 @@ enum SeatSub {
     /// recipient-retired. The seat is never merged into another.
     Retire {
         /// SEAT: exact ID or SPACE/TAB/PANE[@MACHINE]; single-quote path: names with \/ \\ \@ escapes
-        seat: String,
+        #[arg(
+            required_unless_present = "self_retire",
+            conflicts_with = "self_retire"
+        )]
+        seat: Option<String>,
         #[arg(long)]
         operator: bool,
+        /// Retire the invoking named seat (HERDR_THREADS_SEAT_NAME); lists the obligations it abandons.
+        #[arg(long = "self", conflicts_with = "operator")]
+        self_retire: bool,
+        /// With --self: retire although another connected binding of the seat exists.
+        #[arg(long, requires = "self_retire")]
+        force: bool,
     },
     /// List retired seats and their cleanup progress.
     Retirements(PageArgs),
@@ -1987,6 +2066,16 @@ struct LaunchArgs {
     /// Herdr's `[a-z][a-z0-9_-]{0,31}`.
     #[arg(long, value_name = "NAME")]
     name: Option<String>,
+    /// A new tab labelled LABEL to launch in: in --space, else the caller's workspace on Herdr;
+    /// a herdr-core needs --space.
+    #[arg(long, value_name = "LABEL", conflicts_with_all = ["new_terminal", "tab", "pane"])]
+    new_tab: Option<String>,
+    /// A new terminal on a herdr-core host, parented on the calling terminal (no app labels).
+    #[arg(long, conflicts_with_all = ["new_tab", "tab", "pane"])]
+    new_terminal: bool,
+    /// With --new-terminal --space @MACHINE: the absolute working directory on that machine.
+    #[arg(long, value_name = "DIR")]
+    cwd: Option<std::path::PathBuf>,
     /// Native agent arguments, kept byte for byte and in order after `--`.
     #[arg(last = true, allow_hyphen_values = true, value_name = "AGENT_ARG")]
     agent_args: Vec<String>,
@@ -2003,6 +2092,9 @@ struct HandoffArgs {
     invite_deadline: Option<u64>,
     #[arg(long, conflicts_with_all = ["existing", "tab", "pane", "seat"])]
     new_tab: Option<String>,
+    /// A new terminal on a herdr-core host, parented on the calling terminal (no app labels).
+    #[arg(long, conflicts_with_all = ["new_tab", "existing", "tab", "pane", "seat"])]
+    new_terminal: bool,
     #[arg(long)]
     existing: bool,
     /// SEAT: exact ID or SPACE/TAB/PANE[@MACHINE]; single-quote path: names with \/ \\ \@ escapes
@@ -2369,6 +2461,35 @@ fn remote_machine(selector: &super::panes::PaneSelector) -> Option<String> {
         .into_iter()
         .flatten()
         .find_map(|text| super::seat_selector::split_machine(text).map(|(_, m)| m.to_owned()))
+}
+
+/// `--new-terminal --space @MACHINE`: the machine of a new terminal elsewhere. A terminal lives
+/// in no space, so nothing precedes the `@`; `split_machine` keeps refusing that for every other
+/// selector.
+fn terminal_machine(selector: &super::panes::PaneSelector) -> Result<Option<String>, ApiError> {
+    let Some(space) = &selector.space else {
+        return Ok(None);
+    };
+    match space
+        .strip_prefix('@')
+        .filter(|m| !m.is_empty() && !m.contains(['/', '\\', '@']))
+    {
+        Some(machine) => Ok(Some(machine.to_owned())),
+        None => Err(invalid(
+            "--new-terminal takes no space; --space @MACHINE names another machine",
+        )),
+    }
+}
+
+/// The `--cwd` of a new terminal on another machine: absolute, and checked only there
+/// (TRUST-POLICY N15).
+fn remote_terminal_cwd(cwd: Option<std::path::PathBuf>) -> Result<String, ApiError> {
+    match cwd {
+        Some(cwd) if cwd.is_absolute() => Ok(cwd.to_string_lossy().into_owned()),
+        _ => Err(invalid(
+            "a new terminal on another machine needs --cwd DIR (absolute, on that machine)",
+        )),
+    }
 }
 
 /// The remote launch target of `--space/--tab/--pane` with `@MACHINE`: every
@@ -2797,14 +2918,19 @@ fn parse_cli_in_registry(
     // Reject launch-only conflicts and normalize before reading instructions or
     // constructing selectors: no recipient resolution or publication can precede this.
     if let Top::Handoff(args) = &mut cli.command {
-        if (args.cwd.is_some() || args.profile_dir.is_some()) && args.new_tab.is_none() {
+        if (args.cwd.is_some() || args.profile_dir.is_some())
+            && args.new_tab.is_none()
+            && !args.new_terminal
+        {
             return Err(invalid(
                 "--cwd and --profile-dir require --new-tab; guarded pane launches cannot change directories",
             ));
         }
         // A tab on another machine: `--cwd` names a directory there, which only
         // that machine can check (TRUST-POLICY N15).
-        if remote_machine(&args.selector).is_none() {
+        if remote_machine(&args.selector).is_none()
+            && !(args.new_terminal && args.selector.space.is_some())
+        {
             args.cwd = args
                 .cwd
                 .take()
@@ -2816,6 +2942,14 @@ fn parse_cli_in_registry(
             .take()
             .map(normalize_handoff_directory)
             .transpose()?;
+    }
+    if let Top::Launch(args) = &cli.command
+        && args.cwd.is_some()
+        && !(args.new_terminal && args.selector.space.is_some())
+    {
+        return Err(invalid(
+            "launch --cwd needs --new-terminal --space @MACHINE",
+        ));
     }
     // Normalize before capturing selectors so names, picker eligibility and
     // follow execution share the existing read path.
@@ -2870,6 +3004,7 @@ fn parse_cli_in_registry(
         .agent_id
         .map(|value| id(value, crate::protocol::ids::AgentId::parse))
         .transpose()?;
+    let host_flag = single_global("--host-endpoint", cli.host_endpoint)?;
     let output = OutputSpec {
         format: if cli.json {
             OutputFormat::Json
@@ -2878,7 +3013,7 @@ fn parse_cli_in_registry(
         },
         context: ContinuationContext {
             state_dir: single_global("--state-dir", cli.state_dir)?,
-            host: single_global("--host-endpoint", cli.host_endpoint)?,
+            host: host_flag.clone(),
         },
     };
     output.validate().map_err(invalid)?;
@@ -2919,6 +3054,7 @@ fn parse_cli_in_registry(
             }
             Some(selector.clone())
         }
+        Top::Launch(args) if args.new_tab.is_some() || args.new_terminal => None,
         Top::Launch(LaunchArgs { selector, .. }) if remote_machine(selector).is_some() => {
             if selector.pane.is_none() {
                 return Err(invalid("launch, handoff and rebind require --pane PANE"));
@@ -2936,7 +3072,7 @@ fn parse_cli_in_registry(
             Some(selector.clone())
         }
         Top::Handoff(args) => {
-            if args.new_tab.is_some() {
+            if args.new_tab.is_some() || args.new_terminal {
                 None
             } else if args.existing {
                 if args.selector.pane.is_none() && args.seat.is_none() {
@@ -3035,7 +3171,9 @@ fn parse_cli_in_registry(
         | Top::Leave { thread }
         | Top::Archive { thread }
         | Top::Reopen { thread } => Some(thread.clone()),
-        Top::Handoff(args) if args.new_tab.is_none() && !args.existing => args.thread.clone(),
+        Top::Handoff(args) if args.new_tab.is_none() && !args.new_terminal && !args.existing => {
+            args.thread.clone()
+        }
         Top::Invite(args) => Some(args.thread.clone()),
         Top::Send(args) => args.thread.clone(),
         Top::Read(args) => args.thread.clone(),
@@ -3409,6 +3547,8 @@ fn parse_cli_in_registry(
                     label: label.map(|v| bounded(v, "--label")).transpose()?,
                     local,
                 },
+
+                host: None,
             })),
             SeatSub::Resolve {
                 selector,
@@ -3464,6 +3604,11 @@ fn parse_cli_in_registry(
                     None => MutationSpec::Rebind { seat, pane },
                 })
             }
+            SeatSub::Retire {
+                self_retire: true,
+                force,
+                ..
+            } => CliAction::SelfRetire { force },
             SeatSub::Retire { operator, .. } => {
                 if !operator {
                     return Err(invalid("operator required"));
@@ -3550,6 +3695,67 @@ fn parse_cli_in_registry(
         Top::Me {
             command: MeSub::Init { operator },
         } => CliAction::MeInit { operator },
+        Top::Launch(args) if args.new_terminal && args.selector.space.is_some() => {
+            let machine = terminal_machine(&args.selector)?.expect("a space was given");
+            harness_arg(&args.kind, registry)?;
+            if args.harness_binary.is_some() || args.name.is_some() {
+                return Err(invalid(
+                    "--harness-binary and --name are not supported for a launch on another machine",
+                ));
+            }
+            let cwd = remote_terminal_cwd(args.cwd)?;
+            CliAction::RemoteLaunch(Box::new(super::peer_launch::RemoteLaunch {
+                machine,
+                plan: crate::sync::frame::LaunchPlan {
+                    target: crate::sync::frame::LaunchTarget::NewTerminal {
+                        label: args.kind.clone(),
+                    },
+                    kind: args.kind,
+                    argv: args.agent_args,
+                    cwd: Some(cwd),
+                },
+                then: None,
+            }))
+        }
+        Top::Launch(args) if args.new_tab.is_some() || args.new_terminal => {
+            if remote_machine(&args.selector).is_some() {
+                return Err(invalid(
+                    "--new-tab creates here; a launch on another machine takes --pane or --new-terminal --space @MACHINE",
+                ));
+            }
+            if args
+                .new_tab
+                .as_deref()
+                .is_some_and(|label| label.trim().is_empty())
+            {
+                return Err(invalid("--new-tab needs a nonblank label"));
+            }
+            let harness = harness_arg(&args.kind, registry)?;
+            if let Some(name) = &args.name
+                && crate::ports::sanitize_agent_name(name).is_none()
+            {
+                return Err(invalid(format!(
+                    "--name `{name}` has no letter to start a Herdr agent name \
+                     ([a-z][a-z0-9_-]{{0,31}})"
+                )));
+            }
+            CliAction::LaunchNew(Box::new(super::launch_new::LaunchNew {
+                launch: super::launch::LaunchRequest {
+                    directory_context: None,
+                    // Unset here: the Herdr path fills in the root pane, the core path never
+                    // reads it.
+                    target: HostTargetId::new("new-target"),
+                    harness,
+                    harness_binary: args.harness_binary,
+                    argv: args.agent_args,
+                    name: args.name,
+                    pane_label: None,
+                },
+                new_tab: args.new_tab,
+                new_terminal: args.new_terminal,
+                space: args.selector.space,
+            }))
+        }
         Top::Launch(args) if remote_machine(&args.selector).is_some() => {
             harness_arg(&args.kind, registry)?;
             if args.harness_binary.is_some() || args.name.is_some() {
@@ -3659,7 +3865,12 @@ fn parse_cli_in_registry(
                     "--existing --pane cannot name another machine; use --seat 'PANE@MACHINE'",
                 ));
             }
-            if !args.existing && remote_machine(&args.selector).is_some() {
+            let terminal = if args.new_terminal {
+                terminal_machine(&args.selector)?
+            } else {
+                None
+            };
+            if !args.existing && (remote_machine(&args.selector).is_some() || terminal.is_some()) {
                 if args.harness_binary.is_some()
                     || args.name.is_some()
                     || args.profile_dir.is_some()
@@ -3683,11 +3894,19 @@ fn parse_cli_in_registry(
                                 "a new tab on another machine needs --cwd DIR (absolute, on that machine)",
                             ));
                         }
-                        (
-                            machine.to_owned(),
+                        (machine.to_owned(), {
                             crate::sync::frame::LaunchTarget::NewTab {
                                 space: space.to_owned(),
                                 label: label.clone(),
+                            }
+                        })
+                    }
+                    None if terminal.is_some() => {
+                        remote_terminal_cwd(args.cwd.clone())?;
+                        (
+                            terminal.expect("checked"),
+                            crate::sync::frame::LaunchTarget::NewTerminal {
+                                label: kind.clone(),
                             },
                         )
                     }
@@ -3695,8 +3914,10 @@ fn parse_cli_in_registry(
                 };
                 let then = super::topology_handoff::Request {
                     policy: Some(policy),
+                    target: None,
                     automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: None,
+                    new_terminal: false,
                     existing: true,
                     selector: super::panes::PaneSelector::default(),
                     seat: None,
@@ -3723,7 +3944,7 @@ fn parse_cli_in_registry(
                     },
                     then: Some(Box::new(then)),
                 }))
-            } else if args.new_tab.is_some() || args.existing {
+            } else if args.new_tab.is_some() || args.new_terminal || args.existing {
                 if args.existing
                     && (args.harness_binary.is_some()
                         || args.name.is_some()
@@ -3733,8 +3954,10 @@ fn parse_cli_in_registry(
                 }
                 CliAction::TopologyHandoff(super::topology_handoff::Request {
                     policy: Some(policy),
+                    target: None,
                     automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: args.new_tab,
+                    new_terminal: args.new_terminal,
                     existing: args.existing,
                     // With --seat, its --space/--tab narrow the name (`seat_narrowing`), never
                     // qualify a pane (root D8a).
@@ -3951,15 +4174,41 @@ fn parse_cli_in_registry(
         } => CliAction::InternalStoreCheck,
         Top::Internal {
             command:
-                InternalSub::PeerTabCreate {
+                InternalSub::PeerTargetCreate {
                     workspace,
+                    new_terminal,
                     label,
                     cwd,
+                    gate_argv,
                 },
-        } => CliAction::InternalPeerTabCreate {
-            workspace,
+        } => CliAction::InternalPeerTargetCreate {
+            spec: match (workspace, new_terminal) {
+                (Some(workspace), false) => super::peer_launch::TargetSpec::Tab(workspace),
+                (None, true) => super::peer_launch::TargetSpec::Terminal,
+                _ => {
+                    return Err(invalid(
+                        "internal peer-target-create needs --workspace or --new-terminal",
+                    ));
+                }
+            },
             label,
             cwd,
+            gate_argv,
+        },
+        Top::Internal {
+            command: InternalSub::DaemonDetach { program, args },
+        } => CliAction::InternalDaemonDetach { program, args },
+        Top::Internal {
+            command:
+                InternalSub::LaunchGate {
+                    bootstrap,
+                    config_root,
+                    argv,
+                },
+        } => CliAction::InternalLaunchGate {
+            bootstrap,
+            config_roots: config_root,
+            argv,
         },
         Top::Retry { recovery_ref } => CliAction::Retry(id(recovery_ref, LocalRecoveryRef::parse)?),
         Top::View(args) => CliAction::View {
@@ -4023,6 +4272,8 @@ fn parse_cli_in_registry(
         agent_id,
         seat_selectors,
         seat_narrowing,
+        caller_site: None,
+        host_flag,
     })
 }
 

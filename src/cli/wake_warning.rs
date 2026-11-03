@@ -4,11 +4,12 @@
 //! what a wake attempt met (`unreadable`, `focused`) depends on an attempt this send has not made
 //! yet, so it is `doctor`'s. The line rides in the sender's own command output, so it is no item
 //! and wakes nobody. Model-visible: `warning: <seat> wake=no_wake\n`, 23 bytes plus the seat id
-//! (35 bytes for a 12-byte seat). Every shipped harness has an idle wake, so no production seat
-//! produces it today and the skill does not explain it; the path stays as a harness-neutral
-//! diagnostic for a harness without one (`synthetic_fourth` in test-support builds, covered end
-//! to end in `tests/integration/config_smoke.rs`; `idle_wake_classification_of_the_builtins`
-//! asks for the skill sentence back when a shipped harness loses its wake).
+//! (35 bytes for a 12-byte seat), with ` offline` (M19, 8 bytes) after `no_wake` for a named
+//! seat whose bindings ended. A named seat (no Herdr pane) has no wake path unless a live mod
+//! channel stands in; the skill explains `no_wake` once (K2) and the host-side tripwire
+//! (`tests/host_no_wake_tripwire.rs`) keeps it so. The path is host-neutral: any host or
+//! harness with no idle wake produces it (`synthetic_fourth` in test-support builds, covered
+//! end to end in `tests/integration/config_smoke.rs`).
 
 use crate::ports::LocalClient;
 use crate::protocol::{
@@ -25,7 +26,10 @@ use std::io::Write;
 pub(crate) fn lines(rows: &[SeatWakeStatus]) -> String {
     rows.iter()
         .filter(|row| row.first && row.wake == Some(WakeBlock::NoWake))
-        .map(|row| format!("warning: {} wake=no_wake\n", row.seat.as_str()))
+        .map(|row| {
+            let offline = if row.offline { " offline" } else { "" };
+            format!("warning: {} wake=no_wake{offline}\n", row.seat.as_str())
+        })
         .collect()
 }
 
@@ -67,6 +71,9 @@ mod tests {
             harness: Some("h".into()),
             wake,
             first,
+            offline: false,
+            host: None,
+            target: None,
         }
     }
 
@@ -82,5 +89,30 @@ mod tests {
             row("s6", None, true),
         ];
         assert_eq!(lines(&rows), "warning: s1 wake=no_wake\n");
+    }
+
+    /// A named seat's overdue line is the golden bytes; a pane seat's line has the same shape.
+    #[test]
+    fn named_seat_overdue_line_is_golden() {
+        let golden = include_str!("../../tests/cli/golden/overdue_no_wake.txt");
+        let named = lines(&[row("seat-nmd00001", Some(WakeBlock::NoWake), true)]);
+        assert_eq!(named, golden);
+        let pane = lines(&[row("seat-pane0001", Some(WakeBlock::NoWake), true)]);
+        assert_eq!(pane, golden.replace("nmd00001", "pane0001"));
+        assert_eq!(pane, "warning: seat-pane0001 wake=no_wake\n");
+    }
+
+    /// M19: a named seat whose bindings ended ends its line with ` offline` (8 bytes); an online
+    /// seat's bytes are unchanged.
+    #[test]
+    fn offline_named_seat_overdue_line_is_golden() {
+        let mut offline = row("seat-nmd00001", Some(WakeBlock::NoWake), true);
+        offline.offline = true;
+        let golden = include_str!("../../tests/cli/golden/overdue_offline.txt");
+        assert_eq!(lines(&[offline]), golden);
+        assert_eq!(
+            golden.len(),
+            include_str!("../../tests/cli/golden/overdue_no_wake.txt").len() + 8
+        );
     }
 }

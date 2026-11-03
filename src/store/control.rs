@@ -50,6 +50,7 @@ pub use retirement::begin_retirement;
 pub(crate) use retirement::begin_retirement_authored;
 #[cfg(test)]
 pub(crate) use retirement::begin_retirement_fence;
+pub(crate) use retirement::{end_local_seat, settle_local_seat};
 pub use thread::NewThread;
 pub use thread::archive;
 pub(crate) use thread::author_register;
@@ -382,10 +383,17 @@ pub fn advance_cursors(
         |tx, at| {
             let mapping = super::seats::claimed_mapping(tx, context, &claim.instance, claim, None)?;
             // Own stream (spec §2), allowed for subagent bindings.
-            let binding = super::seats::resolve_cooperative(tx, at, claim, None, &mapping)?
-                .binding()
-                .binding_id
-                .clone();
+            let binding = super::seats::resolve_cooperative(
+                tx,
+                context.processes(),
+                at,
+                claim,
+                None,
+                &mapping,
+            )?
+            .binding()
+            .binding_id
+            .clone();
             let mut by_thread: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
             let mut joined_threads: std::collections::BTreeMap<String, bool> = Default::default();
             for id in &request.displayed {
@@ -516,12 +524,24 @@ pub fn binding_event(
                     let mapping =
                         super::seats::claimed_mapping(tx, context, &claim.instance, claim, None)?;
                     let created = match &request.child_session {
-                        Some(child) => {
-                            super::seats::attach_registered_child(tx, at, claim, child, &mapping)?
-                        }
+                        Some(child) => super::seats::attach_registered_child(
+                            tx,
+                            context.processes(),
+                            at,
+                            claim,
+                            child,
+                            &mapping,
+                        )?,
                         // Own stream (spec §2), allowed for subagent bindings: enrolment only.
                         None => matches!(
-                            super::seats::resolve_cooperative(tx, at, claim, None, &mapping)?,
+                            super::seats::resolve_cooperative(
+                                tx,
+                                context.processes(),
+                                at,
+                                claim,
+                                None,
+                                &mapping
+                            )?,
                             super::bindings::Resolution::Enrolled { .. }
                         ),
                     };

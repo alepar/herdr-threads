@@ -148,6 +148,7 @@ struct Transport {
     directory: Option<crate::protocol::results::CommandResult>,
     directory_error: bool,
     offered_through: Option<String>,
+    capabilities: &'static [&'static str],
 }
 impl Transport {
     fn new() -> Self {
@@ -159,11 +160,15 @@ impl Transport {
             offered_through: None,
             directory: None,
             directory_error: false,
+            capabilities: &[],
         }
     }
 }
 impl crate::ports::LocalClient for Transport {
     crate::default_output_local_client!();
+    fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
+        self.capabilities.contains(&name)
+    }
     fn call(
         &self,
         command: Command,
@@ -183,6 +188,13 @@ impl crate::ports::LocalClient for Transport {
                 .directory
                 .clone()
                 .unwrap_or_else(|| crate::protocol::results::CommandResult::Directory(empty())));
+        }
+        if matches!(command, Command::AttentionDigest(_)) {
+            // The tool boundary reads the digest first; it fails open, so the check-in is reached.
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::Unsupported,
+                "no digest",
+            ));
         }
         if self.reject || (self.lose_first && calls.len() == 1) {
             return Err(crate::protocol::results::ApiError::new(
@@ -245,6 +257,106 @@ impl crate::protocol::time::Clock for Clock {
     fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
         crate::protocol::time::MonoInstant(100)
     }
+}
+const READONLY_CHILD: &str = "HT_BRIDGE_READONLY_CHILD";
+
+/// Re-runs itself under `HERDR_THREADS_SEAT_READONLY=1` (the variable is read from the process):
+/// the parent spawns the child, the child runs the assertions.
+#[test]
+fn readonly_check_in_needs_the_capability() {
+    if std::env::var_os(READONLY_CHILD).is_none() {
+        use crate::test_support::spawn::SpawnOwned;
+        let mut command = crate::test_support::spawn::command(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                &format!(
+                    "{}::readonly_check_in_needs_the_capability",
+                    module_path!().split_once("::").map_or("", |(_, rest)| rest)
+                ),
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("HERDR_THREADS_SEAT_READONLY", "1")
+            .env(READONLY_CHILD, "1");
+        let output = command.spawn_owned().unwrap().wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    // This child stands in for a real process: it reads the variable the parent set.
+    crate::cli::caller::mark_process_entry();
+    let refusal = crate::cli::site_capability::READONLY_REFUSAL;
+    let (root, j, cj, seed, event) = fixture();
+    let mut out = vec![];
+    // A daemon without the capability: refused with one line, nothing sent.
+    let stale = Transport::new();
+    match run_event(
+        &j,
+        &cj,
+        &event,
+        Some(&seed),
+        1,
+        &stale,
+        &Clock,
+        &Default::default(),
+        &mut out,
+    ) {
+        Err(BridgeError::Api(error)) => assert_eq!(error.detail, refusal),
+        other => panic!("expected the readonly refusal, got {other:?}"),
+    }
+    assert!(stale.calls.lock().unwrap().is_empty());
+    // With the capability the check-in goes out carrying the marker.
+    let mut current = Transport::new();
+    current.capabilities = &[crate::protocol::capabilities::SEAT_READONLY_V1];
+    run_event(
+        &j,
+        &cj,
+        &event,
+        Some(&seed),
+        1,
+        &current,
+        &Clock,
+        &Default::default(),
+        &mut out,
+    )
+    .unwrap();
+    {
+        let calls = current.calls.lock().unwrap();
+        let Command::CheckIn(sent) = &calls[0] else {
+            panic!("expected CheckIn")
+        };
+        assert!(sent.readonly);
+    }
+    // The tool-boundary check-in is gated alike; the context now exists.
+    let mut tool = tool_event();
+    tool.harness = cj.current().unwrap().unwrap().harness;
+    let stale = Transport::new();
+    match tool_boundary_check_in(
+        &cj,
+        &tool,
+        &stale,
+        &Clock,
+        &Default::default(),
+        &budget(),
+        true,
+    ) {
+        Err(BridgeError::Api(error)) => assert_eq!(error.detail, refusal),
+        other => panic!("expected the readonly refusal, got {:?}", other.map(|_| ())),
+    }
+    assert!(
+        !stale
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| matches!(call, Command::CheckIn(_)))
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn response_loss_restart_retries_exact_command_and_current_reuses_execution() {

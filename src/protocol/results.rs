@@ -57,6 +57,7 @@ pub enum CommandResult {
     Participants(Page<Participant>),
     ParticipantLocations(Vec<ParticipantLocation>),
     WakeStatus(Vec<SeatWakeStatus>),
+    HostTopologies(Vec<HostPaneLabels>),
     Recipients(Page<Recipient>),
     /// Warning recipients have no receipt or ACK obligation.
     WarningRecipients(Page<WarningRecipient>),
@@ -79,6 +80,17 @@ pub enum CommandResult {
     OperationStatus(OperationStatus),
     RetirementJobs(Page<RetirementStatus>),
     SeatResolved(SeatId),
+    /// A seat-acting resolve under a name on the named host: the seat of that name and whether
+    /// this call allocated it (the CLI prints M8 once, on `created`).
+    NamedSeatResolved {
+        seat: SeatId,
+        name: crate::protocol::ids::SeatName,
+        #[serde(default)]
+        created: bool,
+        /// M9: the seat was first addressed from a second locator, as (earlier, new).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        second_locator: Option<(String, String)>,
+    },
     ContinuityReattached(ContinuityReattachment),
     /// The seat's open binding after a `RecordManagedLaunch` decision.
     ManagedLaunchRecorded(ManagedLaunchRecord),
@@ -110,6 +122,10 @@ pub enum CommandResult {
     TurnEndDue {
         due: bool,
     },
+    /// `Command::TurnState`: whether the edge changed the recorded turn state.
+    TurnState {
+        recorded: bool,
+    },
     Left(ThreadId),
     TopicChanged(ThreadId),
     ThreadNameChanged(ThreadId),
@@ -121,8 +137,14 @@ pub enum CommandResult {
     OperatorFreshSeat(SeatId),
     OperatorInvited(InvitationId),
     OperatorRetired(SeatId),
+    /// A named seat retired itself (`seat retire --self`): the obligations it abandoned.
+    SelfRetired(SelfRetired),
     Bootstrap(Box<crate::protocol::handoff::BootstrapResult>),
     BootstrapReserved(Box<crate::protocol::handoff::ReserveBootstrapResult>),
+    LaunchGate(crate::protocol::handoff::LaunchGateReply),
+    /// The seat allocated by a `LocalLaunchGate` `Record`; `None` for `Open`.
+    LocalLaunchGate(Option<SeatId>),
+    Located(crate::protocol::locate::LocateReply),
     BootstrapSubmissionChecked(crate::protocol::handoff::BootstrapSubmissionChecked),
     BootstrapRecovered(Box<crate::protocol::handoff::BootstrapRecoveryResult>),
     LinkedBootstrapCompleted(Box<crate::protocol::handoff::CompletedBootstrapResult>),
@@ -433,6 +455,13 @@ pub enum ErrorCode {
     /// Client-local, never sent by a daemon: the CLI runs under a `codex app-server
     /// --managed-daemon` process, which has no pane to attribute the call to.
     ManagedDaemonRefused,
+    /// A named seat's name is held by another live, unrelated top-level process (M7, SA16): pick
+    /// another name, or wait for the holder to exit.
+    SeatNameInUse,
+    /// A per-command seat name equals the one the host server's own environment carries (M6,
+    /// SA2): the server's role owns that name, so it never binds. Use another name per command,
+    /// or restart the server without the variable.
+    InheritedSeatName,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1105,6 +1134,34 @@ pub struct SeatSummary {
     pub directory: Option<Box<SeatDirectory>>,
 }
 
+/// One pane's current host labels, with the host that reported them: the
+/// same target id can exist on two hosts, so labels are keyed
+/// `(host, target)`. Display data only (TRUST-POLICY N13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostPaneLabels {
+    pub host: String,
+    pub target: HostTargetId,
+    pub terminal: String,
+    #[serde(default)]
+    pub incarnation: Option<String>,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub workspace_label: Option<String>,
+    pub tab_id: String,
+    #[serde(default)]
+    pub tab_label: Option<String>,
+    #[serde(default)]
+    pub pane_label: Option<String>,
+    /// The herdr-core session (`hello` `core.name`) of the reporting host; absent for
+    /// Herdr and named hosts and from an older daemon. Display data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// The reporting host's locator, sent with `session` so a CLI selector can scope a
+    /// seat lookup to that host (`SeatsQuery.host`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<crate::protocol::ids::HostLocator>,
+}
+
 /// One seat's directory entry (ht-xg88). Every value is a display hint: a
 /// remote seat's comes from its home node's `seat_status` and is shown only
 /// as fresh as that node's status allows (`remote_seat_status::presence_of`).
@@ -1137,6 +1194,10 @@ pub struct SeatDirectory {
     pub tab: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
+    /// The seat's name, for a named seat (`seats.name`); display only. An
+    /// older daemon's reply decodes with `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl SeatDirectory {
@@ -1146,9 +1207,14 @@ impl SeatDirectory {
         !matches!(self.state.as_str(), "busy" | "idle" | "offline")
     }
 
-    /// Whether any label is present.
+    /// Whether any label is present. A named seat always has one: its name.
     pub fn has_labels(&self) -> bool {
-        self.workspace.is_some() || self.tab.is_some() || self.pane.is_some()
+        self.workspace.is_some() || self.tab.is_some() || self.pane.is_some() || self.name.is_some()
+    }
+
+    /// The pane part: the host's pane label, else a named seat's name (SA14).
+    pub fn pane_or_name(&self) -> Option<&String> {
+        self.pane.as_ref().or(self.name.as_ref())
     }
 
     /// `WS / TAB / PANE` with each part passed through `escape` (peer text)
@@ -1162,7 +1228,7 @@ impl SeatDirectory {
             "{} / {} / {}",
             part(&self.workspace),
             part(&self.tab),
-            part(&self.pane)
+            part(&self.pane_or_name().cloned())
         ))
     }
 }
@@ -1284,6 +1350,9 @@ pub struct BindingHistory {
     pub registered_at: Option<UtcMillis>,
     pub ended_at: Option<UtcMillis>,
     pub provenance: String,
+    /// N4-hint: the pane or terminal a named binding was addressed from; a hint, never authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator_hint: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1383,6 +1452,9 @@ pub enum InboxBatchItem {
         message: MessageId,
         sequence: u64,
         sender: Option<SeatId>,
+        /// A named sender's name (`reviewer`, `reviewer@B`); absent for other seats and from an older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_label: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         author_role: Option<crate::protocol::summary::AuthorRole>,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -1434,6 +1506,9 @@ pub enum InboxBatchV2Item {
         message: MessageId,
         sequence: u64,
         sender: Option<SeatId>,
+        /// A named sender's name (`reviewer`, `reviewer@B`); absent for other seats and from an older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_label: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         author_role: Option<crate::protocol::summary::AuthorRole>,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -1461,6 +1536,9 @@ pub enum InboxBatchV2Item {
         message: MessageId,
         sequence: u64,
         sender: Option<SeatId>,
+        /// A named sender's name (`reviewer`, `reviewer@B`); absent for other seats and from an older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_label: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         author_role: Option<crate::protocol::summary::AuthorRole>,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -1515,6 +1593,36 @@ pub struct WakeOnState {
     pub seat: SeatId,
     pub wake_on: crate::protocol::commands::WakeOn,
     pub changed: bool,
+}
+
+/// The answer to `seat retire --self`: the retired seat and the obligations it left pending
+/// (at most [`SELF_RETIRE_ROWS`] listed; `more` counts the rest).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelfRetired {
+    pub seat: SeatId,
+    pub abandoned: Vec<AbandonedItem>,
+    #[serde(default)]
+    pub more: u64,
+}
+
+/// Most abandoned items `seat retire --self` lists; the rest are counted in `SelfRetired::more`.
+pub const SELF_RETIRE_ROWS: usize = 50;
+
+/// One pending obligation a self-retired seat abandoned: an invitation it never answered or a
+/// message that wanted its ACK.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbandonedItem {
+    pub kind: AbandonedKind,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AbandonedKind {
+    Invitation,
+    Ack,
 }
 
 /// A seat's nudge threshold. `changed` is true only when a set altered the stored value; a read, or
@@ -1765,6 +1873,18 @@ pub struct SeatWakeStatus {
     /// First report of this seat's `no_wake` to the query's observer.
     #[serde(default, skip_serializing_if = "is_false")]
     pub first: bool,
+    /// A named seat none of whose bindings is open (M19): its `harness` is the last binding's.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub offline: bool,
+    /// The seat's own host (`seats.host_id`), set by the store for the daemon's per-row
+    /// classification. `HostId` is node-local and has no wire form, so the row never carries
+    /// it to a client: it decodes as `None` and encodes without it.
+    #[serde(default, skip)]
+    pub host: Option<crate::ports::HostId>,
+    /// The seat's host target (`seats.target_id`), for the per-target wake answer; node-local
+    /// like `host`: never on the wire.
+    #[serde(default, skip)]
+    pub target: Option<HostTargetId>,
 }
 /// Canonical seat mapping. A local seat's topology labels are client-local
 /// (the CLI's own host read); a remote seat's come from its home node
@@ -2204,6 +2324,8 @@ impl ErrorCode {
         ErrorCode::LivenessFingerprintRequired,
         ErrorCode::SubagentReadOnly,
         ErrorCode::ManagedDaemonRefused,
+        ErrorCode::SeatNameInUse,
+        ErrorCode::InheritedSeatName,
     ];
 
     /// The failure class this code defaults to, or `None` for codes that
@@ -2255,6 +2377,8 @@ impl ErrorCode {
             ErrorCode::LivenessFingerprintRequired => None,
             ErrorCode::SubagentReadOnly => None,
             ErrorCode::ManagedDaemonRefused => None,
+            ErrorCode::SeatNameInUse => None,
+            ErrorCode::InheritedSeatName => None,
             // The daemon restarted between the caller's view and the request
             // (B5, protocol 2): retry against the new boot.
             ErrorCode::DaemonBootChanged => Some(ErrorClass::Transient),
@@ -2332,6 +2456,8 @@ api_error_constructors! {
     liveness_fingerprint_required => LivenessFingerprintRequired,
     subagent_read_only => SubagentReadOnly,
     managed_daemon_refused => ManagedDaemonRefused,
+    seat_name_in_use => SeatNameInUse,
+    inherited_seat_name => InheritedSeatName,
 }
 
 #[cfg(test)]

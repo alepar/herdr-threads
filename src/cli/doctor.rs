@@ -28,7 +28,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -219,6 +219,117 @@ pub(crate) fn probe_daemon(
     }
 }
 
+/// The node's store file opened read-only; `None` when it is absent or unreadable.
+fn open_store_read_only(node_dir: &std::path::Path) -> Option<rusqlite::Connection> {
+    rusqlite::Connection::open_with_flags(
+        node_dir.join(crate::daemon::paths::DATABASE_FILE),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()
+}
+
+/// The `herdr_hosts` rows whose kind this build does not implement (G4): reattach
+/// skips them, so doctor names each as `{host_id, endpoint, kind}`. Read straight
+/// from the store file, read-only; no store, an older schema or an unreadable file
+/// names nothing.
+fn unattachable_hosts_report(node_dir: &std::path::Path) -> Vec<Value> {
+    let Some(conn) = open_store_read_only(node_dir) else {
+        return Vec::new();
+    };
+    crate::store::hosts::unattachable(&conn)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|host| json!({"host_id": host.id.get(), "endpoint": host.endpoint, "kind": host.kind}))
+        .collect()
+}
+
+/// Restored named seats that lost their name to a live seat of that name (D12): `{seat, name,
+/// holder}` each. Read-only from the store file; no store or an older schema names nothing.
+fn held_names_report(node_dir: &std::path::Path) -> Vec<Value> {
+    let Some(conn) = open_store_read_only(node_dir) else {
+        return Vec::new();
+    };
+    crate::store::seats::held_names(&conn)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|held| {
+            json!({"seat": held.seat.as_str(), "name": held.name,
+                   "holder": held.holder.as_ref().map(|h| h.as_str())})
+        })
+        .collect()
+}
+
+/// How long doctor waits for one stored host's socket to classify itself.
+const DOCTOR_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The implemented-kind rows whose socket now answers as another kind (H1b):
+/// the attach is refused for each, so doctor names `{host_id, endpoint, stored,
+/// probed}`. Read-only: it probes (`hello`, then `ping`) and writes nothing. A
+/// row whose socket is absent or silent names nothing; that is host
+/// reachability, not a kind mismatch.
+/// Other state dirs of this user that hold a store besides the one in use: the two Herdr plugin
+/// state roots (`$XDG_STATE_HOME` and `~/.local/state`) are one user's candidate homes, and a
+/// store in each is a split (messages and seats in two places). Filesystem checks only.
+pub(crate) fn other_stores(selected: &Path, candidates: [Option<PathBuf>; 2]) -> Vec<String> {
+    let same = |a: &Path, b: &Path| {
+        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    };
+    let mut found: Vec<PathBuf> = Vec::new();
+    for dir in candidates.into_iter().flatten() {
+        if !same(&dir, selected)
+            && !found.iter().any(|seen| same(seen, &dir))
+            && crate::daemon::paths::holds_store(&dir)
+        {
+            found.push(dir);
+        }
+    }
+    found.iter().map(|dir| dir.display().to_string()).collect()
+}
+
+fn kind_mismatch_hosts_report(node_dir: &std::path::Path) -> Vec<Value> {
+    let Some(conn) = open_store_read_only(node_dir) else {
+        return Vec::new();
+    };
+    crate::store::hosts::remembered(&conn, usize::MAX)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| row.attachable())
+        .filter_map(|row| {
+            let probed =
+                crate::host::probe::probe_kind(row.locator.as_path(), DOCTOR_PROBE_BUDGET).ok()?;
+            (probed != row.host_kind()).then(|| {
+                json!({"host_id": row.id.get(), "endpoint": row.locator.as_str(),
+                       "stored": row.kind, "probed": probed.stored_name()})
+            })
+        })
+        .collect()
+}
+
+/// `report.hosts.agent_status`: each remembered host's rows, where its kind reports a status
+/// source (D21). Read-only; a host that does not answer names nothing.
+fn agent_status_report(node_dir: &std::path::Path, clock: &Arc<dyn Clock>) -> Vec<Value> {
+    let Some(conn) = open_store_read_only(node_dir) else {
+        return Vec::new();
+    };
+    crate::store::hosts::remembered(&conn, usize::MAX)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| row.attachable() && row.host_kind().reports_status_source())
+        .flat_map(|row| {
+            let budget = CallBudget {
+                deadline: MonoInstant(
+                    clock
+                        .monotonic_now()
+                        .0
+                        .saturating_add(DOCTOR_PROBE_BUDGET.as_millis() as u64),
+                ),
+                cancellation: Default::default(),
+            };
+            crate::host::hc::agent_status_rows(row.locator.as_path(), Arc::clone(clock), &budget)
+        })
+        .collect()
+}
+
 /// Per-seat wake blocks of the local seats with open bindings (`Command::WakeStatus`):
 /// `{"seats": [...]}` with every listed seat, or `{"error": ...}` when the daemon has none.
 fn wake_report(
@@ -264,11 +375,34 @@ fn wake_text(report: &Value, debug: bool) -> String {
         .iter()
         .filter(|row| row["wake"].is_string())
         .map(|row| {
+            let offline = if row["offline"].as_bool() == Some(true) {
+                " offline"
+            } else {
+                ""
+            };
             format!(
-                "wake: {} {} wake={}\n",
+                "wake: {} {} wake={}{offline}\n",
                 scalar(&row["seat"]),
                 scalar(&row["harness"]),
                 scalar(&row["wake"])
+            )
+        })
+        .collect()
+}
+
+/// `agent_status: <target> source=<label>` for each row of
+/// `report.hosts.agent_status` (D21): where a host's agent status came from.
+/// Debug doctor text only; no model-visible surface carries it.
+fn agent_status_text(report: &Value) -> String {
+    report["hosts"]["agent_status"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|row| {
+            format!(
+                "agent_status: {} source={}\n",
+                scalar(&row["target"]),
+                scalar(&row["source"])
             )
         })
         .collect()
@@ -552,7 +686,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     let budget = observation_budget(&clock);
     let registry = crate::harness::registry::builtins();
     let ((mut report, code), captured) =
-        report_base(state_dir, host_endpoint, &clock, &budget, registry);
+        report_base(state_dir, host_endpoint, None, &clock, &budget, registry);
     let mut environment = doctor_environment(&report, registry, None);
     environment.clock = clock;
     let environment = local_ownership_environment(&environment, captured.as_ref(), false);
@@ -891,11 +1025,12 @@ fn local_ownership_environment(
 fn report_base(
     state_dir: Option<PathBuf>,
     host_endpoint: Option<PathBuf>,
+    site: Option<&super::caller_location::CallerLocator>,
     clock: &Arc<dyn Clock>,
     budget: &CallBudget,
     registry: &crate::harness::registry::Registry,
 ) -> ((Value, i32), Option<CapturedDoctorContext>) {
-    let inputs = super::instance::InstanceInputs::from_process(state_dir, host_endpoint);
+    let inputs = super::instance::InstanceInputs::for_site(state_dir, host_endpoint, site);
     let (context, source, selected_state, selected_host) =
         match super::instance::resolve_context_with_selected_paths(&inputs) {
             Ok(resolved) => resolved,
@@ -978,6 +1113,10 @@ fn report_captured(
     let mut states: Result<HarnessStatesReport, String> =
         Err("the daemon's instance could not be resolved".into());
     let mut daemon_limitations: Vec<String> = Vec::new();
+    let mut unattachable_hosts: Vec<Value> = Vec::new();
+    let mut mismatched_hosts: Vec<Value> = Vec::new();
+    let mut held_names: Vec<Value> = Vec::new();
+    let mut agent_status: Vec<Value> = Vec::new();
     match resolved {
         Err(error) => {
             report["daemon"] = json!({"state": "unavailable", "error": error.to_string()});
@@ -988,6 +1127,10 @@ fn report_captured(
         }
         Ok(paths) => {
             report["node_dir"] = json!(paths.node_dir.display().to_string());
+            unattachable_hosts = unattachable_hosts_report(&paths.node_dir);
+            mismatched_hosts = kind_mismatch_hosts_report(&paths.node_dir);
+            held_names = held_names_report(&paths.node_dir);
+            agent_status = agent_status_report(&paths.node_dir, clock);
             report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
             report["harness_manifest"] = harness_manifest_report(
                 &paths.node_dir,
@@ -1094,6 +1237,51 @@ fn report_captured(
                 }
             }
         }
+    }
+    for host in &unattachable_hosts {
+        limitations.push(format!(
+            "host {} {} kind '{}': not attached (this build does not implement the kind)",
+            host["host_id"], host["endpoint"], host["kind"]
+        ));
+    }
+    for host in &mismatched_hosts {
+        limitations.push(format!(
+            "host {} {} kind mismatch: stored '{}' but answers as '{}': not attached",
+            host["host_id"],
+            host["endpoint"],
+            host["stored"].as_str().unwrap_or_default(),
+            host["probed"].as_str().unwrap_or_default()
+        ));
+    }
+    for held in &held_names {
+        let holder = held["holder"].as_str().unwrap_or("none");
+        limitations.push(format!(
+            "seat {} holds name '{}' (seat {} owns it): `seat retire SEAT --operator` of either",
+            held["seat"].as_str().unwrap_or_default(),
+            held["name"].as_str().unwrap_or_default(),
+            holder
+        ));
+    }
+    let (xdg, home) = super::instance::state_candidates(
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .as_deref(),
+    );
+    let extra_stores = other_stores(&context.state_dir, [xdg, home]);
+    for dir in &extra_stores {
+        limitations.push(format!(
+            "second store at {dir}: this user has two stores; keep one and pass --state-dir"
+        ));
+    }
+    report["other_stores"] = json!(extra_stores);
+    report["hosts"] =
+        json!({"unattachable": unattachable_hosts, "kind_mismatch": mismatched_hosts});
+    if !agent_status.is_empty() {
+        report["hosts"]["agent_status"] = json!(agent_status);
+    }
+    if !held_names.is_empty() {
+        report["held_names"] = json!(held_names);
     }
     if !limitations.is_empty() && result == "ok" {
         result = "degraded";
@@ -1427,6 +1615,7 @@ pub(crate) fn render_debug_text_in(
             scalar(&report["skill"]["summary_procedure"])
         ));
         out.push_str(&wake_text(report, true));
+        out.push_str(&agent_status_text(report));
         for registration in text_adapters(report, registry) {
             out.push_str(&registration.doctor_text(
                 &report["hooks"][registration.metadata().id],
@@ -1685,6 +1874,7 @@ pub(crate) fn run_registered<W: Write>(
     let ((mut report, mut code), captured) = report_base(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
         parsed.output.context.host.as_ref().map(PathBuf::from),
+        parsed.caller_site.as_ref(),
         &clock,
         &budget,
         registry,

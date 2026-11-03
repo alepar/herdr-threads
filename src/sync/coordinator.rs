@@ -780,6 +780,9 @@ pub struct CoordinatorOptions {
     pub advertise_addr_check: bool,
     /// Advertise [`crate::sync::frame::PEER_LAUNCH_CAP`] (default).
     pub advertise_peer_launch: bool,
+    /// Advertise [`crate::sync::frame::PEER_LAUNCH_TERMINAL_CAP`] (default; only with
+    /// `advertise_peer_launch`).
+    pub advertise_peer_launch_terminal: bool,
     /// The stall thresholds of node status.
     pub timings: StallTimings,
 }
@@ -791,6 +794,7 @@ impl Default for CoordinatorOptions {
             advertise_addr_resolve: true,
             advertise_addr_check: true,
             advertise_peer_launch: true,
+            advertise_peer_launch_terminal: true,
             timings: StallTimings::default(),
         }
     }
@@ -827,6 +831,9 @@ impl CoordinatorOptions {
                 }
                 if withheld.contains(&crate::sync::frame::PEER_LAUNCH_CAP) {
                     options.advertise_peer_launch = false;
+                }
+                if withheld.contains(&crate::sync::frame::PEER_LAUNCH_TERMINAL_CAP) {
+                    options.advertise_peer_launch_terminal = false;
                 }
             }
         }
@@ -932,6 +939,11 @@ impl SyncCoordinator {
                 hello
                     .caps
                     .push(crate::sync::frame::PEER_LAUNCH_CAP.to_owned());
+                if options.advertise_peer_launch_terminal {
+                    hello
+                        .caps
+                        .push(crate::sync::frame::PEER_LAUNCH_TERMINAL_CAP.to_owned());
+                }
             }
             if options.advertise_addr_check {
                 hello

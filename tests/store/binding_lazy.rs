@@ -780,6 +780,35 @@ fn a_dormant_binding_holds_the_wake_frontier_while_nothing_is_connected() {
     assert_eq!(wake_frontier(&db, "s", t0).unwrap(), Some(5));
 }
 
+/// A named seat's verified tmux binding ends with its process and hc has no composer wake, so a
+/// process exit on either leaves no dormant target (`HostKind::wakes_dormant_target`); a foreign
+/// kind is no host this build can wake through either.
+#[test]
+fn a_process_exited_seat_on_a_host_with_no_dormant_wake_holds_no_frontier() {
+    let t0 = NudgeThreshold::new(0).unwrap();
+    for (kind, dormant) in [
+        ("herdr", true),
+        ("named", false),
+        ("hc", false),
+        ("future", false),
+    ] {
+        let mut db = placed_db();
+        db.execute("UPDATE herdr_hosts SET kind=?1", [kind])
+            .unwrap();
+        let a = enroll_binding(&db, "sess-A", None);
+        disconnect(&db, &a, DisconnectReason::ProcessExit);
+        publish_p0(&mut db, 4);
+        let frontier = wake_frontier(&db, "s", t0).unwrap();
+        assert_eq!(frontier, dormant.then_some(4), "{kind}");
+        assert_eq!(
+            dormant_top_level(&db, "s").unwrap().is_some(),
+            dormant,
+            "{kind}"
+        );
+        assert_eq!(has_wake_rows(&db, "s").unwrap(), dormant, "{kind}");
+    }
+}
+
 /// The incident's shape: nothing but a delivery row is pending, so `wake_targets` has no seat-level
 /// attention to lean on and a dormant binding holds no view for its unread probe.
 #[test]

@@ -24,7 +24,7 @@ class InstallerDispatch(unittest.TestCase):
     def run_actual_lane(self, mode='ask', modern=True, fail=False, registered=1,
                         harnesses=(), user_level=True, bare=True, terminal=False,
                         consent=False, final_status=False, without_permissions=False,
-                        help_text='', aisw=(), aisw_opt_out=False):
+                        herdr='/stub/herdr', help_text='', aisw=(), aisw_opt_out=False):
         with tempfile.TemporaryDirectory(prefix='ht-installer-actual-shell-') as folder:
             root = pathlib.Path(folder)
             for profile in aisw:
@@ -86,7 +86,7 @@ new_version=fixture
                        CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                        XDG_CONFIG_HOME=str(root / 'config'), XDG_STATE_HOME=str(root / 'state'),
                        installed_binary=str(binary), bin_dir=str(path), alias_path=str(path / 'ht'),
-                       setup=mode, registered=str(registered),
+                       setup=mode, registered=str(registered), herdr=herdr,
                        CALL_LOG=str(log), CAPABILITY_STATUS='0' if modern else '2',
                        INTEGRATION_STATUS='1' if fail else '0', USER_LEVEL=str(int(user_level)),
                        BARE_SETUP=str(int(bare)), TERMINAL=str(int(terminal)),
@@ -194,9 +194,9 @@ new_version=fixture
         self.assertNotIn('setup incomplete: claude codex', output)
         self.assertNotIn('finish it with: herdr-threads setup', output)
 
-    def run_lane(self, mode='ask', modern=True, fail=False, registered=1):
+    def run_lane(self, mode='ask', modern=True, fail=False, registered=1, herdr='/stub/herdr'):
         return self.run_actual_lane(mode=mode, modern=modern, fail=fail,
-                                    registered=registered, harnesses=('claude', 'codex'))
+                                    registered=registered, herdr=herdr, harnesses=('claude', 'codex'))
 
     def test_default_reconciles_owned_even_without_terminal(self):
         output, calls = self.run_lane()
@@ -225,6 +225,11 @@ new_version=fixture
     def test_unregistered_plugin_skips_integration_changes(self):
         _, calls = self.run_lane(mode='yes', registered=0)
         self.assertEqual(calls, [])
+
+    def test_unregistered_without_herdr_still_runs_integrations(self):
+        # No `herdr` on PATH: nothing to register with, so hook setup runs (standalone).
+        _, calls = self.run_lane(mode='yes', registered=0, herdr='')
+        self.assertIn('internal installer-integrations --confirm-missing', calls)
 
 
 if __name__ == '__main__':

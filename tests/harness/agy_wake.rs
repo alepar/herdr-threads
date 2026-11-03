@@ -116,6 +116,7 @@ fn the_woken_turn_receives_the_bodies_by_injection() {
     let context = match service
         .handle(
             Command::CheckIn(CheckIn {
+                readonly: false,
                 mode: CheckInMode::Lifecycle {
                     expected_binding_generation: 1,
                 },

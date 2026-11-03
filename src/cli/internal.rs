@@ -9,8 +9,37 @@
 //! it, is not an object, and exit 1 only when an object lacks the next key, so a
 //! caller can tell "absent" (1) from "unusable" (2: not UTF-8 or not JSON; 3).
 //! Local only; never contacts the daemon.
+//!
+//! `internal daemon-detach PROGRAM ARGS...` is the daemon launcher's second fork: it starts
+//! PROGRAM in its own session with this process's environment and stdio (stdout aside), prints
+//! the pid on stdout and exits at once, so the daemon is no descendant of the launcher.
 use super::RunError;
 use std::io::Write;
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Stdio};
+
+/// Start `program args` as a session leader, report its pid on `writer`, and do not wait for it.
+pub fn daemon_detach<W: Write>(
+    program: &std::path::Path,
+    args: &[String],
+    writer: &mut W,
+) -> Result<(), RunError> {
+    let mut command = Command::new(program);
+    command.args(args).stdout(Stdio::null());
+    // SAFETY: setsid is async-signal-safe; the child is not a process-group leader.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn()?;
+    writeln!(writer, "{}", child.id())?;
+    writer.flush()?;
+    Ok(())
+}
 
 /// Print the value at `path` of `input` (strings raw, other values as JSON).
 pub fn json_field<W: Write>(input: &str, path: &str, writer: &mut W) -> Result<(), RunError> {

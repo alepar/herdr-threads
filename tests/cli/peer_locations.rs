@@ -7,16 +7,43 @@ use crate::{
         pagination::{Consistency, Page, StopReason},
         results::{
             ApiError, CapabilityList, CommandResult, ContinuityStatus, MembershipStatus,
-            Participant,
+            Participant, SeatDirectory,
         },
         time::*,
     },
 };
-use std::cell::Cell;
 
 struct Client {
     calls: std::sync::atomic::AtomicUsize,
     supported: bool,
+    /// The daemon's workspace, tab and pane labels for the resolved seat;
+    /// `None` is a daemon that cannot read the host (or predates the read).
+    labels: Option<(String, String, String)>,
+    /// Seat `s1` is resolved too, and the daemon sends it no labels (its
+    /// target was reused by another terminal) while `s0` keeps its own.
+    second_resolved: bool,
+}
+fn entry(labels: &(String, String, String)) -> SeatDirectory {
+    SeatDirectory {
+        node: "n".into(),
+        machine: None,
+        state: "idle".into(),
+        since: None,
+        harness: None,
+        activity_at: None,
+        seen_at: None,
+        workspace: Some(labels.0.clone()),
+        tab: Some(labels.1.clone()),
+        pane: Some(labels.2.clone()),
+        name: None,
+    }
+}
+fn same_labels() -> Option<(String, String, String)> {
+    Some((
+        "same \u{1b}[31mworkspace".into(),
+        "same".into(),
+        "same\u{202e}".repeat(100),
+    ))
 }
 impl LocalClient for Client {
     fn call_with_output(
@@ -47,13 +74,14 @@ impl LocalClient for Client {
                             seat,
                             target: Some(HostTargetId::new(format!("w1:p{i}"))),
                             continuity: match i {
+                                1 if self.second_resolved => ContinuityStatus::Resolved,
                                 1 => ContinuityStatus::Unresolved,
                                 2 => ContinuityStatus::Retired,
                                 _ => ContinuityStatus::Resolved,
                             },
                             terminal: Some(format!("term{i}")),
                             incarnation: Some("server-old".into()),
-                            remote: None,
+                            remote: (i == 0).then(|| self.labels.as_ref().map(entry)).flatten(),
                         })
                         .collect(),
                 ))
@@ -95,98 +123,60 @@ fn result() -> CommandResult {
         consistency: Consistency::BoundedLive,
     })
 }
-fn labels(incarnation: &str) -> Vec<SeatHostLabels> {
-    (0..3)
-        .map(|i| SeatHostLabels {
-            target: HostTargetId::new(format!("w1:p{i}")),
-            terminal: format!("term{i}"),
-            incarnation: Some(incarnation.into()),
-            workspace_id: "w1".into(),
-            workspace_label: Some("same \u{1b}[31mworkspace".into()),
-            tab_id: "w1:t1".into(),
-            tab_label: Some("same".into()),
-            pane_label: Some("same\u{202e}".repeat(100)),
-        })
-        .collect()
+fn budget() -> CallBudget {
+    CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    }
+}
+fn client(supported: bool, labels: Option<(String, String, String)>) -> Client {
+    Client {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        supported,
+        labels,
+        second_resolved: false,
+    }
 }
 #[test]
 fn participant_locations_batch_once_escape_and_bound_hints_with_honest_fallbacks() {
-    let client = Client {
-        calls: std::sync::atomic::AtomicUsize::new(0),
-        supported: true,
-    };
-    let snapshots = Cell::new(0);
-    let ready = prepare(
-        &result(),
-        Some(ThreadId::new("t1")),
-        &client,
-        &CallBudget {
-            deadline: MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        || {
-            snapshots.set(snapshots.get() + 1);
-            Ok(labels("server-old"))
-        },
-    );
+    let client = client(true, same_labels());
+    let ready = prepare(&result(), Some(ThreadId::new("t1")), &client, &budget());
     assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert_eq!(snapshots.get(), 1);
     assert!(
-        ready.rows[0].1.contains("w1:p0")
-            && ready.rows[0].1.contains("w1:t1")
-            && ready.rows[0].1.contains("w1")
+        ready.rows[0].1.contains("w1:p0") && ready.rows[0].1.contains("same"),
+        "{}",
+        ready.rows[0].1
     );
     assert!(!ready.rows[0].1.contains('\u{1b}') && !ready.rows[0].1.contains('\u{202e}'));
     assert!(ready.rows[0].1.len() < 700);
     assert!(ready.rows[1].1.contains("unresolved") && !ready.rows[1].1.contains("workspace"));
     assert!(ready.rows[2].1.contains("retired") && !ready.rows[2].1.contains("workspace"));
 }
+// Kills: a resolved seat the daemon sent no labels for (host down, a reused
+// target, a daemon that predates the read) shown with another pane's labels
+// or with invented ones instead of `-`.
 #[test]
-fn participant_locations_restart_and_host_failure_do_not_label_reused_targets() {
-    for failed in [false, true] {
-        let client = Client {
-            calls: std::sync::atomic::AtomicUsize::new(0),
-            supported: true,
-        };
-        let ready = prepare(
-            &result(),
-            Some(ThreadId::new("t1")),
-            &client,
-            &CallBudget {
-                deadline: MonoInstant(u64::MAX),
-                cancellation: Default::default(),
-            },
-            || {
-                if failed {
-                    Err(ApiError::new(
-                        crate::protocol::results::ErrorCode::HostUnavailable,
-                        "offline",
-                    ))
-                } else {
-                    Ok(labels("server-new"))
-                }
-            },
-        );
-        assert!(ready.rows[0].1.contains("w1:p0") && ready.rows[0].1.contains("unavailable"));
-        assert!(!ready.rows[0].1.contains("workspace"));
-    }
+fn participant_locations_without_daemon_labels_show_dash() {
+    let client = client(true, None);
+    let ready = prepare(&result(), Some(ThreadId::new("t1")), &client, &budget());
+    assert_eq!(ready.rows[0].1, "- / - / w1:p0 (-) [advisory]");
+}
+// Kills (ht-kqrt.179): a resolved seat for which the daemon withheld the
+// labels of a reused target shown with a neighbour's labels, the seat's
+// target alone, or no `-` placeholders. The daemon half (the `fits` rule) is
+// pinned in tests/store/remote_seats.rs.
+#[test]
+fn participant_locations_prints_no_label_for_a_reused_target() {
+    let mut client = client(true, same_labels());
+    client.second_resolved = true;
+    let ready = prepare(&result(), Some(ThreadId::new("t1")), &client, &budget());
+    assert!(ready.rows[0].1.contains("same"), "{}", ready.rows[0].1);
+    assert_eq!(ready.rows[1].1, "- / - / w1:p1 (-) [advisory]");
 }
 #[test]
 fn participant_locations_older_daemon_skips_host_and_keeps_bounded_canonical_text() {
-    let client = Client {
-        calls: std::sync::atomic::AtomicUsize::new(0),
-        supported: false,
-    };
-    let ready = prepare(
-        &result(),
-        Some(ThreadId::new("t1")),
-        &client,
-        &CallBudget {
-            deadline: MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        || panic!("older daemon has no location lookup"),
-    );
+    let client = client(false, None);
+    let ready = prepare(&result(), Some(ThreadId::new("t1")), &client, &budget());
     assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(ready.unavailable);
     let base = b"participants\ns0 joined\ns1 joined\ns2 joined\n".to_vec();
@@ -198,27 +188,20 @@ fn participant_locations_older_daemon_skips_host_and_keeps_bounded_canonical_tex
 
 #[test]
 fn participant_locations_host_parent_ids_are_escaped_and_bounded() {
-    let client = Client {
-        calls: std::sync::atomic::AtomicUsize::new(0),
-        supported: true,
-    };
-    let ready = prepare(
-        &result(),
-        Some(ThreadId::new("t1")),
-        &client,
-        &CallBudget {
-            deadline: MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        || {
-            let mut snapshot = labels("server-old");
-            snapshot[0].workspace_id = "w\n\u{1b}".repeat(2000);
-            snapshot[0].tab_id = "t\r\u{202e}".repeat(2000);
-            Ok(snapshot)
-        },
+    let client = client(
+        true,
+        Some((
+            "w\n\u{1b}".repeat(2000),
+            "t\r\u{202e}".repeat(2000),
+            "p".into(),
+        )),
     );
+    let ready = prepare(&result(), Some(ThreadId::new("t1")), &client, &budget());
     let hint = &ready.rows[0].1;
     assert!(!hint.contains(['\n', '\r', '\u{1b}', '\u{202e}']));
     assert!(hint.len() < 2000, "unbounded hint: {}", hint.len());
     assert!(hint.contains("w1:p0") && hint.contains("advisory"));
 }
+
+#[path = "host_topologies.rs"]
+mod host_topologies;

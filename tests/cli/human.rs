@@ -768,3 +768,93 @@ fn human_namespace_stale_and_hold_guards() {
         );
     }
 }
+
+// SA14 / SA17 fix (d): a named seat renders workspace and tab `-` and its name once, in `seat
+// list`, the `thread show` location line and `seat inspect`'s directory line. The delivery
+// `from` header carries only the seat id and the author name, no pane label, so it is not a
+// label surface. HT_BLESS=1 rewrites the golden.
+#[test]
+fn named_seat_labels_render_dash_dash_and_the_name_once() {
+    use crate::protocol::{
+        ids::HostTargetId,
+        results::{
+            ContinuityStatus, MappingStatus, ParticipantLocation, SeatDirectory, SeatInspection,
+            SeatSummary,
+        },
+    };
+    let named = || SeatDirectory {
+        node: "n1".into(),
+        machine: None,
+        state: "idle".into(),
+        since: None,
+        harness: Some("claude".into()),
+        activity_at: None,
+        seen_at: None,
+        workspace: Some("-".into()),
+        tab: Some("-".into()),
+        pane: Some("reviewer".into()),
+        name: Some("reviewer".into()),
+    };
+    let summary = SeatSummary {
+        seat: SeatId::new("snNamed000001"),
+        continuity: ContinuityStatus::Resolved,
+        target: Some(HostTargetId::new("reviewer")),
+        generation: 1,
+        created_at: UtcMillis(1_790_773_200_000),
+        retired_at: None,
+        active: true,
+        bindings: Vec::new(),
+        availability: None,
+        directory: Some(Box::new(named())),
+    };
+    let list = human(&CommandResult::Seats(page(vec![summary.clone()])));
+    // Inspect carries only the name: the daemon's inspect has no host label map.
+    let mut by_name = named();
+    by_name.workspace = None;
+    by_name.tab = None;
+    by_name.pane = None;
+    let inspect = CommandResult::SeatInspect(SeatInspection {
+        summary: SeatSummary {
+            directory: None,
+            ..summary
+        },
+        mapping: MappingStatus {
+            state: ContinuityStatus::Resolved,
+            target: Some(HostTargetId::new("reviewer")),
+            detail_argv: None,
+        },
+        hold: None,
+        retirement: None,
+        open_binding: None,
+        history: page(vec![]),
+        directory: Some(Box::new(by_name)),
+    });
+    let compact = crate::protocol::output::with_render_now(UtcMillis(1_790_773_200_000), || {
+        String::from_utf8(encode_selected(&inspect, &text()).expect("encodes")).expect("utf8")
+    });
+    let inspect_line = compact
+        .lines()
+        .find(|line| line.starts_with("directory:"))
+        .expect("a directory line")
+        .to_owned();
+    let location = crate::cli::peer_locations::format_location(&ParticipantLocation {
+        seat: SeatId::new("snNamed000001"),
+        continuity: ContinuityStatus::Resolved,
+        target: Some(HostTargetId::new("reviewer")),
+        terminal: Some("named:reviewer".into()),
+        incarnation: None,
+        remote: Some(named()),
+    });
+    let actual =
+        format!("[seat list]\n{list}[thread show]\n{location}\n[seat inspect]\n{inspect_line}\n");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cli/golden/named_labels.txt");
+    if std::env::var_os("HT_BLESS").is_some() {
+        std::fs::write(&path, &actual).unwrap();
+    }
+    assert_eq!(actual, include_str!("golden/named_labels.txt"));
+    assert!(
+        !actual.contains("reviewer (") && !actual.contains("/reviewer ("),
+        "the name once, not beside the target: {actual}"
+    );
+}

@@ -143,6 +143,8 @@ struct Remote {
     mode: String,
     #[serde(default)]
     min: i64,
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 fn remote(id: &str, mode: &str) -> Remote {
@@ -150,6 +152,7 @@ fn remote(id: &str, mode: &str) -> Remote {
         id: id.into(),
         mode: mode.into(),
         min: 0,
+        display_name: None,
     }
 }
 
@@ -187,6 +190,29 @@ impl FactKind for RemoteKind {
                     })
                 } else {
                     Ok(())
+                }
+            }
+            // Mirrors `restore_own_seat`: a valid `display_name` waits for the named row, anything
+            // else for exactly one non-named host kind.
+            "wait_restore" => {
+                let named = p
+                    .display_name
+                    .is_some_and(|n| crate::protocol::ids::SeatName::parse(n).is_ok());
+                let sql = if named {
+                    "SELECT count(*)>0 FROM herdr_hosts WHERE kind='named'"
+                } else {
+                    "SELECT count(DISTINCT kind)=1 FROM herdr_hosts WHERE kind<>'named'"
+                };
+                let ready: bool = tx
+                    .query_row(sql, [], |r| r.get(0))
+                    .map_err(|e| FactError::from_api(store_error(e)))?;
+                if ready {
+                    Ok(())
+                } else {
+                    Err(FactError::Wait {
+                        on: WaitFor::Host,
+                        error: ApiError::new(ErrorCode::HostUnavailable, "restore waits"),
+                    })
                 }
             }
             "store" => Err(FactError::Store(ApiError::new(
@@ -768,6 +794,37 @@ fn host_wait_parks_then_applies_once_a_host_row_exists() {
     assert_eq!(c.state(&a.log, 3), "applied");
 }
 
+// Kills: the built-in named host (a store row, never dialled) releasing a `wait:host` park, which
+// would restore an own seat onto a host that cannot hold a pane seat.
+#[test]
+fn named_host_never_satisfies_wait_host() {
+    let (a, mut c) = host_wait_fixture((64, 65));
+    c.pass();
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+    c.conn
+        .execute(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at,kind) \
+             SELECT id,'/.herdr-threads/named-host',0,0,'named' FROM local_node",
+            [],
+        )
+        .unwrap();
+    let progress = c.pass();
+    assert_eq!(progress.applied, 0, "{progress:?}");
+    assert_eq!(
+        c.state(&a.log, 2),
+        "parked_dep",
+        "a named host row is no host"
+    );
+    let progress = c.replay(ReplayScope::Startup);
+    assert_eq!(progress.applied, 0, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+
+    attach_fake_host(&c);
+    let progress = c.pass();
+    assert_eq!(progress.applied, 2, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "applied");
+}
+
 #[test]
 fn startup_replay_takes_host_waiting_entries_when_a_host_exists() {
     let (a, mut c) = host_wait_fixture((62, 63));
@@ -784,6 +841,124 @@ fn startup_replay_takes_host_waiting_entries_when_a_host_exists() {
     assert_eq!(progress.applied, 2, "{progress:?}");
     assert_eq!(c.state(&a.log, 2), "applied");
     assert_eq!(c.state(&a.log, 3), "applied");
+}
+
+fn attach_host_kind(c: &Node, kind: &str) {
+    c.conn
+        .execute(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at,kind) \
+             SELECT id,?1,0,0,?2 FROM local_node",
+            params![format!("/{kind}.sock"), kind],
+        )
+        .unwrap();
+}
+
+/// A node holding a remote `wait_restore` entry (`A@2`, payload `display_name`) parked on
+/// `wait:host`.
+fn restore_wait_fixture(seed: u8, display_name: Option<&str>) -> (Node, Node) {
+    let mut a = Node::new(seed, base());
+    a.author::<RemoteKind>(&Remote {
+        display_name: display_name.map(str::to_owned),
+        ..remote("w", "wait_restore")
+    }); // A@2
+    let mut c = Node::new(seed + 1, base());
+    c.ship(&a, a.log, 2);
+    c.pass();
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+    assert_eq!(parked_on(&c, &a.log, 2).as_deref(), Some("wait:host"));
+    (a, c)
+}
+
+fn park_ready(c: &Node) -> bool {
+    c.conn
+        .query_row(
+            &format!(
+                "SELECT COALESCE({PARKED_READY},0) FROM journal p WHERE p.apply_state='parked_dep'"
+            ),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+// Kills: a `PARKED_READY` that releases a `wait:host` park on any non-named host row, so a row the
+// materializer re-parks (an unnamed seat on a mixed-kind node, a named seat with no named row) is
+// called ready.
+#[test]
+fn park_ready_mirrors_the_materializer() {
+    let hosts: [(&str, &[&str]); 4] = [
+        ("none", &[]),
+        ("named only", &["named"]),
+        ("one kind", &["herdr"]),
+        ("two kinds", &["herdr", "hc"]),
+    ];
+    let mut seed = 100;
+    for name in [
+        Some("alpha"),
+        None,
+        Some("bad name"),
+        Some("-lead"),
+        Some(""),
+    ] {
+        for (label, kinds) in hosts {
+            seed += 2;
+            let (a, mut c) = restore_wait_fixture(seed, name);
+            for kind in kinds {
+                attach_host_kind(&c, kind);
+            }
+            let ready = park_ready(&c);
+            let progress = c.pass();
+            let applied = c.state(&a.log, 2) == "applied";
+            assert_eq!(ready, applied, "name={name:?} hosts={label}: {progress:?}");
+            let named = name.is_some_and(|n| crate::protocol::ids::SeatName::parse(n).is_ok());
+            let expect = match (named, label) {
+                (true, "named only" | "none") => label == "named only",
+                (true, _) => false,
+                (false, "one kind") => true,
+                (false, _) => false,
+            };
+            assert_eq!(applied, expect, "name={name:?} hosts={label}");
+        }
+    }
+}
+
+// Kills: a ready predicate that calls a mixed-kind node's unnamed park ready, so each pass
+// re-attempts it, re-parks it and loops until the entry budget is spent (`has_more`), starving the
+// log heads behind it.
+#[test]
+fn mixed_kind_node_keeps_unnamed_seat_parked_without_spinning() {
+    let (a, mut c) = restore_wait_fixture(150, None);
+    attach_host_kind(&c, "herdr");
+    attach_host_kind(&c, "hc");
+    let mut b = Node::new(152, base());
+    b.author::<PutKind>(&put("free")); // B@2
+    c.ship(&b, b.log, 2);
+
+    let first = c.pass();
+    assert!(!first.has_more, "{first:?}");
+    let second = c.pass();
+    assert!(!second.has_more, "{second:?}");
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+    assert_eq!(c.state(&b.log, 2), "applied", "the head behind it applied");
+}
+
+// Kills: a startup replay that selects a `wait:host` park by "some non-named host exists" and so
+// re-attempts (and re-parks) an unnamed park on a mixed-kind node.
+#[test]
+fn startup_replay_skips_a_park_that_would_re_park() {
+    let (a, mut c) = restore_wait_fixture(160, None);
+    attach_host_kind(&c, "herdr");
+    attach_host_kind(&c, "hc");
+    let progress = c.replay(ReplayScope::Startup);
+    assert_eq!(progress.replayed, 0, "{progress:?}");
+    assert_eq!(progress.parked, 0, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+    c.conn
+        .execute("DELETE FROM herdr_hosts WHERE kind='hc'", [])
+        .unwrap();
+    let progress = c.replay(ReplayScope::Startup);
+    assert_eq!(progress.applied, 1, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "applied");
 }
 
 #[test]
@@ -1214,6 +1389,7 @@ fn unapplied_failed_reattempts() {
         id: "g".into(),
         mode: "gate".into(),
         min: 1000,
+        display_name: None,
     }); // 2
     let mut c = Node::new(45, base());
     c.ship(&a, a.log, 2);

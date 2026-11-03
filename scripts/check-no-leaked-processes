@@ -11,10 +11,16 @@ anything in --exclude never match):
   artifact    argv[0] or cwd is under <root>/target/  (root: --root, else git toplevel)
   orphan-temp PPID 1, a `herdr server` or `daemon run`, HOME or --state-dir under a
               test temp prefix, and no live owner tag
+  core-test   a `herdr-core serve`/`hold` whose HC_SESSION starts ht-test- or ht-smoke-,
+              or whose XDG_STATE_HOME/XDG_RUNTIME_DIR is under a test temp prefix, and
+              no live owner tag
+  tmux-test   a tmux server started with `-L ht-test-<id>` (the private-tmux test helper's
+              socket name), and no live owner tag
 With --run-id it also runs scripts/check-no-leaked-temp-files for the same run.
 Exit 0 clean, 1 leaks (one `LEAK rule=... pid=... ppid=... cmd=...` line each), 2 usage.
-Never kills unless --kill is passed; never matches the real ~/.config/herdr server or
-the user's real daemon (no test tag, HOME and state dir outside the temp prefixes)."""
+Never kills unless --kill is passed; never matches the real ~/.config/herdr server, the
+user's real daemon or the user's real herdr-core (no test tag, HOME, state dir, XDG dirs
+and HC_SESSION outside the test prefixes)."""
 from __future__ import annotations
 
 import argparse
@@ -29,10 +35,11 @@ from dataclasses import dataclass
 TEMP_PREFIXES = (
     "/tmp/ih.", "/private/tmp/ih.", "/tmp/htlat-", "/private/tmp/htlat-",
     "/tmp/hts-", "/private/tmp/hts-", "/tmp/ht-", "/private/tmp/ht-",
-    "/tmp/htci.", "/private/tmp/htci.",
+    "/tmp/htci.", "/private/tmp/htci.", "/tmp/ic.", "/private/tmp/ic.",
 )  # plus os.environ["TMPDIR"] + "/ht-" when set
 OWNER_KEYS = ("HT_TEST_OWNER", "HERDR_THREADS_TEST_OWNER_PID")
-WANTED_ENV = ("HT_LEAK_RUN_ID", "HOME") + OWNER_KEYS
+CORE_SESSION_PREFIXES = ("ht-test-", "ht-smoke-")
+WANTED_ENV = ("HT_LEAK_RUN_ID", "HOME", "HC_SESSION", "XDG_STATE_HOME", "XDG_RUNTIME_DIR") + OWNER_KEYS
 
 
 @dataclass
@@ -74,6 +81,21 @@ def _is_server_or_daemon(proc: Proc) -> bool:
     return cmd.endswith("herdr server") or " daemon run" in cmd
 
 
+def _is_core(proc: Proc) -> bool:
+    return re.search(r"(^|/|\s)herdr-core (serve|hold)(\s|$)", proc.command) is not None
+
+
+def _is_test_core(proc: Proc, temp_prefixes) -> bool:
+    session = proc.env.get("HC_SESSION") or ""
+    return session.startswith(CORE_SESSION_PREFIXES) or any(
+        _under(proc.env.get(key), temp_prefixes) for key in ("XDG_STATE_HOME", "XDG_RUNTIME_DIR")
+    )
+
+
+def _is_test_tmux(proc: Proc) -> bool:
+    return re.search(r"(^|/)tmux\s(.*\s)?-L\s*ht-test-", proc.command) is not None
+
+
 def _state_dir(command: str) -> "str | None":
     match = re.search(r"--state-dir[ =](\S+)", command)
     return match.group(1) if match else None
@@ -106,6 +128,10 @@ def classify(procs, *, root, run_id, alive, exclude, temp_prefixes):
             )
         ):
             leaks.append((proc, "orphan-temp"))
+        elif _is_core(proc) and not live_owner and _is_test_core(proc, temp_prefixes):
+            leaks.append((proc, "core-test"))
+        elif _is_test_tmux(proc) and not live_owner:
+            leaks.append((proc, "tmux-test"))
     return leaks
 
 

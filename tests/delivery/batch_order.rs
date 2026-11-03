@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 
 fn msg(id: &str, priority: u8, deadline: Option<i64>) -> InboxBatchV2Item {
     InboxBatchV2Item::Message {
+        sender_label: None,
         priority: Some(DeliveryPriority::new(priority).unwrap()),
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
@@ -33,6 +34,7 @@ fn msg(id: &str, priority: u8, deadline: Option<i64>) -> InboxBatchV2Item {
 
 fn lazy_msg(id: &str, priority: Option<u8>) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        sender_label: None,
         priority: priority.map(|p| DeliveryPriority::new(p).unwrap()),
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
@@ -201,6 +203,7 @@ fn order_deliveries_uses_the_same_key() {
         watch::{WatchInvitation, WatchMessage},
     };
     let content = |priority: Option<u8>| WatchMessage {
+        sender_label: None,
         thread: ThreadId::new("t1"),
         thread_name: None,
         sender: None,
@@ -302,6 +305,7 @@ fn a_replayed_frozen_invitation_sorts_as_the_live_one() {
         id: MessageId::new(id),
         lazy: false,
         content: WatchMessage {
+            sender_label: None,
             thread: ThreadId::new("t1"),
             thread_name: None,
             sender: None,

@@ -294,6 +294,9 @@ pub struct SeatHostLabels {
     pub tab_id: String,
     pub tab_label: Option<String>,
     pub pane_label: Option<String>,
+    /// The herdr-core session (`hello` `core.name`) of the host that reported the row;
+    /// `None` for Herdr and named rows.
+    pub session: Option<String>,
 }
 
 /// Read all three label levels from one validated Herdr snapshot.
@@ -331,6 +334,7 @@ pub fn normalize_seat_labels(raw: &str) -> Result<Vec<SeatHostLabels>, ApiError>
             target: pane.target,
             workspace_id: pane.workspace_id,
             tab_id: pane.tab_id,
+            session: None,
         })
         .collect())
 }

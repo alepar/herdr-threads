@@ -380,7 +380,9 @@ pub(crate) fn codex_unmeasured_allowance_warning(
 /// paths the CLI opens. Computed only: nothing is created.
 pub(crate) fn codex_sandbox_roots(env: &SetupEnv) -> Result<Vec<String>, String> {
     let state = env.state_dir().map_err(|error| error.to_string())?;
-    let host = env.host_endpoint().map_err(|error| error.to_string())?;
+    let host = env
+        .host_endpoint_optional()
+        .map_err(|error| error.to_string())?;
     let context = RuntimeContext::explicit(state.to_path_buf(), host, None)
         .map_err(|error| format!("invalid host endpoint: {error}"))?;
     let instance = canonical_prefix(&node_dir(&context.state_dir));

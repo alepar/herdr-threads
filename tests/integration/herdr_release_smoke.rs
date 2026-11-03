@@ -58,19 +58,26 @@ const WAKE_TEXTS: [&str; 2] = [
     "herdr-threads: wake up",
 ];
 
-struct Matrix {
-    host: IsolatedHerdr,
-    plugin: PathBuf,
-    bin: PathBuf,
+pub(super) struct Matrix {
+    pub(super) host: IsolatedHerdr,
+    pub(super) plugin: PathBuf,
+    pub(super) bin: PathBuf,
     version: String,
 }
 
 impl Matrix {
     /// A private server of the release under test with the plugin linked, its
     /// startup entry's daemon reachable, and the stand-ins on its PATH.
-    fn new(case: &str) -> Self {
-        let version = std::env::var("HT_HERDR_SMOKE_VERSION")
-            .expect("HT_HERDR_SMOKE_VERSION names the Herdr release on PATH");
+    pub(super) fn new(case: &str) -> Self {
+        // Per release the script names it; any other caller (the named-seat handoff test) runs
+        // against the Herdr first on PATH.
+        let version = std::env::var("HT_HERDR_SMOKE_VERSION").unwrap_or_else(|_| {
+            let out = Command::new("herdr").arg("--version").output().unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .trim_start_matches("herdr ")
+                .to_owned()
+        });
         let host = IsolatedHerdr::new(case).expect("Herdr required");
         let reported = host.command("herdr").arg("--version").output().unwrap();
         assert_eq!(
@@ -163,7 +170,7 @@ impl Matrix {
         m
     }
 
-    fn home(&self) -> PathBuf {
+    pub(super) fn home(&self) -> PathBuf {
         self.host.root().join("home")
     }
 
@@ -184,7 +191,7 @@ impl Matrix {
 
     /// The plugin's executable against the plugin state Herdr gives its
     /// startup entry, with the stand-ins and the agents' config homes.
-    fn cli(&self) -> Command {
+    pub(super) fn cli(&self) -> Command {
         let root = self.host.root();
         let mut cmd = self.host.command(self.plugin.join("bin").join(PLUGIN));
         herdr_threads::test_support::isolation::scrub_env(&mut cmd);
@@ -201,7 +208,7 @@ impl Matrix {
         cmd
     }
 
-    fn globals(&self, cmd: &mut Command) {
+    pub(super) fn globals(&self, cmd: &mut Command) {
         cmd.arg("--json")
             .arg("--state-dir")
             .arg(self.host.root().join("st/herdr/plugins").join(PLUGIN))
@@ -235,7 +242,7 @@ impl Matrix {
         json(&cmd.output().unwrap(), &format!("human {args:?} in {pane}"))
     }
 
-    fn setup(&self, harness: &str) {
+    pub(super) fn setup(&self, harness: &str) {
         let mut cmd = self.cli();
         cmd.args(["setup", harness, "--harness-binary"])
             .arg(self.bin.join(harness));
@@ -251,7 +258,7 @@ impl Matrix {
         );
     }
 
-    fn workspace(&self, label: &str) -> String {
+    pub(super) fn workspace(&self, label: &str) -> String {
         let home = self.home();
         let created = self.herdr(&[
             "workspace",
@@ -363,7 +370,7 @@ impl Matrix {
     }
 
     /// The newest stand-in log started in `pane` (Herdr's HERDR_PANE_ID).
-    fn log_of(&self, pane: &str) -> Vec<Value> {
+    pub(super) fn log_of(&self, pane: &str) -> Vec<Value> {
         let mut logs: Vec<Vec<Value>> = self
             .logs()
             .into_iter()
@@ -515,7 +522,7 @@ fn executable(path: &Path, text: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
-fn json(out: &Output, what: &str) -> Value {
+pub(super) fn json(out: &Output, what: &str) -> Value {
     assert!(
         out.status.success(),
         "{what} failed ({}): stdout={} stderr={}",
@@ -527,7 +534,11 @@ fn json(out: &Output, what: &str) -> Value {
         .unwrap_or_else(|e| panic!("{what}: {e}: {}", String::from_utf8_lossy(&out.stdout)))
 }
 
-fn wait_for<T>(what: &str, timeout: Duration, mut probe: impl FnMut() -> Result<T, String>) -> T {
+pub(super) fn wait_for<T>(
+    what: &str,
+    timeout: Duration,
+    mut probe: impl FnMut() -> Result<T, String>,
+) -> T {
     let deadline = Instant::now() + timeout;
     loop {
         match probe() {

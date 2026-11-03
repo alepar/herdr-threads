@@ -133,9 +133,25 @@ pub(crate) fn namespace(
     instance: &str,
     context: &ContinuationContext,
 ) -> io::Result<HandoffNamespace> {
+    // A named caller pins no host on its continuation lines: its claim host is the reserved
+    // locator, re-derived from the name.
+    let named_host = || {
+        super::caller_location::CallerEnv::from_process()
+            .non_pane_locator(super::caller_location::EnvMode::Cli)
+            .and_then(|site| {
+                site.site()
+                    .claim_host_locator()
+                    .filter(|_| matches!(site, super::caller_location::CallerLocator::Named(_)))
+                    .map(std::path::PathBuf::from)
+            })
+    };
     let runtime = crate::daemon::paths::RuntimeContext::from_environment(
         context.state_dir.as_ref().map(Into::into),
-        context.host.as_ref().map(Into::into),
+        context
+            .host
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .or_else(named_host),
     )?;
     Ok(HandoffNamespace {
         instance: instance.into(),

@@ -1,0 +1,1 @@
+herdr-threads: HERDR_THREADS_SEAT_NAME cannot be combined with --cooperative-seat

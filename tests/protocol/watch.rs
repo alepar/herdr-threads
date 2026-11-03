@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 fn message() -> WatchMessage {
     WatchMessage {
+        sender_label: None,
         deadline_at: None,
         priority: None,
         thread: ThreadId::new("t1"),
@@ -638,6 +639,7 @@ fn no_mod_channels_is_inert() {
         native_session: NativeSessionId::new("n1"),
         harness: Harness::Claude,
         idle_wake: crate::harness::adapter::IdleWake::Channel,
+        readonly: false,
         registered_at: UtcMillis(0),
     };
     assert_eq!(
@@ -701,4 +703,21 @@ fn accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted()
             .attention_version,
         7
     );
+}
+
+// Kills: a `sender_label: null` key on pane-seat lines (their bytes must not change) and a decoder
+// that refuses an older daemon's line without the key.
+#[test]
+fn an_absent_sender_label_serializes_no_key_and_a_line_without_it_decodes() {
+    let line = WatchLine::new("m1", WatchItem::Message(message()));
+    let mut value = serde_json::to_value(&line).unwrap();
+    assert!(value.get("sender_label").is_none(), "{value}");
+    value["sender_label"] = serde_json::json!("reviewer");
+    let labelled: WatchLine = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&labelled).unwrap()["sender_label"],
+        "reviewer"
+    );
+    value.as_object_mut().unwrap().remove("sender_label");
+    assert_eq!(serde_json::from_value::<WatchLine>(value).unwrap(), line);
 }

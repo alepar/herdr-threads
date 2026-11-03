@@ -676,6 +676,21 @@ mod v1 {
     }
 }
 
+/// The config root the launching caller runs under: the first of the adapter's
+/// `child_scrub_vars` set in `lookup`, made absolute. `None`: the harness's default root,
+/// which the launch gate's scrub leaves in force.
+pub fn caller_config_root(
+    registration: &super::registry::Registration,
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> std::io::Result<Option<std::path::PathBuf>> {
+    registration
+        .child_scrub_vars()
+        .iter()
+        .find_map(|name| lookup(name).filter(|value| !value.is_empty()))
+        .map(|value| std::path::absolute(std::path::Path::new(&value)))
+        .transpose()
+}
+
 pub fn launch_registration(
     registry: &super::registry::Registry,
     harness: Harness,

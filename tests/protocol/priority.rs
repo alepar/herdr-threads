@@ -345,6 +345,7 @@ fn watch_message_and_inbox_items_omit_new_fields_when_absent() {
     use crate::protocol::results::InboxBatchV2Item;
     use crate::protocol::watch::WatchMessage;
     let message = WatchMessage {
+        sender_label: None,
         thread: ThreadId::new("t1"),
         thread_name: None,
         sender: Some(SeatId::new("s2")),

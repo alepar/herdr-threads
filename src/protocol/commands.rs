@@ -61,6 +61,9 @@ pub enum Command {
     /// Why a local seat's idle session cannot be woken (`WAKE_STATUS_V1`). Reads only, except the
     /// observer's report bookkeeping (`WakeStatusQuery.observer`).
     WakeStatus(WakeStatusQuery),
+    /// Every readable host's current labels (`HOST_TOPOLOGIES_V1`). Display
+    /// data only; a host that does not answer is absent.
+    HostTopologies,
     Recipients(RecipientsQuery),
     DeliveryInspect(DeliveryInspectQuery),
     PendingReceipts(PendingReceiptsQuery),
@@ -119,6 +122,9 @@ pub enum Command {
     /// Whether an ending turn owes the caller's seat a continuation; gated by
     /// `turn_end.due_v1`. Read-only.
     TurnEndDue(TurnEndDue),
+    /// A harness hook's turn edge for the caller's binding (N2-turn); gated by
+    /// `turn_state.edge_v1`. Top-level claims only.
+    TurnState(TurnStateReport),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
     /// Advance the caller binding's own read cursors over messages it fully displayed. Allowed
@@ -134,6 +140,8 @@ pub enum Command {
     /// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation); advertised as
     /// `seat.nudge_threshold_v1`.
     SetNudgeThreshold(SetNudgeThreshold),
+    /// A named seat retires itself (`seat retire --self`, TRUST-POLICY A3 `cooperative_self_retire`).
+    SelfRetire(SelfRetire),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -157,6 +165,13 @@ pub enum Command {
     BootstrapStatus(Box<crate::protocol::handoff::BootstrapStatus>),
     ResolveBootstrapSeat(Box<crate::protocol::handoff::ResolveBootstrapSeat>),
     RecoverBootstrap(Box<crate::protocol::handoff::RecoverBootstrap>),
+    /// Launch-gate authorization (`capabilities::LAUNCH_GATE_V1`).
+    AuthorizeLaunchGate(Box<crate::protocol::handoff::AuthorizeLaunchGate>),
+    /// A plain `launch` onto a herdr-core records its gate-only record
+    /// (`capabilities::LOCAL_LAUNCH_GATE_V1`).
+    LocalLaunchGate(Box<crate::protocol::handoff::LocalLaunchGate>),
+    /// Verify an `Ambiguous` caller by nearest ancestor (`capabilities::LOCATE_CALLER_V1`).
+    LocateCaller(crate::protocol::locate::LocateCaller),
     /// Operator and status commands for cross-node sync (ht-5fr.8). The mutating
     /// ones are admitted only for the elected owner's peer UID.
     Sync(crate::protocol::sync_admin::SyncCommand),
@@ -426,6 +441,10 @@ pub struct SeatsQuery {
     /// seats only.
     #[serde(default, skip_serializing_if = "SeatFilter::is_empty")]
     pub filter: SeatFilter,
+    /// Host scope (F9): only seats on this host. Sent only by a caller whose site is host-scoped
+    /// (`sent_scope()`), never from a Pane site, so a Pane request's bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostLocator>,
 }
 
 /// See [`SeatsQuery::filter`].
@@ -671,12 +690,31 @@ pub struct RetirementJobsQuery {
     pub page: PageRequest,
 }
 
+/// The `ResolveSeat.locator_hint` part naming the Herdr server of the pane part beside it
+/// (`pane-host=<socket>`, a canonical locator). Never first, so a binding stores the pane.
+pub const HINT_PANE_HOST: &str = "pane-host=";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolveSeat {
     pub target: HostTargetId,
     pub host: HostLocator,
     pub operation: OperationId,
+    /// N4-inherit: the host candidates that sit beside a named target, joined by `\n`: a Herdr
+    /// pane id and/or a herdr-core terminal as `<socket>:<tN>`, sent only by a caller whose
+    /// environment carries them. The daemon reads the server environ of the host that owns each
+    /// (the core a socket names, attached for the check) and refuses a name equal to the
+    /// server's own (M6). A binding stores only the first, a terminal as `<stem>:<tN>`. Absent
+    /// everywhere else, so those requests' bytes are unchanged. A pane part may be followed by a
+    /// [`HINT_PANE_HOST`] part naming its Herdr server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator_hint: Option<String>,
+    /// N2-hint: the caller's tmux wake hint, `tmux:<socket>:<server_pid>:<pane>`, sent only by a
+    /// named caller that runs inside a tmux pane. A separate field, never `locator_hint`: the
+    /// daemon verifies it and holds it in memory per binding, and it is never persisted or
+    /// compared by M9. Absent everywhere else, so those requests' bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_hint: Option<String>,
 }
 /// TRUST-POLICY C1. A resumed top-level session asks the daemon to reattach
 /// the one unresolved seat whose last binding carries its session id onto the
@@ -768,6 +806,10 @@ pub struct CheckIn {
     /// top-level binding, same process fingerprint) before it links lineage; otherwise ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage_parent: Option<NativeSessionId>,
+    /// The caller's environment carried `HERDR_THREADS_SEAT_READONLY=1` (D3): the daemon records
+    /// the resolved binding as read-only, so its display never settles receipt-bearing rows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub readonly: bool,
 }
 /// Lifecycle requests deliberately rotate using a fixed expected generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -979,6 +1021,17 @@ pub struct WakeOnQuery {
     pub seat: SeatId,
 }
 
+/// The caller's named seat retires itself (TRUST-POLICY A3 `cooperative_self_retire`). `force`
+/// retires although another top-level binding of the seat is connected (M18).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelfRetire {
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+    #[serde(default)]
+    pub force: bool,
+}
+
 /// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1032,6 +1085,20 @@ pub struct CompleteInboxDelivery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnEndDue {
     pub claim: CallerClaim,
+}
+
+/// A harness hook's turn edge (a turn started or ended) for the caller's top-level binding, kept in
+/// daemon memory (`service::turn_state`). Changes no seat state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnStateReport {
+    pub claim: CallerClaim,
+    pub edge: crate::harness::adapter::TurnEdge,
+    /// The named caller's tmux wake hint (`ResolveSeat.tmux_hint`'s form), re-established on every
+    /// turn edge so a restarted daemon regains the binding's wake. The claim's liveness
+    /// fingerprint is the harness process the hint is verified for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_hint: Option<String>,
 }
 
 /// Advance the caller binding's cursors over messages it fully displayed (spec §2). Allowed for
@@ -1204,6 +1271,10 @@ pub struct ResolveThreadQuery {
     pub caller_target: Option<HostTargetId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<SeatId>,
+    /// The caller's host (F9): `caller_target` and `caller` resolve only on this host. Sent only
+    /// when the site is host-scoped (`sent_scope()`), never from a Pane site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_host: Option<HostLocator>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1291,6 +1362,7 @@ impl Command {
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
             Self::SetWakeOn(v) => Some(&v.claim),
             Self::SetNudgeThreshold(v) => Some(&v.claim),
+            Self::SelfRetire(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
             Self::SetThreadName(v) => Some(&v.claim),
@@ -1325,6 +1397,7 @@ impl Command {
             Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
             Self::TurnEndDue(v) => Some(&v.claim),
+            Self::TurnState(v) => Some(&v.claim),
             Self::AdvanceCursors(v) => Some(&v.claim),
             Self::BindingEvent(v) => Some(&v.claim),
             Self::Summary(v) => Some(&v.claim),
@@ -1471,6 +1544,7 @@ impl Command {
             Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
             Self::TurnEndDue(v) => Some(&v.claim),
+            Self::TurnState(v) => Some(&v.claim),
             _ => None,
         });
         if let Some(claim) = claim {
@@ -1557,6 +1631,7 @@ impl Command {
             }
             Self::ContinuityCheckIn(continuity) => continuity.validate(),
             Self::RecordManagedLaunch(launch) => launch.validate(),
+            Self::LocalLaunchGate(gate) => gate.validate(),
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }
@@ -1747,6 +1822,8 @@ pub enum PermitMutation {
     SetWakeOn(SetWakeOn),
     /// Nudge threshold of the caller's own seat; wake eligibility only.
     SetNudgeThreshold(SetNudgeThreshold),
+    /// A named seat retires itself.
+    SelfRetire(SelfRetire),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -1785,6 +1862,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
             Command::SetWakeOn(v) => Ok(Self::SetWakeOn(v)),
             Command::SetNudgeThreshold(v) => Ok(Self::SetNudgeThreshold(v)),
+            Command::SelfRetire(v) => Ok(Self::SelfRetire(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
             Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),
@@ -1834,6 +1912,7 @@ mod host_locator_tests {
             mode: CheckInMode::Current,
             operation: op(),
             lineage_parent: None,
+            readonly: false,
         });
         assert_eq!(check_in.host_locator(), Some(&host("/claim.sock")));
         let archive = Command::Archive(ThreadMutation {
@@ -1848,6 +1927,8 @@ mod host_locator_tests {
                 target: target(),
                 host: explicit.clone(),
                 operation: op(),
+                locator_hint: None,
+                tmux_hint: None,
             }),
             Command::ContinuityCheckIn(ContinuityCheckIn {
                 target: target(),
@@ -1896,5 +1977,55 @@ mod host_locator_tests {
         assert_eq!(orphan.host_locator(), None);
         // A host-free read.
         assert_eq!(Command::Health.host_locator(), None);
+    }
+
+    /// Kills: a host field serialized when unset (a Pane request's bytes would change and an old
+    /// `deny_unknown_fields` daemon would reject it).
+    #[test]
+    fn pane_site_seats_query_bytes_unchanged() {
+        let query = SeatsQuery {
+            page: PageRequest::default(),
+            target: Some(HostTargetId::new("p1")),
+            include_retired: false,
+            filter: SeatFilter::default(),
+            host: None,
+        };
+        let json = serde_json::to_string(&query).unwrap();
+        assert_eq!(
+            json,
+            r#"{"page":{"cursor":null,"limit":20,"max_bytes":16384},"target":"p1"}"#
+        );
+        let scoped = SeatsQuery {
+            host: Some(HostLocator::parse("/h/a").unwrap()),
+            ..query
+        };
+        assert!(
+            serde_json::to_string(&scoped)
+                .unwrap()
+                .ends_with(r#","host":"/h/a"}"#)
+        );
+    }
+
+    #[test]
+    fn pane_site_resolve_thread_query_bytes_unchanged() {
+        let query = ResolveThreadQuery {
+            selector: "team".into(),
+            caller_target: Some(HostTargetId::new("p1")),
+            caller: None,
+            caller_host: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&query).unwrap(),
+            r#"{"selector":"team","caller_target":"p1"}"#
+        );
+        let scoped = ResolveThreadQuery {
+            caller_host: Some(HostLocator::parse("/h/a").unwrap()),
+            ..query
+        };
+        assert!(
+            serde_json::to_string(&scoped)
+                .unwrap()
+                .ends_with(r#","caller_host":"/h/a"}"#)
+        );
     }
 }

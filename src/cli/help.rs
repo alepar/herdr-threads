@@ -65,8 +65,14 @@ Exit status:
 
 const LAUNCH_HEAD: &str = r#"Target:
   --pane names one existing Herdr pane at its interactive shell prompt; launch never
-  creates, splits or picks a pane and never types into an occupied one. Herdr's
+  splits or picks a pane and never types into an occupied one. Herdr's
   guarded `agent start` refuses a busy pane.
+  --new-tab LABEL creates a tab in --space, else the caller's workspace, and launches in
+  its root pane; a herdr-core needs --space (an app space).
+  --new-terminal creates a herdr-core terminal parented on the calling terminal.
+  --new-terminal --space @MACHINE --cwd DIR creates one on another machine (DIR there).
+  A herdr-core target runs the launch gate: --harness-binary and --name are refused, the
+  preflight below is the argument check alone, and the agent starts idle.
 
 Preflight (nothing is started when any step refuses):
   - the selected executable must resolve; its registered contract is declared without
@@ -119,7 +125,8 @@ Choose one target mode:
   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
     to an existing canonical seat without launching or restarting its session.
 On another machine: --pane PANE@MACHINE, or --new-tab LABEL --space SPACE@MACHINE
-  --cwd DIR (DIR on that machine); --existing --seat SEAT@MACHINE.
+  --cwd DIR (DIR on that machine), or --new-terminal --space @MACHINE --cwd DIR;
+  --existing --seat SEAT@MACHINE.
 Handoff requires an original top-level Agent and the guarded daemon capability.
 --new-tab conflicts with --existing, --tab, --pane and --seat. Directory example:
   handoff --new-tab review --kind HARNESS --profile-dir /absolute/profile --cwd /absolute/workdir -- "Review this change"

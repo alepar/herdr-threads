@@ -536,6 +536,139 @@ def real_run(tmp):
     return r
 
 
+class TmuxNamedCases(TempDir):
+    """ht-kqrt.61: the opt-in tmux-named cases stay out of the default matrix, and their private tmux servers are
+    killed and verified gone by cleanup (a survivor fails the run)."""
+
+    def recipient(self, harness="codex", tmux=True):
+        run = SimpleNamespace(run_id="000000-test")
+        if tmux:
+            return W.TmuxRecipient(run, f"{harness[:2]}-tmux", harness, f"tmux-{harness}-{run.run_id}")
+        return W.Recipient(run, f"{harness[:2]}-t0", harness, 0, "p1", "s1")
+
+    def test_absent_from_the_default_matrix(self):
+        for case in W.TMUX_CASES:
+            self.assertNotIn(case, W.CASES)
+        self.assertNotIn("tmux-named", " ".join(W.CASES))
+
+    def test_only_the_tmux_recipients_run_them_and_they_run_nothing_else(self):
+        for harness in W.TMUX_HARNESSES:
+            tmux, herdr = self.recipient(harness), self.recipient(harness, tmux=False)
+            for case in W.TMUX_CASES:
+                self.assertTrue(W.applies(tmux, case), (harness, case))
+                self.assertFalse(W.applies(herdr, case), (harness, case))
+            for case in W.CASES + W.SIDE_CASES + W.HOOKS_CASES + W.EOT_CASES:
+                self.assertFalse(W.applies(tmux, case), (harness, case))
+
+    def test_codex_is_not_a_tmux_wake_harness(self):
+        # Codex has no screen_blocked recognizer, so the wake gate never types into a tmux Codex seat.
+        self.assertNotIn("codex", W.TMUX_HARNESSES)
+        self.assertIn("claude", W.TMUX_HARNESSES)
+
+    def test_the_seat_name_is_a_valid_seat_name(self):
+        name = self.recipient("claude").seat_name
+        self.assertRegex(name, r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+        self.assertLessEqual(len(name), 64)  # SEAT_NAME_MAX_BYTES
+
+    def test_expected_wake_follows_the_threshold(self):
+        self.assertTrue(W.expect_wake("send-p0", "1:1", 0))
+        self.assertFalse(W.expect_wake("send-p1", "1:1", 0))
+
+    def test_tmux_env_names_no_herdr_pane_enclosing_tmux_or_agent_session(self):
+        r = object.__new__(W.Run)
+        env = {"HERDR_PANE_ID": "p1", "HERDR_ENV": "1", "HERDR_SOCKET_PATH": "/x", "TMUX": "/t,1,0",
+               "TMUX_PANE": "%1", "CODEX_THREAD_ID": "t", "CLAUDECODE": "1", "PATH": "/bin", "HOME": "/h"}
+        with mock.patch.dict(W.os.environ, env, clear=True):
+            self.assertEqual(r.tmux_env(), {"PATH": "/bin", "HOME": "/h"})
+
+    def test_cleanup_kills_a_private_tmux_server_and_leaves_no_process(self):
+        if not shutil.which("tmux"):
+            self.skipTest("no tmux")
+        r = real_run(self.tmp)
+        self.addCleanup(r.cmdlog.close)
+        r.cwd, r.secrets = str(self.tmp), ()
+        name = r.tmux_start()
+        self.addCleanup(subprocess.run, ["tmux", "-L", name, "kill-server"], capture_output=True)
+        self.assertTrue(name.startswith("ht-test-"))
+        alive = subprocess.run(["tmux", "-L", name, "display", "-p", "x"], capture_output=True, text=True)
+        self.assertEqual(alive.returncode, 0, alive)
+        self.assertFalse(r.tmux_server_gone(name))
+        self.assertEqual(r.cleanup(), [])
+        gone = subprocess.run(["tmux", "-L", name, "display", "-p", "x"], capture_output=True, text=True)
+        self.assertNotEqual(gone.returncode, 0)
+        self.assertEqual(subprocess.run(["pgrep", "-f", "--", f"-L {name}"], capture_output=True).returncode, 1)
+        self.assertTrue(r.tmux_server_gone(name))
+
+    def test_tmux_case_counts_wakes_per_case(self):
+        wake = "herdr-threads: wake up"
+        stale = f"prompt\n{wake}\nanswer\n"
+        self.assertEqual(W.wake_delta(stale, stale + "hello\nreply\n"), 0)
+        self.assertEqual(W.wake_delta(stale, stale + f"{wake}\nreply\n"), 1)
+
+    def test_a_missing_tmux_row_fails_the_completeness_check(self):
+        recipients = [self.recipient("claude"), self.recipient("codex")]
+        rows = [{"recipient": r.name, "case": c, "result": "PASS", "threshold": 0, "harness": r.harness}
+                for r in recipients for c in W.TMUX_CASES]
+        run = SimpleNamespace(results=list(rows), recipients=recipients)
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            self.assertTrue(W.summary(run, list(W.TMUX_CASES)))
+            run = SimpleNamespace(results=rows[1:], recipients=recipients)
+            self.assertFalse(W.summary(run, list(W.TMUX_CASES)))
+        self.assertEqual(run.completeness["missing"], [(recipients[0].name, W.TMUX_CASES[0])])
+
+    def test_the_screen_primitives_read_and_type_into_the_private_server(self):
+        if not shutil.which("tmux"):
+            self.skipTest("no tmux")
+        r = real_run(self.tmp)
+        self.addCleanup(r.cmdlog.close)
+        r.cwd, r.secrets = str(self.tmp), ()
+        rec = W.TmuxRecipient(r, "co-tmux", "codex", "tmux-codex-000000-test")
+        rec.server = r.tmux_start()
+        self.addCleanup(subprocess.run, ["tmux", "-L", rec.server, "kill-server"], capture_output=True)
+        rec.target = r.tmux(rec.server, "display", "-p", "#{pane_id}")[1].strip()
+        self.assertTrue(rec.target.startswith("%"), rec.target)
+        self.assertEqual(rec.status(), "idle")
+        rec.keys("-l", "echo wake-e2e-$((40+2))")
+        rec.keys("Enter")
+        end = time.time() + 5
+        while "wake-e2e-42" not in rec.screen(50) and time.time() < end:
+            time.sleep(0.1)
+        self.assertIn("wake-e2e-42", rec.screen(50))
+        rec.keys("-l", "sleep 3 # esc to interrupt")
+        rec.keys("Enter")
+        self.assertEqual(rec.status(), "working")  # the running-turn status line reads as busy
+
+    def fake_cleanup(self, alive):
+        f = FakeRun(self.tmp)
+        f.r.tmux_servers = ["ht-test-aa"]
+        f.r.tmux_env = lambda: {}
+        f.script["kill-server"] = lambda: (0, "", "")
+        f.script["display"] = lambda: (0, "x", "") if alive else (1, "", "no server running")
+        return f
+
+    def test_a_surviving_tmux_server_fails_cleanup(self):
+        f = self.fake_cleanup(alive=True)
+        problems = f.r.cleanup()
+        self.assertTrue(any("tmux server ht-test-aa still running" in p for p in problems), problems)
+        self.assertTrue(f.r.root.exists())
+
+    def test_a_killed_tmux_server_passes_cleanup(self):
+        f = self.fake_cleanup(alive=False)
+        self.assertEqual(f.r.cleanup(), [])
+        self.assertIn("kill-server", f.calls)
+
+    def test_a_tmux_server_with_a_process_left_fails_cleanup(self):
+        f = self.fake_cleanup(alive=False)
+        f.script["pgrep"] = lambda: (0, "4242\n", "")
+        self.assertTrue(f.r.cleanup())
+
+    def test_keep_leaves_the_tmux_server(self):
+        f = self.fake_cleanup(alive=True)
+        f.r.args.keep = True
+        self.assertEqual(f.r.cleanup(), [])
+        self.assertNotIn("kill-server", f.calls)
+
+
 class Interruption(TempDir):
     """Cleanup begins while a recipient worker is blocked in a helper (like `herdr agent prompt --wait`)."""
 

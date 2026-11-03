@@ -1,0 +1,22 @@
+[
+  {
+    "kind": "message",
+    "id": "m1",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "body of m1",
+    "senderLabel": "reviewer"
+  },
+  {
+    "kind": "message",
+    "id": "m2",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "body of m2",
+    "senderLabel": "reviewer@Q0V"
+  }
+]

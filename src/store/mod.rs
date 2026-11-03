@@ -23,6 +23,8 @@ pub mod local_seat_status;
 pub mod materialization;
 pub mod materialize;
 pub mod messages;
+pub mod named_seats;
+pub mod no_wake_reports;
 pub mod node_directory;
 pub mod node_prune;
 pub mod operator;
@@ -1272,6 +1274,21 @@ pub(crate) fn discover_wake_candidates(
     })
 }
 
+/// The wake walk's per-seat budget check. A Stop is `Cancelled`, not an exhausted budget: only
+/// the deadline is `ReadBudgetExhausted`.
+fn wake_discovery_budget_check(budget: &CallBudget, clock: &dyn Clock) -> Result<(), ApiError> {
+    if budget.cancellation.is_cancelled() {
+        return Err(ApiError::cancelled("wake discovery"));
+    }
+    if budget.deadline_passed(clock) {
+        return Err(api_error(
+            ErrorCode::ReadBudgetExhausted,
+            "wake discovery budget exhausted",
+        ));
+    }
+    Ok(())
+}
+
 fn wake_candidates_page(
     context: &StoreContext,
     instance: &str,
@@ -1314,15 +1331,7 @@ fn wake_candidates_page(
         cursor.as_ref().map_or(0, |c| c.after_ordinal),
         high_water,
         usize::from(page.limit),
-        &|| {
-            if budget.is_exhausted(context.clock()) {
-                return Err(api_error(
-                    ErrorCode::ReadBudgetExhausted,
-                    "wake discovery budget exhausted",
-                ));
-            }
-            Ok(())
-        },
+        &|| wake_discovery_budget_check(budget, context.clock()),
     )?;
     page_fit::fit_internal(
         page.max_bytes as usize,
@@ -1669,6 +1678,16 @@ impl StorePort for SqliteStore {
             |tx, at, ()| bindings::apply_liveness(tx, decisions, at.utc),
         )
     }
+    fn no_wake_reports_apply(
+        &self,
+        observer: &SeatId,
+        persist: &[SeatId],
+        clear: &[SeatId],
+        budget: &CallBudget,
+    ) -> Result<Option<Vec<SeatId>>, ApiError> {
+        self.no_wake_reports_apply_impl(observer, persist, clear, budget)
+            .map(Some)
+    }
     fn archival_pass(
         &self,
         runtime: &archival::Runtime,
@@ -2013,6 +2032,9 @@ impl StorePort for SqliteStore {
             PermitMutation::SetNudgeThreshold(v) => {
                 seats::set_nudge_threshold(&self.context, &mut writer, budget, &v, permit)
             }
+            PermitMutation::SelfRetire(v) => {
+                seats::self_retire(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::CheckIn(_) => Err(api_error(
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",
@@ -2226,6 +2248,22 @@ impl StorePort for SqliteStore {
             &self.instance,
             request,
             attempt,
+            budget,
+        )
+    }
+    fn resolve_named_seat(
+        &self,
+        request: ResolveSeat,
+        host: crate::ports::HostId,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::resolve_named_seat(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            host,
+            &request,
             budget,
         )
     }
@@ -2563,14 +2601,24 @@ impl StorePort for SqliteStore {
             other => other,
         }
     }
-    fn attach_host(
+    fn attach_host_of_kind(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        kind: crate::ports::HostKind,
+        budget: &CallBudget,
+    ) -> Result<(crate::ports::HostId, i64), ApiError> {
+        let mut writer = self.writer(budget)?;
+        hosts::attach_host(&mut writer, locator, now, kind)
+    }
+    fn attach_host_unprobed(
         &self,
         locator: &crate::protocol::ids::HostLocator,
         now: i64,
         budget: &CallBudget,
-    ) -> Result<(crate::ports::HostId, i64), ApiError> {
+    ) -> Result<(crate::ports::HostId, i64, crate::ports::HostKind), ApiError> {
         let mut writer = self.writer(budget)?;
-        hosts::attach_host(&mut writer, locator, now)
+        hosts::attach_host_unprobed(&mut writer, locator, now)
     }
     fn begin_host_observation(
         &self,
@@ -3293,10 +3341,15 @@ impl StorePort for SqliteStore {
                 .optional()
                 .map_err(store_error)?
                 .flatten();
+            let author_label = match author.as_deref() {
+                Some(a) => seat_directory::sender_label(&db, a)?,
+                None => None,
+            };
             Ok(crate::ports::PulledNotice {
                 notice: offered.notice,
                 topic,
                 author: author.map(SeatId::new),
+                author_label,
             })
         })
         .collect()
@@ -3829,6 +3882,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             control::cooperative_payload_hash("set_nudge_threshold", v)?,
+            None,
+        ),
+        PermitMutation::SelfRetire(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("self_retire", v)?,
             None,
         ),
         PermitMutation::Leave(v) => (

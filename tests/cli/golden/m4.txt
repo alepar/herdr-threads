@@ -1,0 +1,1 @@
+herdr-threads: env names pane w1:p1 and terminal hc:t3; neither is an ancestor of this process; unset the stale one

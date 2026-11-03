@@ -73,6 +73,9 @@ pub struct WatchAckRequest {
 pub(crate) struct EmitState {
     next_status: u64,
     assembler: Assembler,
+    /// A read-only watch (D3) never shows a receipt-bearing row; it stays pending for a
+    /// writable sibling.
+    readonly: bool,
 }
 
 impl EmitState {
@@ -81,6 +84,11 @@ impl EmitState {
             assembler: Assembler::new(hint_path),
             ..Self::default()
         }
+    }
+
+    fn with_readonly(mut self, readonly: bool) -> Self {
+        self.readonly = readonly;
+        self
     }
 
     fn with_command_prefix(mut self, prefix: Vec<String>) -> Self {
@@ -158,7 +166,9 @@ fn exit_result(code: i32) -> Result<(), RunError> {
 
 /// The checks that run before any connection or context read, in order:
 /// `HERDR_THREADS_MOD_DELIVERY=off` (both `watch` and `watch ack`), then, for
-/// `watch` only, a missing pane without `--cooperative-*` selection.
+/// `watch` only, a missing pane without `--cooperative-*` selection or a non-Pane site (the
+/// caller said where it lives with `HERDR_THREADS_SEAT_NAME` or `HC_TERMINAL_ID`, so a missing
+/// pane is not `no_pane`).
 pub(crate) fn precheck(
     mod_delivery: Option<&str>,
     caller_pane: Option<&str>,
@@ -422,7 +432,9 @@ fn run_session_marked(
     out: &mut dyn Write,
     mut alive: impl FnMut() -> bool,
 ) -> i32 {
-    let mut state = EmitState::new(session.hint_path.clone()).with_command_prefix(command_prefix);
+    let mut state = EmitState::new(session.hint_path.clone())
+        .with_command_prefix(command_prefix)
+        .with_readonly(super::caller_location::CallerEnv::from_process().readonly());
     let (presentation, cursors) =
         match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
             Probe::Supported {
@@ -867,6 +879,7 @@ pub(crate) fn drain(
     };
     let attention_text =
         crate::protocol::watch::attention_marker_for(&state.assembler.command_prefix);
+    let readonly = state.readonly;
     drain_pages(
         &mut source,
         &mut state.assembler,
@@ -874,6 +887,9 @@ pub(crate) fn drain(
         MAX_DRAIN_PAGES,
         |event| {
             let line = match event {
+                DrainEvent::Item(item) if readonly && item.message.ack_required => {
+                    return Ok(Stop::Continue);
+                }
                 DrainEvent::Item(item) => {
                     let id = item.id.as_str().to_owned();
                     WatchLine::new(
@@ -1132,7 +1148,29 @@ where
     let (instance, client) = connection.get().map_err(|_| CallerFailure::Daemon)?;
     let origin = watch_origin(parsed, session);
     let _origin = super::caller::ActiveGuard::enter(origin.clone());
-    let selection = match derive_caller(parsed, caller_pane, context, paths, connection, clock) {
+    // A named seat's watch locates the seat its hook enrolled: `watch` never allocates, so an
+    // unknown name is "no binding" before the (resolving) selection runs.
+    let site = parsed.caller_site.clone();
+    let named = site
+        .as_ref()
+        .filter(|site| matches!(site, super::caller_location::CallerLocator::Named(_)));
+    if named.is_some()
+        && !matches!(
+            super::named_site_seat(named, connection, &parsed.output, clock),
+            Ok(Some(_))
+        )
+    {
+        return Err(CallerFailure::NoBinding);
+    }
+    let selection = match derive_caller(
+        parsed,
+        caller_pane,
+        site.as_ref(),
+        context,
+        paths,
+        connection,
+        clock,
+    ) {
         Ok(Some(selection)) => selection,
         Ok(None) => return Err(CallerFailure::NoBinding),
         Err(RunError::Api(error))
@@ -1145,6 +1183,19 @@ where
         }
         Err(_) => return Err(CallerFailure::Other),
     };
+    // D3: a readonly watch records the marker before it registers (the watch enrolls through
+    // `register_available`, which never stamps it).
+    let marker_host = context.claim_host().map_err(|_| CallerFailure::Other)?;
+    super::mark_readonly_caller(
+        parsed,
+        &selection,
+        paths,
+        *instance,
+        &marker_host,
+        client,
+        clock.as_ref(),
+    )
+    .map_err(|_| CallerFailure::Other)?;
     if let Some(super::caller::CallerOrigin::Agent(env)) = origin {
         // The mod's watch child runs under the session's harness: its claim is the environment's
         // (the fingerprint is the harness process's), with the `--session` the mod passed.
@@ -1245,6 +1296,7 @@ where
         env.harness,
         session,
         Arc::clone(clock),
+        super::caller_location::CallerEnv::for_site(parsed.caller_site.as_ref()),
     )
 }
 
@@ -1352,7 +1404,9 @@ where
     let command_prefix = super::hook::cli_prefix(&super::hook::pane_selectors(
         Some(&context.state_dir),
         context.host_endpoint.as_deref(),
-        &super::hook::pane_inputs(),
+        &super::hook::pane_inputs(&super::caller_location::CallerEnv::for_site(
+            parsed.caller_site.as_ref(),
+        )),
     ));
     let code = run_session_marked(
         WatchSession {

@@ -1,0 +1,233 @@
+{
+ "inspected": [
+  {
+   "path": "migrations/node/0014_locator_host.sql",
+   "hunks": [
+    "@@ -0,0 +1,3 @@"
+   ]
+  },
+  {
+   "path": "src/cli/caller_guard.rs",
+   "hunks": [
+    "@@ -0,0 +1,130 @@"
+   ]
+  },
+  {
+   "path": "src/cli/caller_location.rs",
+   "hunks": [
+    "@@ -0,0 +1,467 @@"
+   ]
+  },
+  {
+   "path": "src/cli/hc_target.rs",
+   "hunks": [
+    "@@ -0,0 +1,152 @@"
+   ]
+  },
+  {
+   "path": "src/cli/launch_gate.rs",
+   "hunks": [
+    "@@ -0,0 +1,280 @@"
+   ]
+  },
+  {
+   "path": "src/cli/topology_handoff/automatic.rs",
+   "hunks": [
+    "@@ -8,7 +8,9 @@ use crate::{",
+    "@@ -23,14 +25,14 @@ use std::{io::Write, path::PathBuf};",
+    "@@ -191,12 +193,18 @@ fn load_parent(",
+    "@@ -261,6 +269,178 @@ fn save_child(",
+    "@@ -323,8 +503,47 @@ fn resolve_and_attach<C: LocalClient + ?Sized>(",
+    "@@ -340,16 +559,19 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(",
+    "@@ -372,54 +594,25 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(",
+    "@@ -428,13 +621,13 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(",
+    "@@ -442,10 +635,26 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(",
+    "@@ -490,19 +699,49 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(",
+    "@@ -528,13 +767,46 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(",
+    "@@ -550,7 +822,7 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(",
+    "@@ -563,40 +835,20 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(",
+    "@@ -609,6 +861,10 @@ fn effective_launch(",
+    "@@ -640,7 +896,7 @@ fn retained_report(",
+    "@@ -648,15 +904,15 @@ fn retained_report(",
+    "@@ -686,6 +942,14 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size",
+    "@@ -830,7 +1094,7 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size",
+    "@@ -1113,7 +1377,7 @@ pub(super) fn write_pending<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -1254,7 +1518,7 @@ fn present_completed<W: Write>("
+   ]
+  },
+  {
+   "path": "src/daemon/idle_exit.rs",
+   "hunks": [
+    "@@ -1,5 +1,5 @@",
+    "@@ -14,8 +14,8 @@ pub const IDLE_EXIT_AFTER: Duration = Duration::from_secs(10 * 60);",
+    "@@ -31,12 +31,26 @@ pub struct ActivityProbe {"
+   ]
+  },
+  {
+   "path": "src/daemon/lifecycle.rs",
+   "hunks": [
+    "@@ -18,6 +18,7 @@ use crate::daemon::transport::{self, ServeOutcome};",
+    "@@ -318,12 +319,67 @@ enum StartupStderr {",
+    "@@ -355,7 +411,7 @@ fn pipe_reader(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, Re",
+    "@@ -367,8 +423,12 @@ fn spawn_detached(",
+    "@@ -377,7 +437,7 @@ fn spawn_detached(",
+    "@@ -395,10 +455,11 @@ fn spawn_detached(",
+    "@@ -418,7 +479,18 @@ fn spawn_detached(",
+    "@@ -556,34 +628,55 @@ pub async fn ensure_running_with_timeout("
+   ]
+  },
+  {
+   "path": "src/daemon/transport.rs",
+   "hunks": [
+    "@@ -43,6 +43,37 @@ use tokio::{",
+    "@@ -405,6 +436,13 @@ fn skew_reply(frame: &[u8], instance: &str, daemon_boot: &str) -> Option<WireRes",
+    "@@ -427,14 +465,14 @@ async fn serve_connection(",
+    "@@ -551,20 +589,9 @@ async fn serve_connection("
+   ]
+  },
+  {
+   "path": "src/host/hc/discovery.rs",
+   "hunks": [
+    "@@ -0,0 +1,158 @@"
+   ]
+  },
+  {
+   "path": "src/host/hc/mod.rs",
+   "hunks": [
+    "@@ -0,0 +1,1066 @@"
+   ]
+  },
+  {
+   "path": "src/host/hc/rpc.rs",
+   "hunks": [
+    "@@ -0,0 +1,340 @@"
+   ]
+  },
+  {
+   "path": "src/host/hc/wire.rs",
+   "hunks": [
+    "@@ -0,0 +1,252 @@"
+   ]
+  },
+  {
+   "path": "src/host/mod.rs",
+   "hunks": [
+    "@@ -21,10 +21,46 @@ pub const PANE_SCOPED_ENV_VARS: &[&str] = &["
+   ]
+  },
+  {
+   "path": "src/host/named.rs",
+   "hunks": [
+    "@@ -0,0 +1,864 @@"
+   ]
+  },
+  {
+   "path": "src/host/named/tmux.rs",
+   "hunks": [
+    "@@ -0,0 +1,323 @@"
+   ]
+  },
+  {
+   "path": "src/identity/reconcile.rs",
+   "hunks": [
+    "@@ -210,6 +210,17 @@ fn never_registered_structural_bridge(",
+    "@@ -262,23 +273,34 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>,",
+    "@@ -328,6 +350,9 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>,",
+    "@@ -476,6 +501,25 @@ pub fn reconcile_published_page(",
+    "@@ -497,7 +541,7 @@ pub fn reconcile_published_page(",
+    "@@ -618,6 +662,7 @@ pub fn observe_and_publish(",
+    "@@ -628,9 +673,25 @@ pub fn observe_and_publish(",
+    "@@ -661,7 +722,15 @@ pub fn observe_and_publish(",
+    "@@ -671,18 +740,39 @@ pub fn observe_and_publish(",
+    "@@ -693,11 +783,17 @@ fn invalidate_or_skip(",
+    "@@ -867,8 +963,16 @@ pub struct ObservationLane {",
+    "@@ -903,14 +1007,53 @@ impl ObservationLane {",
+    "@@ -918,7 +1061,7 @@ impl ObservationLane {"
+   ]
+  },
+  {
+   "path": "src/service/locate.rs",
+   "hunks": [
+    "@@ -0,0 +1,407 @@"
+   ]
+  },
+  {
+   "path": "src/service/turn_state.rs",
+   "hunks": [
+    "@@ -0,0 +1,187 @@"
+   ]
+  },
+  {
+   "path": "src/service/host_sessions.rs",
+   "hunks": [
+    "@@ -6,10 +6,11 @@",
+    "@@ -28,10 +29,10 @@ use crate::service::{",
+    "@@ -49,30 +50,38 @@ const ATTACH_POLL: Duration = Duration::from_millis(10);",
+    "@@ -120,6 +129,8 @@ pub struct SessionDeps {",
+    "@@ -154,6 +165,7 @@ impl SessionDeps {",
+    "@@ -189,6 +201,11 @@ impl LaneHandle {",
+    "@@ -240,9 +257,15 @@ pub struct HostSession {",
+    "@@ -272,14 +295,20 @@ impl HostSession {",
+    "@@ -299,8 +328,8 @@ impl HostSession {",
+    "@@ -320,6 +349,7 @@ impl HostSession {",
+    "@@ -335,6 +365,8 @@ impl HostSession {",
+    "@@ -344,6 +376,11 @@ impl HostSession {",
+    "@@ -351,10 +388,11 @@ impl HostSession {",
+    "@@ -377,7 +415,10 @@ impl BootstrapObserver for RefusedBootstrapObserver {",
+    "@@ -396,6 +437,8 @@ impl BootstrapObserver for RefusedBootstrapObserver {",
+    "@@ -432,6 +475,7 @@ impl HostSessions {",
+    "@@ -447,6 +491,32 @@ impl HostSessions {",
+    "@@ -458,7 +528,8 @@ impl HostSessions {",
+    "@@ -475,7 +546,11 @@ impl HostSessions {",
+    "@@ -484,7 +559,7 @@ impl HostSessions {",
+    "@@ -492,19 +567,69 @@ impl HostSessions {",
+    "@@ -512,9 +637,18 @@ impl HostSessions {",
+    "@@ -528,16 +662,17 @@ impl HostSessions {",
+    "@@ -549,7 +684,7 @@ impl HostSessions {",
+    "@@ -576,7 +711,7 @@ impl HostSessions {",
+    "@@ -587,8 +722,7 @@ impl HostSessions {",
+    "@@ -596,16 +730,34 @@ impl HostSessions {",
+    "@@ -628,6 +780,68 @@ impl HostSessions {",
+    "@@ -667,11 +881,13 @@ impl HostSessions {",
+    "@@ -687,7 +903,8 @@ impl HostSessions {",
+    "@@ -701,14 +918,26 @@ impl HostSessions {"
+   ]
+  },
+  {
+   "path": "src/cli/hook.rs",
+   "hunks": [
+    "@@ -248,16 +248,57 @@ pub(crate) fn parse_hook_argv_registered(",
+    "@@ -1273,10 +1314,10 @@ pub const CLI_ARGV0: &str = \"herdr-threads\";",
+    "@@ -1463,7 +1504,7 @@ fn report_parse_failure_to_daemon(",
+    "@@ -1536,18 +1577,36 @@ fn find_seat(",
+    "@@ -1615,12 +1674,13 @@ fn find_seat_for(",
+    "@@ -1628,6 +1688,11 @@ fn locate_seat_for(",
+    "@@ -1635,7 +1700,7 @@ fn locate_seat_for(",
+    "@@ -1787,17 +1852,16 @@ fn connect_pane(",
+    "@@ -1857,6 +1921,7 @@ fn enroll_pane(",
+    "@@ -1877,7 +1942,14 @@ fn enroll_pane(",
+    "@@ -1919,14 +1991,14 @@ fn check_in(",
+    "@@ -1955,6 +2027,7 @@ fn check_in(",
+    "@@ -2051,7 +2124,14 @@ fn check_in(",
+    "@@ -2110,6 +2190,9 @@ struct PaneCall<'a> {",
+    "@@ -2159,6 +2242,7 @@ pub(super) fn watch_continuity(",
+    "@@ -2175,6 +2259,7 @@ pub(super) fn watch_continuity(",
+    "@@ -2600,7 +2685,7 @@ impl PaneCall<'_> {",
+    "@@ -2631,7 +2716,7 @@ impl PaneCall<'_> {",
+    "@@ -3482,7 +3567,7 @@ pub(crate) fn run_hook_registered(",
+    "@@ -3593,7 +3678,8 @@ fn adapter_state_dir(",
+    "@@ -3645,7 +3731,10 @@ fn run_hook_step(",
+    "@@ -3654,7 +3743,7 @@ fn run_hook_step(",
+    "@@ -3664,7 +3753,7 @@ fn run_hook_step(",
+    "@@ -3762,7 +3851,8 @@ fn quiet_outcome(detail: String) -> HookOutcome {",
+    "@@ -3783,8 +3873,8 @@ fn pane_context_journal(",
+    "@@ -3837,7 +3927,7 @@ fn record_observer_reset(",
+    "@@ -3869,12 +3959,12 @@ fn report_binding_event(",
+    "@@ -3946,6 +4036,55 @@ fn report_binding_event(",
+    "@@ -3972,6 +4111,9 @@ pub fn run_admitted_hook(",
+    "@@ -3986,8 +4128,165 @@ fn run_admitted_hook_since(",
+    "@@ -4002,7 +4301,7 @@ fn run_admitted_hook_since("
+   ]
+  }
+ ]
+}

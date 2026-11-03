@@ -4795,6 +4795,8 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p1"),
         operation: OperationId::new("resolve"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     let guard =
         crate::ports::OrdinaryResolutionGuard::try_new(&ordinary, observation.clone(), &admission)
@@ -4961,6 +4963,8 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p3"),
         operation: OperationId::new("resolve-once"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     let guard =
         || OrdinaryResolutionGuard::try_new(&request, observation.clone(), &admission).unwrap();
@@ -5097,6 +5101,8 @@ fn ordinary_allocation_refuses_a_moved_terminal_until_its_seat_follows() {
             host: crate::test_support::test_host_locator(),
             target: HostTargetId::new(target),
             operation: OperationId::new(operation),
+            locator_hint: None,
+            tmux_hint: None,
         };
         let guard = OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
         seats::resolve_seat(
@@ -5174,6 +5180,8 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p3"),
         operation: OperationId::new("ordinary-empty-proof"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     let observation = HostObservation {
         focused: false,
@@ -5894,6 +5902,7 @@ fn registration_ignores_an_exhausted_binding_history_generation_and_rolls_back_w
     let (context, mut conn, path, _) = fixture(100);
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s2',?1,'s2','b',1,1,'codex','old','old','cooperative_top_level',0,'term-'||'s2','inc')",[i64::MAX]).unwrap();
     let command = CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
@@ -7069,6 +7078,8 @@ fn ordinary_resolution_guard_rejects_unqualified_or_mismatched_read() {
         host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("pane-new"),
         operation: OperationId::new("resolve"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     let mut observation = snapshot_for_test(2, &["pane-new"]).targets.remove(0);
     observation.terminal = Some(TerminalId::new("terminal-new"));
@@ -7178,6 +7189,8 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
         host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("first-resolve"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     assert_eq!(
         store
@@ -7321,6 +7334,8 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
             host: crate::test_support::test_host_locator(),
             target: current.target.clone(),
             operation: OperationId::new(key),
+            locator_hint: None,
+            tmux_hint: None,
         };
         let guard =
             OrdinaryResolutionGuard::try_new(&request, current.clone(), &admission).unwrap();
@@ -7361,6 +7376,8 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
         host: crate::test_support::test_host_locator(),
         target: current.target.clone(),
         operation: OperationId::new("concurrent-a"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     assert_eq!(
         crate::store::seats::resolve_seat(
@@ -7400,6 +7417,8 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
             host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: OperationId::new("resolve"),
+            locator_hint: None,
+            tmux_hint: None,
         };
         let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
         let Outcome::Resolved(seat) = store
@@ -7568,6 +7587,8 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
             host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: OperationId::new("resolve"),
+            locator_hint: None,
+            tmux_hint: None,
         };
         let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
         match state {
@@ -7645,6 +7666,8 @@ fn ordinary_resolution_cancelled_writer_wait_has_no_seat_or_operation_effect() {
         host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("cancelled-resolve"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     let guard = OrdinaryResolutionGuard::try_new(&request, current, &admission).unwrap();
@@ -8037,6 +8060,7 @@ fn registration_requires_and_records_reconfirmation_evidence() {
     };
     let (context, mut conn, path, _) = fixture(100);
     let command = CheckIn {
+        readonly: false,
         lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
@@ -9668,6 +9692,104 @@ fn process_continuity_lists_the_unresolved_bindings_and_records_its_own_kind() {
     let _ = std::fs::remove_file(path);
 }
 
+/// Process continuity keeps the environment seam (TRUST-POLICY C1, N): it is a C1 decision, so a
+/// named seat is never its candidate and a seat on the named host never rebinds onto a pane.
+/// Kills: listing a named seat, a process decision reattaching one, and a process decision that
+/// skips the cross-kind refusal of `rebind_unresolved_seat`.
+#[test]
+fn process_continuity_refuses_named_and_cross_kind_seats() {
+    use crate::ports::{ContinuityEvidence, HostKind, ProcessContinuityPage};
+    use crate::protocol::time::{CallBudget, Cancellation};
+    const INSTANCE: &str = "34750f98bd59fcfc946da45aaabe933b";
+    let (context, mut conn, path) = c1_fixture();
+    let budget = CallBudget {
+        deadline: MonoInstant(1_000),
+        cancellation: Cancellation::default(),
+    };
+    conn.execute(
+        "UPDATE seats SET state='unresolved',unresolved_reason='other',target_id='held-pane',generation=5 WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',disconnected_at=50,liveness_pid=4242,liveness_start=7,generation=4,incarnation='before-handoff' WHERE seat_id='s1'",
+        [],
+    )
+    .unwrap();
+    let listed = |context: &crate::store::connection::StoreContext| {
+        crate::store::seats::process_continuity_candidates(
+            context,
+            INSTANCE,
+            crate::test_support::test_host_id(),
+            &ProcessContinuityPage::default(),
+            &budget,
+        )
+        .unwrap()
+        .candidates
+        .len()
+    };
+    assert_eq!(listed(&context), 1, "the unnamed seat is a candidate");
+    let decide = |conn: &mut rusqlite::Connection, operation: &str| {
+        let mut command = c1_command("held-pane", "sess-1", operation);
+        command.source = "same_session".into();
+        let guard = crate::ports::ContinuityTargetGuard::try_new(
+            INSTANCE,
+            crate::test_support::test_host_id(),
+            &command,
+            b5_fresh_observation("held-pane"),
+        )
+        .unwrap();
+        crate::store::seats::decide_continuity(
+            &context,
+            conn,
+            INSTANCE,
+            crate::ports::ContinuityRequest {
+                command,
+                guard,
+                diagnostic: "absent",
+                evidence: ContinuityEvidence::Process {
+                    seat: SeatId::new("s1"),
+                    seat_generation: 5,
+                },
+            },
+        )
+    };
+    let settled = |conn: &rusqlite::Connection| -> (String, i64) {
+        (
+            conn.query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+                .unwrap(),
+            conn.query_row(
+                "SELECT count(*) FROM allocation_decisions WHERE seat_id='s1' AND kind='structural_process_continuity'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
+        )
+    };
+
+    // A named seat: not listed, and the C1 match does not name it.
+    conn.execute("UPDATE seats SET name='worker' WHERE id='s1'", [])
+        .unwrap();
+    assert_eq!(listed(&context), 0, "a named seat's continuity is its name");
+    let refused = decide(&mut conn, "pc-named").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotFound, "{refused:?}");
+    assert_eq!(settled(&conn), ("unresolved".to_owned(), 0));
+    conn.execute("UPDATE seats SET name=NULL WHERE id='s1'", [])
+        .unwrap();
+
+    // A seat on the named host: the C1 transaction reaches the cross-kind refusal.
+    let locator = HostLocator::parse(crate::protocol::ids::NAMED_HOST_LOCATOR).unwrap();
+    let (named, _) =
+        crate::store::hosts::attach_host(&mut conn, &locator, 0, HostKind::Named).unwrap();
+    conn.execute("UPDATE seats SET host_id=?1 WHERE id='s1'", [named.get()])
+        .unwrap();
+    let refused = decide(&mut conn, "pc-cross").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InvalidRequest, "{refused:?}");
+    assert_eq!(settled(&conn), ("unresolved".to_owned(), 0));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn continuity_reattaches_unique_session_match_on_held_target() {
     let (context, mut conn, path) = c1_fixture();
@@ -9930,6 +10052,8 @@ fn continuity_for_an_unknown_session_is_final_while_reconciliation_lags() {
         host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("new-pane"),
         operation: OperationId::new("kaw9-enroll"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     let mut observation = b5_fresh_observation("new-pane");
     observation.observation_sequence = 4;
@@ -12979,6 +13103,7 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
         };
         if registered {
             let checkin = CheckIn {
+                readonly: false,
                 mode: CheckInMode::Current,
                 claim: claim("s2"),
                 operation: OperationId::new("registration-not-acceptance"),
@@ -13824,6 +13949,8 @@ fn restore_hold_refusal_names_cause_blockers_and_exact_operator_repairs() {
         host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("held-resolve"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     conn.execute(
@@ -13875,6 +14002,8 @@ fn restore_hold_explicit_refusal_carries_exact_repair_guidance() {
         host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("explicit-resolve"),
+        locator_hint: None,
+        tmux_hint: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "pane-new");

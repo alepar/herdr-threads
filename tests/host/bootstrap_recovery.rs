@@ -474,6 +474,8 @@ mod bootstrap_recovery {
                 host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("w4:p1"),
                 operation: id.payload.resolve_key.clone(),
+                locator_hint: None,
+                tmux_hint: None,
             },
             &context.budget,
             |guard| {

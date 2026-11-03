@@ -278,6 +278,7 @@ fn capability_constants_are_stable() {
     assert_eq!(HARNESS_STATES, "harness.states");
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
     assert_eq!(SEAT_BINDING_DETAILS_V1, "seat.binding_details_v1");
+    assert_eq!(SEAT_READONLY_V1, "seat.readonly_v1");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
     assert_eq!(HOOK_CONTEXT_RECEIPTS_V1, "hook.context_receipts_v1");
@@ -294,6 +295,13 @@ fn capability_constants_are_stable() {
     assert_eq!(WAKE_STATUS_V1, "seat.wake_status_v1");
     assert_eq!(PEER_PRUNE_V1, "peer.prune_v1");
     assert_eq!(PEER_EVENTS_V1, "peer.events_v1");
+    assert_eq!(HOST_TOPOLOGIES_V1, "topology.host_topologies_v1");
+    assert_eq!(HOST_SITES_V1, "seat.host_sites_v1");
+    assert_eq!(TURN_STATE_EDGE, "turn_state.edge_v1");
+    assert_eq!(TERMINAL_SITES_V1, "seat.terminal_sites_v1");
+    assert_eq!(AUTOMATIC_TARGET_V1, "handoff.automatic_target_v1");
+    assert_eq!(LAUNCH_GATE_V1, "launch.gate_v1");
+    assert_eq!(LOCAL_LAUNCH_GATE_V1, "launch.local_gate_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -324,6 +332,7 @@ fn capability_constants_are_stable() {
             "mod.watch_presentation_v2",
             "mod.ack_row_v1",
             "seat.wake_on_v1",
+            "seat.readonly_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
             "hook.context_receipts_v1",
@@ -340,7 +349,15 @@ fn capability_constants_are_stable() {
             "turn_end.due_v1",
             "seat.wake_status_v1",
             "peer.prune_v1",
-            "peer.events_v1"
+            "peer.events_v1",
+            "caller.locate_v1",
+            "topology.host_topologies_v1",
+            "seat.host_sites_v1",
+            "turn_state.edge_v1",
+            "seat.terminal_sites_v1",
+            "handoff.automatic_target_v1",
+            "launch.gate_v1",
+            "launch.local_gate_v1"
         ]
     );
 }
@@ -520,6 +537,114 @@ fn every_advertised_capability_has_a_handler() {
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
             SEATS_DIRECTORY_V1 => probe_seats_directory(),
             WAKE_STATUS_V1 => probe_wake_status(),
+            HOST_TOPOLOGIES_V1 => probe_host_topologies(),
+            HOST_SITES_V1 => probe_host_sites(),
+            TURN_STATE_EDGE => {
+                // The command decodes, validates and routes to the domain service; this daemon
+                // has no cooperative runtime, so it refuses the caller.
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"turn_state","args":{"edge":"busy","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(command.validate().is_ok());
+                assert!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .is_err()
+                );
+            }
+            TERMINAL_SITES_V1 => probe_terminal_sites(),
+            AUTOMATIC_TARGET_V1 => probe_automatic_target(),
+            LAUNCH_GATE_V1 => {
+                let command = Command::AuthorizeLaunchGate(Box::new(
+                    crate::protocol::handoff::AuthorizeLaunchGate {
+                        compound: crate::protocol::ids::OperationId::new("capability-probe"),
+                        attempt: crate::protocol::handoff::BootstrapAttempt::new(1).unwrap(),
+                        core_id: "core".into(),
+                        terminal: "t1".into(),
+                        timeout_ms: 1,
+                        socket: None,
+                    },
+                ));
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                // The control service's domain stub answers like the other probes; the decision
+                // itself is driven by `tests/hc_handoff.rs` through `service::launch_gate`.
+                assert_eq!(
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            LOCAL_LAUNCH_GATE_V1 => {
+                use crate::protocol::handoff::{LocalLaunchGate, LocalLaunchGateAction};
+                let open = LocalLaunchGate {
+                    id: crate::protocol::ids::OperationId::new("capability-probe"),
+                    host: crate::protocol::ids::HostLocator::parse("/core.sock").unwrap(),
+                    action: LocalLaunchGateAction::Open,
+                };
+                let command = Command::LocalLaunchGate(Box::new(open.clone()));
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                // A record names an agent: a person is refused at validation.
+                let placement = crate::ports::Placement::NewTerminal {
+                    parent: crate::protocol::ids::HostTargetId::new("t1"),
+                };
+                let created = crate::ports::CreatedTarget {
+                    correlation: crate::protocol::ids::HostCallId::new("c"),
+                    placement,
+                    target: crate::protocol::ids::HostTargetId::new("t2"),
+                    root_pane: None,
+                    terminal: crate::protocol::ids::TerminalId::new("t2"),
+                    host_incarnation: crate::protocol::ids::HostBootId::new(
+                        "hc-core:core-a:pid=42:start=7:uid=501",
+                    ),
+                    witness: crate::ports::HostWitness::HcCore {
+                        core_id: "core-a".into(),
+                        peer: crate::ports::HcPeer {
+                            pid: 42,
+                            start_seconds: 7,
+                            uid: 501,
+                        },
+                    },
+                };
+                let record = |harness| {
+                    Command::LocalLaunchGate(Box::new(LocalLaunchGate {
+                        action: LocalLaunchGateAction::Record {
+                            harness,
+                            created: Box::new(created.clone()),
+                        },
+                        ..open.clone()
+                    }))
+                };
+                assert!(
+                    record(crate::protocol::authority::Harness::Claude)
+                        .validate()
+                        .is_ok()
+                );
+                assert!(
+                    record(crate::protocol::authority::Harness::Human)
+                        .validate()
+                        .is_err()
+                );
+                // The control service's domain stub answers like the other probes; the
+                // handler is driven end to end by `tests/hc_handoff.rs`.
+                assert_eq!(
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             PEER_PRUNE_V1 => probe_sync_commands(&[
                 crate::protocol::sync_admin::SyncCommand::PeerPrune {
                     host: None,
@@ -538,6 +663,45 @@ fn every_advertised_capability_has_a_handler() {
                     before: None,
                     limit: 1,
                 }])
+            }
+            LOCATE_CALLER_V1 => {
+                let command = Command::LocateCaller(crate::protocol::locate::LocateCaller {
+                    candidates: vec![crate::protocol::locate::LocateCandidate::Pane {
+                        id: "p".into(),
+                    }],
+                    subject: None,
+                });
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                let iso = crate::test_support::isolation::TestIsolation::new("cap-locate-caller");
+                let clock: Arc<dyn crate::protocol::time::Clock> = Arc::new(FixedClock);
+                let store = Arc::new(
+                    crate::store::SqliteStore::new(
+                        crate::store::connection::StoreContext::new(
+                            iso.state_root().join("store.db"),
+                            Arc::clone(&clock),
+                        )
+                        .with_test_host(),
+                        "34750f98bd59fcfc946da45aaabe933b",
+                        crate::store::StoreSettings::default(),
+                    )
+                    .unwrap(),
+                );
+                let result = crate::service::dispatch::DomainService::new(
+                    "34750f98bd59fcfc946da45aaabe933b".into(),
+                    store,
+                    clock,
+                )
+                .handle(command, PeerIdentity::from_kernel(501), &budget())
+                .unwrap();
+                assert!(matches!(
+                    result,
+                    CommandResult::Located(crate::protocol::locate::LocateReply::Unverified { .. })
+                ));
             }
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
@@ -621,6 +785,23 @@ fn every_advertised_capability_has_a_handler() {
                         .code,
                     ErrorCode::NotFound
                 );
+            }
+            SEAT_READONLY_V1 => {
+                // `CheckIn.readonly` decodes and round-trips; the daemon refuses the claim (no
+                // such seat), not the field.
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"check_in","args":{"mode":{"kind":"current"},"readonly":true,"operation":"op","claim":{"host":"/host.sock","instance":"34750f98bd59fcfc946da45aaabe933b","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let Command::CheckIn(check) = &command else {
+                    panic!("expected CheckIn")
+                };
+                assert!(check.readonly);
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                let error = handler
+                    .handle(command, PeerIdentity::from_kernel(501), &budget())
+                    .unwrap_err();
+                assert_ne!(error.code, ErrorCode::InvalidRequest);
             }
             SEAT_NUDGE_THRESHOLD_V1 => {
                 // The daemon serves the read and routes the set: both are on the wire and
@@ -845,6 +1026,7 @@ fn probe_hook_context_receipts() {
             )),
         };
         let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+            readonly: false,
             lineage_parent: None,
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: 0,
@@ -1121,6 +1303,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "mod.watch_presentation_v2",
             "mod.ack_row_v1",
             "seat.wake_on_v1",
+            "seat.readonly_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
             "hook.context_receipts_v1",
@@ -1138,6 +1321,14 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.wake_status_v1",
             "peer.prune_v1",
             "peer.events_v1",
+            "caller.locate_v1",
+            "topology.host_topologies_v1",
+            "seat.host_sites_v1",
+            "turn_state.edge_v1",
+            "seat.terminal_sites_v1",
+            "handoff.automatic_target_v1",
+            "launch.gate_v1",
+            "launch.local_gate_v1",
             "invitation.confirmation_v1",
             "handoff.summary_prompt_v1"
         ]
@@ -1826,6 +2017,23 @@ fn probe_wake_status() {
     );
 }
 
+fn probe_host_topologies() {
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+    let command = Command::HostTopologies;
+    assert!(command.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    assert_eq!(
+        handler
+            .handle(command, PeerIdentity::from_kernel(501), &budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
 #[test]
 fn v2_capability_is_negotiated_only_with_recorder() {
     use crate::{
@@ -2159,7 +2367,95 @@ fn probe_seats_directory() {
             local: true,
             ..SeatFilter::default()
         },
+        host: None,
     });
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    let result = store
+        .query(
+            &command,
+            &ReadContext {
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+                output: OutputSpec::default(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::Seats(page) = result else {
+        panic!("wrong seats route")
+    };
+    assert!(page.items.is_empty());
+}
+
+/// A Named site's `SeatsQuery.host` (the reserved named-host locator) round-trips and the store
+/// answers it with a seat page.
+fn probe_host_sites() {
+    probe_site_lookup(
+        "cap-host-sites",
+        "worker-1",
+        crate::protocol::ids::NAMED_HOST_LOCATOR,
+    );
+}
+
+/// A Terminal site's seat lookup carries the core's socket as host and the terminal id as target.
+/// A V3 plan (version 3, placement set) is a valid original; its V2 spelling of the same
+/// payload (version 2, no placement) is a different one, and an older decoder that denies
+/// unknown fields refuses the V3 bytes.
+fn probe_automatic_target() {
+    use crate::protocol::handoff::{AUTOMATIC_TARGET_PLAN_VERSION, AutomaticBootstrapPlan};
+    let plan: AutomaticBootstrapPlan = serde_json::from_str(include_str!(
+        "../fixtures/handoff-journal/automatic-v2-plan.json"
+    ))
+    .unwrap();
+    assert!(plan.validate().is_ok());
+    let mut v3 = plan.clone();
+    v3.version = AUTOMATIC_TARGET_PLAN_VERSION;
+    v3.payload.startup_input = None;
+    v3.placement = Some(crate::ports::Placement::NewTab {
+        space: v3.payload.workspace.clone(),
+    });
+    assert!(v3.validate().is_ok());
+    let bytes = serde_json::to_string(&v3).unwrap();
+    assert_eq!(
+        serde_json::from_str::<AutomaticBootstrapPlan>(&bytes).unwrap(),
+        v3
+    );
+    assert_ne!(bytes, serde_json::to_string(&plan).unwrap());
+}
+
+fn probe_terminal_sites() {
+    probe_site_lookup("cap-terminal-sites", "t2", "/core/work.sock");
+}
+
+fn probe_site_lookup(label: &str, target: &str, host: &str) {
+    use crate::{
+        ports::{ReadContext, StorePort},
+        protocol::{
+            commands::SeatsQuery, ids::HostLocator, output::OutputSpec, pagination::PageRequest,
+        },
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let iso = TestIsolation::new(label);
+    let context =
+        StoreContext::new(iso.state_root().join("store.db"), Arc::new(FixedClock)).with_test_host();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    let command = Command::Seats(SeatsQuery {
+        page: PageRequest::default(),
+        target: Some(crate::protocol::ids::HostTargetId::new(target)),
+        include_retired: false,
+        filter: Default::default(),
+        host: Some(HostLocator::parse(host).unwrap()),
+    });
+    assert!(command.validate().is_ok());
     assert_eq!(
         serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
         command
@@ -2613,6 +2909,7 @@ fn presentation_capability_routes_use_configured_domain() {
             )),
         };
         let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+            readonly: false,
             lineage_parent: None,
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: 0,

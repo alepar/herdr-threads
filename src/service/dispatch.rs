@@ -84,7 +84,19 @@ struct BootstrapRuntime {
 impl BootstrapRuntime {
     /// `None` when `session` cannot run guarded bootstrap.
     fn of(session: &HostSession, store: &Arc<dyn BootstrapStorePort>) -> Option<Self> {
-        session.bootstrap().map(|runtime| Self {
+        Self::from_runtime(session, session.bootstrap(), store)
+    }
+    /// The runtime of a host that creates its own targets (V3 automatic bootstrap); `None`
+    /// for any other session.
+    fn of_target(session: &HostSession, store: &Arc<dyn BootstrapStorePort>) -> Option<Self> {
+        Self::from_runtime(session, session.target_bootstrap(), store)
+    }
+    fn from_runtime(
+        session: &HostSession,
+        runtime: Option<&crate::service::host_sessions::BootstrapRuntime>,
+        store: &Arc<dyn BootstrapStorePort>,
+    ) -> Option<Self> {
+        runtime.map(|runtime| Self {
             canonical: runtime.canonical.clone(),
             observer: Arc::clone(&runtime.observer),
             store: Arc::clone(store),
@@ -92,6 +104,9 @@ impl BootstrapRuntime {
         })
     }
 }
+
+/// The session a namespace names and the node-wide bootstrap store.
+type NamespaceSession = (Arc<HostSession>, Arc<dyn BootstrapStorePort>);
 
 pub struct DomainService {
     pub(super) instance: String,
@@ -117,8 +132,20 @@ pub struct DomainService {
     pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
     /// The (observer, seat) pairs whose `no_wake` was reported: a send warns its sender once
     /// per seat while the seat stays `no_wake` (`Command::WakeStatus`). In memory, so a daemon
-    /// restart reports each again.
+    /// restart reports each again; seats on a host with no wake path use `no_wake_reports`.
     wake_reports: std::sync::Mutex<WakeReports>,
+    /// `Command::LocateCaller`: nearest-ancestor verification of a two-family caller.
+    locator: super::locate::LocateCallerService,
+    /// Hook turn state per top-level binding (N2-turn): in memory, so a restart reads `Unknown`.
+    pub(super) turn_state: Arc<super::turn_state::TurnStateBook>,
+}
+
+/// The process a turn edge's tmux hint is verified for: the harness the claim fingerprints, else
+/// the reporting peer. A subagent claim has none: only a top-level binding holds a wake.
+pub fn wake_hint_subject(claim: &CallerClaim, peer_pid: Option<u32>) -> Option<u32> {
+    (claim.role == CallerRole::TopLevel && !claim.is_subagent())
+        .then(|| claim.liveness.map(|f| f.pid).or(peer_pid))
+        .flatten()
 }
 
 type WakeReports =
@@ -127,6 +154,37 @@ type WakeReports =
 const MAX_WAKE_REPORTS: usize = 4_096;
 /// Longest host label read of one `seat list --label` (ms).
 const LABEL_READ_MS: u64 = 1_000;
+
+/// What the node's attached hosts can do now: read per `Capabilities` call, so
+/// a Herdr host attached after startup is served and none is frozen from
+/// whichever session led startup.
+pub struct GuardedAnswers {
+    hosts: Option<Arc<HostSessions>>,
+    store: Option<Arc<dyn BootstrapStorePort>>,
+}
+
+impl GuardedAnswers {
+    /// A bootstrap store, and an attached session with a guarded bootstrap
+    /// runtime (a core has none: its V3 runtime sits in the target slot).
+    pub fn bootstrap(&self) -> bool {
+        self.store.is_some()
+            && self.hosts.as_ref().is_some_and(|hosts| {
+                hosts
+                    .attached()
+                    .iter()
+                    .any(|session| session.bootstrap().is_some())
+            })
+    }
+
+    /// [`Self::bootstrap`] and the store's automatic-handoff support.
+    pub fn automatic(&self) -> bool {
+        self.bootstrap()
+            && self
+                .store
+                .as_ref()
+                .is_some_and(|store| store.automatic_available())
+    }
+}
 
 impl DomainService {
     pub fn new(instance: String, store: Arc<dyn StorePort>, clock: Arc<dyn Clock>) -> Self {
@@ -144,7 +202,101 @@ impl DomainService {
             delivery_pull: Default::default(),
             presentation: Default::default(),
             wake_reports: Default::default(),
+            locator: super::locate::LocateCallerService::new(Arc::new(
+                crate::host::process_table::HostProcessTable,
+            )),
+            turn_state: Default::default(),
         }
+    }
+    /// The turn state the wake lane reads (the same instance this service records into).
+    pub fn turn_state(&self) -> Arc<super::turn_state::TurnStateBook> {
+        Arc::clone(&self.turn_state)
+    }
+    /// Record into `turns` instead of a private book, so the named host's wake lane reads it.
+    pub fn with_turn_state(mut self, turns: Arc<super::turn_state::TurnStateBook>) -> Self {
+        self.turn_state = turns;
+        self
+    }
+    /// The process table `LocateCaller` walks (fixtures supply a fake tree).
+    pub fn with_processes(mut self, processes: Arc<dyn crate::ports::ProcessInfo>) -> Self {
+        self.locator = super::locate::LocateCallerService::new(processes);
+        self
+    }
+    /// `Command::LocateCaller`: the sessions a read may consult, asked through their ports.
+    fn locate_caller(
+        &self,
+        request: &crate::protocol::locate::LocateCaller,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> CommandResult {
+        let sessions = self
+            .hosts
+            .as_ref()
+            .map_or_else(Vec::new, |hosts| hosts.all_for_reads());
+        let ports: Vec<_> = sessions.iter().map(|s| Arc::clone(s.port())).collect();
+        CommandResult::Located(self.locator.locate(
+            request,
+            peer.pid(),
+            &ports,
+            &|socket| self.core_port(socket, budget),
+            budget,
+        ))
+    }
+    /// The session of the herdr-core `socket`, attached first when it is new. A socket that is
+    /// not a core, or a daemon with no sessions, is `Unsupported`.
+    fn core_port(&self, socket: &str, budget: &CallBudget) -> Result<Arc<dyn HostPort>, ApiError> {
+        let hosts = self
+            .hosts
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("no host sessions"))?;
+        let locator = crate::protocol::ids::HostLocator::parse(socket)?;
+        // `by_locator` first: `resolve` answers a daemon's `sole` session for any locator.
+        let session = match hosts.by_locator(&locator) {
+            Some(session) => session,
+            None => hosts.resolve(&locator, budget)?,
+        };
+        if !session.port().answers_terminal_ids() {
+            return Err(ApiError::unsupported("not a herdr-core socket"));
+        }
+        Ok(Arc::clone(session.port()))
+    }
+    /// SA2, D1 (M6): a named resolve that carries a host candidate is refused when the server
+    /// owning it holds the same name in its own environment, before anything is allocated or
+    /// bound. No candidate, an unreadable environment or a server with no pid skips the check.
+    fn refuse_inherited_name(
+        &self,
+        request: &crate::protocol::commands::ResolveSeat,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let Some(hint) = request.locator_hint.as_deref() else {
+            return Ok(());
+        };
+        let ports: Vec<_> = self
+            .hosts
+            .as_ref()
+            .map_or_else(Vec::new, |hosts| hosts.all_for_reads())
+            .iter()
+            .map(|session| Arc::clone(session.port()))
+            .collect();
+        let context = crate::ports::HostCallContext {
+            budget: budget.clone(),
+            expected_boot: None,
+            expected_epoch: None,
+        };
+        if let Some(label) = super::locate::inherited_name_host(
+            request.target.as_str(),
+            hint,
+            &ports,
+            &|socket| self.core_port(socket, budget),
+            &context,
+            super::locate::read_server_environ,
+        ) {
+            return Err(error(
+                ErrorCode::InheritedSeatName,
+                &super::locate::inherited_name_detail(request.target.as_str(), label),
+            ));
+        }
+        Ok(())
     }
     /// Share the offered ledger with the wake lane (the same instance the wake worker reads).
     pub fn with_delivery_pull(
@@ -245,9 +397,34 @@ impl DomainService {
         Ok(self)
     }
 
-    /// `Command::WakeStatus`: the store names the seats and their harnesses. A known harness with
-    /// no idle-wake path is `no_wake`; otherwise any attached host reports the block its last
-    /// wake attempt for the seat met (never attaching one). With an observer, `first` marks a
+    /// `budget` capped to [`LABEL_READ_MS`] from now.
+    fn label_budget(&self, budget: &CallBudget) -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(
+                budget
+                    .deadline
+                    .0
+                    .min(self.clock.monotonic_now().0.saturating_add(LABEL_READ_MS)),
+            ),
+            cancellation: budget.cancellation.clone(),
+        }
+    }
+
+    /// Every readable host's labels by `(host, target)`; empty with no host.
+    fn host_labels(&self, budget: &CallBudget) -> crate::store::local_seat_status::LabelMap {
+        self.hosts.as_ref().map_or_else(Default::default, |hosts| {
+            crate::service::seat_publisher::read_labels(
+                hosts,
+                &self.label_budget(budget),
+                &Default::default(),
+            )
+        })
+    }
+
+    /// `Command::WakeStatus`: the store names the seats, their harnesses and their own hosts.
+    /// A known harness with no idle-wake path on its seat's host (`idle_wake_on`) is `no_wake`;
+    /// otherwise that host reports the block its last wake attempt for the seat met (never
+    /// attaching one). With an observer, `first` marks a
     /// `no_wake` not yet reported to it; a seat that is no longer `no_wake` forgets the report.
     fn wake_status(
         &self,
@@ -268,26 +445,42 @@ impl DomainService {
         let hosts = self
             .hosts
             .as_ref()
-            .map_or_else(Vec::new, |hosts| hosts.attached());
-        let registry = crate::harness::registry::builtins();
-        for row in &mut rows {
-            let Some(harness) = row.harness.as_deref() else {
-                continue;
-            };
-            row.wake = match registry.has_idle_wake(harness) {
-                Some(false) => Some(WakeBlock::NoWake),
-                Some(true) => hosts
-                    .iter()
-                    .find_map(|host| host.port().wake_block(&row.seat)),
-                None => None,
-            };
-        }
+            // Reads consult every host, the built-in one included (07 §5.3).
+            .map_or_else(Vec::new, |hosts| hosts.all_for_reads());
+        let now = self.clock.utc_now();
+        let episodes = classify_wake_rows(&mut rows, &hosts, &|seat| {
+            self.mod_channels.wake_suppressed(seat) && !self.mod_channels.stalled(seat, now)
+        });
         if let Some(observer) = &query.observer {
+            // A seat on a host with no wake path keeps its report across restarts and
+            // channel flaps in `no_wake_reports`; the in-memory set serves the rest.
+            let pick = |want: WakeEpisode| -> Vec<crate::protocol::ids::SeatId> {
+                rows.iter()
+                    .zip(&episodes)
+                    .filter(|(_, episode)| **episode == want)
+                    .map(|(row, _)| row.seat.clone())
+                    .collect()
+            };
+            let (persist, clear) = (pick(WakeEpisode::HostNoWake), pick(WakeEpisode::Composer));
+            let fresh = if persist.is_empty() && clear.is_empty() {
+                None
+            } else {
+                self.store
+                    .no_wake_reports_apply(observer, &persist, &clear, budget)
+                    .ok()
+                    .flatten()
+            };
             let mut reports = self
                 .wake_reports
                 .lock()
                 .map_err(|_| error(ErrorCode::StoreCorrupt, "wake report lock poisoned"))?;
-            for row in &mut rows {
+            for (row, episode) in rows.iter_mut().zip(&episodes) {
+                if *episode == WakeEpisode::HostNoWake
+                    && let Some(fresh) = &fresh
+                {
+                    row.first = fresh.contains(&row.seat);
+                    continue;
+                }
                 let key = (observer.clone(), row.seat.clone());
                 if row.wake != Some(WakeBlock::NoWake) {
                     reports.remove(&key);
@@ -323,24 +516,13 @@ impl DomainService {
             .resolve(locator, budget)
     }
 
-    /// Whether guarded bootstrap runs on the already attached server at
-    /// `locator` (a bootstrap store, and a session with a bootstrap runtime).
-    pub(crate) fn bootstrap_available(&self, locator: &HostLocator) -> bool {
-        self.bootstrap_store.is_some()
-            && self
-                .hosts
-                .as_ref()
-                .and_then(|hosts| hosts.by_locator(locator))
-                .is_some_and(|session| session.bootstrap().is_some())
-    }
-
-    /// [`Self::bootstrap_available`] and the store's automatic-handoff support.
-    pub(crate) fn automatic_available(&self, locator: &HostLocator) -> bool {
-        self.bootstrap_available(locator)
-            && self
-                .bootstrap_store
-                .as_ref()
-                .is_some_and(|store| store.automatic_available())
+    /// What the node's attached hosts can do now, read per `Capabilities`
+    /// call (see [`GuardedAnswers`]).
+    pub(crate) fn guarded_answers(&self) -> GuardedAnswers {
+        GuardedAnswers {
+            hosts: self.hosts.clone(),
+            store: self.bootstrap_store.clone(),
+        }
     }
 
     /// The bootstrap runtime of the server `namespace` names, resolved
@@ -352,6 +534,29 @@ impl DomainService {
         namespace: &HandoffNamespace,
         budget: &CallBudget,
     ) -> Result<Option<BootstrapRuntime>, ApiError> {
+        Ok(self
+            .namespace_session(namespace, budget)?
+            .and_then(|(session, store)| BootstrapRuntime::of(&session, &store)))
+    }
+
+    /// [`Self::bootstrap_runtime`] for a V3 record: the runtime of a host that creates its own
+    /// targets, which a Herdr server never has.
+    fn target_runtime(
+        &self,
+        namespace: &HandoffNamespace,
+        budget: &CallBudget,
+    ) -> Result<Option<BootstrapRuntime>, ApiError> {
+        Ok(self
+            .namespace_session(namespace, budget)?
+            .and_then(|(session, store)| BootstrapRuntime::of_target(&session, &store)))
+    }
+
+    /// The session `namespace` names and the node-wide bootstrap store.
+    fn namespace_session(
+        &self,
+        namespace: &HandoffNamespace,
+        budget: &CallBudget,
+    ) -> Result<Option<NamespaceSession>, ApiError> {
         let Some(store) = &self.bootstrap_store else {
             return Ok(None);
         };
@@ -374,7 +579,7 @@ impl DomainService {
                 )
             })?;
         let session = self.attached_host(&locator, budget)?;
-        Ok(BootstrapRuntime::of(&session, store))
+        Ok(Some((session, Arc::clone(store))))
     }
 
     /// The session an operator action runs on: the server its command names,
@@ -389,9 +594,8 @@ impl DomainService {
             Some(locator) => self.attached_host(locator, budget),
             None => self
                 .hosts
-                .as_ref()
-                .and_then(|hosts| hosts.attached().into_iter().next())
-                .ok_or_else(|| ApiError::host_unavailable("no Herdr server attached")),
+                .as_deref()
+                .map_or_else(|| Err(no_host_attached()), operator_fallback_host),
         }
     }
 
@@ -416,9 +620,13 @@ impl DomainService {
     ) -> Result<CommandResult, ApiError> {
         use crate::protocol::handoff::AutomaticBootstrapAction;
         request.validate().map_err(ApiError::invalid_request)?;
-        let runtime = self
-            .bootstrap_runtime(&request.identity.plan.payload.handoff.namespace, budget)?
-            .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
+        let namespace = &request.identity.plan.payload.handoff.namespace;
+        let runtime = if request.identity.plan.placement.is_some() {
+            self.target_runtime(namespace, budget)?
+        } else {
+            self.bootstrap_runtime(namespace, budget)?
+        }
+        .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
         crate::store::topology_handoff::automatic::namespace(
             &runtime.canonical,
             &request.identity,
@@ -457,9 +665,11 @@ impl DomainService {
             } = disposition
             {
                 let resolving = crate::protocol::commands::ResolveSeat {
-                    target: evidence.root_pane.clone(),
+                    target: evidence.launch_target().clone(),
                     host: request.identity.claim.host.clone(),
                     operation: request.identity.plan.payload.keys.resolve.clone(),
+                    locator_hint: None,
+                    tmux_hint: None,
                 };
                 return runtime.identity.with_bootstrap_observation(
                     &*runtime.observer,
@@ -518,10 +728,38 @@ impl DomainService {
             let creation = status
                 .creation
                 .ok_or_else(|| error(ErrorCode::Conflict, "automatic creation unavailable"))?;
+            // TRUST-POLICY `managed_launch`: a host-guarded launch's placeholder, before the
+            // Send that opens its gate, as `launch_gate::allocate_seat` does for peer and local
+            // launch. The seat exists: `Attach` names it.
+            if let (AutomaticBootstrapAction::Attach(attachment), Some(created)) =
+                (&request.action, creation.as_target())
+            {
+                let (session, _) = self.namespace_session(namespace, budget)?.ok_or_else(|| {
+                    ApiError::unsupported("automatic canonical runtime unavailable")
+                })?;
+                let seat = super::launch_gate::GateSeat {
+                    session: &session,
+                    store: self.store.as_ref(),
+                    writer,
+                    clock: self.clock.as_ref(),
+                    budget,
+                    harness: request.identity.plan.payload.launch.harness,
+                    operation: request.identity.plan.payload.keys.resolve.clone(),
+                };
+                let bounded = super::launch_gate::gate_budget(&seat);
+                super::launch_gate::record_placeholder(
+                    &seat,
+                    created,
+                    &attachment.resolved_seat,
+                    &bounded,
+                )?;
+            }
             let resolving = crate::protocol::commands::ResolveSeat {
-                target: creation.root_pane,
+                target: creation.launch_target().clone(),
                 host: request.identity.claim.host.clone(),
                 operation: request.identity.plan.payload.keys.resolve.clone(),
+                locator_hint: None,
+                tmux_hint: None,
             };
             return runtime.identity.with_bootstrap_observation(
                 &*runtime.observer,
@@ -569,6 +807,149 @@ impl DomainService {
             .automatic_bootstrap_mutate(&runtime.canonical, request, permit, None, budget)
     }
 
+    /// The writer of the elected owner, for a caller whose peer is that owner.
+    fn elected_writer(&self, peer: PeerIdentity) -> Result<&Arc<FairWriter>, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        Ok(writer)
+    }
+
+    /// The session of the herdr-core at `host`, attached first when it is new. `by_locator`
+    /// first: `resolve` answers a sole session for any locator.
+    fn core_session(
+        &self,
+        host: &crate::protocol::ids::HostLocator,
+        budget: &CallBudget,
+    ) -> Result<Arc<crate::service::host_sessions::HostSession>, ApiError> {
+        let hosts = self
+            .hosts
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("no host sessions"))?;
+        let session = match hosts.by_locator(host) {
+            Some(session) => session,
+            None => hosts.resolve(host, budget)?,
+        };
+        if !session.port().creates_targets_itself() {
+            return Err(ApiError::unsupported(
+                "this host does not start its own targets",
+            ));
+        }
+        Ok(session)
+    }
+
+    /// A plain `launch` onto a herdr-core: its gate-only record (TRUST-POLICY H3). `Open` runs
+    /// before the terminal exists, `Record` after it: the seat is allocated first, then the
+    /// creation and seat are recorded in one write, which releases the gate.
+    fn local_launch_gate(
+        &self,
+        request: &crate::protocol::handoff::LocalLaunchGate,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        use crate::protocol::handoff::LocalLaunchGateAction;
+        let store = self
+            .bootstrap_store
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("launch gate needs the bootstrap store"))?;
+        let writer = self.elected_writer(peer)?;
+        // `Open` attaches the core too, so a socket that is no core refuses before anything
+        // is created.
+        let session = self.core_session(&request.host, budget)?;
+        match &request.action {
+            LocalLaunchGateAction::Open => {
+                let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                store.local_launch_gate_open(&request.id, budget)?;
+                Ok(CommandResult::LocalLaunchGate(None))
+            }
+            LocalLaunchGateAction::Record { harness, created } => {
+                // No turn here: `allocate_seat` enters the writer itself.
+                let seat = super::launch_gate::allocate_seat(
+                    &super::launch_gate::GateSeat {
+                        session: &session,
+                        store: self.store.as_ref(),
+                        writer,
+                        clock: self.clock.as_ref(),
+                        budget,
+                        harness: *harness,
+                        operation: crate::protocol::ids::OperationId::new(format!(
+                            "local-launch:{}",
+                            request.id.as_str()
+                        )),
+                    },
+                    created,
+                )?;
+                let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                if !store.local_launch_gate_record(&request.id, created, &seat, budget)? {
+                    return Err(error(ErrorCode::Conflict, "launch gate record is not open"));
+                }
+                Ok(CommandResult::LocalLaunchGate(Some(seat)))
+            }
+        }
+    }
+
+    /// The launch gate's decision for a shim in a herdr-core terminal. The store is read per
+    /// poll and the wait holds no store turn and no writer lane.
+    fn authorize_launch_gate(
+        &self,
+        request: &crate::protocol::handoff::AuthorizeLaunchGate,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let store = self
+            .bootstrap_store
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("launch gate needs the bootstrap store"))?;
+        // The shim's own core first (an ordering hint; the witness comparison decides), so a
+        // hung unrelated host cannot delay the creation core's answer.
+        let mut sessions: Vec<_> = self
+            .hosts
+            .as_ref()
+            .map(|hosts| {
+                hosts
+                    .attached()
+                    .into_iter()
+                    .filter(|session| session.target_bootstrap().is_some())
+                    .collect()
+            })
+            .unwrap_or_default();
+        creation_core_first(
+            &mut sessions,
+            request.socket.as_deref(),
+            |session, socket| session.locator().as_str() == socket,
+        );
+        let observers: Vec<Arc<dyn BootstrapObserver>> = sessions
+            .iter()
+            .map(|session| Arc::clone(session.observer()))
+            .collect();
+        let view = |budget: &CallBudget| {
+            store.automatic_launch_gate_view(
+                &self.instance,
+                &request.compound,
+                request.attempt,
+                budget,
+            )
+        };
+        super::launch_gate::authorize(
+            request,
+            &super::launch_gate::GateWorld {
+                view: &view,
+                observers: &observers,
+            },
+            self.clock.as_ref(),
+            budget,
+        )
+        .map(CommandResult::LaunchGate)
+    }
+
     fn automatic_delivery_command(
         &self,
         request: &crate::protocol::handoff::AutomaticDeliveryMutation,
@@ -576,9 +957,13 @@ impl DomainService {
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
         request.validate().map_err(ApiError::invalid_request)?;
-        let runtime = self
-            .bootstrap_runtime(&request.plan().payload.namespace, budget)?
-            .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
+        let namespace = &request.plan().payload.namespace;
+        let runtime = if request.targets_own_host() {
+            self.target_runtime(namespace, budget)?
+        } else {
+            self.bootstrap_runtime(namespace, budget)?
+        }
+        .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
         crate::store::handoff::automatic::validate_namespace(&runtime.canonical, request)?;
         let (owner, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
             error(
@@ -817,6 +1202,8 @@ impl DomainService {
                     target: evidence.root_pane.clone(),
                     host: request.identity.claim.host.clone(),
                     operation: request.identity.payload.resolve_key.clone(),
+                    locator_hint: None,
+                    tmux_hint: None,
                 };
                 return runtime.identity.with_bootstrap_observation(
                     &*runtime.observer,
@@ -890,6 +1277,8 @@ impl DomainService {
                 target: creation.root_pane,
                 host: identity.claim.host.clone(),
                 operation: identity.payload.resolve_key.clone(),
+                locator_hint: None,
+                tmux_hint: None,
             };
             return runtime.identity.with_bootstrap_observation(
                 &*runtime.observer,
@@ -982,10 +1371,79 @@ impl DomainService {
                 "caller instance does not match service",
             ));
         }
-        let due = request.claim.role == crate::protocol::authority::CallerRole::TopLevel
-            && !request.claim.is_subagent()
-            && self.store.turn_end_due(&request.claim, budget)?;
+        let top_level = request.claim.role == crate::protocol::authority::CallerRole::TopLevel
+            && !request.claim.is_subagent();
+        let due = top_level && self.store.turn_end_due(&request.claim, budget)?;
+        if top_level {
+            // The daemon's own answer decides whether this `Stop` ended the turn: a continuation
+            // keeps the binding busy (no turn-start hook follows it), anything else ends it.
+            self.turn_state.answered_turn_end(
+                &Self::turn_key(&request.claim),
+                due,
+                self.clock.monotonic_now().0,
+            );
+        }
         Ok(CommandResult::TurnEndDue { due })
+    }
+
+    fn turn_key(claim: &CallerClaim) -> super::turn_state::TurnKey {
+        super::turn_state::TurnKey {
+            seat: claim.seat.clone(),
+            generation: claim.binding_generation,
+            harness: claim.harness.as_str().to_owned(),
+            native_session: claim.native_session.clone(),
+        }
+    }
+
+    /// A hook's turn edge for the caller's top-level binding: daemon memory only, authorised like
+    /// a cooperative call.
+    fn turn_state_edge(
+        &self,
+        request: &crate::protocol::commands::TurnStateReport,
+        peer: PeerIdentity,
+    ) -> Result<CommandResult, ApiError> {
+        let (owner_uid, _) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if request.claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let top_level = request.claim.role == crate::protocol::authority::CallerRole::TopLevel
+            && !request.claim.is_subagent();
+        let recorded = top_level
+            && self.turn_state.record(
+                &Self::turn_key(&request.claim),
+                request.edge,
+                self.clock.monotonic_now().0,
+            );
+        // The hint belongs to the binding: verify it for the harness process the claim names,
+        // not for the hook that carried it.
+        if let Some(hint) = &request.tmux_hint
+            && let Some(pid) = wake_hint_subject(&request.claim, peer.pid())
+        {
+            self.note_wake_hint(&request.claim.target, pid, hint);
+        }
+        Ok(CommandResult::TurnState { recorded })
+    }
+
+    /// Hand a caller's tmux wake hint to every host; only the named host keeps it (verified per
+    /// binding, in memory), and a hint that fails only costs that binding its wake.
+    fn note_wake_hint(&self, target: &crate::protocol::ids::HostTargetId, pid: u32, hint: &str) {
+        for session in self.hosts.iter().flat_map(|h| h.all_for_reads()) {
+            session.port().note_wake_hint(target, pid, hint);
+        }
     }
 
     /// The hook pull's plain touch-or-reconnect of the claim's binding (spec §3), authorised like
@@ -1332,6 +1790,22 @@ impl DomainService {
 }
 
 /// The locator a prebuilt host answers to before a namespace names its own.
+/// The operator-action failure when no host is attached (G5).
+pub(crate) fn no_host_attached() -> ApiError {
+    ApiError::host_unavailable("no host attached")
+}
+
+/// The host an operator action that names none runs on: the lowest-id dialled
+/// one, else the built-in one (07 §5.3); it only supplies the store and writer.
+pub(crate) fn operator_fallback_host(hosts: &HostSessions) -> Result<Arc<HostSession>, ApiError> {
+    hosts
+        .attached()
+        .into_iter()
+        .next()
+        .or_else(|| hosts.all_for_reads().into_iter().next())
+        .ok_or_else(no_host_attached)
+}
+
 fn prebuilt_locator() -> HostLocator {
     HostLocator::parse("/herdr-threads/prebuilt-host.sock").expect("a canonical fixture locator")
 }
@@ -1418,6 +1892,7 @@ impl LocalService for DomainService {
                 native_session: claim.native_session.clone(),
                 harness: claim.harness,
                 idle_wake: policy.idle_wake(),
+                readonly: binding.readonly,
                 registered_at: self.clock.utc_now(),
             },
             sink,
@@ -1553,29 +2028,29 @@ impl LocalService for DomainService {
             | Command::BootstrapStatus(_)
             | Command::ResolveBootstrapSeat(_)
             | Command::RecoverBootstrap(_)) => self.bootstrap_command(command, peer, budget),
-            // `--label` on a listing also matches this node's own seats by
-            // the hosts' current labels (ht-hldp), read only when asked and
-            // within at most a second of the call's budget, so a slow host
-            // leaves the listing its time (its seats then match no label).
-            Command::Seats(q) if q.filter.label.is_some() && q.target.is_none() => {
-                let labels =
-                    self.hosts.as_ref().map_or_else(Default::default, |hosts| {
-                        let read_budget =
-                            CallBudget {
-                                deadline: MonoInstant(budget.deadline.0.min(
-                                    self.clock.monotonic_now().0.saturating_add(LABEL_READ_MS),
-                                )),
-                                cancellation: budget.cancellation.clone(),
-                            };
-                        crate::service::seat_publisher::read_labels(
-                            hosts,
-                            &read_budget,
-                            &Default::default(),
-                        )
-                    });
+            // A listing (not a pane lookup) and participant locations show this
+            // node's own seats with the hosts' current labels, keyed
+            // `(host, target)` (F6), and `--label` matches them. Read within at
+            // most a second of the call's budget, so a slow host leaves the
+            // read its time (its seats then show no labels).
+            Command::Seats(q) if q.target.is_none() => {
+                let labels = self.host_labels(budget);
                 self.store
                     .seats_read(&Command::Seats(q), &labels, &read, budget)
             }
+            Command::ParticipantLocations(q) => {
+                let labels = self.host_labels(budget);
+                self.store
+                    .seats_read(&Command::ParticipantLocations(q), &labels, &read, budget)
+            }
+            Command::HostTopologies => Ok(CommandResult::HostTopologies(
+                self.hosts.as_ref().map_or_else(Vec::new, |hosts| {
+                    crate::service::seat_publisher::host_topologies(
+                        hosts,
+                        &self.label_budget(budget),
+                    )
+                }),
+            )),
             Command::Directory(_)
             | Command::PickerDirectory(_)
             | Command::Seats(_)
@@ -1594,7 +2069,6 @@ impl LocalService for DomainService {
             | Command::ThreadName(_)
             | Command::History(_)
             | Command::Participants(_)
-            | Command::ParticipantLocations(_)
             | Command::Recipients(_)
             | Command::DeliveryInspect(_)
             | Command::PendingReceipts(_)
@@ -1645,6 +2119,7 @@ impl LocalService for DomainService {
             Command::DeliveryPull(pull) => self.delivery_pull(pull, peer, budget, &read),
             Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
             Command::TurnEndDue(request) => self.turn_end_due(&request, peer, budget),
+            Command::TurnState(request) => self.turn_state_edge(&request, peer),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
@@ -1661,6 +2136,7 @@ impl LocalService for DomainService {
             | Command::CompleteInboxDelivery(_)
             | Command::SetWakeOn(_)
             | Command::SetNudgeThreshold(_)
+            | Command::SelfRetire(_)
             | Command::Leave(_)
             | Command::SetTopic(_)
             | Command::SetThreadName(_)
@@ -1691,6 +2167,19 @@ impl LocalService for DomainService {
             Command::WakeStatus(query) => self.wake_status(&query, &read, budget),
             Command::ResolveSeat(request) => {
                 let preparation = self.attached_host(&request.host, budget)?;
+                // A name at the reserved named-host locator is a seat-acting allocation by name.
+                if request.host.is_named_host() {
+                    self.refuse_inherited_name(&request, budget)?;
+                    let wake_hint = request.tmux_hint.clone();
+                    let target = request.target.clone();
+                    let resolved = preparation.identity().resolve_named(request, budget)?;
+                    // The wake hint is verified and held per binding in host memory; it is never
+                    // stored with the seat and a hint that fails only costs that binding its wake.
+                    if let (Some(hint), Some(pid)) = (wake_hint, peer.pid()) {
+                        self.note_wake_hint(&target, pid, &hint);
+                    }
+                    return Ok(resolved);
+                }
                 preparation
                     .identity()
                     .resolve(request, budget)
@@ -1782,18 +2271,7 @@ impl LocalService for DomainService {
             // observation in one transaction (A2) and opens nothing but an
             // unregistered binding on a seat with none.
             Command::RecordManagedLaunch(launch) => {
-                let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
-                    error(
-                        ErrorCode::CallerUnverified,
-                        "cooperative elected runtime unavailable",
-                    )
-                })?;
-                if peer.effective_uid() != *owner_uid {
-                    return Err(error(
-                        ErrorCode::Unauthorized,
-                        "caller peer does not match elected owner",
-                    ));
-                }
+                let writer = self.elected_writer(peer)?;
                 let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.record_managed_launch(launch, budget)
             }
@@ -1821,6 +2299,7 @@ impl LocalService for DomainService {
                     .run(sync, actor.as_ref(), budget)
                     .map(CommandResult::Sync)
             }
+            Command::LocateCaller(request) => Ok(self.locate_caller(&request, peer, budget)),
             Command::DeliveryPullV2(pull) => self.presentation_pull(&pull, peer, budget),
             Command::DeliveryPresentationConfirmV2(confirm) => {
                 self.presentation_confirm(&confirm, peer, budget)
@@ -1829,6 +2308,8 @@ impl LocalService for DomainService {
                 ErrorCode::Unsupported,
                 "local intents are client-owned",
             )),
+            Command::AuthorizeLaunchGate(request) => self.authorize_launch_gate(&request, budget),
+            Command::LocalLaunchGate(request) => self.local_launch_gate(&request, peer, budget),
             Command::Health
             | Command::Capabilities
             | Command::HookParseFailure(_)
@@ -1881,6 +2362,38 @@ fn bootstrap_namespace(command: &Command) -> Option<&HandoffNamespace> {
 
 pub(super) fn error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
+}
+
+/// Orders `items` so the one whose locator is `socket` comes first (stable otherwise): the
+/// launch gate asks the shim's own core before any other, so a hung unrelated host cannot
+/// delay the creation core's answer.
+fn creation_core_first<T>(
+    items: &mut [T],
+    socket: Option<&str>,
+    is_core: impl Fn(&T, &str) -> bool,
+) {
+    if let Some(socket) = socket {
+        items.sort_by_key(|item| !is_core(item, socket));
+    }
+}
+
+#[cfg(test)]
+mod creation_core_order_tests {
+    use super::creation_core_first;
+
+    #[test]
+    fn the_socket_named_core_is_asked_first() {
+        let mut hosts = ["hung", "other", "creation"];
+        creation_core_first(&mut hosts, Some("creation"), |host, socket| *host == socket);
+        assert_eq!(hosts, ["creation", "hung", "other"]);
+    }
+
+    #[test]
+    fn no_socket_keeps_the_attached_order() {
+        let mut hosts = ["hung", "creation"];
+        creation_core_first(&mut hosts, None, |host, socket| *host == socket);
+        assert_eq!(hosts, ["hung", "creation"]);
+    }
 }
 
 #[cfg(test)]
@@ -1939,6 +2452,7 @@ mod operator_tests {
         for command in [
             Command::CheckIn(CheckIn {
                 lineage_parent: None,
+                readonly: false,
                 mode: CheckInMode::Current,
                 claim: claim.clone(),
                 operation: OperationId::new("op"),
@@ -2049,6 +2563,8 @@ mod operator_tests {
                 host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
+                locator_hint: None,
+                tmux_hint: None,
             }),
             Command::OperatorFreshSeat(OperatorFreshSeat {
                 host: crate::test_support::test_host_locator(),
@@ -2233,6 +2749,18 @@ mod operator_tests {
 mod cooperative_tests;
 
 #[cfg(test)]
+#[path = "../../tests/daemon/self_retire.rs"]
+mod self_retire_tests;
+
+#[cfg(test)]
+#[path = "../../tests/daemon/inherited_name.rs"]
+mod inherited_name_tests;
+
+#[cfg(test)]
+#[path = "../../tests/daemon/launch_gate_guards.rs"]
+mod launch_gate_guards_tests;
+
+#[cfg(test)]
 mod topology_contract_dispatch_tests {
     use super::*;
     #[test]
@@ -2294,6 +2822,86 @@ mod topology_contract_dispatch_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Fills each row's `wake` from the row's own host (`SeatWakeStatus.host`, looked up among
+/// `hosts`): a known harness with no idle-wake path on that host is `NoWake`, otherwise the
+/// host's last-attempt block. `channel_live(seat)` is `ModChannels::mod_suppressed`. A row whose
+/// host is absent (an older store row, a host not attached) is classified as on a Herdr TUI
+/// composer host and asks every host for the block, as before per-row hosts.
+fn classify_wake_rows(
+    rows: &mut [crate::protocol::results::SeatWakeStatus],
+    hosts: &[Arc<HostSession>],
+    channel_live: &dyn Fn(&crate::protocol::ids::SeatId) -> bool,
+) -> Vec<WakeEpisode> {
+    use crate::{
+        harness::registry::IdleWakeOn,
+        ports::{ComposerTraits, WakeCapability},
+        protocol::results::WakeBlock,
+    };
+    let registry = crate::harness::registry::builtins();
+    let mut episodes = Vec::with_capacity(rows.len());
+    for row in rows {
+        episodes.push(WakeEpisode::Other);
+        let Some(harness) = row.harness.as_deref() else {
+            continue;
+        };
+        let own = row
+            .host
+            .and_then(|id| hosts.iter().find(|host| host.host_id() == id));
+        let capability = own.map_or(
+            WakeCapability::Composer(ComposerTraits::HERDR_TUI),
+            |host| match &row.target {
+                Some(target) => host.port().target_wake_capability(target),
+                None => host.port().wake_capability(),
+            },
+        );
+        let idle = registry.idle_wake_on(harness, capability, channel_live(&row.seat));
+        if let Some(episode) = episodes.last_mut() {
+            *episode = match idle {
+                Some(IdleWakeOn::None) if capability == WakeCapability::None => {
+                    WakeEpisode::HostNoWake
+                }
+                Some(IdleWakeOn::Composer) => WakeEpisode::Composer,
+                _ => WakeEpisode::Other,
+            };
+        }
+        row.wake = match idle {
+            Some(IdleWakeOn::None) => Some(WakeBlock::NoWake),
+            Some(_) => match own {
+                Some(host) => host.port().wake_block(&row.seat),
+                None => hosts
+                    .iter()
+                    .find_map(|host| host.port().wake_block(&row.seat)),
+            },
+            None => None,
+        };
+    }
+    episodes
+}
+
+/// What a `wake_status` row says about its no-wake episode (`no_wake_reports`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WakeEpisode {
+    /// No wake because the seat's host has no wake path and no live channel stands in:
+    /// the report is persisted once per (sender, seat).
+    HostNoWake,
+    /// A composer wake: ends the episode (the persisted row is deleted).
+    Composer,
+    /// Anything else (a live channel, a harness without a wake, no binding): the row stays.
+    Other,
+}
+
+#[cfg(test)]
+#[path = "../../tests/service/no_wake_reports.rs"]
+mod no_wake_reports_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/no_wake_rest.rs"]
+mod no_wake_rest_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/wake_status_hosts.rs"]
+mod wake_status_hosts_tests;
 
 #[cfg(test)]
 #[path = "../../tests/service/host_routing.rs"]

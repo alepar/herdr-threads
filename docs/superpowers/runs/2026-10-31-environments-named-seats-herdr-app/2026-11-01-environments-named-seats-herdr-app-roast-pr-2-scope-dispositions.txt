@@ -1,0 +1,23 @@
+scopeFilter-round-2: [Should-fix] src/cli/launch_new.rs:166; src/cli/launch_new.rs:167 in-scope — Correctness defect: launch --new-tab from a named seat dials the named-host locator, so the tab can never be created. Named seats and launch are goal-named.
+scopeFilter-round-2: [Should-fix] tests/sync/facts_seat.rs:1203 in-scope — A test of named-seat retirement fails deterministically at head, so its contract is stale or the materializer is wrong.
+scopeFilter-round-2: [Should-fix] tests/config_smoke.rs:657; tests/config_smoke.rs:501 in-scope — A failing test for the goal-named tmux named-seat wake path; the hermes cell is never reached.
+scopeFilter-round-2: [Should-fix] src/main.rs:73 in-scope — The hc RPC budget is not honoured in production because the host uses a different clock; hc terminal seats are goal-named.
+scopeFilter-round-2: [Should-fix] src/store/seats/publication.rs:472 in-scope — Replayed own seat.retired leaves open bindings on a retired seat, which is incorrect seat/binding behavior.
+scopeFilter-round-2: [Should-fix] src/daemon/transport.rs:565 in-scope — The launch gate's 10 s wait is cut to about 5 s, so a terminal launch can be killed or recorded as launched without a harness; terminal launch is goal-named.
+scopeFilter-round-2: [Should-fix] src/host/hc/mod.rs:941; TRUST-POLICY.md:315 in-scope — An unverified hc capture invalidates and unresolves seats while the policy says it closes nothing; this is incorrect hc seat behavior or a misleading contract.
+scopeFilter-round-2: [Should-fix] src/cli/mod.rs:3756 in-scope — Pane-form invite and seat resolve from a named caller fail with 'invalid seat name'; cross-environment addressing is goal-named.
+scopeFilter-round-2: [Should-fix] src/host/probe.rs:66 in-scope — The probe's blocking connect violates its stated deadline and can stall attach and stop_all, a correctness defect in host attach.
+scopeFilter-round-2: [Should-fix] src/cli/me.rs:203 in-scope — me init in an hc terminal looks up its seat without the core, so with two cores it hits the wrong seat; hc terminal seats are goal-named.
+scopeFilter-round-2: [Should-fix] tests/integration/trust_policy.rs:347 in-scope — 11 tests fail when run from an hc terminal because the caller-variable scrub is incomplete; failing tests on goal-named paths.
+scopeFilter-round-2: [Should-fix] TRUST-POLICY.md:837 in-scope — Normative text states the old wake answer for a recognizer-less tmux seat, a misleading result in the goal-named wake path.
+scopeFilter-round-2: [Should-fix] tests/multinode/peer_launch_terminal.rs:201 in-scope — Single-shot read of async replication gives false failures in cross-node terminal launch tests; goal-named cross-node behavior.
+scopeFilter-round-2: [Should-fix] src/service/dispatch.rs:822 in-scope — Missing tests for every LocalLaunchGate refusal, including its only authorization check, in the goal-named hc launch path.
+scopeFilter-round-2: [Should-fix] src/service/dispatch.rs:1390 in-scope — The turn-edge wake-hint path has no end-to-end test, and a regression there silently loses tmux named-seat wake.
+scopeFilter-round-2: [Should-fix] src/cli/watch.rs:1176 in-scope — The readonly marker on watch is unpinned by any test, though a readonly display must never discharge an ACK (named seats, D3).
+scopeFilter-round-2: [Nit] src/store/seats/resolution.rs:699 in-scope — M10 can never fire for a named seat in an hc terminal, so pane-form allocation mints a second seat; incorrect behavior in a goal-named path.
+scopeFilter-round-2: [Nit] src/test_support/tmux.rs:69 punch-list — cluster override: The cluster's in-scope member is the trust_policy.rs scrub gap. This member only matters when a developer sets TMUX_TMPDIR, so it is a test-helper hardening item that changes no goal-named product behavior.
+scopeFilter-round-2: [Nit] src/daemon/health.rs:618 punch-list — Health reports a permanent degraded state on hc nodes. This is observability polish on code the goal does not name; hc having no wake is an accepted limit.
+scopeFilter-round-2: [Nit] src/cli/caller_location.rs:135 in-scope — The turn edge of a verified-terminal caller is reported against the Herdr pane's seat instead of the terminal's seat, an incorrect attribution in a goal-named path.
+scopeFilter-round-2: [Nit] src/store/queries.rs:1658 punch-list — The daemon-side labels are intended by the design; the gap is unrevised SKILL.md and doc text, a documentation improvement on code the goal does not name.
+scopeFilter-round-2: [Nit] src/cli/launch_new.rs:144 in-scope — Missing test for the created-target mismatch check in the goal-named launch path, where the recorded creation releases the gate.
+scope-filter: 19 in-scope · 3 punch-listed

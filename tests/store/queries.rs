@@ -853,6 +853,74 @@ fn inbox_v2_current_agent_counts_registered_harnesses_only() {
     }
 }
 
+/// Kills: a label for a pane seat or an unknown id (their headers must keep the id), a remote
+/// name without its node tag, a remote node with no directory row that does not fall back to the
+/// short uuid, and an inbox read whose `sender` stops being the seat id.
+#[test]
+fn sender_label_is_the_name_locally_and_name_at_tag_remotely() {
+    use crate::store::seat_directory::sender_label;
+    let (store, db) = fixture();
+    bind_query_agent(&db);
+    let tagged = "ab".repeat(16);
+    let untagged = "cd".repeat(16);
+    db.execute_batch(&format!(
+        "PRAGMA foreign_keys=OFF;
+         INSERT INTO node_directory(node_uuid,tag,tag_k,first_seen_at) VALUES ('{tagged}','Q0V',0,0);
+         INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published,name)
+           VALUES ('r-tag','34750f98bd59fcfc946da45aaabe933b','remote','native',1,0,'{tagged}',0,'agent',1,'reviewer'),
+                  ('r-bare','34750f98bd59fcfc946da45aaabe933b','remote','native',1,0,'{untagged}',0,'agent',1,'reviewer');
+         UPDATE seats SET name=NULL WHERE id='s';"
+    ))
+    .unwrap();
+    assert_eq!(
+        sender_label(&db, "s").unwrap(),
+        None,
+        "a pane seat keeps its id"
+    );
+    assert_eq!(sender_label(&db, "nobody").unwrap(), None);
+    db.execute("UPDATE seats SET name='reviewer' WHERE id='s'", [])
+        .unwrap();
+    assert_eq!(sender_label(&db, "s").unwrap().as_deref(), Some("reviewer"));
+    assert_eq!(
+        sender_label(&db, "r-tag").unwrap().as_deref(),
+        Some("reviewer@Q0V")
+    );
+    assert_eq!(
+        sender_label(&db, "r-bare").unwrap().as_deref(),
+        Some("reviewer@cdcdcdcd")
+    );
+
+    db.execute_batch("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('34750f98bd59fcfc946da45aaabe933b',1,'m-named',  't',1,'ordinary','s','hi',0);
+        INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m-named','t','s','pending',300);
+        UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    let result = query(
+        &store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
+            thread: None,
+            seat: Some(SeatId::new("s")),
+            page: page(None),
+            claim: None,
+        }),
+        &budget(),
+    )
+    .unwrap();
+    let CommandResult::InboxBatchV2(batch) = result else {
+        panic!("wrong result")
+    };
+    let crate::protocol::results::InboxBatchV2Item::Message {
+        sender,
+        sender_label,
+        ..
+    } = &batch.items[0]
+    else {
+        panic!("wrong item")
+    };
+    assert_eq!(sender.as_ref().map(SeatId::as_str), Some("s"));
+    assert_eq!(sender_label.as_deref(), Some("reviewer"));
+}
+
 #[test]
 fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
     let (store, db) = fixture();
@@ -3621,6 +3689,8 @@ fn seat_directory_pages_205_rows_without_offset() {
             target: None,
             include_retired: false,
             filter: Default::default(),
+
+            host: None,
         });
         let CommandResult::Seats(result) =
             query(&store, "34750f98bd59fcfc946da45aaabe933b", &q, &budget()).unwrap()
@@ -3654,6 +3724,8 @@ fn seat_directory_excludes_retired_and_freezes_newest_first_page() {
             target: None,
             include_retired,
             filter: Default::default(),
+
+            host: None,
         });
         let CommandResult::Seats(result) =
             query(&store, "34750f98bd59fcfc946da45aaabe933b", &q, &budget()).unwrap()
@@ -3701,6 +3773,8 @@ fn seat_directory_excludes_retired_and_freezes_newest_first_page() {
         target: None,
         include_retired: true,
         filter: Default::default(),
+
+        host: None,
     });
     assert_eq!(
         query(
@@ -3732,6 +3806,8 @@ fn seat_target_filter_finds_live_seat_after_many_retired_seats_in_one_request() 
             target: Some(HostTargetId::new(target)),
             include_retired: false,
             filter: Default::default(),
+
+            host: None,
         });
         let CommandResult::Seats(result) =
             query(&store, "34750f98bd59fcfc946da45aaabe933b", &q, &budget()).unwrap()
@@ -3757,6 +3833,8 @@ fn seat_target_filter_finds_live_seat_after_many_retired_seats_in_one_request() 
         target: Some(HostTargetId::new("pane")),
         include_retired: true,
         filter: Default::default(),
+
+        host: None,
     });
     let CommandResult::Seats(page) = query(
         &store,
@@ -4936,6 +5014,8 @@ fn thread_names_resolve_all_memberships_archives_ids_and_instances() {
                 selector: selector.into(),
                 caller_target: None,
                 caller: Some(SeatId::new("s")),
+
+                caller_host: None,
             }),
             &budget(),
         )
@@ -4976,6 +5056,8 @@ fn thread_names_resolve_all_memberships_archives_ids_and_instances() {
                 selector: "team café".into(),
                 caller: None,
                 caller_target: Some(crate::protocol::ids::HostTargetId::new("p-own")),
+
+                caller_host: None,
             }),
             &budget(),
         )
@@ -5011,6 +5093,8 @@ fn resolve_name(
             selector: "team café".into(),
             caller: caller.map(SeatId::new),
             caller_target: target.map(crate::protocol::ids::HostTargetId::new),
+
+            caller_host: None,
         }),
         &budget(),
     )
@@ -5189,6 +5273,8 @@ fn thread_names_digest_form_lookup_precedes_cli_misuse_hint() {
                 selector: selector.into(),
                 caller: None,
                 caller_target: None,
+
+                caller_host: None,
             }),
             &budget(),
         )
@@ -6264,6 +6350,8 @@ fn seat_list_reports_the_same() {
             target: None,
             include_retired: false,
             filter: Default::default(),
+
+            host: None,
         }),
         &budget(),
     )
@@ -6334,6 +6422,8 @@ fn presence_bounds_disconnected_subagent_bindings() {
             target: None,
             include_retired: false,
             filter: Default::default(),
+
+            host: None,
         }),
         &budget(),
     )
@@ -7333,5 +7423,94 @@ fn restore_hold_health_query_work_ignores_released_and_stale_history() {
     assert!(
         steps < 2000,
         "health query walked retained hold history: {steps} VM steps"
+    );
+}
+
+/// Two fake hosts, a seat on each with the same pane target id.
+fn two_host_fixture() -> (super::super::connection::StoreContext, rusqlite::Connection) {
+    let (store, db) = fixture();
+    for (host, seat) in [("/h/a", "sa"), ("/h/b", "sb")] {
+        db.execute("INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at) VALUES ((SELECT id FROM local_node),?1,0,0)", [host]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native','p-same',1,1,0,(SELECT id FROM local_node),1,(SELECT host_id FROM herdr_hosts WHERE endpoint=?2))", params![seat, host]).unwrap();
+    }
+    (store, db)
+}
+
+#[test]
+fn seats_query_host_scoped_with_two_fakes() {
+    let (store, _db) = two_host_fixture();
+    let ask = |host: Option<&str>| -> Vec<String> {
+        let q = Command::Seats(SeatsQuery {
+            page: page(None),
+            target: None,
+            include_retired: false,
+            filter: Default::default(),
+            host: host.map(|h| crate::protocol::ids::HostLocator::parse(h).unwrap()),
+        });
+        let CommandResult::Seats(result) =
+            query(&store, "34750f98bd59fcfc946da45aaabe933b", &q, &budget()).unwrap()
+        else {
+            panic!()
+        };
+        result
+            .items
+            .iter()
+            .map(|s| s.seat.as_str().to_owned())
+            .collect()
+    };
+    assert_eq!(ask(Some("/h/a")), ["sa"]);
+    assert_eq!(ask(Some("/h/b")), ["sb"]);
+    assert!(ask(Some("/h/none")).is_empty());
+    // Unset: the unscoped directory still lists both (and the fixture's own seat).
+    let all = ask(None);
+    assert!(all.contains(&"sa".to_owned()) && all.contains(&"sb".to_owned()));
+}
+
+#[test]
+fn resolve_thread_caller_host_scoped() {
+    let (store, db) = two_host_fixture();
+    db.execute("PRAGMA foreign_keys=OFF", []).unwrap();
+    db.execute("UPDATE threads SET name='team' WHERE id='t'", [])
+        .unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0,'team',0)", []).unwrap();
+    // Only host b's seat is a member of t; both threads are named `team`.
+    db.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','sb','joined',0)",
+        [],
+    )
+    .unwrap();
+    let resolve = |host: Option<&str>, seat: Option<&str>| {
+        query(
+            &store,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
+                selector: "team".into(),
+                caller_target: seat
+                    .is_none()
+                    .then(|| crate::protocol::ids::HostTargetId::new("p-same")),
+                caller: seat.map(SeatId::new),
+                caller_host: host.map(|h| crate::protocol::ids::HostLocator::parse(h).unwrap()),
+            }),
+            &budget(),
+        )
+    };
+    // The same pane id resolves to host b's seat only on host b: joined tier picks `t`.
+    assert_eq!(
+        resolve(Some("/h/b"), None).unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("t"))
+    );
+    // On host a the caller is a non-member, so both threads tie in the active tier.
+    assert_eq!(
+        resolve(Some("/h/a"), None).unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    // An explicit seat on the wrong host does not count as the caller.
+    assert_eq!(
+        resolve(Some("/h/a"), Some("sb")).unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        resolve(Some("/h/b"), Some("sb")).unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("t"))
     );
 }

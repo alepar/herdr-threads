@@ -199,7 +199,50 @@ impl ComposerPolicy for NativeComposer {
     fn restore_text(&self, saved: &str) -> String {
         saved.into()
     }
+    fn recognizes_blocked_screens(&self) -> bool {
+        true
+    }
+    /// A permission dialog: an `❯ N.` option row and the `Esc to cancel` footer among the last
+    /// non-empty rows (`tests/fixtures/screen_blocked/claude/`). Otherwise a readable composer
+    /// is not blocked; anything else cannot be told.
+    fn screen_blocked(&self, screen: &str) -> Option<bool> {
+        let screen = screen.replace('\u{a0}', " ");
+        let tail: Vec<&str> = screen
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .rev()
+            .take(DIALOG_TAIL_ROWS)
+            .collect();
+        let footer = tail.iter().any(|line| line.starts_with("Esc to cancel"));
+        let option = tail.iter().any(|line| {
+            line.strip_prefix("❯ ").is_some_and(|rest| {
+                rest.starts_with(|c: char| c.is_ascii_digit()) && rest.contains(". ")
+            })
+        });
+        if footer && option {
+            return Some(true);
+        }
+        (self.read(&screen, None) != ComposerRead::Unreadable).then_some(false)
+    }
+    /// A running turn adds `esc to interrupt` to the footer, the last non-empty row
+    /// (`tests/fixtures/screen_turn_running/claude/`). A readable composer without it is idle;
+    /// anything else cannot be told.
+    fn screen_turn_running(&self, screen: &str) -> Option<bool> {
+        let screen = screen.replace('\u{a0}', " ");
+        let footer = screen
+            .lines()
+            .map(str::trim)
+            .rfind(|line| !line.is_empty())?;
+        if footer.contains("esc to interrupt") {
+            return Some(true);
+        }
+        (self.read(&screen, None) != ComposerRead::Unreadable).then_some(false)
+    }
 }
+
+/// How many trailing non-empty rows can hold a permission dialog's options and footer.
+const DIALOG_TAIL_ROWS: usize = 8;
 
 #[cfg(test)]
 mod tests {
@@ -316,5 +359,61 @@ mod tests {
         ] {
             assert!(!NativeComposer.wants_styled(&read), "{read:?}");
         }
+    }
+
+    macro_rules! blocked_fixture {
+        ($name:literal) => {
+            include_str!(concat!(
+                "../../../tests/fixtures/screen_blocked/claude/",
+                $name,
+                ".txt"
+            ))
+        };
+    }
+
+    // Catches an approval dialog read as typeable, or an idle composer read as blocked.
+    #[test]
+    fn screen_blocked_recognizes_approval_dialogs_and_idle_composers() {
+        assert_eq!(
+            NativeComposer.screen_blocked(blocked_fixture!("approval")),
+            Some(true)
+        );
+        assert_eq!(
+            NativeComposer.screen_blocked(blocked_fixture!("approval-plain")),
+            Some(true)
+        );
+        assert_eq!(
+            NativeComposer.screen_blocked(blocked_fixture!("idle")),
+            Some(false)
+        );
+        assert_eq!(NativeComposer.screen_blocked("not a claude screen"), None);
+    }
+
+    macro_rules! running_fixture {
+        ($name:literal) => {
+            include_str!(concat!(
+                "../../../tests/fixtures/screen_turn_running/claude/",
+                $name,
+                ".txt"
+            ))
+        };
+    }
+
+    // Catches a running turn read as idle (a wake typed into it) or an idle composer read as
+    // running (a stale busy never cleared).
+    #[test]
+    fn screen_turn_running_recognizes_the_interrupt_footer() {
+        assert_eq!(
+            NativeComposer.screen_turn_running(running_fixture!("running")),
+            Some(true)
+        );
+        assert_eq!(
+            NativeComposer.screen_turn_running(running_fixture!("idle")),
+            Some(false)
+        );
+        assert_eq!(
+            NativeComposer.screen_turn_running("not a claude screen"),
+            None
+        );
     }
 }

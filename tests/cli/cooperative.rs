@@ -1274,6 +1274,7 @@ fn inbox_empty_work_flush_before_ack(v2: bool, lazy: bool) {
                     }
                     Ok(result(Page {
                         items: vec![InboxBatchItem::Message {
+                            sender_label: None,
                             thread: ThreadId::new("thread-original"),
                             message: MessageId::new("message-original"),
                             sequence: 1,
@@ -1722,6 +1723,7 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
         crate::cli::derive_caller(
             &mut parsed,
             None,
+            None,
             &runtime,
             &paths,
             &no_connection(),
@@ -1738,9 +1740,17 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
             crate::cli::commands::parse_argv(["herdr-threads"].iter().chain(tail).copied())
                 .unwrap();
         assert!(
-            crate::cli::derive_caller(&mut bare, None, &runtime, &paths, &no_connection(), &clock)
-                .unwrap()
-                .is_none()
+            crate::cli::derive_caller(
+                &mut bare,
+                None,
+                None,
+                &runtime,
+                &paths,
+                &no_connection(),
+                &clock,
+            )
+            .unwrap()
+            .is_none()
         );
         let caller = match &bare.action {
             crate::cli::commands::CliAction::Wire(Command::Participants(q)) => q.caller.clone(),
@@ -2477,6 +2487,7 @@ mod scoped_runtime {
                         )),
                         Command::InboxBatch(_) => Ok(CommandResult::InboxBatch(Page {
                             items: vec![crate::protocol::results::InboxBatchItem::Message {
+                                sender_label: None,
                                 thread: ThreadId::new("t123"),
                                 topic_data: "topic".into(),
                                 message: MessageId::new("m123"),
@@ -4688,6 +4699,7 @@ mod scoped_runtime {
                     tab_id: tab.into(),
                     tab_label: Some(tab_label.into()),
                     pane_label: Some(pane.into()),
+                    session: None,
                 }
             };
             for (seat, target, tab, tab_label, pane, expected) in [
@@ -6136,6 +6148,7 @@ fn inbox_empty_work_selection_preserves_bounds_and_continuations() {
     let mut partial = work("partial");
     partial.stop_reason = StopReason::Bytes;
     partial.items.push(InboxBatchItem::Message {
+        sender_label: None,
         thread: ThreadId::new("thread"),
         topic_data: "topic".into(),
         message: MessageId::new("message"),
@@ -6356,6 +6369,7 @@ fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
             };
             Ok(CommandResult::InboxBatchV2(Page {
                 items: vec![InboxBatchV2Item::LazyMessage {
+                    sender_label: None,
                     priority: None,
                     thread: ThreadId::new("thread"),
                     topic_data: "topic".into(),
@@ -7537,6 +7551,7 @@ impl OrdinaryHumanRetryFixture {
         let result = client
             .call(
                 Command::CheckIn(CheckIn {
+                    readonly: false,
                     lineage_parent: None,
                     claim: original,
                     operation: OperationId::new("human-initial"),
@@ -7622,6 +7637,7 @@ impl OrdinaryHumanRetryFixture {
         let result = client
             .call(
                 Command::CheckIn(CheckIn {
+                    readonly: false,
                     lineage_parent: None,
                     claim: agent,
                     operation: OperationId::new("agent-successor"),
@@ -7685,6 +7701,7 @@ impl OrdinaryHumanRetryFixture {
         let selection = crate::cli::derive_selection(
             &parsed,
             Some("w:p1"),
+            None,
             &self.runtime,
             &self.paths,
             &connection,
@@ -8005,6 +8022,7 @@ fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries
                 })),
                 Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
                     items: vec![InboxBatchV2Item::Message {
+                        sender_label: None,
                         priority: None,
                         thread: ThreadId::new("thread"),
                         message: MessageId::new("message-1"),
@@ -8194,6 +8212,7 @@ fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
                 })),
                 Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
                     items: vec![InboxBatchV2Item::Message {
+                        sender_label: None,
                         priority: None,
                         thread: ThreadId::new("thread"),
                         message: MessageId::new("message-1"),
@@ -8356,6 +8375,7 @@ fn restore_hold_bare_diagnostics_without_a_seat_falls_back_to_health() {
     crate::cli::derive_caller(
         &mut parsed,
         Some("held-pane"),
+        None,
         &runtime,
         &paths,
         &connection,

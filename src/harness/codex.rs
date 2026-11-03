@@ -1453,6 +1453,9 @@ fn caller_session(session: &str, env: &dyn Fn(&str) -> Option<String>) -> Caller
 }
 
 impl HarnessAdapter for CodexAdapter {
+    fn child_scrub_vars(&self) -> &'static [&'static str] {
+        &["CODEX_HOME"]
+    }
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
         if provenance == Some(crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE) {
             crate::notification::policy::WAKE_UP
@@ -1481,6 +1484,14 @@ impl HarnessAdapter for CodexAdapter {
                 refusal: managed_daemon_refusal,
             }),
         })
+    }
+    /// Under herdr-core a Codex daemon would reparent its hooks out of the terminal's process
+    /// tree (L4), so the gate starts it as a plain foreground process.
+    fn host_launch_argv(&self, kind: crate::ports::HostKind) -> Vec<String> {
+        match kind {
+            crate::ports::HostKind::Hc => vec!["--no-daemon".to_owned()],
+            _ => Vec::new(),
+        }
     }
     fn required_hook_events(&self) -> Vec<&'static str> {
         DECLARATION
@@ -1604,6 +1615,13 @@ impl HarnessAdapter for CodexAdapter {
     }
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         Some(&composer::NativeComposer)
+    }
+    fn turn_state_edge(&self, event: &DecodedEvent) -> Option<TurnEdge> {
+        match event.metadata.native_event.as_str() {
+            "UserPromptSubmit" => Some(TurnEdge::Busy),
+            "Stop" => Some(TurnEdge::Idle),
+            _ => None,
+        }
     }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(self)

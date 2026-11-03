@@ -173,6 +173,7 @@ impl Fixture {
             claim.execution = ExecutionId::new(uuid::Uuid::new_v4().to_string());
         }
         let command = CheckIn {
+            readonly: false,
             lineage_parent: None,
             mode: if startup {
                 CheckInMode::Lifecycle {

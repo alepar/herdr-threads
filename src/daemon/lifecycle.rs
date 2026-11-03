@@ -18,6 +18,7 @@ use crate::daemon::transport::{self, ServeOutcome};
 use crate::node::NodeUuid;
 use crate::ports::LocalService;
 use crate::protocol::{
+    authority::LivenessFingerprint,
     commands::Command,
     results::{ApiError, CommandResult, ErrorClass, ErrorCode, HealthState},
     time::{CallBudget, Cancellation, Clock, MonoInstant},
@@ -318,10 +319,65 @@ enum StartupStderr {
 /// Set (and signalled) when the stderr reader thread reaches end of file.
 type ReaderDone = Arc<(Mutex<bool>, Condvar)>;
 
-/// A spawned detached child and its stderr destination.
+/// What the detach hop left of one launch.
+enum Daemon {
+    /// The pid `internal daemon-detach` reported, with its start stamp.
+    Running(LivenessFingerprint),
+    /// The daemon was gone before its start stamp could be read.
+    Gone,
+    /// The hop itself failed (spawn error, non-zero exit or no pid): nothing was started.
+    DetachFailed(String),
+}
+
+/// A launched daemon (reparented off this process, so only its liveness is
+/// observable, never its exit status) and its stderr destination.
 struct Launched {
-    child: Child,
+    daemon: Daemon,
     stderr: StartupStderr,
+}
+
+/// How long the detach hop may take to report the daemon's pid.
+const DETACH_REPORT_WAIT: Duration = Duration::from_secs(5);
+
+/// Run the detach hop `intermediate` to completion: its reported pid, or why it reported none.
+/// The hop is reaped on every path.
+fn read_reported_pid(mut intermediate: Child) -> Result<u32, String> {
+    let stdout = intermediate.stdout.take().expect("piped stdout");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("daemon-detach-report".into())
+        .spawn(move || {
+            let mut line = String::new();
+            let _ = std::io::BufRead::read_line(&mut io::BufReader::new(stdout), &mut line);
+            let _ = sender.send(line);
+        });
+    let reported = receiver.recv_timeout(DETACH_REPORT_WAIT);
+    if reported.is_err() {
+        let _ = intermediate.kill();
+    }
+    let status = intermediate.wait();
+    let status_text = status
+        .as_ref()
+        .map_or_else(|error| error.to_string(), ToString::to_string);
+    match (reported, status) {
+        (Ok(line), Ok(status)) if status.success() => line
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|pid| *pid != 0)
+            .ok_or_else(|| "daemon-detach reported no pid".to_string()),
+        (Err(_), _) => Err("daemon-detach did not report in time".to_string()),
+        _ => Err(status_text),
+    }
+}
+
+/// Whether the daemon `fingerprint` names is still running: its pid exists
+/// with the same start stamp (a reused pid is another process).
+fn daemon_alive(fingerprint: LivenessFingerprint) -> bool {
+    use crate::ports::ProcessInfo;
+    crate::host::process_table::HostProcessTable
+        .process(fingerprint.pid)
+        .is_some_and(|record| record.start == fingerprint.start)
 }
 
 /// Bytes of the child's stderr kept in the fallback ring.
@@ -355,7 +411,7 @@ fn pipe_reader(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, Re
 
 /// Spawn `command` without each of `names`, whatever the caller's environment
 /// holds.
-fn scrub_env(command: &mut ProcessCommand, names: &[&str]) {
+pub(crate) fn scrub_env(command: &mut ProcessCommand, names: &[&str]) {
     for name in names {
         command.env_remove(name);
     }
@@ -367,8 +423,12 @@ fn spawn_detached(
     paths: &NodePaths,
     attempt: &StartAttempt,
 ) -> io::Result<Launched> {
+    // The intermediate (`internal daemon-detach`) starts `executable daemon run`
+    // as its own child and exits, so the daemon is no descendant of this process.
     let mut command = ProcessCommand::new(executable);
     command
+        .args(["internal", "daemon-detach"])
+        .arg(executable)
         .arg("daemon")
         .arg("run")
         .arg("--state-dir")
@@ -377,7 +437,7 @@ fn spawn_detached(
     if let Some(host) = &context.host_endpoint {
         command.arg("--host-endpoint").arg(host);
     }
-    command.stdin(Stdio::null()).stdout(Stdio::null());
+    command.stdin(Stdio::null()).stdout(Stdio::piped());
     let file_log = create_startup_log(paths, attempt);
     let fallback_reason = match file_log {
         Ok((file, path)) => {
@@ -395,10 +455,11 @@ fn spawn_detached(
     } else {
         command.env_remove("HERDR_BIN_PATH");
     }
-    scrub_env(&mut command, crate::host::PANE_SCOPED_ENV_VARS);
+    scrub_env(&mut command, &crate::host::child_env_scrub_list());
     // Its own session, process group and no controlling terminal: a daemon
     // ensured from inside a Herdr pane must outlive that pane's teardown (a
-    // Herdr restart hangs up or kills the pane's session, ht-mp72).
+    // Herdr restart hangs up or kills the pane's session, ht-mp72). The
+    // daemon takes its own session again in the detach hop.
     // SAFETY: setsid is async-signal-safe, and the forked child is not a
     // process-group leader, so it cannot fail with EPERM.
     unsafe {
@@ -418,7 +479,18 @@ fn spawn_detached(
             StartupStderr::Piped { reason, tail, done }
         }
     };
-    Ok(Launched { child, stderr })
+    let daemon = match read_reported_pid(child) {
+        Ok(pid) => {
+            use crate::ports::ProcessInfo;
+            crate::host::process_table::HostProcessTable
+                .process(pid)
+                .map_or(Daemon::Gone, |record| {
+                    Daemon::Running(LivenessFingerprint::of(&record))
+                })
+        }
+        Err(why) => Daemon::DetachFailed(why),
+    };
+    Ok(Launched { daemon, stderr })
 }
 
 impl Launched {
@@ -556,34 +628,55 @@ pub async fn ensure_running_with_timeout(
         if substituted.is_none() {
             held_since = None;
         }
-        // A child that exited with a failure before becoming ready will never
-        // be ready: report its own output now instead of waiting out the
-        // deadline. A clean exit is a lost election; the winner's readiness is
-        // what the loop is waiting for.
-        if let Some(child) = launched.as_mut()
-            && let Ok(Some(status)) = child.child.try_wait()
-        {
-            if !status.success() {
-                let remedy = remedy(
-                    None,
-                    &RemedyContext::StartupFailure {
-                        log: child.remedy_log(&paths),
+        // The launched daemon is reparented, so its liveness (pid and start
+        // stamp) is all that is observable. While it lives it may be electing:
+        // nothing probes the owner lock. Once it is gone, a live owner means it
+        // lost the election to a winner the handshake will find; no owner and
+        // output in its own startup log means it failed; no owner and nothing
+        // written is a loser of a transient probe: launch again.
+        if let Some(child) = launched.as_ref() {
+            let gone = match &child.daemon {
+                Daemon::Running(fingerprint) => !daemon_alive(*fingerprint),
+                Daemon::Gone | Daemon::DetachFailed(_) => true,
+            };
+            if gone {
+                let ownerless = match &child.daemon {
+                    Daemon::DetachFailed(_) => true,
+                    _ => match OwnerLock::acquire(&paths) {
+                        Ok(lock) => {
+                            drop(lock);
+                            true
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => false,
+                        Err(error) => return Err(io_error(error)),
                     },
-                );
-                return Err(api_error(
-                    ErrorCode::HostUnavailable,
-                    startup_failure_text(
-                        &format!("daemon exited during startup ({status})"),
-                        &child.tail_block(),
-                        &remedy,
-                    ),
-                ));
+                };
+                if ownerless {
+                    let block = child.tail_block();
+                    let why = match &child.daemon {
+                        Daemon::DetachFailed(why) => Some(why.as_str()),
+                        _ => None,
+                    };
+                    if why.is_some() || !block.is_empty() {
+                        let remedy = remedy(
+                            None,
+                            &RemedyContext::StartupFailure {
+                                log: child.remedy_log(&paths),
+                            },
+                        );
+                        let summary = match why {
+                            Some(why) => format!("daemon exited during startup ({why})"),
+                            None => "daemon exited during startup".to_string(),
+                        };
+                        return Err(api_error(
+                            ErrorCode::HostUnavailable,
+                            startup_failure_text(&summary, &block, &remedy),
+                        ));
+                    }
+                }
+                launched = None;
+                attempt = StartAttempt::new();
             }
-            // A clean exit is a lost election. If its winner is real the
-            // handshake finds it; if the lock was only held briefly (another
-            // caller's probe below), nobody owns it now: launch again.
-            launched = None;
-            attempt = StartAttempt::new();
         }
         // Probe only while no launched child is starting: the probe holds the
         // owner lock for a moment, and a child electing in that moment would

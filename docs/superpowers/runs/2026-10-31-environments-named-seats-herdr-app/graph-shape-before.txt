@@ -1,0 +1,24 @@
+shape: leaves 69 · depth 18 · width 3.8 · critical path: ht-kqrt.1 → ht-kqrt.3 → ht-kqrt.5 → ht-kqrt.11 → ht-kqrt.74 → ht-kqrt.13 → ht-kqrt.15 → ht-kqrt.16 → ht-kqrt.20 → ht-kqrt.31 → ht-kqrt.32 → ht-kqrt.35 → ht-kqrt.38 → ht-kqrt.69 → ht-kqrt.61 → ht-kqrt.62 → ht-kqrt.64 → ht-kqrt.66
+edge: ht-kqrt.74 <- ht-kqrt.11 · leaf · critical yes · depth 18→17
+edge: ht-kqrt.69 <- ht-kqrt.38 · leaf · critical yes · depth 18→17
+edge: ht-kqrt.64 <- ht-kqrt.62 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.64 <- ht-kqrt.63 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.63 <- ht-kqrt.50 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.62 <- ht-kqrt.61 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.61 <- ht-kqrt.69 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.50 <- ht-kqrt.69 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.38 <- ht-kqrt.35 · leaf · critical yes · depth 18→17
+edge: ht-kqrt.35 <- ht-kqrt.32 · leaf · critical yes · depth 18→17
+edge: ht-kqrt.32 <- ht-kqrt.31 · leaf · critical yes · depth 18→17
+edge: ht-kqrt.31 <- ht-kqrt.20 · leaf · critical yes · depth 18→17
+edge: ht-kqrt.20 <- ht-kqrt.16 · leaf · critical yes · depth 18→17
+edge: ht-kqrt.16 <- ht-kqrt.15 · leaf · critical yes · depth 18→17
+edge: ht-kqrt.15 <- ht-kqrt.13 · leaf · critical yes · depth 18→15
+edge: ht-kqrt.13 <- ht-kqrt.74 · leaf · critical yes · depth 18→17
+edge: ht-kqrt.11 <- ht-kqrt.5 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.11 <- ht-kqrt.10 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.10 <- ht-kqrt.2 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.5 <- ht-kqrt.3 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.3 <- ht-kqrt.1 · leaf · critical yes · depth 18→18
+edge: ht-kqrt.2 <- ht-kqrt.1 · leaf · critical yes · depth 18→18
+summary: edges 287 · exempt 77 · candidates 22 (critical 22, epic-level 0)

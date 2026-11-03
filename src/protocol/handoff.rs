@@ -99,7 +99,10 @@ impl DeliveryMutation {
             != OriginalActor::Agent
             || self.claim.role != super::authority::CallerRole::TopLevel
             || self.claim.instance != self.plan.payload.namespace.instance
-            || self.claim.host.as_path() != self.plan.payload.namespace.host_endpoint.as_path()
+            || !self
+                .claim
+                .host
+                .fronts_namespace(&self.plan.payload.namespace.host_endpoint)
             || self.digest
                 != format!(
                     "{:x}",
@@ -375,6 +378,139 @@ pub enum BootstrapState {
     Attached,
     Completed,
     Cancelled,
+}
+
+/// Bootstrap records V3: the automatic V2 shapes with the creation carried as a
+/// `CreatedTarget` under a frozen placement, so a non-Herdr host can record its creation.
+/// These are the typed byte form of the records the store holds as `AutomaticBootstrapPlan`
+/// (`version` 3, `placement` set) and `AutomaticBootstrapAttachment`; tests pin them byte-equal.
+/// V1 and V2 bytes stay frozen and nothing here is reachable from them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapPlanV3 {
+    pub version: u32,
+    pub payload: AutomaticBootstrapPayload,
+    pub placement: crate::ports::Placement,
+}
+impl From<BootstrapPlanV3> for AutomaticBootstrapPlan {
+    fn from(plan: BootstrapPlanV3) -> Self {
+        Self {
+            version: plan.version,
+            payload: plan.payload,
+            placement: Some(plan.placement),
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapProgressV3 {
+    pub version: u32,
+    pub identity: AutomaticBootstrapIdentity,
+    pub attempt: BootstrapAttempt,
+    pub possible_creation: bool,
+    #[serde(default)]
+    pub request: Option<crate::ports::CreateTargetRequest>,
+    #[serde(default)]
+    pub creation: Option<crate::ports::CreatedTarget>,
+    #[serde(default)]
+    pub not_submitted: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapAttachmentV3 {
+    pub attempt: BootstrapAttempt,
+    pub created: crate::ports::CreatedTarget,
+    pub resolve_operation: OperationId,
+    pub resolved_seat: SeatId,
+    pub child: AutomaticDeliveryMutation,
+}
+
+/// Longest wait a launch gate may ask the daemon for.
+pub const LAUNCH_GATE_MAX_TIMEOUT_MS: u32 = 30_000;
+fn default_launch_gate_timeout_ms() -> u32 {
+    10_000
+}
+/// A launched terminal asks the daemon to authorize its `exec`: bootstrap
+/// `<compound>:<attempt>` and the `(core, tN)` witness the daemon resolves as the frozen
+/// recipient. The bootstrap Send is staged before the daemon replies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizeLaunchGate {
+    pub compound: OperationId,
+    pub attempt: BootstrapAttempt,
+    pub core_id: String,
+    pub terminal: String,
+    #[serde(default = "default_launch_gate_timeout_ms")]
+    pub timeout_ms: u32,
+    /// The core socket the shim runs under (`HC_TERMINAL_SOCKET`). An ordering hint only: the
+    /// daemon asks the host with this locator first; the witness comparison decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
+}
+impl AuthorizeLaunchGate {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.core_id.is_empty() || self.terminal.is_empty() {
+            return Err("launch gate witness is empty");
+        }
+        if self.timeout_ms == 0 || self.timeout_ms > LAUNCH_GATE_MAX_TIMEOUT_MS {
+            return Err("launch gate timeout out of range");
+        }
+        if self
+            .socket
+            .as_ref()
+            .is_some_and(|socket| socket.is_empty() || socket.len() > 4096)
+        {
+            return Err("launch gate socket out of range");
+        }
+        Ok(())
+    }
+}
+/// A plain `launch` onto a herdr-core: the gate-only record (TRUST-POLICY H3). `Open` precedes
+/// the terminal; `Record` follows it and allocates the seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalLaunchGate {
+    pub id: OperationId,
+    /// The core's socket: attached on a miss, and any other host kind is refused.
+    pub host: crate::protocol::ids::HostLocator,
+    pub action: LocalLaunchGateAction,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalLaunchGateAction {
+    Open,
+    Record {
+        harness: crate::protocol::authority::Harness,
+        created: Box<crate::ports::CreatedTarget>,
+    },
+}
+impl LocalLaunchGate {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match &self.action {
+            LocalLaunchGateAction::Open => Ok(()),
+            LocalLaunchGateAction::Record { harness, created } => {
+                if *harness == crate::protocol::authority::Harness::Human {
+                    return Err("a managed launch starts an agent, never a person");
+                }
+                created.validate()
+            }
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchGateRefusal {
+    UnknownBootstrap,
+    WitnessMismatch,
+    StaleAttempt,
+    TimedOut,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LaunchGateReply {
+    Authorized,
+    Refused {
+        #[serde(default = "default_launch_gate_refusal")]
+        reason: LaunchGateRefusal,
+    },
+}
+fn default_launch_gate_refusal() -> LaunchGateRefusal {
+    LaunchGateRefusal::UnknownBootstrap
 }
 
 /// Per-attempt lifecycle is separate from absorbing parent dispositions.
@@ -798,7 +934,10 @@ impl BootstrapIdentity {
             || self.digest != self.semantic_digest()?
             || self.claim.role != super::authority::CallerRole::TopLevel
             || self.claim.instance != self.payload.handoff.namespace.instance
-            || self.claim.host.as_path() != self.payload.handoff.namespace.host_endpoint.as_path()
+            || !self
+                .claim
+                .host
+                .fronts_namespace(&self.payload.handoff.namespace.host_endpoint)
             || !matches!(&self.scope, crate::cli::journal::IntentScope::Cooperative { instance, host, seat } if instance == &self.claim.instance && host == &self.claim.host && seat == &self.claim.seat)
         {
             return Err("bootstrap original identity mismatch");
@@ -1396,6 +1535,7 @@ pub(crate) mod topology_contract_tests {
             explicit.scope.clone(),
             explicit.claim.clone(),
             AutomaticBootstrapPlan {
+                placement: None,
                 version: 2,
                 payload: AutomaticBootstrapPayload {
                     directory_context: Some(context.clone()),
@@ -1507,6 +1647,7 @@ pub(crate) mod topology_contract_tests {
         assert_eq!(serde_json::to_vec(&restored).unwrap(), bytes);
         restored.directory_context = saved.directory_context;
         let plan = AutomaticBootstrapPlan {
+            placement: None,
             version: 2,
             payload: restored,
         };
@@ -1954,6 +2095,22 @@ mod automatic_contract_tests {
         let foreign_instance = with_claim(|claim| claim.instance = "0".repeat(32)).unwrap_err();
         assert_eq!(foreign_host, "automatic original identity mismatch");
         assert_eq!(foreign_host, foreign_instance);
+    }
+
+    #[test]
+    fn named_claim_may_target_a_herdr_namespace() {
+        // A named seat's claim sits at the reserved named host; the launch namespace is the Herdr
+        // server (/host.sock in PLAN). Only a named claim may differ from the namespace host.
+        with_claim(|claim| {
+            claim.host =
+                crate::protocol::ids::HostLocator::parse(crate::protocol::ids::NAMED_HOST_LOCATOR)
+                    .unwrap();
+        })
+        .expect("a named claim is admitted against a Herdr namespace");
+        with_claim(|claim| {
+            claim.host = crate::protocol::ids::HostLocator::parse("/other.sock").unwrap();
+        })
+        .expect_err("a non-named claim on another host stays refused");
     }
 
     #[test]

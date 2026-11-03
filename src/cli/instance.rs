@@ -64,6 +64,17 @@ pub struct InstanceInputs {
     pub non_default_server: bool,
     /// The `herdr` executable on PATH, for the slow fallback only.
     pub herdr: Option<PathBuf>,
+    /// `HERDR_ENV` is set: the caller runs beside a Herdr (SA1 step 4).
+    pub herdr_env: bool,
+    /// The caller is a lone non-Pane site (a Named seat, `HERDR_THREADS_SEAT_NAME`, or a
+    /// herdr-core terminal, `HC_TERMINAL_ID`): with no Herdr configured or on PATH it gets the
+    /// standalone default state dir, beside a Herdr the command group's store, and its Herdr
+    /// host endpoint resolves lazily (fast sources only, never a `herdr` query).
+    pub non_pane_site: bool,
+    /// The lone non-Pane site's claim host: a herdr-core terminal's core socket
+    /// (`HC_TERMINAL_SOCKET`) or a named seat's reserved locator, ahead of a Herdr
+    /// `HERDR_SOCKET_PATH` that may be stale in its environment.
+    pub site_host: Option<PathBuf>,
 }
 
 fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
@@ -71,7 +82,12 @@ fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
 }
 
 impl InstanceInputs {
-    pub fn from_process(state_flag: Option<PathBuf>, host_flag: Option<PathBuf>) -> Self {
+    /// The inputs over a caller environment the entry point already read.
+    pub(crate) fn from_caller(
+        state_flag: Option<PathBuf>,
+        host_flag: Option<PathBuf>,
+        caller: &super::caller_location::CallerEnv,
+    ) -> Self {
         let path = std::env::var_os("PATH");
         Self {
             state_flag,
@@ -84,6 +100,62 @@ impl InstanceInputs {
             non_default_server: non_empty(std::env::var_os("HERDR_SESSION")).is_some()
                 || non_empty(std::env::var_os("HERDR_CONFIG_PATH")).is_some(),
             herdr: hook::resolve_on_path("herdr", path.as_deref()),
+            herdr_env: caller.herdr_env(),
+            non_pane_site: caller.non_pane_site(),
+            site_host: caller
+                .non_pane_locator(super::caller_location::EnvMode::Cli)
+                .and_then(|site| site.site().claim_host_locator().map(PathBuf::from)),
+        }
+    }
+
+    /// This process's inputs as the site the entry point decided. `None` is no site: a Pane
+    /// caller, `peer --stdio`, or the guard before it decides, where the environment's own
+    /// reading stands.
+    pub fn for_site(
+        state_flag: Option<PathBuf>,
+        host_flag: Option<PathBuf>,
+        site: Option<&super::caller_location::CallerLocator>,
+    ) -> Self {
+        let mut inputs = Self::from_caller(
+            state_flag,
+            host_flag,
+            &super::caller_location::CallerEnv::from_process(),
+        );
+        if let Some(site) = site {
+            inputs.non_pane_site = true;
+            inputs.site_host = site.site().claim_host_locator().map(PathBuf::from);
+        }
+        inputs
+    }
+
+    /// A Herdr is configured for this process: a pane or session env, or a named server.
+    fn herdr_configured(&self) -> bool {
+        self.herdr_env || self.non_default_server
+    }
+
+    /// The Herdr host endpoint of a non-Pane caller, resolved at the one point that needs it (a
+    /// handoff into a Herdr pane): the fast sources first, then the `herdr status server` query
+    /// that discovery skips for a named site.
+    pub(crate) fn lazy_host_endpoint(&self) -> io::Result<PathBuf> {
+        let inputs = Self {
+            non_pane_site: false,
+            // A herdr-core terminal's core socket is not a Herdr server.
+            site_host: None,
+            ..self.clone()
+        };
+        resolve_host_endpoint(&inputs)
+            .map(|(host, _)| host)
+            .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error))
+    }
+
+    /// The Herdr server this invocation addresses. A Pane or siteless caller's selected host is
+    /// that server. A non-Pane site's selected host is its claim host (the reserved locator, or a
+    /// core socket), which is never dialled or sent as a Herdr server: its endpoint is looked up
+    /// here, lazily (SA1, SA14).
+    pub(crate) fn herdr_endpoint(&self, selected: Option<&Path>) -> io::Result<PathBuf> {
+        match selected {
+            Some(host) if self.site_host.is_none() => Ok(host.to_path_buf()),
+            _ => self.lazy_host_endpoint(),
         }
     }
 
@@ -186,12 +258,37 @@ pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, Str
     }))
 }
 
-/// Where the default state dir would be, whether or not it exists yet. `None` with no usable
-/// HOME/XDG root; `Err` when both roots already hold a store (ambiguous, as for
-/// [`default_state_dir`]).
-fn default_state_dir_to_create(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
+/// The standalone default state dir, whether or not it exists yet: the single definition of
+/// that path (discovery and Herdr-less `setup` use it). `None` with no usable HOME/XDG root;
+/// `Err` when both roots already hold a store (ambiguous, as for [`default_state_dir`]).
+pub fn standalone_state_dir(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
     let (xdg, home) = state_candidates(absolute(&inputs.home), absolute(&inputs.xdg_state_home));
     Ok(choose_state_dir(xdg, home)?.map(|(dir, _, _)| dir))
+}
+
+/// Where the default state dir would be created. For a non-Pane site (`non_pane_site`) `None`
+/// unless no Herdr is configured (`HERDR_ENV`, `HERDR_SESSION`, `HERDR_CONFIG_PATH` unset) and no
+/// `herdr` is on PATH: beside a Herdr the command group's store is found by the `herdr plugin
+/// list` query (or refused), never split off a second store.
+fn default_state_dir_to_create(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
+    if inputs.non_pane_site && (inputs.herdr_configured() || inputs.herdr.is_some()) {
+        return Ok(None);
+    }
+    standalone_state_dir(inputs)
+}
+
+/// Create `dir` owner-only (the daemon refuses a group/other-writable state root, so the leaf
+/// is 0700 whatever the umask).
+fn create_state_dir(dir: &Path) -> io::Result<()> {
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
 }
 
 /// The context for `peer --stdio`, the ssh-side pump. Like [`resolve_context`], except that a
@@ -212,17 +309,7 @@ pub fn resolve_peer_context(inputs: &InstanceInputs) -> io::Result<RuntimeContex
     if dir.exists() {
         return Err(first);
     }
-    if let Some(parent) = dir.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    // The daemon refuses a group/other-writable state root, so the leaf is created 0700
-    // whatever the umask (an ssh session may run with 002).
-    match fs::DirBuilder::new().mode(0o700).create(&dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    create_state_dir(&dir)?;
     let created = InstanceInputs {
         state_flag: Some(dir),
         ..inputs.clone()
@@ -279,7 +366,7 @@ pub fn plugin_registry(inputs: &InstanceInputs) -> PluginRegistry {
 /// installed plugin) may be a leftover: Herdr's registry says the plugin is not installed or
 /// is disabled. `setup` refuses on it, `doctor` warns, other commands keep working.
 pub fn leftover_state_dir(inputs: &InstanceInputs, state: &Path, how: &str) -> Option<String> {
-    if !(how.starts_with("default") || how.starts_with("legacy")) {
+    if !(how.starts_with("default") || how.starts_with("legacy")) || has_standalone_marker(state) {
         return None;
     }
     match plugin_registry(inputs) {
@@ -324,8 +411,63 @@ pub fn resolve_state_dir(inputs: &InstanceInputs) -> Result<(PathBuf, String), S
     }
     match default_state_dir(inputs)? {
         Some(found) => Ok(found),
-        None => detect_state_dir(&inputs.detect()),
+        None => match default_state_dir_to_create(inputs) {
+            // A non-Pane site with no Herdr configured or on PATH: the standalone default dir
+            // (created by the context resolution). Otherwise the one `herdr plugin list` query.
+            Ok(Some(dir)) if inputs.non_pane_site => Ok((dir, STANDALONE_HOW.into())),
+            _ => detect_state_dir(&inputs.detect()),
+        },
     }
+}
+
+/// The source label of a state directory chosen as the standalone default (a Named site, or
+/// Herdr-less `setup`).
+pub const STANDALONE_HOW: &str = "standalone default";
+
+/// The standalone install marker, `<state>/node/install.json`: written by Herdr-less `setup`
+/// (and so by the installer), it says no Herdr plugin owns this state dir, so it is no leftover.
+const INSTALL_MARKER: &str = "install.json";
+const STANDALONE_MARKER_BODY: &str = "{\"mode\":\"standalone\"}";
+
+fn install_marker_path(state: &Path) -> PathBuf {
+    crate::daemon::paths::node_dir(state).join(INSTALL_MARKER)
+}
+
+/// True when `state` carries the standalone install marker.
+pub fn has_standalone_marker(state: &Path) -> bool {
+    fs::read(install_marker_path(state)).is_ok_and(|bytes| {
+        serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| v["mode"] == "standalone")
+    })
+}
+
+/// Write the standalone marker (owner-only; the node dir is created 0700 when absent).
+pub fn write_standalone_marker(state: &Path) -> io::Result<()> {
+    let node = crate::daemon::paths::node_dir(state);
+    crate::daemon::paths::ensure_private_dir(&node)?;
+    let path = install_marker_path(state);
+    if fs::read(&path).is_ok_and(|bytes| bytes == STANDALONE_MARKER_BODY.as_bytes()) {
+        return Ok(());
+    }
+    fs::write(&path, STANDALONE_MARKER_BODY)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+}
+
+/// The state dir of a Herdr-less `setup`: no flag, no `HERDR_PLUGIN_STATE_DIR`, no Herdr
+/// configured and no `herdr` on PATH. `None` when any of those holds (the usual resolution
+/// applies); otherwise the standalone default, which is also what named-site discovery resolves.
+pub fn herdrless_state_dir(inputs: &InstanceInputs) -> Option<Result<(PathBuf, String), String>> {
+    if inputs.state_flag.is_some()
+        || inputs.env_state.is_some()
+        || inputs.herdr.is_some()
+        || inputs.herdr_configured()
+    {
+        return None;
+    }
+    Some(match standalone_state_dir(inputs) {
+        Ok(Some(dir)) => Ok((dir, STANDALONE_HOW.into())),
+        Ok(None) => Err("neither XDG_STATE_HOME nor HOME is an absolute path".into()),
+        Err(error) => Err(error),
+    })
 }
 
 /// The claim host: the Herdr server of the calling pane. An explicit user flag on an interactive
@@ -343,14 +485,31 @@ pub fn claim_host(
 
 /// The host endpoint and where it came from.
 pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String), String> {
+    // A named seat's claim host is always its reserved locator; an explicit `--host-endpoint`
+    // beside a name names the Herdr server a handoff creates its target on (`lazy_host_endpoint`).
+    if let Some(host) = inputs
+        .site_host
+        .as_ref()
+        .filter(|host| host.as_os_str() == crate::protocol::ids::NAMED_HOST_LOCATOR)
+    {
+        return Ok((host.clone(), "the named site reserved locator".into()));
+    }
     if let Some(host) = &inputs.host_flag {
         return Ok((host.clone(), "--host-endpoint".into()));
+    }
+    if let Some(host) = &inputs.site_host {
+        return Ok((host.clone(), "the terminal site core socket".into()));
     }
     if let Some(host) = &inputs.env_host {
         return Ok((host.clone(), "HERDR_SOCKET_PATH".into()));
     }
     match default_host_endpoint(inputs) {
         Some(found) => Ok(found),
+        // Lazy for a non-Pane site: no `herdr status server` query on every call; a command
+        // that needs the host fails later, in `RuntimeContext::require_host`.
+        None if inputs.non_pane_site => {
+            Err("Herdr host endpoint not resolved for a named site".into())
+        }
         None => detect_host_endpoint(&inputs.detect()),
     }
 }
@@ -386,6 +545,9 @@ pub(crate) fn resolve_context_with_selected_paths(
         Ok((host, how)) => (Some(host), how),
         Err(_) => (None, "none".to_owned()),
     };
+    if state_how == STANDALONE_HOW {
+        create_state_dir(&state)?;
+    }
     let selected_state = state.clone();
     let selected_host = host.clone();
     let context = RuntimeContext::explicit(
@@ -406,6 +568,14 @@ pub(crate) fn resolve_context_with_selected_paths(
         selected_host,
     ))
 }
+
+#[cfg(test)]
+#[path = "../../tests/cli/instance_named.rs"]
+mod instance_named;
+
+#[cfg(test)]
+#[path = "../../tests/daemon/terminal_site.rs"]
+mod terminal_site;
 
 #[cfg(test)]
 mod tests {
@@ -492,6 +662,46 @@ mod tests {
             )),
             ..InstanceInputs::default()
         }
+    }
+
+    /// The standalone marker exempts a fast-default state dir from the leftover check, and the
+    /// Herdr-less state dir is the standalone default that named discovery also resolves.
+    #[test]
+    fn standalone_marker_is_no_leftover_and_herdrless_dir_is_the_default() {
+        let dir = scratch();
+        let mut inputs = InstanceInputs {
+            home: Some(dir.join("home")),
+            ..InstanceInputs::default()
+        };
+        let state = standalone_state_dir(&inputs).unwrap().unwrap();
+        assert_eq!(
+            herdrless_state_dir(&inputs).unwrap().unwrap(),
+            (state.clone(), STANDALONE_HOW.into())
+        );
+        // A Herdr on PATH, a flag or a configured Herdr leave the usual resolution.
+        inputs.herdr = Some(dir.join("herdr"));
+        assert!(herdrless_state_dir(&inputs).is_none());
+        inputs.herdr = None;
+        inputs.state_flag = Some(dir.join("s"));
+        assert!(herdrless_state_dir(&inputs).is_none());
+        inputs.state_flag = None;
+
+        fs::create_dir_all(&state).unwrap();
+        let registry = dir.join("home/.config/herdr/plugins.json");
+        fs::create_dir_all(registry.parent().unwrap()).unwrap();
+        fs::write(&registry, "[]").unwrap();
+        let fast = "default (~/.local/state)";
+        assert!(leftover_state_dir(&inputs, &state, fast).is_some());
+        assert!(!has_standalone_marker(&state));
+        write_standalone_marker(&state).unwrap();
+        write_standalone_marker(&state).unwrap();
+        assert!(has_standalone_marker(&state));
+        assert_eq!(
+            fs::read_to_string(state.join("node/install.json")).unwrap(),
+            r#"{"mode":"standalone"}"#
+        );
+        assert_eq!(leftover_state_dir(&inputs, &state, fast), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

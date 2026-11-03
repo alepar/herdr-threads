@@ -2094,6 +2094,20 @@ fn message_output(
     }
 }
 
+/// A read-only binding (D3) is never offered a receipt-bearing row: it stays pending for a
+/// writable sibling, as in `delivery_pull`.
+fn readonly_hides(readonly: bool, item: &crate::protocol::results::InboxBatchV2Item) -> bool {
+    use crate::protocol::results::InboxBatchV2Item;
+    readonly
+        && matches!(
+            item,
+            InboxBatchV2Item::Message {
+                ack_candidate: Some(_),
+                ..
+            }
+        )
+}
+
 pub(super) fn pull(
     db: &Connection,
     context: &StoreContext,
@@ -2125,6 +2139,7 @@ pub(super) fn pull(
         });
     }
     let binding = binding.expect("canonical binding compared with admitted input");
+    let readonly = super::bindings::is_readonly(db, &binding)?;
     if render_selection(db, claim, consumer)?.as_ref()
         != input.frozen_render.as_ref().map(|v| &v.identity)
     {
@@ -2366,6 +2381,7 @@ pub(super) fn pull(
                 due_context,
                 &mut carry_work,
             )?;
+            let value = value.filter(|v| !readonly_hides(readonly, v));
             if let Some(value) = value {
                 carry_work.ordinary_due_hydrated += 1;
                 let mut assembler = Assembler::new(None).with_command_prefix(carry.prefix.clone());
@@ -2463,7 +2479,9 @@ pub(super) fn pull(
         let ordinary = ordinary.page;
         carry.prefix = input.pull.marker_prefix.clone();
         for value in ordinary.items {
-            if let Some(message) = assemble_message(&mut assembler, value, &carry.prefix)? {
+            if let Some(message) = assemble_message(&mut assembler, value, &carry.prefix)?
+                && !(readonly && message.content.content.ack_required)
+            {
                 messages.push(message);
             }
         }
@@ -2559,6 +2577,7 @@ pub(super) fn pull(
                         due_context,
                         &mut work,
                     )?;
+                    let value = value.filter(|v| !readonly_hides(readonly, v));
                     let stamp = ordinary_due_update
                         .as_ref()
                         .expect("exact keys require snapshot")

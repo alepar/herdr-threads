@@ -4,7 +4,8 @@
 //! design section 4). The handler checks the origin owns the seat ID's tag,
 //! then calls the one materializer in `store::seats`. `seat.retired` retires a
 //! published seat on every node; its handler checks the origin is the seat's
-//! home, then calls `seats::materialize_seat_retired`.
+//! home, then calls `seats::materialize_seat_retired`. On the authoring node's own replay a local row
+//! takes the retirement fence's whole transition (open bindings end `seat_retired`), not a bare state change.
 
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
@@ -17,8 +18,9 @@ use crate::store::materialize::{AuthorRule, require_author};
 use crate::store::seats;
 use crate::sync::EntityKey;
 
-/// The `seat.created` v1 payload. `display_name` is reserved and always
-/// `null` in v1 (seats carry no name); the created time is the envelope HLC.
+/// The `seat.created` v1 payload. `display_name` is the seat's name (`seats.name`) for a
+/// named seat and `null` otherwise; a receiver keeps it only when it parses as a
+/// `SeatName`. The created time is the envelope HLC.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeatCreatedPayload {
     pub seat: SeatId,

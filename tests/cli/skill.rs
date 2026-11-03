@@ -435,3 +435,56 @@ fn daily_loop_uses_inbox_and_hook_notifications() {
     assert!(daily.contains("earlier context absent from inbox"));
     assert!(daily.contains("long inbox messages use inbox continuations"));
 }
+
+/// K1 (106 bytes): the named-seat line is in the skill exactly once.
+#[test]
+fn named_seat_line_k1_is_in_the_skill_once() {
+    let k1 = "Outside Herdr, set `HERDR_THREADS_SEAT_NAME=<name>` per command, never in a shell profile or a server env.";
+    assert_eq!(k1.len(), 106);
+    assert_eq!(crate::cli::skill::SKILL_MD.matches(k1).count(), 1);
+}
+
+// Kills: the `none` meaning reverting to K3's old text, or the `no_wake` explanation (K2, 77 bytes
+// plus one separating space) missing from the Warnings paragraph that lists the `wake=` values.
+#[test]
+fn skill_explains_no_wake_and_the_none_meaning() {
+    let k2 = "`no_wake`: the seat's host cannot wake it; it sees the item on its next turn.";
+    assert_eq!(k2.len(), 77);
+    let k3 = "`none`: no native wake was needed (a mod-channel seat wakes itself).";
+    let warnings = SKILL_MD
+        .split("\n## ")
+        .find(|section| section.starts_with("Warnings"))
+        .expect("Warnings section");
+    assert!(warnings.contains(&format!("{k3} {k2}")), "{warnings}");
+    assert!(!SKILL_MD.contains("a mod-channel seat wakes without one"));
+}
+
+/// K4 (140 bytes): the terminal-site line is in the skill exactly once, after K1 in the Seats
+/// section, not in per-message framing.
+#[test]
+fn terminal_site_line_k4_is_in_the_skill_once() {
+    let k4 = "herdr-threads works alike in a Herdr pane, a named process and a herdr-core terminal: `hc` runs terminals, `herdr-threads` carries messages.";
+    assert_eq!(k4.len(), 140);
+    assert_eq!(crate::cli::skill::SKILL_MD.matches(k4).count(), 1);
+}
+
+/// The frontmatter description and the Trust model bullet name all three seat sources, and the
+/// pane-only requirement is gone.
+#[test]
+fn skill_names_the_three_seat_sources() {
+    let vars = ["HERDR_PANE_ID", "HERDR_THREADS_SEAT_NAME", "HC_TERMINAL_ID"];
+    let description = SKILL_MD
+        .lines()
+        .find(|line| line.starts_with("description: "))
+        .expect("description");
+    let bullet = SKILL_MD
+        .lines()
+        .find(|line| line.starts_with("- Commands locate your seat from"))
+        .expect("locate bullet");
+    for var in vars {
+        assert!(description.contains(var), "description lacks {var}");
+        assert!(bullet.contains(var), "bullet lacks {var}");
+    }
+    assert!(!SKILL_MD.contains("Requires running inside your own Herdr pane"));
+    assert!(!bullet.contains("this pane's"));
+}

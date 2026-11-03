@@ -1,0 +1,31 @@
+heavy: slot 1 acquired 21:43:49
+   Compiling herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.55)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 40s
+     Running tests/combined.rs (target/debug/deps/combined-afbb63e80cd145ba)
+
+running 21 tests
+test hc_schema_conformance::validator_semantics ... ok
+test hc_schema_conformance::malformed_events_fail_validation ... ok
+test hc_schema_conformance::error_replies_have_the_wire_error_shape_and_declared_kinds ... ok
+test hc_schema_conformance::every_event_the_fake_emits_conforms ... ok
+test hc_schema_conformance::replies_conform_in_terminal_state_variants ... ok
+test hc_contract::hello_round_trip ... ok
+test hc_schema_conformance::malformed_replies_fail_validation ... ok
+test hc_schema_conformance::stream_notifications_conform ... ok
+test hc_schema_conformance::every_served_method_reply_conforms ... ok
+test hc_schema_conformance::readme_event_table_is_complete_and_checked_in_full ... ok
+test hc_contract::status_null_decodes ... ok
+test hc_contract::terminal_get_round_trip ... ok
+test hc_contract::doc_get_round_trip ... ok
+test hc_contract::events_subscribe_snapshot_round_trip ... ok
+test hc_contract::terminal_run_params_exist_in_vendored_schema ... ok
+test hc_contract::finish_applies_registry_rule ... ok
+test hc_contract::never_sends_forbidden_methods ... ok
+test hc_contract::tolerates_unknown_fields_and_events ... ok
+test hc_contract::core_id_rotation_seq_reset_and_witness_change ... ok
+test hc_contract::every_sent_method_and_param_in_vendored_schema ... ok
+test hc_contract::fake_hc_bin_serves_same_code ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 1198 filtered out; finished in 0.07s
+
+exit 0

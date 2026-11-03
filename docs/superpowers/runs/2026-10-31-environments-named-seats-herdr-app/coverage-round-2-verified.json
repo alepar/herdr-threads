@@ -1,0 +1,175 @@
+{
+ "findings": [
+  {
+   "type": "GAP",
+   "subject": "R28 TRUST-POLICY/AGENTS.md N rows",
+   "line": "ht-kqrt.21, .22, .23, .24, .26, .27, .28",
+   "verified": true,
+   "reason": "C1-10 added TRUST-POLICY owns lines on H1/H3 leaves only. Among N leaves only .32 names TRUST-POLICY (A4). R18 needs cooperative_named_seat and R21 needs cooperative_self_retire, and no N leaf owns either row. This is new evidence beyond C1-10.",
+   "fix": "Add '(same commit)' TRUST-POLICY owns lines: .21 C1 named continuity + cooperative_named_seat provenance + cross-kind rebind refusal; .26 cooperative_self_retire + Operator replication; .23 D19 live-holder/M7; .24 readonly no-ACK receipt semantics; .27 D1 inherited-name refusal; .22 D12 restore placement; .28 M9.",
+   "ledger": "C1-10"
+  },
+  {
+   "type": "GAP",
+   "subject": "Claude mod channel on a Named site",
+   "line": "ht-kqrt.17",
+   "verified": true,
+   "reason": ".48 owns the register.js no_pane change for Terminal sites only. .17 owns only 'watch on the Named site'. R20 requires 'live-mod Claude reports no block' for named seats, and the goal requires channel delivery for plain/tmux agents. This is new evidence beyond C1-7.",
+   "fix": "Extend .17's owns line: register.js spawn env forwards HERDR_THREADS_SEAT_NAME/READONLY, the mod does not stop on no_pane when a name is set; add an acceptance test running the live mod watch under a name with no HERDR_PANE_ID.",
+   "ledger": "C1-7"
+  },
+  {
+   "type": "GAP",
+   "subject": "environment-agnostic core enforced mechanically",
+   "line": "root goal; ht-kqrt.34/.62/.63/.64",
+   "verified": true,
+   "reason": "The goal says routing, delivery, receipts and binding 'never learn which environment a seat lives in'. R6 covers only CLI env literals and R40 only dialled-host consumers. No leaf owns a host-kind neutrality check.",
+   "fix": "Add a small leaf owning a source-scan test (or a check-harness-neutral extension with a host-kind allowlist): HostKind variants and host env names (HC_*, TMUX, seat-name vars) appear only under src/host/<kind>/, registration and caller_location.rs. Make it a dep of gates .34, .62, .63, .64.",
+   "ledger": ""
+  },
+  {
+   "type": "ORPHAN",
+   "subject": "H3 leaves ht-kqrt.53-.58, .64",
+   "line": "ht-kqrt (root goal)",
+   "verified": true,
+   "reason": "The changes file claims the epic goal was amended (C1-13), but the Goals text in the inputs still has no handoff/launch outcome. That is new evidence that the amendment did not land. H3 itself is in scope per spec constraint 3.",
+   "fix": "Write the H3 outcome into the ht-kqrt goal field, e.g. 'Handoff and launch from any site create workers in Herdr panes and herdr-core terminals, including app spaces (D7).' Regenerate the coverage inputs and confirm it appears.",
+   "ledger": "C1-13"
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "daemon launch-gate authorization handler (.53 -> .54/.57)",
+   "line": "ht-kqrt.57",
+   "verified": true,
+   "reason": ".53 is a seam-contract leaf with deps on .1 only, so it cannot implement the handler that matches against HcHost/CreatedTarget (.41/.55). .54 and .57 only consume the command. This is new evidence beyond C1-17. It merges r2's GAP on R42.",
+   "fix": "Add to .57's owns: daemon LaunchGate handler (match the shim's HC_TERMINAL_ID/(core,tN) against the CreatedTarget/HostWitness and HcHost terminal.get, stage the bootstrap Send before the reply, bounded-timeout refusal), with a fake_hc test.",
+   "ledger": "C1-17"
+  },
+  {
+   "type": "GAP",
+   "subject": "Terminal-site instance discovery beside Herdr (hc analogue of R13)",
+   "line": "ht-kqrt.46",
+   "verified": true,
+   "reason": ".18 covers named-site discovery in N, before Terminal sites exist. .49 covers only hc-only machines. .46's deps (.11, .16, .41, .44) do not include .18. No leaf owns store selection for an hc terminal on a Herdr-installed machine with hooks baked with the TUI --host-endpoint.",
+   "fix": "Add to .46 acceptance: a Terminal site on a Herdr-installed machine uses the Herdr command group's store, the baked TUI --host-endpoint is not used for hc, and doctor flags two stores. Add a dep on .18.",
+   "ledger": ""
+  },
+  {
+   "type": "GAP",
+   "subject": "Herdr desktop-app pane gets full messaging",
+   "line": "ht-kqrt.59",
+   "verified": true,
+   "reason": "The goal names 'a Herdr desktop-app pane' explicitly. Only .43 touches the app (label names). No acceptance runs messaging from an app-labelled terminal.",
+   "fix": "Add a fake_hc app-labelled terminal fixture (herdr-app doc, herdr.space/herdr.tab labels) to .59 acceptance: seat, send, inbox, ACK, hook delivery and the <session>:tN label.",
+   "ledger": ""
+  },
+  {
+   "type": "GAP",
+   "subject": "R39 M20 self-retire refusal from a Terminal site",
+   "line": "ht-kqrt.48",
+   "verified": true,
+   "reason": "R39 requires the refusal. .26 refuses only 'for pane seats (M20)', .46 owns M4/M17 only, and .48 consumes self-retire without owning or testing the Terminal-site refusal.",
+   "fix": "Add to .48's owns line and acceptance: seat retire --self from a Terminal site is refused with M20.",
+   "ledger": ""
+  },
+  {
+   "type": "GAP",
+   "subject": "R10 F behavioural gate ht-kqrt.13 blocks nothing",
+   "line": "ht-kqrt.13",
+   "verified": true,
+   "reason": "No leaf lists .13 in its deps, yet .13 and the spec say the gate runs before N and H1 build on F (spec: 'Before F merges into the run branch').",
+   "fix": "Add ht-kqrt.13 as a dep of .15 and .40 (the first N/H1 leaves building on F) and of phase gates .34 and .63.",
+   "ledger": ""
+  },
+  {
+   "type": "GAP",
+   "subject": "whole-tree gate with every phase merged",
+   "line": "ht-kqrt.64",
+   "verified": true,
+   "reason": ".64 deps only .57 and .58. No gate depends on .62 and .63 together, so no gate is guaranteed to run on the tree with every phase merged before the coordinator merges to main. The finding is new because it shows the dependency structure C1-8 left.",
+   "fix": "Make .64 the final gate: add deps on .62, .63 and .59, and state that it runs on the fully merged run branch (unfiltered suite, check-default-features, leak checks, Herdr regression proof).",
+   "ledger": "C1-8"
+  },
+  {
+   "type": "GAP",
+   "subject": ".59 configuration smoke behind no gate",
+   "line": "ht-kqrt.59",
+   "verified": true,
+   "reason": ".59 is not a dep of .62, .63 or .64 (checked against the inputs), so the C1-12 cross-environment smoke may never run on the final tree.",
+   "fix": "Covered by the whole-tree gate edit: make .59 a dep of .64.",
+   "ledger": "C1-8"
+  },
+  {
+   "type": "GAP",
+   "subject": "R18 unresolved named row vs liveness of other named bindings",
+   "line": "ht-kqrt.25",
+   "verified": true,
+   "reason": "R18 has this clause, and no owns line on .21, .23 or .25 names it. The spec notes that an unresolved row silences liveness for its whole host, and all named seats share one builtin host.",
+   "fix": "Add to .25's owns line and acceptance: one unresolved named row does not silence liveness of other named bindings, with a test.",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "consumer filters F4-audit (.6 -> .50, .34)",
+   "line": "ht-kqrt.6",
+   "verified": true,
+   "reason": ".50 consumes 'consumer filters (F4-audit)', but .6 has no owns line.",
+   "fix": "Give .6 'owns: dialled-only consumer filters per 07 \u00a75.3 (idle exit, cap, reattach sweep, operator_host text)'.",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "hc labels H1c-labels (.43 -> .60, .52)",
+   "line": "ht-kqrt.43",
+   "verified": true,
+   "reason": ".60 and .52 consume 'hc labels (H1c-labels)', but .43 has no owns line. .41 owns only the vocabulary and format, not the seat_labels output or the bare-tN refusal R39 asserts.",
+   "fix": "Give .43 'owns: HcHost seat_labels/live_topology output, herdr-app doc-name parsing/cache, ambiguous bare tN refusal'.",
+   "ledger": ""
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "HcHost::server_process (.47 <-> .27)",
+   "line": "ht-kqrt.47",
+   "verified": true,
+   "reason": ".47 defines HcHost::server_process from the LocalEndpointWitness peer pid but has no owns line. .40's owns line does not name peer-pid recording.",
+   "fix": "Add to .47 'owns: HcHost::server_process; LocalEndpointWitness peer-pid recording in the hc client'.",
+   "ledger": ""
+  },
+  {
+   "type": "GAP",
+   "subject": "Hermes tmux idle wake",
+   "line": "ht-kqrt.36",
+   "verified": false,
+   "reason": "The spec scopes turn_state_edge to Codex/agy plus Claude's report-only Stop, and the default None ('no tmux wake for that harness') applies to Hermes by design.",
+   "fix": "",
+   "ledger": "C1-11"
+  },
+  {
+   "type": "NEEDS-SPEC",
+   "subject": "ht-kqrt (N2) Hermes tmux wake",
+   "line": "ht-kqrt",
+   "verified": false,
+   "reason": "The spec settles it: default turn_state_edge None means no tmux wake for Hermes.",
+   "fix": "",
+   "ledger": ""
+  },
+  {
+   "type": "NEEDS-SPEC",
+   "subject": "ht-kqrt (root) goal lacks H3 outcome",
+   "line": "ht-kqrt",
+   "verified": false,
+   "reason": "Duplicate of the ORPHAN H3 finding. The spec puts H3 in scope (constraint 3), so this needs a tree edit, not a spec question.",
+   "fix": "",
+   "ledger": "C1-13"
+  },
+  {
+   "type": "GAP",
+   "subject": "cross-node hc case in the .59 smoke",
+   "line": "ht-kqrt.59",
+   "verified": false,
+   "reason": "The requirement is owned and tested by .60 (named cross-node by .33). A second end-to-end copy fills no coverage gap.",
+   "fix": "",
+   "ledger": "C1-6"
+  }
+ ]
+}

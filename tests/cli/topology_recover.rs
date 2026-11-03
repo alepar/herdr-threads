@@ -78,6 +78,8 @@ fn canonical_fixture(
             host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: id.payload.resolve_key.clone(),
+            locator_hint: None,
+            tmux_hint: None,
         },
         BootstrapPaneObservation::try_new(
             observation,
@@ -998,7 +1000,7 @@ fn interrupted_saved_inspection_refuses_after_original_normal_retry_unknown_crea
         &native,
         &clock,
         super::super::topology_handoff::BootstrapSubmissionInputs {
-            witness: &witness,
+            witness: &crate::ports::HostWitness::HerdrSocket(witness.clone()),
             context: &context,
         },
     );

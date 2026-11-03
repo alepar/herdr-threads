@@ -1,0 +1,25 @@
+# Host-neutrality scan allowlist (tests/host_neutral_scan.rs).
+# Format: `path[::symbol] # reason`, one entry per line. A path ending in `/` is a
+# directory prefix; otherwise it is one file. `::symbol` limits the exemption to the
+# item (fn, struct, enum, trait, impl, const, type) of that name in the file.
+# No globs. Routing, delivery, receipts and binding modules never carry an entry
+# (the scan test rejects one). Adding a line here is a review decision.
+src/host/native.rs # herdr TUI host adapter: owns its pane env names and its HostPort answers
+src/host/hc/ # herdr-core host adapter: owns the HC_* env names and its HostPort answers
+src/host/named/ # tmux wake path of the named host: owns the TMUX and TMUX_PANE env names
+src/host/mod.rs # host registration and construction
+src/ports.rs # HostKind, its implemented set and the HostPort trait with the permitted kind() readers
+src/cli/caller_location.rs # the only caller-location env reader in the CLI (F7)
+src/service/host_sessions.rs::any_reachable # peer-discovery gate asks about Herdr; the one permitted kind() reader outside the host adapters
+src/service/peer_launcher.rs::gate_argv # permitted reader: the gate argv is by construction what a herdr-core terminal starts, so it asks the adapter for the hc launch argv (H3e)
+src/harness/codex.rs::host_launch_argv # permitted reader: the adapter's launch argv per host kind (H3)
+src/store/hosts.rs::attachable # permitted reader: the G4 reattach check; the built-in named host is implemented but never dialled
+src/store/seats/operator.rs::refuse_cross_kind_rebind # permitted reader: the G4 rebind check refuses a named to pane or terminal rebind
+src/app.rs::production_host_factory # host registration: the production HostFactory::build chooses the host by kind
+src/app.rs::run_elected_impl # host registration: the single source of the built-in named host's kind
+src/host/probe.rs # the kind probe: the one place a server's kind is classified
+src/host/target_creator.rs # host construction by probed kind (H3)
+src/host/named.rs # the named host adapter: owns its env names and its kind
+src/test_support/ # test support, not in a release daemon; env_remove keeps private tmux isolated
+src/service/host_sessions.rs::tests # unit-test fixtures name kinds to set up rows and fakes
+src/store/hosts.rs::tests # unit-test fixtures name kinds to set up rows and fakes

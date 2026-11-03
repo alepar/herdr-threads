@@ -80,8 +80,9 @@ fn exact_namespace(id: &AutomaticBootstrapIdentity, ns: &HandoffNamespace) -> bo
 pub(crate) fn require_capability<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
+    identity: &AutomaticBootstrapIdentity,
 ) -> Result<(), RunError> {
-    crate::cli::topology_runtime::require_automatic_capability(client, clock)
+    crate::cli::topology_runtime::require_bootstrap_route_capability(client, clock, identity)
 }
 
 pub(crate) fn prepare(
@@ -102,7 +103,7 @@ pub(crate) fn prepare(
         (
             Assertion::CreatedPane(target),
             AutomaticBootstrapRecoveryDisposition::CreatedPane { evidence, .. },
-        ) => target == &evidence.root_pane,
+        ) => target == evidence.launch_target(),
         (Assertion::NotCreated, AutomaticBootstrapRecoveryDisposition::NotCreated { .. }) => true,
         (
             Assertion::Cancelled { reason },
@@ -196,7 +197,7 @@ pub(crate) fn retry_to_writer<C: LocalClient + ?Sized, W: Write>(
         ));
     };
     validate_original(journal, &plan, namespace)?;
-    require_capability(client, clock)?;
+    require_capability(client, clock, &plan.request.identity)?;
     let guard = crate::cli::handoff::lock(journal, &plan.original_ref)?;
     retry_under_guard(
         journal, reference, namespace, client, clock, output, writer, &guard,
@@ -232,7 +233,7 @@ pub(crate) fn retry_under_guard<C: LocalClient + ?Sized, W: Write>(
         ));
     };
     validate_original(journal, &plan, namespace)?;
-    require_capability(client, clock)?;
+    require_capability(client, clock, &plan.request.identity)?;
     let result = client.call(
         Command::AutomaticBootstrap(Box::new(plan.request.clone())),
         &crate::cli::cooperative_budget(clock),

@@ -1,0 +1,212 @@
+{
+ "findings": [
+  {
+   "type": "GAP",
+   "subject": "R25 named-caller handoff recovery hint",
+   "line": "No leaf builds the Named-site recovery hint containing HERDR_THREADS_SEAT_NAME=<n>",
+   "verified": true,
+   "reason": "R25 says this. ht-kqrt.10 covers only the Pane-site hints (F7, the 'three Pane-site handoff recovery hints'), and ht-kqrt.30 says only 'handoff out of a named seat'.",
+   "fix": "Extend ht-kqrt.30 (deps already include ht-kqrt.18, ht-kqrt.20; add ht-kqrt.16). Owns: the Named-site CallerSite::env_assignments recovery hint (HERDR_THREADS_SEAT_NAME=<n>). Consumes: CallerLocator::Named site answers (ht-kqrt.16). Acceptance: - [ ] the handoff recovery hint for a named caller contains HERDR_THREADS_SEAT_NAME=<n>; - [ ] running the hint resolves to the same seat (test); - [ ] the Pane-site hints stay byte-identical to their golden output."
+  },
+  {
+   "type": "GAP",
+   "subject": "R26 M11 handoff into a named seat",
+   "line": "No owns line names M11 (handoff into a named seat refused)",
+   "verified": true,
+   "reason": "R26 lists M11. Spec line 452 says it is 'refused by the port answer with M11'. ht-kqrt.30 covers handoff out of a named seat only.",
+   "fix": "Add 'M11 handoff-into-named-seat refusal (NamedHost port answer)' to ht-kqrt.30's owns and consume NamedHost (ht-kqrt.15). Acceptance: - [ ] handoff targeting a named seat is refused with the fixed M11 text `herdr-threads: named seat <name> has no pane to launch into`, and no target is created."
+  },
+  {
+   "type": "GAP",
+   "subject": "R28 spikes S2, S4, named half of S5",
+   "line": "Spikes S2, S4 and the named half of S5 are answered by no leaf",
+   "verified": true,
+   "reason": "Leaves name S1 (ht-kqrt.21), S3 (ht-kqrt.17), S6 (ht-kqrt.32) and E1 (ht-kqrt.27). No leaf names S2, S4 or S5. The spec's spike table gives S2 a store test, S4 a daemon test and S5 (named half) a store test, all at the N gate.",
+   "fix": "Assign them to existing owners. S2 (a first empty named publication clears holds without baseline_hold_unclaimed, store test) goes to ht-kqrt.25 (named presence). S4 (replay scope of self-retire idempotency, daemon test) goes to ht-kqrt.26. S5 named half (a restored named seat against a newer live seat of that name, store test) goes to ht-kqrt.22. Add one - [ ] acceptance line per spike to each of those leaves."
+  },
+  {
+   "type": "GAP",
+   "subject": "R34 tmux docs and evidence",
+   "line": "No leaf owns the delivery-contract table, the AGENTS.md tmux wake line, the TRUST-POLICY N2 row, the T1-T5 records or tmux leak recognition",
+   "verified": true,
+   "reason": "ht-kqrt.39 owns only ComposerTraits::TMUX and wake-lane registration. ht-kqrt.38 owns the tmux helper but not leak recognition. The spec requires the AGENTS.md rule 6 wording, the tmux 'What we do today' line, the TRUST-POLICY N2 A4 row and recognition of `-L ht-test-*` tmux servers in leak checks.",
+   "fix": "Extend ht-kqrt.39's owns with: the delivery-contract audit table in the commit message, the AGENTS.md rule 6 Native wording and the tmux 'What we do today' line, the TRUST-POLICY N2 A4 row, and the T1-T5 results. Extend ht-kqrt.38's owns with scripts/check-no-leaked-processes recognition of tmux servers started with `-L ht-test-*`. Acceptance: - [ ] T1-T5 are recorded in the run report; - [ ] the leak check is clean after the N2 tests."
+  },
+  {
+   "type": "GAP",
+   "subject": "R45 L1-L4",
+   "line": "No H3 leaf answers L1-L4 or lists their live parts as remaining evidence",
+   "verified": true,
+   "reason": "R45 requires 'L1-L4 answered with live parts listed as remaining evidence'. No leaf from ht-kqrt.53 to ht-kqrt.58 mentions L1-L4.",
+   "fix": "Add to ht-kqrt.57's acceptance: - [ ] L1 (fake_hc label test, live part to remaining evidence); - [ ] L2/L3 (fake_hc plus a read-only reading of herdr-core api/run.rs and notes.rs, or the real-core smoke when present); - [ ] L4 (socket path from herdr-core docs/paths.rs, Codex --no-daemon live run to remaining evidence). Each answer goes into the run report."
+  },
+  {
+   "type": "GAP",
+   "subject": "cross-node addressing of hc terminal seats",
+   "line": "No leaf publishes or resolves hc terminal seats or labels across nodes",
+   "verified": true,
+   "reason": "The goal requires cross-node addressing for all three environments. ht-kqrt.33 and R23 cover named seats only (reviewer@B), and ht-kqrt.43's <session>:tN labels are local.",
+   "fix": "New H1 leaf under ht-kqrt: 'hc seats across nodes'. Deps: ht-kqrt.43 (hc labels), ht-kqrt.33 (remote seat_labels publish), ht-kqrt.48. Owns: remote publication of hc seat labels through the existing SeatStatusEntry.pane/seat_labels path. Acceptance: - [ ] over test_support::multinode, node B addresses and displays an hc terminal seat of node A (label@node or seat id, as decided and documented); - [ ] no new wire baseline line."
+  },
+  {
+   "type": "GAP",
+   "subject": "Claude mod channel from Terminal sites",
+   "line": "No leaf makes the Claude mod (register.js) locate an HC_TERMINAL_* caller",
+   "verified": true,
+   "reason": "Partly holds. For Named sites, ht-kqrt.17 owns 'watch S3', which per the spec covers mod watch on a Named site and a node test of register.js's spawn env, so the reviewers' claim fails for Named. For Terminal sites no leaf covers the mod, yet R35 asserts that 'live-mod Claude reports no no_wake' on an hc seat.",
+   "fix": "Extend ht-kqrt.48 (or a new leaf after ht-kqrt.46 and ht-kqrt.17). Owns: mod watch/channel on a Terminal site (the register.js spawn env carries HC_TERMINAL_ID/HC_TERMINAL_SOCKET; it never stops on no_pane). Consumes: Terminal site (ht-kqrt.46), watch on Named site (ht-kqrt.17). Acceptance: - [ ] a watch integration test with a Terminal site against fake_hc delivers through the channel; - [ ] a node test of register.js's spawn env."
+  },
+  {
+   "type": "GAP",
+   "subject": "per-phase integration sweep after F",
+   "line": "Only F has a behavioural gate leaf, so N, N2, H1 and H3 have no integration sweep",
+   "verified": true,
+   "reason": "ht-kqrt.13 depends only on F leaves. The spec's per-phase gates (full suite with leak checks, check-default-features, wire/neutral checks) and the regression proof for Herdr-pane surfaces after the later phases are owned by no leaf. ht-kqrt.59 is a stand-in configuration smoke.",
+   "fix": "New leaf 'Integration sweep: ht-kqrt' depending on ht-kqrt.34, ht-kqrt.39, ht-kqrt.50, ht-kqrt.52, ht-kqrt.57, ht-kqrt.58 and ht-kqrt.59. Acceptance: - [ ] unfiltered nextest under 5 min with HT_LEAK_RUN_ID set, then check-no-leaked-processes --run-id; - [ ] check-default-features; - [ ] check-wire-compat (only the H3 new type) and check-harness-neutral (no allowlist entry); - [ ] herdr-release-smoke against the newest Herdr release plus wake-e2e --self-test; - [ ] golden surfaces unchanged apart from the N2 Stop registration."
+  },
+  {
+   "type": "GAP",
+   "subject": "real-agent tmux wake e2e",
+   "line": "No leaf adds an opt-in real-agent wake-e2e case for a named seat in tmux, or records it out of scope",
+   "verified": true,
+   "reason": "Holds for tmux: ht-kqrt.39 and ht-kqrt.59 use stand-ins, and the spec does not decide this case. The hc half is rejected: the spec keeps the hc wake e2e opt-in until H2 (O9 out of scope), no real core exists on this host, and ht-kqrt.51/ht-kqrt.52 cover the real-core gap.",
+   "fix": "New N2 leaf after ht-kqrt.39 and ht-kqrt.36. Owns: an opt-in scripts/wake-e2e.py case (e.g. --cases tmux-named/send-p0) that runs a named seat in a private `tmux -L ht-test-*` server with real Claude and Codex, outside the default matrix and never a version gate. Acceptance: - [ ] --self-test covers the new case's cleanup; - [ ] evidence from the run-final gate, or the case is recorded as remaining evidence when no credential is available."
+  },
+  {
+   "type": "GAP",
+   "subject": "TRUST-POLICY and AGENTS.md H1/H3 rows",
+   "line": "No leaf owns the spec's TRUST-POLICY H1/H3 rows or the H1 AGENTS.md lines",
+   "verified": true,
+   "reason": "The spec's amendment table has H1 rows (hc vocabulary, D10 finish-reason closure, A1 addendum and limits, A4 no hc wake) and H3 rows (managed_launch through the gate shim, C4 staging, ht.bootstrap hint-only), plus H1 AGENTS.md lines. Only ht-kqrt.32 (N A4) and ht-kqrt.17 own policy text. AGENTS.md requires the policy change in the same commit as the behaviour.",
+   "fix": "Add to ht-kqrt.42's owns: the TRUST-POLICY H1 vocabulary hc row, the D10 closure table, C2 on core-id rotation and the wiped/cloned-core limit. Add to ht-kqrt.46's owns: the A1 addendum in full with the double-fork and Codex-daemon limits, A4 no hc wake, and the AGENTS.md H1 'What we do today' and isolated-core lines. Add to ht-kqrt.54's owns: the H3 managed_launch host-guarded launch row and ht.bootstrap hint-only. Add to ht-kqrt.57's owns: C4 staging for the hc launch. Each lands in the same commit as its behaviour."
+  },
+  {
+   "type": "GAP",
+   "subject": "tmux turn_state_edge for Codex and agy",
+   "line": "Codex and agy turn_state_edge mappings are owned by no leaf",
+   "verified": true,
+   "reason": "The spec's N2 section says 'Codex and agy map their existing events'. ht-kqrt.36 names only Claude's report-only Stop and leaves the default at None. Hermes is not in the spec, so that part of review 1's fix is out of scope.",
+   "fix": "Extend ht-kqrt.36's owns: turn_state_edge implementations for Codex and agy over their existing hook events, in src/harness/codex and src/harness/agy only (neutral core). Acceptance: - [ ] hook-driven turn-state tests for Codex and agy (idle after the turn-end event, busy after the turn-start event); - [ ] a missing event never reads as idle."
+  },
+  {
+   "type": "GAP",
+   "subject": "cross-environment messaging including hc",
+   "line": "No test sends, ACKs and hook-delivers across hc and named and hc and pane seats in one daemon",
+   "verified": true,
+   "reason": "ht-kqrt.34 covers named and pane, ht-kqrt.48 covers hc alone, and ht-kqrt.59 exercises one configuration per site, not pairs. The goal needs cross-environment messaging.",
+   "fix": "Extend ht-kqrt.59 (deps already include ht-kqrt.34 and ht-kqrt.48). Acceptance: - [ ] in one daemon, send, inbox, ACK and hook delivery work hc->named, named->hc, hc->pane and pane->hc, with the sender's header label correct for each."
+  },
+  {
+   "type": "ORPHAN",
+   "subject": "H3 leaves ht-kqrt.54 to ht-kqrt.58",
+   "line": "The root goal text has no launch or handoff-into-hc outcome to back H3",
+   "verified": true,
+   "reason": "The goal text quoted in the inputs covers seats, messaging, addressing and wake only. The spec puts H3 in scope (run constraint 3), so the gap is in the goal text, not the work. ht-kqrt.53 is a seam contract.",
+   "fix": "Amend the ht-kqrt epic description (goal), not the tree: add the outcome 'handoff and launch can create targets in herdr-core terminals and Herdr desktop-app tabs (H3), with Herdr handoff routed through the same CreateTargetPort'. Do not move H3 out, because the spec scopes it in."
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "seat.created.display_name semantics",
+   "line": "Publisher ht-kqrt.33 and restore reader ht-kqrt.22 share the display_name rule with no owner",
+   "verified": true,
+   "reason": "ht-kqrt.33 has no owns line. ht-kqrt.22 reads display_name. The spec says the field is already baselined, so the wire shape exists, but nobody owns the semantics: set from seats.name, SeatName-validated on receive, NULL when invalid.",
+   "fix": "Give ht-kqrt.33 the owns line 'seat.created.display_name semantics: set from seats.name in ensure_published, validated with SeatName on receive, NULL when invalid (existing baselined field, no new wire line)'. ht-kqrt.22 consumes it through a fixture fact with display_name and names the rule in its consumes line. No dep reorder is needed."
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "hc label vocabulary and <session>:tN",
+   "line": "The hc label keys herdr.space/herdr.tab/ht.bootstrap/ht.label and the <session>:tN format have no owner",
+   "verified": true,
+   "reason": "ht-kqrt.55 and ht-kqrt.57 write the keys and ht-kqrt.43 reads them, and none of the three has an owns line. ht-kqrt.55 does not depend on ht-kqrt.43.",
+   "fix": "Contract it in ht-kqrt.41, which all three depend on. Owns: the hc label vocabulary (herdr.space, herdr.tab, ht.bootstrap as hint-only, ht.label; the writers ht-kqrt.55/ht-kqrt.57; the reader ht-kqrt.43) and the <session>:tN label/selector format. ht-kqrt.43, ht-kqrt.55 and ht-kqrt.57 add 'consumes: hc label vocabulary (H1c)'."
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "default standalone state dir",
+   "line": "The state dir that ht-kqrt.18 creates and the one ht-kqrt.19/ht-kqrt.49 bake into hooks are agreed by no line",
+   "verified": true,
+   "reason": "ht-kqrt.19 depends only on ht-kqrt.1 and consumes nothing from ht-kqrt.18, which owns 'default state dir creation'.",
+   "fix": "Add ht-kqrt.18 as a dep of ht-kqrt.19, with 'consumes: default state dir definition (N1-disc)'. ht-kqrt.18's owns names the path function that both use. Acceptance on ht-kqrt.19: - [ ] the baked --state-dir equals what named-site discovery resolves with no flag."
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "launch-gate shim to daemon (core,tN) authorization",
+   "line": "No leaf owns the daemon command and reply the gate shim waits on, or the staging of the bootstrap Send",
+   "verified": true,
+   "reason": "R42 requires 'waiting for the daemon's (core,tN) authorization before exec, with the bootstrap Send staged'. ht-kqrt.54 owns only the shim, ht-kqrt.53 only the V3 journal records.",
+   "fix": "Add to ht-kqrt.53's contract (seam leaf, and ht-kqrt.54 already depends on it? No: ht-kqrt.54 deps are 10, 2, 41, so add ht-kqrt.53 as a dep). Owns: the launch-gate authorization command and reply (bootstrap compound:attempt, (core,tN) witness, timeout, refusal), its local capability, and the rule that the bootstrap Send is staged before the reply. ht-kqrt.54 and ht-kqrt.57 consume it."
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "readonly field on the resolve command",
+   "line": "ht-kqrt.24 carries readonly in the resolve command but owns only the binding semantics",
+   "verified": true,
+   "reason": "ht-kqrt.24 says it is 'carried in the resolve command' and owns only 'occupant_bindings.readonly semantics'. ht-kqrt.16 owns only the base named resolve command shape.",
+   "fix": "Add 'readonly field on the resolve command (#[serde(default)], read from HERDR_THREADS_SEAT_READONLY in caller_location.rs)' to ht-kqrt.24's owns."
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "tmux hint field and storage vs locator_hint/M9",
+   "line": "No owner decides whether the tmux hint is a separate resolve-command field held only in daemon memory or a locator_hint",
+   "verified": true,
+   "reason": "ht-kqrt.38 owns the format and verification, ht-kqrt.27/ht-kqrt.28 own locator_hint and M9, and 0012 has no tmux column. The spec's Key abstractions keeps tmux hints in daemon memory per binding, but no leaf states it.",
+   "fix": "Extend ht-kqrt.38's owns: 'tmux hint as its own resolve-command field (#[serde(default)]), held in daemon memory per binding and lost on restart (accepted limit), never stored as occupant_bindings.locator_hint and never triggers M9'. Consumers ht-kqrt.39 and ht-kqrt.28 cite it. Acceptance: - [ ] a test that a tmux-hinted named binding records no locator_hint and emits no M9."
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "HcDiscovery API and core state paths",
+   "line": "ht-kqrt.41 owns HcDiscovery but ht-kqrt.45 implements it with no owns line, and consumers cite ht-kqrt.45",
+   "verified": true,
+   "reason": "ht-kqrt.41's owns are 'HcHost / HcBoot / HcDiscovery'. ht-kqrt.45 has only a consumes line. ht-kqrt.49 and ht-kqrt.57 consume 'HcDiscovery (H1d)'.",
+   "fix": "Move 'HcDiscovery API and core state paths ($XDG_STATE_HOME|~/.local/state/herdr-core/*/core.json, socket derivation, hello id match)' from ht-kqrt.41's owns to a new owns line on ht-kqrt.45. ht-kqrt.41 keeps HcHost/HcBoot."
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "site-capability gate for seat.terminal_sites_v1",
+   "line": "ht-kqrt.48 uses ht-kqrt.12's CLI site-capability gate without consuming it",
+   "verified": true,
+   "reason": "ht-kqrt.12 owns the mechanism, and ht-kqrt.48 gates Terminal sites on it. It reaches ht-kqrt.12 only transitively (through ht-kqrt.16) and does not list it in consumes.",
+   "fix": "Add 'CLI site-capability gate mechanism (F9, ht-kqrt.12)' to ht-kqrt.48's consumes line and ht-kqrt.12 as a direct dep."
+  },
+  {
+   "type": "UNOWNED-SEAM",
+   "subject": "HcHost terminal.run request/reply",
+   "line": "ht-kqrt.55 adds terminal.run with the R43 parameter set but has no owns line",
+   "verified": true,
+   "reason": "ht-kqrt.57 and ht-kqrt.58 consume 'HcHost terminal.run (H3c)'. ht-kqrt.55 owns nothing, and ht-kqrt.40 owns only the base client.",
+   "fix": "Add an owns line to ht-kqrt.55: the 'terminal.run client method and its parameter set (no_notify, outlive_parent, no_parent, labels; no caller, no first_message; each checked against the vendored hc-0.1.15 schema), plus the fake_hc terminal.run'."
+  },
+  {
+   "type": "GAP",
+   "subject": "hc idle wake as far as host allows",
+   "line": "hc gets only no_wake reporting",
+   "verified": false,
+   "reason": "Out of scope. Spec run constraint 3 makes H2 (hc composer wake) a follow-on, because herdr-core has no draft-safe send. no_wake for hc is the intended outcome.",
+   "fix": ""
+  },
+  {
+   "type": "GAP",
+   "subject": "user-facing README/install docs",
+   "line": "No leaf documents HERDR_THREADS_SEAT_NAME, standalone install or hc for users",
+   "verified": false,
+   "reason": "Neither the goal nor the spec asks for README or install docs. The spec's doc surfaces are the skill (K1-K4), AGENTS.md and TRUST-POLICY.",
+   "fix": ""
+  },
+  {
+   "type": "ORPHAN",
+   "subject": "ht-kqrt.52 hc-smoke",
+   "line": "The opt-in real-core smoke may deliver nothing",
+   "verified": false,
+   "reason": "It backs R41 ('hc-smoke status is recorded'), and both reviewers map it there. The spec defines its fallback: it closes as follow-on with no TSV row, and ht-kqrt.51 always ships.",
+   "fix": ""
+  },
+  {
+   "type": "NEEDS-SPEC",
+   "subject": "ht-kqrt.40/ht-kqrt.48 hc wake decision",
+   "line": "Whether hc offers an input API the goal would require",
+   "verified": false,
+   "reason": "The spec answers it. hc composer wake (terminal.read/terminal.send) is H2, out of scope until herdr-core ships a draft-safe send.",
+   "fix": ""
+  }
+ ]
+}

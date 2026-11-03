@@ -71,8 +71,9 @@ pub struct ControlService<H, S> {
     stop: StopController,
     health: H,
     domain: S,
-    bootstrap_guarded: bool,
-    automatic_guarded: bool,
+    /// The guarded answers, read per `Capabilities` call; `None` for a service
+    /// without the concrete domain (it advertises neither capability).
+    guarded: Option<crate::service::dispatch::GuardedAnswers>,
     hook_parse_failures: Option<std::sync::Arc<crate::daemon::logs::HookParseFailures>>,
     /// The harness version manifest (the evidence recorder and the version
     /// states hold their own handles). Not read here.
@@ -96,8 +97,7 @@ where
             stop,
             health,
             domain,
-            bootstrap_guarded: false,
-            automatic_guarded: false,
+            guarded: None,
             hook_parse_failures: None,
             harness_manifest: None,
             harness_evidence: None,
@@ -168,24 +168,18 @@ impl<H> ControlService<H, crate::service::dispatch::DomainService>
 where
     H: Fn(&CallBudget) -> HealthInputs + Send + Sync,
 {
-    /// Only the concrete fully equipped domain can enable this capability:
-    /// the server at `host` must be attached and serve guarded bootstrap.
+    /// Only the concrete domain can enable these capabilities. They are
+    /// answered per `Capabilities` call from the hosts attached then, never
+    /// frozen from the host that led startup.
     pub fn new_guarded(
         stop: StopController,
         health: H,
         domain: crate::service::dispatch::DomainService,
-        host: &crate::protocol::ids::HostLocator,
-    ) -> Result<Self, ApiError> {
-        if !domain.bootstrap_available(host) {
-            return Err(ApiError::unsupported(
-                "bootstrap runtime composition incomplete",
-            ));
-        }
-        let automatic_guarded = domain.automatic_available(host);
+    ) -> Self {
+        let guarded = domain.guarded_answers();
         let mut service = Self::new(stop, health, domain);
-        service.automatic_guarded = automatic_guarded;
-        service.bootstrap_guarded = true;
-        Ok(service)
+        service.guarded = Some(guarded);
+        service
     }
 }
 
@@ -319,6 +313,8 @@ where
             }
             ApiCommand::Health => Ok(CommandResult::Health((self.health)(budget).assemble())),
             ApiCommand::Capabilities => {
+                let bootstrap = self.guarded.as_ref().is_some_and(|g| g.bootstrap());
+                let automatic = self.guarded.as_ref().is_some_and(|g| g.automatic());
                 Ok(CommandResult::Capabilities(CapabilityList {
                     capabilities: crate::protocol::capabilities::ADVERTISED
                         .iter()
@@ -336,21 +332,19 @@ where
                             crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
                             crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
                         ])
-                        .chain(self.bootstrap_guarded.then_some(
+                        .chain(bootstrap.then_some(
                             crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
                         ))
-                        .chain(self.bootstrap_guarded.then_some(
+                        .chain(bootstrap.then_some(
                             crate::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1,
                         ))
                         .chain(
-                            self.automatic_guarded
+                            automatic
                                 .then_some(crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1),
                         )
-                        .chain(
-                            (self.bootstrap_guarded && self.automatic_guarded).then_some(
-                                crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1,
-                            ),
-                        )
+                        .chain((bootstrap && automatic).then_some(
+                            crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1,
+                        ))
                         .map(str::to_owned)
                         .collect(),
                 }))

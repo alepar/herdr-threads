@@ -50,12 +50,27 @@ Amended 2026-10-27 for seat recovery after a Herdr restart (ht-dtx0): a push-cha
 its own session's `same_session` C1 claim, and the daemon keeps a C1 claim refused only for host evidence that is not
 ready and decides it after the epoch's reconciliation (C1); no new provenance or wire value.
 
+Amended 2026-10-31 for herdr-core closure (H1c-closure, ht-kqrt.67): an hc host's seats close on herdr-core's own
+finality, keyed on `(keep, reason)` (D10, "hc host closure" under C2); a kept terminal waiting for a restart unresolves
+its seat as recoverable and the core's restart of the same `tN` reattaches it (C1); no new provenance or wire value.
+
 Amended 2026-10-27 for restored-pane retirement (ht-wpq4): a seat a new Herdr incarnation left unresolved retires
 when the pane watched at its target closes within that incarnation and no claim names it for an observed grace
 (C2); the retirement records `closure_evidence = restored_pane_closed`, two accepted limits; no new wire value.
 
+Amended 2026-11-01 for peer launch onto a herdr-core (ht-kqrt.143): the launch gate of a peer-requested launch reads a
+gate-only record on the `peer_requests` row and is released by its recorded creation, and this node's launcher
+allocates the seat with `managed_launch` provenance before the gate opens (N15, the launch gate paragraph in H3, an
+accepted limit); no new provenance or wire value.
+
+Amended 2026-11-01 for local plain launch onto a herdr-core (ht-kqrt.186): a second gate-only record, on
+`local_launch_gates`; the daemon allocates the seat with `managed_launch` provenance before the gate opens
+(the launch gate paragraph in H3, an accepted limit); no new provenance. New local capability
+`launch.local_gate_v1`; no peer wire change.
+
 Amended 2026-10-31 for persistently refused seats (ht-wp7n): a reconciliation pass records its marker past a
-transition refused on 3 consecutive finished passes unless that transition is `MarkUnresolved` (C2), one accepted limit; no new
+transition refused on 3 consecutive finished passes unless that transition is an unresolve (`MarkUnresolved`,
+`UnresolveAwaitingTerminal`) (C2), one accepted limit; no new
 provenance or wire value.
 
 Amended 2026-10-27 for remote addresses (`SEAT@MACHINE`, phase 1): a seat name qualified by a machine is resolved
@@ -123,7 +138,7 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 ## Vocabulary
 
 - **Seat**: a durable plugin identity for one role. Threads, invitations and receipts belong to seats.
-- **Target**: a Herdr pane address the seat is currently mapped to. A locator, not an identity.
+- **Target**: a host target the seat is currently mapped to (a Herdr pane today; a name or a terminal as those hosts land). A locator, not an identity.
 - **Binding**: one occupant record of a seat, keyed by (seat, harness, native session, agent id) with the
   agent id empty for a top-level session. A seat holds many bindings, each with its own `binding_id`, role
   (`top_level` or `subagent`, a subagent pointing at its parent binding), execution, the mapping generation,
@@ -131,9 +146,18 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
   disconnected, with a process fingerprint) is a separate property from identity: a disconnected binding is
   still that session's binding. `seats.generation` is the seat's *mapping* generation, bumped only by rebind,
   unresolve and retire, never by a check-in.
-- **Herdr boot / incarnation**: one Herdr server process. A Herdr restart is a new incarnation; terminal ids
+- **Host boot / incarnation** (per host): one Herdr server process. A Herdr restart is a new incarnation; terminal ids
   and pane addresses from the old one prove nothing about the new one.
+  For Herdr it is one server process; other hosts define theirs when they land. For a herdr-core (hc) host it is
+  `hc-core:<core.id>` read from `hello` (ASCII, at most 128 bytes): the socket is only a dial address, a core
+  restart, stop+start or update keeps the boot, and a different core id at a known locator is a new boot, so its
+  seats get C2 holds and are never matched by `tN` alone (a wiped or cloned core is the accepted limit). The CLI reads caller-location environment in one place
+  (`src/cli/caller_location.rs`); that reading is a hint, never authority.
 - **Daemon boot**: one herdr-threads daemon process. A daemon restart does not change the Herdr incarnation.
+  K5: an autostarted daemon is scrubbed of the pane- and terminal-scoped variables
+  (`host::child_env_scrub_list()`) and reparented through `herdr-threads internal daemon-detach` (setsid, spawn,
+  report the pid, exit), so no terminal sweep keyed on `HC_SCOPE` or on descent from a scoped process reaches
+  it. The launcher then sees only the daemon's liveness (pid and start stamp), never its exit status.
 - **Operator**: a request made with `--operator`, accepted when the kernel peer UID matches the daemon owner.
   This is the local account, not proof of a person.
 - **Node**: one daemon and store per (machine, OS user, state dir). Nodes sync through signed facts (root spec
@@ -163,10 +187,20 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 
 | Path | Trigger | Recorded as |
 |---|---|---|
-| Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
+| Structural reconfirm | Same terminal, same Herdr boot and incarnation; for an hc host the same `tN` under the same core id boot (ids are monotonic and never reused, so a finished `tN` never names another terminal), including the `tN` of a seat unresolved while its kept terminal waited for a restart that the core has now done | automatic, no new provenance |
 | Cooperative continuity | A top-level lifecycle or turn event, or a push-channel harness's in-process watch for its own session (ht-dtx0), carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
+| Named continuity | A seat-acting resolve on the built-in named host of a name equal to the name of an unresolved named seat, with no live seat of that name. The seat keeps its id, history and obligations; no new seat is made. Retire ends continuity for good: a retired name mints a new seat | `cooperative_named_seat` (seat history only) |
 | Process continuity (ht-hsyg) | After a new or unknown Herdr incarnation, a top-level harness binding (not human, `managed_launch` or subagent) of an unresolved seat (reason `other`) that its latest unresolve ended while open and connected, placed under an earlier incarnation than the current one, has a live fingerprinted process (same pid and start stamp) that is the shell Herdr reports for the seat's saved target in the current incarnation or belongs to the session that shell leads, on that shell's controlling terminal; no other such binding of another seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, the pane has no resolved owner, and the session's unique C1 match is that seat at the judged generation | `structural_process_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
+
+Named rule. The named host is not host evidence and never closes by absence: reconcile plans no
+`BeginRetirement` and no `MarkUnresolved` for it, and the store refuses `RetireReason::Closed` for a named seat (only
+an operator or the seat itself retires one). A named seat never rebinds onto a pane or terminal target, and a pane or
+terminal seat never rebinds onto the named host (cross-kind refusal in `rebind_unresolved_seat`, which also skips a
+host kind outside the implemented set); cooperative continuity by native session never matches a named seat. The named
+host never satisfies `wait:host`: an own-seat restore needs a Herdr or herdr-core host row, and an unnamed
+restored seat goes to a host row only when every non-named host row of the node has one kind (else the entry waits
+for the operator on `wait:host`).
 
 A herdr-threads daemon upgrade can leave a still-running native session needing recovery;
 C1 does not require that session to restart or emit a resumed SessionStart. Non-resume
@@ -267,7 +301,7 @@ this grants no enrollment around pending recovery and adds no non-resume hook re
 The reconciliation marker means nothing this pass planned can still add a C1 candidate or a seat to protect; it does
 not mean every planned transition applied (ht-wp7n). A pass records it past a refused transition only if the refusal is
 non-transient, repeated for the same seat, seat generation, reason and action on 3 consecutive finished passes of the recovery
-boot and epoch (a pass cut short by a store error counts for nothing), and its action is anything but `MarkUnresolved`. Any other action means the seat is already unresolved, where it
+boot and epoch (a pass cut short by a store error counts for nothing), and its action is anything but an unresolve (`MarkUnresolved`, `UnresolveAwaitingTerminal`). Any other action means the seat is already unresolved, where it
 keeps blocking the hold lift, or proven in the current incarnation, so the pass would not have unresolved it: it adds
 no C1 candidate and no seat to protect. The refused seat is replanned on every pass and stays named in the daemon log
 and Health; an unapplied carry ends in the ordinary unavailable path (C4), and target ownership stays as last applied: after a
@@ -288,6 +322,35 @@ every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown 
 yields unresolved seats under the C2 restore holds above, and each binding ends with reason `seat_unresolved`
 so the same session can reopen it after a rebind.
 
+**hc host closure (D10, H1c-closure).** A herdr-core host closes a seat on the core's own finality, read from one
+coherent capture (`hello` and `events.subscribe{}` on one connection) of the same core id. The capture keeps every
+local record, live and finished, with its `reason` and `keep`, and drops `machine/tN` mirrors; only `state=="live"`
+records are present targets. Events (`finished`, `removed`) are hints to capture, never closure. The rule follows
+`Registry::finish`: a finish leaves the terminal `live` (pending restart) only when `keep` is true and the reason is
+one of `holder_lost`, `stopped_by_restart`, `server_stop`, `host_shutdown`, `signaled`; every other finish is final and
+the core never revives it or reuses its id.
+
+| Capture shows for the seat's `tN` | `keep` | Reason | Effect on the seat |
+|---|---|---|---|
+| `finished` | false | any | retired through the pane-close fence |
+| `finished` | true | `exited`, `killed`, or a reason this build does not know | retired through the pane-close fence |
+| `live`, no holder | true | `holder_lost`, `stopped_by_restart`, `server_stop`, `host_shutdown`, `signaled` | unresolved (`host_invalidation`, recoverable); bindings end `seat_unresolved`; the core's restart of the same `tN` reattaches it (C1 structural) |
+| absent (pruned, `removed`) | either | any | retired through the pane-close fence, whether the seat is resolved or unresolved |
+| `live` with a holder | either | none, or an unknown reason | nothing |
+
+An unknown reason on a `finished` record is final (the core already decided it); on a `live` record it changes
+nothing. A record `state` other than `live` or `finished`, a reply with no usable core id, a failed `hello` and a
+failed snapshot each freeze the observation, which closes nothing and ends no binding. Accepted limit: a record
+state this build cannot read freezes observation of that whole core until an upgrade; its seats keep their state and
+messaging keeps working, the core reads unavailable in Health, and its closures wait. One unknown record is never
+evidence against every seat on the core. An agent that exits inside a live shell-rooted terminal is not a terminal finish: it ends
+only that binding and the seat stays resolved. One capture or several that reach the same final state give one
+outcome. A different core id at a known locator is a new boot: its seats get the C2 restore holds above and are never
+matched by `tN` alone, while a restart, stop+start or update of the same core id (the event sequence begins again) is
+the same boot. Accepted limit: the core id is the only boot evidence, so a core whose state was wiped and recreated
+with the same id, or a clone of a core's state directory, is indistinguishable from a restart and can show another
+terminal under a saved `tN`.
+
 **Process continuity (ht-hsyg).** A new incarnation can keep the pane processes alive: a Herdr live handoff
 (`herdr server live-handoff`, `herdr update --handoff`) passes each pane's terminal to a new server process, which
 assigns new terminal ids. Old ids still prove nothing. What carries over is the process: after each completed
@@ -307,8 +370,9 @@ process could be either's; every such seat is listed, never a bounded page), whi
 when the pane has an owner, or when the session's unique C1 match is not the judged seat at its judged generation; nor
 on an unreadable fact. A candidate the facts rule out, or that a definitive C1 refusal answers, is not read again for
 10 minutes for that seat generation and fingerprint; that memory is the daemon process's own (a restart forgets it).
-A gone process, an unread fact or a not-ready refusal is retried next pass. Person seats and `managed_launch` bindings
-are not covered.
+A gone process, an unread fact or a not-ready refusal is retried next pass. Person seats, named seats (their continuity
+is their name) and `managed_launch` bindings are not covered, and a host with no pane shell read (named, herdr-core)
+decides nothing here. The decision is the C1 transaction, so the cross-kind rebind refusal holds.
 
 **Restored-pane retirement (ht-wpq4).** A seat that a new incarnation left unresolved (reason `other`) keeps a
 saved target from the old one, which proves nothing (C2), so its absence never retires the seat. What retires it
@@ -337,6 +401,10 @@ before any pass of the incarnation saw it, is never retired this way and waits f
 A retirement of a published seat is also a `seat.retired` fact. Other nodes retire their remote copy of the seat
 only on that fact from the seat's home node (a fact from any other origin is recorded `failed` and retires
 nothing); they never retire a remote seat on their own evidence.
+A replayed own `seat.retired` of a local row (a restore from the own log) takes the same transition as the fence: its
+open bindings end `seat_retired`, their catch-ups are superseded, its offers and no-wake reports go, its wake work
+resets, its generation and its server's lifecycle revision advance. Its `retirements` row is `replicated`, with no
+closure evidence.
 
 **Startup enrollment.** Installed Claude/Codex top-level `SessionStart` lifecycle hooks enroll
 `HERDR_PANE_ID` through the same journaled ordinary canonical guarded seat resolver as `launch`.
@@ -402,6 +470,32 @@ exits back to its shell stays bound until a check-in replaces it or its pane dis
 act as any seat: a child agent, a script, another seat's agent writing the shared client directories. This is
 in-contract (see Accepted limits).
 
+*A1 addendum (two-family callers).* When the environment names both a Herdr pane
+(`HERDR_PANE_ID`) and a herdr-core terminal (`HC_TERMINAL_ID` with `HC_TERMINAL_SOCKET`), the caller is
+`Ambiguous` and the CLI or hook asks the daemon (`LocateCaller`) before anything binds. The daemon walks up
+from the connection's peer pid (or the claim's liveness pid) and verifies a candidate only when its
+host-reported root process (`target_root_process`: a Herdr pane's shell, an hc terminal's pid) is an ancestor;
+the nearest ancestor root wins, whichever family owns it. A pane candidate asks only the Herdr hosts and a
+terminal candidate only the core its socket names, attached on a miss. If nothing verifies (not an ancestor, host unreachable, daemon too old
+to know the command), no seat binds and nothing falls back to a candidate: the CLI prints M4 (naming both
+candidates and asking to unset the stale one) and hooks exit 0 with M4 on stderr and inject nothing. A
+verified terminal acts as that Terminal site at every hop (a terminal is always (core socket, `tN`), never a bare
+`tN`): the CLI decides once in `run` and the hook once in `run_admitted_hook_since`, after the routing flags (`--state-dir`, `--host-endpoint`) are known and against the daemon the command will use (the CLI parses first, so help and usage errors ask no daemon), each yielding one swapped env
+or site that every later use takes (instance context, seat lookups, `me init`, the claim host, the turn edge),
+with no ambient state; nothing binds to the pane the environment also named, and a refused hook reports no turn. `HC_TERMINAL_ID` without
+`HC_TERMINAL_SOCKET` and no pane is refused with M17. Single-family callers are never verified: that would be
+adversarial verification, which this policy does not add. The walk stops at a terminal-root wall: a process
+whose `argv[0]` basename is `herdr-core` or `hc` (`host::hc::foreign_terminal_process_names`), because on
+herdr-core's spawn path the core stays a descendant of the `hc` client and so of the pane shell, and a Herdr
+pane root above the wall must not verify an agent inside an hc terminal; the hc candidate's own root sits
+below the wall and is found first, so the wall changes no outcome for an hc caller. Every call walks afresh;
+no verdict is cached. Accepted limits: (1) a process whose argv is unreadable
+is not a wall; (2) a double-forked process, and a Codex in daemon mode (its process reparented away from the
+terminal), has no ancestor root, so with two families it is unverifiable and refused, and with one family it
+is accepted unverified; (3) a single-family stale environment (a `HERDR_PANE_ID` left in an hc terminal with
+no `HC_TERMINAL_ID`, or the reverse) is accepted as that family, as A1 always did. The live run of Codex in a real core, with and without
+`--no-daemon` (spike H-C1), is remaining evidence: only the fallback over fake process trees is tested.
+
 **Invocation spelling.** Ordinary root commands act as agents. Person and local-operator
 commands require immediate argv[1] `human`: `ht human me init [--operator]`,
 `ht human send THREAD --body TEXT`, and `ht human seat rebind ... --operator`.
@@ -449,8 +543,10 @@ records there are replay machinery, never its identity.
 | `replicated_from:<node_uuid>` | receipts, invitation answers (the accept and reject rows) and events applied from another node's fact (bindings never) | Applied as given from a fact authored and signed by node `<node_uuid>`; the authoring node's own provenance travels inside the fact. Never written for a locally authored fact. |
 | `local_journal` | receipts, invitation answers and events materialized from an own old incarnation's entry with no staged local attribution | A wipe or restore pull-back re-applied this node's own earlier fact; the original binding is not known here. Never on bindings. |
 | `direct_auto_join` | join observations and events of a 1:1 pair seat's auto-join only | The seat's home node joined it because its pair was created (main D7): in the creating transaction when the seat is local to the creator, else when its node applied the pair's `thread.direct` (N4). No binding acted; the derived event's `actor_seat` is the pair creator. Never on bindings or receipts; authorizes nothing (amended 2026-10-15, main v1 reconcile §2.2). |
-| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
+| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it establishes no availability. Receipt deadlines start at send time independently of this binding. A host-guarded launch (herdr-core `terminal.run`) starts `internal launch-gate` instead of the harness: the shim blanks the leaked environment (the K5 list minus `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, `HC_SCOPE`, all `HERDR_*`, each adapter's session and pid variables, `child_scrub_vars`), sets the caller's config roots, waits a bounded time for the daemon to authorize its `(core, tN)` witness against the bootstrap `<compound>:<attempt>`, then `exec`s the harness. `exec` keeps the pid, so the record is the same single root-pid fingerprint of the terminal's process (two-phase launch); the shim decides nothing (the daemon authorizes against the canonical view, A2), and a refusal, a transport error or the deadline never execs the harness. |
 | `peer_request:<node_uuid>` | launch and bootstrap audit of a peer-requested launch on the executing node only (`peer_requests`, bootstrap attempts) | The linked peer node `<node_uuid>`, on its authenticated direct link (N6) with cap `peer.launch.v1`, asked this node to launch an agent here; this node decided and executed it (N15). The requesting seat travels as a claim and is recorded as claimed, never as actor. Never on bindings (the launched agent's binding is `managed_launch`, then its own check-in), receipts, invitations, memberships or messages, and never replicated: it authorizes only that one launch. |
+| `cooperative_named_seat` | named-host observation (snapshot rows of the built-in named host) | The named host's enumeration is a store read of the live local seats with `host_id = named` (`NamedSeatSource::live_named`), and `observe_current_target(name)` reports every valid `SeatName` present (generation 1, terminal `named:<name>`, fixed per-node boot and incarnation `named-host:node=<uuid>`). It is cooperative: presence is what the store says, not host evidence. Its snapshot is complete and stamped with the host's fixed boot and incarnation (`CoherentVerified` by `stamp_fixed_structure`, see Named presence), but the host is `NonClosing`, so it authorizes no absence closure; the host is `NonClosing`, and reconcile plans no `BeginRetirement` and no `MarkUnresolved` for a named seat an enumeration does not show. It names the observation only: a binding's provenance stays the caller's. Also the named-continuity record (C1): the reattachment of an unresolved named seat by the resolve of its name is written to seat history as a `cooperative_continuity` decision whose `operator_label` is `cooperative_named_seat`. Never on bindings or receipts. Named presence (SA17): the observation lane publishes the named capture with the host's fixed boot/incarnation stamped by reconcile (so the store admits it; closure authority stays `NonClosing`), the publication gives each resolved named seat its structural proof so the C4 carry keeps live bindings available across a daemon restart, and the named host never arms `baseline_hold_unclaimed` or a recovery hold (one unresolved named row never silences the liveness of the others; a publication releases any open hold). A named seat goes offline only when its bindings end, then shows inactive, unavailable since T, with one `recipient_unavailable` per episode. |
+| `cooperative_self_retire` | local `allocation_decisions.operator_label` (`cooperative_self_retire:<binding>`) of a self retirement only | A named seat's own top-level binding retired the seat with `seat retire --self` (`Command::SelfRetire`, a cooperative mutation: a declared subagent is refused). The daemon decides against A2: the seat is live, local and named (a pane or terminal seat is refused, M20), and no other top-level binding of the seat is connected unless `--force` (M18, which names the other bindings). It is scoped `self-retire:<seat>:<operation>` and checked before the live-seat precheck, so a replay returns the stored result. **Replicates as `RetireReason::Operator`:** the wire enum is closed (no `serde(other)`), so peers cannot tell a self retirement from an operator one; the distinction is node-local, in `seat inspect`'s allocation decisions. A same-user cooperative claim, not proof: anything that can act as the seat's binding can retire it. Never on bindings or receipts. |
 | `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
 | `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
 | `liveness_process_exit` | binding disconnections only | The binding's fingerprinted process (pid and start time) no longer exists, or the pid now has a different start time. Structural evidence; it disconnects the binding and never ends it, moves a seat or merges seats. |
@@ -578,6 +674,73 @@ model open work, and summary closure never changes receipt state or installs glo
   supersedes its predecessor only after copying its cursors (except the plain-first late link, see
   *Lineage*). A seat is active while any open binding is
   connected, or while its open human binding sits on a resolved seat.
+- *Live-holder guard (named seats, D19, SA16)*: when a named seat (`seats.name` set) would gain or
+  reconnect a top-level agent binding, the daemon's enrolling transaction reads the seat's other connected
+  top-level bindings and refuses with `seat_name_in_use` (M7, `herdr-threads: seat <name> is held by live pid
+  <pid>; use another name`) when a holder is alive (`LivenessFingerprint::is_alive` against the daemon's
+  process table: pid and start stamp, so an exited or pid-reused holder frees the name at once), differs
+  from the caller, and neither process is in the other's parent chain. Admitted beside a live holder: the
+  same process (a new session id in it), its ancestors and descendants, subagents (`agent_id`), `readonly`
+  bindings (D3), independent forks (`concurrent_session=1`) and `managed_launch` placeholders. A call by an
+  already-connected binding is a touch, never judged. The refusal rolls the transaction back, so two
+  concurrent unrelated enrolls of one name yield one binding (SA7). The guard is cooperative same-user
+  consistency, not verification (see Accepted limits).
+- *Named CLI caller and handoff (named seats, N5-cli)*: a seat-acting CLI call under a name (no pane, no
+  `--cooperative-*` flag: M14) resolves the seat at the reserved named-host locator through the journaled
+  `ResolveSeat` every time (the hook's request, tmux hint included), so the daemon's M6 and M7 guards run on
+  that path and a repeat call binds the same seat; the first call that allocates it prints M8 on stderr
+  once. Harness and role come from the harness session in the environment, else from the context a hook
+  saved for (reserved locator, seat); a caller with neither is refused with M15 and nothing is created.
+  Reads (`inbox --json|--machine|--seat`, `seat list`, `thread show`) create nothing. A named caller's
+  automatic or explicit handoff into a Herdr pane freezes the reserved locator as the claim host and the
+  Herdr endpoint, resolved at that call only, as the namespace host: the seat acts through the named host,
+  the launch runs on the namespace's host, and neither is inferred from the other. A claim may differ from
+  the namespace host only when it sits at the reserved locator (`HostLocator::fronts_namespace`); every other
+  claim must still equal it. The recipient's seat is resolved on the Herdr host. The claim host identifies the
+  caller and is never dialled or sent as a Herdr server: every path that addresses a Herdr server or pane from a
+  non-Pane site (a named seat's pane forms, `launch`, `launch --new-tab`, handoff, invite and
+  `seat resolve --pane`) takes the endpoint from the one shared point (`InstanceInputs::herdr_endpoint`), which
+  ignores a non-Pane site's selected host; a lone Terminal site's claim host is a core socket, so its `me init`
+  reads no pane agent. With no Herdr host reachable the command refuses with M21 naming the pane.
+- *Inherited-name refusal (named seats, D1, SA2, N4-inherit)*: a named resolve whose caller also carries
+  a Herdr pane (`ResolveSeat.locator_hint`, the pane id beside `HERDR_THREADS_SEAT_NAME`) is checked
+  against the environment of the server that owns the pane: the daemon reads the pid the host answers
+  as `server_process()` (NativeCli: the Herdr socket's kernel peer pid; `/proc/<pid>/environ` on Linux,
+  `KERN_PROCARGS2` on macOS, same user only), and when that environment carries the same name it refuses
+  with `inherited_seat_name` (M6, `herdr-threads: HERDR_THREADS_SEAT_NAME=<name> inherited from the Herdr
+  server; use another name per command or restart the server without it`) before anything is allocated
+  or bound, and never falls back to the pane. Accepted limits: the check compares the name only, so a
+  caller that sets the server's own name per command is refused too (the name is the server's role;
+  only a different name, or a server restarted without the variable, binds); a server with no pid, an
+  unreadable environment (another user, a gone pid, an unsupported platform) or a pane no host answers
+  for skips the check, which leaves only observability (D1 limit); and the hint is the caller's
+  claim, not verification, so a caller that omits it is not checked (cooperative model). A named
+  caller sends every candidate it has, the pane id and `<core socket>:<tN>`; each is checked, and the
+  core a terminal candidate names is attached for the check (one that cannot be attached skips it).
+  The hc host answers `server_process()` with the peer pid of its core socket (the
+  `herdr-core serve` process, from the connection's `LocalEndpointWitness`), the same environ read
+  applies, and M6 then names `herdr-core` in place of `Herdr` (same 129 bytes plus name and label).
+- *Second-locator notice (named seats, N4-hint, M9)*: a named resolve that carries `ResolveSeat.locator_hint`
+  records it on the seat's open top-level binding that has none (`occupant_bindings.locator_hint`; when
+  no such binding exists yet nothing is recorded and a later command's resolve records it). When the hint
+  is on no earlier row of the seat (ended rows included) while another distinct hint is, the resolve answers
+  M9 (`herdr-threads: seat <name> now bound from <loc1> and <loc2>`, 41 bytes + fields). The decision reads
+  only the persisted rows, so it fires once per (seat, locator), also across daemon restarts. `seat inspect`
+  lists each binding with its hint. `locator_hint` is a hint, never authority: only M9, M10 and `seat inspect`
+  read it (and `occupant_bindings.locator_host`, below, M10 alone), and it never selects, binds, moves or ends a
+  seat. M10 (pane-form allocation refused for a pane a named seat's binding hinted) needs a connected
+  top-level binding of a live named seat, so a named process that exited stops refusing once liveness
+  disconnects it (its binding never ends, so the pane would otherwise stay refused until the seat retires). It
+  compares host plus target: a Herdr pane's hint is the bare pane id and its server is
+  `occupant_bindings.locator_host` (the caller's `HERDR_SOCKET_PATH`, a canonical parent plus file name,
+  sent as a `pane-host=` part of the wire hint and stored only when it parses as a locator), compared with the
+  allocation's host endpoint; a herdr-core terminal's hint is `<socket stem>:<tN>`, built from the
+  allocation's host endpoint, so `t1` of another core never matches. Accepted limits: a pane hint with no
+  reported server (a binding marked before `locator_host`, or a caller with no `HERDR_SOCKET_PATH`) matches
+  that pane id on every Herdr host, and hints store the socket's file stem, so two cores with one stem share
+  the form; the outcome of each is M10 naming a live seat, never a wrong bind. It is the caller's claim, so the attribution
+  of a hint to a binding is best effort (it lands on the newest unmarked open binding); the tmux hint is a
+  separate field held in daemon memory and is never recorded here.
 - *Independent lifecycle forks (ht-i9a7)*: neutral `EventKind::Fork` maps to a
   journaled `CheckInMode::Fork` with the same expected-generation and exact execution
   checks as an ordinary lifecycle. The adapter maps only its native independent-start
@@ -729,6 +892,61 @@ model open work, and summary closure never changes receipt state or installs glo
   (implemented, best effort, client-side).
 - *Second agent*: `launch` refuses to start an agent for a seat whose bound agent (`cooperative_top_level`
   or `managed_launch`) Herdr reports live in another pane (implemented).
+- *No composer wake (named seats without a verified tmux hint or whose connected top-level bindings all belong to harnesses with no blocked-screen recognizer; hc seats until upstream wake)*: such a seat's per-target wake answer is `None`, so
+  nothing types into its composer and delivery-contract rules 5 and 6 are degraded: p0 ACK requests,
+  invitations and warnings arrive on the seat's next turn, and nobody wakes it unless a live, unstalled mod
+  channel does. Rules 1-4 hold (a seat with no wake is never nudged). The nudge threshold is inert there: `nudge-threshold N`
+  still records the value and prints `herdr-threads: SEAT has no idle wake; threshold has no effect` (M12). Soft pokes
+  and recipient-side deadline reminders are not sent (the host has no wake lane, and a named seat none of
+  whose bindings is open is never a poke candidate); a deadline yields only the sender's overdue line, which reads `wake=no_wake`, plus ` offline` once
+  the seat's bindings ended (M19). The degradation is stated once in SKILL.md (K2) and a host-side tripwire test
+  fails when any implemented host kind answers `None` while SKILL.md does not explain `no_wake`.
+- *Wake, hc terminal seats (H1g, ht-kqrt.48)*: a herdr-core terminal seat has no composer wake until herdr-core
+  offers an upstream way to type into a terminal (`HcHost` is `wake: None`; `safe_wake_target` is `None`). Its
+  caller site is `HC_TERMINAL_ID` with `HC_TERMINAL_SOCKET` (the core's socket is the claim host and the host
+  locator a request carries, the terminal id its target), sent only to a daemon that advertises
+  `seat.terminal_sites_v1` (M13 otherwise). It enrolls through its hooks and sends, reads, ACKs and accepts like
+  any seat; items reach it in-turn (hooks) or through a live mod channel, which the mod's watch child keeps with
+  `HC_TERMINAL_ID`/`HC_TERMINAL_SOCKET` forwarded and never stopping on `no_pane`. A sender whose ACK request or
+  p0 send names such a seat without a live channel gets `wake=no_wake` once per (sender, seat) episode
+  (`no_wake_reports`, N6); a live mod channel reports none. `seat retire --self` from it is refused (M20: it
+  has no name).
+- *tmux wake hint (named seats, N2-hint)*: a named caller inside a tmux pane sends `tmux:<socket>:<server_pid>:<pane>`
+  (from `TMUX` and `TMUX_PANE`) in `ResolveSeat.tmux_hint` or `TurnStateReport.tmux_hint` (every hook that reports a turn
+  edge), never in `CallerClaim` and never as `locator_hint`. The
+  daemon accepts it for a binding only when `tmux -S <socket> display -p -t <pane> '#{pane_pid} #{pid} #{pane_in_mode} #{pane_input_off} #{synchronize-panes} #{pane_width} #{pane_active} #{window_active} #{session_attached}'` (2 s deadline)
+  answers the hint's server pid and the pane's process is the subject's process or an ancestor of it (the subject is the
+  claim's harness fingerprint when the report has one, else the calling process, so the binding anchors on the harness
+  and not on a short-lived hook); the verified
+  binding is held in daemon memory only (lost on restart, pruned when its process exits) and the host's per-target wake
+  answer is `Composer` while any live verified binding of the seat exists and the wake gate can type
+  (`gate_never_types` false: some connected top-level binding is of a harness with a blocked-screen recognizer), else `None`. A failed check (a reused pane
+  id, a stale `TMUX_PANE` inherited into a nested Herdr session, a missing server) records nothing: it only leaves that
+  binding without a wake path and never moves, rebinds or ends a seat. The hint is the caller's claim, checked against
+  the process table and tmux itself (A2); anything that can run as the seat's process in that pane can obtain wake.
+- *tmux composer wake (named seats, N2-wake)*: a named seat with a live verified tmux binding is woken by the
+  built-in host's own wake lane (pacer, reachability, Health) like a Herdr pane: `send-keys -t <pane> -l <wake text>`
+  then `Enter`, read back with `capture-pane -p` through the bound harness's composer policy (and, when the policy asks for it, one `capture-pane -p -e` as Herdr's styled read, keeping the detection read when that one fails), and `C-u` only when the
+  harness opts in and the composer holds exactly the wake. The wake is decided per pane (rule 4): over every live
+  connected top-level binding of the seat the pane is idle only when all are idle; one busy binding, or one `Unknown`
+  (a daemon restart, a binding that has not reported), gives no typing for that attempt. The same holds when
+  the screen is not recognised as unblocked (`screen_blocked == Some(false)` is required), the composer is not read
+  empty (a draft is never typed over, never stashed), and when `#{pane_in_mode}`, `#{pane_input_off}` or
+  `#{synchronize-panes}` is non-zero (copy-mode or another mode, input disabled, synchronized panes): each is a
+  pre-send refusal retried on the ladder, treated as busy and never reported as `no_wake` (for a seat the gate can
+  type into; a seat whose harnesses have no recognizer answers `None` and is reported `no_wake`); a focused pane
+  (`#{pane_active}` and `#{window_active}` set and `#{session_attached}` non-zero, read for the wake's own pane) also needs
+  A4's minute of observed empty composer samples on the daemon's monotonic clock, under the rules A4 *Wake* states, and each
+  held attempt is such a pre-send refusal, recorded as the `focused` wake block; the copy-mode scroll
+  position is never touched. The hint is re-verified at the wake's pane query (server pid) and at bind (ancestry). A
+  daemon that holds a wake-armed binding (verified hint, live fingerprint) does not idle-exit, so a p0 more than
+  10 min after the seat's last hook still wakes it; the binding is pruned when its process exits and the daemon then
+  exits as before. Accepted limits: no server-side draft guard beyond the composer read-back and the exact-text
+  clear; a harness with no running-turn recognizer (`screen_turn_running` is `None`) stays unwoken after a user
+  interrupt until its next hook, and one with no `screen_blocked` recognizer is never typed into: its tmux seat answers `None` and its sender reads `wake=no_wake`; the hint, the turn
+  state and the keep-alive live in daemon memory, so after a crash, upgrade or explicit stop there is no wake until that
+  binding's next turn edge (a tool hook restores nothing, and that turn is not idle anyway); the sibling set is the seat's connected top-level bindings, so a sibling in another pane
+  also holds the wake (conservative); tmux drops OSC 7501, so no self-reported status exists (T5).
 - *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
   (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
   provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys.
@@ -742,7 +960,9 @@ model open work, and summary closure never changes receipt state or installs glo
   turn, so a session resumed in the pane sits idle unknown to the daemon. With no top-level binding of the seat
   connected, the last disconnected top-level agent binding (not a fork, `concurrent_session`) is a target when a
   process exit disconnected it (`liveness_process_exit`) and it has something to act on at the seat's threshold,
-  placed on the observed terminal and seat generation like any target. It authorizes nothing but an ordinary wake
+  placed on the observed terminal and seat generation like any target, and only on a host that can wake a target with no live
+  process (`HostKind::wakes_dormant_target`, today Herdr): a named seat's verified tmux binding ends with its process and hc
+  has no composer wake, so such a seat gets no dormant target and its sender reads `wake=no_wake`. It authorizes nothing but an ordinary wake
   prompt (never a soft-deadline poke, whose text names threads): no binding, seat, cursor, receipt or availability
   changes, and the session reconnects only through its own later check-in. A session that connects voids a wake
   still reserved for the dormant target, and a refused one retries at up to 5 minutes, since nothing else clears a
@@ -750,7 +970,7 @@ model open work, and summary closure never changes receipt state or installs glo
   item buried under that many silent ones no longer wakes the seat, and still arrives on its next turn. Its pid is stale, so the composer wake takes it on any Herdr-reported foreground
   process of its own pane (no foreground report, no wake) and the native recheck requires Herdr's agent kind there
   to be its harness and awaiting input. An accepted limit: another session of that harness in the pane, which the
-  seat would enroll anyway, gets the wake. An end event never leaves a dormant binding. A target whose mod channel is live and not stalled is woken through that channel
+  seat would enroll anyway, gets the wake. An end event never leaves a dormant binding. A target whose writable mod channel is live and not stalled is woken through that channel
   and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
   only to the one target whose fingerprint pid is among Herdr's pane foreground processes (the non-shell
   entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness
@@ -1732,6 +1952,7 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs
 `src/service/remote_resolver.rs`).
 
 **N15. A peer-requested launch is this node's decision; a cross-node handoff is the sender's facts.**
+- *A new terminal on a herdr-core* (`LaunchTarget::NewTerminal`, cap `peer.launch.terminal.v1`) is sent only to a peer that advertised the cap and is decided here like any peer launch: the terminal gets no parent and no caller (`internal peer-target-create`, alias `peer-tab-create`), and no seat arrives from the request. This node's launcher allocates the seat, for a new terminal and for a new tab on a herdr-core alike, after the terminal exists and before its gate opens: an ordinary guarded resolution of that terminal with no caller, then a `managed_launch` binding on the gate shim's process, the same process the harness becomes. The launch stays attributed to the peer node in its `peer_requests` row (`peer_request:<node_uuid>`); the binding's provenance is `managed_launch`, as for a Herdr peer launch (a binding carrying the peer provenance would fall out of every `managed_launch` check, such as the first check-in's replacement of the placeholder). The requesting seat is not used, no bootstrap record exists here and nothing is sent here: the gate reads a gate-only record on the `peer_requests` row (see the launch gate paragraph in H3).
 - *Handoff into an existing remote seat* adds no remote action. The thread, invitation, task message and ACK
   request are facts authored by the sender's home node for the sender's seat (A2 there, N3, N4), addressed to a
   seat the sender's node holds as remote (N5); the recipient's home node delivers and wakes them under the
@@ -1797,6 +2018,57 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
   Relayed contact, gossip or a third node's link never removes one.
 
 ## Accepted limits
+
+- Live-holder guard (named seats). The guard compares process fingerprints and parent chains from the
+  daemon's process table; a same-user process that fakes a fingerprint, runs under a holder's ancestor, or
+  starts after a holder's liveness row disconnected is admitted. Two unrelated sessions sharing a name through
+  a common ancestor (for example one shell starting both) are treated as one holder family. It prevents
+  accidental sharing of one role's ACK obligations, not an adversary (D19).
+- Typo seats (named seats). A seat-acting call under a name allocates the live seat of that name when none
+  exists (`seats.name` on the built-in named host, the CLI prints M8 `herdr-threads: created seat <seat>
+  (<name>)` once), so a misspelled name is a new seat, not an error. Reads (`inbox`, `seat list`,
+  `thread show`) never allocate: an unknown name yields nothing. The daemon decides by the canonical view
+  (A2); the name is a cooperative same-user claim, not evidence. An unused typo seat is retired by the
+  operator.
+
+- Remote seat names (N7). A named seat's name travels as `seat.created.display_name`; a receiver keeps it
+  as `seats.name` of the remote row only when it parses as a `SeatName`, else NULL (never a rejection). It
+  is display and the `name@node` selector, a cooperative claim of the seat's home node: two seats of one
+  name on a node make `name@node` a refused conflict, never a pick, and no name feeds routing, wake or
+  attribution. Names never change after publication.
+
+- Named-seat restore (D12, SA4, N3-restore). An own `seat.created` with a `display_name` pulled back after a wipe
+  restores unresolved on the named host at target = name. When a non-retired local seat of that name already
+  exists there, resolved or unresolved (the rows `seats_live_name` covers), the restored row is inserted with
+  `name` NULL, the held marker; its held name is the `display_name` of its own `seat.created` fact (nothing new
+  is stored, no `allocation_decisions` kind). Limit: there is no merge and no automatic pick. A resolve of the
+  name keeps reaching the existing seat and named continuity never reattaches the held row. The held row gets
+  the name only in the retire transaction of the existing seat (`human seat retire SEAT --operator` or
+  `seat retire --self`), which hands it to the oldest held row of that name (by `created_at`, then id); named
+  continuity then reattaches it on the next resolve. Retiring the held row leaves the existing seat alone.
+  `seat inspect` shows the held name as `hold: reason_data held_name:<name>` and `doctor` lists each held seat
+  with the seat that owns the name. Two live candidates never trade a name.
+
+- Read-only bindings (D3, SA7). A caller whose environment carries `HERDR_THREADS_SEAT_READONLY=1` has its
+  binding recorded `occupant_bindings.readonly = 1` by its check-in (the flag only rises; the CLI sends it,
+  the daemon decides). A read-only binding reads, advances its own cursors and sends like any other, but a
+  display-like settlement (inbox display ACK, mod or hook delivery confirmation) made under it settles
+  nothing, and no pull of its offers a receipt-bearing row, whether a hook pull, a mod channel's presentation
+  pull or the watch fallback's page: they stay pending for a writable binding, and an explicit `ack` is
+  unchanged. Its mod channel is never judged stalled and does not suppress the seat's wake, since it cannot
+  discharge the row (a seat whose only channels are read-only has no channel wake, and a read-only
+  channel does not keep a stalled writable sibling from falling back to the native wake).
+  ACK obligations belong to the role and the first writable display discharges them, so a headless
+  `claude -p` or `codex exec` session that must not discharge them sets the variable. The marker is a
+  cooperative same-user claim like the rest of the caller context; a plain seat-acting call (and the mod's
+  `watch`) under the variable first sends that check-in, so every enrollment path records it, and a
+  refused check-in refuses the call (a readonly caller never falls back to writable); a session that omits
+  the variable is writable. A subagent, a person and a retry replay send no such check-in. A
+  readonly caller's inbox display records and submits no ACK settlement (the daemon would skip it) and
+  exits 0. Accepted limit: a plain-only named seat's first call under the variable is refused until the
+  named host has observed the seat; the refused check-in stays a pending local intent, recovered with
+  `retry <ref>` (or by enrolling the seat through a hook first), because falling back to writable would
+  void the marker.
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
 mail is seat-level, not per binding (A8). A seat-pending row is settled for the
@@ -2233,7 +2505,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Native attention uses sampled composer/focus guards.** Check-to-send focus or input races are
   accepted: a user may type or change focus after the final read. Empty samples do not establish an
   absence of keystrokes, cursor moves, or type/delete activity between samples. Focus is Herdr's pane
-  selection, not every attached client's physical attention. Restart/outage gaps can delay focused
+  selection, not every attached client's physical attention; on tmux it is the session's current window and pane with
+  any client attached, so a control-mode client counts, several clients read as one, and it says nothing about where
+  a person is looking. Restart/outage gaps can delay focused
   wakes; nonempty/unreadable composers can defer indefinitely. No atomic host/client buffer claim is made.
 - **A received wake can be judged unreceived.** The receipt check sees only calls that claim the seat: a session
   that took the woken turn without any herdr-threads call before the ladder's next retry (at least 30 s) is
@@ -2379,6 +2653,16 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   collect (D7, `direct.auto_join_v1`; A5 "Automatic pair reservation"): the peer seat is joined in the creating
   transaction, and its first session is offered the opener and every later send. Explicit leave still applies.
   A pair created before the upgrade with a pending invitation keeps it.
+- **Hook turn state is cooperative and in memory (N2-turn).** The daemon records busy/idle per top-level binding
+  from the harness's own hooks (`HarnessAdapter::turn_state_edge`, reported by `Command::TurnState`, gated by
+  `turn_state.edge_v1`): a turn start is busy; a `Stop` that ended the turn, a Claude `StopFailure`, or a stale busy
+  cleared by the screen (`ScreenIdle`, only for a binding recorded busy, only after 60 s of busy and two
+  `screen_turn_running == Some(false)` reads at least 5 s apart) is idle. A `Stop` the daemon answered with a
+  continuation (`TurnEndDue` due) leaves the binding busy. A binding the daemon has not heard from since it started
+  is `Unknown` and never reads as idle. The state grants no authority and changes no seat. Accepted limit: a missed
+  `Stop` (killed harness, user interrupt, a hook that never ran) keeps the binding busy, so a typed wake waits for
+  the binding's next hook; a harness whose `screen_turn_running` answers `None` (today Hermes) has no screen clear.
+  Claude's `Stop` and `StopFailure` hooks are report-only: empty stdout, exit 0, never a continuation.
 
 ### Cross-node sync (ht-5fr)
 
@@ -2457,6 +2741,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   also reveals panes that hold no seat (`no_seat` with its path and pane ID) and every candidate of an ambiguous
   name, more than `seat_status` shares; in-contract between this user's own nodes (A1). Design
   `docs/superpowers/specs/2026-10-27-remote-addresses-design.md`.
+- **A harness launched for a peer on a herdr-core can start before its task exists.** The gate releases on the
+  recorded creation, not on a Send (N15), so the agent may start idle and receive the task by normal delivery once
+  the sender's node authors it, or never, if that node goes away first. The same holds for a Herdr peer launch. The
+  seat and a live terminal remain; `keep: false` retires the seat when the worker exits.
+- **A plain launch onto a herdr-core starts idle, with no hook preflight.** The gate releases on the recorded
+  creation, so the agent starts with nothing to read, as a Herdr launch does, and a missing hook shows only as a
+  seat that never checks in. A launcher that dies between the creation and its record leaves a terminal whose shim
+  is refused at the gate's deadline; `keep: false` finishes it and starts no harness.
 - **Any linked node can launch agents here.** A node with a direct link and `peer.launch.v1` can make this node
   open a tab and start an agent in a workspace of this node's Herdr, with any registered harness, profile and
   argv and any existing directory as `cwd`: what `ssh <this node> herdr-threads launch` could do as the same
@@ -2479,6 +2771,12 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   one), what it sent this node's seats waits unpulled until it links here directly or the operator runs
   `peer unforget`. The island's facts already held stay held and applied, so a fact a kept node authors later
   against one of them applies as before.
+- **Credential variables in an autostarted core.** A herdr-core whose environment was frozen when some process
+  autostarted it, and which holds `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `OPENAI_API_KEY`, passes that
+  variable to every launch in that core: the gate scrubs the adapter's config-root variables, not credentials,
+  so the inherited credential reaches the harness and can override the launch's profile. A peer launch onto a
+  core with no profile starts the harness in its default mode and sets no root. Start a core from a shell
+  without these variables, or restart it, to avoid this.
 
 ## Decision record
 
@@ -2681,6 +2979,21 @@ nested in bootstrap status; an inspection-aware client is required to present th
 new records. Guards are never stripped to fabricate older-client compatibility. No heuristic PID or topology
 snapshot proves quiescence, and recovery never kills an unowned process.
 
+A V3 automatic bootstrap (plan version 3, `handoff.automatic_target_v1`) freezes a
+placement and records its creation as a `CreatedTarget` instead of a Herdr tab. Its
+namespace endpoint is the target core's socket, so a caller in a Herdr pane or a named
+seat may hand off into a core and its claim host need not equal that endpoint; its
+child carries the version-3 marker an older daemon refuses at decode, so no partial row
+is written. The creation witness is the core id plus the serving process, and the
+deciding read takes the terminal on that same peer (`terminal.get` pinned to the
+`hello`'s witness); a changed core or peer is a stale observation, never a match. The
+launch argv of a V3 plan is frozen at creation and the retained report must equal it.
+`--created-pane tN` on a V3 plan records the operator's assertion against one fresh
+`terminal.get` pinned to the core's current peer, and the recorded creation carries
+that witness. An `ht.bootstrap` label never reclassifies an unknown creation.
+Accepted limit: the gate shim exits after its 10 s authorization wait, so a recovery
+later than that finds no terminal and resolves through `--not-created` or `--cancel`.
+
 Herdr offers correlation rather than creation idempotency. The product therefore
 sacrifices automatic progress after an uncertain submission. An operator's
 mistaken inspected noncreation or quiescence assertion can permit duplicate
@@ -2721,6 +3034,39 @@ Launch setup status failures/unavailable observations are diagnostic and establi
 owned-hook claim. They do not veto an independently validated native launch. The
 selected binary, native API/profile inputs and fingerprints of configuration actually
 used remain mandatory; incomplete structural observations still refuse submission.
+
+
+herdr-core (hc) launch (H3). `terminal.run` creates the terminal with `no_notify`, `outlive_parent`, `no_parent` (only when it has no `parent`),
+`keep: false`, no `caller`, no hc `name` and no `first_message`. The `ht.bootstrap` label it writes
+(`herdr.space`/`herdr.tab` for a new tab, `ht.label` always) is a recovery hint only: it never classifies an
+outcome and never reclassifies a recorded unknown. A JSON-RPC error other than `spawn_failed` is the only
+transport-proven `NotSubmitted`; `spawn_failed`, a timeout, a disconnect or an undecodable reply stays
+`OutcomeUnknown`. The created target's witness is the `(core id, peer)` the pre-run `hello` showed, and the run is
+pinned to that peer.
+
+The gate shim (`internal launch-gate`) is decided before the CLI's caller checks (ht-kqrt.239): it never runs the two-family
+guard and a leaked invalid seat name does not refuse it; it reads only the terminal variables (`launch_gate::terminal_env`).
+
+The launch gate's decision (H3d2, `LAUNCH_GATE_V1`, `Command::AuthorizeLaunchGate`) is the daemon's alone (A2). The shim
+sends `<compound>:<attempt>`, the core id and its `tN`; the daemon reads the canonical view of that bootstrap (never
+a label, never a path the client names) and authorizes only when the attempt is the current one, the recorded
+creation's witness is that core and `tN`, a fresh same-response `terminal.get` through an attached host session
+shows that terminal on that core and serving process, and the bootstrap Send is already published. The Send is staged
+before the reply, so a harness never runs before its first message exists (C4: the recipient's receipt keeps its
+honest availability and deadline). One exception, a peer-requested launch onto a herdr-core (N15): there is no bootstrap here and no local Send, because the request carries no task and the sender's home node authors it after `Launched{seat}`. Its gate reads a gate-only record on the `peer_requests` row (attempt and `CreatedTarget`, behind the same view), and a recorded creation, written in one update with the launcher's seat, releases it, so that harness can start before its first message exists, as a Herdr peer launch does (Accepted limits). A local handoff into a herdr-core always needs its staged Send; a peer row never stands in for it. A second exception, a plain local `launch --new-tab` or `--new-terminal` onto a herdr-core: `launch` has no first message by design, as on Herdr. Its gate reads a gate-only record of its own (`local_launch_gates`, behind the same view, never a `peer_requests` row): the CLI opens it before the terminal exists, and after the creation the daemon allocates the seat for that `(core, tN)`, writes the `managed_launch` binding on the shim's process, and records the `CreatedTarget` with the seat in one update, which releases the gate. The decision stays the daemon's alone: the client names only a record id and a creation, and the witness comparison and the same-response `terminal.get` decide. A handoff always keeps its staged Send: a bootstrap's compound is read first, and a gate-only record never stands in for it. The wait polls the view with one short read per poll, holding no store turn and no
+writer lane, and is bounded by the request's `timeout_ms` (at most 30 s) and the call budget; the daemon's request bound for it is that wait plus 1 s (a plain `launch`'s `Record`, which allocates the seat, gets its 6 s seat budget plus 1 s), never the ordinary 5 s, so the typed answer is written before the shim's own call gives up, and the seat allocation ends with the request's budget and cancellation; a mismatch, a stale or
+unknown bootstrap, a cancelled bootstrap or the deadline is a refusal and the shim exits without `exec`. A refusal
+authorizes nothing and records nothing. `handoff --new-tab --space`, `--new-terminal` and a plain-shell handoff
+(core found by `HcDiscovery`, which only says `hello`; `hc` is never run) take the automatic V3 path only: `--thread`
+and `--new-thread` into a herdr-core target are refused before any creation, and an in-place launch into `tN` is
+refused by the host's `native_launch_capability() == Unsupported`.
+The gate runs the harness under the launching caller's config root, frozen in a handoff's plan; the adapter's root variables are scrubbed, so an autostarted core's root never wins. A peer plan carries no root: the harness runs on the peer user's default root.
+
+Launch closure is the terminal's finality (H3-launch-final). The gate shim `exec`s the harness as the terminal's root, and
+every launch is `keep: false`, so the harness exiting finishes the terminal for good and the D10 row "`finished`, `keep`
+false, any reason" retires the launched seat through the pane-close fence. This is the core's own final record, not an
+inference from the agent's exit: no launched seat is left unresolved or waiting for a restart. A harness that is not the
+terminal's root (a shell-rooted terminal) still ends only its binding.
 
 ## Bounded invitation presentation (2026-10-11)
 

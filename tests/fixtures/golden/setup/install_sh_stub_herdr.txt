@@ -1,0 +1,30 @@
+exit=Some(0)
+herdr-threads: downloading <asset> (v<version>) from file://<root>/release/download/v<version>
+herdr-threads: checksum verified (<sha256>)
+herdr-threads: installed <version> into <root>/prefix
+herdr-threads: linked <root>/ubin/herdr-threads -> <root>/prefix/bin/herdr-threads
+herdr-threads: linked <root>/ubin/ht -> <root>/prefix/bin/herdr-threads
+herdr-threads: Herdr already has the plugin linked from <root>/prefix
+herdr-threads: Herdr server is not running: no daemon was started; it starts with the next Herdr server start
+claude hooks: installed
+  warning: Foreground user settings required. herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings and changes a foreground setting only through an owned component the user explicitly consents to, where the advice names one. User settings, environment and launch arguments are not proof of execution; project/managed settings, other shells, and wrapper behavior may override them. Set disableAgentView to true in Claude's user settings.js
+claude skill: installed
+claude permissions: installed
+codex hooks: installed
+  warning: Foreground user settings required. herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings and changes a foreground setting only through an owned component the user explicitly consents to, where the advice names one. User settings, environment and launch arguments are not proof of execution; project/managed settings, other shells, and wrapper behavior may override them. Codex attaches to a shared app-server daemon unless CODEX
+  Codex runs hooks from hooks.json only once you trust them. The next interactive `codex` start lists the new hooks as needing review (or open /hooks); trusting them makes Codex record each hook's hash in config.toml [hooks.state] under the key `<hooks.json>:<event>:<group>:<hook>`. That is how Herdr's own hooks.json entry is trusted: Herdr writes the hook, Codex's review records the trust. setup never writes trust. `codex exec` cannot review: trust once interactively, or (scratch only) pass --dangerously-bypass-hook-trust. Editing or moving a trusted group asks for review again
+  pane environment: Add to your shell startup file: zsh/bash `if [ "${HERDR_ENV-}" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi`; fish `if test "$HERDR_ENV" = 1; set -gx CODEX_EXEC_SERVER_URL ""; end`. `herdr-threads setup codex --with-pane-env` adds the block to
+codex skill: installed
+codex permissions: installed
+
+Next steps:
+  - <root>/ubin is not on PATH; add it, e.g.: export PATH="<root>/ubin:$PATH"
+  - ht is not on PATH; use <root>/ubin/ht skill or <root>/ubin/ht follow.
+  - To select the installed ht, put <root>/ubin first on PATH; caller shell aliases/functions may also override it.
+  - Start Herdr (or restart its server) so the plugin's startup entry starts the daemon,
+    then check it: herdr-threads doctor
+  - Try it: in a Herdr shell pane run herdr-threads human me init, then follow https://github.com/alepar/herdr-threads#try-it-yourself
+installed and linked: herdr-threads <version>
+
+--- claude settings.json
+{"env":{"CLAUDE_CODE_PLUGIN_DIRS":"<root>/home/.local/state/herdr/plugins/herdr-threads/claude-mod/herdr-threads"},"hooks":{"PreToolUse":[{"hooks":[{"command":"'<root>/prefix/bin/herdr-threads' '--state-dir' '<root>/home/.local/state/herdr/plugins/herdr-threads' '--host-endpoint' '<root>/herdr.sock' 'hook-event' 'claude' 'PreToolUse'","timeout":10,"type":"command"}],"matcher":"*"}],"SessionStart":[{"hooks":[{"command":"'<root>/prefix/bin/herdr-threads' '--state-dir' '<root>/home/.local/state/herdr/plugins/herdr-threads' '--host-endpoint' '<root>/herdr.sock' 'hook-event' 'claude' 'SessionStart'","timeout":10,"type":"command"}]}],"Stop":[{"hooks":[{"command":"'<root>/prefix/bin/herdr-threads' '--state-dir' '<root>/home/.local/state/herdr/plugins/herdr-threads' '--host-endpoint' '<root>/herdr.sock' 'hook-event' 'claude' 'Stop'","timeout":10,"type":"command"}]}],"StopFailure":[{"hooks":[{"command":"'<root>/prefix/bin/herdr-threads' '--state-dir' '<root>/home/.local/state/herdr/plugins/herdr-threads' '--host-endpoint' '<root>/herdr.sock' 'hook-event' 'claude' 'StopFailure'","timeout":10,"type":"command"}]}],"SubagentStart":[{"hooks":[{"command":"'<root>/prefix/bin/herdr-threads' '--state-dir' '<root>/home/.local/state/herdr/plugins/herdr-threads' '--host-endpoint' '<root>/herdr.sock' 'hook-event' 'claude' 'SubagentStart'","timeout":10,"type":"command"}]}],"SubagentStop":[{"hooks":[{"command":"'<root>/prefix/bin/herdr-threads' '--state-dir' '<root>/home/.local/state/herdr/plugins/herdr-threads' '--host-endpoint' '<root>/herdr.sock' 'hook-event' 'claude' 'SubagentStop'","timeout":10,"type":"command"}]}],"UserPromptSubmit":[{"hooks":[{"command":"'<root>/prefix/bin/herdr-threads' '--state-dir' '<root>/home/.local/state/herdr/plugins/herdr-threads' '--host-endpoint' '<root>/herdr.sock' 'hook-event' 'claude' 'UserPromptSubmit'","timeout":10,"type":"command"}]}]},"permissions":{"allow":["Bash(herdr-threads)","Bash(herdr-threads *)","Bash(ht)","Bash(ht *)"],"ask":["Bash(herdr-threads human)","Bash(herdr-threads human *)","Bash(herdr-threads setup)","Bash(herdr-threads setup *)","Bash(herdr-threads unsetup)","Bash(herdr-threads unsetup *)","Bash(herdr-threads doctor fix)","Bash(herdr-threads doctor fix *)","Bash(herdr-threads internal installer-integrations)","Bash(herdr-threads internal installer-integrations *)","Bash(ht human)","Bash(ht human *)","Bash(ht setup)","Bash(ht setup *)","Bash(ht unsetup)","Bash(ht unsetup *)","Bash(ht doctor fix)","Bash(ht doctor fix *)","Bash(ht internal installer-integrations)","Bash(ht internal installer-integrations *)"]}}

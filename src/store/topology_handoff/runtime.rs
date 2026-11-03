@@ -5,7 +5,8 @@ use crate::{
     protocol::{
         authority::{MutationPermit, OperatorActor},
         commands::{Command, PermitMutation},
-        handoff::AutomaticBootstrapMutation,
+        handoff::{AutomaticBootstrapMutation, BootstrapAttempt},
+        ids::OperationId,
         results::CommandResult,
         time::CallBudget,
     },
@@ -162,6 +163,52 @@ impl BootstrapStorePort for SqliteStore {
             budget,
             |_| Ok(()),
             |tx, _, ()| super::automatic::query(tx, canonical, request),
+        )
+    }
+    fn automatic_launch_gate_view(
+        &self,
+        instance: &str,
+        compound: &OperationId,
+        attempt: BootstrapAttempt,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::LaunchGateView>, ApiError> {
+        if instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic bootstrap instance differs",
+            ));
+        }
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| super::automatic::launch_gate_view(tx, instance, compound, attempt),
+        )
+    }
+    fn local_launch_gate_open(
+        &self,
+        id: &OperationId,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, now, ()| super::local_gate::open(tx, id.as_str(), now.utc.0),
+        )
+    }
+    fn local_launch_gate_record(
+        &self,
+        id: &OperationId,
+        created: &crate::ports::CreatedTarget,
+        seat: &crate::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| super::local_gate::record(tx, id.as_str(), created, seat),
         )
     }
     fn automatic_bootstrap_recovery_replay(

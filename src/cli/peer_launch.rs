@@ -1,18 +1,23 @@
-//! `internal peer-tab-create`: the tab a peer-requested launch opens
-//! (remote launch, TRUST-POLICY N15).
+//! `internal peer-target-create` (alias `peer-tab-create`): the tab or terminal a
+//! peer-requested launch opens (remote launch, TRUST-POLICY N15).
 //!
 //! Run only by this node's daemon, as a child with a scrubbed environment, for a
-//! `launch_request` it recorded in `peer_requests`; the launch itself is then an
-//! ordinary `launch --pane` child. It creates one tab in one workspace of the
-//! `--host-endpoint` Herdr server (witnessed by a `ping` on the same server,
-//! never focused) and prints `{"pane":..,"tab":..}`. It reads and writes no seat,
-//! binding or journal and claims no caller.
+//! `launch_request` it recorded in `peer_requests`; on a Herdr server the launch itself
+//! is then an ordinary `launch --pane` child, on a herdr-core the terminal starts the
+//! gate argv. It creates one target through the `--host-endpoint` host's
+//! `CreateTargetPort` (witnessed by that host, never focused) and prints
+//! `{"pane":..,"tab":..}` for a Herdr tab or `{"terminal":..,"created":<CreatedTarget>}` for a
+//! herdr-core terminal. It reads and
+//! writes no seat, binding or journal and claims no caller.
 
 use std::{io::Write, path::Path, sync::Arc, time::Duration};
 
 use super::RunError;
 use crate::{
-    ports::{CreateTabOutcome, CreateTabPort, CreateTabRequest, HostCallContext},
+    ports::{
+        CreateTargetOutcome, CreateTargetPort, CreateTargetRequest, HostCallContext, HostWitness,
+        Placement,
+    },
     protocol::{
         ids::{HostCallId, HostTargetId},
         results::{ApiError, ErrorCode},
@@ -20,14 +25,25 @@ use crate::{
     },
 };
 
-/// Budget of the witness ping and the creation together (ms).
+/// Budget of the witness read and the creation together (ms).
 const BUDGET_MS: u64 = 30_000;
 
-pub fn create_tab<W: Write>(
+/// Where `internal peer-target-create` puts its target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetSpec {
+    /// A new tab in this workspace (a Herdr workspace or an hc app space).
+    Tab(String),
+    /// A new terminal with no parent.
+    Terminal,
+}
+
+/// Creates the target on the host at `endpoint` and prints it.
+pub fn create_target<W: Write>(
     endpoint: &Path,
-    workspace: &str,
+    spec: &TargetSpec,
     label: &str,
     cwd: &Path,
+    gate_argv: Vec<String>,
     clock: Arc<dyn Clock>,
     out: &mut W,
 ) -> Result<(), RunError> {
@@ -35,43 +51,72 @@ pub fn create_tab<W: Write>(
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(BUDGET_MS)),
         cancellation: Cancellation::default(),
     };
-    let witness = crate::host::request_witnessed(
-        endpoint,
-        &uuid::Uuid::new_v4().to_string(),
-        "ping",
-        serde_json::json!({}),
-        clock.as_ref(),
-        &budget,
-        Duration::from_secs(5),
-    )?
-    .witness;
-    let host = crate::host::native::NativeCli::new(endpoint.to_path_buf(), Arc::clone(&clock));
-    let request = CreateTabRequest {
+    let creator =
+        crate::host::target_creator::connect(endpoint, gate_argv, Arc::clone(&clock), &budget)?;
+    create_with(
+        creator.port.as_ref(),
+        creator.witness,
+        spec,
+        label,
+        cwd,
+        budget,
+        out,
+    )
+}
+
+/// [`create_target`] against a given port: generic over the host.
+pub fn create_with<P: CreateTargetPort + ?Sized, W: Write>(
+    port: &P,
+    witness: HostWitness,
+    spec: &TargetSpec,
+    label: &str,
+    cwd: &Path,
+    budget: CallBudget,
+    out: &mut W,
+) -> Result<(), RunError> {
+    let invalid = |detail: &'static str| ApiError::new(ErrorCode::InvalidRequest, detail);
+    let placement = match spec {
+        TargetSpec::Tab(workspace) => Placement::NewTab {
+            space: HostTargetId::parse(workspace.clone()).map_err(invalid)?,
+        },
+        TargetSpec::Terminal => Placement::NewTerminal {
+            parent: HostTargetId::parse(crate::host::hc::NO_PARENT).map_err(invalid)?,
+        },
+    };
+    let request = CreateTargetRequest {
         correlation: HostCallId::new(uuid::Uuid::new_v4().to_string()),
-        workspace: HostTargetId::parse(workspace.to_owned())
-            .map_err(|detail| ApiError::new(ErrorCode::InvalidRequest, detail))?,
+        placement,
         cwd: cwd.to_path_buf(),
         label: label.to_owned(),
         focus: false,
         env: Default::default(),
         directory_context: None,
         expected_witness: witness,
+        gate_argv: Vec::new(),
     };
     let context = HostCallContext {
         budget,
         expected_boot: None,
         expected_epoch: None,
     };
-    match host.create_tab(&request, &context) {
-        CreateTabOutcome::Created(created) => {
-            let line = serde_json::json!({
-                "pane": created.root_pane.as_str(),
-                "tab": created.tab.as_str(),
-            });
+    match port.create_target(&request, &context) {
+        CreateTargetOutcome::Created(created) => {
+            let line = match &created.root_pane {
+                Some(pane) => serde_json::json!({
+                    "pane": pane.as_str(),
+                    "tab": created.target.as_str(),
+                }),
+                // The terminal's full creation record: the daemon's worker records it for
+                // the launch gate (N15).
+                None => serde_json::json!({
+                    "terminal": created.target.as_str(),
+                    "created": &created,
+                }),
+            };
             writeln!(out, "{line}")?;
             Ok(())
         }
-        CreateTabOutcome::NotSubmitted(error) | CreateTabOutcome::OutcomeUnknown(error) => {
+        CreateTargetOutcome::NotSubmitted(error) | CreateTargetOutcome::OutcomeUnknown(error) => {
             Err(error.into())
         }
     }
@@ -593,12 +638,17 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                 LaunchState::Unavailable { reason } => one_line(&reason),
                 LaunchState::Unknown => "unknown answer".to_owned(),
             },
-            RemoteLaunchAnswer::NoCap { version } => {
+            RemoteLaunchAnswer::NoCap { version, cap } => {
                 settle();
+                let cap = if cap.is_empty() {
+                    crate::sync::frame::PEER_LAUNCH_CAP
+                } else {
+                    cap.as_str()
+                };
                 return Err(refuse(
                     ErrorCode::Unsupported,
                     format!(
-                        "machine {label} cannot launch for other machines (needs peer.launch.v1; version {})",
+                        "machine {label} cannot launch for other machines (needs {cap}; version {})",
                         version.as_deref().unwrap_or("unknown")
                     ),
                 ));
@@ -648,8 +698,10 @@ mod tests {
             },
             then: Some(Box::new(super::super::topology_handoff::Request {
                 policy: None,
+                target: None,
                 automatic: true,
                 new_tab: None,
+                new_terminal: false,
                 existing: true,
                 selector: Default::default(),
                 seat: None,

@@ -29,8 +29,13 @@ struct Client {
     generation: std::sync::atomic::AtomicU64,
     /// When set, the daemon refuses threshold reads with this error.
     threshold_refusal: std::sync::Mutex<Option<crate::protocol::results::ApiError>>,
+    /// When set, the daemon advertises `seat.wake_status_v1` and answers it with this block.
+    wake: std::sync::Mutex<Option<crate::protocol::results::WakeBlock>>,
 }
 impl LocalClient for Client {
+    fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
+        name == crate::protocol::capabilities::WAKE_STATUS_V1 && self.wake.lock().unwrap().is_some()
+    }
     fn call_with_output(
         &self,
         command: Command,
@@ -106,6 +111,20 @@ impl LocalClient for Client {
                     changed,
                 }))
             }
+            Command::WakeStatus(q) => Ok(CommandResult::WakeStatus(
+                q.seats
+                    .into_iter()
+                    .map(|seat| crate::protocol::results::SeatWakeStatus {
+                        seat,
+                        harness: Some("codex".into()),
+                        wake: *self.wake.lock().unwrap(),
+                        first: false,
+                        offline: false,
+                        host: None,
+                        target: None,
+                    })
+                    .collect(),
+            )),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -143,6 +162,7 @@ impl Fixture {
                 threshold: std::sync::Mutex::new(NudgeThreshold::new(stored).unwrap()),
                 generation: std::sync::atomic::AtomicU64::new(1),
                 threshold_refusal: Default::default(),
+                wake: Default::default(),
             },
         };
         let parsed = parse_argv([
@@ -358,4 +378,37 @@ fn a_remote_seat_refusal_reaches_the_user() {
         error.detail
     );
     assert!(out.is_empty());
+}
+
+// ---- M12: the threshold is inert on a seat with no idle wake ----
+
+// Kills: a set on a no-wake seat that prints nothing (or refuses and records nothing), or an M12
+// line on a read, on a wakeable seat, or one whose bytes differ from the golden.
+#[test]
+fn set_on_a_no_wake_seat_records_and_prints_m12() {
+    use crate::protocol::results::WakeBlock;
+    let fixture = Fixture::new(0);
+    *fixture.client.wake.lock().unwrap() = Some(WakeBlock::NoWake);
+    let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold", "3"]);
+    result.unwrap();
+    let golden = include_str!("golden/m12.txt").replace("seat-nmd00001", "seat");
+    assert_eq!(out, format!("nudge_threshold: 3 (changed)\n{golden}"));
+    assert_eq!(fixture.client.threshold.lock().unwrap().get(), 3);
+    assert_eq!(
+        render_inert(&SeatId::new("seat-nmd00001")).len(),
+        57 + 13 + 1
+    );
+    assert_eq!(
+        render_inert(&SeatId::new("seat-nmd00001")),
+        include_str!("golden/m12.txt")
+    );
+    // A read says nothing about wake.
+    let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold"]);
+    result.unwrap();
+    assert_eq!(out, "nudge_threshold: 3\n");
+    // A block other than `no_wake` leaves the set line alone.
+    *fixture.client.wake.lock().unwrap() = Some(WakeBlock::Focused);
+    let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold", "4"]);
+    result.unwrap();
+    assert_eq!(out, "nudge_threshold: 4 (changed)\n");
 }

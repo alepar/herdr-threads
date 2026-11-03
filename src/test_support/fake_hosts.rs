@@ -86,10 +86,25 @@ impl FakeHostWorld {
     pub fn plan(self: &Arc<Self>, hint: Option<HostLocator>) -> HostAttachPlan {
         let building = Arc::clone(self);
         let existing = Arc::clone(self);
+        let probing = Arc::clone(self);
         HostAttachPlan {
             hint,
             factory: HostFactory {
-                build: Arc::new(move |locator| {
+                // A fixture is Herdr-shaped unless it reports being a herdr-core.
+                probe: Arc::new(move |locator, _| {
+                    let core = probing
+                        .hosts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(locator.as_str())
+                        .is_some_and(|(port, _)| port.kind() == crate::ports::HostKind::Hc);
+                    Ok(if core {
+                        crate::ports::HostKind::Hc
+                    } else {
+                        crate::ports::HostKind::Herdr
+                    })
+                }),
+                build: Arc::new(move |_, locator| {
                     building
                         .hosts
                         .lock()
@@ -214,5 +229,77 @@ impl HostPort for RefusingHost {
     }
     fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
         refused()
+    }
+}
+
+/// A [`RefusingHost`] that also reports `labels` as its panes' workspace,
+/// tab and pane labels (`HostPort::seat_labels`). Two of these may own the
+/// same target id with different labels, as two real Herdr servers do.
+pub struct LabelledHost(pub Vec<crate::host::observation::SeatHostLabels>);
+
+impl HostPort for LabelledHost {
+    fn seat_labels(
+        &self,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
+        Ok(self.0.clone())
+    }
+    fn live_topology(
+        &self,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, ApiError> {
+        RefusingHost.live_topology(budget)
+    }
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        NativeLaunchCapability::Unsupported
+    }
+    fn observe_current_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        RefusingHost.observe_current_target(target, context)
+    }
+    fn observe_current_target_for_archival(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<ComposerObservation, ApiError> {
+        RefusingHost.observe_current_target_for_archival(target, context)
+    }
+    fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        RefusingHost.enumerate_targets(context)
+    }
+    fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
+        None
+    }
+    fn submit_prompt(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        RefusingHost.submit_prompt(target, text, context)
+    }
+    fn launch_native(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        RefusingHost.launch_native(request, context)
+    }
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<AgentComposerState, ApiError> {
+        RefusingHost.pane_agent_state(target, context)
+    }
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        RefusingHost.send_submit_key(target, context)
     }
 }

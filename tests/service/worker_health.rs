@@ -807,6 +807,8 @@ struct ObservedHost {
     sequence: AtomicU64,
     fail: std::sync::atomic::AtomicBool,
     snapshots: AtomicU64,
+    /// A store-only host's live set (`Some`), or a host with input of its own (`None`).
+    store_only: Mutex<Option<Vec<crate::protocol::ids::SeatId>>>,
 }
 impl ObservedHost {
     fn observation(&self, sequence: u64) -> crate::ports::HostObservation {
@@ -840,6 +842,15 @@ impl ObservedHost {
     }
 }
 impl crate::ports::HostPort for ObservedHost {
+    fn store_enumeration(
+        &self,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<Option<Vec<crate::protocol::ids::SeatId>>, ApiError> {
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(api_error(ErrorCode::HostUnavailable, "store read refused"));
+        }
+        Ok(self.store_only.lock().unwrap().clone())
+    }
     fn live_topology(
         &self,
         _: &crate::protocol::time::CallBudget,
@@ -942,6 +953,8 @@ struct FaultyObservationStore {
     fail_page: std::sync::atomic::AtomicBool,
     pages_ok: AtomicU64,
     pass_records: AtomicU64,
+    /// While set, the marker write answers `Ok(false)`: the store found the publication stale.
+    refuse_marker: std::sync::atomic::AtomicBool,
     /// While set, every published page carries one synthetic saved seat whose
     /// planned transition the store refuses (`Stale`).
     refuse_transitions: std::sync::atomic::AtomicBool,
@@ -1108,6 +1121,9 @@ impl crate::identity::reconcile::observation_store::ObservationStore
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         self.pass_records.fetch_add(1, Ordering::SeqCst);
+        if self.refuse_marker.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
         self.inner.record_reconciliation_pass(published, budget)
     }
 }
@@ -1173,6 +1189,7 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
         sequence: AtomicU64::new(1),
         fail: Default::default(),
         snapshots: AtomicU64::new(0),
+        store_only: Default::default(),
     });
     let writer = Arc::new(FairWriter::new(32));
     let cancellation = Cancellation::default();
@@ -1203,6 +1220,7 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
         fail_page: Default::default(),
         pages_ok: AtomicU64::new(0),
         pass_records: AtomicU64::new(0),
+        refuse_marker: Default::default(),
         refuse_transitions: Default::default(),
     });
     let private = ["private", "/Users/", "SQLite", "socket"];
@@ -2102,6 +2120,7 @@ fn refusal_free_pass_records_marker_once() {
         sequence: AtomicU64::new(1),
         fail: Default::default(),
         snapshots: AtomicU64::new(0),
+        store_only: Default::default(),
     });
     let writer = Arc::new(FairWriter::new(32));
     let cancellation = Cancellation::default();
@@ -2134,6 +2153,7 @@ fn refusal_free_pass_records_marker_once() {
         fail_page: Default::default(),
         pages_ok: AtomicU64::new(0),
         pass_records: AtomicU64::new(0),
+        refuse_marker: Default::default(),
         refuse_transitions: Default::default(),
     });
     let worker = StopWorker(
@@ -2194,6 +2214,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
         sequence: AtomicU64::new(1),
         fail: Default::default(),
         snapshots: AtomicU64::new(0),
+        store_only: Default::default(),
     });
     let writer = Arc::new(FairWriter::new(32));
     let cancellation = Cancellation::default();
@@ -2226,6 +2247,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
         fail_page: Default::default(),
         pages_ok: AtomicU64::new(0),
         pass_records: AtomicU64::new(0),
+        refuse_marker: Default::default(),
         refuse_transitions: std::sync::atomic::AtomicBool::new(true),
     });
     let worker = StopWorker(
@@ -2309,4 +2331,262 @@ fn lane_failure_is_logged_before_health_reports_it() {
         assert_eq!(*log.seen.lock().unwrap(), [None]);
         assert!(status.last_error().is_some());
     }
+}
+
+/// A store-only lane on the fake clock: `store_only` starts empty, so the first pass publishes it.
+struct StoreOnlyRig {
+    production: Production,
+    clock: Arc<TestClock>,
+    host: Arc<ObservedHost>,
+    pacer: Arc<Pacer>,
+    port: Arc<FaultyObservationStore>,
+    identity: Arc<crate::identity::repair::OrdinaryIdentity>,
+    observation: Arc<WorkerStatus>,
+    cancellation: Cancellation,
+}
+
+fn store_only_rig() -> StoreOnlyRig {
+    let observation = Arc::new(WorkerStatus::default());
+    let production = Production::new([Default::default(), Default::default(), observation.clone()]);
+    let clock = production.clock.clone();
+    let host = Arc::new(ObservedHost {
+        clock: clock.clone(),
+        sequence: AtomicU64::new(1),
+        fail: Default::default(),
+        snapshots: AtomicU64::new(0),
+        store_only: Mutex::new(Some(Vec::new())),
+    });
+    let writer = Arc::new(FairWriter::new(32));
+    let cancellation = Cancellation::default();
+    let pacer = Arc::new(Pacer::new(
+        "observation",
+        clock.clone(),
+        cancellation.clone(),
+    ));
+    let identity = Arc::new(
+        crate::identity::repair::OrdinaryIdentity::new(
+            production.instance.to_string(),
+            crate::test_support::test_host_id(),
+            production.store.clone(),
+            host.clone(),
+            clock.clone(),
+            writer.clone(),
+        )
+        .with_observation_pacer(pacer.clone()),
+    );
+    let port = Arc::new(FaultyObservationStore {
+        inner: ScheduledStore {
+            store: production.store.clone(),
+            writer,
+            liveness: None,
+            host: None,
+        },
+        fail_admission: Default::default(),
+        fail_page: Default::default(),
+        pages_ok: AtomicU64::new(0),
+        pass_records: AtomicU64::new(0),
+        refuse_marker: Default::default(),
+        refuse_transitions: Default::default(),
+    });
+    StoreOnlyRig {
+        production,
+        clock,
+        host,
+        pacer,
+        port,
+        identity,
+        observation,
+        cancellation,
+    }
+}
+
+impl StoreOnlyRig {
+    fn spawn(&self) -> StopWorker {
+        StopWorker(
+            self.cancellation.clone(),
+            Some(
+                spawn_observation_loop(
+                    self.identity.clone(),
+                    self.port.clone(),
+                    self.cancellation.clone(),
+                    self.observation.clone(),
+                    Arc::new(Default::default()),
+                    self.pacer.clone(),
+                    Arc::new(Default::default()),
+                )
+                .unwrap(),
+            ),
+        )
+    }
+
+    fn wait_for(&self, what: &str, done: &dyn Fn() -> bool) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !done() {
+            assert!(
+                std::time::Instant::now() < until,
+                "{what}: {:?}",
+                self.production.scheduler()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Advance the clock `millis` once the lane is blocked in its Pacer (`idle_events == wakes + 1`),
+    /// wake it, and wait until it has taken the wake, so the next call sees the pass it started.
+    fn tick(&self, millis: u64) {
+        self.wait_for("lane never blocked in its Pacer", &|| {
+            self.pacer.idle_events() == self.pacer.wakes() + 1
+        });
+        let wakes = self.pacer.wakes();
+        self.clock.0.fetch_add(millis, Ordering::SeqCst);
+        self.pacer.clock_advanced();
+        self.wait_for("lane never woke", &|| self.pacer.wakes() > wakes);
+    }
+
+    fn degraded_with(&self, expected: &str) -> bool {
+        matches!(self.production.scheduler(), ComponentStatus::Degraded(text)
+            if text.starts_with(expected))
+    }
+}
+
+// Kills: a retry swallowed by the unchanged-set skip. A failed capture on a store-only lane whose
+// live set is unchanged must still run a real capture after the heal and report recovery.
+#[test]
+fn store_only_lane_reports_recovery_with_an_unchanged_live_set() {
+    let rig = store_only_rig();
+    let worker = rig.spawn(); // leak-guard: a worker thread stopped by StopWorker, no process
+    rig.wait_for("first pass", &|| {
+        rig.port.pass_records.load(Ordering::SeqCst) == 1
+    });
+    let snapshots = || rig.host.snapshots.load(Ordering::SeqCst);
+    let first = snapshots();
+    rig.tick(5_000);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        snapshots(),
+        first,
+        "an unchanged healthy lane publishes nothing"
+    );
+    rig.host.fail.store(true, Ordering::SeqCst);
+    rig.port.fail_admission.store(true, Ordering::SeqCst);
+    rig.tick(5_000);
+    rig.wait_for("failure surfaced", &|| {
+        rig.degraded_with("host observation capture failed: StoreBusy; retrying (attempt ")
+    });
+    rig.host.fail.store(false, Ordering::SeqCst);
+    rig.port.fail_admission.store(false, Ordering::SeqCst);
+    rig.tick(1_000);
+    rig.wait_for("recovery reported", &|| {
+        rig.production.scheduler() == ComponentStatus::Ready
+            && rig.pacer.attempts() == 0
+            && rig.port.pass_records.load(Ordering::SeqCst) == 2
+    });
+    let healed = snapshots();
+    assert!(healed > first, "recovery is a real capture");
+    rig.tick(5_000);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(snapshots(), healed, "the write-load rule is back");
+    worker.stop();
+}
+
+// Kills: a remembered set that outlives an unfinished pass.
+#[test]
+fn store_only_lane_finishes_a_failed_pass_when_the_live_set_goes_back() {
+    let rig = store_only_rig();
+    let worker = rig.spawn(); // leak-guard: a worker thread stopped by StopWorker, no process
+    rig.wait_for("first pass", &|| {
+        rig.port.pass_records.load(Ordering::SeqCst) == 1
+    });
+    *rig.host.store_only.lock().unwrap() = Some(vec![crate::protocol::ids::SeatId::new("a")]);
+    rig.port.fail_page.store(true, Ordering::SeqCst);
+    rig.tick(5_000);
+    rig.wait_for("page failure surfaced", &|| {
+        rig.degraded_with("host observation reconciliation failed: StoreBusy")
+    });
+    *rig.host.store_only.lock().unwrap() = Some(Vec::new());
+    rig.port.fail_page.store(false, Ordering::SeqCst);
+    rig.tick(5_000);
+    rig.wait_for("pass finished", &|| {
+        rig.production.scheduler() == ComponentStatus::Ready
+            && rig.port.pass_records.load(Ordering::SeqCst) == 2
+    });
+    worker.stop();
+}
+
+// Kills: a skip that reads only the lane's own flags, which a failure at the read gate never sets.
+#[test]
+fn store_only_lane_retries_a_failure_the_lane_never_saw() {
+    let rig = store_only_rig();
+    let budget = || CallBudget {
+        deadline: crate::protocol::time::MonoInstant(rig.clock.monotonic_now().0 + 10_000),
+        cancellation: Cancellation::default(),
+    };
+    let capture = || {
+        rig.identity
+            .capture_if_due(&rig.port, &budget(), &budget())
+            .unwrap()
+    };
+    // One pass by hand: capture, every page, the marker.
+    let Some(crate::identity::reconcile::ObservationOutcome::Published(published)) = capture()
+    else {
+        panic!("the first capture publishes");
+    };
+    let outcome = crate::identity::reconcile::ObservationOutcome::Published(published.clone());
+    let (mut after, mut high) = (0, None);
+    loop {
+        let page = rig
+            .identity
+            .reconcile_page(&rig.port, &outcome, after, high, &budget())
+            .unwrap();
+        match page.next_after_ordinal {
+            Some(next) => {
+                after = next;
+                high = Some(page.high_water_ordinal);
+            }
+            None => break,
+        }
+    }
+    rig.identity
+        .record_reconciliation_pass(&rig.port, &published, &budget())
+        .unwrap();
+    rig.clock.0.fetch_add(5_000, Ordering::SeqCst);
+    assert!(capture().is_none(), "an unchanged finished lane is skipped");
+    rig.pacer.on_failure();
+    rig.clock.0.fetch_add(40_000, Ordering::SeqCst);
+    assert!(
+        capture().is_some(),
+        "an outstanding failure forces a real capture"
+    );
+}
+
+// Kills: a lane that promotes the live set after a marker write the store refused (`Ok(false)`, a
+// stale publication), which would skip every later tick while the set is unchanged.
+#[test]
+fn store_only_lane_publishes_again_after_a_refused_marker() {
+    let rig = store_only_rig();
+    let budget = || CallBudget {
+        deadline: crate::protocol::time::MonoInstant(rig.clock.monotonic_now().0 + 10_000),
+        cancellation: Cancellation::default(),
+    };
+    let capture = || {
+        rig.identity
+            .capture_if_due(&rig.port, &budget(), &budget())
+            .unwrap()
+    };
+    rig.port.refuse_marker.store(true, Ordering::SeqCst);
+    let Some(crate::identity::reconcile::ObservationOutcome::Published(published)) = capture()
+    else {
+        panic!("the first capture publishes");
+    };
+    assert!(
+        !rig.identity
+            .record_reconciliation_pass(&rig.port, &published, &budget())
+            .unwrap(),
+        "the store refused the marker"
+    );
+    rig.clock.0.fetch_add(5_000, Ordering::SeqCst);
+    assert!(
+        capture().is_some(),
+        "a refused pass leaves the live set unpromoted: the next tick publishes again"
+    );
 }

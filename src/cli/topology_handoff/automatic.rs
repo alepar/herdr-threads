@@ -8,7 +8,9 @@ use crate::{
         handoff::HandoffLauncher,
         journal::{IntentRef, Journal},
     },
-    ports::{CreateTabOutcome, CreateTabPort, CreateTabRequest, LocalClient},
+    ports::{
+        CreateTabOutcome, CreateTabRequest, CreateTargetOutcome, CreateTargetPort, LocalClient,
+    },
     protocol::{
         commands::Command,
         handoff::*,
@@ -23,14 +25,14 @@ use std::{io::Write, path::PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ParentProgress {
-    version: u32,
-    identity: AutomaticBootstrapIdentity,
-    attempt: BootstrapAttempt,
-    possible_creation: bool,
-    request: Option<CreateTabRequest>,
-    creation: Option<crate::ports::CreatedTab>,
-    not_submitted: bool,
+pub(super) struct ParentProgress {
+    pub(super) version: u32,
+    pub(super) identity: AutomaticBootstrapIdentity,
+    pub(super) attempt: BootstrapAttempt,
+    pub(super) possible_creation: bool,
+    pub(super) request: Option<CreateTabRequest>,
+    pub(super) creation: Option<crate::ports::CreatedTab>,
+    pub(super) not_submitted: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -191,12 +193,18 @@ fn load_parent(
     }
     Ok(Some(value))
 }
-pub(super) fn saved_native_request(
+/// The correlation the saved creation request carries, so a recovered creation keeps it.
+pub(super) fn saved_correlation(
     journal: &Journal,
     reference: &IntentRef,
     id: &AutomaticBootstrapIdentity,
-) -> Result<Option<crate::ports::CreateTabRequest>, RunError> {
-    Ok(load_parent(journal, reference, id)?.and_then(|value| value.request))
+) -> Result<Option<crate::protocol::ids::HostCallId>, RunError> {
+    Ok(
+        load_local(journal, reference, id)?.and_then(|local| match local {
+            Local::V2(p) => p.request.map(|r| r.correlation),
+            Local::V3(p) => p.request.map(|r| r.correlation),
+        }),
+    )
 }
 fn load_child(
     journal: &Journal,
@@ -261,6 +269,178 @@ fn save_child(
     save_record(journal, &child_path(journal, reference), value)
 }
 
+/// The local progress of one creation: the released V2 tab record or the V3 target record.
+enum Local {
+    V2(ParentProgress),
+    V3(BootstrapProgressV3),
+}
+impl Local {
+    fn new(id: &AutomaticBootstrapIdentity, attempt: BootstrapAttempt) -> Self {
+        if id.plan.placement.is_some() {
+            Self::V3(BootstrapProgressV3 {
+                version: 3,
+                identity: id.clone(),
+                attempt,
+                possible_creation: false,
+                request: None,
+                creation: None,
+                not_submitted: false,
+            })
+        } else {
+            Self::V2(ParentProgress {
+                version: 2,
+                identity: id.clone(),
+                attempt,
+                possible_creation: false,
+                request: None,
+                creation: None,
+                not_submitted: false,
+            })
+        }
+    }
+    fn attempt(&self) -> BootstrapAttempt {
+        match self {
+            Self::V2(p) => p.attempt,
+            Self::V3(p) => p.attempt,
+        }
+    }
+    fn possible_creation(&self) -> bool {
+        match self {
+            Self::V2(p) => p.possible_creation,
+            Self::V3(p) => p.possible_creation,
+        }
+    }
+    fn not_submitted(&self) -> bool {
+        match self {
+            Self::V2(p) => p.not_submitted,
+            Self::V3(p) => p.not_submitted,
+        }
+    }
+    fn creation(&self) -> Option<AutomaticCreation> {
+        match self {
+            Self::V2(p) => p.creation.as_ref().map(AutomaticCreation::from),
+            Self::V3(p) => p.creation.as_ref().map(AutomaticCreation::from),
+        }
+    }
+    fn mark_not_submitted(&mut self) {
+        match self {
+            Self::V2(p) => p.not_submitted = true,
+            Self::V3(p) => p.not_submitted = true,
+        }
+    }
+    fn save(&self, journal: &Journal, reference: &IntentRef) -> Result<(), RunError> {
+        match self {
+            Self::V2(p) => save_parent(journal, reference, p),
+            Self::V3(p) => save_record(journal, &parent_path(journal, reference), p),
+        }
+    }
+}
+/// The saved local progress, read through the plan: a V3 plan's record is never decoded as a
+/// `ParentProgress` (which denies unknown fields).
+fn load_local(
+    journal: &Journal,
+    reference: &IntentRef,
+    id: &AutomaticBootstrapIdentity,
+) -> Result<Option<Local>, RunError> {
+    if id.plan.placement.is_none() {
+        return Ok(load_parent(journal, reference, id)?.map(Local::V2));
+    }
+    let Some(bytes) = super::read_linked_bytes(
+        &parent_path(journal, reference),
+        super::MAX_LINKED_LOCAL_BYTES,
+    )?
+    else {
+        return Ok(None);
+    };
+    let value: BootstrapProgressV3 = super::decode_linked(&bytes, super::MAX_LINKED_LOCAL_BYTES)?;
+    let placement = id.plan.placement.as_ref();
+    let p = &id.plan.payload;
+    if value.version != 3
+        || value.identity != *id
+        || (!value.possible_creation
+            && (value.request.is_some() || value.creation.is_some() || value.not_submitted))
+        || (value.not_submitted && (value.request.is_none() || value.creation.is_some()))
+        || value.request.as_ref().is_some_and(|r| {
+            Some(&r.placement) != placement
+                || r.cwd != p.cwd
+                || r.label != p.label
+                || r.focus
+                || r.env != p.env
+                || r.directory_context != p.directory_context
+                // Everything but the program path, which a reinstall may move.
+                || gate_argv(id, value.attempt)
+                    .is_ok_and(|expected| expected.get(1..) != r.gate_argv.get(1..))
+        })
+        || value.creation.as_ref().is_some_and(|created| {
+            created.validate().is_err()
+                || id
+                    .creation_scope(&AutomaticCreation::from(created))
+                    .is_err()
+                || value.request.as_ref().is_some_and(|r| {
+                    r.correlation != created.correlation
+                        || r.placement != created.placement
+                        || r.expected_witness != created.witness
+                })
+        })
+    {
+        return Err(invalid(
+            "automatic bootstrap local creation evidence differs",
+        ));
+    }
+    Ok(Some(Local::V3(value)))
+}
+/// What a V3 creation runs in its new terminal, per attempt:
+/// `<program> --state-dir S internal launch-gate --bootstrap <compound>:<attempt>
+/// [--config-root H=DIR] -- <executable> <harness argv>`. The core hands a terminal none of
+/// the caller's routing, so the state directory rides the argv.
+fn gate_argv(
+    id: &AutomaticBootstrapIdentity,
+    attempt: BootstrapAttempt,
+) -> Result<Vec<String>, RunError> {
+    let p = &id.plan.payload;
+    let binary = p
+        .launch
+        .binary
+        .clone()
+        .ok_or_else(|| invalid("automatic target plan lacks its frozen executable"))?;
+    let program = std::env::current_exe()?
+        .to_str()
+        .ok_or_else(|| invalid("herdr-threads executable path is not UTF-8"))?
+        .to_owned();
+    let state_dir = p
+        .handoff
+        .namespace
+        .state_dir
+        .to_str()
+        .ok_or_else(|| invalid("state directory is not UTF-8"))?
+        .to_owned();
+    let mut argv = vec![
+        program,
+        "--state-dir".into(),
+        state_dir,
+        "internal".into(),
+        "launch-gate".into(),
+        "--bootstrap".into(),
+        format!("{}:{}", p.keys.compound.as_str(), attempt.get()),
+    ];
+    if let Some(context) = &p.directory_context {
+        let registration = crate::harness::launch::launch_registration(
+            crate::harness::registry::builtins(),
+            p.launch.harness,
+        )?;
+        let dir = context
+            .profile_dir
+            .to_str()
+            .ok_or_else(|| invalid("profile directory is not UTF-8"))?;
+        argv.push("--config-root".into());
+        argv.push(format!("{}={dir}", registration.metadata().id));
+    }
+    argv.push("--".into());
+    argv.push(binary);
+    argv.extend(p.launch.argv.iter().cloned());
+    Ok(argv)
+}
+
 fn unknown(reference: &IntentRef, attempt: BootstrapAttempt) -> RunError {
     ApiError::unknown_outcome(format!("automatic bootstrap {} attempt {} has uncertain topology submission; inspect the exact namespace before recovery; no automatic creation", reference.recovery_ref(), attempt.get())).into()
 }
@@ -323,8 +503,47 @@ fn resolve_and_attach<C: LocalClient + ?Sized>(
     Ok(result)
 }
 
+/// The outcome of one submission, whatever the host: the V2 tab path and the V3 target path
+/// meet here.
+enum Submitted {
+    Refused,
+    Unknown,
+    Created(Box<AutomaticCreation>),
+}
+
+fn record_created<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    id: &AutomaticBootstrapIdentity,
+    attempt: BootstrapAttempt,
+    created: &AutomaticCreation,
+) -> Result<AutomaticBootstrapResult, RunError> {
+    let recorded = call(
+        client,
+        clock,
+        parent_request(
+            id,
+            AutomaticBootstrapAction::RecordCreated {
+                attempt,
+                evidence: created.clone(),
+            },
+        ),
+    );
+    let saved = match recorded {
+        Ok(value) => parent_result(id, value)?,
+        Err(error) => match status(client, clock, id) {
+            Ok(saved) if saved.creation.as_ref() == Some(created) => saved,
+            _ => return Err(error),
+        },
+    };
+    if saved.creation.as_ref() != Some(created) {
+        return Err(invalid("automatic recorded creation differs"));
+    }
+    resolve_and_attach(client, clock, id, saved)
+}
+
 #[allow(clippy::too_many_arguments)]
-fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
+fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTargetPort + ?Sized>(
     journal: &Journal,
     reference: &IntentRef,
     namespace: &HandoffNamespace,
@@ -340,8 +559,11 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
     let completed =
         matches!(status(client, clock, &id), Ok(s) if s.state == BootstrapState::Completed);
     if !completed {
-        if id.plan.payload.directory_context.is_some() {
+        if id.plan.payload.directory_context.is_some() && id.plan.placement.is_none() {
             super::require_directory_capability(client, clock)?;
+        }
+        if id.plan.placement.is_some() {
+            super::require_target_capability(client, clock)?;
         }
         super::super::handoff_delivery::require_policy_capabilities(
             client,
@@ -349,7 +571,7 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
             id.plan.payload.handoff.policy.as_ref(),
         )?;
     }
-    let mut local = load_parent(journal, reference, &id)?;
+    let mut local = load_local(journal, reference, &id)?;
     let begun = call(
         client,
         clock,
@@ -372,54 +594,25 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
         return Err(invalid("automatic bootstrap is cancelled"));
     }
     if let Some(progress) = &local {
-        if progress.attempt > current.attempt
-            || (progress.attempt < current.attempt && progress.creation.is_some())
+        if progress.attempt() > current.attempt
+            || (progress.attempt() < current.attempt && progress.creation().is_some())
         {
             return Err(invalid(
                 "automatic local attempt contradicts canonical attempt",
             ));
         }
-        if progress.attempt < current.attempt {
+        if progress.attempt() < current.attempt {
             local = None;
         }
     }
-    let mut local = local.unwrap_or_else(|| ParentProgress {
-        version: 2,
-        identity: id.clone(),
-        attempt: current.attempt,
-        possible_creation: false,
-        request: None,
-        creation: None,
-        not_submitted: false,
-    });
+    let mut local = local.unwrap_or_else(|| Local::new(&id, current.attempt));
     if current.creation.is_some() {
         return resolve_and_attach(client, clock, &id, current);
     }
-    if let Some(created) = &local.creation {
-        let result = call(
-            client,
-            clock,
-            parent_request(
-                &id,
-                AutomaticBootstrapAction::RecordCreated {
-                    attempt: local.attempt,
-                    evidence: created.clone(),
-                },
-            ),
-        );
-        let saved = match result {
-            Ok(value) => parent_result(&id, value)?,
-            Err(error) => match status(client, clock, &id) {
-                Ok(saved) if saved.creation.as_ref() == Some(created) => saved,
-                _ => return Err(error),
-            },
-        };
-        if saved.creation.as_ref() != Some(created) {
-            return Err(invalid("automatic recorded creation differs"));
-        }
-        return resolve_and_attach(client, clock, &id, saved);
+    if let Some(created) = local.creation() {
+        return record_created(client, clock, &id, local.attempt(), &created);
     }
-    if local.not_submitted {
+    if local.not_submitted() {
         return parent_result(
             &id,
             call(
@@ -428,13 +621,13 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
                 parent_request(
                     &id,
                     AutomaticBootstrapAction::RecordNotSubmitted {
-                        attempt: local.attempt,
+                        attempt: local.attempt(),
                     },
                 ),
             )?,
         );
     }
-    if current.state != BootstrapState::Prepared || local.possible_creation {
+    if current.state != BootstrapState::Prepared || local.possible_creation() {
         return Err(unknown(reference, current.attempt));
     }
     super::check_bootstrap_directories(
@@ -442,10 +635,26 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
         &id.plan.payload.cwd,
         id.plan.payload.directory_context.as_ref(),
     )?;
-    if submission.witness.endpoint.as_os_str() != namespace.host_endpoint.as_os_str() {
-        return Err(invalid(
-            "automatic native endpoint differs from frozen namespace",
-        ));
+    // A Herdr socket witness must be the frozen namespace's endpoint; a core's witness is
+    // pinned by `hello` inside the creation itself.
+    match (id.plan.placement.is_some(), submission.witness) {
+        (false, _) => {
+            if submission.herdr_witness()?.endpoint.as_os_str()
+                != namespace.host_endpoint.as_os_str()
+            {
+                return Err(invalid(
+                    "automatic native endpoint differs from frozen namespace",
+                ));
+            }
+        }
+        (true, crate::ports::HostWitness::HerdrSocket(w)) => {
+            if w.endpoint.as_os_str() != namespace.host_endpoint.as_os_str() {
+                return Err(invalid(
+                    "automatic native endpoint differs from frozen namespace",
+                ));
+            }
+        }
+        (true, crate::ports::HostWitness::HcCore { .. }) => {}
     }
     let reserved = call(
         client,
@@ -490,19 +699,49 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
     {
         return Err(invalid("automatic native authorization differs"));
     }
-    let request = CreateTabRequest {
-        correlation: HostCallId::new(uuid::Uuid::new_v4().to_string()),
-        workspace: id.plan.payload.workspace.clone(),
-        cwd: id.plan.payload.cwd.clone(),
-        label: id.plan.payload.label.clone(),
-        focus: false,
-        env: id.plan.payload.env.clone(),
-        directory_context: id.plan.payload.directory_context.clone(),
-        expected_witness: submission.witness.clone(),
+    // The request is saved before `CheckSubmission`: a crash after the host call resumes from
+    // it and never submits twice.
+    let correlation = HostCallId::new(uuid::Uuid::new_v4().to_string());
+    let v3_request = match (&id.plan.placement, &mut local) {
+        (Some(placement), Local::V3(progress)) => {
+            let request = crate::ports::CreateTargetRequest {
+                correlation: correlation.clone(),
+                placement: placement.clone(),
+                cwd: id.plan.payload.cwd.clone(),
+                label: id.plan.payload.label.clone(),
+                focus: false,
+                env: id.plan.payload.env.clone(),
+                directory_context: id.plan.payload.directory_context.clone(),
+                expected_witness: submission.witness.clone(),
+                gate_argv: gate_argv(&id, current.attempt)?,
+            };
+            progress.possible_creation = true;
+            progress.request = Some(request.clone());
+            Some(request)
+        }
+        _ => None,
     };
-    local.possible_creation = true;
-    local.request = Some(request.clone());
-    save_parent(journal, reference, &local).map_err(|_| unknown(reference, current.attempt))?;
+    let v2_request = match &mut local {
+        Local::V2(progress) => {
+            let request = CreateTabRequest {
+                correlation: correlation.clone(),
+                workspace: id.plan.payload.workspace.clone(),
+                cwd: id.plan.payload.cwd.clone(),
+                label: id.plan.payload.label.clone(),
+                focus: false,
+                env: id.plan.payload.env.clone(),
+                directory_context: id.plan.payload.directory_context.clone(),
+                expected_witness: submission.herdr_witness()?.clone(),
+            };
+            progress.possible_creation = true;
+            progress.request = Some(request.clone());
+            Some(request)
+        }
+        Local::V3(_) => None,
+    };
+    local
+        .save(journal, reference)
+        .map_err(|_| unknown(reference, current.attempt))?;
     let checked = call(
         client,
         clock,
@@ -528,13 +767,46 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
         &id.plan.payload.cwd,
         id.plan.payload.directory_context.as_ref(),
     ) {
-        Ok(()) => native.create_tab(&request, submission.context),
-        Err(error) => CreateTabOutcome::NotSubmitted(ApiError::invalid_request(error.to_string())),
+        Err(_) => Submitted::Refused,
+        Ok(()) => match (&v2_request, &v3_request) {
+            (Some(request), _) => {
+                match crate::ports::create_tab_through(native, request, submission.context) {
+                    CreateTabOutcome::NotSubmitted(_) => Submitted::Refused,
+                    CreateTabOutcome::OutcomeUnknown(_) => Submitted::Unknown,
+                    CreateTabOutcome::Created(created) => {
+                        if created.validate().is_err()
+                            || created.correlation != request.correlation
+                            || created.workspace != request.workspace
+                            || created.witness != request.expected_witness
+                        {
+                            return Err(unknown(reference, current.attempt));
+                        }
+                        Submitted::Created(Box::new(AutomaticCreation::Tab(*created)))
+                    }
+                }
+            }
+            (None, Some(request)) => match native.create_target(request, submission.context) {
+                CreateTargetOutcome::NotSubmitted(_) => Submitted::Refused,
+                CreateTargetOutcome::OutcomeUnknown(_) => Submitted::Unknown,
+                CreateTargetOutcome::Created(created) => {
+                    if created.validate().is_err()
+                        || created.correlation != request.correlation
+                        || created.placement != request.placement
+                        || created.witness != request.expected_witness
+                    {
+                        return Err(unknown(reference, current.attempt));
+                    }
+                    Submitted::Created(Box::new(AutomaticCreation::Target(*created)))
+                }
+            },
+            (None, None) => return Err(invalid("automatic local progress lacks its request")),
+        },
     };
     match outcome {
-        CreateTabOutcome::NotSubmitted(_) => {
-            local.not_submitted = true;
-            save_parent(journal, reference, &local)
+        Submitted::Refused => {
+            local.mark_not_submitted();
+            local
+                .save(journal, reference)
                 .map_err(|_| unknown(reference, current.attempt))?;
             parent_result(
                 &id,
@@ -550,7 +822,7 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
                 )?,
             )
         }
-        CreateTabOutcome::OutcomeUnknown(_) => {
+        Submitted::Unknown => {
             let _ = call(
                 client,
                 clock,
@@ -563,40 +835,20 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
             );
             Err(unknown(reference, current.attempt))
         }
-        CreateTabOutcome::Created(created) => {
-            if created.validate().is_err()
-                || created.correlation != request.correlation
-                || created.workspace != request.workspace
-                || created.witness != request.expected_witness
-            {
-                return Err(unknown(reference, current.attempt));
+        Submitted::Created(created) => {
+            match (&mut local, &*created) {
+                (Local::V2(progress), AutomaticCreation::Tab(tab)) => {
+                    progress.creation = Some(tab.clone());
+                }
+                (Local::V3(progress), AutomaticCreation::Target(target)) => {
+                    progress.creation = Some(target.clone());
+                }
+                _ => return Err(unknown(reference, current.attempt)),
             }
-            local.creation = Some(*created);
-            save_parent(journal, reference, &local)
+            local
+                .save(journal, reference)
                 .map_err(|_| unknown(reference, current.attempt))?;
-            let created = local.creation.as_ref().unwrap().clone();
-            let recorded = call(
-                client,
-                clock,
-                parent_request(
-                    &id,
-                    AutomaticBootstrapAction::RecordCreated {
-                        attempt: current.attempt,
-                        evidence: created.clone(),
-                    },
-                ),
-            );
-            let saved = match recorded {
-                Ok(value) => parent_result(&id, value)?,
-                Err(error) => match status(client, clock, &id) {
-                    Ok(saved) if saved.creation.as_ref() == Some(&created) => saved,
-                    _ => return Err(error),
-                },
-            };
-            if saved.creation.as_ref() != Some(&created) {
-                return Err(invalid("automatic recorded creation differs"));
-            }
-            resolve_and_attach(client, clock, &id, saved)
+            record_created(client, clock, &id, current.attempt, &created)
         }
     }
 }
@@ -609,6 +861,10 @@ fn effective_launch(
     let AutomaticOriginal::Handoff(plan) = &attachment.child.original else {
         return Err(invalid("automatic child lacks frozen launch"));
     };
+    if id.plan.placement.is_some() {
+        // The harness argv was frozen at creation, before the thread existed.
+        return Ok(plan.launch.clone());
+    }
     let template = plan
         .startup_input
         .as_ref()
@@ -640,7 +896,7 @@ fn retained_report(
     let result = LinkedBootstrapReport {
         thread: thread.clone(),
         recipient: attachment.resolved_seat.clone(),
-        pane: attachment.created.root_pane.clone(),
+        pane: attachment.created.launch_target().clone(),
         kind: "launch".into(),
         launch: id.plan.payload.launch.clone(),
         report: report.clone(),
@@ -648,15 +904,15 @@ fn retained_report(
             "{:x}",
             Sha256::digest(serde_json::to_vec(report).map_err(std::io::Error::other)?)
         ),
-        terminal: attachment.created.terminal.clone(),
-        host_incarnation: attachment.created.host_incarnation.clone(),
+        terminal: attachment.created.terminal().clone(),
+        host_incarnation: attachment.created.host_incarnation().clone(),
     };
     result.validate().map_err(invalid)?;
     Ok(result)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized, W: Write>(
+pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTargetPort + ?Sized, W: Write>(
     journal: &Journal,
     reference: &IntentRef,
     _actor: InvocationActor,
@@ -686,6 +942,14 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size
         .into());
     }
     let _lock = super::super::handoff::lock(journal, reference)?;
+    // A target the host started itself has nothing to launch: the plan, not the caller,
+    // picks the launcher, so a retry can never start a second agent.
+    let mut started = crate::cli::handoff::StartedByCreation;
+    let launcher: &mut dyn HandoffLauncher = if id.plan.placement.is_some() {
+        &mut started
+    } else {
+        launcher
+    };
     let current = status(client, clock, &id)?;
     if current.state == BootstrapState::Completed {
         return present_completed(journal, reference, &id, current, output, writer);
@@ -830,7 +1094,7 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size
                 .as_ref()
                 .is_none_or(|v| v["outcome"] != "started")
     {
-        return Err(ApiError::unknown_outcome(format!("automatic bootstrap {} downstream possible start; inspect exact pane {}; no automatic relaunch", reference.recovery_ref(), attachment.created.root_pane.as_str())).into());
+        return Err(ApiError::unknown_outcome(format!("automatic bootstrap {} downstream possible start; inspect exact pane {}; no automatic relaunch", reference.recovery_ref(), attachment.created.launch_target().as_str())).into());
     }
     let report = progress
         .launch
@@ -1113,7 +1377,7 @@ pub(super) fn write_pending<C: LocalClient + ?Sized, W: Write>(
             "status_unknown": current.is_none(),
             "creation": current.as_ref().and_then(|v| v.creation.as_ref()),
             "seat": current.as_ref().and_then(|v| v.attachment.as_ref()).map(|a| &a.resolved_seat),
-            "pane": current.as_ref().and_then(|v| v.creation.as_ref()).map(|c| &c.root_pane),
+            "pane": current.as_ref().and_then(|v| v.creation.as_ref()).map(|c| c.launch_target()),
             "thread": current.as_ref().and_then(|v| v.thread.as_ref()),
             "message": child.as_ref().and_then(|v| v.message.as_ref()),
             "possible_start": possible_start,
@@ -1254,7 +1518,7 @@ fn present_completed<W: Write>(
         "bootstrap": { "failed": false, "outcome": "started", "state": "completed",
             "recovery_ref": reference.recovery_ref(), "thread": completed.thread,
             "seat": completed.attachment.as_ref().map(|a| &a.resolved_seat),
-            "pane": completed.attachment.as_ref().map(|a| &a.created.root_pane),
+            "pane": completed.attachment.as_ref().map(|a| a.created.launch_target()),
             "message": message, "launch": completed.completed.as_ref().map(|r| &r.report),
         }
     });

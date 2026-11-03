@@ -2720,7 +2720,9 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
         .collect();
     assert_eq!(scheduler.len(), 1, "one folded summary line: {lines:?}");
     assert!(
-        scheduler[0].contains(&format!("{} lanes degraded", Lane::WORKERS.len()))
+        // The workers' lanes plus the built-in named host's own observation and
+        // wake lanes, which reach Health while degraded.
+        scheduler[0].contains(&format!("{} lanes degraded", Lane::WORKERS.len() + 2))
             && Lane::WORKERS
                 .iter()
                 .all(|lane| scheduler[0].contains(lane.name()))

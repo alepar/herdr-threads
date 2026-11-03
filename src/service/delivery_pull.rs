@@ -238,6 +238,7 @@ fn frame_item(item: &DeliveryItem) -> FrameItem {
         thread_name: message.thread_name.clone(),
         sender: message.sender.as_ref().map(|seat| seat.as_str().to_owned()),
         sender_name: message.sender_name.clone(),
+        sender_label: message.sender_label.clone(),
         author_role: message.author_role.map(|role| role.as_str().to_owned()),
         relays_user: message.relays_user,
         user_intent: message.user_intent.map(|intent| intent.as_str().to_owned()),
@@ -259,6 +260,7 @@ fn notice_block(pulled: &PulledNotice, marker_prefix: &[String]) -> FrameItem {
                 .as_ref()
                 .map_or_else(|| "service".to_owned(), |a| a.as_str().to_owned()),
         ),
+        sender_label: pulled.author_label.clone(),
         body: crate::protocol::watch::notice_marker_for(marker_prefix, &pulled.notice.warning),
         ..FrameItem::default()
     }
@@ -598,6 +600,11 @@ impl DomainService {
                         DrainEvent::Item(item) => item,
                         _ => return Ok(Stop::Continue),
                     };
+                    // A read-only binding (D3) is never offered a receipt-bearing row: it stays
+                    // pending for a writable sibling.
+                    if binding.readonly && item.message.ack_required {
+                        return Ok(Stop::Continue);
+                    }
                     pending.insert(item.id.clone());
                     let offered = known.get(&item.id);
                     let due = offered.is_some_and(|offer| offer.is_due(now));

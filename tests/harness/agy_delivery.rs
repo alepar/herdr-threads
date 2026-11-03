@@ -1474,6 +1474,7 @@ mod daemon {
         fn check_in(&self) -> CallerClaim {
             let claim = claim(1);
             let command = Command::CheckIn(CheckIn {
+                readonly: false,
                 mode: CheckInMode::Lifecycle {
                     expected_binding_generation: 1,
                 },
@@ -1656,6 +1657,7 @@ mod daemon {
         next.native_session = NativeSessionId::new("e806a19d-b316-4599-b4c5-a56db668fb4a");
         next.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
         let command = Command::CheckIn(CheckIn {
+            readonly: false,
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: first.binding_generation,
             },
@@ -1710,6 +1712,7 @@ mod daemon {
             .service
             .handle(
                 Command::CheckIn(CheckIn {
+                    readonly: false,
                     mode: CheckInMode::Lifecycle {
                         expected_binding_generation: 0,
                     },
@@ -2263,6 +2266,7 @@ fn modern_items() -> Vec<PresentationItemV2> {
             id: MessageId::new("msg-a1"),
             lazy: false,
             content: crate::protocol::watch::WatchMessage {
+                sender_label: None,
                 deadline_at: None,
                 priority: None,
                 thread: crate::protocol::ids::ThreadId::new("t1"),

@@ -623,7 +623,7 @@ fn run_continuous_case(slow: bool, probe_drain: bool, writer_end_gate: bool) {
 }
 
 /// The launcher gives ensure_running its actual daemon-run argv while
-/// executing the test fixture in a dedicated detached child.
+/// executing the test fixture in a dedicated detached child (it plays the detach hop).
 #[test]
 #[ignore]
 fn detached_owner_fixture() {
@@ -703,7 +703,15 @@ fn ensure_parent_fixture() {
             &launcher,
             Arc::new(TestClock),
         ))
-        .unwrap();
+        .unwrap_or_else(|error| {
+            // The libtest harness captures print macros and panic messages, and the parent reads
+            // this stderr: write to the descriptor itself.
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                format!("ensure_running failed: {error:?}\n").as_bytes(),
+            );
+            std::process::exit(101)
+        });
 }
 
 #[test]
@@ -748,8 +756,10 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
     let caller_err = |n: u8| fs::File::create(root.join(format!("ensure-{n}.err"))).unwrap();
     let launcher = root.join("launcher.sh");
     let current = std::env::current_exe().unwrap();
+    // The launcher is the detach hop (`internal daemon-detach PROGRAM ARGS...`): it starts the
+    // owner fixture off its own stdout, which carries only the pid, and reports that pid.
     let script = format!(
-        "#!/bin/sh\nexec '{}' --ignored --exact daemon::tests::detached_owner_fixture\n",
+        "#!/bin/sh\n'{}' --ignored --exact daemon::tests::detached_owner_fixture >/dev/null &\necho $!\n",
         current.display()
     );
     fs::write(&launcher, script).unwrap();

@@ -34,6 +34,7 @@ pub enum CallKind {
     Capabilities,
     HookParseFailure,
     HarnessEvidence,
+    LocateCaller,
     Other,
 }
 
@@ -48,6 +49,7 @@ impl CallKind {
             Command::Capabilities => Self::Capabilities,
             Command::HookParseFailure(_) => Self::HookParseFailure,
             Command::HarnessEvidence(_) => Self::HarnessEvidence,
+            Command::LocateCaller(_) => Self::LocateCaller,
             _ => Self::Other,
         }
     }

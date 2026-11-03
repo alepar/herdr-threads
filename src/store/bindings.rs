@@ -1015,6 +1015,29 @@ pub fn parent_of(db: &Connection, binding: &BindingId) -> Result<Option<BindingI
         .transpose()
 }
 
+/// Record that the binding was opened with `HERDR_THREADS_SEAT_READONLY=1` (D3). Sticky: a
+/// binding's environment does not change, so the flag is only ever raised.
+pub fn set_readonly(db: &Connection, binding: &BindingId) -> Result<(), ApiError> {
+    db.execute(
+        "UPDATE occupant_bindings SET readonly=1 WHERE binding_id=?1 AND readonly=0",
+        [binding.as_str()],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// Whether the binding is read-only (D3): its display never settles receipt-bearing rows.
+pub fn is_readonly(db: &Connection, binding: &BindingId) -> Result<bool, ApiError> {
+    db.query_row(
+        "SELECT readonly<>0 FROM occupant_bindings WHERE binding_id=?1",
+        [binding.as_str()],
+        |r| r.get(0),
+    )
+    .optional()
+    .map(|v| v.unwrap_or(false))
+    .map_err(store_error)
+}
+
 pub fn get(db: &Connection, binding: &BindingId) -> Result<Option<BindingRow>, ApiError> {
     Ok(query_rows(
         db,

@@ -134,6 +134,9 @@ pub enum SemanticMutation {
         /// Hermes `parent_session_id` hint, frozen with the claim (see `CheckIn::lineage_parent`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lineage_parent: Option<NativeSessionId>,
+        /// The caller's environment marks the binding read-only (D3); frozen with the claim.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        readonly: bool,
     },
     ResolveSeat {
         target: HostTargetId,
@@ -407,9 +410,19 @@ impl SemanticMutation {
                 if let Self::DirectSend(plan) = mutation.as_ref() {
                     plan.validate_claim(self.frozen_claim().unwrap())?;
                 }
+                // A V3 automatic bootstrap and its child may hand off into a core whose socket
+                // is not the caller's host.
+                let own_host = match mutation.as_ref() {
+                    Self::AutomaticBootstrap(plan) => plan.placement.is_some(),
+                    Self::AutomaticHandoff(plan) => {
+                        plan.version == crate::protocol::handoff::AUTOMATIC_TARGET_PLAN_VERSION
+                    }
+                    _ => false,
+                };
                 if mutation.namespace().is_some_and(|ns| {
                     let claim = self.frozen_claim().unwrap();
-                    ns.instance != claim.instance || ns.host_endpoint != claim.host.as_path()
+                    ns.instance != claim.instance
+                        || (!own_host && !claim.host.fronts_namespace(&ns.host_endpoint))
                 }) {
                     return Err(invalid("frozen namespace differs from original claim"));
                 }
@@ -421,6 +434,7 @@ impl SemanticMutation {
                 event_id,
                 operator,
                 lineage_parent,
+                readonly,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -442,6 +456,7 @@ impl SemanticMutation {
                     mode: *mode,
                     operation: OperationId::new("validation"),
                     lineage_parent: lineage_parent.clone(),
+                    readonly: *readonly,
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -636,6 +651,7 @@ impl SemanticMutation {
                 mode,
                 operator,
                 lineage_parent,
+                readonly,
                 ..
             } => {
                 let check = CheckIn {
@@ -643,6 +659,7 @@ impl SemanticMutation {
                     mode: *mode,
                     operation,
                     lineage_parent: lineage_parent.clone(),
+                    readonly: *readonly,
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -654,6 +671,8 @@ impl SemanticMutation {
                 target: target.clone(),
                 host: host.clone(),
                 operation,
+                locator_hint: crate::cli::caller_location::resolve_hint(host),
+                tmux_hint: crate::cli::caller_location::resolve_tmux_hint(host),
             }),
             Self::ContinuityCheckIn {
                 target,
@@ -676,6 +695,7 @@ impl SemanticMutation {
             }),
             Self::CheckIn => Command::CheckIn(CheckIn {
                 lineage_parent: None,
+                readonly: super::caller_location::CallerEnv::from_process().readonly(),
                 mode: crate::protocol::commands::CheckInMode::Current,
                 operation,
                 claim: native()?,
@@ -1494,6 +1514,8 @@ impl Journal {
             event_id: event_id.into(),
             operator,
             lineage_parent,
+            // The recording process is the caller's own: its environment decides (D3).
+            readonly: super::caller_location::CallerEnv::from_process().readonly(),
         };
         if !scope_matches(&scope, &semantic) {
             return Err(invalid("intent authority scope mismatch"));

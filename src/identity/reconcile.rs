@@ -210,6 +210,17 @@ fn never_registered_structural_bridge(
 /// Decide from the store's indexed matches for one fenced saved-seat page.
 /// The size of the published namespace does not affect this pass.
 pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, ApiError> {
+    plan_page_for(page, crate::ports::ClosureAuthority::Closing)
+}
+
+/// [`plan_page`] for a host with the given closure authority. A `NonClosing`
+/// host (the named host) has no absence authority: a saved seat its
+/// publication does not show stays as it is, with no `BeginRetirement` and no
+/// `MarkUnresolved`.
+pub fn plan_page_for(
+    page: &SnapshotSeatPage,
+    closure: crate::ports::ClosureAuthority,
+) -> Result<Vec<GuardedSeatTransition>, ApiError> {
     if page.seats.len() > MAX_SAVED_SEATS_PER_PLAN
         || usize::from(page.visited) > MAX_SAVED_SEATS_PER_PLAN
         || page.seats.len() > usize::from(page.visited)
@@ -262,23 +273,34 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
         } else if publication_before_proof {
             None
         } else if !same_incarnation {
-            Some(ReconciliationAction::MarkUnresolved)
+            // A non-closing host never unresolves a seat for want of proof.
+            (closure != crate::ports::ClosureAuthority::NonClosing)
+                .then_some(ReconciliationAction::MarkUnresolved)
         } else if let Some(observed) = saved.observed_match.as_ref() {
             if observed.observation_sequence == 0
                 || observed.observation_sequence > page.publication.observation_sequence
                 || observed.structural_generation == 0
-                || (saved.terminal.is_some() && saved.terminal != observed.terminal)
+                || (saved.terminal.is_some()
+                    && observed.terminal.is_some()
+                    && saved.terminal != observed.terminal)
             {
                 return Err(stale("indexed seat match conflicts with publication"));
             }
             let Some(terminal) = observed.terminal.as_ref() else {
+                // The target is shown with no terminal behind it. A resolved
+                // seat waits as recoverable; an unresolved one is unchanged.
+                let action = if saved.state == SeatState::Resolved {
+                    ReconciliationAction::UnresolveAwaitingTerminal
+                } else {
+                    ReconciliationAction::MarkUnresolved
+                };
                 actions.push(GuardedSeatTransition {
                     publication: page.publication.clone(),
                     seat: saved.seat.clone(),
                     expected_binding_generation: saved.binding_generation,
                     expected_target: saved.target.clone(),
                     expected_terminal: saved.terminal.clone(),
-                    action: ReconciliationAction::MarkUnresolved,
+                    action,
                 });
                 continue;
             };
@@ -328,6 +350,9 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
             } else {
                 None
             }
+        } else if closure == crate::ports::ClosureAuthority::NonClosing {
+            // No absence closure for a non-closing host.
+            None
         } else if let Some(target) = saved.target.as_ref() {
             Some(ReconciliationAction::BeginRetirement {
                 absent_target: target.clone(),
@@ -477,6 +502,25 @@ pub fn reconcile_published_page(
     high_water_ordinal: Option<u64>,
     budget: &CallBudget,
 ) -> Result<ReconcilePageProgress, ApiError> {
+    reconcile_published_page_for(
+        store,
+        published,
+        after_ordinal,
+        high_water_ordinal,
+        budget,
+        crate::ports::ClosureAuthority::Closing,
+    )
+}
+
+/// [`reconcile_published_page`] for a host with the given closure authority.
+pub fn reconcile_published_page_for(
+    store: &(impl observation_store::ObservationStore + ?Sized),
+    published: &PublishedSnapshot,
+    after_ordinal: u64,
+    high_water_ordinal: Option<u64>,
+    budget: &CallBudget,
+    closure: crate::ports::ClosureAuthority,
+) -> Result<ReconcilePageProgress, ApiError> {
     let page = store.saved_seats_page(
         &published.id,
         after_ordinal,
@@ -497,7 +541,7 @@ pub fn reconcile_published_page(
     let mut retirements = 0u8;
     let mut refused = 0u8;
     let mut refusals = Vec::new();
-    for transition in plan_page(&page)? {
+    for transition in plan_page_for(&page, closure)? {
         let seat = transition.seat.clone();
         let generation = transition.expected_binding_generation;
         let action = std::mem::discriminant(&transition.action);
@@ -618,6 +662,7 @@ pub fn observe_and_publish(
     context: &HostCallContext,
     maintenance_budget: &CallBudget,
 ) -> Result<ObservationOutcome, ApiError> {
+    let non_closing = host.closure_authority() == crate::ports::ClosureAuthority::NonClosing;
     let ticket = lane.begin_observation()?;
     let admission = match store.begin_host_observation(instance, host_id, &context.budget) {
         Ok(admission) => admission,
@@ -628,9 +673,25 @@ pub fn observe_and_publish(
         }
     };
     let capture = host.enumerate_targets(context);
+    // A Stop that cancelled this capture is not a host outage: the lane's Cancelled check takes it.
+    if context.budget.cancellation.is_cancelled() {
+        let _ = lane.discard(ticket);
+        return Err(ApiError::cancelled("host capture"));
+    }
+    // SA17 (c): a non-closing host (the named host) enumerates the store, not
+    // a server. Its complete capture takes the host's fixed structural
+    // boot/incarnation so the publication admits it; a failed capture still
+    // only freezes (unavailability writes nothing). The stamp grants no
+    // absence authority: the planner and applier gate closure on
+    // `NonClosing`, never on the evidence.
+    let capture = if non_closing {
+        capture.map(stamp_fixed_structure)
+    } else {
+        capture
+    };
     let reason = match &capture {
         Err(_) => Some(HostInvalidationReason::HostUnavailable),
-        Ok(_) if context.budget.is_exhausted(store.clock()) => {
+        Ok(_) if context.budget.deadline_passed(store.clock()) => {
             Some(HostInvalidationReason::HostUnavailable)
         }
         Ok(snapshot)
@@ -661,7 +722,15 @@ pub fn observe_and_publish(
         let cause = capture.err();
         lane.mark_unavailable();
         let _ = lane.discard(ticket);
-        return invalidate_or_skip(store, lane, &admission, reason, cause, maintenance_budget);
+        return invalidate_or_skip(
+            store,
+            lane,
+            &admission,
+            reason,
+            cause,
+            non_closing,
+            maintenance_budget,
+        );
     }
     let snapshot = capture.expect("reason classified host failure");
     let admission_for_failure = admission.clone();
@@ -671,16 +740,37 @@ pub fn observe_and_publish(
         Err(error) => {
             lane.mark_unavailable();
             let _ = lane.discard(ticket);
+            // A Stop that cancelled the publication is not a failed publication: the lane's
+            // Cancelled check takes it, and nothing is frozen or invalidated.
+            if error.code == ErrorCode::Cancelled {
+                return Err(error);
+            }
             invalidate_or_skip(
                 store,
                 lane,
                 &admission_for_failure,
                 HostInvalidationReason::PublicationFailed,
                 Some(error),
+                non_closing,
                 maintenance_budget,
             )
         }
     }
+}
+
+/// SA17 (c): the structural identity of a non-closing host's complete capture
+/// is its fixed boot: the snapshot is coherent against that boot and its
+/// incarnation is the boot itself (`named-host:node=<uuid>`). A partial
+/// capture is left as it is.
+pub(crate) fn stamp_fixed_structure(mut snapshot: HostSnapshot) -> HostSnapshot {
+    if snapshot.complete {
+        snapshot.enumeration = crate::ports::EnumerationEvidence::CoherentVerified;
+        snapshot.incarnation = crate::ports::IncarnationEvidence::Verified {
+            identity: snapshot.boot.as_str().to_owned(),
+            evidence_kind: crate::ports::EvidenceKind::CoherentEnumeration,
+        };
+    }
+    snapshot
 }
 
 /// Writes the durable invalidation for a failed capture, unless the lane
@@ -693,10 +783,16 @@ fn invalidate_or_skip(
     admission: &HostObservationAdmission,
     reason: HostInvalidationReason,
     cause: Option<ApiError>,
+    non_closing: bool,
     maintenance_budget: &CallBudget,
 ) -> Result<ObservationOutcome, ApiError> {
     if reason.is_unavailability() {
         return Ok(ObservationOutcome::Frozen { reason, cause });
+    }
+    // A non-closing host has no absence authority to lose: an invalidation
+    // would unresolve its seats (and arm holds) on no host evidence.
+    if non_closing {
+        return Ok(ObservationOutcome::Superseded);
     }
     if lane.skips_repeated_invalidation(reason) {
         return Ok(ObservationOutcome::InvalidationRepeated { reason, cause });
@@ -867,7 +963,15 @@ pub struct ObservationLane {
     /// Lane captures that ran to an outcome; an explicit target read that
     /// needs a capture waits for this to advance.
     completed_captures: u64,
+    /// A store-only host's live set, read before the capture now being published.
+    staged_live: Option<Vec<crate::protocol::ids::SeatId>>,
+    /// The live set whose publication and reconciliation pass both finished, with no capture begun
+    /// since. `None` after a start and while a pass is open.
+    published_live: Option<Vec<crate::protocol::ids::SeatId>>,
 }
+
+/// The lane cadence a daemon runs at unless it is configured otherwise.
+pub const DEFAULT_SNAPSHOT_CADENCE_MILLIS: u64 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservationTicket(u64);
@@ -903,14 +1007,53 @@ impl ObservationLane {
         self.completed_captures
     }
 
+    pub fn published_live(&self) -> Option<&[crate::protocol::ids::SeatId]> {
+        self.published_live.as_deref()
+    }
+
+    pub fn stage_live(&mut self, live: Vec<crate::protocol::ids::SeatId>) {
+        self.staged_live = Some(live);
+    }
+
+    pub fn clear_staged_live(&mut self) {
+        self.staged_live = None;
+    }
+
+    /// A capture starts: no set counts as finished until its pass does. A capture, a page or a marker
+    /// that fails and a refused pass all leave this empty, so the next due tick captures again.
+    pub fn begin_pass(&mut self) {
+        self.published_live = None;
+    }
+
+    /// The staged live set becomes the published one; with nothing staged the published set stays.
+    pub fn promote_live(&mut self) {
+        if let Some(live) = self.staged_live.take() {
+            self.published_live = Some(live);
+        }
+    }
+
+    pub fn explicit_capture_requested(&self) -> bool {
+        self.explicit_capture
+    }
+
+    /// A due capture found nothing to publish: a dirty mark that found no change does not stay due.
+    pub fn skip_unchanged_capture(&mut self) {
+        self.dirty = false;
+    }
+
     pub fn snapshot_due(&self, now: MonoInstant) -> bool {
-        self.snapshot_due_gated(now, None)
+        self.snapshot_due_gated(now, None, DEFAULT_SNAPSHOT_CADENCE_MILLIS)
     }
 
     /// `retry_at` is the lane Pacer's `next_retry_at()`. A host-event hint is
     /// always due; a retry after failure waits for the backoff; otherwise the
-    /// 5 s cadence applies.
-    pub fn snapshot_due_gated(&self, now: MonoInstant, retry_at: Option<MonoInstant>) -> bool {
+    /// configured `cadence_millis` applies.
+    pub fn snapshot_due_gated(
+        &self,
+        now: MonoInstant,
+        retry_at: Option<MonoInstant>,
+        cadence_millis: u64,
+    ) -> bool {
         if self.dirty || self.explicit_capture {
             return true;
         }
@@ -918,7 +1061,7 @@ impl ObservationLane {
             return retry_at.is_none_or(|at| now.0 >= at.0);
         }
         self.last_snapshot_at
-            .is_none_or(|last| now.0.saturating_sub(last.0) >= 5_000)
+            .is_none_or(|last| now.0.saturating_sub(last.0) >= cadence_millis)
     }
 
     /// The skip predicate (pacer spec D4): same reason as the last completed

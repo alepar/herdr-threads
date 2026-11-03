@@ -2032,6 +2032,63 @@ fn handoff_fenced_early_terminal_retry_uses_frozen_selection_without_live_inspec
         }
     }
 }
+// Kills: a completed-handoff retry that compares the bare `tN` and so accepts the same `tN` of
+// another core as the frozen caller (a terminal is (core socket, tN)).
+#[test]
+fn two_cores_completed_handoff_retry_needs_its_own_core() {
+    for (socket, accepted) in [
+        (claim().host.as_str().to_owned(), true),
+        ("/run/cores/other.sock".to_owned(), false),
+    ] {
+        let (_temp, journal) = journal();
+        let reference = frozen(&journal);
+        let events = std::sync::Arc::new(Mutex::new(vec![]));
+        let client = FencedClient {
+            inner: Client::new(None),
+            terminal: true.into(),
+            events: events.clone(),
+        };
+        let mut output = Output {
+            events,
+            fail_flush: false,
+        };
+        save(
+            &journal,
+            &reference,
+            &Progress {
+                thread: Some(ThreadId::new("t1")),
+                launch: Some(serde_json::json!({"outcome":"started"})),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut parsed = crate::cli::commands::parse_argv(["ht", "retry", "local:1"]).unwrap();
+        parsed.caller_site = Some(crate::cli::caller_location::CallerLocator::Terminal {
+            socket,
+            id: "w1:p1".into(),
+        });
+        let result = try_completed_retry(
+            &parsed,
+            &journal,
+            &claim().instance,
+            Some("w1:p1"),
+            &selected_context(&journal),
+            &client,
+            &TestClock,
+            &mut output,
+        );
+        if accepted {
+            assert!(result.unwrap(), "its own core completes the retry");
+            assert!(journal.load(&reference).is_err());
+        } else {
+            assert!(
+                result.is_err(),
+                "another core's t1 is not the frozen caller"
+            );
+            assert!(journal.load(&reference).is_ok());
+        }
+    }
+}
 #[test]
 fn handoff_fenced_early_live_alias_defers_without_calls_or_refusal() {
     let (_temp, journal) = journal();

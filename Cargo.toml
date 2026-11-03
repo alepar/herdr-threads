@@ -18,9 +18,25 @@ test-support = []
 # Every target here uses `herdr_threads::test_support` (spawn, isolation,
 # history fixtures, probes), which exists only with the `test-support`
 # feature, so each needs `required-features`.
+# The fake herdr-core server as a process (src/test_support/fake_hc.rs).
+[[bin]]
+name = "fake-hc"
+path = "src/bin/fake-hc.rs"
+required-features = ["test-support"]
+
 [[test]]
 name = "combined"
 path = "tests/combined.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "hc_handoff"
+path = "tests/hc_handoff.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "hc_messaging"
+path = "tests/hc_messaging.rs"
 required-features = ["test-support"]
 
 [[test]]
@@ -54,8 +70,28 @@ path = "tests/package.rs"
 required-features = ["test-support"]
 
 [[test]]
+name = "hc_inherited_name"
+path = "tests/hc_inherited_name.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "service"
 path = "tests/service.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "named_seats"
+path = "tests/named_seats.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "config_smoke"
+path = "tests/config_smoke.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "integration_sweep"
+path = "tests/integration_sweep.rs"
 required-features = ["test-support"]
 
 [dependencies]

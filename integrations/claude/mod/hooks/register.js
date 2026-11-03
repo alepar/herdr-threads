@@ -59,7 +59,7 @@ export function frame(items) {
   const blocks = items.map((it) =>
     it.kind === 'attention'
       ? `[herdr-threads] attention ${oneLine(it.id)}:\n${indent(it.body)}`
-      : `[herdr-threads] ${it.kind === 'lazy' ? 'message' : oneLine(it.kind)} ${oneLine(it.id)} in ${label(it.thread, it.threadName)} from ${label(it.sender, it.senderName)}${markers(it)}:\n${indent(it.body)}`,
+      : `[herdr-threads] ${it.kind === 'lazy' ? 'message' : oneLine(it.kind)} ${oneLine(it.id)} in ${label(it.thread, it.threadName)} from ${it.senderLabel ? oneLine(it.senderLabel) : label(it.sender, it.senderName)}${markers(it)}:\n${indent(it.body)}`,
   )
   return `${HEADER}\n\n${blocks.join('\n\n')}`
 }
@@ -307,8 +307,11 @@ export function createCore(io) {
         void pumpLazy()
         void pump()
       } else if (o.state === 'closing' || o.state === 'refused') {
+        // A named seat or a herdr-core terminal has no pane: `no_pane` is never a reason to stop for it.
+        const named = !!(io.watchEnv?.HERDR_THREADS_SEAT_NAME || io.watchEnv?.HC_TERMINAL_ID)
         S.stopReason = o.exit === 3 &&
-          ['not_claude', 'disabled', 'replaced', 'no_pane', 'env_disabled', 'unsupported'].includes(o.reason)
+          ['not_claude', 'disabled', 'replaced', 'no_pane', 'env_disabled', 'unsupported'].includes(o.reason) &&
+          !(named && o.reason === 'no_pane')
           ? o.reason : null
         if (
           (o.state === 'refused' && o.reason === 'session_mismatch') ||
@@ -388,6 +391,7 @@ export function createCore(io) {
         threadName: o.thread_name ?? null,
         sender: o.sender ?? null,
         senderName: o.sender_name ?? null,
+        senderLabel: o.sender_label ?? null,
         author_role: o.author_role ?? null,
         relays_user: o.relays_user === true,
         user_intent: o.user_intent ?? null,
@@ -1091,11 +1095,13 @@ function rethrow(err) {
 }
 
 /** Builds the core's io from the engine interface `$`. */
-function buildIo($, ledgerFile, binName) {
+function buildIo($, ledgerFile, binName, watchEnv = null) {
   const lines = []
   let writing = Promise.resolve()
   return {
     bin: binName,
+    // The named-seat variables the watch child is given beside the inherited session environment.
+    watchEnv,
     argv: Array.isArray(LAUNCH?.argv) && LAUNCH.argv.length ? LAUNCH.argv : null,
     // The engine's validator forbids reading `$` members as values, so a missing
     // API is detected by calling: only the store can be probed without effect.
@@ -1137,7 +1143,7 @@ function buildIo($, ledgerFile, binName) {
         .catch(() => {})
     },
     spawn: (argv, cb) => {
-      const stream = guard(() => $.process.spawn({ argv }))
+      const stream = guard(() => $.process.spawn(watchEnv ? { argv, env: watchEnv } : { argv }))
       let stopped = false
       void (async () => {
         let buf = ''
@@ -1188,7 +1194,20 @@ export const register = (on) => {
     if (core) core.dispose()
     const ledgerFile = (await $.env.get('HERDR_THREADS_MOD_LEDGER')) || null
     const binName = (await $.env.get('HERDR_THREADS_BIN')) || 'herdr-threads'
-    core = createCore(buildIo($, ledgerFile, binName))
+    // A named seat (no HERDR_PANE_ID) is forwarded to the watch child explicitly, with its read-only marker.
+    const watchEnv = {}
+    const seatName = await $.env.get('HERDR_THREADS_SEAT_NAME')
+    if (seatName) watchEnv.HERDR_THREADS_SEAT_NAME = seatName
+    // A herdr-core terminal (no HERDR_PANE_ID either) is forwarded the same way: its id and core socket.
+    const terminalId = await $.env.get('HC_TERMINAL_ID')
+    const terminalSocket = await $.env.get('HC_TERMINAL_SOCKET')
+    if (terminalId) {
+      watchEnv.HC_TERMINAL_ID = terminalId
+      if (terminalSocket) watchEnv.HC_TERMINAL_SOCKET = terminalSocket
+    }
+    const seatReadonly = await $.env.get('HERDR_THREADS_SEAT_READONLY')
+    if (seatReadonly) watchEnv.HERDR_THREADS_SEAT_READONLY = seatReadonly
+    core = createCore(buildIo($, ledgerFile, binName, watchEnv.HERDR_THREADS_SEAT_NAME || watchEnv.HC_TERMINAL_ID ? watchEnv : null))
     await core.onLoad()
     timer = $.clock.every(1000, () => {
       if (core) void core.onTick()

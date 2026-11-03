@@ -30,6 +30,13 @@ use std::{
 };
 
 static CALL_ID: AtomicU64 = AtomicU64::new(1);
+/// Herdr's marker that the process runs inside one of its panes.
+pub const ENV_HERDR: &str = "HERDR_ENV";
+/// The caller's own pane id.
+pub const ENV_PANE_ID: &str = "HERDR_PANE_ID";
+/// The pane family's caller-location variables, as read by `cli::caller_location`.
+pub const ENV_VARS: &[&str] = &[ENV_HERDR, ENV_PANE_ID];
+
 /// Herdr `agent.start` errors that are checked before anything is typed.
 const CONFIRMED_PRESTART_REFUSALS: [&str; 3] = [
     "agent_pane_busy",
@@ -56,7 +63,7 @@ const PROMPT_RECHECK_MILLIS: u64 = 750;
 /// Ceiling of the wake prompt submission itself.
 const PROMPT_SUBMIT_MILLIS: u64 = 2_000;
 /// Smallest budget a wake prompt submission is started with.
-const MIN_PROMPT_MILLIS: u64 = 250;
+pub(crate) const MIN_PROMPT_MILLIS: u64 = 250;
 /// Ceiling of one composer read or composer key/text send.
 const COMPOSER_CALL_MILLIS: u64 = 750;
 /// Clears beyond one per composer line before a stash gives up.
@@ -79,7 +86,7 @@ const WAKE_BLOCK_MILLIS: u64 = 10 * 60_000;
 /// Bound on recorded blocks; expired ones are pruned first, then a new seat is not recorded.
 const MAX_WAKE_BLOCKS: usize = 1_024;
 
-struct EmptyComposerWindow {
+pub(crate) struct EmptyComposerWindow {
     target: SafeWakeTarget,
     since: u64,
     last: u64,
@@ -92,7 +99,7 @@ pub struct NativeCli {
     epoch: AtomicU64,
     /// Observation order within one (boot, epoch). Never reused by this adapter.
     sequence: AtomicU64,
-    empty_windows: Mutex<HashMap<SeatId, EmptyComposerWindow>>,
+    empty_windows: EmptyWindows,
     /// The block each seat's last wake attempt met, with when (monotonic ms) it was recorded
     /// (`HostPort::wake_block`).
     wake_blocks: Mutex<HashMap<SeatId, (WakeBlock, u64)>>,
@@ -1247,6 +1254,58 @@ impl NativeCli {
     }
 }
 
+/// The pid of the process serving the unix socket at `socket`, from the kernel's peer
+/// credentials of a fresh connection (the same source the incarnation witness records); `None`
+/// when the connection or the credentials are unavailable.
+fn socket_peer_pid(socket: &std::path::Path) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let stream =
+        crate::host::probe::connect_until(socket, Instant::now() + Duration::from_secs(1)).ok()?;
+    let fd = stream.as_raw_fd();
+    #[cfg(target_os = "linux")]
+    let pid = {
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: `cred` and `len` are valid for the size `len` states.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&raw mut cred).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0).then_some(cred.pid)?
+    };
+    #[cfg(target_os = "macos")]
+    let pid = {
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        // SAFETY: `pid` and `len` are valid for the size `len` states.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&raw mut pid).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0).then_some(pid)?
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let pid = {
+        let _ = fd;
+        return None;
+    };
+    u32::try_from(pid).ok().filter(|pid| *pid != 0)
+}
+
 impl HostPort for NativeCli {
     fn seat_labels(
         &self,
@@ -1260,6 +1319,32 @@ impl HostPort for NativeCli {
         budget: &CallBudget,
     ) -> Result<crate::host::observation::HostTopology, ApiError> {
         self.topology(budget)
+    }
+
+    fn target_root_process(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        self.check_context(context)?;
+        let raw = self.run_unfenced(
+            &["pane", "process-info", target.as_str()],
+            &context.budget,
+            Duration::from_millis(750),
+        )?;
+        Ok(serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|response| {
+                response
+                    .pointer("/result/process_info/shell_pid")
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid != 0))
+    }
+
+    fn server_process(&self) -> Option<u32> {
+        socket_peer_pid(&self.socket)
     }
 
     fn native_launch_capability(&self) -> NativeLaunchCapability {
@@ -1855,48 +1940,68 @@ fn cooperative_wake_ready(
     Ok(())
 }
 
+/// Per-seat empty-composer samples of one host.
+pub(crate) type EmptyWindows = Mutex<HashMap<SeatId, EmptyComposerWindow>>;
+
+/// Empty samples are process-local, bounded, and tied to the same target.
+/// Missing samples for over a minute restart qualification. These are
+/// screen observations, not a claim that no keyboard activity occurred.
+/// An unfocused pane is ready at once; a focused one is ready after `FOCUSED_EMPTY_MILLIS` of
+/// samples, `now` being the host's monotonic millisecond.
+pub(crate) fn focused_empty_ready(
+    windows: &EmptyWindows,
+    now: u64,
+    target: &SafeWakeTarget,
+    focused: bool,
+    previous: Option<EmptyComposerWindow>,
+) -> bool {
+    if !focused {
+        return true;
+    }
+    let mut identity = target.clone();
+    // This counter orders reads, not the identity of the composer.
+    identity.observation_sequence = 0;
+    let since = previous
+        .filter(|window| {
+            window.target == identity
+                && now >= window.last
+                && now - window.last <= FOCUSED_EMPTY_MILLIS
+        })
+        .map_or(now, |window| window.since);
+    if now.saturating_sub(since) >= FOCUSED_EMPTY_MILLIS {
+        return true;
+    }
+    let Ok(mut windows) = windows.lock() else {
+        return false;
+    };
+    windows.retain(|_, window| now >= window.last && now - window.last <= FOCUSED_EMPTY_MILLIS);
+    if windows.len() < MAX_EMPTY_WINDOWS {
+        windows.insert(
+            target.seat.clone(),
+            EmptyComposerWindow {
+                target: identity,
+                since,
+                last: now,
+            },
+        );
+    }
+    false
+}
+
 impl NativeCli {
-    /// Empty samples are process-local, bounded, and tied to the same target.
-    /// Missing samples for over a minute restart qualification. These are
-    /// screen observations, not a claim that no keyboard activity occurred.
     fn focused_empty_ready(
         &self,
         target: &SafeWakeTarget,
         focused: bool,
         previous: Option<EmptyComposerWindow>,
     ) -> bool {
-        if !focused {
-            return true;
-        }
-        let now = self.clock.monotonic_now().0;
-        let mut identity = target.clone();
-        // This counter orders reads, not the identity of the composer.
-        identity.observation_sequence = 0;
-        let since = previous
-            .filter(|window| {
-                window.target == identity
-                    && now >= window.last
-                    && now - window.last <= FOCUSED_EMPTY_MILLIS
-            })
-            .map_or(now, |window| window.since);
-        if now.saturating_sub(since) >= FOCUSED_EMPTY_MILLIS {
-            return true;
-        }
-        let Ok(mut windows) = self.empty_windows.lock() else {
-            return false;
-        };
-        windows.retain(|_, window| now >= window.last && now - window.last <= FOCUSED_EMPTY_MILLIS);
-        if windows.len() < MAX_EMPTY_WINDOWS {
-            windows.insert(
-                target.seat.clone(),
-                EmptyComposerWindow {
-                    target: identity,
-                    since,
-                    last: now,
-                },
-            );
-        }
-        false
+        focused_empty_ready(
+            &self.empty_windows,
+            self.clock.monotonic_now().0,
+            target,
+            focused,
+            previous,
+        )
     }
 
     /// Records the block a wake attempt met (`None`: the attempt got past the composer checks).
@@ -2269,9 +2374,9 @@ impl NativeCli {
         harness: Harness,
         context: &HostCallContext,
     ) -> Result<ComposerRead, ApiError> {
-        let Some(policy) = self.composer_policy(harness) else {
+        if self.composer_policy(harness).is_none() {
             return Ok(ComposerRead::Unreadable);
-        };
+        }
         let limit = composer_limit(self, context)?;
         let started = Instant::now();
         let raw = self.run_unfenced(
@@ -2294,27 +2399,21 @@ impl NativeCli {
         let text = text("text")
             .ok_or_else(|| error(ErrorCode::InvalidRequest, "composer read has no text"))?;
         self.check_after_parse_unfenced(&context.budget, started, limit)?;
-        let read = composer::read_composer_in(self.registry, harness, text, None);
-        if !policy.wants_styled(&read) {
-            return Ok(read);
-        }
-        // A failed styled read keeps the detection read; an abort still aborts.
-        Ok(self
-            .read_styled_composer(target, policy, context)?
-            .unwrap_or(read))
+        composer::read_composer_with(self.registry, harness, text, None, || {
+            self.read_styled_screen(target, context)
+        })
     }
 
     /// One bounded `agent read --source recent --format ansi` (detection
-    /// text carries no styles), composer-parsed by the policy. `Ok(None)` when
+    /// text carries no styles), parsed. `Ok(None)` when
     /// the read fails, answers another pane, source or format, or carries no
     /// parsable styles: a Herdr that ignores `format` returns plain text.
     /// Cancellation, an exhausted budget or a stale observation is an error.
-    fn read_styled_composer(
+    fn read_styled_screen(
         &self,
         target: &HostTargetId,
-        policy: &dyn ComposerPolicy,
         context: &HostCallContext,
-    ) -> Result<Option<ComposerRead>, ApiError> {
+    ) -> Result<Option<Vec<crate::harness::sgr::StyledLine>>, ApiError> {
         let limit = composer_limit(self, context)?;
         let started = Instant::now();
         let raw = match self.run_unfenced(
@@ -2347,7 +2446,7 @@ impl NativeCli {
             crate::harness::sgr::parse(text("text")?)
         })();
         self.check_after_parse_unfenced(&context.budget, started, limit)?;
-        Ok(screen.and_then(|screen| policy.read_styled(&screen, None)))
+        Ok(screen)
     }
 
     /// Clears the composer with a bounded `ctrl+u` loop until a read shows it

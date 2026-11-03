@@ -79,8 +79,10 @@ pub fn tag(command: &mut Command) -> &mut Command {
         command.env(durability, "1");
     }
     // The runner's own harness (the developer's Codex or Claude Code) is not this child's caller:
-    // its markers and session variables go (ht-54r.95), unless the test sets or removes them.
-    crate::test_support::isolation::remove_ambient_harness_env(
+    // its markers and session variables go (ht-54r.95), and so does every `SCRUBBED_PREFIXES`
+    // variable (a pane's `HERDR_*`, a herdr-core terminal's `HC_*`, a tmux client's `TMUX*`),
+    // unless the test sets or removes them.
+    crate::test_support::isolation::remove_ambient_env(
         command,
         std::env::vars_os().map(|(key, _)| key),
     );

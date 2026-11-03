@@ -1,15 +1,12 @@
 use herdr_threads::{
-    app::{SystemClock, run_elected_guarded},
+    app::{SystemClock, production_host_factory, run_elected_guarded},
     cli,
     daemon::paths::{NodePaths, RuntimeContext},
     protocol::{
         ids::HostLocator,
         time::{Cancellation, Clock},
     },
-    service::{
-        config::ServiceConfig,
-        host_sessions::{HostAttachPlan, HostFactory},
-    },
+    service::{config::ServiceConfig, host_sessions::HostAttachPlan},
 };
 use std::{
     ffi::OsString,
@@ -63,22 +60,9 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
         ),
         None => None,
     };
-    let factory_clock = Arc::clone(&clock);
     let plan = HostAttachPlan {
         hint,
-        factory: HostFactory {
-            build: Arc::new(move |locator| {
-                let host = Arc::new(herdr_threads::host::native::NativeCli::new(
-                    locator.as_path().to_path_buf(),
-                    Arc::clone(&factory_clock),
-                ));
-                (host.clone(), host)
-            }),
-            exists: Arc::new(|path| {
-                use std::os::unix::fs::FileTypeExt;
-                std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket())
-            }),
-        },
+        factory: production_host_factory(Arc::clone(&clock)),
     };
     runtime.block_on(run_elected_guarded(
         &paths,
@@ -93,6 +77,7 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
 }
 
 fn main() {
+    cli::caller::mark_process_entry();
     // Test-support builds: a test library defaults to the test fast paths;
     // this executable takes them only when its environment asks.
     #[cfg(feature = "test-support")]
@@ -118,7 +103,7 @@ fn main() {
         // default state dir, created on a node never used locally; the host stays an
         // optional attach hint.
         let resolved = cli::instance::resolve_peer_context(
-            &cli::instance::InstanceInputs::from_process(peer.state_dir, peer.host_endpoint),
+            &cli::instance::InstanceInputs::for_site(peer.state_dir, peer.host_endpoint, None),
         );
         let code = match resolved {
             Ok(context) => cli::peer::run_stdio(&context),

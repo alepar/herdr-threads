@@ -11,7 +11,7 @@ use crate::{
     protocol::{
         authority::CallerClaim,
         commands::Command,
-        ids::{OperationId, SeatId, ThreadId},
+        ids::{HostTargetId, OperationId, SeatId, ThreadId},
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
         time::Clock,
@@ -416,6 +416,34 @@ pub trait HandoffLauncher {
         recipient: &SeatId,
         gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
     ) -> Result<super::launch::LaunchReport, RunError>;
+}
+/// The launcher of a plan whose target host started the harness itself: the terminal was
+/// created running the launch-gate shim, which waits for the staged bootstrap Send and then
+/// execs the harness. There is nothing to start, only the retained "started" report (and the
+/// `gate(true)` that records a possible start) the shared pipeline needs.
+pub(crate) struct StartedByCreation;
+impl HandoffLauncher for StartedByCreation {
+    fn preflight(&mut self, _: &LaunchRequest) -> Result<SeatId, RunError> {
+        Err(super::invalid_request("a created target has no preflight"))
+    }
+    fn launch(
+        &mut self,
+        request: &LaunchRequest,
+        recipient: &SeatId,
+        gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
+    ) -> Result<super::launch::LaunchReport, RunError> {
+        gate(true)?;
+        Ok(super::launch::LaunchReport {
+            report: serde_json::json!({
+                "outcome": "started",
+                "seat": recipient,
+                "pane": request.target,
+                "harness": request.harness.as_str(),
+                "argv": request.argv,
+            }),
+            exit: 0,
+        })
+    }
 }
 pub(crate) fn progress_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
     journal
@@ -1394,7 +1422,16 @@ pub(crate) fn try_completed_retry<C: LocalClient + ?Sized, W: Write>(
                 .as_ref()
                 .is_none_or(|selector| selector.direct_id().as_ref() == Some(&claim.target))
     } else {
-        caller_pane == Some(claim.target.as_str()) && parsed.cooperative_selector.is_none()
+        // A terminal is (core socket, tN): the same `tN` of another core is not the frozen caller.
+        let host_agrees = match &parsed.caller_site {
+            Some(site @ super::caller_location::CallerLocator::Terminal { .. }) => {
+                site.site().claim_host_locator() == Some(claim.host.as_str())
+            }
+            _ => true,
+        };
+        caller_pane == Some(claim.target.as_str())
+            && host_agrees
+            && parsed.cooperative_selector.is_none()
     };
     if !selected {
         return Err(super::invalid_request(
@@ -1814,6 +1851,29 @@ pub(crate) mod summary_prompt {
         out.push_str(END);
         out
     }
+
+    /// The startup prompt of a plan that creates its target before the thread exists (V3): it
+    /// names no thread, because the harness argv is frozen at creation and the handoff
+    /// arrives by ordinary delivery. 79 bytes plus the summary and the command with a
+    /// summary, 76 plus the command without one; never longer than [`render`].
+    pub(crate) fn render_thread_free(
+        summary: Option<&str>,
+        context: &ContinuationContext,
+    ) -> String {
+        let mut out = String::from(LEAD);
+        match summary {
+            Some(summary) => {
+                out.push_str(summary);
+                out.push_str(" (full task arrives as a herdr-threads message; if not shown, run `");
+            }
+            None => {
+                out.push_str("full task arrives as a herdr-threads message; if not shown, run `")
+            }
+        }
+        super::bootstrap_v1::fallback_inbox(context, &mut out);
+        out.push_str(if summary.is_some() { "`)." } else { "`." });
+        out
+    }
 }
 
 /// Stderr hint for a launching handoff without a usable summary: no `--summary` and no `--goal`
@@ -2020,10 +2080,11 @@ fn report_core(
     declaration: Result<Option<&'static str>, ApiError>,
 ) -> serde_json::Value {
     let prefix = super::hook::cli_prefix(&plan.context);
-    let mut retry = vec![
-        "env".into(),
-        format!("HERDR_PANE_ID={}", claim.target.as_str()),
-    ];
+    let mut retry = vec!["env".to_owned()];
+    retry.extend(super::caller_location::claim_recovery_env(
+        &claim.host,
+        claim.target.as_str(),
+    ));
     retry.extend(prefix.clone());
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let mut inspect = prefix.clone();
@@ -2297,6 +2358,31 @@ fn retry_automatic_live<C: LocalClient + ?Sized, W: Write>(
     Ok(true)
 }
 /// Called only after the shared caller mapping/context checks in run_selected.
+/// M11: a handoff whose launch target names a live named seat is refused before anything is
+/// created. The host's own answer decides (`named::NATIVE_LAUNCH`); a target that is no seat name
+/// or names no named seat is left to the Herdr launch as before.
+fn refuse_named_target<C: LocalClient + ?Sized>(
+    client: &C,
+    output: &crate::protocol::output::OutputSpec,
+    target: &HostTargetId,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    use crate::{host::named, ports::NativeLaunchCapability, protocol::ids::SeatName};
+    let Ok(name) = SeatName::parse(target.as_str()) else {
+        return Ok(());
+    };
+    if named::NATIVE_LAUNCH != NativeLaunchCapability::Unsupported {
+        return Ok(());
+    }
+    let locator =
+        crate::protocol::ids::HostLocator::parse(crate::protocol::ids::NAMED_HOST_LOCATOR)
+            .expect("the reserved locator parses");
+    if super::pane_seat_on(client, output, target, Some(locator), clock)?.is_some() {
+        return Err(super::invalid_request(&named::handoff_into_refusal(&name)));
+    }
+    Ok(())
+}
+
 pub(crate) fn run<W: Write>(
     parsed: super::commands::ParsedCli,
     claim: CallerClaim,
@@ -2336,9 +2422,10 @@ pub(crate) fn run<W: Write>(
             );
         }
     }
-    let mut env = super::setup::SetupEnv::from_process(&parsed.output)?;
+    let mut env =
+        super::setup::SetupEnv::from_process(&parsed.output, parsed.caller_site.as_ref())?;
     let (runtime, _) =
-        super::instance::resolve_context(&super::instance::InstanceInputs::from_process(
+        super::instance::resolve_context(&super::instance::InstanceInputs::for_site(
             parsed
                 .output
                 .context
@@ -2351,9 +2438,14 @@ pub(crate) fn run<W: Write>(
                 .host
                 .as_ref()
                 .map(std::path::PathBuf::from),
+            parsed.caller_site.as_ref(),
         ))?;
     env.state_dir = Some(runtime.state_dir.clone());
-    let claim_host = runtime.require_host()?.to_path_buf();
+    let claim_host = super::topology_runtime::herdr_endpoint(
+        &runtime,
+        &parsed.output,
+        parsed.caller_site.as_ref(),
+    )?;
     env.host_endpoint = Some(claim_host.clone());
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(runtime.state_dir.display().to_string());
@@ -2363,12 +2455,17 @@ pub(crate) fn run<W: Write>(
         state_dir: runtime.state_dir.clone(),
         host_endpoint: claim_host.clone(),
     };
-    let host = crate::host::native::NativeCli::new(claim_host, Arc::clone(&clock));
+    let herdr_locator = crate::protocol::ids::HostLocator::parse(claim_host.to_string_lossy())
+        .map_err(|detail| super::invalid_request(&detail.detail))?;
+    let handle = super::host_client::LaunchHandle::herdr(claim_host, Arc::clone(&clock));
+    let host = handle.host()?;
     let seats = super::launch::DaemonSeatResolver::new(
         &client,
         journal,
         instance,
-        runtime.claim_host()?,
+        // The recipient's seat lives on the Herdr server the target is created on: the same
+        // locator a Pane caller's claim host has, and the Herdr endpoint for a named caller.
+        herdr_locator,
         clock.as_ref(),
     );
     let shell = super::launch::SystemShellProbe::from_process();
@@ -2376,7 +2473,7 @@ pub(crate) fn run<W: Write>(
         registry: crate::harness::registry::builtins(),
         parts: super::launch::LaunchParts {
             env: &env,
-            host: &host,
+            host,
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),
@@ -2386,6 +2483,12 @@ pub(crate) fn run<W: Write>(
     };
     match parsed.action {
         super::commands::CliAction::Handoff(mut request) => {
+            refuse_named_target(
+                &client,
+                &parsed.output,
+                &request.launch.target,
+                clock.as_ref(),
+            )?;
             let labels = host
                 .seat_labels(&super::cooperative_budget(clock.as_ref()))
                 .unwrap_or_default();
@@ -2455,6 +2558,10 @@ pub(crate) fn run<W: Write>(
 #[cfg(test)]
 #[path = "../../tests/cli/handoff.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/cli/named_handoff.rs"]
+mod named_tests;
 
 /// Hash the exact generated JSON without retaining a second diagnostic buffer.
 pub(crate) fn automatic_summary(report: &serde_json::Value) -> io::Result<serde_json::Value> {

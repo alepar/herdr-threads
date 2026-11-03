@@ -1,0 +1,54 @@
+heavy: slot 2 acquired 01:05:24
+   Compiling herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.30)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 02s
+     Running tests/combined.rs (target/debug/deps/combined-afbb63e80cd145ba)
+
+running 10 tests
+test cli_env_read_scan::matcher_fails_on_a_planted_literal ... ok
+test host_neutral_scan::matcher_reports_env_literal_in_receipts ... ok
+test host_neutral_scan::matcher_permits_the_implemented_set_comments_and_io_errors ... ok
+test host_neutral_scan::allowlist_rejects_entries_over_neutral_modules ... ok
+test host_neutral_scan::matcher_reports_kind_on_host_receivers ... ok
+test host_neutral_scan::symbol_entry_exempts_only_its_item ... ok
+test host_neutral_scan::matcher_reports_host_kind_in_delivery ... ok
+test host_neutral_scan::allowlist_is_well_formed_and_every_entry_resolves ... ok
+test cli_env_read_scan::only_caller_location_reads_caller_env ... ok
+test host_neutral_scan::src_names_no_host_kind_or_host_env_outside_the_allowlist ... FAILED
+
+failures:
+
+---- host_neutral_scan::src_names_no_host_kind_or_host_env_outside_the_allowlist stdout ----
+
+thread 'host_neutral_scan::src_names_no_host_kind_or_host_env_outside_the_allowlist' (1178491) panicked at tests/host_neutral_scan.rs:368:5:
+src/app.rs:2049: let host_id = host_sessions.reserve_host_id(&locator, crate::ports::HostKind::Named)?;
+src/host/named.rs:29: pub const ENV_SEAT_NAME: &str = "HERDR_THREADS_SEAT_NAME";
+src/host/named.rs:31: pub const ENV_SEAT_READONLY: &str = "HERDR_THREADS_SEAT_READONLY";
+src/host/named.rs:164: HostKind::Named
+src/host/probe.rs:45: return Ok(HostKind::Hc);
+src/host/probe.rs:48: Ok(reply) if reply["result"]["type"] == "pong" => Ok(HostKind::Herdr),
+src/host/target_creator.rs:33: HostKind::Hc => {
+src/host/target_creator.rs:40: kind: HostKind::Hc,
+src/main.rs:71: herdr_threads::ports::HostKind::Hc => {
+src/service/host_sessions.rs:743: port.kind(),
+src/service/host_sessions.rs:1312: .unwrap_or(Some(HostKind::Herdr))
+src/service/host_sessions.rs:1748: .insert("/hc/core.sock".into(), Some(HostKind::Hc));
+src/service/host_sessions.rs:1753: assert_eq!(*rig.world.built_kinds.lock().unwrap(), vec![HostKind::Hc]);
+src/service/host_sessions.rs:1798: .insert("/herdr/a.sock".into(), Some(HostKind::Hc));
+src/store/hosts.rs:51: self.host_kind().is_implemented() && self.host_kind() != HostKind::Named
+src/store/hosts.rs:319: let (id, epoch) = attach_host(&mut db, &a, 100, HostKind::Herdr).unwrap();
+src/store/hosts.rs:326: let (again, epoch) = attach_host(&mut db, &a, 250, HostKind::Herdr).unwrap();
+src/store/hosts.rs:342: let (a, _) = attach_host(&mut db, &loc("/run/a.sock"), 10, HostKind::Herdr).unwrap();
+src/store/hosts.rs:343: let (b, _) = attach_host(&mut db, &loc("/run/b.sock"), 20, HostKind::Herdr).unwrap();
+src/store/hosts.rs:344: let (c, _) = attach_host(&mut db, &loc("/run/c.sock"), 30, HostKind::Herdr).unwrap();
+src/store/hosts.rs:345: attach_host(&mut db, &loc("/run/a.sock"), 40, HostKind::Herdr).unwrap();
+src/test_support/fake_hosts.rs:93: probe: Arc::new(|_, _| Ok(crate::ports::HostKind::Herdr)),
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    host_neutral_scan::src_names_no_host_kind_or_host_env_outside_the_allowlist
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 1230 filtered out; finished in 0.42s
+
+error: test failed, to rerun pass `--test combined`
+exit 101

@@ -1,0 +1,17 @@
+heavy: slot 1 acquired 07:55:21
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/combined.rs (target/debug/deps/combined-afbb63e80cd145ba)
+
+running 9 tests
+test host_neutral_scan::allowlist_rejects_entries_over_neutral_modules ... ok
+test host_neutral_scan::matcher_reports_kind_on_host_receivers ... ok
+test host_neutral_scan::matcher_reports_env_literal_in_receipts ... ok
+test host_neutral_scan::matcher_permits_the_implemented_set_comments_and_io_errors ... ok
+test host_neutral_scan::matcher_reports_host_kind_in_delivery ... ok
+test host_neutral_scan::mod_entry_exempts_only_its_module ... ok
+test host_neutral_scan::symbol_entry_exempts_only_its_item ... ok
+test host_neutral_scan::allowlist_is_well_formed_and_every_entry_resolves ... ok
+test host_neutral_scan::src_names_no_host_kind_or_host_env_outside_the_allowlist ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 1265 filtered out; finished in 0.44s
+

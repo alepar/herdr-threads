@@ -7145,3 +7145,312 @@ mod bytes_first {
         assert!(message.contains("CHECK constraint failed"), "{message}");
     }
 }
+
+fn delta_0013_index() -> usize {
+    schema::NODE_DELTAS
+        .iter()
+        .position(|delta| delta.sql.contains("herdr_hosts_one_named"))
+        .expect("the 0013 host environments delta is registered")
+}
+
+fn column(db: &Connection, table: &str, name: &str) -> Option<(String, bool, Option<String>)> {
+    db.query_row(
+        "SELECT type,\"notnull\",dflt_value FROM pragma_table_info(?1) WHERE name=?2",
+        [table, name],
+        |r| Ok((r.get(0)?, r.get::<_, i64>(1)? == 1, r.get(2)?)),
+    )
+    .optional()
+    .unwrap()
+}
+
+fn index_sql(db: &Connection, name: &str) -> Option<String> {
+    db.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+        [name],
+        |r| r.get(0),
+    )
+    .optional()
+    .unwrap()
+}
+
+fn host_seat_row(db: &Connection, id: &str, host: i64, state: &str, name: Option<&str>) {
+    let retired = if state == "retired" { "1" } else { "NULL" };
+    db.execute(
+        &format!(
+            "INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id,name) \
+             VALUES (?1,(SELECT id FROM local_node),?2,'native',1,0,{retired},{retired},(SELECT id FROM local_node),1,?3,?4)"
+        ),
+        params![id, state, host, name],
+    )
+    .unwrap();
+}
+
+#[test]
+fn delta_0013_applies_on_populated_store() {
+    let db = Connection::open_in_memory().unwrap();
+    let before = &schema::NODE_DELTAS[..delta_0013_index()];
+    open_with(&db, before).unwrap();
+    assert_eq!(user_version(&db), 12);
+    crate::test_support::attach_test_host_to_connection(&db);
+    db.execute_batch(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id)
+         VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
+         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at)
+         VALUES ('s',4,1,'p','b',1,'codex','sess','exec','cooperative_top_level',5,5);",
+    )
+    .unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
+    let host: (String, Option<i64>) = db
+        .query_row("SELECT kind,kind_probed_at FROM herdr_hosts", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(host, ("herdr".to_owned(), None));
+    let seat: Option<String> = db
+        .query_row("SELECT name FROM seats WHERE id='s'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(seat, None);
+    let binding: (Option<String>, i64) = db
+        .query_row(
+            "SELECT locator_hint,readonly FROM occupant_bindings WHERE seat_id='s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(binding, (None, 0));
+    schema::verify_baseline(&db).unwrap();
+}
+
+#[test]
+fn delta_0013_columns_indexes_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    assert_eq!(
+        column(&db, "herdr_hosts", "kind"),
+        Some(("TEXT".into(), true, Some("'herdr'".into())))
+    );
+    assert_eq!(
+        column(&db, "herdr_hosts", "kind_probed_at"),
+        Some(("INTEGER".into(), false, None))
+    );
+    assert_eq!(
+        column(&db, "seats", "name"),
+        Some(("TEXT".into(), false, None))
+    );
+    assert_eq!(
+        column(&db, "occupant_bindings", "locator_hint"),
+        Some(("TEXT".into(), false, None))
+    );
+    assert_eq!(
+        column(&db, "occupant_bindings", "readonly"),
+        Some(("INTEGER".into(), true, Some("0".into())))
+    );
+    // `kind` carries no CHECK: an unknown kind is stored, validated in code.
+    let table_sql: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='herdr_hosts'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!table_sql.contains("kind IN"), "{table_sql}");
+    let one_named = index_sql(&db, "herdr_hosts_one_named").unwrap();
+    assert!(one_named.contains("UNIQUE") && one_named.contains("herdr_hosts(kind)"));
+    assert!(one_named.contains("WHERE kind = 'named'"), "{one_named}");
+    let live_name = index_sql(&db, "seats_live_name").unwrap();
+    assert!(live_name.contains("UNIQUE") && live_name.contains("seats(host_id, name)"));
+    assert!(
+        live_name.contains("name IS NOT NULL AND is_local = 1 AND state <> 'retired'"),
+        "{live_name}"
+    );
+    assert!(table_exists(&db, "no_wake_reports"));
+    let pk: Vec<(String, i64)> = db
+        .prepare("SELECT name,pk FROM pragma_table_info('no_wake_reports') ORDER BY cid")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        pk,
+        vec![("observer".to_owned(), 1), ("seat_id".to_owned(), 2)]
+    );
+}
+
+#[test]
+fn delta_0013_indexes_enforce_their_scope() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
+    let host: i64 = db
+        .query_row("SELECT min(host_id) FROM herdr_hosts", [], |r| r.get(0))
+        .unwrap();
+    // One 'named' host at most; any number of other kinds.
+    let insert_host = |endpoint: &str, kind: &str| {
+        db.execute(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at,kind) VALUES ((SELECT id FROM local_node),?1,0,?2)",
+            [endpoint, kind],
+        )
+    };
+    insert_host("/a.sock", "named").unwrap();
+    assert!(insert_host("/b.sock", "named").is_err());
+    insert_host("/c.sock", "future").unwrap();
+    insert_host("/d.sock", "future").unwrap();
+    // A live name is unique per host, unresolved rows included; retired rows free it.
+    host_seat_row(&db, "a", host, "resolved", Some("reviewer"));
+    let dup = db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id,name)
+         VALUES ('b',(SELECT id FROM local_node),'unresolved','native',1,0,(SELECT id FROM local_node),1,?1,'reviewer')",
+        [host],
+    );
+    assert!(
+        dup.is_err(),
+        "unresolved row must conflict on the live name"
+    );
+    host_seat_row(&db, "c", host, "resolved", None);
+    host_seat_row(&db, "d", host, "resolved", None);
+    db.execute(
+        "UPDATE seats SET state='retired',retired_at=1,retired_seq=1 WHERE id='a'",
+        [],
+    )
+    .unwrap();
+    host_seat_row(&db, "e", host, "resolved", Some("reviewer"));
+}
+
+#[test]
+fn seats_name_check_sample() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
+    let host: i64 = db
+        .query_row("SELECT min(host_id) FROM herdr_hosts", [], |r| r.get(0))
+        .unwrap();
+    let mut n = 0;
+    let mut accepts = |name: &str| {
+        n += 1;
+        db.execute(
+            "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id,name)
+             VALUES (?1,(SELECT id FROM local_node),'resolved','native',1,0,(SELECT id FROM local_node),1,?2,?3)",
+            params![format!("seat{n}"), host, name],
+        )
+        .is_ok()
+    };
+    for good in ["reviewer", "a.b-c_1", &"a".repeat(64)] {
+        assert!(accepts(good), "{good} must pass the CHECK");
+    }
+    // The CHECK is a superset of the grammar: the leading `-`/`.` and seat-id
+    // shaped rules are validated in code (`SeatName::parse`, phase N), so the
+    // CHECK admits them; it rejects what no grammar could allow.
+    for superset in ["-x", ".x"] {
+        assert!(accepts(superset), "{superset} is the code's to refuse");
+    }
+    for bad in ["", &"a".repeat(65), "a b", "a/b", "é", "a\nb"] {
+        assert!(!accepts(bad), "{bad:?} must fail the CHECK");
+    }
+}
+
+const RAW: &str = "x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'";
+
+/// A store at schema version 12 (every delta before 0013).
+pub(super) fn store_before_0013() -> Connection {
+    let db = Connection::open_in_memory().unwrap();
+    let before: Vec<schema::NodeDelta> = schema::NODE_DELTAS
+        .iter()
+        .filter(|d| d.version < 13)
+        .copied()
+        .collect();
+    assert_eq!(before.len() + 1, 12);
+    open_with(&db, &before).unwrap();
+    assert_eq!(user_version(&db), 12);
+    db
+}
+
+/// A remote seat row (version 12 shape) and, when `payload` is given, its `seat.created` journal row.
+pub(super) fn remote_with_created(db: &Connection, seat: &str, payload: Option<&[u8]>) {
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+         VALUES (?1,(SELECT id FROM local_node),'remote','native',0,0,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',0,'agent',1)",
+        [seat],
+    )
+    .unwrap();
+    let Some(payload) = payload else { return };
+    db.execute_batch(
+        "INSERT OR IGNORE INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
+         VALUES (1,printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0)",
+    )
+    .unwrap();
+    db.execute(
+        &format!(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,ingested_at,apply_state,raw) \
+             VALUES (1,(SELECT coalesce(max(counter),0)+1 FROM journal),zeroblob(32),zeroblob(32),0,'seat.created',1,x'',?1,?2,zeroblob(64),0,'pending',{RAW})"
+        ),
+        rusqlite::params![seat, payload],
+    )
+    .unwrap();
+}
+
+// Kills: a 0013 without the backfill (a valid name stays NULL), a backfill that copies an invalid
+// value (the CHECK aborts the migration, or a leading dot survives), one that rewrites a local
+// row, and one that aborts on a non-JSON payload.
+#[test]
+fn delta_0013_backfills_remote_seat_names() {
+    let db = store_before_0013();
+    let long = format!(r#"{{"display_name":"{}"}}"#, "a".repeat(65));
+    let cases: [(&str, Option<&[u8]>); 8] = [
+        ("valid", Some(br#"{"display_name":"reviewer.1"}"#)),
+        ("space", Some(br#"{"display_name":"bad name"}"#)),
+        ("dot", Some(br#"{"display_name":".hidden"}"#)),
+        ("dash", Some(br#"{"display_name":"-x"}"#)),
+        ("long", Some(long.as_bytes())),
+        ("nullname", Some(br#"{"display_name":null}"#)),
+        ("junk", Some(b"\xff not json")),
+        ("nojournal", None),
+    ];
+    for (seat, payload) in &cases {
+        remote_with_created(&db, seat, *payload);
+    }
+    db.execute(
+        "INSERT INTO herdr_hosts(node_id,endpoint,created_at) SELECT id,'/h.sock',0 FROM local_node",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) \
+         VALUES ('localseat',(SELECT id FROM local_node),'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        &format!(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,ingested_at,apply_state,raw) \
+             VALUES (1,100,zeroblob(32),zeroblob(32),0,'seat.created',1,x'','localseat',?1,zeroblob(64),0,'pending',{RAW})"
+        ),
+        [br#"{"display_name":"mine"}"#.as_slice()],
+    )
+    .unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
+    let name = |seat: &str| -> Option<String> {
+        db.query_row("SELECT name FROM seats WHERE id=?1", [seat], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(name("valid").as_deref(), Some("reviewer.1"));
+    // The name is what a read of the remote seat shows after the upgrade.
+    let entry = crate::store::seat_directory::directory(&db, "valid", UtcMillis(100))
+        .unwrap()
+        .expect("a remote seat has an entry");
+    assert_eq!(entry.name.as_deref(), Some("reviewer.1"));
+    for seat in [
+        "space",
+        "dot",
+        "dash",
+        "long",
+        "nullname",
+        "junk",
+        "nojournal",
+        "localseat",
+    ] {
+        assert_eq!(name(seat), None, "{seat}");
+    }
+}

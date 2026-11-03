@@ -508,6 +508,38 @@ impl Cluster {
         self.start_store_only(node);
     }
 
+    /// Restarts `node`'s daemon with the server on `endpoint` (a herdr-core socket, say) as
+    /// its startup host, and waits until its `herdr_hosts` holds a row.
+    pub fn restart_with_host(&mut self, node: usize, endpoint: &Path) {
+        self.stop_node(node);
+        let output = self
+            .iso
+            .command(&self.bin)
+            .envs(self.nodes[node].env.iter().map(|(k, v)| (k, v)))
+            .arg("--state-dir")
+            .arg(&self.nodes[node].state)
+            .arg("--host-endpoint")
+            .arg(endpoint)
+            .args(["daemon", "ensure"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "daemon ensure of node {}: {output:?}",
+            self.nodes[node].name
+        );
+        self.nodes[node].up = true;
+        let _ = fs::remove_file(self.down_flag(node));
+        self.wait_until(
+            &format!("node {} to attach its host", self.nodes[node].name),
+            Duration::from_secs(60),
+            || {
+                self.scalar(node, "SELECT count(*) FROM herdr_hosts", &[])
+                    .filter(|n| n != "0")
+            },
+        );
+    }
+
     /// Starts `node`'s daemon the way a peer does: a `peer --stdio` pump
     /// ensures it (store-only, no Herdr server attached), prints the preamble
     /// and is let go.
@@ -818,11 +850,18 @@ impl Cluster {
         harness: &'static str,
         process: &str,
     ) -> Seat {
-        self.seat_with_process(node, 0, pane, harness, Some(process))
+        self.seat_with_process(node, 0, pane, harness, Some(process), None)
+    }
+
+    /// [`Cluster::seat`] whose seat carries `name` (`seats.name`) before its first enrollment,
+    /// so the `seat.created` it publishes carries the name as `display_name`. The CLI's named
+    /// allocation is not reachable through a cluster node's pane flags; this stands in for it.
+    pub fn named_seat(&self, node: usize, pane: &str, name: &str) -> Seat {
+        self.seat_with_process(node, 0, pane, "claude", None, Some(name))
     }
 
     fn seat_with(&self, node: usize, host: usize, pane: &str, harness: &'static str) -> Seat {
-        self.seat_with_process(node, host, pane, harness, None)
+        self.seat_with_process(node, host, pane, harness, None, None)
     }
 
     fn seat_with_process(
@@ -832,6 +871,7 @@ impl Cluster {
         pane: &str,
         harness: &'static str,
         process: Option<&str>,
+        name: Option<&str>,
     ) -> Seat {
         let probe = Seat {
             id: String::new(),
@@ -849,6 +889,14 @@ impl Cluster {
             "seat resolve {pane} on node {node}: {stderr}{value}"
         );
         let id = value["result"]["data"].clone();
+        if let Some(name) = name {
+            let id = id.as_str().expect("a seat id");
+            let changed = self.write_sql(
+                node,
+                &format!("UPDATE seats SET name='{name}' WHERE id='{id}' AND published=0"),
+            );
+            assert_eq!(changed, 1, "name the unpublished seat {id}");
+        }
         let session =
             crate::test_support::fake_herdr::session_of(self.host_at(node, host).label(), pane);
         let seat = Seat {

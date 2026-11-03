@@ -116,14 +116,20 @@ fn pane_env_wins_over_installed_host_and_not_foreign() {
     assert_eq!(
         foreign_session(&HookEnv {
             herdr_env: true,
-            pane: None
+            pane: None,
+            ambiguous: None,
+            named: None,
+            caller: Default::default(),
         }),
         Some("HERDR_PANE_ID missing")
     );
     assert_eq!(
         foreign_session(&HookEnv {
             herdr_env: false,
-            pane: Some("w1:p1".into())
+            pane: Some("w1:p1".into()),
+            ambiguous: None,
+            named: None,
+            caller: Default::default(),
         }),
         Some("not running inside a Herdr pane")
     );
@@ -175,7 +181,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
                 settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
                 registered("PreToolUse")
             );
-            assert_eq!(plan.owned.len(), 5);
+            assert_eq!(plan.owned.len(), 7);
             plan.owned
         } else {
             let codex = crate::harness::codex::setup::plan_codex_for_version(
@@ -1992,6 +1998,9 @@ fn herdr() -> HookEnv {
     HookEnv {
         herdr_env: true,
         pane: Some("w9:p1".into()),
+        ambiguous: None,
+        named: None,
+        caller: Default::default(),
     }
 }
 
@@ -2004,10 +2013,16 @@ fn hook_parse_error_outside_herdr_is_quiet() {
     let outside = HookEnv {
         herdr_env: false,
         pane: None,
+        ambiguous: None,
+        named: None,
+        caller: Default::default(),
     };
     let no_pane = HookEnv {
         herdr_env: true,
         pane: None,
+        ambiguous: None,
+        named: None,
+        caller: Default::default(),
     };
     for env in [&outside, &no_pane] {
         assert_eq!(
@@ -2044,7 +2059,7 @@ fn unknown_payload_and_non_herdr_process_are_quiet() {
     let deadline = Instant::now() + TOOL_BUDGET;
     for payload in [
         &b"not json"[..],
-        br#"{"hook_event_name":"Stop","session_id":"s"}"#,
+        br#"{"hook_event_name":"Notification","session_id":"s"}"#,
     ] {
         let outcome = run_hook(
             &args(&root),
@@ -2068,6 +2083,9 @@ fn unknown_payload_and_non_herdr_process_are_quiet() {
         HookEnv {
             herdr_env: true,
             pane: None,
+            ambiguous: None,
+            named: None,
+            caller: Default::default(),
         },
     ] {
         let outcome = run_hook(
@@ -2161,7 +2179,10 @@ fn unavailable_daemon_is_reported_only_for_top_level_lifecycle() {
     // the pane would not detect (pane agents do not inherit
     // HERDR_PLUGIN_STATE_DIR). The host endpoint is repeated only when the
     // pane's HERDR_SOCKET_PATH would not reach it by itself.
-    let diagnose = diagnose_argv(&args(&root), &pane_inputs());
+    let diagnose = diagnose_argv(
+        &args(&root),
+        &pane_inputs(&crate::cli::caller_location::CallerEnv::default()),
+    );
     assert_eq!(diagnose[1], "--state-dir");
     assert!(diagnose[2].ends_with("/state"), "{diagnose:?}");
     assert!(diagnose.ends_with(&["daemon".into(), "health".into()]));
@@ -2861,6 +2882,7 @@ mod pane_seat_selection {
         let located = locate_seat_for(
             Harness::Codex,
             &Seats(seats),
+            &HookEnv::default(),
             &herdr.context,
             &mut target,
             Instant::now() + Duration::from_secs(5),
@@ -3079,6 +3101,9 @@ mod parse_failure_report {
         let env = HookEnv {
             herdr_env: true,
             pane: Some("w1:p1".into()),
+            ambiguous: None,
+            named: None,
+            caller: Default::default(),
         };
         let outcome = run_hook(
             &args,
@@ -3325,6 +3350,7 @@ mod continuity_gate {
                 clock: clock(),
                 retry,
                 turn_end: false,
+                caller: Default::default(),
             }
         }
         fn saved_context(&self, seat: &str) -> Option<OccupantContext> {
@@ -4428,6 +4454,10 @@ mod continuity_gate {
                 | ErrorCode::SequenceExhausted
                 // The reattachment request carries no fingerprint: an identical retry repeats it.
                 | ErrorCode::LivenessFingerprintRequired
+                // M7: the live holder keeps the name until it exits; an identical retry repeats it.
+                | ErrorCode::SeatNameInUse
+                // M6: the server's own name stays refused until it is restarted without it.
+                | ErrorCode::InheritedSeatName
                 // A deterministic rejection on this branch's retry path
                 // (ht-p03): identical retry repeats it.
                 | ErrorCode::StaleRequirementAcceptance => true,
@@ -6042,6 +6072,7 @@ mod mod_channel_live {
                 clock: clock(),
                 retry: Arc::new(Window),
                 turn_end: false,
+                caller: Default::default(),
             }
         }
     }
@@ -7408,6 +7439,9 @@ mod enum_callback {
             &HookEnv {
                 herdr_env: true,
                 pane: None,
+                ambiguous: None,
+                named: None,
+                caller: Default::default(),
             },
             Instant::now() + TOOL_BUDGET,
             clock(),
@@ -9386,6 +9420,7 @@ mod registered_resume {
             clock: clock(),
             retry: Arc::new(HookDeadline(Instant::now() + TOOL_BUDGET)),
             turn_end: false,
+            caller: Default::default(),
         };
         let ev = LifecycleEvent {
             harness: Harness::Human,
@@ -9664,6 +9699,7 @@ mod registered_resume {
         let f = Fixture::new(true);
         let lazy = |id: &str, body: &str, end: usize| {
             crate::protocol::results::InboxBatchV2Item::LazyMessage {
+                sender_label: None,
                 priority: None,
                 thread: crate::protocol::ids::ThreadId::new("t-hermes"),
                 topic_data: "hermes topic".into(),
@@ -9902,6 +9938,9 @@ mod registered_resume {
                     &HookEnv {
                         herdr_env: true,
                         pane: Some("w9:p2".into()),
+                        ambiguous: None,
+                        named: None,
+                        caller: Default::default(),
                     },
                     Instant::now() + LIFECYCLE_BUDGET,
                     Arc::new(SystemClock::new()),
@@ -10848,6 +10887,9 @@ mod registered_resume {
         let outside = HookEnv {
             herdr_env: false,
             pane: None,
+            ambiguous: None,
+            named: None,
+            caller: Default::default(),
         };
         for input in [
             hermes_cli_start("cli-a", 1),
@@ -11286,6 +11328,7 @@ fn watch_continuity_sends_nothing_to_an_older_daemon() {
         crate::protocol::authority::Harness::Claude,
         "sess-1",
         clock,
+        Default::default(),
     ));
     let sent = client.0.lock().unwrap();
     assert!(
@@ -11295,4 +11338,862 @@ fn watch_continuity_sends_nothing_to_an_older_daemon() {
         "{sent:?}"
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+// -- two-family caller guard (ht-kqrt.11 F8, ht-kqrt.46 H1) --------------
+
+mod two_family_guard {
+    use super::*;
+    use crate::cli::caller_guard::{Guard, Refusal, cli_pane, verify};
+    use crate::cli::caller_location::CallerEnv;
+    use crate::cli::caller_location::M17;
+    use crate::host::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV, native};
+    use crate::protocol::results::CommandResult;
+    use crate::service::locate::{
+        LocateCallerService,
+        tests::{Roots, tree},
+    };
+    use crate::test_support::counting_client::{CallKind, CountingLocalClient, DaemonVintage};
+
+    fn budget() -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(u64::MAX / 2),
+            cancellation: Cancellation::default(),
+        }
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> CallerEnv {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        CallerEnv::from_lookup(move |name| {
+            owned
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| OsString::from(v))
+        })
+    }
+
+    fn both() -> CallerEnv {
+        env(&[
+            (native::ENV_PANE_ID, "w1:p1"),
+            (HC_TERMINAL_ID_ENV, "t3"),
+            (HC_TERMINAL_SOCKET_ENV, "/hc.sock"),
+        ])
+    }
+
+    /// A daemon whose `LocateCaller` runs the real service over a fake process tree
+    /// (hook subject pid 30 under pane shell 10, the terminal's root 20 nearer still) and one
+    /// fake Herdr host with the given pane root.
+    fn daemon(root: Option<u32>) -> (CountingLocalClient, Arc<LocateCallerService>) {
+        daemon_with(vec![Roots::port(vec![("w1:p1", Ok(root))])])
+    }
+
+    fn daemon_with(
+        hosts: Vec<Arc<dyn crate::ports::HostPort>>,
+    ) -> (CountingLocalClient, Arc<LocateCallerService>) {
+        let service = Arc::new(LocateCallerService::new(tree()));
+        let serving = Arc::clone(&service);
+        let client = CountingLocalClient::scripted(
+            move |command| match command {
+                Command::LocateCaller(request) => Ok(CommandResult::Located(serving.locate(
+                    request,
+                    Some(30),
+                    &hosts,
+                    &|_| {
+                        hosts
+                            .iter()
+                            .find(|host| host.answers_terminal_ids())
+                            .cloned()
+                            .ok_or_else(|| {
+                                crate::protocol::results::ApiError::unsupported("no core")
+                            })
+                    },
+                    &budget(),
+                ))),
+                other => panic!("unexpected command {other:?}"),
+            },
+            DaemonVintage::Current,
+        );
+        (client, service)
+    }
+
+    const M4: &str = "herdr-threads: env names pane w1:p1 and terminal hc:t3; neither is an ancestor of this process; unset the stale one";
+
+    // Kills: a guard that binds the pane whenever it is named (the pre-F behaviour), one that
+    // refuses a pane that does verify, a family ranking instead of the nearest ancestor, and a
+    // verified terminal that still binds the pane.
+    #[test]
+    fn both_families_follow_the_nearest_ancestor() {
+        let mut printed = Vec::new();
+        let (verifying, _) = daemon(Some(10));
+        let pane = cli_pane(
+            &both(),
+            |c| verify(&verifying, c, &budget()),
+            |line| printed.push(line.to_owned()),
+        );
+        assert_eq!(pane.as_deref(), Some("w1:p1"));
+        assert!(printed.is_empty());
+        assert_eq!(verifying.calls(CallKind::LocateCaller), 1);
+
+        // The terminal's root (20) is nearer than the pane's shell (10): the terminal wins, so
+        // no pane binds, and nothing is refused.
+        let (terminal_wins, _) = daemon_with(vec![
+            Roots::port(vec![("w1:p1", Ok(Some(10)))]),
+            Roots::hc_port(vec![("t3", Ok(Some(20)))]),
+        ]);
+        let pane = cli_pane(
+            &both(),
+            |c| verify(&terminal_wins, c, &budget()),
+            |line| printed.push(line.to_owned()),
+        );
+        assert_eq!(pane, None);
+        assert!(printed.is_empty(), "{printed:?}");
+
+        // Neither root is an ancestor (a stale HERDR_PANE_ID inside a stale hc terminal): M4.
+        let (stale, _) = daemon_with(vec![
+            Roots::port(vec![("w1:p1", Ok(Some(99)))]),
+            Roots::hc_port(vec![("t3", Ok(Some(98)))]),
+        ]);
+        let pane = cli_pane(
+            &both(),
+            |c| verify(&stale, c, &budget()),
+            |line| printed.push(line.to_owned()),
+        );
+        assert_eq!(pane, None);
+        assert_eq!(printed, [M4]);
+    }
+
+    // Kills: a verified terminal that loses its socket and id (so nothing can act as the site),
+    // and one that is reported as the pane.
+    #[test]
+    fn verify_yields_the_verified_terminal_locator() {
+        let (terminal_wins, _) = daemon_with(vec![
+            Roots::port(vec![("w1:p1", Ok(Some(10)))]),
+            Roots::hc_port(vec![("t3", Ok(Some(20)))]),
+        ]);
+        let candidates = match both().locate(crate::cli::caller_location::EnvMode::Cli) {
+            Ok(Some(crate::cli::caller_location::Located::Ambiguous(all))) => all,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            verify(&terminal_wins, &candidates, &budget()),
+            Guard::Terminal(crate::cli::caller_location::CallerLocator::Terminal {
+                socket: "/hc.sock".into(),
+                id: "t3".into(),
+            })
+        );
+    }
+
+    // Kills: a guard that falls back to the pane when the daemon cannot be asked, is too old
+    // to know the command (no request is sent), or answers with an error.
+    #[test]
+    fn unreachable_or_older_daemon_is_unverified() {
+        let older = CountingLocalClient::scripted(|_| panic!("sent"), DaemonVintage::Older);
+        let candidates = vec![
+            crate::cli::caller_location::CallerLocator::pane("w1:p1"),
+            crate::cli::caller_location::CallerLocator::Terminal {
+                socket: "/hc.sock".into(),
+                id: "t3".into(),
+            },
+        ];
+        assert!(matches!(
+            verify(&older, &candidates, &budget()),
+            Guard::Refused(_)
+        ));
+        assert_eq!(older.total_calls(), 0);
+        let failing = CountingLocalClient::scripted(
+            |_| Err(ApiError::host_unavailable("down")),
+            DaemonVintage::Current,
+        );
+        assert!(matches!(
+            verify(&failing, &candidates, &budget()),
+            Guard::Refused(_)
+        ));
+        assert_eq!(failing.calls(CallKind::LocateCaller), 1);
+    }
+
+    // Kills: verifying a `One` caller (adversarial, TRUST-POLICY A1): the daemon must see no
+    // LocateCaller for a pane alone, a terminal alone or nothing.
+    #[test]
+    fn locate_caller_never_sent_for_one() {
+        let (client, _) = daemon(Some(10));
+        for pairs in [
+            &[(native::ENV_PANE_ID, "w1:p1")][..],
+            &[
+                (HC_TERMINAL_ID_ENV, "t3"),
+                (HC_TERMINAL_SOCKET_ENV, "/hc.sock"),
+            ][..],
+            &[][..],
+        ] {
+            let _ = cli_pane(&env(pairs), |c| verify(&client, c, &budget()), |_| {});
+        }
+        assert_eq!(client.calls(CallKind::LocateCaller), 0);
+        assert_eq!(client.total_calls(), 0);
+        // A hook carries candidates for an Ambiguous caller only.
+        assert!(
+            crate::cli::caller_guard::hook_candidates(&env(&[(native::ENV_PANE_ID, "p")]))
+                .is_none()
+        );
+        assert!(
+            crate::cli::caller_guard::hook_candidates(&both()).is_none(),
+            "no HERDR_ENV, no pane in a hook"
+        );
+        let marked = env(&[
+            (native::ENV_HERDR, "1"),
+            (native::ENV_PANE_ID, "w1:p1"),
+            (HC_TERMINAL_ID_ENV, "t3"),
+            (HC_TERMINAL_SOCKET_ENV, "/hc.sock"),
+        ]);
+        assert_eq!(
+            crate::cli::caller_guard::hook_candidates(&marked).map(|c| c.len()),
+            Some(2)
+        );
+    }
+
+    // Golden: M4 is 106 bytes plus the pane, session and terminal fields, exactly the golden's text.
+    #[test]
+    fn m4_golden() {
+        let refusal = Refusal {
+            terminal: "hc:t3".into(),
+            pane: "w1:p1".into(),
+        };
+        assert_eq!(format!("{}\n", refusal.m4()), include_str!("golden/m4.txt"));
+        assert_eq!(
+            refusal.m4().len(),
+            106 + "w1:p1".len() + "hc".len() + "t3".len()
+        );
+        assert_eq!(refusal.m4(), M4);
+    }
+
+    // Golden: M17 is 91 bytes, exactly the golden's text.
+    #[test]
+    fn m17_golden() {
+        assert_eq!(format!("{M17}\n"), include_str!("golden/m17.txt"));
+        assert_eq!(M17.len(), 91);
+    }
+
+    /// A scripted daemon on a real socket: `Capabilities` advertises `caller.locate_v1`,
+    /// `LocateCaller` runs the real service over a fake process tree (hook subject pid 30 under
+    /// pane shell 10; the pane's shell is `root`), every other command is recorded and refused.
+    struct Locating {
+        service: LocateCallerService,
+        hosts: Vec<Arc<dyn crate::ports::HostPort>>,
+        commands: Mutex<Vec<Command>>,
+    }
+    impl crate::ports::LocalService for Locating {
+        fn service_control(
+            &self,
+            _: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &str,
+            _: &str,
+            _: &crate::service::live_gate::LiveServiceGate,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            Err(crate::test_support::unserved("no service control"))
+        }
+        fn audit_service_disconnect(
+            &self,
+            _: &str,
+            _: u64,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &CallBudget,
+        ) -> Result<(), ApiError> {
+            Err(crate::test_support::unserved("no service disconnect"))
+        }
+        fn service_operation(
+            &self,
+            _: crate::protocol::service::ServiceOperation,
+            _: &crate::ports::ServiceConnectionAuthority,
+            _: &dyn crate::ports::ServiceAuthorityGate,
+            _: &CallBudget,
+        ) -> Result<crate::protocol::service::ServiceResult, ApiError> {
+            Err(crate::test_support::unserved("no service operation"))
+        }
+        fn handle_with_output(
+            &self,
+            c: Command,
+            p: crate::protocol::authority::PeerIdentity,
+            b: &CallBudget,
+            _: &OutputSpec,
+        ) -> Result<CommandResult, ApiError> {
+            self.handle(c, p, b)
+        }
+        fn handle(
+            &self,
+            c: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            b: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            match c {
+                Command::Capabilities => Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: vec![
+                            crate::protocol::capabilities::LOCATE_CALLER_V1.to_owned(),
+                            crate::protocol::capabilities::TERMINAL_SITES_V1.to_owned(),
+                        ],
+                    },
+                )),
+                Command::LocateCaller(request) => Ok(CommandResult::Located(self.service.locate(
+                    &request,
+                    Some(30),
+                    &self.hosts,
+                    &|_| {
+                        self.hosts
+                            .iter()
+                            .find(|host| host.answers_terminal_ids())
+                            .cloned()
+                            .ok_or_else(|| {
+                                crate::protocol::results::ApiError::unsupported("no core")
+                            })
+                    },
+                    b,
+                ))),
+                other => {
+                    self.commands.lock().unwrap().push(other);
+                    Err(crate::test_support::unserved("scripted daemon"))
+                }
+            }
+        }
+    }
+
+    /// The daemon's serve loop on its own thread; dropped, it is stopped and joined.
+    struct Daemon {
+        service: Arc<Locating>,
+        shutdown: Cancellation,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Daemon {
+        fn start(iso: &crate::test_support::isolation::TestIsolation, root: Option<u32>) -> Self {
+            Self::start_with(iso, vec![Roots::port(vec![("w1:p1", Ok(root))])])
+        }
+        fn start_with(
+            iso: &crate::test_support::isolation::TestIsolation,
+            hosts: Vec<Arc<dyn crate::ports::HostPort>>,
+        ) -> Self {
+            use crate::daemon::ownership::OwnerLock;
+            let context =
+                RuntimeContext::explicit(iso.path("state"), iso.path("host.sock"), None).unwrap();
+            let paths = NodePaths::resolve(&context.state_dir).unwrap();
+            let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+            let instance = owner.node_uuid().unwrap();
+            let listener = owner.bind_socket().unwrap();
+            owner
+                .publish_endpoint(
+                    &listener,
+                    env!("CARGO_PKG_VERSION"),
+                    crate::protocol::wire::PROTOCOL_VERSION,
+                )
+                .unwrap();
+            let service = Arc::new(Locating {
+                service: LocateCallerService::new(tree()),
+                hosts,
+                commands: Mutex::new(Vec::new()),
+            });
+            let handler = Arc::clone(&service);
+            let shutdown = Cancellation::default();
+            let stopped = shutdown.clone();
+            let worker = std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(async {
+                    let _ = crate::daemon::transport::serve(
+                        listener.into_async().unwrap(),
+                        instance,
+                        handler,
+                        Arc::new(SystemClock::new()),
+                        crate::daemon::paths::effective_uid(),
+                        stopped,
+                    )
+                    .await
+                    .unwrap();
+                });
+                drop(owner);
+            });
+            Self {
+                service,
+                shutdown,
+                worker: Some(worker),
+            }
+        }
+        /// The commands that were not part of the guard itself.
+        fn other_commands(&self) -> Vec<Command> {
+            self.service.commands.lock().unwrap().clone()
+        }
+    }
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+
+    fn registration(harness: &str) -> &'static crate::harness::registry::Registration {
+        let registry = builtins();
+        registry.by_id(registry.agent(harness).unwrap()).unwrap()
+    }
+
+    fn hook_args(
+        iso: &crate::test_support::isolation::TestIsolation,
+        harness: &str,
+        event: Option<&str>,
+    ) -> HookArgs {
+        HookArgs {
+            state_dir: Some(iso.path("state")),
+            host_endpoint: Some(iso.path("host.sock")),
+            harness: crate::harness::registry::OccupantHarness::Agent(
+                builtins().agent(harness).unwrap(),
+            )
+            .into(),
+            event: event.map(str::to_owned),
+        }
+    }
+
+    /// The hook environment of a caller naming both a pane and an hc terminal.
+    fn ambiguous_env() -> HookEnv {
+        let marked = env(&[
+            (native::ENV_HERDR, "1"),
+            (native::ENV_PANE_ID, "w1:p1"),
+            (HC_TERMINAL_ID_ENV, "t3"),
+            (HC_TERMINAL_SOCKET_ENV, "/hc.sock"),
+        ]);
+        HookEnv {
+            herdr_env: true,
+            pane: Some("w1:p1".into()),
+            ambiguous: crate::cli::caller_guard::hook_candidates(&marked),
+            named: None,
+            caller: marked,
+        }
+    }
+
+    fn run(
+        registration: &'static crate::harness::registry::Registration,
+        args: &HookArgs,
+        payload: &[u8],
+    ) -> HookOutcome {
+        run_hook_registered(
+            registration,
+            args,
+            &InstalledHarness::Claude("unused".into()),
+            payload,
+            &ambiguous_env(),
+            Instant::now() + LIFECYCLE_BUDGET,
+            Arc::new(SystemClock::new()),
+            None,
+        )
+    }
+
+    fn claude_payload(event: &str, source: Option<&str>) -> Vec<u8> {
+        let mut value = serde_json::json!({
+            "session_id": "sess-1", "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp",
+            "hook_event_name": event,
+        });
+        if let Some(source) = source {
+            value["source"] = source.into();
+        } else {
+            value["permission_mode"] = "default".into();
+            value["tool_name"] = "Bash".into();
+            value["tool_input"] = serde_json::json!({"command": "ls"});
+            value["tool_use_id"] = "toolu_1".into();
+        }
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    fn hermes_payload() -> Vec<u8> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+        let now = SystemClock::new().utc_now().0;
+        value["started_at"] = now.into();
+        value["deadline_at"] = (now + 1200).into();
+        value["observation_order"]["observed_at_millis"] = now.into();
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    fn context(outcome: &HookOutcome) -> String {
+        String::from_utf8(outcome.stdout.clone()).unwrap()
+    }
+
+    /// The context a hook injected, or empty.
+    fn injected(outcome: &HookOutcome) -> String {
+        context(outcome)
+    }
+
+    // Kills: a hook that binds the named pane without asking the daemon, a refused hook that
+    // exits non-zero, prints no M4 or injects anything (no guard line any more), and any seat
+    // command (check-in, resolve) sent for a caller that did not verify. Every harness shape.
+    #[test]
+    fn neither_verifies_prints_m4_injects_nothing() {
+        let iso = crate::test_support::isolation::TestIsolation::new("guard-neither");
+        let daemon = Daemon::start(&iso, Some(99));
+        let compact = serde_json::to_vec(&serde_json::json!({
+            "session_id": "sess-1", "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp",
+            "hook_event_name": "SessionStart", "source": "compact", "model": "m",
+        }))
+        .unwrap();
+        let outcomes = [
+            run(
+                registration("claude"),
+                &hook_args(&iso, "claude", Some("SessionStart")),
+                &claude_payload("SessionStart", Some("startup")),
+            ),
+            run(
+                registration("claude"),
+                &hook_args(&iso, "claude", Some("PreToolUse")),
+                &claude_payload("PreToolUse", None),
+            ),
+            run(
+                registration("codex"),
+                &hook_args(&iso, "codex", Some("SessionStart")),
+                &compact,
+            ),
+            run(
+                registration("hermes"),
+                &hook_args(&iso, "hermes", None),
+                &hermes_payload(),
+            ),
+        ];
+        for outcome in outcomes {
+            assert_eq!(outcome.diagnostic.as_deref(), Some(M4), "{outcome:?}");
+            assert!(outcome.stdout.is_empty(), "{:?}", injected(&outcome));
+            assert!(outcome.attention.is_none());
+        }
+        assert_eq!(daemon.other_commands(), Vec::<Command>::new());
+    }
+
+    // Kills: the F guard text surviving into a Terminal site: M1 (CLI/hook stderr) and M3 (hook
+    // context) are gone, so a terminal that verifies (nearest root 20) prints and injects neither
+    // and acts as its terminal's seat, and no refusal line names "not supported yet" or "guard".
+    #[test]
+    fn m1_m3_absent_from_terminal_site() {
+        let iso = crate::test_support::isolation::TestIsolation::new("guard-terminal-wins");
+        let daemon = Daemon::start_with(
+            &iso,
+            vec![
+                Roots::port(vec![("w1:p1", Ok(Some(10)))]),
+                Roots::hc_port(vec![("t3", Ok(Some(20)))]),
+            ],
+        );
+        let outcome = run(
+            registration("claude"),
+            &hook_args(&iso, "claude", Some("SessionStart")),
+            &claude_payload("SessionStart", Some("startup")),
+        );
+        // The verified terminal acts as its Terminal site: no refusal, and the hook goes on to
+        // look up the terminal's seat host-scoped on the terminal's core (the scripted daemon
+        // advertises `seat.terminal_sites_v1` and refuses the lookup itself), never on the core
+        // the runner's own `HC_TERMINAL_SOCKET` names.
+        assert_ne!(outcome.diagnostic.as_deref(), Some(M4), "{outcome:?}");
+        assert!(
+            outcome
+                .diagnostic
+                .as_deref()
+                .is_some_and(|d| d.starts_with("seat lookup:")),
+            "{outcome:?}"
+        );
+        let commands = daemon.other_commands();
+        let [Command::Seats(query)] = commands.as_slice() else {
+            panic!("the hook looked up exactly the terminal's seat: {commands:?}");
+        };
+        assert_eq!(query.target, Some(HostTargetId::new("t3")));
+        assert_eq!(
+            query.host,
+            Some(crate::protocol::ids::HostLocator::parse("/hc.sock").unwrap())
+        );
+        drop(daemon);
+        // Another isolation: the first daemon's socket is still being torn down.
+        let iso = crate::test_support::isolation::TestIsolation::new("guard-terminal-refused");
+        let refused = Daemon::start(&iso, Some(99));
+        let outcome = run(
+            registration("claude"),
+            &hook_args(&iso, "claude", Some("SessionStart")),
+            &claude_payload("SessionStart", Some("startup")),
+        );
+        let text = format!("{:?}{}", outcome.diagnostic, injected(&outcome));
+        assert!(
+            !text.contains("not supported yet") && !text.contains("guard:"),
+            "{text}"
+        );
+        drop(refused);
+    }
+
+    // Kills: a guard that refuses a pane the daemon verified (no seat would ever bind from a
+    // two-family caller), or one that still prints M4 for it.
+    #[test]
+    fn verified_pane_proceeds_to_bind() {
+        let iso = crate::test_support::isolation::TestIsolation::new("guard-verified");
+        let daemon = Daemon::start(&iso, Some(10));
+        let outcome = run(
+            registration("claude"),
+            &hook_args(&iso, "claude", Some("SessionStart")),
+            &claude_payload("SessionStart", Some("startup")),
+        );
+        assert_ne!(outcome.diagnostic.as_deref(), Some(M4));
+        assert!(
+            !daemon.other_commands().is_empty(),
+            "the hook went on to seat resolution"
+        );
+    }
+}
+
+// -- a terminal is (core socket, tN) at every hop of a hook (ht-kqrt.203) --------
+
+mod terminal_turn_edge {
+    use super::*;
+    use crate::cli::caller_guard::{Guard, Refusal};
+    use crate::cli::caller_location::{CallerEnv, CallerLocator, EnvMode};
+    use crate::harness::adapter::TurnEdge;
+    use crate::host::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV, native};
+    use crate::protocol::{
+        commands::TurnStateReport,
+        ids::SeatId,
+        pagination::{Consistency, Page, StopReason},
+        results::{ContinuityStatus, MappingStatus, SeatInspection, SeatSummary},
+        time::UtcMillis,
+    };
+    use std::sync::Mutex;
+
+    fn terminal(core: &str) -> CallerLocator {
+        CallerLocator::Terminal {
+            socket: core.into(),
+            id: "t3".into(),
+        }
+    }
+
+    /// What `HookEnv::from_process` makes of a Herdr pane `w1:p1` that also names terminal `t3`.
+    fn two_family(core: &str) -> HookEnv {
+        HookEnv {
+            herdr_env: true,
+            pane: Some("w1:p1".into()),
+            ambiguous: Some(vec![CallerLocator::pane("w1:p1"), terminal(core)]),
+            named: None,
+            caller: CallerEnv::from_lookup(|name| match name {
+                native::ENV_HERDR => Some("1".into()),
+                native::ENV_PANE_ID => Some("w1:p1".into()),
+                HC_TERMINAL_ID_ENV => Some("t3".into()),
+                HC_TERMINAL_SOCKET_ENV => Some(core.into()),
+                _ => None,
+            }),
+        }
+    }
+
+    fn decoded() -> DecodedEvent {
+        DecodedEvent {
+            harness: crate::harness::registry::builtins()
+                .agent("claude")
+                .unwrap(),
+            role: EventRole::TopLevel,
+            native_session: Some("sess-1".into()),
+            event_id: "e1".into(),
+            intent: EventIntent::Current,
+            metadata: EventMetadata {
+                turn_end: true,
+                enrollment_witness: None,
+                skill_pointer: false,
+                callback_deadline: None,
+                context_source: "Stop".into(),
+                capability: Capability::ContractValidatedInput,
+                domain: ContractDomain::Native,
+                native_event: "Stop".into(),
+                shape_fields: vec![],
+                agent_id: None,
+            },
+            delivery: DeliveryEligibility::Context,
+            runtime: RuntimeAttribution::Unavailable {
+                diagnostic: "fixture".into(),
+            },
+            binding_event: None,
+        }
+    }
+
+    fn page<T>(items: Vec<T>) -> Page<T> {
+        Page {
+            items,
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        }
+    }
+
+    fn summary(target: &str) -> SeatSummary {
+        SeatSummary {
+            seat: SeatId::new("S-t3"),
+            continuity: ContinuityStatus::Resolved,
+            target: Some(HostTargetId::new(target)),
+            generation: 3,
+            created_at: UtcMillis(0),
+            retired_at: None,
+            active: false,
+            bindings: Vec::new(),
+            availability: None,
+            directory: None,
+        }
+    }
+
+    /// A daemon with one seat, `t3` of the core at `core`, and a record of the turn reports.
+    struct Daemon {
+        core: String,
+        reports: Mutex<Vec<TurnStateReport>>,
+    }
+    impl LocalClient for Daemon {
+        crate::default_output_local_client!();
+        fn supports_capability(&self, _: &str, _: &CallBudget) -> bool {
+            true
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            match command {
+                // Only a host-scoped lookup of `t3` finds the seat: a bare pane id, or the same
+                // `t3` asked of no core, finds none.
+                Command::Seats(query) => {
+                    let found = query.target.as_ref().map(HostTargetId::as_str) == Some("t3")
+                        && query.host.as_ref().map(|host| host.as_str())
+                            == Some(self.core.as_str());
+                    Ok(CommandResult::Seats(page(if found {
+                        vec![summary("t3")]
+                    } else {
+                        vec![]
+                    })))
+                }
+                Command::SeatInspect(query) => Ok(CommandResult::SeatInspect(SeatInspection {
+                    mapping: MappingStatus {
+                        state: ContinuityStatus::Resolved,
+                        target: Some(HostTargetId::new("t3")),
+                        detail_argv: None,
+                    },
+                    summary: SeatSummary {
+                        seat: query.seat,
+                        ..summary("t3")
+                    },
+                    hold: None,
+                    retirement: None,
+                    open_binding: None,
+                    history: page(vec![]),
+                    directory: None,
+                })),
+                Command::TurnState(report) => {
+                    self.reports.lock().unwrap().push(report);
+                    Ok(CommandResult::TurnState { recorded: true })
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    fn args(state: &Path) -> HookArgs {
+        HookArgs {
+            state_dir: Some(state.to_owned()),
+            host_endpoint: None,
+            harness: Harness::Claude,
+            event: None,
+        }
+    }
+
+    // Kills: the turn edge of a verified-terminal caller reported with the original two-family
+    // env, which targets the Herdr pane's seat (no seat found, no report) instead of the
+    // terminal's seat on its core.
+    #[test]
+    fn verified_terminal_turn_edge_reports_the_terminal() {
+        let dir = scratch_pane().0;
+        let state = dir.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        // The runtime context canonicalizes its host endpoint, so the core's socket path exists.
+        let core = dir.join("alpha.sock");
+        std::fs::write(&core, "").unwrap();
+        let core = core.to_str().unwrap().to_owned();
+        let original = two_family(&core);
+        let swapped = caller_env(&original, &decoded(), Guard::Terminal(terminal(&core)))
+            .unwrap_or_else(|_| panic!("the terminal verified"))
+            .expect("a swapped env");
+        assert_eq!(swapped.target(), Some("t3"));
+        assert_eq!(
+            swapped.caller.non_pane_locator(EnvMode::Hook),
+            Some(terminal(&core))
+        );
+        assert!(swapped.ambiguous.is_none());
+        let args = args(&state);
+        let runtime = hook_runtime_context(&args, &swapped.caller).unwrap();
+        let daemon = Daemon {
+            core: core.clone(),
+            reports: Mutex::new(Vec::new()),
+        };
+        let mut target = HostTargetId::new("t3");
+        report_turn_edge_on(
+            &daemon,
+            &runtime,
+            crate::node::NodeUuid::from_bytes([7; 16]),
+            &mut target,
+            &args,
+            &decoded(),
+            TurnEdge::Idle,
+            &swapped,
+            Instant::now() + Duration::from_secs(5),
+            &clock(),
+        )
+        .unwrap_or_else(|_| panic!("the terminal's turn is reported"));
+        let reports = daemon.reports.lock().unwrap();
+        assert_eq!(reports.len(), 1, "one turn report");
+        assert_eq!(reports[0].claim.target.as_str(), "t3");
+        assert_eq!(reports[0].claim.host.as_str(), core);
+        assert_eq!(reports[0].claim.seat.as_str(), "S-t3");
+        drop(reports);
+
+        // The original env, as the hook used to report with, finds no seat for the pane.
+        let mut pane_target = HostTargetId::new("w1:p1");
+        let stale = report_turn_edge_on(
+            &daemon,
+            &runtime,
+            crate::node::NodeUuid::from_bytes([7; 16]),
+            &mut pane_target,
+            &args,
+            &decoded(),
+            TurnEdge::Idle,
+            &original,
+            Instant::now() + Duration::from_secs(5),
+            &clock(),
+        );
+        assert!(stale.is_err(), "the Herdr pane has no seat on that core");
+        assert_eq!(daemon.reports.lock().unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Kills: a refused two-family caller that goes on to report a turn against the pane, and a
+    // verified Herdr pane that swaps the env.
+    #[test]
+    fn refused_two_family_reports_no_turn_edge() {
+        let original = two_family("/run/cores/alpha.sock");
+        let refused = caller_env(
+            &original,
+            &decoded(),
+            Guard::Refused(Refusal {
+                terminal: "alpha:t3".into(),
+                pane: "w1:p1".into(),
+            }),
+        );
+        let Err(outcome) = refused else {
+            panic!("a refused caller yields its M4 outcome, not an env");
+        };
+        assert!(outcome.stdout.is_empty());
+        assert!(
+            outcome
+                .diagnostic
+                .as_deref()
+                .is_some_and(|line| line.starts_with("herdr-threads: env names pane w1:p1")),
+            "{:?}",
+            outcome.diagnostic
+        );
+        assert!(
+            matches!(
+                caller_env(&original, &decoded(), Guard::Pane("w1:p1".into())),
+                Ok(None)
+            ),
+            "the Herdr pane keeps its env"
+        );
+    }
 }

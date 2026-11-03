@@ -252,7 +252,10 @@ pub(crate) fn prepare_automatic<C: LocalClient + ?Sized>(
     inputs.namespace.validate().map_err(fail)?;
     if inputs.claim.role != CallerRole::TopLevel
         || inputs.claim.instance != inputs.namespace.instance
-        || inputs.claim.host.as_path() != inputs.namespace.host_endpoint.as_path()
+        || !inputs
+            .claim
+            .host
+            .fronts_namespace(&inputs.namespace.host_endpoint)
     {
         return Err(fail(
             "automatic delivery requires original top-level instance claim",
@@ -484,7 +487,10 @@ pub fn prepare<C: LocalClient + ?Sized>(
     inputs.namespace.validate().map_err(fail)?;
     if inputs.claim.role != CallerRole::TopLevel
         || inputs.claim.instance != inputs.namespace.instance
-        || inputs.claim.host.as_path() != inputs.namespace.host_endpoint.as_path()
+        || !inputs
+            .claim
+            .host
+            .fronts_namespace(&inputs.namespace.host_endpoint)
     {
         return Err(fail(
             "delivery requires the original top-level instance claim",
@@ -524,6 +530,8 @@ pub fn prepare<C: LocalClient + ?Sized>(
                 selector: selector.clone(),
                 caller: Some(inputs.claim.seat.clone()),
                 caller_target: Some(inputs.claim.target.clone()),
+
+                caller_host: None,
             }),
             &super::cooperative_budget(inputs.clock),
         )?
@@ -830,6 +838,7 @@ pub fn execute<C: LocalClient + ?Sized>(
 struct DeliveryObservation {
     plan: DeliveryPlan,
     caller_target: crate::protocol::ids::HostTargetId,
+    caller_host: crate::protocol::ids::HostLocator,
     phase: &'static str,
     staged: handoff::StagedWork,
     /// None: no canonical status was observed by this invocation (unknown).
@@ -879,7 +888,9 @@ fn execute_locked<C: LocalClient + ?Sized>(
             seat: claim.seat.clone(),
         })
         || claim.instance != plan.payload.namespace.instance
-        || claim.host.as_path() != plan.payload.namespace.host_endpoint.as_path()
+        || !claim
+            .host
+            .fronts_namespace(&plan.payload.namespace.host_endpoint)
         || claim.role != CallerRole::TopLevel
     {
         return Err(super::invalid_request("delivery original scope mismatch"));
@@ -919,6 +930,7 @@ fn execute_locked<C: LocalClient + ?Sized>(
     *observed = Some(DeliveryObservation {
         plan: (*plan).clone(),
         caller_target: claim.target.clone(),
+        caller_host: claim.host.clone(),
         phase: "begin",
         staged: Default::default(),
         last_observed: None,
@@ -1092,7 +1104,9 @@ fn delivery_plan(pending: &PendingIntent) -> Result<&DeliveryPlan, RunError> {
             seat: claim.seat.clone(),
         })
         || claim.instance != plan.payload.namespace.instance
-        || claim.host.as_path() != plan.payload.namespace.host_endpoint.as_path()
+        || !claim
+            .host
+            .fronts_namespace(&plan.payload.namespace.host_endpoint)
         || claim.role != CallerRole::TopLevel
     {
         return Err(super::invalid_request("delivery original scope mismatch"));
@@ -1394,10 +1408,11 @@ fn write_pending<W: Write>(
         host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
     };
     let prefix = super::hook::cli_prefix(&context);
-    let mut retry = vec![
-        "env".into(),
-        format!("HERDR_PANE_ID={}", observed.caller_target.as_str()),
-    ];
+    let mut retry = vec!["env".to_owned()];
+    retry.extend(super::caller_location::claim_recovery_env(
+        &observed.caller_host,
+        observed.caller_target.as_str(),
+    ));
     retry.extend(prefix.clone());
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let mut inspect = prefix;
@@ -1813,13 +1828,12 @@ fn write_automatic_pending<W: Write>(
         state_dir: Some(namespace.state_dir.to_string_lossy().into_owned()),
         host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
     };
-    let mut retry = vec![
-        "env".into(),
-        format!(
-            "HERDR_PANE_ID={}",
-            pending.semantic.frozen_claim().unwrap().target.as_str()
-        ),
-    ];
+    let mut retry = vec!["env".to_owned()];
+    let claim = pending.semantic.frozen_claim().unwrap();
+    retry.extend(super::caller_location::claim_recovery_env(
+        &claim.host,
+        claim.target.as_str(),
+    ));
     retry.extend(super::hook::cli_prefix(&context));
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let phase = if progress.thread.is_none() {

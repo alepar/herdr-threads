@@ -190,6 +190,7 @@ pub fn presentation_hook_text(items: &[Item]) -> String {
                 thread_name: m.thread_name.clone(),
                 sender: m.sender.as_ref().map(|s| s.as_str().into()),
                 sender_name: m.sender_name.clone(),
+                sender_label: m.sender_label.clone(),
                 author_role: m.author_role.map(|v| v.as_str().into()),
                 relays_user: m.relays_user,
                 user_intent: m.user_intent.map(|v| v.as_str().into()),

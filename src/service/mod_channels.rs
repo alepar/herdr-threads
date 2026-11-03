@@ -85,6 +85,8 @@ struct Entry {
     native_session: String,
     harness: Harness,
     idle_wake: IdleWake,
+    /// The binding is read-only (D3): it never discharges a receipt-bearing row.
+    readonly: bool,
     connected_since: UtcMillis,
     state: ModChannelState,
     grace_until: Option<UtcMillis>,
@@ -113,6 +115,12 @@ impl Entry {
     /// (a closed binding is disconnected and no wake target; its grace only authorizes acks).
     fn handling(&self, now: UtcMillis) -> bool {
         self.unexpired(now) && self.state != ModChannelState::RebindGrace
+    }
+
+    /// The entry stands in for the native wake of its binding: a handling channel whose policy
+    /// wakes an idle session itself. A read-only channel cannot discharge the row (D3).
+    fn suppresses_wake(&self, now: UtcMillis) -> bool {
+        self.idle_wake == IdleWake::Channel && self.handling(now) && !self.readonly
     }
 }
 
@@ -561,10 +569,13 @@ impl ModChannelRegistry {
         let (seat, channel, judged_ack, pushed) = {
             let state = self.lock();
             let entry = state.entries.get(binding)?;
-            if !matches!(
-                entry.state,
-                ModChannelState::Live | ModChannelState::ReconnectGrace
-            ) {
+            // A read-only channel never discharges a row, so silence is not a stall (D3).
+            if entry.readonly
+                || !matches!(
+                    entry.state,
+                    ModChannelState::Live | ModChannelState::ReconnectGrace
+                )
+            {
                 return None;
             }
             if now.0.saturating_sub(entry.last_ack_or_registration.0) <= MOD_STALL_AFTER_MS as i64 {
@@ -873,6 +884,7 @@ impl ModChannels for ModChannelRegistry {
                     native_session: registration.native_session.as_str().to_owned(),
                     harness: registration.harness,
                     idle_wake: registration.idle_wake,
+                    readonly: registration.readonly,
                     connected_since: now,
                     state: ModChannelState::Live,
                     grace_until: None,
@@ -1004,8 +1016,7 @@ impl ModChannels for ModChannelRegistry {
     }
 
     fn wake_suppressed(&self, seat: &SeatId) -> bool {
-        // Per binding (spec §3 Wake): some handling channel of the seat (Live or
-        // ReconnectGrace, as `seat_live`) whose policy wakes an idle session itself.
+        // Per binding (spec §3 Wake): some channel of the seat stands in for the native wake.
         let now = self.clock.utc_now();
         let state = self.lock();
         state.by_seat.get(seat).is_some_and(|bindings| {
@@ -1013,9 +1024,17 @@ impl ModChannels for ModChannelRegistry {
                 state
                     .entries
                     .get(binding)
-                    .is_some_and(|e| e.idle_wake == IdleWake::Channel && e.handling(now))
+                    .is_some_and(|e| e.suppresses_wake(now))
             })
         })
+    }
+
+    fn binding_wake_suppressed(&self, seat: &SeatId, binding: &BindingId) -> bool {
+        let now = self.clock.utc_now();
+        self.lock()
+            .entries
+            .get(binding)
+            .is_some_and(|entry| &entry.seat == seat && entry.suppresses_wake(now))
     }
 
     fn record_attention_push(&self, seat: &SeatId, binding: &BindingId, now: UtcMillis) {
@@ -1080,7 +1099,12 @@ impl ModChannels for ModChannelRegistry {
             state
                 .seat_bindings(seat)
                 .into_iter()
-                .filter(|binding| state.entries.get(binding).is_some_and(|e| e.unexpired(now)))
+                .filter(|binding| {
+                    state
+                        .entries
+                        .get(binding)
+                        .is_some_and(|e| e.unexpired(now) && !e.readonly)
+                })
                 .collect()
         };
         !bindings.is_empty()

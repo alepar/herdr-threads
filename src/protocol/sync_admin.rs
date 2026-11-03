@@ -665,6 +665,9 @@ pub enum RemoteLaunchAnswer {
     NoCap {
         #[serde(default)]
         version: Option<String>,
+        /// The missing capability (empty from an older daemon: `peer.launch.v1`).
+        #[serde(default)]
+        cap: String,
     },
     Timeout {
         #[serde(default)]

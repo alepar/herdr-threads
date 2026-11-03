@@ -1707,3 +1707,252 @@ fn held_legacy_lock_shows_live() {
         json!([])
     );
 }
+
+/// Seeds `state`'s store with one `hc` host row at `socket`; returns the report's `hosts`.
+#[cfg(feature = "test-support")]
+fn hc_hosts_report(case: &PathCase, socket: &std::path::Path) -> Value {
+    let state = case.dir.join("state");
+    let node = crate::daemon::paths::node_dir(&state);
+    std::fs::create_dir_all(&node).unwrap();
+    let db = rusqlite::Connection::open(node.join(crate::daemon::paths::DATABASE_FILE)).unwrap();
+    crate::store::schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO herdr_hosts(node_id,endpoint,created_at,kind) \
+         VALUES ((SELECT id FROM local_node),?1,0,'hc')",
+        [socket.to_str().unwrap()],
+    )
+    .unwrap();
+    drop(db);
+    let (report, _) = crate::cli::doctor::report(Some(state), None);
+    report
+}
+
+/// Kills: a doctor whose `report.hosts.agent_status` is never populated, so the status source
+/// of an attached hc host (D21) cannot be shown.
+#[cfg(feature = "test-support")]
+#[test]
+fn agent_status_rows_come_from_the_real_report() {
+    use crate::test_support::fake_hc::{FakeHc, FakeTerminal};
+    let case = PathCase::new("agent-status");
+    let fake = FakeHc::start();
+    fake.add_terminal(FakeTerminal::live("t1"));
+    fake.add_terminal(FakeTerminal::live("t2"));
+    fake.set_status(
+        "t2",
+        Some(json!({"state": "idle", "app": "claude", "msg": "", "title": ""})),
+    );
+    let report = hc_hosts_report(&case, fake.socket());
+    assert_eq!(
+        report["hosts"]["agent_status"],
+        json!([
+            {"target": "t1", "source": "none"},
+            {"target": "t2", "source": "osc7501"},
+        ])
+    );
+    let text = crate::cli::doctor::render_debug_text(&report);
+    assert!(text.contains("agent_status: t1 source=none\n"), "{text}");
+    assert!(text.contains("agent_status: t2 source=osc7501\n"), "{text}");
+}
+
+/// Kills: a doctor that prints status rows for a core that does not answer, or adds the key to
+/// every report.
+#[cfg(feature = "test-support")]
+#[test]
+fn a_silent_core_prints_no_agent_status() {
+    let case = PathCase::new("agent-status-silent");
+    let report = hc_hosts_report(&case, &case.dir.join("no-such.sock"));
+    assert!(report["hosts"].get("agent_status").is_none(), "{report}");
+}
+
+/// Kills: a doctor that stays silent when an implemented-kind row's socket now
+/// answers as another kind (the attach is refused), or names a matching row or a
+/// dead socket.
+#[cfg(feature = "test-support")]
+#[test]
+fn doctor_names_kind_mismatch_row() {
+    use crate::test_support::{fake_hc::FakeHc, fake_herdr::FakeHerdr, scratch};
+    let case = PathCase::new("kind-mismatch");
+    let node = crate::daemon::paths::node_dir(&case.dir.join("state"));
+    std::fs::create_dir_all(&node).unwrap();
+    let hc = FakeHc::start();
+    let herdr_socket =
+        scratch::temp_path(format!("ht-fake-herdr-{}", uuid::Uuid::new_v4().simple()));
+    let _herdr = FakeHerdr::start("kind", &herdr_socket, &[]);
+    let dead = scratch::temp_path("ht-dead-host");
+    {
+        let db =
+            rusqlite::Connection::open(node.join(crate::daemon::paths::DATABASE_FILE)).unwrap();
+        crate::store::schema::initialize(
+            &db,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed(),
+        )
+        .unwrap();
+        // Stored as Herdr: the hc socket mismatches, the Herdr socket matches,
+        // the dead socket is reachability, not a mismatch.
+        for socket in [hc.socket(), herdr_socket.as_path(), dead.as_path()] {
+            db.execute(
+                "INSERT INTO herdr_hosts(node_id,endpoint,created_at,kind) \
+                 VALUES ((SELECT id FROM local_node),?1,0,'herdr')",
+                [socket.to_str().unwrap()],
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(
+        kind_mismatch_hosts_report(&node),
+        vec![
+            json!({"host_id": 1, "endpoint": hc.socket().to_str().unwrap(),
+                    "stored": "herdr", "probed": "hc"})
+        ]
+    );
+    assert!(kind_mismatch_hosts_report(&case.dir.join("nowhere")).is_empty());
+
+    let registry = crate::harness::registry::builtins();
+    let state = case.dir.join("state");
+    let host = case.dir.join("herdr.sock");
+    let parsed = super::super::commands::parse_argv_in_registry(
+        [
+            std::ffi::OsString::from("herdr-threads"),
+            "doctor".into(),
+            "--json".into(),
+            "--harness".into(),
+            "claude".into(),
+            "--state-dir".into(),
+            state.clone().into_os_string(),
+            "--host-endpoint".into(),
+            host.clone().into_os_string(),
+        ],
+        registry,
+    )
+    .unwrap();
+    let environment = SetupEnvironment {
+        config_roots: [("claude".into(), case.dir.join("config"))]
+            .into_iter()
+            .collect(),
+        path: Some(case.dir.clone().into_os_string()),
+        state_dir: Some(state),
+        host_endpoint: Some(host),
+        executable: PathBuf::from("/isolated/herdr-threads"),
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    let _ = run_registered(&parsed, registry, Some(&environment), &mut out);
+    let doc: Value = serde_json::from_slice::<Value>(&out).unwrap()["doctor"].clone();
+    assert_eq!(doc["hosts"]["kind_mismatch"].as_array().unwrap().len(), 1);
+    let limitations = doc["limitations"].to_string();
+    assert!(
+        limitations.contains("kind mismatch")
+            && limitations.contains(hc.socket().to_str().unwrap())
+            && limitations.contains("answers as 'hc'"),
+        "{limitations}"
+    );
+    assert!(!limitations.contains("ht-dead-host"), "{limitations}");
+}
+
+/// Kills: a doctor that stays silent about a host row reattach skips (a kind
+/// this build does not implement), a Herdr row listed as unattachable, and a
+/// store file that is absent or predates the kind column failing the report.
+#[test]
+fn doctor_names_unattachable_kind_row() {
+    let case = PathCase::new("unattachable-kind");
+    let state = case.dir.join("state");
+    let node = crate::daemon::paths::node_dir(&state);
+    std::fs::create_dir_all(&node).unwrap();
+    {
+        let db =
+            rusqlite::Connection::open(node.join(crate::daemon::paths::DATABASE_FILE)).unwrap();
+        crate::store::schema::initialize(
+            &db,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed(),
+        )
+        .unwrap();
+        for (endpoint, kind) in [("/herdr/ok.sock", "herdr"), ("/herdr/far.sock", "future")] {
+            db.execute(
+                "INSERT INTO herdr_hosts(node_id,endpoint,created_at,kind) \
+                 VALUES ((SELECT id FROM local_node),?1,0,?2)",
+                [endpoint, kind],
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(
+        unattachable_hosts_report(&node),
+        vec![json!({"host_id": 2, "endpoint": "/herdr/far.sock", "kind": "future"})]
+    );
+    assert!(unattachable_hosts_report(&case.dir.join("nowhere")).is_empty());
+
+    let registry = crate::harness::registry::builtins();
+    let host = case.dir.join("herdr.sock");
+    let parsed = super::super::commands::parse_argv_in_registry(
+        [
+            std::ffi::OsString::from("herdr-threads"),
+            "doctor".into(),
+            "--json".into(),
+            "--harness".into(),
+            "claude".into(),
+            "--state-dir".into(),
+            state.clone().into_os_string(),
+            "--host-endpoint".into(),
+            host.clone().into_os_string(),
+        ],
+        registry,
+    )
+    .unwrap();
+    let environment = SetupEnvironment {
+        config_roots: [("claude".into(), case.dir.join("config"))]
+            .into_iter()
+            .collect(),
+        path: Some(case.dir.clone().into_os_string()),
+        state_dir: Some(state),
+        host_endpoint: Some(host),
+        executable: PathBuf::from("/isolated/herdr-threads"),
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    let _ = run_registered(&parsed, registry, Some(&environment), &mut out);
+    let doc: Value = serde_json::from_slice::<Value>(&out).unwrap()["doctor"].clone();
+    assert_eq!(
+        doc["hosts"]["unattachable"],
+        json!([{"host_id": 2, "endpoint": "/herdr/far.sock", "kind": "future"}])
+    );
+    let limitations = doc["limitations"].to_string();
+    assert!(
+        limitations.contains("/herdr/far.sock") && limitations.contains("future"),
+        "{limitations}"
+    );
+    assert!(!limitations.contains("/herdr/ok.sock"), "{limitations}");
+}
+
+/// Kills: a check that ignores the second candidate root, flags the selected dir itself,
+/// counts a dir without a database as a store, or reports a store twice.
+#[test]
+fn doctor_flags_two_live_stores() {
+    let case = PathCase::new("two-stores");
+    let mk = |name: &str, store: bool| {
+        let dir = case.dir.join(name);
+        let node = dir.join("node");
+        std::fs::create_dir_all(&node).unwrap();
+        if store {
+            std::fs::write(node.join(crate::daemon::paths::DATABASE_FILE), b"").unwrap();
+        }
+        dir
+    };
+    let (a, b, empty) = (mk("a", true), mk("b", true), mk("c", false));
+    assert_eq!(
+        other_stores(&a, [Some(a.clone()), Some(b.clone())]),
+        vec![b.display().to_string()]
+    );
+    assert!(other_stores(&a, [Some(a.clone()), Some(empty)]).is_empty());
+    assert!(other_stores(&a, [Some(a.clone()), Some(a.clone())]).is_empty());
+    assert_eq!(
+        other_stores(&a, [Some(b.clone()), Some(b.clone())]).len(),
+        1
+    );
+}

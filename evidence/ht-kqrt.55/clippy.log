@@ -1,0 +1,4 @@
+heavy: slot 2 acquired 21:45:30
+    Checking herdr-threads v2.8.1 (/var/home/alepar/AleCode/herdr-threads/.worktrees/external-seat/.worktrees/super-auto-environments-named-seats-herdr-app--task-ht-kqrt.55)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 23s
+exit 0

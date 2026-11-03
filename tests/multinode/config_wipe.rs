@@ -63,7 +63,11 @@ fn wipe_with_the_key_intact_suppresses_settled_history() {
     });
     assert_eq!(
         cluster
-            .scalar(1, "SELECT count(*) FROM herdr_hosts", &[])
+            .scalar(
+                1,
+                "SELECT count(*) FROM herdr_hosts WHERE kind='herdr'",
+                &[]
+            )
             .as_deref(),
         Some("0"),
         "B restarted store-only"

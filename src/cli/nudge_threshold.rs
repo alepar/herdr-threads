@@ -11,11 +11,12 @@ use crate::ports::LocalClient;
 use crate::{
     harness::context::Role,
     protocol::{
-        commands::{Command, NudgeThresholdQuery, SetNudgeThreshold},
-        ids::OperationId,
+        capabilities::WAKE_STATUS_V1,
+        commands::{Command, NudgeThresholdQuery, SetNudgeThreshold, WakeStatusQuery},
+        ids::{OperationId, SeatId},
         output::OutputFormat,
         priority::NudgeThreshold,
-        results::{CommandResult, NudgeThresholdState},
+        results::{CommandResult, NudgeThresholdState, WakeBlock},
         time::Clock,
     },
 };
@@ -34,6 +35,37 @@ pub fn render(state: &NudgeThresholdState, set: bool) -> String {
         "unchanged"
     };
     format!("nudge_threshold: {value} ({note})\n")
+}
+
+/// M12, printed after a set on a seat with no idle wake (57 bytes plus the seat id).
+pub fn render_inert(seat: &SeatId) -> String {
+    format!(
+        "herdr-threads: {} has no idle wake; threshold has no effect\n",
+        seat.as_str()
+    )
+}
+
+/// Whether the daemon classifies `seat` `no_wake` (best effort: an older daemon, or any failure,
+/// says no). The value is still recorded either way.
+fn has_no_idle_wake<C: LocalClient + ?Sized>(
+    client: &C,
+    seat: &SeatId,
+    budget: &crate::protocol::time::CallBudget,
+) -> bool {
+    if !client.supports_capability(WAKE_STATUS_V1, budget) {
+        return false;
+    }
+    let query = WakeStatusQuery {
+        all: false,
+        seats: vec![seat.clone()],
+        message: None,
+        observer: None,
+    };
+    matches!(
+        client.call(Command::WakeStatus(query), budget),
+        Ok(CommandResult::WakeStatus(rows))
+            if rows.iter().any(|row| row.seat == *seat && row.wake == Some(WakeBlock::NoWake))
+    )
 }
 
 /// Run `nudge-threshold` (or its `wake-on` alias, which passes the mapped `value`) as the selected seat.
@@ -83,7 +115,11 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
     let bytes = if parsed.output.format == OutputFormat::Json {
         crate::protocol::output::encode_selected(&result, &parsed.output)?
     } else {
-        render(state, value.is_some()).into_bytes()
+        let mut text = render(state, value.is_some());
+        if value.is_some() && has_no_idle_wake(client, &state.seat, &budget) {
+            text.push_str(&render_inert(&state.seat));
+        }
+        text.into_bytes()
     };
     writer.write_all(&bytes)?;
     writer.flush()?;

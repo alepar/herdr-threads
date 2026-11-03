@@ -180,6 +180,7 @@ fn fixture_claim(
 
 fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
     let command = Command::CheckIn(CheckIn {
+        readonly: false,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: claim.binding_generation,
         },

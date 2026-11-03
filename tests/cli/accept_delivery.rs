@@ -46,6 +46,7 @@ fn claim() -> CallerClaim {
 
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        sender_label: None,
         priority: None,
         thread: ThreadId::new("t"),
         topic_data: "topic".into(),
@@ -83,6 +84,7 @@ fn lazy_partial(id: &str, body: &str, shown: usize) -> InboxBatchV2Item {
             wakes,
             ..
         } => InboxBatchV2Item::LazyMessage {
+            sender_label: None,
             priority,
             thread,
             topic_data,
@@ -410,6 +412,7 @@ fn accept_prints_pending_rows_of_every_priority() {
             wakes,
             ..
         } => InboxBatchV2Item::LazyMessage {
+            sender_label: None,
             priority: Some(DeliveryPriority::new(p).unwrap()),
             thread,
             topic_data,

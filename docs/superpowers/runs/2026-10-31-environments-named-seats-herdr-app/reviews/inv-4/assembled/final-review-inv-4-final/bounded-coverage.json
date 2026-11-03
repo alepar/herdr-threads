@@ -1,0 +1,235 @@
+{
+ "inspected": [
+  {
+   "path": "src/service/locate.rs",
+   "hunks": [
+    "@@ -0,0 +1,408 @@"
+   ]
+  },
+  {
+   "path": "src/cli/caller_location.rs",
+   "hunks": [
+    "@@ -0,0 +1,431 @@"
+   ]
+  },
+  {
+   "path": "src/host/named.rs",
+   "hunks": [
+    "@@ -0,0 +1,672 @@"
+   ]
+  },
+  {
+   "path": "src/host/named/tmux.rs",
+   "hunks": [
+    "@@ -0,0 +1,278 @@"
+   ]
+  },
+  {
+   "path": "src/cli/caller_guard.rs",
+   "hunks": [
+    "@@ -0,0 +1,127 @@"
+   ]
+  },
+  {
+   "path": "src/protocol/locate.rs",
+   "hunks": [
+    "@@ -0,0 +1,49 @@"
+   ]
+  },
+  {
+   "path": "src/cli/launch_gate.rs",
+   "hunks": [
+    "@@ -0,0 +1,279 @@"
+   ]
+  },
+  {
+   "path": "src/service/launch_gate.rs",
+   "hunks": [
+    "@@ -0,0 +1,112 @@"
+   ]
+  },
+  {
+   "path": "src/service/turn_state.rs",
+   "hunks": [
+    "@@ -0,0 +1,177 @@"
+   ]
+  },
+  {
+   "path": "src/store/no_wake_reports.rs",
+   "hunks": [
+    "@@ -0,0 +1,112 @@"
+   ]
+  },
+  {
+   "path": "src/daemon/idle_exit.rs",
+   "hunks": [
+    "@@ -1,5 +1,5 @@",
+    "@@ -14,8 +14,8 @@ pub const IDLE_EXIT_AFTER: Duration = Duration::from_secs(10 * 60);",
+    "@@ -31,12 +31,26 @@ pub struct ActivityProbe {"
+   ]
+  },
+  {
+   "path": "src/service/dispatch.rs",
+   "hunks": [
+    "@@ -84,7 +84,19 @@ struct BootstrapRuntime {",
+    "@@ -93,6 +105,9 @@ impl BootstrapRuntime {",
+    "@@ -117,8 +132,12 @@ pub struct DomainService {",
+    "@@ -144,7 +163,85 @@ impl DomainService {",
+    "@@ -245,9 +342,34 @@ impl DomainService {",
+    "@@ -268,26 +390,42 @@ impl DomainService {",
+    "@@ -352,6 +490,29 @@ impl DomainService {",
+    "@@ -374,7 +535,7 @@ impl DomainService {",
+    "@@ -389,9 +550,8 @@ impl DomainService {",
+    "@@ -416,9 +576,13 @@ impl DomainService {",
+    "@@ -460,6 +624,8 @@ impl DomainService {",
+    "@@ -519,9 +685,11 @@ impl DomainService {",
+    "@@ -569,6 +737,49 @@ impl DomainService {",
+    "@@ -576,9 +787,13 @@ impl DomainService {",
+    "@@ -817,6 +1032,8 @@ impl DomainService {",
+    "@@ -890,6 +1107,8 @@ impl DomainService {",
+    "@@ -982,12 +1201,64 @@ impl DomainService {",
+    "@@ -1332,6 +1603,22 @@ impl DomainService {",
+    "@@ -1553,29 +1840,29 @@ impl LocalService for DomainService {",
+    "@@ -1594,7 +1881,6 @@ impl LocalService for DomainService {",
+    "@@ -1645,6 +1931,7 @@ impl LocalService for DomainService {",
+    "@@ -1661,6 +1948,7 @@ impl LocalService for DomainService {",
+    "@@ -1691,6 +1979,21 @@ impl LocalService for DomainService {",
+    "@@ -1821,6 +2124,7 @@ impl LocalService for DomainService {",
+    "@@ -1829,6 +2133,7 @@ impl LocalService for DomainService {",
+    "@@ -1939,6 +2244,7 @@ mod operator_tests {",
+    "@@ -2049,6 +2355,8 @@ mod operator_tests {",
+    "@@ -2232,6 +2540,14 @@ mod operator_tests {",
+    "@@ -2295,6 +2611,86 @@ mod topology_contract_dispatch_tests {"
+   ]
+  },
+  {
+   "path": "src/cli/hook.rs",
+   "hunks": [
+    "@@ -248,16 +248,45 @@ pub(crate) fn parse_hook_argv_registered(",
+    "@@ -697,7 +726,7 @@ fn compose_context_limited(",
+    "@@ -1547,7 +1576,18 @@ fn find_seat_for(",
+    "@@ -1628,6 +1668,15 @@ fn locate_seat_for(",
+    "@@ -1787,14 +1836,13 @@ fn connect_pane(",
+    "@@ -1925,8 +1973,7 @@ fn check_in(",
+    "@@ -3482,7 +3529,7 @@ pub(crate) fn run_hook_registered(",
+    "@@ -3783,7 +3830,7 @@ fn pane_context_journal(",
+    "@@ -3837,7 +3884,7 @@ fn record_observer_reset(",
+    "@@ -3869,8 +3916,7 @@ fn report_binding_event(",
+    "@@ -3946,6 +3992,40 @@ fn report_binding_event(",
+    "@@ -3972,6 +4052,9 @@ pub fn run_admitted_hook(",
+    "@@ -3985,6 +4068,115 @@ fn run_admitted_hook_since(",
+    "@@ -4016,9 +4208,22 @@ fn run_admitted_hook_since(",
+    "@@ -4362,9 +4567,32 @@ fn same_endpoint(a: &Path, b: &Path) -> bool {",
+    "@@ -4390,6 +4618,9 @@ fn hook_runtime_context_with(",
+    "@@ -4479,7 +4710,7 @@ pub fn run_process(parsed: Result<HookArgs, String>) -> i32 {"
+   ]
+  },
+  {
+   "path": "src/app.rs",
+   "hunks": [
+    "@@ -1027,18 +1027,14 @@ impl LaneProbe {",
+    "@@ -1048,6 +1044,7 @@ impl LaneProbe {",
+    "@@ -1195,18 +1192,23 @@ impl LaneProbe {",
+    "@@ -1216,10 +1218,7 @@ impl LaneProbe {",
+    "@@ -1247,9 +1246,7 @@ impl LaneProbe {",
+    "@@ -1386,6 +1383,36 @@ where",
+    "@@ -1861,6 +1888,7 @@ where",
+    "@@ -1870,6 +1898,7 @@ where",
+    "@@ -1962,6 +1991,9 @@ where",
+    "@@ -2018,6 +2050,10 @@ where",
+    "@@ -2037,6 +2073,29 @@ where",
+    "@@ -2527,10 +2586,13 @@ where",
+    "@@ -2562,6 +2624,7 @@ where"
+   ]
+  },
+  {
+   "path": "src/daemon/lifecycle.rs",
+   "hunks": [
+    "@@ -18,6 +18,7 @@ use crate::daemon::transport::{self, ServeOutcome};",
+    "@@ -318,12 +319,67 @@ enum StartupStderr {",
+    "@@ -353,14 +409,26 @@ fn pipe_reader(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, Re",
+    "@@ -369,7 +437,7 @@ fn spawn_detached(",
+    "@@ -387,9 +455,11 @@ fn spawn_detached(",
+    "@@ -409,7 +479,18 @@ fn spawn_detached(",
+    "@@ -547,34 +628,55 @@ pub async fn ensure_running_with_timeout("
+   ]
+  },
+  {
+   "path": "src/host/target_creator.rs",
+   "hunks": [
+    "@@ -0,0 +1,66 @@"
+   ]
+  },
+  {
+   "path": "src/cli/hc_target.rs",
+   "hunks": [
+    "@@ -0,0 +1,120 @@"
+   ]
+  },
+  {
+   "path": "src/store/named_seats.rs",
+   "hunks": [
+    "@@ -0,0 +1,100 @@"
+   ]
+  },
+  {
+   "path": "src/store/poke.rs",
+   "hunks": [
+    "@@ -109,6 +109,10 @@ fn collect(",
+    "@@ -116,6 +120,7 @@ fn collect("
+   ]
+  },
+  {
+   "path": "src/service/host_sessions.rs",
+   "hunks": [
+    "@@ -6,10 +6,11 @@",
+    "@@ -28,10 +29,10 @@ use crate::service::{",
+    "@@ -49,30 +50,38 @@ const ATTACH_POLL: Duration = Duration::from_millis(10);",
+    "@@ -120,6 +129,8 @@ pub struct SessionDeps {",
+    "@@ -154,6 +165,7 @@ impl SessionDeps {",
+    "@@ -240,9 +252,15 @@ pub struct HostSession {",
+    "@@ -272,14 +290,20 @@ impl HostSession {",
+    "@@ -299,8 +323,8 @@ impl HostSession {",
+    "@@ -335,6 +359,8 @@ impl HostSession {",
+    "@@ -344,6 +370,11 @@ impl HostSession {",
+    "@@ -351,10 +382,11 @@ impl HostSession {",
+    "@@ -377,7 +409,10 @@ impl BootstrapObserver for RefusedBootstrapObserver {",
+    "@@ -396,6 +431,8 @@ impl BootstrapObserver for RefusedBootstrapObserver {",
+    "@@ -432,6 +469,7 @@ impl HostSessions {",
+    "@@ -447,6 +485,32 @@ impl HostSessions {",
+    "@@ -458,7 +522,8 @@ impl HostSessions {",
+    "@@ -475,7 +540,11 @@ impl HostSessions {",
+    "@@ -484,7 +553,7 @@ impl HostSessions {",
+    "@@ -492,15 +561,59 @@ impl HostSessions {",
+    "@@ -528,16 +641,17 @@ impl HostSessions {",
+    "@@ -549,7 +663,7 @@ impl HostSessions {",
+    "@@ -576,7 +690,7 @@ impl HostSessions {",
+    "@@ -587,8 +701,7 @@ impl HostSessions {",
+    "@@ -596,16 +709,34 @@ impl HostSessions {",
+    "@@ -628,6 +759,68 @@ impl HostSessions {",
+    "@@ -667,11 +860,13 @@ impl HostSessions {",
+    "@@ -701,14 +896,26 @@ impl HostSessions {",
+    "@@ -728,30 +935,34 @@ impl HostSessions {",
+    "@@ -770,17 +981,18 @@ impl HostSessions {",
+    "@@ -826,7 +1038,7 @@ impl HostSessions {"
+   ]
+  },
+  {
+   "path": "src/service/peer_launcher.rs",
+   "hunks": [
+    "@@ -6,8 +6,12 @@",
+    "@@ -46,6 +50,11 @@ const RECORD_RETRIES: [Duration; 3] = [",
+    "@@ -186,11 +195,37 @@ pub struct PeerLaunchService {",
+    "@@ -256,11 +291,31 @@ impl PeerLaunchService {",
+    "@@ -301,7 +356,7 @@ impl PeerLaunchService {",
+    "@@ -435,13 +490,17 @@ impl PeerLaunchService {",
+    "@@ -497,7 +556,16 @@ impl PeerLaunchService {",
+    "@@ -518,7 +586,7 @@ impl PeerLaunchService {",
+    "@@ -569,7 +637,7 @@ pub fn plan_refusal(plan: &crate::sync::frame::LaunchPlan, plan_bytes: usize) ->",
+    "@@ -577,17 +645,91 @@ pub fn plan_refusal(plan: &crate::sync::frame::LaunchPlan, plan_bytes: usize) ->",
+    "@@ -614,7 +756,9 @@ struct Worker {",
+    "@@ -738,7 +882,19 @@ fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::Joi"
+   ]
+  }
+ ]
+}

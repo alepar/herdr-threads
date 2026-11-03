@@ -30,17 +30,20 @@ use super::{
     panes::{looks_like_pane_id, resolve_parents},
     seat_selector::{self, Narrowing},
 };
+use crate::host::hc::labels::{AddressRefusal, HcAddress, HcCore, TerminalId};
 use crate::sync::frame::{AddrOutcome, AddrTarget};
 use crate::{
     daemon::paths::{NodePaths, RuntimeContext},
     host::observation::HostTopology,
     ports::LocalClient,
     protocol::{
-        capabilities::INVITATION_CONFIRMATION_V1,
-        commands::{Command, SeatInspectQuery},
-        ids::{HostTargetId, SeatId},
+        capabilities::{HOST_SITES_V1, HOST_TOPOLOGIES_V1, INVITATION_CONFIRMATION_V1},
+        commands::{Command, SeatFilter, SeatInspectQuery, SeatsQuery},
+        ids::{HostLocator, HostTargetId, NAMED_HOST_LOCATOR, SeatId},
         pagination::PageRequest,
-        results::{ApiError, CommandResult, ContinuityStatus, ErrorCode, SeatInspection},
+        results::{
+            ApiError, CommandResult, ContinuityStatus, ErrorCode, HostPaneLabels, SeatInspection,
+        },
         sync_admin::{AddressReply, RemoteAddress, SyncCommand, SyncReply},
         time::Clock,
     },
@@ -76,6 +79,48 @@ pub(crate) fn skip_first_freeze_for_test() -> impl Drop {
     }
     SKIP_FIRST_FREEZE.with(|flag| flag.set(true));
     Reset
+}
+
+/// The herdr-core reading of `raw` against `cores`: the terminal it names, `None` when `raw` is
+/// no such address (another reading may apply), or a refusal listing the `<session>:tN`
+/// candidates when a bare `tN` is ambiguous (one line of about 40 bytes plus 10 per candidate).
+fn hc_selector(raw: &str, cores: &[HcCore]) -> Result<Option<(String, HostTargetId)>, ApiError> {
+    let Some(address) = HcAddress::parse(raw) else {
+        return Ok(None);
+    };
+    match address.resolve(cores) {
+        Ok((session, terminal)) => Ok(Some((session, HostTargetId::new(terminal.as_str())))),
+        Err(AddressRefusal::NoSuchTarget) => Ok(None),
+        Err(refusal) => Err(ApiError::invalid_request(refusal.to_string())),
+    }
+}
+
+/// The attached herdr-core cores from `HostTopologies` rows: one per reported session, with
+/// the terminals it owns, and the locator of the host that reported each session.
+fn hc_cores_from(rows: &[HostPaneLabels]) -> (Vec<HcCore>, HashMap<String, HostLocator>) {
+    let mut cores: Vec<HcCore> = Vec::new();
+    let mut locators = HashMap::new();
+    for row in rows {
+        let Some(session) = &row.session else {
+            continue;
+        };
+        let Some(terminal) = TerminalId::parse(row.target.as_str()) else {
+            continue;
+        };
+        if let Some(locator) = &row.locator {
+            locators
+                .entry(session.clone())
+                .or_insert_with(|| locator.clone());
+        }
+        match cores.iter_mut().find(|core| &core.session == session) {
+            Some(core) => core.terminals.push(terminal),
+            None => cores.push(HcCore {
+                session: session.clone(),
+                terminals: vec![terminal],
+            }),
+        }
+    }
+    (cores, locators)
 }
 
 /// A host read run at most once, its outcome (success or failure) shared by every slot.
@@ -145,6 +190,8 @@ where
     caller: Once<Option<HostTargetId>, L>,
     raw_narrowing: Option<SeatNarrowing>,
     narrowing: OnceCell<Narrowing>,
+    /// The herdr-core cores and their host locators, read from the daemon on first use.
+    hc: OnceCell<(Vec<HcCore>, HashMap<String, HostLocator>)>,
 }
 
 /// One slot's pass-1 outcome: a frozen seat, or a pane whose seat is allocated in pass 2.
@@ -153,6 +200,8 @@ enum Resolved {
     Seat(SeatId),
     Pane {
         pane: HostTargetId,
+        /// The core a herdr-core terminal lives on; `None` for the caller's own host.
+        host: Option<HostLocator>,
         /// `Some((path, tier))` for a name (D2 step 4): pass 2 prints its `resolved:` line after
         /// allocating; `None` for a direct pane ID (D6: no line).
         line: Option<(String, String)>,
@@ -170,6 +219,8 @@ pub(crate) struct DeferredSeats {
 struct Deferred {
     slot: SeatSlot,
     pane: HostTargetId,
+    /// The core the target lives on (`None`: the caller's own host).
+    host: Option<HostLocator>,
     /// Set on the first slot of a distinct raw name only, so a repeated name prints once.
     line: Option<(String, String)>,
 }
@@ -231,6 +282,7 @@ where
         caller: Once::new(live_caller),
         raw_narrowing: parsed.seat_narrowing.take(),
         narrowing: OnceCell::new(),
+        hc: OnceCell::new(),
     };
     let mut memo: HashMap<(String, SeatMapping), Resolved> = HashMap::new();
     let mut resolutions: Vec<(SeatSlot, Resolved)> = Vec::new();
@@ -253,11 +305,12 @@ where
         }
         match resolved {
             Resolved::Seat(seat) => arg.slot.set(&mut parsed.action, seat).map_err(run_error)?,
-            Resolved::Pane { pane, line } => {
+            Resolved::Pane { pane, host, line } => {
                 deferred_slot[index] = true;
                 entries.push(Deferred {
                     slot: arg.slot,
                     pane,
+                    host,
                     line: line.filter(|_| first),
                 });
             }
@@ -326,11 +379,18 @@ where
         }
         let same = match (target, recipient) {
             (Resolved::Seat(a), Resolved::Seat(b)) => a == b,
-            (Resolved::Pane { pane: a, .. }, Resolved::Pane { pane: b, .. }) => a == b,
-            (Resolved::Seat(seat), Resolved::Pane { pane, .. })
-            | (Resolved::Pane { pane, .. }, Resolved::Seat(seat)) => {
+            (
+                Resolved::Pane {
+                    pane: a, host: ha, ..
+                },
+                Resolved::Pane {
+                    pane: b, host: hb, ..
+                },
+            ) => a == b && ha == hb,
+            (Resolved::Seat(seat), Resolved::Pane { pane, host, .. })
+            | (Resolved::Pane { pane, host, .. }, Resolved::Seat(seat)) => {
                 let (_, client) = connection.get()?;
-                super::pane_seat(client, &parsed.output, pane, clock.as_ref())?
+                super::pane_seat_on(client, &parsed.output, pane, host.clone(), clock.as_ref())?
                     .is_some_and(|existing| existing == *seat)
             }
         };
@@ -369,9 +429,11 @@ where
     }
     let (instance, client) = connection.get()?;
     run_gates(parsed, client, clock.as_ref())?;
-    let mut allocated: HashMap<HostTargetId, SeatId> = HashMap::new();
+    // Two cores' `t2` are two targets.
+    let mut allocated: HashMap<(Option<HostLocator>, HostTargetId), SeatId> = HashMap::new();
     for entry in &deferred.entries {
-        let seat = match allocated.get(&entry.pane) {
+        let key = (entry.host.clone(), entry.pane.clone());
+        let seat = match allocated.get(&key) {
             Some(seat) => seat.clone(),
             None => {
                 let seat = super::allocate_recipient_seat(
@@ -380,10 +442,12 @@ where
                     instance,
                     client,
                     clock.as_ref(),
-                    &parsed.output,
+                    &parsed.herdr_output(),
+                    parsed.caller_site.as_ref(),
                     entry.pane.clone(),
+                    entry.host.clone(),
                 )?;
-                allocated.insert(entry.pane.clone(), seat.clone());
+                allocated.insert(key, seat.clone());
                 seat
             }
         };
@@ -636,6 +700,10 @@ where
             }
             return Ok(Resolved::Seat(seat));
         }
+        // 2b. A herdr-core terminal `<session>:tN`, or a bare `tN` with one core attached.
+        if let Some((target, host)) = self.hc_target(raw).map_err(run_error)? {
+            return self.map_hc_pane(parsed, slot, target, host);
+        }
         // 3. A direct pane ID needs no topology unless narrowing applies.
         if looks_like_pane_id(raw) && self.raw_narrowing.is_none() {
             let pane = HostTargetId::parse(raw.to_owned()).map_err(|detail| {
@@ -643,15 +711,24 @@ where
             })?;
             return self.map_pane(parsed, slot, pane);
         }
-        // 4. Name path against the live topology.
+        // 4. Name path against the live topology. A bare token that no pane path matches (or
+        // when no Herdr topology is reachable) may still name a seat of the named host (SA14).
         let narrowing = self.narrowing().map_err(run_error)?.cloned();
         let narrowing = narrowing.unwrap_or_default();
-        let topology = self.topology().map_err(run_error)?;
-        let caller = self.caller().map_err(run_error)?;
-        let candidate = self.candidate(
-            selector.resolve_with(topology, caller, &narrowing, slot.tiering()),
-            raw,
-        )?;
+        let outcome = match self.topology() {
+            Ok(topology) => {
+                let caller = self.caller().map_err(run_error)?;
+                selector.resolve_with(topology, caller, &narrowing, slot.tiering())
+            }
+            Err(error) => match self.named_seat(parsed, raw, &seat_selector::Outcome::NoMatch)? {
+                Some(seat) => return Ok(Resolved::Seat(seat)),
+                None => return Err(run_error(error)),
+            },
+        };
+        if let Some(seat) = self.named_seat(parsed, raw, &outcome)? {
+            return Ok(Resolved::Seat(seat));
+        }
+        let candidate = self.candidate(outcome, raw)?;
         let path = candidate.path.clone();
         let tier = candidate.tier.as_str().to_owned();
         match self.map_pane(parsed, slot, candidate.pane.clone())? {
@@ -659,11 +736,85 @@ where
                 write_resolved_line(self.stderr, &path, &candidate.pane, &seat, &tier)?;
                 Ok(Resolved::Seat(seat))
             }
-            Resolved::Pane { pane, .. } => Ok(Resolved::Pane {
+            Resolved::Pane { pane, host, .. } => Ok(Resolved::Pane {
                 pane,
+                host,
                 line: Some((path, tier)),
             }),
         }
+    }
+
+    /// The existing seat of the named host that `raw` names, when `raw` reads as a name (no
+    /// pane path matched: `outcome`). Nothing is created: an unknown name reads as no match.
+    fn named_seat(
+        &self,
+        parsed: &ParsedCli,
+        raw: &str,
+        outcome: &seat_selector::Outcome,
+    ) -> Result<Option<SeatId>, RunError> {
+        // `--space`/`--tab` narrow to Herdr locations, which a name has none of.
+        if self.raw_narrowing.is_some() {
+            return Ok(None);
+        }
+        let Some(name) = seat_selector::name_reading(raw, outcome) else {
+            return Ok(None);
+        };
+        let (_, client) = self.connection.get()?;
+        if !client.supports_capability(
+            HOST_SITES_V1,
+            &super::cooperative_budget(self.clock.as_ref()),
+        ) {
+            return Ok(None);
+        }
+        let locator = HostLocator::parse(NAMED_HOST_LOCATOR).map_err(run_error)?;
+        super::pane_seat_on(
+            client,
+            &parsed.output,
+            &HostTargetId::new(name.as_str()),
+            Some(locator),
+            self.clock.as_ref(),
+        )
+    }
+
+    /// The herdr-core terminal `raw` names and its host's locator. The daemon is asked for
+    /// cores only when `raw` has the `tN` / `<session>:tN` shape.
+    fn hc_target(
+        &self,
+        raw: &str,
+    ) -> Result<Option<(HostTargetId, Option<HostLocator>)>, ApiError> {
+        if HcAddress::parse(raw).is_none() {
+            return Ok(None);
+        }
+        let (cores, locators) = self.hc_cores();
+        Ok(hc_selector(raw, cores)?
+            .map(|(session, target)| (target, locators.get(&session).cloned())))
+    }
+
+    /// The attached herdr-core cores and their host locators, from the daemon's
+    /// `HostTopologies` rows (once per invocation). Empty when the daemon predates the
+    /// command or the read fails: the step resolves nothing then.
+    fn hc_cores(&self) -> &(Vec<HcCore>, HashMap<String, HostLocator>) {
+        self.hc.get_or_init(|| {
+            let Ok((_, client)) = self.connection.get() else {
+                return Default::default();
+            };
+            let budget = crate::protocol::time::CallBudget {
+                deadline: crate::protocol::time::MonoInstant(
+                    self.clock
+                        .monotonic_now()
+                        .0
+                        .saturating_add(REMOTE_ADDRESS_BUDGET_MS),
+                ),
+                cancellation: crate::protocol::time::Cancellation::default(),
+            };
+            if !client.supports_capability(HOST_TOPOLOGIES_V1, &budget) {
+                return Default::default();
+            }
+            match client.call(Command::HostTopologies, &budget) {
+                Ok(CommandResult::HostTopologies(rows)) => hc_cores_from(&rows),
+                _ => Default::default(),
+            }
+        })
     }
 
     /// Whether `raw` names a live local pane (its whole-string reading): a read failure is no hit.
@@ -716,6 +867,78 @@ where
                 Err(error) => Err(error),
             },
         )
+    }
+
+    /// The live remote seat named `location` on the node tagged `tag`, from this node's
+    /// replicated state (`seat.created.display_name`, N7). `location` must read as a seat
+    /// name or as a `<session>:tN` herdr-core label (the pane text its home node published,
+    /// H1-remote); the node's own pane readings were tried first, so a pane path wins.
+    /// A name is display text: the daemon's `SeatDirectory.name` of an unretired seat on that
+    /// node, never a lookup that creates or changes anything; two seats of one name refuse.
+    fn remote_named_seat(&self, location: &str, tag: &str) -> Result<Option<SeatId>, RunError> {
+        // A name, or the `<session>:tN` label of a herdr-core terminal seat (H1-remote): both
+        // are the pane text the seat's home node published.
+        let name = match crate::protocol::ids::SeatName::parse(location) {
+            Ok(name) => name.as_str().to_owned(),
+            Err(_) => match crate::host::hc::labels::HcAddress::parse(location) {
+                Some(address) if address.session.is_some() => address.to_string(),
+                _ => return Ok(None),
+            },
+        };
+        let name = name.as_str();
+        let (_, client) = self.connection.get()?;
+        let clock = self.clock.as_ref();
+        let mut cursor = None;
+        let mut found: Option<SeatId> = None;
+        for _ in 0..REMOTE_NAME_MAX_PAGES {
+            let result = client
+                .call(
+                    Command::Seats(SeatsQuery {
+                        page: PageRequest {
+                            cursor: cursor.take(),
+                            limit: REMOTE_NAME_PAGE_LIMIT,
+                            max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+                        },
+                        target: None,
+                        include_retired: false,
+                        filter: SeatFilter {
+                            node: Some(tag.to_owned()),
+                            ..Default::default()
+                        },
+                        host: None,
+                    }),
+                    &super::cooperative_budget(clock),
+                )
+                .map_err(run_error)?;
+            let CommandResult::Seats(page) = result else {
+                return Ok(None);
+            };
+            for seat in page.items {
+                let named = seat.retired_at.is_none()
+                    && seat.directory.as_ref().is_some_and(|d| {
+                        d.name.as_deref() == Some(name)
+                            || (name.contains(':') && d.pane.as_deref() == Some(name))
+                    });
+                if !named {
+                    continue;
+                }
+                // A peer names its own seats and may repeat a name: never guess between them.
+                if found.replace(seat.seat).is_some() {
+                    return Err(run_error(ApiError::new(
+                        ErrorCode::Conflict,
+                        format!(
+                            "{name}@{tag} names more than one seat; pass an exact seat ID",
+                            name = name
+                        ),
+                    )));
+                }
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(found)
     }
 
     /// `location@machine` (spec D2): `Ok(None)` when only the whole string's local reading can
@@ -852,6 +1075,16 @@ where
                 }
                 AddrOutcome::NoMatch if hit => return Ok(None),
                 AddrOutcome::NoMatch => {
+                    if let Some(seat) = self.remote_named_seat(location, &node.tag.to_string())? {
+                        write_resolved_text(
+                            self.stderr,
+                            &format!("{location}@{}", node.tag),
+                            location,
+                            &seat,
+                            "any",
+                        )?;
+                        return Ok(Some(Resolved::Seat(seat)));
+                    }
                     return Err(run_error(ApiError::not_found(format!(
                         "seat {location}@{}: neither an existing seat ID nor a live space/tab/pane \
                          name on {label}",
@@ -877,6 +1110,21 @@ where
                     )));
                 }
                 AddrOutcome::HostUnavailable => {
+                    // The named host has no topology, so a node with one named seat
+                    // answers every name this way: the replicated name decides first.
+                    if !hit
+                        && let Some(seat) =
+                            self.remote_named_seat(location, &node.tag.to_string())?
+                    {
+                        write_resolved_text(
+                            self.stderr,
+                            &format!("{location}@{}", node.tag),
+                            location,
+                            &seat,
+                            "any",
+                        )?;
+                        return Ok(Some(Resolved::Seat(seat)));
+                    }
                     format!("{label}: seat names need its live Herdr topology")
                 }
                 AddrOutcome::Unavailable { reason } => {
@@ -962,6 +1210,30 @@ where
             .map_err(run_error)
     }
 
+    /// [`Self::map_pane`] for a herdr-core terminal: a lookup is scoped to the core's host,
+    /// so `alpha:t1` never picks the seat on `beta`'s `t1`.
+    fn map_hc_pane(
+        &mut self,
+        parsed: &ParsedCli,
+        slot: SeatSlot,
+        pane: HostTargetId,
+        host: Option<HostLocator>,
+    ) -> Result<Resolved, RunError> {
+        match slot.mapping() {
+            SeatMapping::Lookup => {
+                let (_, client) = self.connection.get()?;
+                super::pane_seat_on(client, &parsed.output, &pane, host, self.clock.as_ref())?
+                    .map(Resolved::Seat)
+                    .ok_or_else(|| super::no_seat_for_pane(&pane))
+            }
+            SeatMapping::Allocate => Ok(Resolved::Pane {
+                pane,
+                host,
+                line: None,
+            }),
+        }
+    }
+
     /// Steps 3 and 4: the pane's seat by the slot's D4 class. A lookup resolves now; an
     /// allocation is deferred to pass 2 (no journal write here).
     fn map_pane(
@@ -977,7 +1249,11 @@ where
                     .map(Resolved::Seat)
                     .ok_or_else(|| super::no_seat_for_pane(&pane))
             }
-            SeatMapping::Allocate => Ok(Resolved::Pane { pane, line: None }),
+            SeatMapping::Allocate => Ok(Resolved::Pane {
+                pane,
+                host: None,
+                line: None,
+            }),
         }
     }
 }
@@ -994,7 +1270,14 @@ fn cannot_resolve_machines(error: &ApiError) -> bool {
 fn same_resolution(a: &Resolved, b: &Resolved) -> bool {
     match (a, b) {
         (Resolved::Seat(a), Resolved::Seat(b)) => a == b,
-        (Resolved::Pane { pane: a, .. }, Resolved::Pane { pane: b, .. }) => a == b,
+        (
+            Resolved::Pane {
+                pane: a, host: ha, ..
+            },
+            Resolved::Pane {
+                pane: b, host: hb, ..
+            },
+        ) => a == b && ha == hb,
         _ => false,
     }
 }
@@ -1003,6 +1286,11 @@ fn same_resolution(a: &Resolved, b: &Resolved) -> bool {
 /// the seat to replicate, plus margin, so the daemon's typed answer arrives first (spec 4.3).
 pub(crate) const REMOTE_ADDRESS_BUDGET_MS: u64 =
     crate::service::sync_admin::REMOTE_ADDRESS_DAEMON_BOUND_MS + 3_000;
+
+/// The name lookup of a remote seat pages the node's seats this many at a time, at most this
+/// many pages.
+const REMOTE_NAME_PAGE_LIMIT: u16 = 64;
+const REMOTE_NAME_MAX_PAGES: usize = 16;
 
 /// Caller-visible refusals of remote addresses (spec 4.4).
 mod remote_error {
@@ -1189,5 +1477,426 @@ pub(crate) fn post_freeze_checks(action: &mut CliAction) -> Result<(), ApiError>
             check_unique_recipients(require_ack)
         }
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod hc_selector_tests {
+    use super::*;
+    use crate::host::hc::labels::TerminalId;
+
+    fn core(session: &str) -> HcCore {
+        HcCore {
+            session: session.into(),
+            terminals: vec![TerminalId::parse("t1").unwrap()],
+        }
+    }
+
+    #[test]
+    fn bare_t1_with_two_cores_is_refused_with_both() {
+        let cores = [core("alpha"), core("beta")];
+        let error = hc_selector("t1", &cores).unwrap_err();
+        assert!(
+            error.detail.contains("alpha:t1") && error.detail.contains("beta:t1"),
+            "{}",
+            error.detail
+        );
+        assert_eq!(
+            hc_selector("beta:t1", &cores).unwrap().unwrap(),
+            ("beta".to_owned(), HostTargetId::new("t1"))
+        );
+    }
+
+    fn row(session: Option<&str>, target: &str, locator: Option<&str>) -> HostPaneLabels {
+        HostPaneLabels {
+            host: "1".into(),
+            target: HostTargetId::new(target),
+            terminal: target.into(),
+            incarnation: None,
+            workspace_id: "-".into(),
+            workspace_label: None,
+            tab_id: "-".into(),
+            tab_label: None,
+            pane_label: None,
+            session: session.map(str::to_owned),
+            locator: locator.map(|l| HostLocator::parse(l).unwrap()),
+        }
+    }
+
+    fn two_core_rows() -> Vec<HostPaneLabels> {
+        vec![
+            row(Some("alpha"), "t1", Some("/a")),
+            row(Some("alpha"), "t2", Some("/a")),
+            row(Some("beta"), "t1", Some("/b")),
+            row(None, "w1:p1", None),
+        ]
+    }
+
+    #[test]
+    fn cores_from_rows_group_by_session() {
+        let (cores, locators) = hc_cores_from(&two_core_rows());
+        assert_eq!(cores.len(), 2);
+        assert_eq!(cores[0].session, "alpha");
+        let ids: Vec<&str> = cores[0].terminals.iter().map(TerminalId::as_str).collect();
+        assert_eq!(ids, ["t1", "t2"]);
+        assert_eq!(cores[1].session, "beta");
+        assert_eq!(locators["alpha"].as_str(), "/a");
+        assert_eq!(locators["beta"].as_str(), "/b");
+    }
+
+    #[test]
+    fn rows_without_session_make_no_core() {
+        let (cores, locators) = hc_cores_from(&[row(None, "w1:p1", None), row(None, "t1", None)]);
+        assert!(cores.is_empty() && locators.is_empty());
+    }
+
+    #[test]
+    fn bare_t1_refused_with_both_candidates_from_rows() {
+        let (cores, _) = hc_cores_from(&two_core_rows());
+        let error = hc_selector("t1", &cores).unwrap_err();
+        assert_eq!(
+            error.detail,
+            "ambiguous terminal, use one of: alpha:t1 beta:t1"
+        );
+        // t2 is only on alpha: a bare t2 is unambiguous in the candidate list but several
+        // cores are attached, so it is refused too, naming just its owner.
+        assert!(
+            hc_selector("t2", &cores)
+                .unwrap_err()
+                .detail
+                .ends_with("alpha:t2")
+        );
+    }
+
+    #[test]
+    fn qualified_t1_maps_to_its_hosts_locator() {
+        let (cores, locators) = hc_cores_from(&two_core_rows());
+        let (session, target) = hc_selector("beta:t1", &cores).unwrap().unwrap();
+        assert_eq!((session.as_str(), target.as_str()), ("beta", "t1"));
+        assert_eq!(locators[&session].as_str(), "/b");
+    }
+
+    /// A client that counts `HostTopologies` calls and serves two-core rows.
+    struct Counting(std::sync::atomic::AtomicUsize);
+    impl LocalClient for Counting {
+        fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
+            name == HOST_TOPOLOGIES_V1
+        }
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            if matches!(command, Command::SeatInspect(_)) {
+                // A raw `alpha:t2` is first tried as a seat ID.
+                return Err(ApiError::not_found("no such seat"));
+            }
+            assert!(matches!(command, Command::HostTopologies));
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(CommandResult::HostTopologies(two_core_rows()))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+
+    struct TestClock;
+    impl Clock for TestClock {
+        fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+            crate::protocol::time::UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
+            crate::protocol::time::MonoInstant(0)
+        }
+    }
+
+    #[test]
+    fn non_tn_selector_reads_no_cores() {
+        let connection = LazyConnection::new(|| {
+            Ok((
+                crate::node::NodeUuid::new_v4(),
+                Counting(std::sync::atomic::AtomicUsize::new(0)),
+            ))
+        });
+        let clock: Arc<dyn Clock> = Arc::new(TestClock);
+        let mut stderr = Vec::new();
+        let stage = Stage {
+            connection: &connection,
+            clock: &clock,
+            stderr: &mut stderr,
+            topology: Once::new(|| Err(ApiError::invalid_request("unused"))),
+            caller: Once::new(|| Ok(None)),
+            raw_narrowing: None,
+            narrowing: OnceCell::new(),
+            hc: OnceCell::new(),
+        };
+        let calls = || {
+            connection
+                .get()
+                .unwrap()
+                .1
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+        };
+        for raw in ["w1:p1", "snSGbl096JZZ", "project/alice", "alpha:x1"] {
+            assert_eq!(stage.hc_target(raw).unwrap(), None, "{raw}");
+        }
+        assert_eq!(calls(), 0, "a non-tN selector read the cores");
+        let (target, host) = stage.hc_target("beta:t1").unwrap().unwrap();
+        assert_eq!(target.as_str(), "t1");
+        assert_eq!(host.unwrap().as_str(), "/b");
+        // A second tN selector reuses the one read.
+        assert!(stage.hc_target("alpha:t2").unwrap().is_some());
+        assert_eq!(calls(), 1);
+    }
+
+    /// Kills: an allocate slot that drops the core (`alpha:t2` allocated on the caller's own
+    /// host, or as a named seat `t2`), and two cores' `t1` read as one target.
+    #[test]
+    fn allocate_slot_keeps_the_core() {
+        let connection = LazyConnection::new(|| {
+            Ok((
+                crate::node::NodeUuid::new_v4(),
+                Counting(std::sync::atomic::AtomicUsize::new(0)),
+            ))
+        });
+        let clock: Arc<dyn Clock> = Arc::new(TestClock);
+        let mut parsed = crate::cli::commands::parse_argv([
+            "herdr-threads",
+            "invite",
+            "thread-1",
+            "--seat",
+            "alpha:t2",
+        ])
+        .unwrap();
+        let mut stderr = Vec::new();
+        let deferred = resolve_cli_seats(
+            &mut parsed,
+            &connection,
+            &clock,
+            || Err(ApiError::invalid_request("no herdr")),
+            || Ok(None),
+            &mut stderr,
+        )
+        .unwrap();
+        let [entry] = deferred.entries.as_slice() else {
+            panic!("one deferred slot");
+        };
+        assert_eq!(entry.pane.as_str(), "t2");
+        assert_eq!(entry.host.as_ref().map(HostLocator::as_str), Some("/a"));
+
+        let on = |host: &str| Resolved::Pane {
+            pane: HostTargetId::new("t2"),
+            host: Some(HostLocator::parse(host).unwrap()),
+            line: None,
+        };
+        assert!(same_resolution(&on("/a"), &on("/a")));
+        assert!(!same_resolution(&on("/a"), &on("/b")));
+    }
+
+    #[test]
+    fn other_readings_fall_through() {
+        let one = [core("alpha")];
+        assert_eq!(
+            hc_selector("t1", &one).unwrap().unwrap(),
+            ("alpha".to_owned(), HostTargetId::new("t1"))
+        );
+        // No cores, an unknown session, or a non-address: not an hc selector.
+        assert_eq!(hc_selector("t1", &[]).unwrap(), None);
+        assert_eq!(hc_selector("gamma:t1", &one).unwrap(), None);
+        assert_eq!(hc_selector("w1:p1", &one).unwrap(), None);
+    }
+}
+
+/// The `named_seat` stage through `resolve_cli_seats` (SA14, D4): a bare token reads as a name
+/// only when no pane path matched, and only against the named host.
+#[cfg(test)]
+mod named_stage_tests {
+    use super::*;
+    use crate::host::observation::{TopologyPane, TopologySpace, TopologyTab};
+    use crate::protocol::{
+        pagination::{Consistency, Page, StopReason},
+        results::SeatSummary,
+        time::UtcMillis,
+    };
+    use std::sync::Mutex;
+
+    /// Serves one named-host seat for `reviewer`; records every command it is sent.
+    struct Named {
+        host_sites: bool,
+        sent: Mutex<Vec<Command>>,
+    }
+
+    impl LocalClient for Named {
+        fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
+            self.host_sites && name == HOST_SITES_V1
+        }
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.sent.lock().unwrap().push(command.clone());
+            let query = match command {
+                Command::Seats(query) => query,
+                // The token is no exact seat ID.
+                Command::SeatInspect(_) => {
+                    return Err(ApiError::new(ErrorCode::NotFound, "no such seat"));
+                }
+                _ => return Err(ApiError::new(ErrorCode::Unsupported, "only seat lookups")),
+            };
+            let on_named = query.host.as_ref().is_some_and(HostLocator::is_named_host)
+                && query.target.as_ref().map(HostTargetId::as_str) == Some("reviewer");
+            let items = if on_named {
+                vec![SeatSummary {
+                    seat: SeatId::new("snSGnamed0001"),
+                    continuity: ContinuityStatus::Resolved,
+                    target: Some(HostTargetId::new("reviewer")),
+                    generation: 1,
+                    created_at: UtcMillis(0),
+                    retired_at: None,
+                    active: true,
+                    bindings: Vec::new(),
+                    availability: None,
+                    directory: None,
+                }]
+            } else {
+                Vec::new()
+            };
+            Ok(CommandResult::Seats(Page {
+                items,
+                next_cursor: None,
+                next_argv: None,
+                high_water_ordinal: 0,
+                scope_revision: None,
+                has_more: false,
+                stop_reason: StopReason::Complete,
+                consistency: Consistency::BoundedLive,
+            }))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+
+    struct Zero;
+    impl Clock for Zero {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
+            crate::protocol::time::MonoInstant(0)
+        }
+    }
+
+    fn topology(pane_label: Option<&str>) -> HostTopology {
+        HostTopology {
+            spaces: vec![TopologySpace {
+                id: "w1".into(),
+                label: Some("project".into()),
+            }],
+            tabs: vec![TopologyTab {
+                id: "w1:t1".into(),
+                space: "w1".into(),
+                label: Some("main".into()),
+            }],
+            panes: pane_label
+                .map(|label| TopologyPane {
+                    target: HostTargetId::new("w1:p1"),
+                    space: "w1".into(),
+                    tab: "w1:t1".into(),
+                    label: Some(label.into()),
+                    agent_names: Vec::new(),
+                })
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// Runs `inbox --seat reviewer` through pass 1 and returns the parsed seat and the commands
+    /// the daemon was sent.
+    fn resolve(
+        host_sites: bool,
+        topology: Result<HostTopology, ApiError>,
+    ) -> (Result<String, String>, Vec<Command>) {
+        let mut parsed =
+            crate::cli::commands::parse_argv(["herdr-threads", "inbox", "--seat", "reviewer"])
+                .unwrap();
+        let connection = LazyConnection::new(|| {
+            Ok((
+                crate::node::NodeUuid::new_v4(),
+                Named {
+                    host_sites,
+                    sent: Mutex::new(Vec::new()),
+                },
+            ))
+        });
+        let clock: Arc<dyn Clock> = Arc::new(Zero);
+        let mut stderr = Vec::new();
+        let outcome = resolve_cli_seats(
+            &mut parsed,
+            &connection,
+            &clock,
+            || topology,
+            || Ok(None),
+            &mut stderr,
+        );
+        let sent = connection.get().unwrap().1.sent.lock().unwrap().clone();
+        let seat = outcome.map_err(|error| error.to_string()).map(|_| {
+            let CliAction::Wire(Command::Inbox(query)) = &parsed.action else {
+                panic!("not an inbox read: {:?}", parsed.action);
+            };
+            query.seat.as_ref().map(|s| s.as_str().to_owned()).unwrap()
+        });
+        (seat, sent)
+    }
+
+    #[test]
+    fn bare_token_with_no_pane_match_reads_as_a_named_seat() {
+        let (seat, sent) = resolve(true, Ok(topology(None)));
+        assert_eq!(seat.unwrap(), "snSGnamed0001");
+        assert!(
+            sent.iter().any(|c| matches!(c, Command::Seats(q)
+                if q.host.as_ref().is_some_and(HostLocator::is_named_host))),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn bare_token_reads_as_a_name_when_no_herdr_topology_is_reachable() {
+        let (seat, _) = resolve(true, Err(ApiError::invalid_request("no herdr")));
+        assert_eq!(seat.unwrap(), "snSGnamed0001");
+    }
+
+    #[test]
+    fn a_matching_pane_path_wins_and_the_named_host_is_never_asked() {
+        let (seat, sent) = resolve(true, Ok(topology(Some("reviewer"))));
+        // The pane reading wins: the lookup is for pane `w1:p1`, never for the name.
+        assert!(seat.is_err(), "{seat:?}");
+        assert!(
+            !sent.iter().any(|c| matches!(c, Command::Seats(q)
+                if q.host.as_ref().is_some_and(HostLocator::is_named_host))),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn without_the_host_sites_capability_a_name_resolves_nothing() {
+        let (seat, sent) = resolve(false, Ok(topology(None)));
+        assert!(seat.is_err(), "{seat:?}");
+        assert!(
+            !sent.iter().any(|c| matches!(c, Command::Seats(_))),
+            "{sent:?}"
+        );
     }
 }

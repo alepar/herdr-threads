@@ -1,0 +1,8 @@
+[seat list]
+Current host labels are advisory; unavailable labels do not change seat identity.
+SEAT           NODE  STATE     PRESENCE  CREATED            SPACE  TAB  PANE
+snNamed000001  n1    resolved  active    2026-09-30 13:00Z  -      -    reviewer
+[thread show]
+- / - / reviewer [advisory]
+[seat inspect]
+directory: n1 idle claude last=- seen=-: - / - / reviewer

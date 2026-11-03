@@ -6,10 +6,11 @@
 
 use crate::daemon::health::{ComponentStatus, HostHealthInput, LaneDegradation};
 use crate::daemon::logs::LaneErrorLog;
+use crate::host::probe::PROBE_BUDGET;
 use crate::identity::repair::OrdinaryIdentity;
 use crate::ports::{
-    BootstrapObserver, HookPullOutlook, HostId, HostPort, ModChannels, NativeLaunchCapability,
-    PokeCapabilitySource, StorePort,
+    BootstrapObserver, HookPullOutlook, HostId, HostKind, HostPort, ModChannels,
+    NativeLaunchCapability, PokeCapabilitySource, StorePort, WakeCapability,
 };
 use crate::protocol::{
     handoff::HandoffNamespace,
@@ -28,10 +29,10 @@ use crate::service::{
 };
 use crate::store::hosts::{HostIndex, HostRow};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, RwLock, TryLockError,
+        Arc, Mutex, OnceLock, RwLock, TryLockError,
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle, ThreadId},
@@ -49,30 +50,38 @@ const ATTACH_POLL: Duration = Duration::from_millis(10);
 /// The budget of a startup or sweep attach.
 const BACKGROUND_ATTACH_MS: u64 = 5_000;
 
-type BuildHost =
-    Arc<dyn Fn(&HostLocator) -> (Arc<dyn HostPort>, Arc<dyn BootstrapObserver>) + Send + Sync>;
+type BuildHost = Arc<
+    dyn Fn(HostKind, &HostLocator) -> (Arc<dyn HostPort>, Arc<dyn BootstrapObserver>) + Send + Sync,
+>;
+type ProbeHost = Arc<dyn Fn(&HostLocator, Duration) -> Result<HostKind, ApiError> + Send + Sync>;
 type SocketExists = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 /// The `herdr_hosts` rows this node attached before, most recent first.
 pub type RememberedHosts = Arc<dyn Fn(&CallBudget) -> Result<Vec<HostRow>, ApiError> + Send + Sync>;
+/// The hosts that hold a resolved local seat, read through the store.
+pub type SeatedHosts = Arc<dyn Fn(&CallBudget) -> Result<BTreeSet<HostId>, ApiError> + Send + Sync>;
 type LogLine = Arc<dyn Fn(&str) + Send + Sync>;
 /// Runs once with the first attached session.
 pub type FirstAttachHook = Box<dyn FnOnce(&Arc<HostSession>) + Send>;
 
-/// HostFactory: how a Herdr server's port and observer are built and whether
-/// its socket exists.
+/// HostFactory: how a host's port and observer are built, which kind answers
+/// on a socket, and whether the socket exists.
 ///
-/// Owns: two closures, `build(locator) -> (port, observer)` and `exists(path)`.
-/// Hides: `NativeCli` construction and the socket test (production) versus the
-/// fake-locator map (tests).
+/// Owns: three closures, `exists(path)`, `probe(locator, budget) -> kind` and
+/// `build(kind, locator) -> (port, observer)`. `HostSessions` calls them in
+/// that order, `probe` under `attach_lock` and before the `herdr_hosts` row is
+/// written (H1b), so a crash never leaves a wrongly kinded row.
+/// Hides: `NativeCli` / `HcHost` construction, the `hello`-then-`ping` probe and
+/// the socket test (production) versus the fake-locator map (tests).
 /// Must not: attach, write the store or spawn workers (`HostSessions` does all
 /// three).
 /// Role: built in `main.rs` or a test, carried by [`HostAttachPlan`] and
-/// consumed by `HostSessions`. Two closures, not a trait: one production
+/// consumed by `HostSessions`. Closures, not a trait: one production
 /// implementation, and the fake is data. A new way to build a host is a new
-/// closure pair; nothing else constructs a `HostPort`.
+/// closure; nothing else constructs a `HostPort`.
 #[derive(Clone)]
 pub struct HostFactory {
     pub build: BuildHost,
+    pub probe: ProbeHost,
     pub exists: SocketExists,
 }
 
@@ -120,6 +129,8 @@ pub struct SessionDeps {
     pub lane_log: Option<Arc<dyn LaneErrorLog>>,
     /// The remembered `herdr_hosts` rows, read through the store.
     pub remembered: RememberedHosts,
+    /// The hosts holding a resolved local seat: what keeps a dialled host from idling out.
+    pub seated: SeatedHosts,
     pub sweep_interval: Duration,
     /// Each session's wake-lane safety tick and observation capture cadence
     /// (production: `WAKE_SAFETY_TICK_MILLIS` and `OBSERVATION_CADENCE`; see
@@ -154,6 +165,7 @@ impl SessionDeps {
             log: Arc::new(|_: &str| {}),
             lane_log: None,
             remembered: Arc::new(|_: &CallBudget| Ok(Vec::new())),
+            seated: Arc::new(|_: &CallBudget| Ok(BTreeSet::new())),
             sweep_interval: DEFAULT_SWEEP_INTERVAL,
             wake_safety_tick: Duration::from_millis(
                 crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
@@ -189,6 +201,11 @@ impl LaneHandle {
 pub struct HostHealthEntry {
     pub input: HostHealthInput,
     pub lanes: Vec<LaneDegradation>,
+    /// Whether `input` joins `Health.hosts` and its aggregate. False for the
+    /// built-in named host: only its failed lanes reach Health, because its
+    /// capability answers (no cooperative Herdr prompt) are not a dialled
+    /// server's and would skew the aggregate and its wake limitation.
+    pub aggregated: bool,
 }
 
 /// `lane` as a Health degradation when its worker recorded a failure after its
@@ -240,9 +257,15 @@ pub struct HostSession {
     reachability: Arc<HostReachability>,
     identity: Arc<OrdinaryIdentity>,
     bootstrap: Option<BootstrapRuntime>,
+    /// The bootstrap runtime of a host that creates its own targets (V3 automatic bootstrap).
+    /// Kept apart from `bootstrap` so the V1/V2 guarded path, Send preparation and the
+    /// advertised guarded capabilities, which read `bootstrap`, answer as before.
+    target_bootstrap: Option<BootstrapRuntime>,
     evidence: Arc<HostEvidenceStatus>,
     observation: LaneHandle,
-    wake: LaneHandle,
+    /// `None` when the port's `wake_capability()` is `WakeCapability::None`: no wake
+    /// lane runs for such a host.
+    wake: Option<LaneHandle>,
     stop: Cancellation,
     /// Keeps the link from the daemon's stop token to `stop` alive.
     _link: CancelSubscription,
@@ -272,14 +295,20 @@ impl HostSession {
     pub fn bootstrap(&self) -> Option<&BootstrapRuntime> {
         self.bootstrap.as_ref()
     }
+    /// `None` unless the port creates its own targets and the node has a handoff state
+    /// directory.
+    pub fn target_bootstrap(&self) -> Option<&BootstrapRuntime> {
+        self.target_bootstrap.as_ref()
+    }
     pub fn evidence(&self) -> &Arc<HostEvidenceStatus> {
         &self.evidence
     }
     pub fn observation(&self) -> &LaneHandle {
         &self.observation
     }
-    pub fn wake(&self) -> &LaneHandle {
-        &self.wake
+    /// The wake lane; `None` for a host whose port answers `WakeCapability::None`.
+    pub fn wake(&self) -> Option<&LaneHandle> {
+        self.wake.as_ref()
     }
     /// Asks this session's workers to stop. Their handles join through the
     /// daemon's worker slot.
@@ -299,8 +328,8 @@ impl HostSession {
             other => other,
         };
         let id = self.host_id.get();
-        let lanes = [&self.observation, &self.wake]
-            .into_iter()
+        let lanes = std::iter::once(&self.observation)
+            .chain(self.wake.as_ref())
             .filter_map(|handle| {
                 lane_degradation(format!("{}[{id}]", handle.lane().name()), handle.status())
             })
@@ -320,6 +349,7 @@ impl HostSession {
                 last_reconciliation_at: evidence.last_reconciliation_at,
             },
             lanes,
+            aggregated: true,
         }
     }
 
@@ -335,6 +365,8 @@ impl HostSession {
     ) -> Arc<Self> {
         let stop = Cancellation::default();
         let link = stop.on_cancel(Arc::new(|| {}));
+        // A host that creates its own targets keeps the runtime in the V3 slot only.
+        let creates_targets = identity.host_port().creates_targets_itself();
         let observer = bootstrap.as_ref().map_or_else(
             || Arc::new(RefusedBootstrapObserver) as Arc<dyn BootstrapObserver>,
             |runtime| Arc::clone(&runtime.observer),
@@ -344,6 +376,11 @@ impl HostSession {
             status: Arc::new(WorkerStatus::default()),
             pacer: Arc::new(Pacer::new(lane.name(), Arc::clone(&clock), stop.clone())),
         };
+        let (bootstrap_slot, target_slot) = if creates_targets {
+            (None, bootstrap)
+        } else {
+            (bootstrap, None)
+        };
         Arc::new(Self {
             host_id: identity.host_id(),
             locator,
@@ -351,10 +388,11 @@ impl HostSession {
             observer,
             reachability: Arc::new(HostReachability::default()),
             identity,
-            bootstrap,
+            bootstrap: bootstrap_slot,
+            target_bootstrap: target_slot,
             evidence: Arc::new(HostEvidenceStatus::default()),
             observation: lane(Lane::Observation),
-            wake: lane(Lane::Wakes),
+            wake: Some(lane(Lane::Wakes)),
             stop,
             _link: link,
         })
@@ -377,7 +415,10 @@ impl BootstrapObserver for RefusedBootstrapObserver {
 
 /// HostSessions: the registry of attached Herdr servers.
 ///
-/// Owns: up to [`MAX_ATTACHED_HOSTS`] sessions keyed by `HostId`, attached at
+/// Owns: one built-in session slot ([`HostSessions::attach_builtin`]: set once,
+/// never dialled, outside the cap and [`HostSessions::attached`], visible to
+/// [`HostSessions::all_for_reads`], `by_locator` and `resolve`) and up to
+/// [`MAX_ATTACHED_HOSTS`] dialled sessions keyed by `HostId`, attached at
 /// startup, lazily through [`HostSessions::resolve`] on the request path (one
 /// attach under concurrent first claims, bounded by the request budget,
 /// `StoreBusy` past it) and by a periodic sweep; never detached. Each session
@@ -396,6 +437,8 @@ impl BootstrapObserver for RefusedBootstrapObserver {
 /// (`DomainService::attached_host`). New per-host workers go into `HostSession`.
 pub struct HostSessions {
     sessions: RwLock<BTreeMap<HostId, Arc<HostSession>>>,
+    /// The built-in session: set once, never in `sessions`.
+    builtin: OnceLock<Arc<HostSession>>,
     index: Arc<HostIndex>,
     factory: HostFactory,
     attach_lock: Mutex<()>,
@@ -432,6 +475,7 @@ impl HostSessions {
         };
         Self {
             sessions: RwLock::new(BTreeMap::new()),
+            builtin: OnceLock::new(),
             index,
             factory,
             attach_lock: Mutex::new(()),
@@ -447,6 +491,32 @@ impl HostSessions {
         }
     }
 
+    /// A registry over several prebuilt sessions (distinct host ids), for fixtures that read
+    /// every host's labels. Nothing attaches; there is no sole session, so locators resolve
+    /// only through the registry's own lookup.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn prebuilt_many(
+        prebuilt: Vec<Arc<HostSession>>,
+        store: Arc<dyn StorePort>,
+        clock: Arc<dyn Clock>,
+        node_uuid: String,
+    ) -> Arc<Self> {
+        let deps = SessionDeps::detached(store, clock, node_uuid);
+        let factory = HostFactory {
+            build: Arc::new(|_, _| unreachable!("a prebuilt registry attaches nothing")),
+            probe: Arc::new(|_, _| unreachable!("a prebuilt registry attaches nothing")),
+            exists: Arc::new(|_| false),
+        };
+        let sessions = Self::new(Arc::new(HostIndex::new()), factory, deps);
+        {
+            let mut map = sessions.sessions.write().unwrap_or_else(|e| e.into_inner());
+            for session in prebuilt {
+                map.insert(session.host_id, session);
+            }
+        }
+        Arc::new(sessions)
+    }
+
     /// A registry over one prebuilt session, for fixtures: every locator
     /// resolves to it and nothing attaches. The node-wide pieces are inert
     /// (no workers, no remembered rows, nothing reachable to attach).
@@ -458,7 +528,8 @@ impl HostSessions {
     ) -> Arc<Self> {
         let deps = SessionDeps::detached(store, clock, node_uuid);
         let factory = HostFactory {
-            build: Arc::new(|_| unreachable!("a prebuilt registry attaches nothing")),
+            build: Arc::new(|_, _| unreachable!("a prebuilt registry attaches nothing")),
+            probe: Arc::new(|_, _| unreachable!("a prebuilt registry attaches nothing")),
             exists: Arc::new(|_| false),
         };
         let mut sessions = Self::new(Arc::new(HostIndex::new()), factory, deps);
@@ -475,7 +546,11 @@ impl HostSessions {
         self.sessions.read().ok()?.get(&id).cloned()
     }
 
+    /// The session of `locator`: the built-in one first, then a dialled one.
     pub fn by_locator(&self, locator: &HostLocator) -> Option<Arc<HostSession>> {
+        if let Some(builtin) = self.builtin.get().filter(|b| b.locator == *locator) {
+            return Some(Arc::clone(builtin));
+        }
         self.sessions
             .read()
             .ok()?
@@ -484,7 +559,7 @@ impl HostSessions {
             .cloned()
     }
 
-    /// Every session, ascending by host id.
+    /// Every dialled session, ascending by host id. Never the built-in one.
     pub fn attached(&self) -> Vec<Arc<HostSession>> {
         self.sessions
             .read()
@@ -492,19 +567,69 @@ impl HostSessions {
             .unwrap_or_default()
     }
 
+    /// Every session a read may consult: the dialled ones (ascending by host
+    /// id), then the built-in one.
+    pub fn all_for_reads(&self) -> Vec<Arc<HostSession>> {
+        let mut all = self.attached();
+        all.extend(self.builtin.get().cloned());
+        all
+    }
+
+    /// Whether any dialled session's host holds a resolved local seat (07 §5.3 idle exit). A
+    /// store that cannot answer counts as holding one, so a read failure never ends the daemon.
+    pub fn any_seated(&self) -> bool {
+        let attached = self.attached();
+        if attached.is_empty() {
+            return false;
+        }
+        match (self.deps.seated)(&self.background_budget()) {
+            Ok(seated) => attached
+                .iter()
+                .any(|session| seated.contains(&session.host_id)),
+            Err(_) => true,
+        }
+    }
+
+    /// The first dialled session's Pacer for a host lane, among the sessions that run the lane
+    /// (a host with no wake capability has no wake lane, so it is not "first" for `Wakes`).
+    pub fn first_pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
+        self.attached().into_iter().find_map(|session| match lane {
+            Lane::Observation => Some(Arc::clone(session.observation().pacer())),
+            Lane::Wakes => session.wake().map(|wake| Arc::clone(wake.pacer())),
+            _ => None,
+        })
+    }
+
     pub fn attached_count(&self) -> usize {
         self.sessions.read().map_or(0, |map| map.len())
     }
 
-    /// Whether any attached server is not marked down.
+    /// The built-in host's wake-armed named bindings (tmux hint verified, process alive), pruning
+    /// the dead ones: the idle-exit term for a tmux seat the daemon could wake.
+    pub fn wake_armed_bindings(&self) -> usize {
+        self.builtin
+            .get()
+            .map_or(0, |session| session.port().wake_armed_bindings())
+    }
+
+    /// Whether any attached Herdr server is not marked down. The peer-discovery
+    /// gate asks about Herdr (`machines` come from its CLI), so this is the one
+    /// new `kind()` reader: dialled sessions of another kind never open it.
     pub fn any_reachable(&self) -> bool {
-        self.attached()
-            .iter()
-            .any(|session| !session.reachability.is_down())
+        self.attached().iter().any(|session| {
+            session.port().kind() == crate::ports::HostKind::Herdr
+                && !session.reachability.is_down()
+        })
     }
 
     /// One Health entry per attached server, ascending by host id, with the
-    /// server's own failed lanes (`observation[<host_id>]`, `wake[<host_id>]`).
+    /// server's own failed lanes (`observation[<host_id>]`, `wake[<host_id>]`),
+    /// then the built-in named host's entry only while one of its lanes is
+    /// degraded, and not aggregated (`HostHealthEntry::aggregated`).
+    /// `DaemonHealthInputs.hosts` empty means a store-only daemon, and `assemble`
+    /// aggregates over `hosts`, so an always-present built-in input would turn
+    /// every store-only daemon's capability fields into the named host's; its
+    /// lane failure still reaches Health and doctor.
     ///
     /// Operator-only surface: it feeds `Health.hosts` and the degraded-lane
     /// lines of `doctor`, which carry the node-local host id and the socket
@@ -512,9 +637,18 @@ impl HostSessions {
     /// outage or recovery shows without a restart. A server the observation
     /// lane marked down reports unreachable even before its evidence says so.
     pub fn health_entries(&self) -> Vec<HostHealthEntry> {
+        let builtin = self
+            .builtin
+            .get()
+            .map(|session| HostHealthEntry {
+                aggregated: false,
+                ..session.health_entry()
+            })
+            .filter(|entry| !entry.lanes.is_empty());
         self.attached()
             .iter()
             .map(|session| session.health_entry())
+            .chain(builtin)
             .collect()
     }
 
@@ -528,16 +662,17 @@ impl HostSessions {
         locator: &HostLocator,
         budget: &CallBudget,
     ) -> Result<Arc<HostSession>, ApiError> {
-        self.resolve_checked(locator, budget, true)
+        self.resolve_checked(locator, budget, false)
     }
 
-    /// `resolve` with the canonical-path check optional: the operator's startup
-    /// hint is explicit, so it skips the check (its socket may not exist yet).
+    /// `resolve` for the operator's startup hint when `startup_hint`: it is explicit,
+    /// so it skips the canonical-path check (its socket may not exist yet) and a
+    /// silent probe does not refuse it.
     fn resolve_checked(
         &self,
         locator: &HostLocator,
         budget: &CallBudget,
-        canonical_check: bool,
+        startup_hint: bool,
     ) -> Result<Arc<HostSession>, ApiError> {
         if let Some(sole) = &self.sole {
             return Ok(Arc::clone(sole));
@@ -549,7 +684,7 @@ impl HostSessions {
         if let Some(session) = self.by_locator(locator) {
             return Ok(session);
         }
-        self.attach_locked(locator, budget, canonical_check)
+        self.attach_locked(locator, budget, startup_hint)
     }
 
     fn lock_attach(&self, budget: &CallBudget) -> Result<std::sync::MutexGuard<'_, ()>, ApiError> {
@@ -576,7 +711,7 @@ impl HostSessions {
         &self,
         locator: &HostLocator,
         budget: &CallBudget,
-        canonical_check: bool,
+        startup_hint: bool,
     ) -> Result<Arc<HostSession>, ApiError> {
         if self.stopped.load(Ordering::SeqCst) {
             return Err(unavailable("host sessions are stopped"));
@@ -587,8 +722,7 @@ impl HostSessions {
                 locator.as_str()
             )));
         }
-        if canonical_check && self.deps.check_canonical && !is_canonical_on_disk(locator.as_path())
-        {
+        if !startup_hint && self.deps.check_canonical && !is_canonical_on_disk(locator.as_path()) {
             return Err(ApiError::invalid_request("host locator is not canonical"));
         }
         if self.attached_count() >= MAX_ATTACHED_HOSTS {
@@ -596,16 +730,34 @@ impl HostSessions {
                 "too many Herdr servers attached ({MAX_ATTACHED_HOSTS})"
             )));
         }
-        let (host_id, epoch) = {
+        // Probe before the row is written (H1b), still under `attach_lock`.
+        let probed = match (self.factory.probe)(locator, PROBE_BUDGET) {
+            Ok(kind) => Some(kind),
+            // The operator named this server and its socket may not be up yet: it
+            // attaches under the kind its row holds (the default for a new row,
+            // `kind_probed_at` NULL), the observation lane reports it down and
+            // reconnects, and a later attach whose probe answers stamps the kind.
+            Err(_) if startup_hint => None,
+            Err(error) => return Err(error),
+        };
+        let (host_id, epoch, kind) = {
             let _turn = self
                 .deps
                 .writer
                 .enter_foreground(budget, self.deps.clock.as_ref())?;
-            self.deps
-                .store
-                .attach_host(locator, self.deps.clock.utc_now().0, budget)?
+            let now = self.deps.clock.utc_now().0;
+            match probed {
+                Some(kind) => {
+                    let (host_id, epoch) = self
+                        .deps
+                        .store
+                        .attach_host_of_kind(locator, now, kind, budget)?;
+                    (host_id, epoch, kind)
+                }
+                None => self.deps.store.attach_host_unprobed(locator, now, budget)?,
+            }
         };
-        let (port, observer) = (self.factory.build)(locator);
+        let (port, observer) = (self.factory.build)(kind, locator);
         port.resume_after_epoch(u64::try_from(epoch).unwrap_or(0));
 
         let session = self.start_session(host_id, locator, port, observer)?;
@@ -625,6 +777,68 @@ impl HostSessions {
         if let Some(hook) = hook {
             hook(&session);
         }
+        Ok(session)
+    }
+
+    /// Upserts the host row of `locator` and returns its id, so a built-in
+    /// port that needs its own host id (the named host's store read is keyed on
+    /// it) can be built before [`HostSessions::attach_builtin`]. Idempotent: the
+    /// attach that follows returns the same id.
+    pub fn reserve_host_id(
+        &self,
+        locator: &HostLocator,
+        kind: crate::ports::HostKind,
+    ) -> Result<HostId, ApiError> {
+        let budget = self.background_budget();
+        let _turn = self
+            .deps
+            .writer
+            .enter_foreground(&budget, self.deps.clock.as_ref())?;
+        self.deps
+            .store
+            .attach_host_of_kind(locator, self.deps.clock.utc_now().0, kind, &budget)
+            .map(|(host_id, _)| host_id)
+    }
+
+    /// Attaches the built-in host under `locator`: the one session that is never
+    /// dialled. It skips `factory.exists`, the canonical-path check and
+    /// [`MAX_ATTACHED_HOSTS`], runs the first-attach hook never, and lives in its
+    /// own slot, so [`HostSessions::attached`] never lists it. A second call is
+    /// an error.
+    pub fn attach_builtin(
+        &self,
+        kind: crate::ports::HostKind,
+        port: Arc<dyn HostPort>,
+        observer: Arc<dyn BootstrapObserver>,
+        locator: &HostLocator,
+    ) -> Result<Arc<HostSession>, ApiError> {
+        let budget = self.background_budget();
+        let _attaching = self.lock_attach(&budget)?;
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(unavailable("host sessions are stopped"));
+        }
+        if self.builtin.get().is_some() {
+            return Err(ApiError::invalid_request(
+                "the built-in host is already attached",
+            ));
+        }
+        let (host_id, epoch) = {
+            let _turn = self
+                .deps
+                .writer
+                .enter_foreground(&budget, self.deps.clock.as_ref())?;
+            self.deps.store.attach_host_of_kind(
+                locator,
+                self.deps.clock.utc_now().0,
+                kind,
+                &budget,
+            )?
+        };
+        port.resume_after_epoch(u64::try_from(epoch).unwrap_or(0));
+        let session = self.start_session(host_id, locator, port, observer)?;
+        self.index.publish(locator.clone(), host_id);
+        // Under `attach_lock`, so no second call raced the check above.
+        let _ = self.builtin.set(Arc::clone(&session));
         Ok(session)
     }
 
@@ -667,11 +881,13 @@ impl HostSessions {
         };
         let reachability = Arc::new(HostReachability::default());
         let evidence = Arc::new(HostEvidenceStatus::default());
-        let wake_pacer = Arc::new(Pacer::new(
-            Lane::Wakes.name(),
-            Arc::clone(&deps.clock),
-            stop.clone(),
-        ));
+        let wake_pacer = (port.wake_capability() != WakeCapability::None).then(|| {
+            Arc::new(Pacer::new(
+                Lane::Wakes.name(),
+                Arc::clone(&deps.clock),
+                stop.clone(),
+            ))
+        });
         let observation_pacer = Arc::new(Pacer::new(
             Lane::Observation.name(),
             Arc::clone(&deps.clock),
@@ -687,7 +903,8 @@ impl HostSessions {
                 Arc::clone(&deps.writer),
             )
             .with_service_cancellation(stop.clone())
-            .with_observation_pacer(Arc::clone(&observation_pacer)),
+            .with_observation_pacer(Arc::clone(&observation_pacer))
+            .with_observation_cadence(deps.observation_cadence),
         );
         let bootstrap = deps.state_dir.as_ref().and_then(|state_dir| {
             (port.native_launch_capability() == NativeLaunchCapability::HostGuardedStart).then(
@@ -701,14 +918,26 @@ impl HostSessions {
                 },
             )
         });
+        let target_bootstrap = deps.state_dir.as_ref().and_then(|state_dir| {
+            port.creates_targets_itself().then(|| BootstrapRuntime {
+                canonical: HandoffNamespace {
+                    instance: deps.node_uuid.clone(),
+                    state_dir: state_dir.clone(),
+                    host_endpoint: PathBuf::from(locator),
+                },
+                observer: Arc::clone(&observer),
+            })
+        });
         let observation_status = Arc::new(WorkerStatus::default());
         let wake_status = Arc::new(WorkerStatus::default());
         if let Some(log) = &deps.lane_log {
             observation_status.set_error_log(Arc::clone(log));
             wake_status.set_error_log(Arc::clone(log));
         }
-        reachability.attach_wake_pacer(Arc::clone(&wake_pacer));
-        deps.kicks.register(Lane::Wakes, Arc::clone(&wake_pacer));
+        if let Some(pacer) = &wake_pacer {
+            reachability.attach_wake_pacer(Arc::clone(pacer));
+            deps.kicks.register(Lane::Wakes, Arc::clone(pacer));
+        }
         deps.kicks
             .register(Lane::Observation, Arc::clone(&observation_pacer));
 
@@ -728,30 +957,34 @@ impl HostSessions {
                 deps.observation_cadence,
             )?);
             spawn_fault(locator)?;
-            started.push(start_wake_worker_named(
-                format!("herdr-wakes-{id}"),
-                Arc::clone(&deps.store),
-                Arc::clone(&deps.writer),
-                Arc::clone(&port),
-                host_id,
-                deps.node_uuid.clone(),
-                deps.boot,
-                deps.retry,
-                Arc::clone(&wake_pacer),
-                stop.clone(),
-                Arc::clone(&wake_status),
-                Arc::clone(&deps.poke_capabilities),
-                Arc::clone(&reachability),
-                Arc::clone(&deps.mod_channels),
-                Arc::clone(&deps.hook_pull),
-                deps.liveness.clone(),
-                deps.wake_safety_tick,
-            )?);
+            if let Some(wake_pacer) = &wake_pacer {
+                started.push(start_wake_worker_named(
+                    format!("herdr-wakes-{id}"),
+                    Arc::clone(&deps.store),
+                    Arc::clone(&deps.writer),
+                    Arc::clone(&port),
+                    host_id,
+                    deps.node_uuid.clone(),
+                    deps.boot,
+                    deps.retry,
+                    Arc::clone(wake_pacer),
+                    stop.clone(),
+                    Arc::clone(&wake_status),
+                    Arc::clone(&deps.poke_capabilities),
+                    Arc::clone(&reachability),
+                    Arc::clone(&deps.mod_channels),
+                    Arc::clone(&deps.hook_pull),
+                    deps.liveness.clone(),
+                    deps.wake_safety_tick,
+                )?);
+            }
             Ok(())
         })();
         if let Err(error) = spawned {
             stop.cancel();
-            deps.kicks.unregister(Lane::Wakes, &wake_pacer);
+            if let Some(pacer) = &wake_pacer {
+                deps.kicks.unregister(Lane::Wakes, pacer);
+            }
             deps.kicks.unregister(Lane::Observation, &observation_pacer);
             for handle in started {
                 let _ = handle.join();
@@ -770,17 +1003,18 @@ impl HostSessions {
             reachability,
             identity,
             bootstrap,
+            target_bootstrap,
             evidence,
             observation: LaneHandle {
                 lane: Lane::Observation,
                 status: observation_status,
                 pacer: observation_pacer,
             },
-            wake: LaneHandle {
+            wake: wake_pacer.map(|pacer| LaneHandle {
                 lane: Lane::Wakes,
                 status: wake_status,
-                pacer: wake_pacer,
-            },
+                pacer,
+            }),
             stop,
             _link: link,
         }))
@@ -826,7 +1060,7 @@ impl HostSessions {
     /// thread failing to start is an error.
     pub fn attach_startup(self: &Arc<Self>, hint: Option<&HostLocator>) -> std::io::Result<()> {
         if let Some(hint) = hint
-            && let Err(error) = self.resolve_checked(hint, &self.background_budget(), false)
+            && let Err(error) = self.resolve_checked(hint, &self.background_budget(), true)
         {
             self.log_attach_failure(hint, &error);
         }
@@ -840,15 +1074,21 @@ impl HostSessions {
         self.start_sweep()
     }
 
-    /// The session the node-wide seams without a claim host follow (Health,
-    /// archival, the advertised bootstrap capability): the hint's, else the first server startup
-    /// attached (the most recently attached remembered one), else the lowest
-    /// attached `host_id`; `None` when no server is attached.
+    /// The session the node-wide seams without a claim host follow (Health):
+    /// the hint's, else the first server startup attached (the most recently
+    /// attached remembered one), else the lowest attached `host_id`; each
+    /// branch only when its port has `HostGuardedStart`, so a built-in named
+    /// host or a core never leads. `None` when there is none.
     pub fn startup_primary(&self, hint: Option<&HostLocator>) -> Option<Arc<HostSession>> {
+        let guarded = |session: &Arc<HostSession>| {
+            session.port().native_launch_capability() == NativeLaunchCapability::HostGuardedStart
+        };
         let first = *self.startup_first.lock().unwrap_or_else(|e| e.into_inner());
         hint.and_then(|hint| self.by_locator(hint))
-            .or_else(|| first.and_then(|id| self.get(id)))
-            .or_else(|| self.attached().into_iter().next())
+            .filter(guarded)
+            .or_else(|| first.and_then(|id| self.get(id)).filter(guarded))
+            // Dialled-only fallback (07 §5.3).
+            .or_else(|| self.attached().into_iter().find(guarded))
     }
 
     fn remembered_rows(&self) -> Vec<HostRow> {
@@ -868,6 +1108,9 @@ impl HostSessions {
         for row in self.remembered_rows() {
             if self.attached_count() >= MAX_ATTACHED_HOSTS {
                 break;
+            }
+            if !row.attachable() {
+                continue;
             }
             if let Some(session) = self.by_locator(&row.locator) {
                 first.get_or_insert(session.host_id);
@@ -909,6 +1152,7 @@ impl HostSessions {
 
     /// One sweep pass: at most 64 unattached rows, round-robin by `host_id`.
     fn sweep_tick(&self) {
+        // Dialled-only: the sweep re-attaches remembered rows; the built-in host is never dialled.
         let attached: Vec<HostLocator> = self
             .attached()
             .iter()
@@ -917,7 +1161,7 @@ impl HostSessions {
         let mut rows: Vec<HostRow> = self
             .remembered_rows()
             .into_iter()
-            .filter(|row| !attached.contains(&row.locator))
+            .filter(|row| row.attachable() && !attached.contains(&row.locator))
             .collect();
         rows.sort_by_key(|row| row.id);
         let cursor = self
@@ -951,7 +1195,7 @@ impl HostSessions {
         self.sweep_stop.cancel();
         // Waits out an attach in flight, so no session starts after this point.
         drop(self.attach_lock.lock().unwrap_or_else(|e| e.into_inner()));
-        for session in self.attached() {
+        for session in self.all_for_reads() {
             session.stop();
         }
         let ours: Vec<ThreadId> =
@@ -999,13 +1243,22 @@ mod tests {
     use std::{collections::BTreeSet, sync::atomic::AtomicUsize, time::Instant};
 
     /// Every host call is refused: sessions start, observe nothing and wake nothing.
-    struct FakeHost;
+    struct FakeHost {
+        no_wake: bool,
+    }
 
     fn refused<T>() -> Result<T, ApiError> {
         Err(ApiError::unsupported("fake host"))
     }
 
     impl HostPort for FakeHost {
+        fn wake_capability(&self) -> WakeCapability {
+            if self.no_wake {
+                WakeCapability::None
+            } else {
+                WakeCapability::Composer(crate::ports::ComposerTraits::HERDR_TUI)
+            }
+        }
         fn live_topology(
             &self,
             _: &crate::protocol::time::CallBudget,
@@ -1015,8 +1268,9 @@ mod tests {
                 "fixture host has no topology",
             ))
         }
+        // Guarded-start, as a Herdr server: `startup_primary` leads only with one.
         fn native_launch_capability(&self) -> NativeLaunchCapability {
-            NativeLaunchCapability::Unsupported
+            NativeLaunchCapability::HostGuardedStart
         }
         fn observe_current_target(
             &self,
@@ -1081,6 +1335,13 @@ mod tests {
     struct World {
         live: Mutex<BTreeSet<String>>,
         built: AtomicUsize,
+        /// The kind each locator's probe answers (`None`: the peer is silent);
+        /// Herdr when absent.
+        kinds: Mutex<BTreeMap<String, Option<HostKind>>>,
+        /// The `herdr_hosts` rows that existed at each probe, in probe order.
+        rows_at_probe: Mutex<Vec<i64>>,
+        /// The kind each build was asked for, in build order.
+        built_kinds: Mutex<Vec<HostKind>>,
     }
 
     impl World {
@@ -1130,9 +1391,28 @@ mod tests {
             let factory = HostFactory {
                 build: {
                     let world = Arc::clone(&world);
-                    Arc::new(move |_| {
+                    Arc::new(move |kind, _| {
                         world.built.fetch_add(1, Ordering::SeqCst);
-                        (Arc::new(FakeHost), Arc::new(NoObserver))
+                        world.built_kinds.lock().unwrap().push(kind);
+                        (Arc::new(FakeHost { no_wake: false }), Arc::new(NoObserver))
+                    })
+                },
+                probe: {
+                    let world = Arc::clone(&world);
+                    let db_path = isolation.path("store.db");
+                    Arc::new(move |locator, _| {
+                        let rows = rusqlite::Connection::open(&db_path)
+                            .and_then(|db| {
+                                db.query_row("SELECT count(*) FROM herdr_hosts", [], |r| r.get(0))
+                            })
+                            .unwrap_or(0);
+                        world.rows_at_probe.lock().unwrap().push(rows);
+                        let kinds = world.kinds.lock().unwrap();
+                        kinds
+                            .get(locator.as_str())
+                            .copied()
+                            .unwrap_or(Some(HostKind::Herdr))
+                            .ok_or_else(|| ApiError::host_unavailable("silent peer"))
                     })
                 },
                 exists: {
@@ -1170,6 +1450,7 @@ mod tests {
                     let db = remembered_store.context().open_query(budget.clone())?;
                     crate::store::hosts::remembered(&db, usize::MAX)
                 }),
+                seated: Arc::new(|_| Ok(BTreeSet::new())),
                 sweep_interval: sweep,
                 wake_safety_tick: Duration::from_millis(
                     crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
@@ -1200,6 +1481,18 @@ mod tests {
 
         fn lines(&self) -> Vec<String> {
             self.log.lock().unwrap().clone()
+        }
+
+        /// The stored `(kind, kind_probed_at)` of `endpoint`.
+        fn row_kind(&self, endpoint: &str) -> (String, Option<i64>) {
+            rusqlite::Connection::open(self._isolation.path("store.db"))
+                .unwrap()
+                .query_row(
+                    "SELECT kind,kind_probed_at FROM herdr_hosts WHERE endpoint=?1",
+                    [endpoint],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
         }
 
         fn remember(&self, locator: &str) {
@@ -1475,6 +1768,59 @@ mod tests {
         assert!(rig.sessions.by_locator(&loc("/herdr/dead.sock")).is_none());
     }
 
+    // Kills: a remembered row of a kind outside the implemented set dialled as
+    // Herdr (startup, sweep, or an explicit resolve); a Herdr row left
+    // un-stamped by its reattach.
+    #[test]
+    fn reattach_skips_rows_of_an_unimplemented_kind_and_stamps_herdr_rows() {
+        let rig = Rig::new("hs-unknown-kind", false, Duration::from_millis(20));
+        rig.remember("/herdr/live.sock");
+        rig.remember("/herdr/future.sock");
+        let db = rusqlite::Connection::open(rig._isolation.path("store.db")).unwrap();
+        db.execute(
+            "UPDATE herdr_hosts SET kind='future', kind_probed_at=NULL WHERE endpoint='/herdr/future.sock'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE herdr_hosts SET kind_probed_at=NULL WHERE endpoint='/herdr/live.sock'",
+            [],
+        )
+        .unwrap();
+        rig.world.set_live("/herdr/live.sock", true);
+        rig.world.set_live("/herdr/future.sock", true);
+        rig.sessions.attach_startup(None).unwrap();
+        // Let several sweep ticks pass: the sweep must not pick the row up either.
+        Cancellation::default().wait_blocking(Duration::from_millis(100));
+        let attached: Vec<String> = rig
+            .sessions
+            .attached()
+            .iter()
+            .map(|s| s.locator().as_str().to_owned())
+            .collect();
+        assert_eq!(attached, vec!["/herdr/live.sock"]);
+        assert_eq!(rig.world.built.load(Ordering::SeqCst), 1);
+        let explicit = rig
+            .sessions
+            .resolve(&loc("/herdr/future.sock"), &rig.budget(5_000))
+            .err()
+            .expect("an explicit locator of an unimplemented kind is refused");
+        assert_eq!(explicit.code, ErrorCode::HostUnavailable);
+        assert_eq!(rig.world.built.load(Ordering::SeqCst), 1);
+        let stamped = |endpoint: &str| -> (String, Option<i64>) {
+            db.query_row(
+                "SELECT kind,kind_probed_at FROM herdr_hosts WHERE endpoint=?1",
+                [endpoint],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        let (kind, probed) = stamped("/herdr/live.sock");
+        assert_eq!(kind, "herdr");
+        assert!(probed.is_some(), "the Herdr reattach stamps kind_probed_at");
+        assert_eq!(stamped("/herdr/future.sock"), ("future".to_owned(), None));
+    }
+
     // Kills: a primary picked by lowest id when the hint (or the most recently
     // attached remembered server) names another one.
     #[test]
@@ -1501,6 +1847,291 @@ mod tests {
         let missing = loc("/herdr/missing.sock");
         let fallback = rig.sessions.startup_primary(Some(&missing)).unwrap();
         assert_ne!(fallback.locator(), &missing);
+    }
+
+    // Kills: the probe running after (or without) the row write, so a crash or
+    // a refused probe leaves a wrongly kinded row; the probed kind not reaching
+    // the stored column or `build`.
+    #[test]
+    fn probe_runs_before_the_row_and_its_kind_is_stored_and_built() {
+        let rig = Rig::new("hs-probe-order", false, Duration::from_secs(60));
+        rig.world.set_live("/hc/core.sock", true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert("/hc/core.sock".into(), Some(HostKind::Hc));
+        rig.sessions
+            .resolve(&loc("/hc/core.sock"), &rig.budget(5_000))
+            .unwrap();
+        assert_eq!(*rig.world.rows_at_probe.lock().unwrap(), vec![0]);
+        assert_eq!(*rig.world.built_kinds.lock().unwrap(), vec![HostKind::Hc]);
+        let db = rusqlite::Connection::open(rig._isolation.path("store.db")).unwrap();
+        let (kind, probed): (String, Option<i64>) = db
+            .query_row(
+                "SELECT kind,kind_probed_at FROM herdr_hosts WHERE endpoint='/hc/core.sock'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "hc");
+        assert!(probed.is_some());
+    }
+
+    // Kills: a failed probe still writing a row.
+    #[test]
+    fn failed_probe_writes_no_row() {
+        let rig = Rig::new("hs-probe-fail", false, Duration::from_secs(60));
+        rig.world.set_live("/herdr/silent.sock", true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert("/herdr/silent.sock".into(), None);
+        let error = rig
+            .sessions
+            .resolve(&loc("/herdr/silent.sock"), &rig.budget(5_000))
+            .err()
+            .expect("a silent peer is not attached");
+        assert_eq!(error.code, ErrorCode::HostUnavailable);
+        let db = rusqlite::Connection::open(rig._isolation.path("store.db")).unwrap();
+        let rows: i64 = db
+            .query_row("SELECT count(*) FROM herdr_hosts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    // Kills: a stored kind overwritten by a probe that disagrees with it.
+    #[test]
+    fn a_kind_mismatch_refuses_the_attach() {
+        let rig = Rig::new("hs-probe-mismatch", false, Duration::from_secs(60));
+        rig.world.set_live("/herdr/a.sock", true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert("/herdr/a.sock".into(), Some(HostKind::Hc));
+        // Stored as Herdr, the socket now answers as hc.
+        rig.remember("/herdr/a.sock");
+        let error = rig
+            .sessions
+            .resolve(&loc("/herdr/a.sock"), &rig.budget(5_000))
+            .err()
+            .expect("a kind mismatch refuses the attach");
+        assert_eq!(error.code, ErrorCode::HostUnavailable);
+        assert!(error.detail.contains("stored as kind 'herdr'"), "{error:?}");
+        assert_eq!(rig.world.built.load(Ordering::SeqCst), 0);
+        assert_eq!(rig.sessions.attached_count(), 0);
+        let db = rusqlite::Connection::open(rig._isolation.path("store.db")).unwrap();
+        let kind: String = db
+            .query_row(
+                "SELECT kind FROM herdr_hosts WHERE endpoint='/herdr/a.sock'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "herdr", "the stored kind is not rewritten");
+    }
+
+    // Kills: a startup hint whose server is not up yet being refused (no row, no
+    // session, no observation lane) instead of attaching unprobed.
+    #[test]
+    fn a_hint_whose_probe_fails_attaches_unprobed() {
+        let rig = Rig::new("hs-hint-silent", false, Duration::from_secs(60));
+        let hint = loc("/herdr/hint.sock");
+        rig.world.set_live(hint.as_str(), true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert(hint.as_str().into(), None);
+        rig.sessions.attach_startup(Some(&hint)).unwrap();
+        assert!(rig.sessions.by_locator(&hint).is_some());
+        assert_eq!(
+            *rig.world.built_kinds.lock().unwrap(),
+            vec![HostKind::Herdr]
+        );
+        assert_eq!(rig.row_kind("/herdr/hint.sock"), ("herdr".into(), None));
+    }
+
+    // Kills: a silent hint rebuilding a stamped hc row as the default kind.
+    #[test]
+    fn a_silent_hint_keeps_a_stamped_row() {
+        let rig = Rig::new("hs-hint-stamped", false, Duration::from_secs(60));
+        let hint = loc("/hc/core.sock");
+        rig.store
+            .attach_host_of_kind(&hint, 1, HostKind::Hc, &rig.budget(5_000))
+            .unwrap();
+        rig.world.set_live(hint.as_str(), true);
+        rig.world
+            .kinds
+            .lock()
+            .unwrap()
+            .insert(hint.as_str().into(), None);
+        rig.sessions.attach_startup(Some(&hint)).unwrap();
+        assert!(rig.sessions.by_locator(&hint).is_some());
+        assert_eq!(*rig.world.built_kinds.lock().unwrap(), vec![HostKind::Hc]);
+        assert_eq!(rig.row_kind("/hc/core.sock"), ("hc".into(), Some(1)));
+    }
+
+    fn builtin_parts(no_wake: bool) -> (Arc<dyn HostPort>, Arc<dyn BootstrapObserver>) {
+        (Arc::new(FakeHost { no_wake }), Arc::new(NoObserver))
+    }
+
+    // Kills: a built-in session listed by `attached()`, so the sweep, startup
+    // primary and `any_reachable` would treat it as a dialled server.
+    #[test]
+    fn attach_builtin_is_never_in_attached() {
+        let rig = Rig::new("hs-builtin", false, Duration::from_secs(60));
+        let (port, observer) = builtin_parts(false);
+        let session = rig
+            .sessions
+            .attach_builtin(HostKind::Named, port, observer, &loc("/builtin/named"))
+            .unwrap();
+        assert!(rig.sessions.attached().is_empty());
+        assert_eq!(rig.sessions.attached_count(), 0);
+        assert!(rig.sessions.startup_primary(None).is_none());
+        let all = rig.sessions.all_for_reads();
+        assert_eq!(all.len(), 1);
+        assert!(Arc::ptr_eq(&all[0], &session));
+        let (port, observer) = builtin_parts(false);
+        let error = rig
+            .sessions
+            .attach_builtin(HostKind::Named, port, observer, &loc("/builtin/other"))
+            .err()
+            .unwrap();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(rig.sessions.all_for_reads().len(), 1);
+    }
+
+    // Kills: the built-in attach consulting the socket test or counting
+    // against the dialled cap.
+    #[test]
+    fn attach_builtin_skips_factory_exists_and_cap() {
+        let rig = Rig::new("hs-builtin-cap", false, Duration::from_secs(60));
+        for n in 0..MAX_ATTACHED_HOSTS {
+            let locator = format!("/herdr/s{n}.sock");
+            rig.world.set_live(&locator, true);
+            rig.sessions
+                .resolve(&loc(&locator), &rig.budget(10_000))
+                .unwrap();
+        }
+        assert_eq!(rig.sessions.attached_count(), MAX_ATTACHED_HOSTS);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let factory = HostFactory {
+            build: Arc::new(|_, _| unreachable!("the built-in port is given")),
+            probe: Arc::new(|_, _| unreachable!("the built-in host is never probed")),
+            exists: {
+                let calls = Arc::clone(&calls);
+                Arc::new(move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    false
+                })
+            },
+        };
+        let sessions = Arc::new(HostSessions::new(
+            Arc::clone(&rig.index),
+            factory,
+            SessionDeps::detached(
+                Arc::clone(&rig.store) as Arc<dyn StorePort>,
+                Arc::new(crate::app::SystemClock::default()),
+                "node".into(),
+            ),
+        ));
+        let (port, observer) = builtin_parts(false);
+        sessions
+            .attach_builtin(
+                HostKind::Named,
+                port,
+                observer,
+                &loc("/builtin/not-on-disk"),
+            )
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "exists never consulted");
+        sessions.stop_all();
+        // The dialled registry is full, and the built-in slot still takes one.
+        let (port, observer) = builtin_parts(false);
+        rig.sessions
+            .attach_builtin(HostKind::Herdr, port, observer, &loc("/builtin/past-cap"))
+            .unwrap();
+        assert_eq!(rig.sessions.attached_count(), MAX_ATTACHED_HOSTS);
+        assert_eq!(rig.sessions.all_for_reads().len(), MAX_ATTACHED_HOSTS + 1);
+    }
+
+    // Kills: `resolve` trying to dial (exists is false for it) instead of
+    // answering the built-in slot.
+    #[test]
+    fn builtin_found_by_locator_and_resolve() {
+        let rig = Rig::new("hs-builtin-find", false, Duration::from_secs(60));
+        rig.world.set_live("/herdr/a.sock", true);
+        let dialled = rig
+            .sessions
+            .resolve(&loc("/herdr/a.sock"), &rig.budget(5_000))
+            .unwrap();
+        let (port, observer) = builtin_parts(false);
+        let builtin = rig
+            .sessions
+            .attach_builtin(HostKind::Named, port, observer, &loc("/builtin/named"))
+            .unwrap();
+        let named = loc("/builtin/named");
+        assert!(Arc::ptr_eq(
+            &rig.sessions.by_locator(&named).unwrap(),
+            &builtin
+        ));
+        assert!(Arc::ptr_eq(
+            &rig.sessions.resolve(&named, &rig.budget(5_000)).unwrap(),
+            &builtin
+        ));
+        assert!(Arc::ptr_eq(
+            &rig.sessions.by_locator(&loc("/herdr/a.sock")).unwrap(),
+            &dialled
+        ));
+        let all = rig.sessions.all_for_reads();
+        assert_eq!(all.len(), 2);
+        assert!(Arc::ptr_eq(&all[0], &dialled), "dialled first");
+        assert!(Arc::ptr_eq(&all[1], &builtin), "built-in last");
+        assert_eq!(rig.sessions.attached().len(), 1);
+    }
+
+    // Kills: a wake lane (pacer, kick registration, worker) started for a host
+    // that cannot wake.
+    #[test]
+    fn no_wake_lane_for_wake_none() {
+        let rig = Rig::new("hs-no-wake", false, Duration::from_secs(60));
+        let before = rig.slot.lock().unwrap().len();
+        let (port, observer) = builtin_parts(true);
+        let session = rig
+            .sessions
+            .attach_builtin(HostKind::Named, port, observer, &loc("/builtin/named"))
+            .unwrap();
+        assert!(session.wake().is_none());
+        assert!(!rig.kicks.registered(Lane::Wakes));
+        assert!(rig.kicks.registered(Lane::Observation));
+        let names: Vec<String> = rig
+            .slot
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(before)
+            .map(|h| h.thread().name().unwrap().to_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert!(names[0].starts_with("herdr-observations-"));
+        let entry = session.health_entry();
+        assert!(
+            entry
+                .lanes
+                .iter()
+                .all(|lane| !lane.lane.starts_with("wake"))
+        );
+        // A waking host keeps its lane.
+        rig.world.set_live("/herdr/a.sock", true);
+        let dialled = rig
+            .sessions
+            .resolve(&loc("/herdr/a.sock"), &rig.budget(5_000))
+            .unwrap();
+        assert!(dialled.wake().is_some());
+        assert!(rig.kicks.registered(Lane::Wakes));
     }
 
     #[test]

@@ -5,6 +5,8 @@ pub mod counting_client;
 pub mod fact_exchange;
 pub mod failpoints;
 #[cfg(feature = "test-support")]
+pub mod fake_hc;
+#[cfg(feature = "test-support")]
 pub mod fake_herdr;
 pub mod fake_hosts;
 pub mod harness_shim;
@@ -28,12 +30,13 @@ pub mod snapshot;
 pub mod spawn;
 #[cfg(feature = "test-support")]
 pub mod sync_node;
+pub mod tmux;
 #[cfg(feature = "test-support")]
 pub mod write_guard;
 
 pub use fake_hosts::{
-    FakeHostWorld, RefusingHost, fake_host_plan, single_host_plan, single_host_plan_at,
-    single_host_plan_with_observer,
+    FakeHostWorld, LabelledHost, RefusingHost, fake_host_plan, single_host_plan,
+    single_host_plan_at, single_host_plan_with_observer,
 };
 
 use crate::{
@@ -120,6 +123,22 @@ fn upsert_test_host(conn: &Connection) -> i64 {
 /// Observation entry points take it as their explicit host.
 pub fn test_host_id() -> crate::ports::HostId {
     crate::ports::HostId::from_row(1)
+}
+
+/// One due observation capture of `identity`, published through `store` for `host`: what the
+/// observation worker does before any read, so a bootstrap read finds a published boot.
+pub fn capture_host_observation(
+    identity: &crate::identity::repair::OrdinaryIdentity,
+    store: std::sync::Arc<dyn crate::ports::StorePort>,
+    host: crate::ports::HostId,
+    budget: &crate::protocol::time::CallBudget,
+) -> Result<(), crate::protocol::results::ApiError> {
+    let ports = crate::service::workers::ScheduledStore::new(
+        store,
+        std::sync::Arc::new(crate::service::fair_writer::FairWriter::new(32)),
+    )
+    .for_host(host);
+    identity.capture_if_due(&ports, budget, budget).map(|_| ())
 }
 
 /// A `HostId` for fixtures that build a second host: the raw `herdr_hosts.host_id`
@@ -922,6 +941,9 @@ pub fn resolve_seeded(state_dir: &std::path::Path) -> crate::daemon::paths::Node
     paths
 }
 
+/// The observation lane tick (ms) a shared test daemon runs at, in place of the 5 s production one.
+pub const TEST_DAEMON_LANE_TICK_MS: &str = "300";
+
 /// A detached `daemon run --state-dir <state>` child of the real binary,
 /// started the way the CLI's own ensure starts it, but owned by the test: the
 /// 5-argument form is store-only (no Herdr server attached unless the store
@@ -946,6 +968,10 @@ pub fn spawn_node_daemon(
         command.arg("--host-endpoint").arg(hint);
     }
     command
+        .env(
+            crate::service::config::TEST_LANE_TICK_ENV,
+            TEST_DAEMON_LANE_TICK_MS,
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::fs::File::create(stderr_to)?)

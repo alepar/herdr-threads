@@ -1,0 +1,3 @@
+[Should-fix] hc host (H1) → JSON-RPC client: "enumerate_targets ... keeps local state=="live" addresses, and drops finished ones"; Finish-reason closure (D10): "closure uses only the publication-absence path" plus the row "program exit, signal, server_stop, host_shutdown → unresolved" · dissolved@r1
+[Should-fix] Finish-reason closure (D10) table; H1 acceptance "Finish reasons: ... lost and restarted change nothing"; H3 "sets keep: false" · dissolved@r1
+[Should-fix] Finish-reason closure table ("killed, or removed of a still-resolved seat → retired"; "program exit ... → unresolved; C1 resume reattaches it"); "Only shell-rooted terminals give continuity across sessions" · dissolved@r1
