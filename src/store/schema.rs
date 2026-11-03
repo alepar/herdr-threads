@@ -595,8 +595,9 @@ fn schema_objects(conn: &Connection) -> rusqlite::Result<Vec<SchemaObject>> {
 }
 
 /// The objects `NODE_BASELINE` plus `deltas[..version - 1]` create, read from an
-/// in-memory database. With `cache` (the production list only) each version is
-/// built once per process.
+/// in-memory database. With `cache` (the production list only) one replay of the
+/// baseline and every delta fills the cache for every version at once, so a process
+/// (each test is one) pays one replay however many deltas a fresh store steps through.
 fn expected_objects(
     deltas: &[NodeDelta],
     version: i64,
@@ -610,7 +611,20 @@ fn expected_objects(
     memory
         .execute_batch(NODE_BASELINE)
         .expect("NODE_BASELINE applies to an empty database");
-    for delta in deltas.iter().filter(|d| d.version <= version) {
+    // Without `cache` only `version` is wanted; with it, every version of `deltas`.
+    let last = if cache {
+        latest_version(deltas)
+    } else {
+        version
+    };
+    let mut built: BTreeMap<i64, Arc<Vec<SchemaObject>>> = BTreeMap::new();
+    if cache || version == NODE_SCHEMA_VERSION {
+        built.insert(
+            NODE_SCHEMA_VERSION,
+            Arc::new(schema_objects(&memory).map_err(store_error)?),
+        );
+    }
+    for delta in deltas.iter().filter(|d| d.version <= last) {
         let does_not_apply = |error: rusqlite::Error| {
             api_error(
                 ErrorCode::IncompatibleSchema,
@@ -625,15 +639,26 @@ fn expected_objects(
                 .execute_batch(rebuild.sql_after)
                 .map_err(does_not_apply)?;
         }
+        if cache || delta.version == version {
+            built.insert(
+                delta.version,
+                Arc::new(schema_objects(&memory).map_err(store_error)?),
+            );
+        }
     }
-    let built = Arc::new(schema_objects(&memory).map_err(store_error)?);
+    let wanted = built.get(&version).cloned().ok_or_else(|| {
+        api_error(
+            ErrorCode::IncompatibleSchema,
+            format!("unsupported schema version {version}"),
+        )
+    })?;
     if cache {
         CACHE
             .lock()
             .expect("expected-object cache")
-            .insert(version, built.clone());
+            .append(&mut built);
     }
-    Ok(built)
+    Ok(wanted)
 }
 
 /// The one schema check. `NODE_BASELINE` (plus `NODE_DELTAS`) is the reviewed
