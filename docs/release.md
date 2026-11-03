@@ -17,7 +17,7 @@ It carries ht-kqrt (super-auto run, merged at `8075625fa`): named seats outside 
 
 **CI** on `4fd9704df` (run 41717519794): every test passed; shards 2 and 4 ran 305 s and 302 s against the 300 s budget (ht-ozl7, not a release gate; the fix is a schema-check cache that replays all deltas once). The [release run 41726708192](https://github.com/alepar/herdr-threads/actions/runs/41726708192) passed. SHA256SUMS matches GitHub's digests, and the Linux x86_64 binary reports 2.9.0.
 
-**Installed on blacky with `herdr-threads update --setup`** on the first try: "updated 2.8.4 -> 2.9.0 (sha256 verified twice; backup pre-v2.9.0-20261103T221413Z)". The daemon's `/proc` exe hash `2806c23e…` equals the archive binary, and the Herdr plugin link is unchanged.
+**Installed on blacky with `herdr-threads update --setup`** on the first try: "updated 2.8.4 -> 2.9.0 (sha256 verified twice; backup pre-v2.9.0-20261103T221413Z)". The daemon's `/proc` exe hash `2806c23e…` equals the archive binary, and the Herdr plugin link is unchanged. The laptop (Q0V) took 2.9.0 with `herdr-threads update --setup` on the first try (backup pre-v2.9.0-20261103T221531Z, schema 12 -> 14); its binary hash `9de19a0f…` equals the macos-aarch64 archive binary, its daemon is healthy and the nSG link reports v=2.9.0.
 
 [v2.8.4 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.4) from source `b279e4c60`, a patch release. No schema change (node schema stays 12) and no peer wire change: `scripts/freeze-peer-wire 2.4.0 --at v2.8.4 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
