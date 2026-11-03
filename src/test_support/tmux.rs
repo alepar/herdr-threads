@@ -13,6 +13,8 @@ use crate::test_support::spawn::{self, SpawnOwned};
 
 pub struct PrivateTmux {
     name: String,
+    /// The server socket, read at start: `kill-server` leaves the file.
+    socket: PathBuf,
 }
 
 /// One pane of the private server.
@@ -61,7 +63,15 @@ impl PrivateTmux {
         // The client exits once the server it forked is up; stop() after wait leaves the server.
         let status = client.wait().expect("wait for the tmux client");
         assert!(status.success(), "tmux new-session failed: {status}");
-        Some(Self { name })
+        let mut tmux = Self {
+            name,
+            socket: PathBuf::new(),
+        };
+        // `kill-server` leaves the socket file: removed on drop, and ledgered so a killed test's
+        // socket is removed at exit or reported by `check-no-leaked-temp-files`.
+        tmux.socket = tmux.socket_path();
+        crate::test_support::scratch::register(&tmux.socket);
+        Some(tmux)
     }
 
     /// `tmux -L <name> <args>`, its output.
@@ -138,6 +148,9 @@ impl PrivateTmux {
 impl Drop for PrivateTmux {
     fn drop(&mut self) {
         let _ = self.run(&["kill-server"]);
+        if !self.socket.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.socket);
+        }
     }
 }
 

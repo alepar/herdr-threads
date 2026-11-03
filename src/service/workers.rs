@@ -653,6 +653,14 @@ impl WorkerStatus {
             log.record_wake_refusal(seat, detail);
         }
     }
+    /// Reports why a sent wake typed the `inbox` marker instead of its harness's content-free
+    /// text to the lane error log (rate limited there, per seat). A no-op when no log is set.
+    pub fn report_wake_text_fallback(&self, seat: &crate::protocol::ids::SeatId, why: &str) {
+        let log = self.error_log.lock().ok().and_then(|slot| slot.clone());
+        if let Some(log) = log {
+            log.record_wake_text_fallback(seat, why);
+        }
+    }
     /// Reports a reconciliation transition the store refused to the lane
     /// error log (rate limited there, per seat and reason). A no-op when no
     /// log is set; Health counts refusals through `HostEvidenceStatus`.
@@ -1794,6 +1802,9 @@ impl<'a, P: WakePort + ?Sized> ObservedWakePort<'a, P> {
         }
         for (seat, detail) in &outcome.refusals {
             self.status.report_wake_refusal(seat, detail);
+        }
+        for (seat, why) in &outcome.text_fallbacks {
+            self.status.report_wake_text_fallback(seat, why);
         }
     }
     /// Poke driver errors reach worker health like wake driver errors.

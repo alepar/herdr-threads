@@ -253,5 +253,13 @@ fn named_tmux_idle_recipient_wakes_for_p0_not_p1() {
                 .ok_or(screen)
         },
     );
-    assert!(woken.contains("herdr-threads:"), "{woken}");
+    // A hook-registered binding gets the content-free wake (R18), never the `inbox` marker.
+    assert!(
+        woken.contains(herdr_threads::notification::policy::WAKE_UP),
+        "{woken}"
+    );
+    assert!(
+        !woken.contains(herdr_threads::notification::policy::MARKER),
+        "{woken}"
+    );
 }

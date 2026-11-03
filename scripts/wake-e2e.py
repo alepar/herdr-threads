@@ -1229,6 +1229,17 @@ class Run:
                 continue
             if not gone:
                 problems.append(f"tmux server {name} still running after kill-server")
+                continue
+            # kill-server leaves the socket file behind.
+            env = self.tmux_env()
+            socket = os.path.join(env.get("TMUX_TMPDIR") or "/tmp", f"tmux-{os.getuid()}", name)
+            try:
+                os.unlink(socket)
+                steps.append({"tmux_socket_removed": socket})
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                problems.append(f"tmux server {name}: socket {socket} not removed: {clip(e, 200, getattr(self, 'secrets', None))}")
 
     def drain(self):
         """Stop admitting helpers, terminate the in-flight ones (each in its own process group), then join the
@@ -2801,7 +2812,8 @@ class TmuxRecipient(Recipient):
 
     def status(self):
         text = self.visible()
-        if DIALOG.search(text):
+        # LINUX_DIALOG: its case-sensitive "Allow" does not match the auto-mode banner's "allow ... to run".
+        if LINUX_DIALOG.search(text):
             return "blocked"
         return "working" if TMUX_RUNNING.search(text) else "idle"
 
@@ -2833,7 +2845,7 @@ class TmuxRecipient(Recipient):
                 text = self.visible()
                 if AUTH_REJECTED.search(text) or LINUX_LOGIN.search(text):
                     raise RuntimeError(f"{self.name}: {self.harness} is not logged in or its auth was rejected: {self.tail()}")
-                if DIALOG.search(text):
+                if LINUX_DIALOG.search(text):
                     raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
                 if COMPOSER_UP.search(text) and self.status() == "idle":
                     break
