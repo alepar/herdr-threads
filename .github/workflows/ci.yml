@@ -281,6 +281,13 @@ jobs:
         with:
           python-version: '3.11.9'
 
+      - name: Every tracked Python file parses under the CI Python
+        if: needs.changes.outputs.heavy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files -z '*.py' | xargs -0 python -c 'import ast, sys; [ast.parse(open(f, encoding="utf-8").read(), f) for f in sys.argv[1:]]'
+
       - name: zsh for shell round-trip tests
         if: needs.changes.outputs.heavy == 'true'
         run: |

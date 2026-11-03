@@ -357,16 +357,19 @@ fn restore_never_lands_on_the_named_host() {
     };
     let restore = |conn: &mut Connection| {
         let tx = conn.transaction().unwrap();
-        let input = crate::store::materialize::local_only(
-            &tx,
-            crate::store::connection::DecisionInstant {
-                utc: at(),
-                monotonic: MonoInstant(100),
-            },
-        )
-        .unwrap();
-        let result = materialize_seat_created(&tx, &input, &payload);
-        drop(input);
+        // The input borrows `tx` (and, in test-support builds, holds a write scope): end it
+        // before the commit.
+        let result = {
+            let input = crate::store::materialize::local_only(
+                &tx,
+                crate::store::connection::DecisionInstant {
+                    utc: at(),
+                    monotonic: MonoInstant(100),
+                },
+            )
+            .unwrap();
+            materialize_seat_created(&tx, &input, &payload)
+        };
         if result.is_ok() {
             tx.commit().unwrap();
         }
