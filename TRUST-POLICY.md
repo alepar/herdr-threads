@@ -2771,6 +2771,12 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   one), what it sent this node's seats waits unpulled until it links here directly or the operator runs
   `peer unforget`. The island's facts already held stay held and applied, so a fact a kept node authors later
   against one of them applies as before.
+- **Credential variables in an autostarted core.** A herdr-core whose environment was frozen when some process
+  autostarted it, and which holds `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `OPENAI_API_KEY`, passes that
+  variable to every launch in that core: the gate scrubs the adapter's config-root variables, not credentials,
+  so the inherited credential reaches the harness and can override the launch's profile. A peer launch onto a
+  core with no profile starts the harness in its default mode and sets no root. Start a core from a shell
+  without these variables, or restart it, to avoid this.
 
 ## Decision record
 
