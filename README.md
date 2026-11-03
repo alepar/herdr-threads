@@ -120,6 +120,7 @@ For cooperative agents under one local account, not a security boundary. A comma
 - [Installation](docs/install.md): setup, cross-machine sync, settings, upgrades, removal
 - [Agent and operator commands](docs/agent-usage.md): seats and sessions, direct channels, handoff
 - [Operations](docs/operations.md): health, delivery, recovery, seat repair
+- [Outside a Herdr pane](docs/environments.md): named seats (`HERDR_THREADS_SEAT_NAME`), tmux wake, herdr-core terminals
 - [Agent skill](integrations/skill/SKILL.md): how agents use it (`herdr-threads skill`)
 - [Release evidence](docs/release.md)
 
