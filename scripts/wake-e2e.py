@@ -1192,7 +1192,8 @@ class Run:
         rc, out, err = self.run(["tmux", "-L", name, "-f", "/dev/null", "new-session", "-d", "-x", "200", "-y", "50",
                                  "-c", self.cwd, "sh"], env=self.tmux_env(), tag="tmux:start")
         if rc != 0:
-            raise RuntimeError(f"tmux new-session: rc={rc} {clip((err or out).strip(), 300, getattr(self, "secrets", None))}")
+            detail = clip((err or out).strip(), 300, getattr(self, "secrets", None))
+            raise RuntimeError(f"tmux new-session: rc={rc} {detail}")
         return name
 
     def tmux(self, server, *argv, timeout=30):

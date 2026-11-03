@@ -73,6 +73,21 @@ fn rig(label: &str) -> Rig {
         2,
         ClusterOptions {
             links: vec![(0, 1)],
+            // The seat publisher's production periods (5 s check, labels re-read at most every
+            // 60 s) would dominate every wait here, the label change in particular.
+            env: [0, 1]
+                .into_iter()
+                .flat_map(|node| {
+                    [
+                        (node, "HT_TEST_SEAT_CHECK_MS".to_owned(), "200".to_owned()),
+                        (
+                            node,
+                            "HT_TEST_SEAT_REFRESH_MS".to_owned(),
+                            "1000".to_owned(),
+                        ),
+                    ]
+                })
+                .collect(),
             ..Default::default()
         },
     );

@@ -6650,6 +6650,8 @@ mod main539_composition {
         contexts: crate::harness::context::ContextJournal,
         claim: CallerClaim,
         root: std::path::PathBuf,
+        /// The domain's clock: CLI budgets are measured on the same monotonic origin.
+        clock: Arc<dyn Clock>,
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -6719,12 +6721,15 @@ mod main539_composition {
                 crate::store::SqliteStore::new(context, claim.instance.clone(), Default::default())
                     .unwrap(),
             );
-            let domain =
-                crate::service::dispatch::DomainService::new(claim.instance.clone(), store, clock)
-                    .with_cooperative_owner(
-                        501,
-                        Arc::new(crate::service::fair_writer::FairWriter::new(8)),
-                    );
+            let domain = crate::service::dispatch::DomainService::new(
+                claim.instance.clone(),
+                store,
+                clock.clone(),
+            )
+            .with_cooperative_owner(
+                501,
+                Arc::new(crate::service::fair_writer::FairWriter::new(8)),
+            );
             let boot = uuid::Uuid::new_v4();
             let domain = crate::daemon::control::ControlService::new(
                 crate::daemon::control::StopController::new(instance, boot, Default::default()),
@@ -6742,6 +6747,7 @@ mod main539_composition {
                 contexts,
                 claim,
                 root,
+                clock,
             }
         }
         fn record_join(&self) -> crate::cli::journal::IntentRef {
@@ -6771,7 +6777,7 @@ mod main539_composition {
                 None,
                 crate::harness::context::Role::TopLevel,
                 &self.client,
-                &crate::app::SystemClock::new(),
+                &*self.clock,
                 output,
             )
         }
@@ -6897,7 +6903,7 @@ mod main539_composition {
             None,
             crate::harness::context::Role::TopLevel,
             &client,
-            &crate::app::SystemClock::new(),
+            &*f.clock,
             &mut Vec::new(),
         )
         .unwrap_err();

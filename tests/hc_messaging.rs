@@ -1357,6 +1357,14 @@ fn two_family_doctor_selects_the_core() {
 #[test]
 fn two_family_setup_does_not_need_a_herdr_endpoint() {
     let rig = verified_two_family("hcm-2f-setup");
+    // `setup claude` needs a `claude` executable; a stand-in on the rig's private PATH entry keeps
+    // the test independent of the host's harnesses.
+    let claude = no_herdr_dir(&rig).join("claude");
+    std::fs::write(&claude, "#!/bin/sh\nprintf '%s\\n' '2.0.0 (Claude Code)'\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let state = rig.state.to_string_lossy().into_owned();
     // `--state-dir` follows the subcommand: a leading one is refused at parse time.
     let ran = two_family_with(
