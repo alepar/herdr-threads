@@ -2,6 +2,23 @@
 
 ## Current release status
 
+[v2.9.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.9.0) from source `4fd9704df`, a minor release. It carries a **one-way store upgrade to node schema 14** (migrations 0013, host environments, and 0014, the binding's locator host); binaries before 2.9.0 refuse an upgraded store. Peer wire: two new capabilities, `seat.terminal_sites_v1` and `peer.launch.terminal.v1`, both gated; `scripts/freeze-peer-wire 2.4.0 --at 4fd9704df --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It carries ht-kqrt (super-auto run, merged at `8075625fa`): named seats outside Herdr (`HERDR_THREADS_SEAT_NAME`, read-only seats, `seat retire --self`), tmux wake for named Claude and agy seats, herdr-core terminal seats, and `launch`/`handoff` onto a core. The run's roasts were bounded (provenance gap), so the coordinator ran three independent reviews before merge; their findings and the run's Must-fix items were fixed in two coordinator rounds. The user approved two TRUST-POLICY launch-gate exceptions (gate-only records for peer launch and local plain launch onto a core, ht-kqrt.143 and .186), and chose recorded limits for credential variables in an autostarted core and for a peer launch with no profile (default mode). Then fix/kqrt-ci (`d7c2945e2`: a default-feature clippy lint, a Python 3.12-only f-string in `scripts/wake-e2e.py`, a test needing `claude` on PATH, a shared-clock test race) and docs/kqrt-user-docs (`docs/environments.md`).
+
+**Host:** since the 2026-11-03 reboot blacky has no host C toolchain. The user chose a build toolbox (`ht-build`) over layering packages; qualification ran inside it. zsh is now installed, so the zsh round-trip tests ran for real.
+
+**Qualification** on `4fd9704df`, evidence in `~/.cache/herdr-threads-release/2.9.0`, with the claude-1 token and the codex-1 credential (codex-2 was reported rejected).
+- Static checks, builds, the Herdr matrix 0.9.1-0.9.5, the package gate and every leak check pass.
+- The full suite passed 8953/8956. The 3 failures came from the qualify script exporting `CODEX_HOME` and the Claude token for the wake step: they pass with a clean environment and one fails again with only `CODEX_HOME` set (ht-97ir, test isolation).
+- `installer-shell` first failed because the toolbox lacked `script(1)`; with util-linux-script installed it passed 328/328.
+- The wake e2e passed 120/120.
+- Opt-in tmux-named cases (not part of the required run): the first run failed both rows as a false "blocked at a dialog", a driver bug (the case-insensitive `Allow .* to run` matches Claude's auto-mode banner). With the driver patched against the same candidate binary: send-p1 passed; send-p0 woke the seat in 0.26 s but typed the inbox marker instead of `wake up`, so the model ran one extra `inbox` (ht-i5w2). A second patched run of send-p0 passed with `wake up`: the marker is intermittent. The driver fix ships after 2.9.0.
+
+**CI** on `4fd9704df` (run 41717519794): every test passed; shards 2 and 4 ran 305 s and 302 s against the 300 s budget (ht-ozl7, not a release gate; the fix is a schema-check cache that replays all deltas once). The [release run 41726708192](https://github.com/alepar/herdr-threads/actions/runs/41726708192) passed. SHA256SUMS matches GitHub's digests, and the Linux x86_64 binary reports 2.9.0.
+
+**Installed on blacky with `herdr-threads update --setup`** on the first try: "updated 2.8.4 -> 2.9.0 (sha256 verified twice; backup pre-v2.9.0-20261103T221413Z)". The daemon's `/proc` exe hash `2806c23e…` equals the archive binary, and the Herdr plugin link is unchanged.
+
 [v2.8.4 is published](https://github.com/alepar/herdr-threads/releases/tag/v2.8.4) from source `b279e4c60`, a patch release. No schema change (node schema stays 12) and no peer wire change: `scripts/freeze-peer-wire 2.4.0 --at v2.8.4 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 It carries two merged branches, each with a fixer roast and an independent review, and each with a TRUST-POLICY amendment the user approved:
