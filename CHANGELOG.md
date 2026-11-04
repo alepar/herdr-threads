@@ -1,5 +1,24 @@
 # Changelog
 
+## v3.0.0
+
+Breaking peer wire change: a remote handoff needs both machines on 3.0.0 (capability `peer.handoff.v1`); a 2.x peer is refused with an upgrade error, with no two-step fallback. One-way store upgrade to node schema 15 (migration 0015, atomic remote handoff). Binaries before 3.0.0 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. Restart the daemon after upgrading, and run `herdr-threads update --setup` so the skill refreshes.
+
+### Changed
+
+- **A remote handoff is one signed request.** The target machine writes the 1:1 thread and the task message before the agent starts, so a launched agent always has its task. `--summary` is required for a remote handoff; `--profile-dir` (absolute, on the target) works for a new tab or terminal there and is refused for an existing pane. `--thread`, `--new-thread`, `--goal`, `--thread-name`, `--topic` and `--invite-deadline` are refused for remote handoffs, and `--deadline` is at most 6 days.
+- **The sender's machine owns a remote handoff's ACK deadline** and warns even while the target is offline (an alert when the target never answered). Unanswered requests are re-sent when the link comes back and expire after 6 days; `peer list` shows failed and expired handoffs.
+- **Handoff prompts are one line** on every host, local and remote: `<summary> — from: <name> (<id>)`.
+
+### Fixed
+
+- Opening a store no longer slows down with each schema migration.
+
+### Known limits
+
+- A 2.x node that replicates a 3.0.0 handoff message holds it as failed until it is upgraded and the fact is replayed (`sync unapplied`).
+- If the target machine crashes after writing the handoff message but before the agent starts, the message stands in the thread with no agent; the sender's deadline warning still fires.
+
 ## v2.9.0
 
 One-way store upgrade to node schema 14 (migrations 0013, host environments, and 0014, the binding's locator host). Binaries before 2.9.0 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. Restart the daemon after upgrading: an older daemon refuses named and terminal seats. Run `herdr-threads update --setup` so the skill, the Claude mod and the Hermes bridge refresh. Peer wire: two new capabilities, `seat.terminal_sites_v1` and `peer.launch.terminal.v1`; older peers work without them. See [Outside a Herdr pane](docs/environments.md).
