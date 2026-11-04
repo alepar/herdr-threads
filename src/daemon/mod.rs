@@ -443,3 +443,7 @@ mod consumer_audit;
 #[cfg(test)]
 #[path = "../../tests/daemon/tmux_idle_exit.rs"]
 mod tmux_idle_exit;
+
+#[cfg(test)]
+#[path = "../../tests/daemon/peer_handoff_decide.rs"]
+mod peer_handoff_decide;

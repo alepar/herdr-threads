@@ -31,6 +31,7 @@ use crate::protocol::sync_admin::{
 use crate::protocol::time::{CallBudget, Cancellation, Clock};
 use crate::service::fair_writer::FairWriter;
 use crate::store::SqliteStore;
+use crate::store::handoff_obligations;
 use crate::store::incarnations::{self, ForkOrigin};
 use crate::store::sync_status::{self, node_label, resolve_node};
 use crate::store::{node_directory, node_prune, sync_dial_targets, sync_link_events};
@@ -71,6 +72,8 @@ pub struct SyncAdmin {
     pub runtime: tokio::runtime::Handle,
     /// The discovery worker's state; `None` when the daemon runs none.
     pub discovery: Option<Arc<crate::sync::discovery::DiscoveryStatus>>,
+    /// The node's signing identity (a handoff request's sender block).
+    pub identity: Arc<crate::node::NodeIdentity>,
 }
 
 impl SyncAdmin {
@@ -129,18 +132,21 @@ impl SyncAdmin {
                     .block_on(self.sync.snapshot(&ask))
                     .map(|snapshot| live_nodes(&snapshot.links))
                     .unwrap_or_default();
-                let (rows, nodes, forgotten) = self.store.sync_read(budget, |conn, _| {
-                    Ok((
-                        sync_status::peers(conn, now)?,
-                        sync_status::nodes(conn, now, &live)?,
-                        sync_status::forgotten_count(conn)?,
-                    ))
-                })?;
+                let (rows, nodes, forgotten, handoffs) =
+                    self.store.sync_read(budget, |conn, _| {
+                        Ok((
+                            sync_status::peers(conn, now)?,
+                            sync_status::nodes(conn, now, &live)?,
+                            sync_status::forgotten_count(conn)?,
+                            handoff_obligations::ledger_rows(conn)?,
+                        ))
+                    })?;
                 Ok(SyncReply::Peers {
                     rows,
                     discovery: self.discovery_state(),
                     nodes,
                     forgotten,
+                    handoffs,
                 })
             }
             SyncCommand::Status { log } => self.status(log.as_deref(), budget),
@@ -163,10 +169,15 @@ impl SyncAdmin {
                 self.resolve_address(&machine, target, budget)
             }
             SyncCommand::CheckRemoteSeat { seat } => self.check_remote_seat(&seat, budget),
-            SyncCommand::RemoteLaunch { machine, request } => {
-                self.remote_launch(&machine, Some(*request), budget)
+            SyncCommand::RemoteLaunch {
+                machine,
+                request,
+                claim,
+                resume_only,
+            } => self.remote_launch(&machine, Some(*request), claim, resume_only, budget),
+            SyncCommand::ResolveMachine { machine } => {
+                self.remote_launch(&machine, None, None, false, budget)
             }
-            SyncCommand::ResolveMachine { machine } => self.remote_launch(&machine, None, budget),
             SyncCommand::PeerEvents {
                 node,
                 before,
@@ -828,6 +839,8 @@ impl SyncAdmin {
         &self,
         machine: &str,
         request: Option<crate::sync::frame::LaunchRequest>,
+        claim: Option<crate::protocol::authority::CallerClaim>,
+        resume_only: bool,
         budget: &CallBudget,
     ) -> Result<SyncReply, ApiError> {
         use crate::protocol::sync_admin::{LaunchReply, RemoteLaunchAnswer};
@@ -865,8 +878,30 @@ impl SyncAdmin {
             return Ok(SyncReply::Launch(LaunchReply::Remote {
                 node,
                 answer: RemoteLaunchAnswer::Unknown,
+                handoff_message: None,
             }));
         };
+        if request.plan.handoff().is_some() {
+            let sender = crate::service::peer_handoff::SyncSender {
+                sync: self.sync.clone(),
+                runtime: self.runtime.clone(),
+            };
+            let requester = crate::service::peer_handoff::Requester {
+                store: &self.store,
+                writer: &self.writer,
+                clock: self.clock.as_ref(),
+                identity: &self.identity,
+                log: &self.log,
+                sender: &sender,
+                background: false,
+            };
+            let polled = requester.poll(uuid, request, claim.as_ref(), resume_only, budget)?;
+            return Ok(SyncReply::Launch(LaunchReply::Remote {
+                node,
+                answer: polled.answer,
+                handoff_message: Some(polled.message).filter(|m| !m.is_empty()),
+            }));
+        }
         let remaining = budget
             .deadline
             .0
@@ -903,7 +938,11 @@ impl SyncAdmin {
                 _ => RemoteLaunchAnswer::Answered { state },
             },
         };
-        Ok(SyncReply::Launch(LaunchReply::Remote { node, answer }))
+        Ok(SyncReply::Launch(LaunchReply::Remote {
+            node,
+            answer,
+            handoff_message: None,
+        }))
     }
 
     /// N15: ask `seat`'s home node whether it can take a handoff now. Only a
@@ -968,8 +1007,8 @@ impl SyncAdmin {
         }))
     }
 
-    /// Whether `seat` is (or within [`REPLICA_WAIT_MS`] becomes) a seat this
-    /// node holds as `home`'s (TRUST-POLICY N14).
+    /// Whether `seat` is (or within `wait_ms` becomes) a seat this node holds as `home`'s
+    /// (TRUST-POLICY N14).
     fn wait_replicated(
         &self,
         seat: &str,
@@ -977,27 +1016,47 @@ impl SyncAdmin {
         wait_ms: u64,
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
-        use rusqlite::OptionalExtension;
-        const POLL_MS: u64 = 100;
-        let start = self.clock.monotonic_now().0;
-        // Bounded by count too, so a stalled clock cannot keep it polling.
-        for _ in 0..=wait_ms / POLL_MS {
-            let held = self.store.sync_read(budget, |conn, _| {
-                conn.query_row(
-                    "SELECT 1 FROM seats WHERE id=?1 AND home_node=?2 AND is_local=0",
-                    [seat, home.to_string().as_str()],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map(|found| found.is_some())
-                .map_err(crate::store::connection::store_error)
-            })?;
-            let now = self.clock.monotonic_now().0;
-            if held || now.saturating_sub(start) >= wait_ms || now >= budget.deadline.0 {
-                return Ok(held);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        }
-        Ok(false)
+        wait_replicated(
+            &self.store,
+            self.clock.as_ref(),
+            seat,
+            home,
+            wait_ms,
+            budget,
+        )
     }
+}
+
+/// Whether `seat` is (or within [`REPLICA_WAIT_MS`] becomes) a seat this node holds as `home`'s
+/// (TRUST-POLICY N14).
+pub(crate) fn wait_replicated(
+    store: &crate::store::SqliteStore,
+    clock: &dyn Clock,
+    seat: &str,
+    home: &crate::node::NodeUuid,
+    wait_ms: u64,
+    budget: &CallBudget,
+) -> Result<bool, ApiError> {
+    use rusqlite::OptionalExtension;
+    const POLL_MS: u64 = 100;
+    let start = clock.monotonic_now().0;
+    // Bounded by count too, so a stalled clock cannot keep it polling.
+    for _ in 0..=wait_ms / POLL_MS {
+        let held = store.sync_read(budget, |conn, _| {
+            conn.query_row(
+                "SELECT 1 FROM seats WHERE id=?1 AND home_node=?2 AND is_local=0",
+                [seat, home.to_string().as_str()],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|found| found.is_some())
+            .map_err(crate::store::connection::store_error)
+        })?;
+        let now = clock.monotonic_now().0;
+        if held || now.saturating_sub(start) >= wait_ms || now >= budget.deadline.0 {
+            return Ok(held);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+    }
+    Ok(false)
 }

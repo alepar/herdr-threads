@@ -17,6 +17,7 @@ use crate::store::journal as jr;
 use crate::store::node_directory::{self, NodeDirectoryRow};
 use crate::sync::LogKey;
 use crate::sync::facts::{FactError, FactKind, FactRegistry, with_input};
+use crate::sync::handoff_block::SenderBlock;
 use crate::sync::hlc::HlcStamp;
 
 struct FixedClock;
@@ -454,4 +455,165 @@ fn require_author_error_text() {
         format!("origin {uuid8} is not the authorized author of receipt.settled for sBseat")
     );
     assert!(matches!(FactError::from_api(err), FactError::Rejected(_)));
+}
+
+// ---- AuthorRule::HandoffRecipientHome (spec 4.2) -----------------------------
+
+/// A block of sender `node` for author `author`, signed by `signer`.
+fn handoff_block(node: NodeUuid, author: &str, signer: &NodeIdentity) -> SenderBlock {
+    let mut block = SenderBlock {
+        v: 1,
+        request: uuid::Uuid::from_u128(7),
+        sender_node: Some(node),
+        author: Some(seat(author)),
+        author_role: None,
+        message: Some(crate::protocol::ids::MessageId::new("mHandoff0001")),
+        body: "do the thing".into(),
+        priority: 0,
+        require_ack: true,
+        requested_at: 1_700_000_000_000,
+        ack_after_ms: Some(300_000),
+        sig: String::new(),
+    };
+    block.sign(signer).unwrap();
+    block
+}
+
+fn handoff_rule(block: SenderBlock, recipient: &str) -> AuthorRule {
+    AuthorRule::HandoffRecipientHome {
+        block: Box::new(block),
+        recipient: seat(recipient),
+    }
+}
+
+/// Author `sA` homed on this node, recipient `sR` homed on the returned node. No
+/// `peer_requests`, ledger or directory row exists: the rule reads the fact and the
+/// replicated identity only.
+fn handoff_store() -> (Store, NodeUuid) {
+    let mut s = Store::new();
+    let target = other(120);
+    s.local_seat("sA");
+    s.remote_seat("sR", target);
+    assert_eq!(
+        s.run(|tx, _| Ok(tx
+            .query_row("SELECT count(*) FROM handoff_obligations", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap())),
+        0
+    );
+    (s, target)
+}
+
+#[test]
+fn handoff_rule_reads_only_fact_and_identity() {
+    let (mut s, target) = handoff_store();
+    let me = NodeIdentity::from_seed([90; 32]);
+    let node = s.node;
+    let good = || handoff_rule(handoff_block(node, "sA", &me), "sR");
+    assert!(check(&mut s, target, "message.sent", good()).is_ok());
+
+    // Origin is not the recipient's home (the sender node itself, a third node).
+    for origin in [node, other(121)] {
+        let err = check(&mut s, origin, "message.sent", good());
+        assert_eq!(err.unwrap_err().code, ErrorCode::InvalidRequest, "{origin}");
+    }
+    // The author is homed elsewhere than the block's sender node.
+    s.remote_seat("sAway", other(122));
+    let away = handoff_rule(handoff_block(node, "sAway", &me), "sR");
+    assert!(check(&mut s, target, "message.sent", away).is_err());
+    // Signed by another node's key.
+    let forged = handoff_rule(
+        handoff_block(node, "sA", &NodeIdentity::from_seed([91; 32])),
+        "sR",
+    );
+    assert!(check(&mut s, target, "message.sent", forged).is_err());
+    // A tampered signature, a block with no sender node.
+    let mut tampered = handoff_block(node, "sA", &me);
+    tampered.body.push('!');
+    assert!(check(&mut s, target, "message.sent", handoff_rule(tampered, "sR")).is_err());
+    let mut anonymous = handoff_block(node, "sA", &me);
+    anonymous.sender_node = None;
+    assert!(
+        check(
+            &mut s,
+            target,
+            "message.sent",
+            handoff_rule(anonymous, "sR")
+        )
+        .is_err()
+    );
+    // An unknown recipient has no home.
+    assert!(
+        check(
+            &mut s,
+            target,
+            "message.sent",
+            handoff_rule(handoff_block(node, "sA", &me), "sNone")
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn handoff_rule_error_text_names_author_and_recipient() {
+    let (mut s, _target) = handoff_store();
+    let me = NodeIdentity::from_seed([90; 32]);
+    let node = s.node;
+    let c = other(123);
+    let err = check(
+        &mut s,
+        c,
+        "message.sent",
+        handoff_rule(handoff_block(node, "sA", &me), "sR"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.detail,
+        format!(
+            "origin {} is not the authorized author of message.sent for sA/sR",
+            &c.to_string()[..8]
+        )
+    );
+}
+
+// Kills: an unordered or single-row key read (two readers could disagree), a rule that checks
+// only the newest key, and one that accepts a key no log of the sender node holds.
+#[test]
+fn node_keys_newest_incarnation_first_and_any_verifies() {
+    let (mut s, target) = handoff_store();
+    let me = NodeIdentity::from_seed([90; 32]);
+    let later = NodeIdentity::from_seed([91; 32]);
+    let node = s.node;
+    // The next incarnation of this node, under another key (the schema allows it).
+    let current: i64 = s
+        .conn
+        .query_row(
+            "SELECT incarnation FROM sync_logs WHERE node_uuid=?1",
+            [node.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(current < i64::from(u32::MAX));
+    s.conn
+        .execute(
+            "INSERT INTO sync_logs(node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter, \
+             head_hash,applied_through,state,first_seen_at) \
+             VALUES (?1,?3,1,?2,zeroblob(32),0,zeroblob(32),0,'active',0)",
+            rusqlite::params![node.to_string(), later.public_key().to_vec(), current + 1],
+        )
+        .unwrap();
+    let keys = s.run(|tx, _| node_keys(tx, node).map_err(store_error));
+    assert_eq!(keys, vec![later.public_key(), me.public_key()]);
+    // A node this store holds no log of has no key.
+    assert!(
+        s.run(|tx, _| node_keys(tx, other(124)).map_err(store_error))
+            .is_empty()
+    );
+    for signer in [&me, &later] {
+        let rule = handoff_rule(handoff_block(node, "sA", signer), "sR");
+        assert!(check(&mut s, target, "message.sent", rule).is_ok());
+    }
+    let stranger = NodeIdentity::from_seed([92; 32]);
+    let rule = handoff_rule(handoff_block(node, "sA", &stranger), "sR");
+    assert!(check(&mut s, target, "message.sent", rule).is_err());
 }

@@ -15,6 +15,7 @@ pub mod liveness;
 pub mod locate;
 pub mod mod_channels;
 pub mod pacer;
+pub mod peer_handoff;
 pub mod peer_launcher;
 pub mod remote_resolver;
 pub mod seat_publisher;

@@ -6,7 +6,9 @@ use crate::{
     ports::TimeBasis,
     protocol::{
         authority::{CARRIED_BINDING_PROVENANCES, ObligationRef},
-        ids::{InvitationId, MessageId, RetirementJobId, SeatId, ThreadId, prefix},
+        ids::{
+            InvitationId, MessageId, RetirementJobId, SeatId, ThreadId, direct_thread_id, prefix,
+        },
         results::{ApiError, CommandResult, ErrorCode},
         service::EventAuthor,
         time::UtcMillis,
@@ -24,6 +26,7 @@ use super::connection::{DecisionInstant, StoreContext, api_error, store_error};
 use super::effective::{
     EffectiveReceiptState, ReceiptSource, effective_observation, effective_receipt,
 };
+use super::handoff_obligations;
 
 /// The node store baseline: the one reviewed schema, applied verbatim to an
 /// empty database and the only thing `verify_baseline` audits an existing store
@@ -149,6 +152,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
     NodeDelta {
         version: 14,
         sql: include_str!("../../migrations/node/0014_locator_host.sql"),
+        rebuild: None,
+    },
+    NodeDelta {
+        version: 15,
+        sql: include_str!("../../migrations/node/0015_atomic_remote_handoff.sql"),
         rebuild: None,
     },
 ];
@@ -1455,6 +1463,14 @@ fn overdue_wake(
             )
             .optional()
             .map_err(store_error)?,
+        ObligationRef::Handoff(request) => tx
+            .query_row(
+                "SELECT requested_at FROM handoff_obligations WHERE request=?1",
+                [request.as_str()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?,
         _ => None,
     };
     let last: Option<(Option<String>, Option<i64>)> = tx
@@ -1476,13 +1492,13 @@ fn overdue_wake(
 /// not settle the obligation; the handler performs settlement in the same tx.
 ///
 /// Responsibility: the one deciding-node guard. Only the node that authored an
-/// obligation (`messages.origin_node` for a receipt, `invitations.origin_node`
-/// for an invitation) records it overdue; for another node's obligation this
+/// obligation (`COALESCE(messages.deadline_node, messages.origin_node)` for a receipt,
+/// `invitations.origin_node` for an invitation) records it overdue; for another node's obligation this
 /// returns `inserted: false` and writes nothing. Every overdue path (due scan,
 /// extension lapse, late ACK/answer, retirement job) goes through here, so a
 /// new overdue path must call this function and not write the warning itself.
 pub fn record_overdue_if_pending(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     obligation: &ObligationRef,
     basis: &TimeBasis,
     decision_at: UtcMillis,
@@ -1829,7 +1845,7 @@ pub fn clear_warning_condition_for_invitation(
 }
 
 pub fn record_overdue_with_decision_seq(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     obligation: &ObligationRef,
     basis: &TimeBasis,
     decision_at: UtcMillis,
@@ -1838,22 +1854,37 @@ pub fn record_overdue_with_decision_seq(
     record_overdue_inner(tx, obligation, basis, decision_at, Some(decision_seq))
 }
 
+/// The one deadline-owner test (N5), as SQL over the message id expression `$message`: true when
+/// this node owns the message's deadline, `COALESCE(messages.deadline_node, messages.origin_node)`
+/// being the local node. A missing message row or both columns NULL count as local. Every receipt
+/// due candidate filter and `obligation_authored_here` use it, so they cannot drift; the two
+/// `receipt_due_sparse` triggers in migration 0015 restate it and
+/// `deadline_owner_triggers_use_the_fragment` pins them.
+macro_rules! deadline_owner_sql {
+    ($message:literal) => {
+        concat!(
+            "COALESCE((SELECT COALESCE(deadline_node,origin_node) FROM messages WHERE id=",
+            $message,
+            "),(SELECT id FROM local_node))=(SELECT id FROM local_node)"
+        )
+    };
+}
+pub(crate) use deadline_owner_sql;
+
 /// Whether this node is the obligation's deciding node. An obligation with no
 /// recorded origin (a derived message, an unknown row) is judged by the caller's
 /// own checks, so it counts as authored here.
-fn obligation_authored_here(
-    tx: &Transaction<'_>,
-    obligation: &ObligationRef,
-) -> Result<bool, ApiError> {
+fn obligation_authored_here(tx: &Connection, obligation: &ObligationRef) -> Result<bool, ApiError> {
     let (sql, id) = match obligation {
         ObligationRef::Invitation(id) => (
             "SELECT origin_node IS (SELECT id FROM local_node) FROM invitations WHERE id=?1",
             id.as_str(),
         ),
         ObligationRef::Receipt { message, .. } => (
-            "SELECT origin_node IS NULL OR origin_node=(SELECT id FROM local_node) FROM messages WHERE id=?1",
+            concat!("SELECT ", deadline_owner_sql!("?1")),
             message.as_str(),
         ),
+        // The ledger row exists only on the sender node, so a node that has one authored it.
         _ => return Ok(true),
     };
     Ok(tx
@@ -1863,8 +1894,27 @@ fn obligation_authored_here(
         .unwrap_or(true))
 }
 
+/// The in-thread handoff overdue warning of the handoff that carried `message`, if it fired and
+/// its receipt condition is still open; a cleared one no longer stands for the linked message,
+/// which then gets its own overdue.
+fn handoff_warning_of(tx: &Connection, message: &MessageId) -> Result<Option<String>, ApiError> {
+    let Some(row) = handoff_obligations::by_message(tx, message.as_str()).map_err(store_error)?
+    else {
+        return Ok(None);
+    };
+    tx.query_row(
+        "SELECT m.id FROM messages m \
+         JOIN warning_conditions c ON c.open_warning_id = m.id AND c.clear_warning_id IS NULL \
+         WHERE m.event_key = ?1",
+        [format!("overdue:handoff:{}", row.request)],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(store_error)
+}
+
 fn record_overdue_inner(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     obligation: &ObligationRef,
     basis: &TimeBasis,
     decision_at: UtcMillis,
@@ -1947,6 +1997,42 @@ fn record_overdue_inner(
                     row.source == ReceiptSource::Manifest,
                 )
             }
+            ObligationRef::Handoff(request) => {
+                // The ledger exists only on the sender node, so a node without the row
+                // (the target) records nothing; a row without a seat has no thread to warn in.
+                let Some(row) = handoff_obligations::get(tx, request).map_err(store_error)? else {
+                    return Ok(OverdueOutcome {
+                        warning: None,
+                        inserted: false,
+                    });
+                };
+                let Some(seat) = row.seat.clone() else {
+                    return Ok(OverdueOutcome {
+                        warning: None,
+                        inserted: false,
+                    });
+                };
+                let (author, seat) = (SeatId::new(row.author.clone()), SeatId::new(seat));
+                let thread = direct_thread_id(&author, &seat)
+                    .map_err(|why| api_error(ErrorCode::InvalidRequest, why.to_string()))?;
+                // Once linked, the ordinary receipt obligation is the deadline record.
+                let state = match row.state {
+                    handoff_obligations::State::Sent | handoff_obligations::State::Launched => {
+                        "pending"
+                    }
+                    _ => "closed",
+                };
+                (
+                    thread,
+                    seat,
+                    row.deadline_at,
+                    state.to_owned(),
+                    None,
+                    None,
+                    format!("overdue:handoff:{request}"),
+                    false,
+                )
+            }
             _ => {
                 return Err(api_error(
                     ErrorCode::InvalidRequest,
@@ -2014,11 +2100,18 @@ fn record_overdue_inner(
         "pending"
     };
     let mut payload = serde_json::json!({
-        "obligation": match obligation { ObligationRef::Invitation(_) => "invitation", _ => "receipt" },
+        "obligation": match obligation {
+            ObligationRef::Invitation(_) => "invitation",
+            ObligationRef::Handoff(_) => "handoff",
+            _ => "receipt",
+        },
         "seat": seat.as_str(), "deadline_at": deadline,
         "classified_at": classify_at, "materialized_at": decision_at.0,
         "current_status": effective_status, "physical_status": "pending",
     });
+    if let ObligationRef::Handoff(request) = obligation {
+        payload["request"] = request.as_str().into();
+    }
     if matches!(basis, TimeBasis::Decision) {
         let wake = overdue_wake(tx, obligation, seat.as_str())?;
         payload["detail"] = match wake.as_str() {
@@ -2040,6 +2133,7 @@ fn record_overdue_inner(
     let condition = match obligation {
         ObligationRef::Invitation(id) => ("invitation", id.as_str()),
         ObligationRef::Receipt { seat, .. } => ("receipt", seat.as_str()),
+        ObligationRef::Handoff(_) => ("receipt", seat.as_str()),
         _ => unreachable!(),
     };
     if matches!(basis, TimeBasis::Decision) && condition.0 == "receipt" {
@@ -2081,6 +2175,15 @@ fn record_overdue_inner(
     } else {
         None
     };
+    // The handoff overdue that already fired stands for the linked message's receipt obligation
+    // while its receipt condition is still open (it then points at it like any receipt); a
+    // cleared one no longer stands for it, so the linked message gets its own overdue.
+    let active = match (&active, obligation, basis) {
+        (None, ObligationRef::Receipt { message, .. }, TimeBasis::Decision) => {
+            handoff_warning_of(tx, message)?.or(active)
+        }
+        _ => active,
+    };
     let (warning, inserted) = match active {
         Some(id) => (MessageId::new(id), false),
         None => append_event_once_at_seq(tx, event, decision_seq, None)?,
@@ -2097,6 +2200,9 @@ fn record_overdue_inner(
                 "message_id=?2 AND seat_id=?3",
                 vec![message.as_str().to_owned(), seat.as_str().to_owned()],
             ),
+            // The ledger row carries no warning marker; its condition is the pair's receipt
+            // condition.
+            ObligationRef::Handoff(_) => ("", "", Vec::new()),
             _ => unreachable!(),
         };
     let marker_sql = format!(
@@ -2107,6 +2213,7 @@ fn record_overdue_inner(
             params![source_message.as_ref().unwrap().as_str(), seat.as_str(), warning.as_str()]).map_err(store_error)?;
     }
     let changed = match source_parameters.as_slice() {
+        [] => Ok(1),
         [one] => tx.execute(&marker_sql, params![warning.as_str(), one]),
         [one, two] => tx.execute(&marker_sql, params![warning.as_str(), one, two]),
         _ => unreachable!(),

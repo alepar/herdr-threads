@@ -15,7 +15,7 @@
 //!   `FactKind` handler or a local-only writer called it, so each materializer
 //!   exists once. New apply-time inputs are fields here.
 
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::node::{NodeUuid, tag_for};
 use crate::protocol::ids::{SeatId, ThreadId, prefix, public_id_parts};
@@ -26,6 +26,7 @@ use crate::store::{schema, seats};
 use crate::sync::EntityKey;
 use crate::sync::facts::FactKind;
 use crate::sync::facts::payload::ReferencedSeats;
+use crate::sync::handoff_block::SenderBlock;
 use crate::sync::hlc::HlcStamp;
 
 /// The suppression query: whether the settlement named by the key already
@@ -329,6 +330,12 @@ pub enum AuthorRule {
     /// The seat ID's tag is `tag_for(origin, k)` for some `k` from 0 to the
     /// origin's current `tag_k` (`seat.created`).
     OwnTag(SeatId),
+    /// A remote handoff `message.sent` (spec 4.2): the origin is the recipient's home, the
+    /// author's home is the block's sender node, and that node's key verifies the block.
+    HandoffRecipientHome {
+        block: Box<SenderBlock>,
+        recipient: SeatId,
+    },
     /// Any origin (`thread.register`, the `node.*` kinds).
     Any,
 }
@@ -337,8 +344,45 @@ fn subject(rule: &AuthorRule) -> String {
     match rule {
         AuthorRule::SeatHome(s) | AuthorRule::OwnTag(s) => s.as_str().to_owned(),
         AuthorRule::EitherSeatHome(a, b) => format!("{}/{}", a.as_str(), b.as_str()),
+        AuthorRule::HandoffRecipientHome { block, recipient } => format!(
+            "{}/{}",
+            block.author.as_ref().map_or("-", SeatId::as_str),
+            recipient.as_str()
+        ),
         AuthorRule::Any => "-".to_owned(),
     }
+}
+
+/// The public keys of `node`'s journal logs (`sync_logs.pubkey`), newest incarnation first. N1
+/// says every incarnation shares one key, so the order only fixes what two readers see if one
+/// ever differs; empty for a node this store has no log of. The one reader of these keys, shared
+/// by the materializer's handoff rule and the target's pre-launch sender check.
+pub fn node_keys(conn: &Connection, node: NodeUuid) -> rusqlite::Result<Vec<[u8; 32]>> {
+    let keys = conn
+        .prepare("SELECT pubkey FROM sync_logs WHERE node_uuid=?1 ORDER BY incarnation DESC")?
+        .query_map([node.to_string()], |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(keys
+        .into_iter()
+        .filter_map(|key| <[u8; 32]>::try_from(key).ok())
+        .collect())
+}
+
+/// The handoff rule: fact and replicated identity only (no `peer_requests`, no ledger).
+fn handoff_authorized(
+    tx: &Transaction<'_>,
+    origin: NodeUuid,
+    block: &SenderBlock,
+    recipient: &SeatId,
+) -> Result<bool, ApiError> {
+    let (Some(sender_node), Some(author)) = (block.sender_node, block.author.as_ref()) else {
+        return Ok(false);
+    };
+    if !is_home(tx, recipient, origin)? || !is_home(tx, author, sender_node)? {
+        return Ok(false);
+    }
+    let keys = node_keys(tx, sender_node).map_err(store_error)?;
+    Ok(keys.iter().any(|key| block.verify(key).is_ok()))
 }
 
 /// Whether `seat`'s replicated home node is `origin`; an unknown seat has
@@ -398,6 +442,9 @@ pub fn require_author(
             is_home(tx, a, m.origin_node)? || is_home(tx, b, m.origin_node)?
         }
         AuthorRule::OwnTag(seat) => owns_tag(tx, seat, m.origin_node)?,
+        AuthorRule::HandoffRecipientHome { block, recipient } => {
+            handoff_authorized(tx, m.origin_node, block, recipient)?
+        }
     };
     if ok {
         return Ok(());

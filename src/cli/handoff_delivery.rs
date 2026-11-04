@@ -1012,7 +1012,7 @@ fn execute_locked<C: LocalClient + ?Sized>(
         },
         &mut staged,
         &mut phase,
-        &call,
+        handoff::StagingAuthor::Caller { call: &call },
         &mut |staged| {
             progress.staged = staged.clone();
             handoff::save_progress(journal, reference, &progress).map_err(RunError::from)

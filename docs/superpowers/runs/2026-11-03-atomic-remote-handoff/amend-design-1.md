@@ -1,0 +1,39 @@
+owners:
+- [Should-fix] §9 row 'Target crashes after staging, before launch'; Decisions 'Failed after staging' → owner: docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §Decisions added during decomposition (coverage rounds 1-2)
+- [Should-fix] §4.1 target's values list; §4.2 'payload restates block' predicate; §1.1 field list → owner: docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §4.2 Authority rule (`MessageSent::apply`, `src/store/materialize.rs`)
+- [Nit] §1 Rules 'A 64 KiB body fits' and 'The initiator's CLI checks the same bounds' → owner: docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §1. Wire: capability, plan fields, signed block
+- [Nit] §1.1 'ack_after_ms in 1..=i64::MAX when set'; §2.3/§4.1/§4.2 'deadline_at == requested_at + ack_after_ms' → owner: docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §1.1 `SenderBlock` and its signing bytes
+- [Nit] §1.1 SenderBlock struct definition → owner: docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §1.1 `SenderBlock` and its signing bytes
+- [Nit] Coordinator answers Q1 vs §6 (lines 462-463, 477-482), acceptance criterion '(19/22 bytes)' (line 585), test plan (line 610), Key abstractions summary_prompt (line 827), walk-through (lines 831, 833) → owner: docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §6. Prompt renderer v2 (one renderer, local and remote)
+amended:
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §1. Wire: capability, plan fields, signed block
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §1.1 `SenderBlock` and its signing bytes
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §2.1 CLI parse (`src/cli/commands.rs:3870-3946`)
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §2.2 Run (`src/cli/mod.rs:3259-3326`, `src/cli/peer_launch.rs`)
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §2.3 Daemon: sign, record the obligation, link it later
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §4.1 Shape: `message.sent` v1 plus one additive field
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §4.2 Authority rule (`MessageSent::apply`, `src/store/materialize.rs`)
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §6. Prompt renderer v2 (one renderer, local and remote)
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §8. TRUST-POLICY edits (same commit as the code)
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §9. Errors and edge cases
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §Acceptance criteria
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §Testing
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §Unchanged behavior
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §Seat-addressed overdue (Q4)
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §Decisions added during decomposition (coverage rounds 1-2)
+- docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md §Key abstractions
+work:
+- HandoffObligations: frozen request bytes, monotonic states, expiry | Owns store::handoff_obligations per the redesigned spec §2.3: the handoff_obligations table definition in migration 0015 (request_bytes BLOB frozen at first insert, state CHECK sent/launched/linked/expired, overdue_seq, thread_warned_at, alert_shown_at, expires_at, and the Q4 partial index on overdue_seq IS NOT NULL AND seat IS NULL AND state='sent' AND alert_shown_at IS NULL); insert-or-ignore plus read-back so the winning row's bytes are what every send uses; the guarded transition table (Launched sent->launched, link sent or launched->linked, expiry sent or launched->expired, delete on NoCap/Refused/plain Failed guarded on sent, Failed with staged and non-answers no change; a guard miss is a no-op; linked and expired terminal); overdue as columns, never a state; OBLIGATION_TTL_MS = 6 days with a compile-time assertion < peer_requests::RETENTION_MS; the re-send set (sent or launched, overdue or not); the due query; pruning linked/expired 7 days after updated_at. Consumes the rest of migration 0015 and SenderBlock (ht-8lem.1). Consumed by ht-8lem.4 (sends row request_bytes, runs expiry before each pass and at start, answers an expired CLI poll), ht-8lem.14 (due scan sets overdue_seq/thread_warned_at instead of a state), ht-8lem.16 (alert predicate reads the columns), ht-8lem.10 (84-byte still-pending and 32-byte expired CLI lines, 63-byte --deadline refusal), ht-8lem.3 (materializer link is the guarded transition) | src/store/handoff_obligations.rs, src/store/mod.rs, migrations/node/0015_*.sql, src/store/schema.rs | covers: [Should-fix] §9 row 'Target crashes after staging, before launch'; Decisions 'Failed after staging'
+- Recorded Failed answer derives staged from handoff columns | The one function that builds the recorded answer of a failed peer_requests row sets LaunchState::Failed.staged = Some{thread, message} exactly when handoff_thread and handoff_message are set, and serves the worker's failure, settle_at_start's interrupted rows and every repeat-id answer alike (whatever pane and unconfirmed hold). Consumes migration 0015 peer_requests columns and LaunchState::Failed.staged (ht-8lem.1); consumed by the sender ledger (keeps the row) and the CLI's '; message <m> stands in thread <t>' line (ht-8lem.10) | src/store/peer_requests.rs, src/service/peer_launcher.rs | covers: [Should-fix] §9 row 'Target crashes after staging, before launch'; Decisions 'Failed after staging'
+supersedes:
+- ht-8lem.2 → HandoffObligations: frozen request bytes, monotonic states, expiry
+unchanged:
+- Target side unchanged: decide and its refusal order and texts, staging as one transaction, launch order, the hc staged-Send gate, and the duplicate-id rule (a repeat id gets only the recorded answer, never a second launch).
+- Signing bytes layout (HTHOFF01), the signed field set and verify_strict; the block rides LaunchPlan.message and MessageSentPayload.handoff, both serde(default).
+- The authority rule reads only the fact and replicated identity, never peer_requests or the ledger.
+- Q4's seat-addressed alert and its delivery paths: digest count and token, wake probe 9 (p0, wakes at every T), mod_binding_view attention block, the HandoffOverdue inbox row (68 bytes plus tag) behind inbox.seat_alerts_v1, AdvanceCursors.alerts clearing from top-level non-readonly bindings only.
+- The in-thread overdue:handoff:<request> warning, its receipt condition, its 49-byte payload delta, and one in-thread warning per handoff.
+- Deadline owner (deadline_node, N5) and the post-link ordinary receipt path.
+- Re-send cadence (each link-up, at most every 30 s), the CLI's 120 s poll window, request file and request_key rules, and the Launched result line.
+- Q5: a target crash after staging is never resumed on the target.
+- Local handoffs, bare launch --pane P@M, retained v1 prompts, and 2.x compatibility as in §7.

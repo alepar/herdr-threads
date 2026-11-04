@@ -17,7 +17,7 @@
 use super::{
     OutputSpec, detail_argv, format_command_argv, needs_terminal_escape, other_day, text_json,
 };
-use crate::protocol::sync_admin::{NodeRow, StatusReply, SyncReply};
+use crate::protocol::sync_admin::{HandoffLedgerRow, NodeRow, StatusReply, SyncReply};
 use crate::protocol::{
     pagination::Page,
     results::{
@@ -83,6 +83,21 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                             out.push_str("first contact: ");
                             out.push_str(&line);
                             out.push('\n');
+                        }
+                        continue;
+                    }
+                    InboxBatchV2Item::HandoffOverdue(alert) => {
+                        out.push_str("warning overdue_handoff ");
+                        out.push_str(alert.request.get(..8).unwrap_or(&alert.request));
+                        out.push_str(" to ");
+                        out.push_str(&alert.node_tag);
+                        match &alert.seat {
+                            Some(seat) => {
+                                out.push_str(": unlinked: seat ");
+                                out.push_str(&token(seat));
+                                out.push('\n');
+                            }
+                            None => out.push_str(": not confirmed by that machine\n"),
                         }
                         continue;
                     }
@@ -1226,6 +1241,41 @@ fn node_row(node: &NodeRow, now: i64, out: &mut String) {
     out.push('\n');
 }
 
+/// One sender-ledger handoff line of `peer list`, none for a row that needs none. Fixed text:
+/// 51 bytes (overdue), 36 (overdue unlinked), 32 (expired unconfirmed), 36 (expired unlinked)
+/// and 21 (failed), each plus the 8-character request, the node label and (unlinked, failed)
+/// the seat or the one-line detail.
+fn handoff_row(row: &HandoffLedgerRow, out: &mut String) {
+    use std::fmt::Write as _;
+    let head = format!(
+        "handoff {} to {}",
+        row.request.get(..8).unwrap_or(&row.request),
+        token(&row.node)
+    );
+    match (row.state.as_str(), &row.seat) {
+        ("sent", None) if row.overdue => {
+            let _ = writeln!(out, "{head} overdue: not confirmed by that machine");
+        }
+        ("launched", Some(seat)) if row.overdue => {
+            let _ = writeln!(out, "{head} overdue unlinked: seat {}", token(seat));
+        }
+        ("expired", None) => {
+            let _ = writeln!(out, "{head} expired unconfirmed");
+        }
+        ("expired", Some(seat)) => {
+            let _ = writeln!(out, "{head} expired unlinked: seat {}", token(seat));
+        }
+        ("failed", _) => {
+            let _ = writeln!(
+                out,
+                "{head} failed: {}",
+                one_line(row.detail.as_deref().unwrap_or("no detail"))
+            );
+        }
+        _ => {}
+    }
+}
+
 /// `-` for an absent number.
 fn opt_num(value: Option<u64>) -> String {
     value.map_or_else(|| "-".to_owned(), |n| n.to_string())
@@ -1251,12 +1301,13 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
             discovery,
             nodes,
             forgotten,
+            handoffs,
         } => {
             out.push_str("peers\n");
             if let Some(state) = discovery {
                 let _ = writeln!(out, "discovery {state}");
             }
-            if rows.is_empty() && nodes.is_empty() {
+            if rows.is_empty() && nodes.is_empty() && handoffs.is_empty() {
                 out.push_str("empty\n");
             }
             for row in rows {
@@ -1286,6 +1337,9 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
             let now = super::render_now().0;
             for node in nodes {
                 node_row(node, now, out);
+            }
+            for handoff in handoffs {
+                handoff_row(handoff, out);
             }
             // 11 to 30 bytes, only when `peer prune` forgot nodes.
             if *forgotten > 0 {

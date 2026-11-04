@@ -20,6 +20,8 @@ mod invitation;
 mod membership;
 mod retirement;
 mod thread;
+pub(crate) use direct::author_thread_direct;
+pub(crate) use direct::auto_join_local_pair_seats;
 pub(crate) use direct::direct_pair;
 pub(crate) use direct::direct_pair_selection;
 pub use direct::ensure_direct_thread;
@@ -27,7 +29,7 @@ pub(crate) use direct::guard_pair_member;
 pub(crate) use direct::guard_pair_service_owner;
 pub(crate) use direct::pending_auto_join;
 pub(crate) use direct::validate_pair_send;
-pub use direct::{direct_auto_join_payloads, resolve_direct_pair};
+pub use direct::{direct_auto_join_payloads, open_pair, resolve_direct_pair};
 pub use invitation::accept;
 pub use invitation::accept_required;
 pub(crate) use invitation::author_invitation;
@@ -452,13 +454,23 @@ pub fn advance_cursors(
             // An in-turn top-level display of a message whose receipt is still pending, or of a
             // pending invitation, served this occupant (ht-705): the wake candidate owes it no
             // idle wake for that item. Nothing is settled or accepted; the item stays pending.
-            let top_level: bool = tx
+            let (top_level, readonly): (bool, bool) = tx
                 .query_row(
-                    "SELECT role='top_level' FROM occupant_bindings WHERE binding_id=?1",
+                    "SELECT role='top_level',readonly FROM occupant_bindings WHERE binding_id=?1",
                     [binding.as_str()],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .map_err(store_error)?;
+            // Seat-addressed alerts the display showed (Q4): only a top-level, non-readonly
+            // binding clears them, in this transaction (it wakes the author itself).
+            if top_level && !readonly && !request.alerts.is_empty() {
+                super::handoff_obligations::mark_alerts_shown(
+                    tx,
+                    claim.seat.as_str(),
+                    &request.alerts,
+                    at.utc.0,
+                )?;
+            }
             if top_level && request.in_turn {
                 for id in &request.displayed {
                     let pending =

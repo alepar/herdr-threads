@@ -33,7 +33,7 @@
 # Scanned files (the single source of truth is WIRE_FILES below; tests/ is never scanned, so
 # the frozen 2.1.1 shadow structs there are outside the lint by construction). A `:Type[,Type]`
 # suffix restricts the file's recorded types (R1 still scans the whole file):
-#   src/sync/frame.rs, src/sync/envelope.rs:WireEnvelope, src/sync/facts/{payload,node_genesis,
+#   src/sync/frame.rs, src/sync/handoff_block.rs, src/sync/envelope.rs:WireEnvelope, src/sync/facts/{payload,node_genesis,
 #   node_retag,seat,thread,invitation,membership,message,receipt}.rs, src/protocol/sync_admin.rs
 # A listed file that does not exist is a configuration error (exit 2).
 #
@@ -77,6 +77,7 @@ export LC_ALL=C
 # path[:Type,Type] (see header). Single source of truth for the scanned list.
 WIRE_FILES=(
     "src/sync/frame.rs"
+    "src/sync/handoff_block.rs"
     "src/sync/envelope.rs:WireEnvelope"
     "src/sync/facts/payload.rs"
     "src/sync/facts/node_genesis.rs"

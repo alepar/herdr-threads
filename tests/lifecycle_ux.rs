@@ -998,6 +998,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
                     startup_input: None,
                     bootstrap_input: None,
                     summary_prompt: None,
+                    sender_prompt: None,
                     request: HandoffRequest {
                         summary: None,
                         policy: None,

@@ -210,6 +210,10 @@ impl DeadlinePort for ScheduledStore {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
         self.store.due_obligations(request, budget)
     }
+    fn due_handoffs(&self, budget: &CallBudget) -> Result<usize, ApiError> {
+        let _turn = self.writer.enter_background(budget, self.store.clock())?;
+        self.store.due_handoffs(budget)
+    }
     fn pending_retirement_jobs(
         &self,
         page: PageRequest,

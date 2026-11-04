@@ -111,6 +111,8 @@ mod named_site;
 mod opaque_relay;
 #[path = "sync/opaque_wire.rs"]
 mod opaque_wire;
+#[path = "store/peer_handoff.rs"]
+mod peer_handoff;
 #[path = "sync/peer_wire_fixtures.rs"]
 mod peer_wire_fixtures;
 #[path = "support/peer_wire_freeze.rs"]

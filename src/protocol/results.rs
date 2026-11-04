@@ -144,6 +144,13 @@ pub enum CommandResult {
     LaunchGate(crate::protocol::handoff::LaunchGateReply),
     /// The seat allocated by a `LocalLaunchGate` `Record`; `None` for `Open`.
     LocalLaunchGate(Option<SeatId>),
+    /// `Command::PeerHandoffStage`: the staged pair thread and message (also on a repeat).
+    PeerHandoffStaged {
+        thread: ThreadId,
+        message: crate::protocol::ids::MessageId,
+    },
+    /// `Command::PeerRequestView`: what the launch child of a handoff request launches.
+    PeerRequestView(Box<PeerRequestView>),
     Located(crate::protocol::locate::LocateReply),
     BootstrapSubmissionChecked(crate::protocol::handoff::BootstrapSubmissionChecked),
     BootstrapRecovered(Box<crate::protocol::handoff::BootstrapRecoveryResult>),
@@ -1484,6 +1491,9 @@ pub enum InboxBatchV2Item {
     /// First-contact stats of a session the daemon has not enrolled yet (ht-54r.8): only the
     /// first page of such a read carries it, as its first item. Presentation only.
     FirstContact(FirstContact),
+    /// A seat-addressed alert (`inbox.seat_alerts_v1`): a handoff to another machine the
+    /// author's node could not confirm in time. First page only, ahead of the merged rows.
+    HandoffOverdue(HandoffOverdue),
     Invitation {
         thread: ThreadId,
         topic_data: String,
@@ -1593,6 +1603,15 @@ pub struct WakeOnState {
     pub seat: SeatId,
     pub wake_on: crate::protocol::commands::WakeOn,
     pub changed: bool,
+}
+
+/// What `Command::PeerRequestView` reads of a handoff request's `peer_requests` row: the stored
+/// plan, the prompt frozen at decide and the row's state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerRequestView {
+    pub plan: crate::sync::frame::LaunchPlan,
+    pub handoff_prompt: Option<String>,
+    pub state: String,
 }
 
 /// The answer to `seat retire --self`: the retired seat and the obligations it left pending
@@ -2196,6 +2215,21 @@ pub struct ThreadHistory {
 pub struct FirstContact {
     pub threads: Vec<ThreadHistory>,
     pub more: u64,
+}
+
+/// A handoff request overdue on this node: not confirmed by the target machine, or (with
+/// `seat`) launched there but not linked yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffOverdue {
+    /// The request id.
+    pub request: String,
+    /// The target node's tag, else its uuid prefix.
+    pub node_tag: String,
+    /// The seat the target reported launching (`Launched{seat}`) when known: the row is
+    /// launched but not linked yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<String>,
 }
 
 /// One thread a fast-forward skipped over: its gap counts and its last message.

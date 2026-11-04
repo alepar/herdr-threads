@@ -531,6 +531,7 @@ fn page_of(store: &crate::store::SqliteStore, claim: &CallerClaim) -> Vec<(Strin
                 max_bytes: 60_000,
                 cursor: None,
             },
+            seat_alerts: false,
         }),
         &OutputSpec::default(),
         &budget(),
@@ -754,6 +755,7 @@ fn v2_items(
                 max_bytes: 60_000,
                 cursor: None,
             },
+            seat_alerts: false,
         }),
         &OutputSpec::default(),
         &budget(),
@@ -803,6 +805,7 @@ fn unenrolled_inbox_page_carries_stats_until_the_enrolling_advance() {
                 claim: claim.clone(),
                 operation: OperationId::new("enroll"),
                 displayed: vec![],
+                alerts: Vec::new(),
             },
             &budget(),
         )
@@ -819,5 +822,193 @@ fn unenrolled_inbox_page_carries_stats_until_the_enrolling_advance() {
         !v2_items(&store, &bound, 20)
             .iter()
             .any(|i| matches!(i, InboxBatchV2Item::FirstContact(_)))
+    );
+}
+
+// ---- seat-addressed handoff alerts (inbox.seat_alerts_v1) ----
+
+const ALERT_TARGET: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+/// A pending alert for author seat `s`: an overdue ledger row (request `n`) with no known seat.
+fn pending_alert(conn: &Connection, n: u8) -> String {
+    use crate::store::handoff_obligations::{NewObligation, insert_or_get, mark_overdue};
+    let request = format!("{n:0>36}");
+    insert_or_get(
+        conn,
+        &NewObligation {
+            request: &request,
+            target_node: ALERT_TARGET,
+            author: "s",
+            message: &format!("m{n}"),
+            requested_at: 1,
+            deadline_at: Some(2),
+            request_bytes: b"A",
+        },
+    )
+    .unwrap();
+    assert!(mark_overdue(conn, &request, 3).unwrap());
+    request
+}
+
+fn alert_page(
+    store: &crate::store::SqliteStore,
+    claim: &CallerClaim,
+    seat_alerts: bool,
+) -> Vec<InboxBatchV2Item> {
+    let CommandResult::InboxBatchV2(page) = query_with_output(
+        &store.context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
+            thread: None,
+            claim: Some(claim.clone()),
+            seat: Some(claim.seat.clone()),
+            page: PageRequest {
+                limit: 20,
+                max_bytes: 60_000,
+                cursor: None,
+            },
+            seat_alerts,
+        }),
+        &OutputSpec::default(),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("v2 page")
+    };
+    page.items
+}
+
+fn alerts_of(items: &[InboxBatchV2Item]) -> Vec<(String, String)> {
+    items
+        .iter()
+        .filter_map(|i| match i {
+            InboxBatchV2Item::HandoffOverdue(a) => Some((a.request.clone(), a.node_tag.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn advance_with_alerts(
+    store: &crate::store::SqliteStore,
+    claim: &CallerClaim,
+    operation: &str,
+    alerts: Vec<String>,
+) {
+    store
+        .advance_cursors(
+            &crate::protocol::commands::AdvanceCursors {
+                in_turn: false,
+                invitations: Vec::new(),
+                claim: claim.clone(),
+                operation: OperationId::new(operation),
+                displayed: vec![],
+                alerts,
+            },
+            &budget(),
+        )
+        .unwrap();
+}
+
+fn alert_shown_at(conn: &Connection, request: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT alert_shown_at FROM handoff_obligations WHERE request=?1",
+        [request],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// A bound top-level claim for seat `s`.
+fn bound_claim(store: &crate::store::SqliteStore) -> CallerClaim {
+    check_in(store, lifecycle(session_claim("sess-A", EXEC_A), "a1"))
+        .unwrap()
+        .context
+}
+
+#[test]
+fn inbox_first_page_carries_seat_alerts() {
+    let (store, conn) = seated(1);
+    let claim = bound_claim(&store);
+    let (r1, r2) = (pending_alert(&conn, 1), pending_alert(&conn, 2));
+    conn.execute(
+        "INSERT INTO node_directory(node_uuid,tag,tag_k,first_seen_at) VALUES (?1,'lap',0,0)",
+        [ALERT_TARGET],
+    )
+    .unwrap();
+    let items = alert_page(&store, &claim, true);
+    let alerts = alerts_of(&items);
+    // In overdue order, ahead of the merged rows, labelled by the directory tag (else the uuid
+    // prefix), and the read clears nothing.
+    assert_eq!(alerts.iter().map(|a| &a.0).collect::<Vec<_>>(), [&r1, &r2]);
+    assert!(alerts.iter().all(|a| a.1 == "lap"));
+    assert!(matches!(items[0], InboxBatchV2Item::HandoffOverdue(_)));
+    assert!(matches!(items[1], InboxBatchV2Item::HandoffOverdue(_)));
+    assert_eq!(alerts_of(&alert_page(&store, &claim, true)).len(), 2);
+}
+
+#[test]
+fn inbox_without_flag_has_no_alert() {
+    let (store, conn) = seated(1);
+    let claim = bound_claim(&store);
+    pending_alert(&conn, 1);
+    assert!(alerts_of(&alert_page(&store, &claim, false)).is_empty());
+    // Without a directory tag the node is named by its uuid prefix.
+    assert_eq!(
+        alerts_of(&alert_page(&store, &claim, true))[0].1,
+        "bbbbbbbb"
+    );
+}
+
+#[test]
+fn advance_cursors_clears_alerts_top_level_only() {
+    let (store, conn) = seated(1);
+    let claim = bound_claim(&store);
+    let mine = pending_alert(&conn, 1);
+    let other = pending_alert(&conn, 2);
+    conn.execute(
+        "UPDATE handoff_obligations SET author='o' WHERE request=?1",
+        [&other],
+    )
+    .unwrap();
+    // An unknown request id and another author's request change nothing.
+    advance_with_alerts(&store, &claim, "x1", vec!["nope".into(), other.clone()]);
+    assert_eq!(
+        (alert_shown_at(&conn, &mine), alert_shown_at(&conn, &other)),
+        (None, None)
+    );
+    // A readonly binding and a subagent binding change nothing.
+    conn.execute("UPDATE occupant_bindings SET readonly=1", [])
+        .unwrap();
+    advance_with_alerts(&store, &claim, "x2", vec![mine.clone()]);
+    assert_eq!(alert_shown_at(&conn, &mine), None);
+    conn.execute(
+        "UPDATE occupant_bindings SET readonly=0, role='subagent'",
+        [],
+    )
+    .unwrap();
+    advance_with_alerts(&store, &claim, "x3", vec![mine.clone()]);
+    assert_eq!(alert_shown_at(&conn, &mine), None);
+    // A top-level, non-readonly binding clears it.
+    conn.execute("UPDATE occupant_bindings SET role='top_level'", [])
+        .unwrap();
+    advance_with_alerts(&store, &claim, "x4", vec![mine.clone()]);
+    assert!(alert_shown_at(&conn, &mine).is_some());
+    assert_eq!(alert_shown_at(&conn, &other), None);
+    assert!(alerts_of(&alert_page(&store, &claim, true)).is_empty());
+}
+
+#[test]
+fn old_cli_gets_count_only() {
+    let (store, conn) = seated(1);
+    let claim = bound_claim(&store);
+    let request = pending_alert(&conn, 1);
+    // An old CLI sends neither flag: no item, and its advance leaves the alert pending.
+    assert!(alerts_of(&alert_page(&store, &claim, false)).is_empty());
+    advance_with_alerts(&store, &claim, "old", Vec::new());
+    assert_eq!(alert_shown_at(&conn, &request), None);
+    assert_eq!(
+        crate::store::handoff_obligations::alert_count(&conn, "s").unwrap(),
+        1
     );
 }

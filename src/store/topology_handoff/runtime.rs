@@ -211,6 +211,47 @@ impl BootstrapStorePort for SqliteStore {
             |tx, _, ()| super::local_gate::record(tx, id.as_str(), created, seat),
         )
     }
+    fn peer_handoff_stage(
+        &self,
+        request: &str,
+        seat: &crate::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let staged = self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, decision, ()| {
+                crate::store::peer_handoff::stage(tx, &self.context, decision, request, seat, None)
+            },
+        )?;
+        if staged.fresh {
+            // The target-side audit line (spec section 8), not a provenance value.
+            eprintln!(
+                "peer handoff {} staged thread {} message {} from {}",
+                request.chars().take(8).collect::<String>(),
+                staged.thread.as_str(),
+                staged.message.as_str(),
+                staged.sender_node.chars().take(8).collect::<String>(),
+            );
+        }
+        Ok(CommandResult::PeerHandoffStaged {
+            thread: staged.thread,
+            message: staged.message,
+        })
+    }
+    fn peer_request_view(
+        &self,
+        request: &str,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| crate::store::peer_handoff::request_view(tx, request),
+        )
+    }
     fn automatic_bootstrap_recovery_replay(
         &self,
         canonical: &HandoffNamespace,

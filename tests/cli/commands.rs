@@ -742,6 +742,52 @@ fn launch_new_flags_parse_and_conflict() {
     );
 }
 
+// Kills: a non-UTF-8 --cwd or --profile-dir for another machine sent lossily (U+FFFD in place of
+// the byte), so the target would act on a directory the user never named. 57 bytes, model-visible.
+#[test]
+fn remote_paths_must_be_utf8() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStrExt;
+    const TEXT: &str = "--cwd and --profile-dir for another machine must be UTF-8";
+    assert_eq!(TEXT.len(), 57);
+    let bad = || OsString::from(std::ffi::OsStr::from_bytes(b"/abs/\xff"));
+    let argv = |head: &[&str], flag: &str, tail: &[&str]| {
+        let mut argv: Vec<OsString> = head.iter().map(OsString::from).collect();
+        argv.push(flag.into());
+        argv.push(bad());
+        argv.extend(tail.iter().map(OsString::from));
+        argv
+    };
+    let tab = ["--new-tab", "L", "--space", "S@M"];
+    fn handoff<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+        let mut head = vec!["herdr-threads", "handoff", "--kind", "codex"];
+        head.extend_from_slice(extra);
+        head
+    }
+    let task = ["--summary", "s", "--", "task"];
+    let mut with_cwd = handoff(&tab);
+    with_cwd.extend(["--cwd", "/w"]);
+    let terminal = handoff(&["--new-terminal", "--space", "@M"]);
+    let cases = [
+        // --profile-dir of a remote tab handoff
+        argv(&with_cwd, "--profile-dir", &task),
+        // --cwd of a remote tab handoff
+        argv(&handoff(&tab), "--cwd", &task),
+        // --cwd of a remote new-terminal handoff
+        argv(&terminal, "--cwd", &task),
+        // --cwd of a remote new-terminal launch
+        argv(
+            &["herdr-threads", "launch", "--kind", "codex", "--new-terminal", "--space", "@M"],
+            "--cwd",
+            &[],
+        ),
+    ];
+    for argv in cases {
+        let error = parse_argv(argv.clone()).map(|_| ()).unwrap_err();
+        assert_eq!(error.detail, TEXT, "{argv:?}");
+    }
+}
+
 #[test]
 fn remote_new_terminal_parses_to_a_new_terminal_target() {
     use crate::sync::frame::LaunchTarget;
@@ -753,7 +799,7 @@ fn remote_new_terminal_parses_to_a_new_terminal_target() {
     let handoff = |extra: &[&str]| {
         let mut argv = vec!["herdr-threads", "handoff", "--kind", "claude"];
         argv.extend_from_slice(extra);
-        argv.extend(["--", "x"]);
+        argv.extend(["--summary", "s", "--", "x"]);
         parse_argv(argv)
     };
     let form = ["--new-terminal", "--space", "@m", "--cwd", "/tmp"];
@@ -768,7 +814,8 @@ fn remote_new_terminal_parses_to_a_new_terminal_target() {
             remote.plan.target
         );
         assert_eq!(remote.plan.cwd.as_deref(), Some("/tmp"), "{name}");
-        assert_eq!(remote.then.is_some(), name == "handoff", "{name}");
+        assert!(remote.then.is_none(), "{name}");
+        assert_eq!(remote.is_handoff(), name == "handoff", "{name}");
     }
     for extra in [
         // no --cwd, a relative --cwd
@@ -5019,4 +5066,224 @@ fn seat_retire_self_parses_and_rejects_combinations() {
     ] {
         assert!(parse_argv(bad.clone()).is_err(), "{bad:?}");
     }
+}
+
+fn remote_handoff(extra: &[&str]) -> Result<super::CliAction, String> {
+    let mut argv = vec!["herdr-threads", "handoff", "--kind", "codex", "--pane", "P@M"];
+    argv.extend_from_slice(extra);
+    argv.extend(["--", "task"]);
+    parse_argv(argv)
+        .map(|parsed| parsed.action)
+        .map_err(|error| error.detail)
+}
+
+// Kills: a remote handoff accepted without --summary, a thread/pair flag silently ignored (the
+// recipient writes the pair), a relative profile dir sent to be resolved on the wrong machine,
+// a deadline past the obligation's lifetime, and a changed refusal text (model-visible).
+#[test]
+fn remote_handoff_refusals() {
+    let cases: [(&[&str], &str, usize); 8] = [
+        (
+            &[],
+            "--summary is required for a handoff to another machine",
+            54,
+        ),
+        (
+            &["--summary", "s", "--harness-binary", "/x"],
+            "--harness-binary and --name are not supported for a handoff to another machine",
+            78,
+        ),
+        (
+            &["--summary", "s", "--name", "n"],
+            "--harness-binary and --name are not supported for a handoff to another machine",
+            78,
+        ),
+        (
+            &["--summary", "s", "--invite-deadline", "5"],
+            "--invite-deadline is not supported for a handoff to another machine (a pair has no invitation)",
+            94,
+        ),
+        (
+            &["--summary", "s", "--deadline", "518401"],
+            "--deadline for a handoff to another machine is at most 6 days",
+            61,
+        ),
+        (
+            &["--summary", "s", "--deadline", "9000000000000000"],
+            "--deadline for a handoff to another machine is at most 6 days",
+            61,
+        ),
+        (
+            &["--summary", "s", "--thread", "t1"],
+            "--thread, --new-thread, --thread-name, --topic and --goal are not supported for a handoff to another machine (it opens the 1:1 pair)",
+            132,
+        ),
+        (
+            &["--summary", "s", "--deadline", "0"],
+            "deadline must be positive and fit milliseconds",
+            46,
+        ),
+    ];
+    for (extra, text, bytes) in cases {
+        let Err(error) = remote_handoff(extra) else {
+            panic!("{extra:?} must be refused")
+        };
+        assert_eq!(error, text, "{extra:?}");
+        assert_eq!(error.len(), bytes, "{extra:?}");
+    }
+    for flag in [
+        vec!["--new-thread"],
+        vec!["--new-thread", "--thread-name", "n"],
+        vec!["--new-thread", "--topic", "t"],
+        vec!["--new-thread", "--goal", "g"],
+    ] {
+        let mut extra = vec!["--summary", "s"];
+        extra.extend(flag.iter().copied());
+        let Err(error) = remote_handoff(&extra) else {
+            panic!("{flag:?} must be refused")
+        };
+        assert_eq!(error.len(), 132, "{flag:?}: {error}");
+        assert!(error.starts_with("--thread, --new-thread"), "{error}");
+    }
+    // Exactly 6 days is accepted.
+    assert!(remote_handoff(&["--summary", "s", "--deadline", "518400"]).is_ok());
+    // A relative profile dir on a remote new tab is refused (a pane never reaches this check).
+    let Err(error) = parse_argv([
+        "herdr-threads", "handoff", "--kind", "codex", "--new-tab", "L", "--space", "S@M",
+        "--cwd", "/w", "--summary", "s", "--profile-dir", "rel/dir", "--", "task",
+    ]) else {
+        panic!("a relative remote profile dir must be refused")
+    };
+    assert_eq!(
+        error.detail,
+        "--profile-dir for another machine must be an absolute path there"
+    );
+    assert_eq!(error.detail.len(), 64);
+}
+
+const GUARDED_PANE: &str =
+    "--cwd and --profile-dir require --new-tab; guarded pane launches cannot change directories";
+
+// Kills: a remote pane handoff that accepts --profile-dir or --cwd (the agent would run on the
+// shell's default root while the CLI reports started), a changed refusal text, and a refusal
+// that also catches the remote new tab or terminal.
+#[test]
+fn remote_pane_profile_dir_refused_before_sending() {
+    assert_eq!(GUARDED_PANE.len(), 90);
+    for extra in [["--profile-dir", "/abs/p"], ["--cwd", "/abs/c"]] {
+        let mut args = vec!["--summary", "S"];
+        args.extend(extra);
+        let Err(error) = remote_handoff(&args) else {
+            panic!("{extra:?} on a remote pane must be refused")
+        };
+        assert_eq!(error, GUARDED_PANE, "{extra:?}");
+    }
+    use crate::sync::frame::LaunchTarget;
+    for argv in [
+        vec![
+            "herdr-threads", "handoff", "--kind", "codex", "--new-tab", "L", "--space", "S@M",
+            "--cwd", "/w", "--summary", "S", "--profile-dir", "/abs/p", "--", "task",
+        ],
+        vec![
+            "herdr-threads", "handoff", "--kind", "codex", "--new-terminal", "--space", "@M",
+            "--cwd", "/w", "--summary", "S", "--profile-dir", "/abs/p", "--", "task",
+        ],
+    ] {
+        let super::CliAction::RemoteLaunch(remote) = parse_argv(argv).unwrap().action else {
+            panic!("RemoteLaunch")
+        };
+        assert_eq!(remote.plan.profile_dir.as_deref(), Some("/abs/p"));
+        assert!(!matches!(remote.plan.target, LaunchTarget::Pane { .. }));
+    }
+}
+
+// Kills: a plan that loses the summary, the profile dir or the task, a draft that is already
+// signed or carries daemon-owned fields, an ACK window lost on the way to the signed block, and
+// a follow-on handoff still built.
+#[test]
+fn remote_handoff_plan_contents() {
+    use crate::sync::frame::LaunchTarget;
+    let check = |action: super::CliAction,
+                 machine: &str,
+                 profile: Option<&str>,
+                 target: &dyn Fn(&LaunchTarget) -> bool| {
+        let super::CliAction::RemoteLaunch(remote) = action else {
+            panic!("a remote handoff parses to RemoteLaunch")
+        };
+        assert_eq!(remote.machine, machine);
+        assert!(remote.then.is_none());
+        assert!(target(&remote.plan.target), "{:?}", remote.plan.target);
+        assert_eq!(remote.plan.kind, "codex");
+        assert_eq!(remote.plan.handoff_prompt.as_deref(), Some("S"));
+        assert_eq!(remote.plan.profile_dir.as_deref(), profile);
+        let block = remote.plan.message.as_deref().expect("an unsigned draft");
+        assert_eq!(block.body, "task");
+        assert_eq!(block.priority, 0);
+        assert!(block.require_ack);
+        assert_eq!(block.ack_after_ms, Some(90_000));
+        assert_eq!(block.author, None);
+        assert_eq!(block.author_role, None);
+        assert_eq!(block.sender_node, None);
+        assert_eq!(block.message, None);
+        assert_eq!(block.requested_at, 0);
+        assert_eq!(block.sig, "");
+        assert_eq!(block.v, 0);
+        assert!(remote.is_handoff());
+    };
+    let common = ["--summary", "S", "--profile-dir", "/abs/p", "--deadline", "90"];
+    // A pane cannot change the profile directory: it carries none.
+    let mut pane = vec!["herdr-threads", "handoff", "--kind", "codex", "--pane", "P@M"];
+    pane.extend(["--summary", "S", "--deadline", "90"]);
+    pane.extend(["--", "task"]);
+    check(parse_argv(pane).unwrap().action, "M", None, &|t| {
+        matches!(t, LaunchTarget::Pane { pane, .. } if pane == "P")
+    });
+    let mut tab = vec![
+        "herdr-threads", "handoff", "--kind", "codex", "--new-tab", "lbl", "--space", "S@M",
+        "--cwd", "/w",
+    ];
+    tab.extend(common);
+    tab.extend(["--", "task"]);
+    check(parse_argv(tab).unwrap().action, "M", Some("/abs/p"), &|t| {
+        matches!(t, LaunchTarget::NewTab { space, label } if space == "S" && label == "lbl")
+    });
+    let mut terminal = vec![
+        "herdr-threads", "handoff", "--kind", "codex", "--new-terminal", "--space", "@M",
+        "--cwd", "/w",
+    ];
+    terminal.extend(common);
+    terminal.extend(["--", "task"]);
+    check(parse_argv(terminal).unwrap().action, "M", Some("/abs/p"), &|t| {
+        matches!(t, LaunchTarget::NewTerminal { label } if label == "codex")
+    });
+    // No --deadline, no --profile-dir: the plan carries neither.
+    let super::CliAction::RemoteLaunch(bare) = remote_handoff(&["--summary", "S"]).unwrap() else {
+        panic!("RemoteLaunch")
+    };
+    assert_eq!(bare.plan.profile_dir, None);
+    assert_eq!(bare.plan.message.as_ref().unwrap().ack_after_ms, None);
+}
+
+// Kills: an oversized body or a plan the target would refuse being sent anyway (the quote-heavy
+// body doubles when escaped), and a refusal on a plan right at the limit.
+#[test]
+fn remote_handoff_plan_size_precheck() {
+    let handoff = |body: String| {
+        parse_argv([
+            "herdr-threads", "handoff", "--kind", "codex", "--pane", "P@M", "--summary", "s",
+            "--", body.as_str(),
+        ])
+        .map(|parsed| parsed.action)
+        .map_err(|error| error.detail)
+    };
+    assert!(handoff("a".repeat(65_536)).is_ok());
+    let Err(error) = handoff("a".repeat(65_537)) else {
+        panic!("a body over 65 536 bytes is refused")
+    };
+    assert_eq!(error, "body exceeds byte limit");
+    let Err(error) = handoff("\"".repeat(65_536)) else {
+        panic!("a quote-heavy body whose plan is too large is refused")
+    };
+    assert_eq!(error, "launch plan too large");
+    assert_eq!(error.len(), 21);
 }

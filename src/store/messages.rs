@@ -863,6 +863,8 @@ pub(super) enum PublicationAuthor<'a> {
         relays_user: bool,
         user_intent: Option<crate::protocol::summary::UserIntent>,
         decision_at: i64,
+        /// `messages.deadline_node` (spec 4.3): the handoff block's sender node, else `None`.
+        deadline_node: Option<String>,
     },
     /// The registered service author: no seat, label `herdr-graph`.
     Programmatic {
@@ -974,9 +976,10 @@ pub(super) fn insert_publication_suppressing(
             relays_user,
             user_intent,
             author_role_backfilled,
+            deadline_node,
             ..
         } => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id,origin_node,priority,author_role_backfilled) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding,origin_node,priority,author_role_backfilled]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id,origin_node,priority,author_role_backfilled,deadline_node) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding,origin_node,priority,author_role_backfilled,deadline_node]).map_err(store_error)?;
         }
         PublicationAuthor::Programmatic { author, .. } => {
             tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role,origin_node,delivery_mode,priority) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service',?9,?10,?11)",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq,author.as_str(),origin_node,mode,priority]).map_err(store_error)?;
@@ -1190,6 +1193,7 @@ pub(super) fn build_message_sent(
         sent_at,
         duration_ms,
         recipients: audience.into_values().collect(),
+        handoff: None,
     })
 }
 
@@ -1483,6 +1487,8 @@ pub fn materialize_message(
         suppressed = synthesize_preparation(tx, m, &prep_id, payload)?;
     }
     let attribution = attribution::take(tx, m, &attribution::send_key(payload.message.as_str()))?;
+    // A handoff message: the block's sender node decides its receipt overdue, on every node.
+    let sender_node = payload.handoff.as_ref().and_then(|b| b.sender_node);
     // Bindings never replicate. Old facts omitted the role: retain a live
     // local author's claim when staged, otherwise backfill only what the
     // relay/intent fields imply (TRUST-POLICY: legacy message claims).
@@ -1519,15 +1525,30 @@ pub fn materialize_message(
             relays_user: payload.relays_user,
             user_intent: payload.user_intent,
             decision_at: payload.sent_at,
+            deadline_node: sender_node.map(|n| n.to_string()),
         },
         &suppressed,
     )?;
+    if let Some(sender) = sender_node {
+        let local: String = tx
+            .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+            .map_err(store_error)?;
+        if local == sender.to_string() {
+            let recipient = payload.recipients.first().map_or("", |r| r.seat.as_str());
+            super::handoff_obligations::link(
+                tx,
+                payload.message.as_str(),
+                recipient,
+                payload.sent_at,
+            )?;
+        }
+    }
     Ok(())
 }
 
 /// The route a send takes (see [`journaled_route`]); the creating fact is the
 /// thread's own.
-fn send_route(
+pub(crate) fn send_route(
     tx: &Transaction<'_>,
     context: &StoreContext,
     thread: &ThreadId,

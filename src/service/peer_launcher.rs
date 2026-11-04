@@ -237,6 +237,116 @@ fn short(id: &str) -> &str {
     &id[..id.len().min(8)]
 }
 
+/// A handoff plan's refusal: the sender's message does not verify against its node.
+const HANDOFF_UNVERIFIED: &str = "handoff message does not verify against its sender node";
+/// The sender node's key is not replicated here yet (unrecorded; a retry decides afresh).
+const SENDER_NODE_UNKNOWN: &str = "sender node key not replicated here yet";
+/// The sender seat is not replicated here yet (unrecorded).
+const SENDER_SEAT_UNKNOWN: &str = "sender seat not replicated here yet";
+/// The sender seat is replicated with another home.
+const SENDER_SEAT_FOREIGN: &str = "the sender seat is not that node's seat here";
+/// The sender seat is replicated here as retired.
+const SENDER_SEAT_RETIRED: &str = "the sender seat is retired here";
+/// The plan's profile directory is not usable here.
+const PROFILE_DIR_UNUSABLE: &str = "profile directory is not an existing absolute directory here";
+/// The selected adapter takes no handoff startup input.
+const NO_STARTUP_INPUT: &str = "selected adapter has no handoff startup input";
+
+/// What `decide` freezes for an accepted handoff plan.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct HandoffDecision {
+    /// The first user message, rendered once (spec section 6) and stored with the row.
+    pub(crate) prompt: String,
+}
+
+/// The profile directory of a handoff plan as the one frozen [`LaunchDirectoryContext`], through
+/// the adapter's `explicit_directory_env`: `None` for a plan without `profile_dir`. The worker
+/// repeats this call on the stored plan, so decide and launch agree. `Err` is the refusal detail.
+/// A pane plan never reaches this with a directory (`plan_refusal` refuses a pane carrying a
+/// `profile_dir`), so freezing `/` for a plan with no `cwd` is only a defensive default.
+pub(crate) fn handoff_directory(
+    plan: &crate::sync::frame::LaunchPlan,
+) -> Result<Option<crate::protocol::handoff::LaunchDirectoryContext>, String> {
+    let Some(dir) = plan.profile_dir.as_deref() else {
+        return Ok(None);
+    };
+    let path = Path::new(dir);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err(PROFILE_DIR_UNUSABLE.into());
+    }
+    let registration = plan_registration(plan)?;
+    let env = registration
+        .launch_policy()
+        .expect("launch_registration checked the policy")
+        .explicit_directory_env(path)
+        .map_err(|error| clamp_detail(&error.detail))?;
+    let context = crate::protocol::handoff::LaunchDirectoryContext {
+        profile_dir: path.to_path_buf(),
+        cwd: plan
+            .cwd
+            .as_deref()
+            .map_or_else(|| "/".into(), PathBuf::from),
+        env,
+    };
+    context
+        .validate()
+        .map_err(|_| PROFILE_DIR_UNUSABLE.to_owned())?;
+    Ok(Some(context))
+}
+
+/// The registration of the plan's harness, with a launch policy.
+fn plan_registration(
+    plan: &crate::sync::frame::LaunchPlan,
+) -> Result<&'static crate::harness::registry::Registration, String> {
+    let registry = crate::harness::registry::builtins();
+    let id = registry.agent(&plan.kind).map_err(|_| {
+        format!(
+            "harness {} is not registered here",
+            clamp_detail(&plan.kind)
+        )
+    })?;
+    crate::harness::launch::launch_registration(
+        registry,
+        crate::harness::registry::OccupantHarness::Agent(id),
+    )
+    .map_err(|error| clamp_detail(&error.detail))
+}
+
+/// Whether the adapter takes the handoff startup input for `argv`; the same
+/// `prepare_startup_input` call as the local handoff's `select_startup_input`. `Err` is the
+/// refusal detail (an adapter error passes through).
+fn check_startup_input(
+    policy: &dyn crate::harness::adapter::LaunchPolicy,
+    argv: &[String],
+) -> Result<(), String> {
+    startup_input_verdict(policy.prepare_startup_input(
+        argv,
+        &crate::harness::adapter::StartupInputSpec {
+            max_text_bytes: crate::ports::NativeLaunchRequest::MAX_ARG_BYTES,
+        },
+    ))
+}
+
+/// The refusal detail of an adapter's startup-input answer, if it is one.
+fn startup_input_verdict<T>(
+    answer: Result<Option<T>, crate::protocol::results::ApiError>,
+) -> Result<(), String> {
+    match answer {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(NO_STARTUP_INPUT.into()),
+        Err(error) => Err(clamp_detail(&error.detail)),
+    }
+}
+
+/// What this node's store says about a handoff's sender.
+struct SenderView {
+    /// The public keys of the sender node's logs, newest incarnation first.
+    keys: Vec<[u8; 32]>,
+    /// The sender seat's directory row: home node, whether it is local, replicated name,
+    /// whether it is retired.
+    seat: Option<(String, bool, Option<String>, bool)>,
+}
+
 impl PeerLaunchService {
     fn budget(&self) -> CallBudget {
         CallBudget {
@@ -453,11 +563,87 @@ impl PeerLaunchService {
         if let Ok(Some(stored)) = written {
             return stored.answer();
         }
-        LaunchState::Failed {
-            detail,
-            pane: row.pane.clone(),
-            unconfirmed: true,
+        PeerRequest {
+            state: "failed".into(),
+            detail: Some(detail),
+            ..row.clone()
         }
+        .answer()
+    }
+
+    /// The handoff checks of `decide`, after placement, cwd and hold: the sender's signed block
+    /// against its node, its seat against the directory, the profile directory and the
+    /// harness's startup input. `Ok(None)` for a plan that is not a handoff. `Err(Refused)` is
+    /// to be recorded; `Err(Unavailable)` (the sender's node or seat not replicated yet) is
+    /// answered unrecorded, so a retry decides afresh. Writes nothing.
+    pub(crate) fn handoff_refusal(
+        &self,
+        from: NodeUuid,
+        request: &LaunchRequest,
+    ) -> Result<Option<HandoffDecision>, LaunchState> {
+        let plan = &request.plan;
+        let Some(block) = plan.handoff() else {
+            return Ok(None);
+        };
+        if block.sender_node != Some(from)
+            || block.author.as_ref().map(|a| a.as_str()) != Some(request.requester_seat.as_str())
+            || block.request != request.id
+        {
+            return Err(refused(HANDOFF_UNVERIFIED));
+        }
+        let seat = request.requester_seat.clone();
+        let view = self
+            .read(move |conn| {
+                use rusqlite::OptionalExtension;
+                let keys = crate::store::materialize::node_keys(conn, from)?;
+                let seat = conn
+                    .query_row(
+                        "SELECT home_node,is_local,name,state='retired' FROM seats WHERE id=?1",
+                        [&seat],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )
+                    .optional()?;
+                Ok(SenderView { keys, seat })
+            })
+            .map_err(|error| LaunchState::Unavailable {
+                reason: format!("store: {}", error.detail),
+            })?;
+        if view.keys.is_empty() {
+            return Err(LaunchState::Unavailable {
+                reason: SENDER_NODE_UNKNOWN.into(),
+            });
+        }
+        if !view.keys.iter().any(|key| block.verify(key).is_ok()) {
+            return Err(refused(HANDOFF_UNVERIFIED));
+        }
+        let Some((home, is_local, name, retired)) = view.seat else {
+            return Err(LaunchState::Unavailable {
+                reason: SENDER_SEAT_UNKNOWN.into(),
+            });
+        };
+        if is_local || home != from.to_string() {
+            return Err(refused(SENDER_SEAT_FOREIGN));
+        }
+        if retired {
+            return Err(refused(SENDER_SEAT_RETIRED));
+        }
+        handoff_directory(plan).map_err(refused)?;
+        let registration = plan_registration(plan).map_err(refused)?;
+        check_startup_input(
+            registration
+                .launch_policy()
+                .expect("launch_registration checked the policy"),
+            &plan.argv,
+        )
+        .map_err(refused)?;
+        let prompt = crate::cli::handoff::summary_prompt::render_v2(
+            plan.handoff_prompt.as_deref(),
+            &crate::cli::handoff::summary_prompt::SenderLine {
+                name,
+                id: request.requester_seat.clone(),
+            },
+        );
+        Ok(Some(HandoffDecision { prompt }))
     }
 
     fn decide(&self, from: NodeUuid, request: &LaunchRequest) -> Result<LaunchState, ApiError> {
@@ -502,6 +688,9 @@ impl PeerLaunchService {
             pane: None,
             seat: None,
             detail: None,
+            handoff_thread: None,
+            handoff_message: None,
+            handoff_prompt: None,
             created_at: now_ms(self.clock.as_ref()),
             updated_at: 0,
         };
@@ -527,10 +716,18 @@ impl PeerLaunchService {
         } else if self.held(&placement)? {
             return Ok(self.refuse(from, &row, "that pane is held for recovery here"));
         }
+        // The handoff checks run after the existing ones and before the slot claim; a
+        // refusal is recorded (no fact is written), an unavailable answer is not.
+        let handoff_prompt = match self.handoff_refusal(from, request) {
+            Ok(decision) => decision.map(|d| d.prompt),
+            Err(LaunchState::Refused { detail }) => return Ok(self.refuse(from, &row, &detail)),
+            Err(state) => return Ok(state),
+        };
         // A pane launch names its pane from the start, so an interruption at any
         // point reads as unconfirmed (the launch child may have started).
         let row = PeerRequest {
             pane: (!new_tab).then(|| placement.target.clone()),
+            handoff_prompt,
             ..row
         };
         // The cap and the claim on a slot are one step under the live lock (no
@@ -601,6 +798,7 @@ impl PeerLaunchService {
                 detail,
                 pane: None,
                 unconfirmed: false,
+                staged: None,
             });
         }
         Ok(LaunchState::Running { pane })
@@ -637,18 +835,28 @@ pub fn plan_refusal(plan: &crate::sync::frame::LaunchPlan, plan_bytes: usize) ->
     {
         return Some("a tab label must not start with -".into());
     }
+    if matches!(plan.target, LaunchTarget::Pane { .. }) && plan.profile_dir.is_some() {
+        return Some(PANE_PROFILE_DIR.into());
+    }
     None
 }
 
+/// The refusal of a pane plan carrying a profile directory (49 bytes): Herdr's `agent.start`
+/// carries argv only, so a pane cannot take the directory's environment.
+const PANE_PROFILE_DIR: &str = "a pane launch cannot change the profile directory";
+
 /// The `internal peer-target-create` arguments of a new tab (`workspace` names its
 /// workspace) or, with no workspace, a new terminal: its label ends in `[from <tag>]`, the
-/// requesting node. `gate_argv` is what a herdr-core terminal starts.
+/// requesting node. `gate_argv` is what a herdr-core terminal starts. `directory_context` is a
+/// handoff tab's frozen profile directory context (`None` for a bare plan and for hc): its env
+/// goes to the created tab, as a local tab's `CreateTabRequest.env` does.
 pub fn target_args(
     workspace: Option<&str>,
     label: &str,
     tag: &str,
     cwd: &str,
     gate_argv: &[String],
+    directory_context: Option<&crate::protocol::handoff::LaunchDirectoryContext>,
 ) -> Vec<String> {
     // `--flag=value`: a value can never be read as another flag.
     let mut args = vec!["internal".into(), "peer-target-create".into()];
@@ -658,6 +866,12 @@ pub fn target_args(
     }
     args.push(format!("--label={} [from {tag}]", label.trim()));
     args.push(format!("--cwd={cwd}"));
+    if let Some(context) = directory_context {
+        args.push(format!(
+            "--directory-context={}",
+            serde_json::to_string(context).expect("a directory context serializes")
+        ));
+    }
     if !gate_argv.is_empty() {
         args.push("--".into());
         args.extend(gate_argv.iter().cloned());
@@ -670,8 +884,10 @@ pub fn target_args(
 /// <host args> <plan.argv>`. The executable is resolved on `path` from the plan's kind (the
 /// plan carries arguments only); the core hands a terminal none of the caller's routing, so the
 /// state directory rides the argv. `config_root` is the launching caller's config root, pushed
-/// as `--config-root <harness>=<dir>`. A peer plan carries no root (`None`): the gate's scrub
-/// leaves the harness's default root and the core's ambient root cannot win.
+/// as `--config-root <harness>=<dir>`. A bare peer plan carries no root (`None`): the gate's
+/// scrub leaves the harness's default root and the core's ambient root cannot win. A handoff
+/// plan passes its frozen profile directory here and its frozen `prompt`, which the adapter's
+/// startup-input template places in the plan's argv (the same call as `decide`'s check).
 pub fn gate_argv(
     program: &Path,
     state_dir: &Path,
@@ -679,6 +895,7 @@ pub fn gate_argv(
     plan: &crate::sync::frame::LaunchPlan,
     path: Option<&std::ffi::OsStr>,
     config_root: Option<&Path>,
+    prompt: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let text = |p: &Path| {
         p.to_str()
@@ -705,7 +922,26 @@ pub fn gate_argv(
     let executable = crate::cli::hook::resolve_on_path(name, path)
         .ok_or_else(|| format!("no executable `{name}` on PATH"))?;
     let mut harness_argv = registration.host_launch_argv(crate::ports::HostKind::Hc);
-    harness_argv.extend(plan.argv.iter().cloned());
+    match prompt {
+        None => harness_argv.extend(plan.argv.iter().cloned()),
+        Some(prompt) => {
+            let template = registration
+                .launch_policy()
+                .ok_or_else(|| NO_STARTUP_INPUT.to_owned())?
+                .prepare_startup_input(
+                    &plan.argv,
+                    &crate::harness::adapter::StartupInputSpec {
+                        max_text_bytes: crate::ports::NativeLaunchRequest::MAX_ARG_BYTES,
+                    },
+                )
+                .map_err(|e| clamp_detail(&e.detail))?
+                .ok_or_else(|| NO_STARTUP_INPUT.to_owned())?;
+            let (applied, _) = template
+                .apply(&plan.argv, prompt)
+                .map_err(|e| clamp_detail(&e.detail))?;
+            harness_argv.extend(applied);
+        }
+    }
     crate::ports::NativeLaunchRequest::validate_argv(
         &crate::harness::launch::compose_native_argv(
             crate::harness::registry::OccupantHarness::Agent(id),
@@ -746,6 +982,30 @@ pub fn launch_args(pane: &str, plan: &crate::sync::frame::LaunchPlan) -> Vec<Str
         args.extend(plan.argv.iter().cloned());
     }
     args
+}
+
+/// The `internal peer-handoff-launch` arguments of request `request` on `pane`: the child stages
+/// the request's thread and message, then launches (spec section 3.2). `--flag=value`, as above.
+pub fn handoff_launch_args(pane: &str, request: &str) -> Vec<String> {
+    vec![
+        "internal".into(),
+        "peer-handoff-launch".into(),
+        format!("--request={request}"),
+        format!("--pane={pane}"),
+    ]
+}
+
+/// The child that launches `plan` on `pane`: the staging child for a handoff plan, plain
+/// `launch --pane` for every other.
+fn launch_child_args(
+    pane: &str,
+    request: &str,
+    plan: &crate::sync::frame::LaunchPlan,
+) -> Vec<String> {
+    match plan.handoff() {
+        Some(_) => handoff_launch_args(pane, request),
+        None => launch_args(pane, plan),
+    }
 }
 
 /// Runs one accepted request to its outcome.
@@ -883,6 +1143,22 @@ fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::Joi
 }
 
 impl Worker {
+    fn budget(&self) -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(self.clock.monotonic_now().0 + CALL_BUDGET_MS),
+            cancellation: Cancellation::default(),
+        }
+    }
+
+    /// The prompt `decide` froze on the request's row.
+    fn frozen_prompt(&self) -> Result<Option<String>, ApiError> {
+        self.store.sync_read(&self.budget(), |conn, _| {
+            peer_requests::get(conn, &self.id)
+                .map(|row| row.and_then(|row| row.handoff_prompt))
+                .map_err(crate::store::connection::store_error)
+        })
+    }
+
     fn record(&self, state: &str, pane: Option<&str>, seat: Option<&str>, detail: Option<&str>) {
         self.retrying(&format!("recording {state}"), |conn, now| {
             peer_requests::record(conn, &self.id, state, pane, seat, detail, now)
@@ -970,6 +1246,52 @@ impl Worker {
         )
     }
 
+    /// Stages the handoff's facts and records the gate in one commit, retried on
+    /// [`RECORD_RETRIES`] (`stage` is idempotent on the request id). The audit line names the
+    /// request, thread, message and sender node (spec section 8).
+    fn stage_handoff(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        created: &str,
+        terminal: &str,
+    ) -> Result<(), ApiError> {
+        let attempt = || {
+            let budget = self.budget();
+            let _turn = self.writer.enter_background(&budget, self.clock.as_ref())?;
+            self.store
+                .sync_operator_quantum(&budget, |tx, context, decision| {
+                    crate::store::peer_handoff::stage(
+                        tx,
+                        context,
+                        decision,
+                        &self.id,
+                        seat,
+                        Some(crate::store::peer_handoff::GateRecord { created, terminal }),
+                    )
+                })
+        };
+        let mut staged = attempt();
+        for delay in RECORD_RETRIES {
+            if staged.is_ok() {
+                break;
+            }
+            std::thread::sleep(delay);
+            staged = attempt();
+        }
+        let staged = staged?;
+        if staged.fresh {
+            (self.log)(&format!(
+                "peer launch {} from {}: staged message {} in thread {} (sender node {})",
+                short(&self.id),
+                self.tag,
+                staged.message.as_str(),
+                staged.thread.as_str(),
+                staged.sender_node
+            ));
+        }
+        Ok(())
+    }
+
     /// The program the children run: this binary (a test stand-in in
     /// test-support builds when `HT_TEST_PEER_LAUNCH_STUB` names one).
     fn program() -> PathBuf {
@@ -1036,15 +1358,35 @@ impl Worker {
                 let workspace =
                     matches!(plan.target, LaunchTarget::NewTab { .. }).then_some(target.as_str());
                 let hc = self.session.port().creates_targets_itself();
+                let handoff = plan.handoff().is_some();
                 let gate = if hc {
+                    // A handoff plan's gate starts the harness with the frozen prompt and the
+                    // frozen profile directory; a bare plan carries neither (the gate's scrub
+                    // keeps the core's root out).
+                    let (root, prompt) = if handoff {
+                        let prompt = match self.frozen_prompt() {
+                            Ok(Some(prompt)) => prompt,
+                            Ok(None) => return self.fail(None, "gate: no frozen handoff prompt"),
+                            Err(error) => {
+                                return self.fail(None, &format!("gate: {}", error.detail));
+                            }
+                        };
+                        let root = match handoff_directory(plan) {
+                            Ok(context) => context.map(|c| c.profile_dir),
+                            Err(why) => return self.fail(None, &format!("gate: {why}")),
+                        };
+                        (root, Some(prompt))
+                    } else {
+                        (None, None)
+                    };
                     match gate_argv(
                         &Self::program(),
                         &self.state_dir,
                         &self.id,
                         plan,
                         std::env::var_os("PATH").as_deref(),
-                        // A peer plan carries no root; the gate's scrub keeps the core's out.
-                        None,
+                        root.as_deref(),
+                        prompt.as_deref(),
                     ) {
                         Ok(argv) => argv,
                         Err(why) => return self.fail(None, &format!("gate: {why}")),
@@ -1052,12 +1394,23 @@ impl Worker {
                 } else {
                     Vec::new()
                 };
+                // A Herdr handoff tab takes the frozen profile env at creation (the agent started
+                // in its root pane inherits it); hc carries the root in the gate argv instead.
+                let context = if handoff && !hc {
+                    match handoff_directory(plan) {
+                        Ok(context) => context,
+                        Err(why) => return self.fail(None, &format!("creation: {why}")),
+                    }
+                } else {
+                    None
+                };
                 let out = self.child(&target_args(
                     workspace,
                     label,
                     &self.tag,
                     plan.cwd.as_deref().unwrap_or_default(),
                     &gate,
+                    context.as_ref(),
                 ));
                 let value = serde_json::from_str::<serde_json::Value>(out.stdout.trim()).ok();
                 let created = value.as_ref().and_then(|v| {
@@ -1096,16 +1449,31 @@ impl Worker {
                             }
                         };
                         let text = serde_json::to_string(&created).unwrap_or_default();
-                        let opened = self.retrying("recording the gate", |conn, now| {
-                            peer_requests::record_gate_launch(
-                                conn,
-                                &self.id,
-                                &text,
-                                &terminal,
-                                seat.as_str(),
-                                now,
-                            )
-                        });
+                        let opened = if handoff {
+                            // Facts and gate record in one commit: the gate opens only on the
+                            // staged Send (`gate_view`). A failure records plain `failed`.
+                            match self.stage_handoff(&seat, &text, &terminal) {
+                                Ok(()) => true,
+                                Err(error) => {
+                                    self.fail(
+                                        Some(&terminal),
+                                        &format!("staging for {terminal}: {}", error.detail),
+                                    );
+                                    return;
+                                }
+                            }
+                        } else {
+                            self.retrying("recording the gate", |conn, now| {
+                                peer_requests::record_gate_launch(
+                                    conn,
+                                    &self.id,
+                                    &text,
+                                    &terminal,
+                                    seat.as_str(),
+                                    now,
+                                )
+                            })
+                        };
                         if opened {
                             (self.log)(&format!(
                                 "peer launch {} from {}: launched seat {} on {terminal}",
@@ -1142,7 +1510,7 @@ impl Worker {
             }
             _ => target,
         };
-        let out = self.child(&launch_args(&pane, plan));
+        let out = self.child(&launch_child_args(&pane, &self.id, plan));
         let seat = crate::cli::launch::json_envelope_seat(&out.stdout);
         match (out.ok, seat) {
             (true, Some(seat)) => {
@@ -1217,6 +1585,9 @@ mod tests {
             kind: "claude".into(),
             argv: vec!["--model".into(), "x".into()],
             cwd: None,
+            profile_dir: None,
+            handoff_prompt: None,
+            message: None,
         };
         let parse = |args: Vec<String>| {
             let mut argv = vec![
@@ -1243,7 +1614,15 @@ mod tests {
             label,
             cwd,
             gate_argv,
-        } = parse(target_args(Some("w1"), " review ", "Q0V", "/work", &[]))
+            directory_context,
+        } = parse(target_args(
+            Some("w1"),
+            " review ",
+            "Q0V",
+            "/work",
+            &[],
+            None,
+        ))
         else {
             panic!("a tab creation")
         };
@@ -1256,23 +1635,127 @@ mod tests {
                 0
             )
         );
+        assert_eq!(directory_context, None);
+        let context = crate::protocol::handoff::LaunchDirectoryContext {
+            profile_dir: "/p".into(),
+            cwd: "/work".into(),
+            env: [("PROFILE_ROOT".to_owned(), "/p".to_owned())].into(),
+        };
+        let with = target_args(Some("w1"), "x", "Q0V", "/work", &[], Some(&context));
+        assert!(with.iter().any(|a| a.starts_with("--directory-context={")));
+        let crate::cli::commands::CliAction::InternalPeerTargetCreate {
+            directory_context, ..
+        } = parse(with)
+        else {
+            panic!("a tab creation")
+        };
+        assert_eq!(directory_context, Some(context));
         let gate = vec!["/bin/ht".to_owned(), "--x".into()];
         let crate::cli::commands::CliAction::InternalPeerTargetCreate {
             spec, gate_argv, ..
-        } = parse(target_args(None, "term", "Q0V", "/work", &gate))
+        } = parse(target_args(None, "term", "Q0V", "/work", &gate, None))
         else {
             panic!("a terminal creation")
         };
         assert_eq!(spec, crate::cli::peer_launch::TargetSpec::Terminal);
         assert_eq!(gate_argv, gate);
         // The previous name parses to the same action.
-        let mut old = target_args(Some("w1"), "x", "Q0V", "/work", &[]);
+        let mut old = target_args(Some("w1"), "x", "Q0V", "/work", &[], None);
         old[1] = "peer-tab-create".into();
         assert!(matches!(
             parse(old),
             crate::cli::commands::CliAction::InternalPeerTargetCreate { .. }
         ));
         assert_eq!(clamp_detail(&"é".repeat(600)).len(), 1024);
+    }
+
+    fn pane_plan(handoff: bool) -> crate::sync::frame::LaunchPlan {
+        crate::sync::frame::LaunchPlan {
+            target: LaunchTarget::Pane {
+                space: None,
+                tab: None,
+                pane: "w1:p2".into(),
+            },
+            kind: "claude".into(),
+            argv: vec!["--model".into(), "x".into()],
+            cwd: None,
+            profile_dir: None,
+            handoff_prompt: None,
+            message: handoff.then(|| {
+                Box::new(crate::sync::handoff_block::SenderBlock {
+                    v: 1,
+                    ..Default::default()
+                })
+            }),
+        }
+    }
+
+    // Kills: a handoff plan launched by the plain `launch` (the agent would start with no
+    // staged message), and a child command line the real CLI does not parse back to the request
+    // and pane it was built from.
+    #[test]
+    fn worker_runs_handoff_child_for_handoff_plan() {
+        assert_eq!(
+            handoff_launch_args("w1:p2", "req-1"),
+            [
+                "internal",
+                "peer-handoff-launch",
+                "--request=req-1",
+                "--pane=w1:p2"
+            ]
+        );
+        assert_eq!(
+            launch_child_args("w1:p2", "req-1", &pane_plan(true)),
+            handoff_launch_args("w1:p2", "req-1")
+        );
+        let mut argv = vec![
+            "ht".to_owned(),
+            "--json".into(),
+            "--state-dir".into(),
+            "/s".into(),
+            "--host-endpoint".into(),
+            "/h.sock".into(),
+        ];
+        argv.extend(handoff_launch_args("w1:p2", "req-1"));
+        let crate::cli::commands::CliAction::InternalPeerHandoffLaunch { request, pane } =
+            crate::cli::commands::parse_argv_exact_seats(argv)
+                .unwrap()
+                .action
+        else {
+            panic!("a handoff launch")
+        };
+        assert_eq!((request.as_str(), pane.as_str()), ("req-1", "w1:p2"));
+    }
+
+    // Kills: the plain launch losing its place for a plan without a block (bare `launch --pane
+    // P@M` must stay a gate-only launch).
+    #[test]
+    fn bare_plan_still_runs_launch() {
+        let plan = pane_plan(false);
+        assert_eq!(
+            launch_child_args("w1:p2", "req-1", &plan),
+            launch_args("w1:p2", &plan)
+        );
+        assert_eq!(launch_args("w1:p2", &plan)[0], "launch");
+    }
+
+    // Kills: an adapter without handoff startup input accepted (the launched agent would start
+    // with no task), and an adapter's own error replaced by the generic one.
+    #[test]
+    fn startup_input_verdict_passes_adapter_answers_through() {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        assert_eq!(
+            startup_input_verdict(Ok::<Option<()>, ApiError>(None)),
+            Err("selected adapter has no handoff startup input".to_owned())
+        );
+        assert_eq!(
+            startup_input_verdict(Err::<Option<()>, _>(ApiError::new(
+                ErrorCode::Conflict,
+                "startup prompt is occupied"
+            ))),
+            Err("startup prompt is occupied".to_owned())
+        );
+        assert_eq!(startup_input_verdict(Ok(Some(()))), Ok(()));
     }
 
     // Kills: an unregistered harness or a flag-like tab label taken on (a real
@@ -1288,6 +1771,9 @@ mod tests {
             kind: kind.into(),
             argv: Vec::new(),
             cwd: Some("/tmp".into()),
+            profile_dir: None,
+            handoff_prompt: None,
+            message: None,
         };
         let registered = crate::harness::registry::builtins()
             .registrations()
@@ -1433,6 +1919,9 @@ mod tests {
             kind: kind.into(),
             argv: argv.iter().map(|a| (*a).to_owned()).collect(),
             cwd: Some("/tmp".into()),
+            profile_dir: None,
+            handoff_prompt: None,
+            message: None,
         }
     }
 
@@ -1449,6 +1938,7 @@ mod tests {
             "req-1",
             &plan,
             Some(&path),
+            None,
             None,
         )
         .unwrap();
@@ -1487,6 +1977,7 @@ mod tests {
             &plan,
             Some(&path),
             Some(Path::new("/profiles/b")),
+            None,
         )
         .unwrap();
         let crate::cli::commands::CliAction::InternalLaunchGate { config_roots, .. } =
@@ -1511,6 +2002,7 @@ mod tests {
             &plan,
             Some(&empty),
             None,
+            None,
         )
         .unwrap_err();
         assert!(error.contains("no executable `claude`"), "{error}");
@@ -1529,9 +2021,97 @@ mod tests {
             &plan,
             Some(&path),
             None,
+            None,
         )
         .unwrap();
         let at = |needle: &str| argv.iter().position(|a| a == needle).unwrap();
         assert!(at("--no-daemon") < at("--model"), "{argv:?}");
+    }
+
+    // Kills: a handoff gate that drops the frozen prompt or the profile directory, passes the
+    // prompt outside the adapter's template slot, or lets either leak into a bare plan.
+    #[test]
+    fn gate_argv_carries_frozen_prompt_and_config_root() {
+        let (exe, path) = path_with("claude");
+        let plan = terminal_plan("claude", &["--model", "x"]);
+        let prompt = "do the thing \u{2014} from: me (s1)";
+        let argv = gate_argv(
+            Path::new("/bin/ht"),
+            Path::new("/s"),
+            "req-1",
+            &plan,
+            Some(&path),
+            Some(Path::new("/profiles/b")),
+            Some(prompt),
+        )
+        .unwrap();
+        let crate::cli::commands::CliAction::InternalLaunchGate {
+            config_roots,
+            argv: harness,
+            ..
+        } = crate::cli::commands::parse_argv_exact_seats(argv.clone())
+            .unwrap()
+            .action
+        else {
+            panic!("a launch gate: {argv:?}")
+        };
+        assert_eq!(config_roots, ["claude=/profiles/b"]);
+        let registry = crate::harness::registry::builtins();
+        let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
+        let template = registration
+            .launch_policy()
+            .unwrap()
+            .prepare_startup_input(
+                &plan.argv,
+                &crate::harness::adapter::StartupInputSpec {
+                    max_text_bytes: crate::ports::NativeLaunchRequest::MAX_ARG_BYTES,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let mut expected = vec![exe.to_str().unwrap().to_owned()];
+        expected.extend(registration.host_launch_argv(crate::ports::HostKind::Hc));
+        expected.extend(template.apply(&plan.argv, prompt).unwrap().0);
+        assert_eq!(harness, expected);
+        assert!(harness.iter().any(|a| a.contains(prompt)), "{harness:?}");
+    }
+
+    // Kills: a bare launch whose gate argv changed when the handoff parameters were added.
+    #[test]
+    fn gate_argv_bare_plan_unchanged() {
+        let (exe, path) = path_with("claude");
+        let plan = terminal_plan("claude", &["--model", "x"]);
+        let argv = gate_argv(
+            Path::new("/bin/ht"),
+            Path::new("/s"),
+            "r",
+            &plan,
+            Some(&path),
+            None,
+            None,
+        )
+        .unwrap();
+        let registry = crate::harness::registry::builtins();
+        let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
+        let mut tail = vec![exe.to_str().unwrap().to_owned()];
+        tail.extend(registration.host_launch_argv(crate::ports::HostKind::Hc));
+        tail.extend(plan.argv.clone());
+        assert_eq!(
+            argv,
+            [
+                "/bin/ht",
+                "--state-dir",
+                "/s",
+                "internal",
+                "launch-gate",
+                "--bootstrap",
+                "r:1",
+                "--"
+            ]
+            .iter()
+            .map(|a| (*a).to_owned())
+            .chain(tail)
+            .collect::<Vec<_>>()
+        );
     }
 }

@@ -2669,6 +2669,7 @@ fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
             relays_user: false,
             user_intent: None,
             decision_at: i64::from(n) + 100,
+            deadline_node: None,
         },
     )
     .unwrap();
@@ -3763,6 +3764,7 @@ fn presentation_relevance_unavailable_exact_episode_and_late_publication_are_swe
                 author_role_backfilled: false,
                 relays_user: false,
                 user_intent: None,
+                deadline_node: None,
                 decision_at: 200 + n,
             },
         )
@@ -4267,4 +4269,231 @@ fn pulled_notice_settlement_uses_exact_binding_when_sessions_match_across_harnes
         binding_notice_frontier(&db, "same-session-sibling").unwrap(),
         0
     );
+}
+
+// ---- Seat-addressed handoff alert (ht-8lem.20) ----
+
+mod alert {
+    use super::*;
+    use crate::store::handoff_obligations as ledger;
+
+    const REQ: &str = "000000000000000000000000000000000001";
+
+    fn row(db: &Connection, author: &str, request: &str) {
+        ledger::insert_or_get(
+            db,
+            &ledger::NewObligation {
+                request,
+                target_node: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                author,
+                message: &format!("m-{request}"),
+                requested_at: 1_000,
+                deadline_at: Some(2_000),
+                request_bytes: b"req",
+            },
+        )
+        .unwrap();
+    }
+
+    /// An overdue, unlinked row for author `s`.
+    fn overdue(db: &Connection, request: &str) {
+        row(db, "s", request);
+        assert!(ledger::mark_overdue(db, request, 3_000).unwrap());
+    }
+
+    fn warnings(db: &Connection) -> (AttentionClass, LogicalAttentionFrontier, AttentionToken) {
+        let run = digest(db, "s");
+        (run.digest.warnings, run.frontier, run.digest.token)
+    }
+
+    fn seq(db: &Connection, request: &str) -> u64 {
+        ledger::get(db, request)
+            .unwrap()
+            .unwrap()
+            .overdue_seq
+            .unwrap() as u64
+    }
+
+    fn key(seq: u64) -> Option<LogicalPublicationKey> {
+        Some(LogicalPublicationKey {
+            decision_seq: seq,
+            event_offset: 0,
+        })
+    }
+
+    // Kills: an alert missing from the count, listed as a ref, absent from has_more, or from the
+    // token and frontier keys.
+    #[test]
+    fn alert_counts_in_digest() {
+        let db = empty();
+        let (before, ..) = warnings(&db);
+        overdue(&db, REQ);
+        let (class, frontier, token) = warnings(&db);
+        assert_eq!(class.count, before.count + 1);
+        assert!(class.has_more);
+        assert!(class.items.is_empty(), "an alert has no thread, so no ref");
+        let expected = key(seq(&db, REQ));
+        assert_eq!(frontier.actionable_warning, expected);
+        assert_eq!(token.warning, expected.map(|k| (k.decision_seq, 0)));
+    }
+
+    // Kills: the check-in count ignoring the alert (either wrapper).
+    #[test]
+    fn alert_counts_in_pending_warning_count() {
+        use crate::protocol::time::{CallBudget, MonoInstant};
+        let db = empty();
+        let clock = crate::app::SystemClock::new();
+        let budget = CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        };
+        let seat = SeatId::new("s");
+        let binding = crate::protocol::ids::BindingId::new("b");
+        let count = |db: &Connection| {
+            (
+                crate::store::queries::pending_warning_count_in_transaction(
+                    db, INST, &seat, &budget, &clock,
+                )
+                .unwrap()
+                .0,
+                crate::store::queries::pending_warning_count_for_binding_in_transaction(
+                    db, INST, &seat, &binding, &budget, &clock,
+                )
+                .unwrap()
+                .0,
+            )
+        };
+        assert_eq!(count(&db), (0, 0));
+        overdue(&db, REQ);
+        assert_eq!(count(&db), (1, 1));
+    }
+
+    const INST: &str = "34750f98bd59fcfc946da45aaabe933b";
+
+    // Kills: a retired author's alert still counted; a shown alert still counted.
+    #[test]
+    fn retired_author_and_shown_alert_are_not_counted() {
+        let db = empty();
+        overdue(&db, REQ);
+        assert_eq!(warnings(&db).0.count, 1);
+        db.execute(
+            "UPDATE seats SET state='retired',retired_at=1 WHERE id='s'",
+            [],
+        )
+        .unwrap();
+        let (class, frontier, _) = warnings(&db);
+        assert_eq!((class.count, frontier.actionable_warning), (0, None));
+
+        let db = empty();
+        overdue(&db, REQ);
+        ledger::mark_alerts_shown(&db, "s", &[REQ.to_string()], 4_000).unwrap();
+        let (class, frontier, _) = warnings(&db);
+        assert_eq!((class.count, frontier.actionable_warning), (0, None));
+    }
+
+    // Kills: a launch alone clearing the alert, the in-thread warning, link or shown Refused
+    // leaving it; unshown Refused or expiry dropping it.
+    #[test]
+    fn alert_leaves_on_thread_warning_link_and_shown_refused() {
+        let count = |db: &Connection| warnings(db).0.count;
+        let db = empty();
+        overdue(&db, "000000000000000000000000000000000001");
+        assert_eq!(count(&db), 1);
+        assert!(ledger::launched(&db, "000000000000000000000000000000000001", "o", 5_000).unwrap());
+        assert_eq!(count(&db), 1, "launched alone keeps the alert");
+        // The pair thread arrives (replication): the due pass writes the in-thread warning.
+        let pair = crate::protocol::ids::direct_thread_id(
+            &crate::protocol::ids::SeatId::new("s"),
+            &crate::protocol::ids::SeatId::new("o"),
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",
+            [pair.as_str()],
+        )
+        .unwrap();
+        let mut db = db;
+        assert_eq!(ledger::due_pass(&mut db, 6_000, 16).unwrap(), 1);
+        assert_eq!(count(&db), 0, "in-thread warning");
+
+        let db = empty();
+        overdue(&db, "000000000000000000000000000000000002");
+        assert!(ledger::link(&db, "m-000000000000000000000000000000000002", "o", 5_000).unwrap());
+        assert_eq!(count(&db), 0, "link");
+
+        let db = empty();
+        overdue(&db, "000000000000000000000000000000000003");
+        assert!(
+            ledger::fail(
+                &db,
+                "000000000000000000000000000000000003",
+                "refused",
+                true,
+                5_000
+            )
+            .unwrap()
+        );
+        assert_eq!(count(&db), 0, "shown Refused");
+
+        let db = empty();
+        overdue(&db, "000000000000000000000000000000000004");
+        assert!(
+            ledger::fail(
+                &db,
+                "000000000000000000000000000000000004",
+                "refused",
+                false,
+                5_000
+            )
+            .unwrap()
+        );
+        assert_eq!(count(&db), 1, "unshown Refused keeps the alert");
+
+        let db = empty();
+        overdue(&db, "000000000000000000000000000000000005");
+        let past = 1_000 + ledger::OBLIGATION_TTL_MS + 1;
+        assert_eq!(ledger::expire_due(&db, past).unwrap().len(), 1);
+        assert_eq!(count(&db), 1, "expiry keeps the alert");
+    }
+
+    // Kills: the ninth probe missing or the alert not a wake reason.
+    #[test]
+    fn seat_has_pending_rows_sees_alert() {
+        let db = empty();
+        assert!(!seat_has_pending_rows(&db, "s").unwrap());
+        overdue(&db, REQ);
+        assert!(seat_has_pending_rows(&db, "s").unwrap());
+        ledger::mark_alerts_shown(&db, "s", &[REQ.to_string()], 4_000).unwrap();
+        assert!(!seat_has_pending_rows(&db, "s").unwrap());
+    }
+
+    // Kills: the wake path ignoring the alert at some threshold, or retyping it once shown.
+    #[test]
+    fn alert_wakes_at_every_threshold_once() {
+        for threshold in [0, -1, 3] {
+            let db = empty();
+            db.execute(
+                "UPDATE seats SET nudge_threshold=?1 WHERE id='s'",
+                [threshold],
+            )
+            .unwrap();
+            let idle = wake_attention(&db, "s").attention;
+            assert_eq!(idle.latest_warning_seq, None, "T={threshold}");
+            overdue(&db, REQ);
+            let woken = wake_attention(&db, "s").attention;
+            let alert = seq(&db, REQ);
+            assert_eq!(
+                woken.latest_warning_seq,
+                Some(alert as i64),
+                "T={threshold}"
+            );
+            assert_eq!(woken.frontier.actionable_warning, key(alert));
+            assert!(woken.frontier.actionable_warning > idle.frontier.actionable_warning);
+            ledger::mark_alerts_shown(&db, "s", &[REQ.to_string()], 4_000).unwrap();
+            let after = wake_attention(&db, "s").attention;
+            assert_eq!(after.latest_warning_seq, None, "T={threshold}");
+            assert_eq!(after.frontier.actionable_warning, None, "T={threshold}");
+        }
+    }
 }

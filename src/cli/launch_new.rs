@@ -256,6 +256,9 @@ fn on_core<W: Write>(
         kind: harness_id.to_owned(),
         argv: request.launch.argv.clone(),
         cwd: None,
+        profile_dir: None,
+        handoff_prompt: None,
+        message: None,
     };
     // The launching caller's own root: the core may have been autostarted under another profile.
     let config_root =
@@ -272,6 +275,7 @@ fn on_core<W: Write>(
         &plan,
         std::env::var_os("PATH").as_deref(),
         config_root.as_deref(),
+        None,
     )
     .map_err(|why| invalid_request(&why))?;
     let host = HostLocator::parse(

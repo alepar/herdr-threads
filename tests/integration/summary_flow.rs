@@ -518,6 +518,7 @@ impl World {
                 limit: 100,
                 ..Default::default()
             },
+            seat_alerts: false,
         }))
         .unwrap()
     }
@@ -3028,6 +3029,7 @@ fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
                         .iter()
                         .map(|id| herdr_threads::protocol::ids::MessageId::new(id.as_str()))
                         .collect(),
+                    alerts: Vec::new(),
                 },
             ))
             .expect("advance B's cursors over the displayed history");
@@ -3356,6 +3358,7 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
                     .iter()
                     .map(|id| herdr_threads::protocol::ids::MessageId::new(id.as_str()))
                     .collect(),
+                alerts: Vec::new(),
             },
         ))
         .expect("advance B's cursors over the displayed history");

@@ -222,6 +222,7 @@ impl Fixture {
             claim: None,
             seat: Some(SeatId::new(seat)),
             page: PageRequest::default(),
+            seat_alerts: false,
         })) else {
             panic!("inbox")
         };
@@ -1098,6 +1099,7 @@ fn in_turn_display_of_a_nudge_owes_no_idle_wake() {
                     displayed,
                     in_turn,
                     invitations: Vec::new(),
+                    alerts: Vec::new(),
                 },
                 &budget(),
             )
@@ -1178,6 +1180,7 @@ fn in_turn_display_of_an_invitation_owes_no_idle_wake() {
                 displayed: Vec::new(),
                 in_turn: true,
                 invitations: vec![InvitationId::new(invitation.clone())],
+                alerts: Vec::new(),
             },
             &budget(),
         )
@@ -1251,6 +1254,7 @@ fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
                     displayed: vec![nudge.clone()],
                     in_turn: true,
                     invitations: Vec::new(),
+                    alerts: Vec::new(),
                 },
                 &budget(),
             )

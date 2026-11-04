@@ -295,6 +295,22 @@ pub struct BootstrapLaunch {
     /// absent (and not serialized, so older plans stay byte-identical): the frozen V1 text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_prompt: Option<SummaryPrompt>,
+    /// Present: the launch prompt is prompt v2 (`cli::handoff::summary_prompt::render_v2_from`),
+    /// which wins over `summary_prompt`; absent (and not serialized): older plans stay
+    /// byte-identical.
+    /// Boxed so `BootstrapLaunch`, embedded in large request enums, stays small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_prompt: Option<Box<SenderPrompt>>,
+}
+
+/// A frozen prompt-v2 launch: the sender-written summary (or none: `Handoff`) and the rendered
+/// from part (`<name> (<id>)` or `<id>`), fixed at plan time so a relaunch never re-reads the seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SenderPrompt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub from: String,
 }
 
 /// A frozen summary-prompt launch: the sender-written one-line purpose (`--summary`, else
@@ -1206,6 +1222,7 @@ pub(crate) mod topology_contract_tests {
                 name: Some("peer".into()),
                 argv: vec!["--model".into(), "fixed".into()],
                 summary_prompt: None,
+                sender_prompt: None,
                 composed_argv: None,
                 startup_input: None,
             },
@@ -2290,6 +2307,7 @@ mod automatic_contract_tests {
                 pane_label: None,
             },
             summary: None,
+            sender_prompt: None,
             context: crate::protocol::output::ContinuationContext {
                 state_dir: Some("/state".into()),
                 host: Some("/host.sock".into()),

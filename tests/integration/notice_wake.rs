@@ -248,6 +248,7 @@ impl Fixture {
                     claim: None,
                     seat: Some(SeatId::new(seat)),
                     page: PageRequest::default(),
+                    seat_alerts: false,
                 }),
                 &read_context(),
                 &budget(),

@@ -7279,6 +7279,102 @@ fn delta_0013_columns_indexes_tables() {
 }
 
 #[test]
+fn migration_0015_handoff_obligations() {
+    // Fresh and upgraded stores both land on the same DDL.
+    let upgraded = Connection::open_in_memory().unwrap();
+    open_with(&upgraded, &[]).unwrap();
+    open_with(&upgraded, schema::NODE_DELTAS).unwrap();
+    for db in [fresh_db(), upgraded] {
+        let cols: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('handoff_obligations') ORDER BY cid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            cols,
+            [
+                "request",
+                "target_node",
+                "author",
+                "message",
+                "requested_at",
+                "deadline_at",
+                "request_bytes",
+                "seat",
+                "state",
+                "answer",
+                "overdue_seq",
+                "thread_warned_at",
+                "alert_shown_at",
+                "created_at",
+                "expires_at",
+                "updated_at"
+            ]
+        );
+        db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let request = "00000000-0000-0000-0000-000000000001";
+        let node = "0".repeat(32);
+        let insert = |request: &str, node: &str, message: &str, state: &str| {
+            db.execute(
+                "INSERT INTO handoff_obligations(request,target_node,author,message,requested_at,\
+                 request_bytes,state,created_at,expires_at,updated_at) \
+                 VALUES (?1,?2,'sA',?3,1,x'00',?4,1,2,1)",
+                [request, node, message, state],
+            )
+        };
+        assert!(insert(request, &node, "m1", "bogus").is_err());
+        assert!(insert(request, &node[..31], "m1", "sent").is_err());
+        assert!(insert("short", &node, "m1", "sent").is_err());
+        insert(request, &node, "m1", "sent").unwrap();
+        for state in ["launched", "linked", "expired", "failed"] {
+            db.execute(
+                "UPDATE handoff_obligations SET state=?1 WHERE request=?2",
+                [state, request],
+            )
+            .unwrap();
+        }
+        let alert = index_sql(&db, "handoff_obligations_alert").unwrap();
+        assert!(
+            alert.contains(
+                "WHERE overdue_seq IS NOT NULL AND thread_warned_at IS NULL AND alert_shown_at IS NULL AND state!='linked'"
+            ),
+            "{alert}"
+        );
+        assert_eq!(alert.matches("state").count(), 1, "{alert}");
+        for name in ["handoff_thread", "handoff_message", "handoff_prompt"] {
+            assert_eq!(
+                column(&db, "peer_requests", name),
+                Some(("TEXT".into(), false, None)),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            column(&db, "messages", "deadline_node"),
+            Some(("TEXT".into(), false, None))
+        );
+        db.execute(
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             VALUES ('t',(SELECT id FROM local_node),'topic','goal',0,0,0)",
+            [],
+        )
+        .unwrap();
+        let message = |id: &str, seq: i64, node: Option<&str>| {
+            db.execute(
+                "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,deadline_node) \
+                 VALUES (?1,(SELECT id FROM local_node),'t',?3,'ordinary','b',0,?3,?2)",
+                rusqlite::params![id, node, seq],
+            )
+        };
+        let err = message("mshort", 1, Some(&node[..31])).unwrap_err();
+        assert!(err.to_string().contains("CHECK constraint failed"), "{err}");
+        message("mnone", 1, None).unwrap();
+        message("mfull", 2, Some(&node)).unwrap();
+    }
+}
+
+#[test]
 fn delta_0013_indexes_enforce_their_scope() {
     let db = Connection::open_in_memory().unwrap();
     open_with(&db, schema::NODE_DELTAS).unwrap();

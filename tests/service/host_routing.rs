@@ -114,6 +114,7 @@ impl Rig {
                 displayed: Vec::new(),
                 in_turn: false,
                 invitations: Vec::new(),
+                alerts: Vec::new(),
             }),
             PeerIdentity::from_kernel(peer_uid),
             &self.budget(),

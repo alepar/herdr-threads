@@ -3,7 +3,7 @@ bootstrap_compound: <uuid>
 child_compound: bootstrap-<hash64>
 launch.agent_name: peer
 launch.agent_name_source: pane_label
-launch.argv: ["--model","env model","--model","note=\"literal $HOME\"","--model","repeat=true","--model","caller=\"quoted value\"","Handoff: Golden goal — full task in thread <thread> (arrives as a herdr-threads message; if not shown, run `herdr-threads --state-dir <root>/state --host-endpoint <root>/host.sock inbox`)."]
+launch.argv: ["--model","env model","--model","note=\"literal $HOME\"","--model","repeat=true","--model","caller=\"quoted value\"","Golden goal — from: sender"]
 launch.binding: {"binding_generation":1,"provenance":"managed_launch","recorded":true,"state":"launched, not checked in"}
 launch.codex: none
 launch.config_dir: {"path":"<root>/claude-config","source":"launcher"}

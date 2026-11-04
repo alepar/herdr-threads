@@ -1,0 +1,69 @@
+{
+ "inspected": [
+  {
+   "path": "src/service/peer_handoff.rs",
+   "hunks": [
+    "@@ -0,0 +1,753 @@"
+   ]
+  },
+  {
+   "path": "src/cli/peer_handoff_launch.rs",
+   "hunks": [
+    "@@ -0,0 +1,527 @@"
+   ]
+  },
+  {
+   "path": "src/cli/handoff.rs",
+   "hunks": [
+    "@@ -51,6 +51,10 @@ pub struct HandoffPlan {",
+    "@@ -149,17 +153,47 @@ pub(crate) struct Staging<'a> {",
+    "@@ -603,6 +637,7 @@ fn startup_envelope(",
+    "@@ -620,14 +655,28 @@ fn startup_envelope(",
+    "@@ -672,6 +721,7 @@ fn prepare_saved_startup(",
+    "@@ -684,6 +734,21 @@ fn prepare_saved_startup(",
+    "@@ -697,6 +762,7 @@ pub(crate) fn prepare_automatic_startup(",
+    "@@ -766,10 +832,13 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -790,6 +859,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -806,6 +876,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -868,10 +939,13 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -885,6 +959,7 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -1014,6 +1089,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -1135,6 +1211,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(",
+    "@@ -1231,7 +1308,7 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(",
+    "@@ -1264,6 +1341,7 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(",
+    "@@ -1551,11 +1629,15 @@ fn cleanup_completed<W: Write>(",
+    "@@ -1771,16 +1853,18 @@ pub(crate) mod bootstrap_v1 {",
+    "@@ -1852,6 +1936,44 @@ pub(crate) mod summary_prompt {",
+    "@@ -1916,14 +2038,66 @@ pub(crate) fn frozen_prompt<C: LocalClient + ?Sized>(",
+    "@@ -1934,10 +2108,17 @@ pub(crate) fn launch_prompt(",
+    "@@ -1960,6 +2141,7 @@ pub(crate) fn retained_argv_matches_v2(",
+    "@@ -1974,7 +2156,7 @@ pub(crate) fn retained_argv_matches_v2(",
+    "@@ -2007,6 +2189,7 @@ pub(crate) fn retained_launch_argv_matches(",
+    "@@ -2016,6 +2199,7 @@ pub(crate) fn retained_launch_argv_matches(",
+    "@@ -2123,6 +2307,7 @@ fn report_core(",
+    "@@ -2137,6 +2322,7 @@ fn report_core("
+   ]
+  },
+  {
+   "path": "tests/host_neutral_allowlist.txt",
+   "hunks": [
+    "@@ -22,4 +22,5 @@ src/host/target_creator.rs # host construction by probed kind (H3)"
+   ]
+  },
+  {
+   "path": "tests/fixtures/golden/help/handoff.txt",
+   "hunks": [
+    "@@ -37,7 +37,7 @@ Options:",
+    "@@ -57,7 +57,7 @@ Options:",
+    "@@ -84,7 +84,9 @@ Choose one target mode:"
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -1863,8 +1894,27 @@ fn obligation_authored_here(",
+    "@@ -2081,6 +2175,14 @@ fn record_overdue_inner("
+   ]
+  }
+ ]
+}

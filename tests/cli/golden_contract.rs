@@ -775,6 +775,7 @@ fn run_inbox(presentation: crate::cli::output::Presentation) -> (String, Vec<Str
         claim: None,
         seat: Some(SeatId::new("seat-a")),
         page: Default::default(),
+        seat_alerts: false,
     };
     let mut out = Vec::new();
     crate::cli::run_wire(

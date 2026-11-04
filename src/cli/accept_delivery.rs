@@ -129,6 +129,7 @@ fn scoped_page<C: LocalClient + ?Sized>(
             page: PageRequest::default(),
             claim: Some(request.claim.clone()),
             thread: Some(request.thread.clone()),
+            seat_alerts: false,
         }),
         request.output,
         &budget(),
@@ -290,6 +291,7 @@ fn run<C: LocalClient + ?Sized, W: Write>(
                 displayed: batch.to_vec(),
                 in_turn: false,
                 invitations: Vec::new(),
+                alerts: Vec::new(),
             }),
             &budget(),
         ) {

@@ -601,6 +601,7 @@ mod page_level {
                 claim,
                 seat: Some(SeatId::new("b")),
                 page: PageRequest::default(),
+                seat_alerts: false,
             }),
             &OutputSpec::default(),
             &budget(),

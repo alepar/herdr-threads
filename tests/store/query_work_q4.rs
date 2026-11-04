@@ -834,6 +834,7 @@ fn public_warning_page(
                 limit,
                 max_bytes: 65536,
             },
+            seat_alerts: false,
         },
         &crate::protocol::output::OutputSpec::default(),
         &budget(),

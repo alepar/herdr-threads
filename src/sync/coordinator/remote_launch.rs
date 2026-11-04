@@ -18,8 +18,8 @@ use std::sync::OnceLock;
 
 use super::*;
 use crate::sync::frame::{
-    LaunchReply, LaunchRequest, LaunchState, LaunchTarget, MAX_LAUNCH_ARGS, MAX_LAUNCH_TEXT_BYTES,
-    PEER_LAUNCH_CAP, PEER_LAUNCH_TERMINAL_CAP,
+    LaunchPlan, LaunchReply, LaunchRequest, LaunchStaged, LaunchState, LaunchTarget,
+    MAX_LAUNCH_ARGS, MAX_LAUNCH_TEXT_BYTES, PEER_HANDOFF_CAP, PEER_LAUNCH_CAP,
 };
 
 /// Launch requests one peer may have in flight here (answering is quick:
@@ -46,7 +46,7 @@ pub enum LaunchAnswer {
     /// No established active link to the node.
     NotLinked,
     /// The link does not carry [`PEER_LAUNCH_CAP`] (or, for a new terminal,
-    /// [`PEER_LAUNCH_TERMINAL_CAP`]); the peer's version and the missing cap.
+    /// what [`LaunchPlan::required_cap`] names); the peer's version and the missing cap.
     NoCap {
         version: Option<String>,
         cap: &'static str,
@@ -93,6 +93,16 @@ fn bounded(text: &str) -> String {
     text[..end].to_owned()
 }
 
+/// The `messages.body` bound a handoff block's body keeps (bytes).
+const MAX_HANDOFF_BODY_BYTES: usize = 65_536;
+
+/// Whether a link advertising `caps` takes `plan`: a handoff plan needs
+/// [`PEER_HANDOFF_CAP`] besides the base launch cap.
+fn link_takes(caps: &[String], plan: &crate::sync::frame::LaunchPlan) -> bool {
+    caps.iter().any(|c| c == PEER_LAUNCH_CAP)
+        && (plan.handoff().is_none() || caps.iter().any(|c| c == PEER_HANDOFF_CAP))
+}
+
 /// Why `request` cannot be taken as sent, if it cannot.
 fn malformed(request: &LaunchRequest) -> Option<&'static str> {
     let long = |t: &str| t.len() > MAX_LAUNCH_TEXT_BYTES;
@@ -117,10 +127,40 @@ fn malformed(request: &LaunchRequest) -> Option<&'static str> {
         || plan.argv.len() > MAX_LAUNCH_ARGS
         || plan.argv.iter().any(|a| long(a))
         || plan.cwd.as_deref().is_some_and(long)
+        || plan.profile_dir.as_deref().is_some_and(long)
     {
         return Some("launch request out of bounds");
     }
+    match plan.handoff() {
+        // The body is bounded by `messages.body`, not by the launch text bound; a remote
+        // handoff always carries its summary (Q6).
+        Some(block) => {
+            if block.body.len() > MAX_HANDOFF_BODY_BYTES
+                || plan.handoff_prompt.as_deref().is_none_or(|prompt| {
+                    crate::cli::handoff::summary_prompt::validate(prompt).is_err()
+                })
+            {
+                return Some("launch request out of bounds");
+            }
+        }
+        None if plan.handoff_prompt.is_some() || plan.profile_dir.is_some() => {
+            return Some("launch request out of bounds");
+        }
+        None => {}
+    }
     None
+}
+
+/// The capability `caps` lacks for `plan`, if any: the base [`PEER_LAUNCH_CAP`] first, then what
+/// [`LaunchPlan::required_cap`] adds. A plan is sent only to a peer that advertised it: an older
+/// peer would read a new terminal target as `unknown` and drop a handoff's message.
+fn missing_cap(caps: &[String], plan: &LaunchPlan) -> Option<&'static str> {
+    let has = |cap: &str| caps.iter().any(|c| c == cap);
+    if !has(PEER_LAUNCH_CAP) {
+        return Some(PEER_LAUNCH_CAP);
+    }
+    let needed = plan.required_cap();
+    (!has(needed)).then_some(needed)
 }
 
 fn refused(detail: &str) -> LaunchState {
@@ -151,17 +191,7 @@ impl Actor {
         };
         let entry = &self.links[&link_id];
         let caps = &entry.handle.peer().caps;
-        // A new terminal is sent only to a peer that advertised it: an older
-        // peer would read the target as `unknown`.
-        let missing = if !caps.iter().any(|c| c == PEER_LAUNCH_CAP) {
-            Some(PEER_LAUNCH_CAP)
-        } else if matches!(request.plan.target, LaunchTarget::NewTerminal { .. })
-            && !caps.iter().any(|c| c == PEER_LAUNCH_TERMINAL_CAP)
-        {
-            Some(PEER_LAUNCH_TERMINAL_CAP)
-        } else {
-            None
-        };
+        let missing = missing_cap(caps, &request.plan);
         if let Some(cap) = missing {
             let _ = reply.send(LaunchAnswer::NoCap {
                 version: entry.peer_version.clone(),
@@ -180,7 +210,7 @@ impl Actor {
         let id = request.id;
         if entry
             .handle
-            .send(PeerFrame::LaunchRequest(request))
+            .send(PeerFrame::LaunchRequest(Box::new(request)))
             .is_err()
         {
             let _ = reply.send(LaunchAnswer::LinkLost);
@@ -198,13 +228,7 @@ impl Actor {
         let Some(entry) = self.links.get(&link_id) else {
             return;
         };
-        if !entry
-            .handle
-            .peer()
-            .caps
-            .iter()
-            .any(|c| c == PEER_LAUNCH_CAP)
-        {
+        if !link_takes(&entry.handle.peer().caps, &request.plan) {
             return;
         }
         let from = entry.handle.peer().node;
@@ -311,10 +335,15 @@ fn bound_state(state: LaunchState) -> LaunchState {
             detail,
             pane,
             unconfirmed,
+            staged,
         } => LaunchState::Failed {
             detail: bounded(&detail),
             pane: pane.map(|p| bounded(&p)),
             unconfirmed,
+            staged: staged.map(|s| LaunchStaged {
+                thread: bounded(&s.thread),
+                message: bounded(&s.message),
+            }),
         },
         LaunchState::Unavailable { reason } => LaunchState::Unavailable {
             reason: bounded(&reason),
@@ -337,8 +366,50 @@ mod tests {
                 kind: "codex".into(),
                 argv: vec!["--model".into(), "x".into()],
                 cwd: Some("/tmp".into()),
+                profile_dir: None,
+                handoff_prompt: None,
+                message: None,
             },
         }
+    }
+
+    fn caps(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    // Kills: a handoff plan sent to a peer that never advertised `peer.handoff.v1` (it would drop
+    // the signed message), a plain plan that starts demanding the handoff cap, and a new
+    // terminal that stops needing its own.
+    #[test]
+    fn missing_cap_follows_the_plan() {
+        use crate::sync::frame::{PEER_HANDOFF_CAP, PEER_LAUNCH_TERMINAL_CAP};
+        let pane = request(LaunchTarget::Pane {
+            space: None,
+            tab: None,
+            pane: "w1:p1".into(),
+        });
+        let mut handoff = pane.clone();
+        handoff.plan.message = Some(Box::default());
+        let mut terminal = pane.clone();
+        terminal.plan.target = LaunchTarget::NewTerminal { label: "x".into() };
+
+        let launch_only = caps(&[PEER_LAUNCH_CAP]);
+        assert_eq!(missing_cap(&launch_only, &pane.plan), None);
+        assert_eq!(
+            missing_cap(&launch_only, &handoff.plan),
+            Some(PEER_HANDOFF_CAP)
+        );
+        assert_eq!(
+            missing_cap(&launch_only, &terminal.plan),
+            Some(PEER_LAUNCH_TERMINAL_CAP)
+        );
+        assert_eq!(missing_cap(&[], &handoff.plan), Some(PEER_LAUNCH_CAP));
+        let with_handoff = caps(&[PEER_LAUNCH_CAP, PEER_HANDOFF_CAP]);
+        assert_eq!(missing_cap(&with_handoff, &handoff.plan), None);
+        assert_eq!(
+            missing_cap(&with_handoff, &terminal.plan),
+            Some(PEER_LAUNCH_TERMINAL_CAP)
+        );
     }
 
     #[test]
@@ -368,5 +439,69 @@ mod tests {
         });
         long.plan.argv = vec!["a".into(); MAX_LAUNCH_ARGS + 1];
         assert!(malformed(&long).is_some());
+    }
+
+    fn handoff_request(body_len: usize) -> LaunchRequest {
+        let mut request = request(LaunchTarget::NewTab {
+            space: "w1".into(),
+            label: "review".into(),
+        });
+        request.plan.profile_dir = Some("/profiles/a".into());
+        request.plan.handoff_prompt = Some("review the parser".into());
+        request.plan.message = Some(Box::new(crate::sync::handoff_block::SenderBlock {
+            body: "x".repeat(body_len),
+            ..Default::default()
+        }));
+        request
+    }
+
+    // Kills: a handoff body held to the 1 KiB launch text bound (a 64 KiB task refused), an
+    // unbounded one (past `messages.body`), a prompt that is not one valid summary line, an
+    // over-long profile directory, and handoff fields riding a plan with no signed message.
+    #[test]
+    fn malformed_bounds() {
+        assert_eq!(malformed(&handoff_request(65_536)), None);
+        assert!(malformed(&handoff_request(65_537)).is_some());
+        for bad in ["", "two\nlines", "back`tick", &"y".repeat(201)] {
+            let mut request = handoff_request(1);
+            request.plan.handoff_prompt = Some(bad.into());
+            assert!(malformed(&request).is_some(), "prompt {bad:?}");
+        }
+        let mut no_prompt = handoff_request(1);
+        no_prompt.plan.handoff_prompt = None;
+        assert!(
+            malformed(&no_prompt).is_some(),
+            "a remote handoff has a summary"
+        );
+        let mut long_dir = handoff_request(1);
+        long_dir.plan.profile_dir = Some(format!("/{}", "d".repeat(MAX_LAUNCH_TEXT_BYTES)));
+        assert!(malformed(&long_dir).is_some());
+        let mut at_bound = handoff_request(1);
+        at_bound.plan.profile_dir = Some(format!("/{}", "d".repeat(MAX_LAUNCH_TEXT_BYTES - 1)));
+        assert_eq!(malformed(&at_bound), None);
+        let mut stray = handoff_request(1);
+        stray.plan.message = None;
+        assert!(
+            malformed(&stray).is_some(),
+            "fields of a handoff without its message"
+        );
+    }
+
+    // Kills: a handoff frame taken from a link that did not advertise `peer.handoff.v1`
+    // (answered by a node that cannot stage it), or a plain launch newly gated on it.
+    #[test]
+    fn handoff_frame_needs_the_handoff_cap() {
+        let caps = |list: &[&str]| list.iter().map(|c| (*c).to_owned()).collect::<Vec<_>>();
+        let handoff = handoff_request(1).plan;
+        let plain = request(LaunchTarget::Unknown).plan;
+        let launch_only = caps(&[PEER_LAUNCH_CAP]);
+        let both = caps(&[PEER_LAUNCH_CAP, PEER_HANDOFF_CAP]);
+        assert!(!link_takes(&launch_only, &handoff));
+        assert!(link_takes(&both, &handoff));
+        assert!(link_takes(&launch_only, &plain));
+        assert!(
+            !link_takes(&caps(&[PEER_HANDOFF_CAP]), &plain),
+            "launch cap still required"
+        );
     }
 }

@@ -126,7 +126,9 @@ Choose one target mode:
     to an existing canonical seat without launching or restarting its session.
 On another machine: --pane PANE@MACHINE, or --new-tab LABEL --space SPACE@MACHINE
   --cwd DIR (DIR on that machine), or --new-terminal --space @MACHINE --cwd DIR;
-  --existing --seat SEAT@MACHINE.
+  --existing --seat SEAT@MACHINE. A launching handoff to another machine requires --summary,
+  takes --profile-dir as an absolute path on that machine, and opens the 1:1 pair (no
+  --thread, --new-thread, --thread-name, --topic, --goal or --invite-deadline).
 Handoff requires an original top-level Agent and the guarded daemon capability.
 --new-tab conflicts with --existing, --tab, --pane and --seat. Directory example:
   handoff --new-tab review --kind HARNESS --profile-dir /absolute/profile --cwd /absolute/workdir -- "Review this change"

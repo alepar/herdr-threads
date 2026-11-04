@@ -360,67 +360,80 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
     .map_err(fail)?;
     // A V3 plan creates its target before the thread exists, so its harness argv, executable
     // and startup prompt are frozen here (the prompt names no thread).
-    let (plan_version, frozen_binary, frozen_argv, frozen_prompt_v, payload_startup) =
-        if let (Some(target), Some(_)) = (&request.target, &target_placement) {
-            let binary = match launch.harness_binary.as_deref() {
-                Some(explicit) => {
-                    let explicit = std::path::Path::new(explicit);
-                    if !explicit.is_absolute() || !explicit.is_file() {
-                        return Err(fail("--harness-binary must be an absolute executable file"));
-                    }
-                    explicit.to_string_lossy().into_owned()
+    let (
+        plan_version,
+        frozen_binary,
+        frozen_argv,
+        frozen_prompt_v,
+        frozen_sender_v,
+        payload_startup,
+    ) = if let (Some(target), Some(_)) = (&request.target, &target_placement) {
+        let binary = match launch.harness_binary.as_deref() {
+            Some(explicit) => {
+                let explicit = std::path::Path::new(explicit);
+                if !explicit.is_absolute() || !explicit.is_file() {
+                    return Err(fail("--harness-binary must be an absolute executable file"));
                 }
-                None => {
-                    let crate::harness::adapter::ExecutableLookup::Path(name) =
-                        registration.metadata().executable
-                    else {
-                        return Err(super::unsupported("selected adapter has no executable"));
-                    };
-                    super::hook::resolve_on_path(name, std::env::var_os("PATH").as_deref())
-                        .ok_or_else(|| fail(&format!("no executable `{name}` on PATH")))?
-                        .to_string_lossy()
-                        .into_owned()
-                }
-            };
-            let context = crate::protocol::output::ContinuationContext {
-                state_dir: namespace.state_dir.to_str().map(str::to_owned),
-                host: namespace.host_endpoint.to_str().map(str::to_owned),
-            };
-            let prompt = super::handoff::summary_prompt::render_thread_free(
+                explicit.to_string_lossy().into_owned()
+            }
+            None => {
+                let crate::harness::adapter::ExecutableLookup::Path(name) =
+                    registration.metadata().executable
+                else {
+                    return Err(super::unsupported("selected adapter has no executable"));
+                };
+                super::hook::resolve_on_path(name, std::env::var_os("PATH").as_deref())
+                    .ok_or_else(|| fail(&format!("no executable `{name}` on PATH")))?
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+        let context = crate::protocol::output::ContinuationContext {
+            state_dir: namespace.state_dir.to_str().map(str::to_owned),
+            host: namespace.host_endpoint.to_str().map(str::to_owned),
+        };
+        // Prompt v2 against a daemon that advertises it (no thread id either way).
+        let prompt = if inputs.client.supports_capability(
+            crate::protocol::capabilities::HANDOFF_SENDER_PROMPT_V2,
+            &super::cooperative_budget(inputs.clock),
+        ) {
+            super::handoff::summary_prompt::render_v2(
                 request.summary.as_deref(),
-                &context,
-            );
-            let (applied, _) = startup_input.apply(&launch.argv, &prompt)?;
-            let mut argv = registration.host_launch_argv(target.kind);
-            argv.extend(applied);
-            crate::ports::NativeLaunchRequest::validate_argv(
-                &crate::harness::launch::compose_native_argv(
-                    harness.occupant(),
-                    argv.clone(),
-                    vec![],
-                )?,
-            )
-            .map_err(fail)?;
-            (
-                AUTOMATIC_TARGET_PLAN_VERSION,
-                Some(binary),
-                argv,
-                None,
-                None,
+                &super::handoff::sender_line(inputs.client, inputs.clock, &inputs.claim.seat),
             )
         } else {
-            (
-                AUTOMATIC_PLAN_VERSION,
-                launch.harness_binary,
-                launch.argv,
-                super::handoff::frozen_prompt(
-                    inputs.client,
-                    inputs.clock,
-                    request.summary.as_deref(),
-                ),
-                Some(startup_input),
-            )
+            super::handoff::summary_prompt::render_thread_free(request.summary.as_deref(), &context)
         };
+        let (applied, _) = startup_input.apply(&launch.argv, &prompt)?;
+        let mut argv = registration.host_launch_argv(target.kind);
+        argv.extend(applied);
+        crate::ports::NativeLaunchRequest::validate_argv(
+            &crate::harness::launch::compose_native_argv(harness.occupant(), argv.clone(), vec![])?,
+        )
+        .map_err(fail)?;
+        (
+            AUTOMATIC_TARGET_PLAN_VERSION,
+            Some(binary),
+            argv,
+            None,
+            None,
+            None,
+        )
+    } else {
+        (
+            AUTOMATIC_PLAN_VERSION,
+            launch.harness_binary,
+            launch.argv,
+            super::handoff::frozen_prompt(inputs.client, inputs.clock, request.summary.as_deref()),
+            super::handoff::frozen_sender_prompt(
+                inputs.client,
+                inputs.clock,
+                request.summary.as_deref(),
+                &inputs.claim.seat,
+            ),
+            Some(startup_input),
+        )
+    };
     let scope = super::journal::IntentScope::Cooperative {
         instance: inputs.claim.instance.clone(),
         host: inputs.claim.host.clone(),
@@ -457,6 +470,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
                     composed_argv: None,
                     startup_input: None,
                     summary_prompt: frozen_prompt_v,
+                    sender_prompt: frozen_sender_v.map(Box::new),
                 },
                 startup_input: payload_startup,
             },
@@ -505,6 +519,7 @@ pub(super) fn preflight_automatic_launch_request(
         .ok_or_else(|| super::invalid_request("automatic bootstrap lacks frozen startup input"))?;
     let prompt = super::handoff::launch_prompt(
         p.launch.summary_prompt.as_ref(),
+        p.launch.sender_prompt.as_deref(),
         ThreadId::new("t".repeat(128)).as_str(),
         &crate::protocol::output::ContinuationContext {
             state_dir: ns.state_dir.to_str().map(str::to_owned),
@@ -727,6 +742,13 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
                 inputs.clock,
                 request.summary.as_deref(),
             ),
+            sender_prompt: super::handoff::frozen_sender_prompt(
+                inputs.client,
+                inputs.clock,
+                request.summary.as_deref(),
+                &inputs.claim.seat,
+            )
+            .map(Box::new),
             argv: launch.argv,
         },
         handoff_key: child("handoff"),
@@ -775,6 +797,7 @@ pub(super) fn preflight_launch_request(
     };
     let prompt = super::handoff::launch_prompt(
         identity.payload.launch.summary_prompt.as_ref(),
+        identity.payload.launch.sender_prompt.as_deref(),
         thread.as_str(),
         &context,
         &identity.claim.instance,
@@ -1282,6 +1305,7 @@ fn downstream_plan(
         bootstrap_input: payload.launch.startup_input.clone(),
         // The template-free path's frozen prompt: the summary prompt, or V1 without one.
         summary_prompt: payload.launch.summary_prompt.clone(),
+        sender_prompt: payload.launch.sender_prompt.as_deref().cloned(),
         request: super::handoff::HandoffRequest {
             policy: payload.handoff.policy.clone(),
             automatic: false,

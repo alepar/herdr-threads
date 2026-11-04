@@ -71,6 +71,10 @@ pub const PEER_LAUNCH_CAP: &str = "peer.launch.v1";
 /// herdr-core terminal). A node sends one only to a peer that advertised it;
 /// a peer without it would read the target as `unknown`.
 pub const PEER_LAUNCH_TERMINAL_CAP: &str = "peer.launch.terminal.v1";
+/// Capability: this node takes a LaunchPlan carrying `profile_dir`, `handoff_prompt` and `message`
+/// (atomic remote handoff, TRUST-POLICY N15), writes the message before it launches, and
+/// verifies `message.sent` facts that embed a sender block (N4).
+pub const PEER_HANDOFF_CAP: &str = "peer.handoff.v1";
 /// Most `argv` entries a launch plan carries.
 pub const MAX_LAUNCH_ARGS: usize = 64;
 /// Longest single launch plan text (a label, path, harness id or argument),
@@ -573,6 +577,37 @@ pub struct LaunchPlan {
     /// An absolute directory on the receiving node (new tab only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// The harness profile directory on the receiving node (handoff only).
+    // cap: PEER_HANDOFF_CAP
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_dir: Option<String>,
+    /// The first user message the launched agent starts with (handoff only).
+    // cap: PEER_HANDOFF_CAP
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_prompt: Option<String>,
+    /// The sender node's signed block for the handoff message (handoff only).
+    // cap: PEER_HANDOFF_CAP
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<Box<crate::sync::handoff_block::SenderBlock>>,
+}
+
+impl LaunchPlan {
+    /// The signed handoff message this plan carries, if any.
+    pub fn handoff(&self) -> Option<&crate::sync::handoff_block::SenderBlock> {
+        self.message.as_deref()
+    }
+
+    /// The one capability beyond the base `peer.launch.v1` a peer must advertise to take this
+    /// plan. Callers ask the plan instead of matching `message.is_some()` and targets.
+    pub fn required_cap(&self) -> &'static str {
+        if self.handoff().is_some() {
+            PEER_HANDOFF_CAP
+        } else if matches!(self.target, LaunchTarget::NewTerminal { .. }) {
+            PEER_LAUNCH_TERMINAL_CAP
+        } else {
+            PEER_LAUNCH_CAP
+        }
+    }
 }
 
 /// Where to launch.
@@ -648,6 +683,10 @@ pub enum LaunchState {
         /// inspected before anyone launches there again.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unconfirmed: bool,
+        /// Set when the target failed after its staging transaction (the pair thread and
+        /// message exist there): the sender keeps its obligation for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        staged: Option<LaunchStaged>,
     },
     /// Not answered now (busy, launcher not ready); ask again.
     Unavailable {
@@ -657,6 +696,15 @@ pub enum LaunchState {
     #[default]
     #[serde(other)]
     Unknown,
+}
+
+/// The thread and message a handoff target staged before it failed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchStaged {
+    #[serde(default)]
+    pub thread: String,
+    #[serde(default)]
+    pub message: String,
 }
 
 /// One candidate of an ambiguous [`AddrOutcome`].
@@ -767,7 +815,7 @@ pub enum PeerFrame {
     AddrResolved(AddrResolved),
     /// Launch an agent on the receiving node, or ask how that launch stands.
     // cap: PEER_LAUNCH_CAP
-    LaunchRequest(LaunchRequest),
+    LaunchRequest(Box<LaunchRequest>),
     /// The answer to one `launch_request`.
     // cap: PEER_LAUNCH_CAP
     LaunchReply(LaunchReply),
@@ -1723,6 +1771,96 @@ mod tests {
                 PeerFrame::decode(&frame(count).encode().unwrap()).is_ok(),
                 "{count}"
             );
+        }
+    }
+
+    fn plan(target: LaunchTarget) -> LaunchPlan {
+        LaunchPlan {
+            target,
+            kind: "codex".into(),
+            ..LaunchPlan::default()
+        }
+    }
+
+    #[test]
+    fn launch_plan_old_json_decodes() {
+        let old = r#"{"id":"00000000-0000-0000-0000-000000000007","requester_seat":"sA","plan":{"target":{"k":"pane","pane":"p"},"kind":"codex","argv":["x"]}}"#;
+        let request: LaunchRequest = serde_json::from_str(old).unwrap();
+        assert!(request.plan.profile_dir.is_none());
+        assert!(request.plan.handoff_prompt.is_none());
+        assert!(request.plan.message.is_none());
+        let again = serde_json::to_string(&request).unwrap();
+        assert!(
+            !again.contains("profile_dir")
+                && !again.contains("handoff_prompt")
+                && !again.contains("message"),
+            "{again}"
+        );
+        assert_eq!(
+            serde_json::from_str::<LaunchRequest>(&again).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn launch_failed_old_json_decodes() {
+        let state: LaunchState = serde_json::from_str(r#"{"k":"failed","detail":"x"}"#).unwrap();
+        assert_eq!(
+            state,
+            LaunchState::Failed {
+                detail: "x".into(),
+                pane: None,
+                unconfirmed: false,
+                staged: None
+            }
+        );
+        assert!(!serde_json::to_string(&state).unwrap().contains("staged"));
+        let staged = LaunchState::Failed {
+            detail: "x".into(),
+            pane: None,
+            unconfirmed: false,
+            staged: Some(LaunchStaged {
+                thread: "d1".into(),
+                message: "m1".into(),
+            }),
+        };
+        let text = serde_json::to_string(&staged).unwrap();
+        assert!(
+            text.contains(r#""staged":{"thread":"d1","message":"m1"}"#),
+            "{text}"
+        );
+        assert_eq!(serde_json::from_str::<LaunchState>(&text).unwrap(), staged);
+    }
+
+    #[test]
+    fn required_cap_without_handoff() {
+        let pane = LaunchTarget::Pane {
+            space: None,
+            tab: None,
+            pane: "p".into(),
+        };
+        let tab = LaunchTarget::NewTab {
+            space: "w".into(),
+            label: "l".into(),
+        };
+        let terminal = LaunchTarget::NewTerminal { label: "l".into() };
+        assert_eq!(plan(pane.clone()).required_cap(), PEER_LAUNCH_CAP);
+        assert_eq!(plan(tab).required_cap(), PEER_LAUNCH_CAP);
+        assert_eq!(
+            plan(terminal.clone()).required_cap(),
+            PEER_LAUNCH_TERMINAL_CAP
+        );
+        assert!(plan(pane.clone()).handoff().is_none());
+        let block = crate::sync::handoff_block::SenderBlock {
+            v: 1,
+            body: "b".into(),
+            ..Default::default()
+        };
+        for target in [pane, terminal] {
+            let mut with = plan(target);
+            with.message = Some(Box::new(block.clone()));
+            assert_eq!(with.required_cap(), PEER_HANDOFF_CAP);
+            assert_eq!(with.handoff(), Some(&block));
         }
     }
 }

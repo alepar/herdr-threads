@@ -255,8 +255,29 @@ pub fn resolve_direct_pair(
     creation_policy: Option<&crate::protocol::commands::EnsureCreationPolicy>,
     _installation_default_ms: Option<u64>,
 ) -> Result<(ThreadId, bool), ApiError> {
-    let instance = claim.instance.as_str();
-    let caller = &claim.seat;
+    open_pair(
+        tx,
+        context,
+        decision,
+        claim.instance.as_str(),
+        &claim.seat,
+        recipient,
+        creation_policy,
+    )
+}
+
+/// [`resolve_direct_pair`] without a claim: the pair of `caller` (a seat of `instance`) and
+/// `recipient`, opened or found. For a decision the caller already made under its own authority
+/// (the sender node's handoff ledger, ht-8lem.4); same facts, same result.
+pub fn open_pair(
+    tx: &Transaction<'_>,
+    context: &StoreContext,
+    decision: DecisionInstant,
+    instance: &str,
+    caller: &SeatId,
+    recipient: &SeatId,
+    creation_policy: Option<&crate::protocol::commands::EnsureCreationPolicy>,
+) -> Result<(ThreadId, bool), ApiError> {
     if caller == recipient {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -304,26 +325,7 @@ pub fn resolve_direct_pair(
         seat_hi: b.clone(),
         creator: Some(caller.clone()),
     };
-    if context.journal_open() {
-        FactRoute::Journal.emit::<ThreadDirect>(
-            tx,
-            context,
-            decision,
-            &direct,
-            None,
-            |_, _, _| {
-                Err(api_error(
-                    ErrorCode::Unsupported,
-                    "thread.direct is journaled",
-                ))
-            },
-        )?;
-    } else {
-        // Only a store whose journal never opened (a fixture; the daemon opens
-        // it before serving) gets here: the same materializer, written locally.
-        let input = local_only(tx, decision)?;
-        super::materialize_thread_direct(tx, &input, &direct)?;
-    }
+    author_thread_direct(tx, context, decision, &direct)?;
     author_membership(
         tx,
         context,
@@ -343,6 +345,35 @@ pub fn resolve_direct_pair(
         author_membership(tx, context, decision, Transition::Joined, &payload)?;
     }
     Ok((thread, true))
+}
+
+/// Authors one `thread.direct`: through the journal, or (a store whose journal never opened, a
+/// fixture; the daemon opens it before serving) the same materializer written locally.
+pub(crate) fn author_thread_direct(
+    tx: &Transaction<'_>,
+    context: &StoreContext,
+    decision: DecisionInstant,
+    direct: &ThreadDirectPayload,
+) -> Result<(), ApiError> {
+    if context.journal_open() {
+        FactRoute::Journal.emit::<ThreadDirect>(
+            tx,
+            context,
+            decision,
+            direct,
+            None,
+            |_, _, _| {
+                Err(api_error(
+                    ErrorCode::Unsupported,
+                    "thread.direct is journaled",
+                ))
+            },
+        )?;
+    } else {
+        let input = local_only(tx, decision)?;
+        super::materialize_thread_direct(tx, &input, direct)?;
+    }
+    Ok(())
 }
 
 /// The pair seats this node auto-joins now (reconcile section 2.1): local, not

@@ -1460,6 +1460,29 @@ impl Cluster {
         node: usize,
         payload: &K::Payload,
     ) -> (u64, [u8; 32]) {
+        self.author_with::<K>(
+            node,
+            payload,
+            FactRegistry::builtins_plus(|b| b.with::<K>()),
+        )
+    }
+
+    /// [`Cluster::author_kind`] for a kind the builtins already hold (a payload the daemons
+    /// refuse, such as a forged `message.sent`): authored under the plain builtins.
+    pub fn author_builtin<K: FactKind>(
+        &mut self,
+        node: usize,
+        payload: &K::Payload,
+    ) -> (u64, [u8; 32]) {
+        self.author_with::<K>(node, payload, FactRegistry::builtins())
+    }
+
+    fn author_with<K: FactKind>(
+        &mut self,
+        node: usize,
+        payload: &K::Payload,
+        registry: &'static FactRegistry,
+    ) -> (u64, [u8; 32]) {
         let was_up = self.nodes[node].up;
         self.stop_node(node);
         let seed = self.nodes[node].seed;
@@ -1469,7 +1492,6 @@ impl Cluster {
         )
         .with_journal_seed(seed);
         let mut conn = ctx.open_writer().expect("open the node's store writer");
-        let registry = FactRegistry::builtins_plus(|b| b.with::<K>());
         journal::open(
             &ctx,
             &mut conn,

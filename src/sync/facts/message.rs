@@ -69,6 +69,10 @@ pub struct MessageSentPayload {
     pub duration_ms: i64,
     #[serde(default)]
     pub recipients: Vec<RecipientSpec>,
+    /// The sender node's signed block when this message is the first message of an atomic
+    /// remote handoff (TRUST-POLICY N4, N15); `None` for every ordinary message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<crate::sync::handoff_block::SenderBlock>,
 }
 
 impl ReferencedSeats for MessageSentPayload {
@@ -178,13 +182,57 @@ impl FactKind for MessageSent {
         payload: MessageSentPayload,
     ) -> Result<(), FactError> {
         payload.check().map_err(FactError::Rejected)?;
+        let rule = match &payload.handoff {
+            Some(block) => {
+                if !block.restates(&payload) {
+                    return Err(FactError::Rejected(ApiError::new(
+                        ErrorCode::InvalidRequest,
+                        "handoff message does not restate its sender block",
+                    )));
+                }
+                AuthorRule::HandoffRecipientHome {
+                    block: Box::new(block.clone()),
+                    recipient: payload.recipients[0].seat.clone(),
+                }
+            }
+            None => AuthorRule::SeatHome(payload.author.clone()),
+        };
         with_input(cx, |m| {
-            require_author(
-                tx,
-                m,
-                Self::NAME,
-                &AuthorRule::SeatHome(payload.author.clone()),
-            )?;
+            require_author(tx, m, Self::NAME, &rule)?;
+            messages::materialize_message(tx, m, &payload)
+        })
+    }
+}
+
+/// The pre-3.0 `message.sent`: authority `SeatHome(author)` only, `handoff` ignored. A daemon
+/// started with `HT_TEST_LEGACY_MESSAGE_SENT=<file>` (see [`super::daemon_registry`]) stands it
+/// in for an older node's handler while the file exists.
+#[cfg(feature = "test-support")]
+pub struct LegacyMessageSent;
+
+#[cfg(feature = "test-support")]
+impl FactKind for LegacyMessageSent {
+    const NAME: &'static str = MessageSent::NAME;
+    const MAJOR: u32 = MessageSent::MAJOR;
+    type Payload = MessageSentPayload;
+
+    fn creates(payload: &MessageSentPayload) -> Option<EntityKey> {
+        MessageSent::creates(payload)
+    }
+
+    fn needs(payload: &MessageSentPayload) -> Vec<EntityKey> {
+        MessageSent::needs(payload)
+    }
+
+    fn apply(
+        tx: &Transaction<'_>,
+        cx: &mut ApplyContext<'_>,
+        payload: MessageSentPayload,
+    ) -> Result<(), FactError> {
+        payload.check().map_err(FactError::Rejected)?;
+        let rule = AuthorRule::SeatHome(payload.author.clone());
+        with_input(cx, |m| {
+            require_author(tx, m, Self::NAME, &rule)?;
             messages::materialize_message(tx, m, &payload)
         })
     }

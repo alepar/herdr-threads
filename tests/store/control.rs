@@ -2044,6 +2044,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         claim: None,
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
+        seat_alerts: false,
     });
     let CommandResult::Inbox(before) = crate::store::queries::query(
         &context,
@@ -3167,6 +3168,7 @@ fn managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history(
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
         claim: None,
+        seat_alerts: false,
     });
     let CommandResult::Inbox(page) = crate::store::queries::query(
         &context,
@@ -11617,6 +11619,7 @@ fn invitation_rejection_delivers_reason_once_as_a_thread_warning() {
             seat: Some(SeatId::new("s1")),
             page: Default::default(),
             claim: None,
+            seat_alerts: false,
         }),
         &budget,
     )

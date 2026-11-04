@@ -99,6 +99,8 @@ impl Assembler {
         match item {
             // First-contact history has no delivery frame.
             InboxBatchV2Item::FirstContact(_) => Ok(Assembled::Pending),
+            // A seat-addressed alert is a text-inbox row only; a delivery carries none.
+            InboxBatchV2Item::HandoffOverdue(_) => Ok(Assembled::Attention),
             InboxBatchV2Item::Invitation {
                 thread,
                 topic_data,

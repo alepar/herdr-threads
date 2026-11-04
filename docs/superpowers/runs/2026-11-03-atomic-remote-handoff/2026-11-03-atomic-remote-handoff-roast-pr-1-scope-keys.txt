@@ -1,0 +1,14 @@
+[Blocking] src/store/receipts.rs:1019; src/store/schema.rs:1867; src/store/receipts.rs:3
+[Blocking] tests/store/schema.rs:7357
+[Should-fix] tests/multinode/handoff_atomic.rs:340; tests/multinode/handoff_atomic.rs:325
+[Should-fix] tests/multinode/handoff_atomic.rs:885; tests/multinode/handoff_atomic.rs:960
+[Should-fix] tests/store/handoff_obligations.rs:519; tests/store/handoff_obligations.rs:521
+[Should-fix] src/service/peer_launcher.rs:601
+[Should-fix] tests/multinode/handoff_atomic.rs:286; tests/multinode/handoff_atomic.rs:345
+[Nit] src/store/handoff_obligations.rs:503
+[Nit] src/service/peer_handoff.rs:538
+[Nit] src/cli/peer_launch.rs:291
+[Nit] integrations/skill/SKILL.md:64
+[Nit] src/service/peer_handoff.rs:606
+[Nit] src/cli/handoff.rs:840
+[Nit] src/store/handoff_obligations.rs:339

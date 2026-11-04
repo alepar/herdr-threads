@@ -3,7 +3,7 @@ bootstrap_compound: <uuid>
 child_compound: bootstrap-<hash64>
 launch.agent_name: peer
 launch.agent_name_source: pane_label
-launch.argv: ["--model","env model","--config","note=\"literal $HOME\"","--config","repeat=true","--config","caller=\"quoted value\"","Handoff: Golden goal — full task in thread <thread> (arrives as a herdr-threads message; if not shown, run `herdr-threads --state-dir <root>/state --host-endpoint <root>/host.sock inbox`)."]
+launch.argv: ["--model","env model","--config","note=\"literal $HOME\"","--config","repeat=true","--config","caller=\"quoted value\"","Golden goal — from: sender"]
 launch.binding: {"binding_generation":1,"provenance":"managed_launch","recorded":true,"state":"launched, not checked in"}
 launch.codex: {"codex_home":"<root>/codex-home","command_execution":"approved_outside_sandbox","command_guidance":"Run herdr-threads commands outside the sandbox through Codex approval; if denied, report the policy refusal without bypassing it","config_path":"<root>/codex-home/config.toml","config_present":false,"pane_env_installed":false,"profile":"default","profile_source":"none"}
 launch.config_dir: {"path":"<root>/codex-home","source":"launcher"}

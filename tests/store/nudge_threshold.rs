@@ -593,6 +593,7 @@ fn hydrate_wakes_follow_current_threshold() {
             page: PageRequest::default(),
             claim: None,
             thread: None,
+            seat_alerts: false,
         };
         let result = crate::store::queries::query_with_output(
             &store.context,

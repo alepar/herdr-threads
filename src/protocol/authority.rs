@@ -235,6 +235,9 @@ pub enum ObligationRef {
     },
     CheckIn(SeatId),
     Control(ThreadId),
+    /// A sender-ledger handoff obligation, keyed by request id (`handoff_obligations`): the
+    /// overdue of a handoff that has not linked yet. Recorded only on the node holding the row.
+    Handoff(String),
 }
 
 pub const MAX_PERMIT_MILLIS: u64 = 250;

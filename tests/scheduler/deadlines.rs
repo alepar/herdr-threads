@@ -55,6 +55,8 @@ struct FakePort {
     deadline: AtomicI64,
     due_calls: AtomicU64,
     warnings: AtomicU64,
+    handoff_calls: AtomicU64,
+    handoff_warnings: AtomicU64,
 }
 impl DeadlinePort for FakePort {
     crate::no_durable_work!();
@@ -74,6 +76,10 @@ impl DeadlinePort for FakePort {
         } else {
             Ok(due_progress(request, 0, 0, false))
         }
+    }
+    fn due_handoffs(&self, _: &CallBudget) -> Result<usize, ApiError> {
+        self.handoff_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.handoff_warnings.load(Ordering::SeqCst) as usize)
     }
     fn pending_retirement_jobs(
         &self,
@@ -126,6 +132,22 @@ fn tick_uses_store_decision_clock_at_exact_boundary_after_wall_jumps() {
     port.clock.mono.store(4_000, Ordering::SeqCst);
     assert_eq!(driver.drive(&budget()).unwrap().due_warnings_added, 1);
     assert_eq!(port.due_calls.load(Ordering::SeqCst), 5);
+}
+
+// Kills: a due pass that never runs the handoff ledger's due step, or drops its warnings from
+// the pass outcome (a port without a ledger keeps the default of none).
+#[test]
+fn due_pass_runs_the_handoff_due_step_and_counts_its_warnings() {
+    let port = FakePort::default();
+    port.deadline.store(i64::MAX, Ordering::SeqCst);
+    port.handoff_warnings.store(2, Ordering::SeqCst);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
+    assert_eq!(driver.drive(&budget()).unwrap().due_warnings_added, 2);
+    assert_eq!(port.handoff_calls.load(Ordering::SeqCst), 1);
+    // The receipt warning count adds to it.
+    port.deadline.store(0, Ordering::SeqCst);
+    port.clock.mono.store(1_000, Ordering::SeqCst);
+    assert_eq!(driver.drive(&budget()).unwrap().due_warnings_added, 3);
 }
 
 #[test]

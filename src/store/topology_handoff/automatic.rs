@@ -406,6 +406,7 @@ fn validate_report(
     } else if let Some(template) = &p.startup_input {
         crate::cli::handoff::retained_prompts(
             p.launch.summary_prompt.as_ref(),
+            p.launch.sender_prompt.as_deref(),
             report.thread.as_str(),
             &child.context,
             &id.claim.instance,
@@ -421,6 +422,7 @@ fn validate_report(
             p.launch.harness,
             &p.launch.argv,
             p.launch.summary_prompt.as_ref(),
+            p.launch.sender_prompt.as_deref(),
             report.thread.as_str(),
             &child.context,
             &id.claim.instance,

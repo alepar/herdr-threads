@@ -1,0 +1,18 @@
+    Checking herdr-threads v2.9.0 (/var/home/alepar/AleCode/herdr-threads/.worktrees/atomic-remote-handoff/.worktrees/super-auto-atomic-remote-handoff--task-ht-8lem.50)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.95s
+clippy 0
+check-harness-neutral: ok — 0 violations, 84 allowlisted (to-migrate 0, frozen-wire 49, history 0, registration 35), 51 entries
+neutral 0
+check-wire-compat: ok — 0 violations, 0 stale, 450 fields, 24 variants, 268 baseline entries
+wire 0
+test service::peer_handoff::tests::settle_table ... ok
+
+test result: ok. 153 passed; 0 failed; 0 ignored; 0 measured; 6966 filtered out; finished in 7.20s
+
+ Nextest run ID a13014db-e091-42e5-b5d4-8df87b7de871 with nextest profile: default
+    Starting 2 tests across 1 binary (72 tests skipped)
+        PASS [  13.044s] (1/2) herdr-threads::multinode handoff_atomic::linked_then_overdue_on_the_sender_only
+        PASS [  28.304s] (2/2) herdr-threads::multinode handoff_atomic::overdue_while_partitioned
+────────────
+     Summary [  28.304s] 2 tests run: 2 passed, 72 skipped
+all-done

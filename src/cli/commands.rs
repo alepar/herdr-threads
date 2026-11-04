@@ -487,11 +487,17 @@ pub enum CliAction {
     RemoteLaunch(Box<super::peer_launch::RemoteLaunch>),
     /// `launch --new-tab` or `--new-terminal`: the target is created, then the harness started.
     LaunchNew(Box<super::launch_new::LaunchNew>),
+    /// `internal peer-handoff-launch`: preflight, stage the request's handoff, then launch.
+    InternalPeerHandoffLaunch {
+        request: String,
+        pane: String,
+    },
     InternalPeerTargetCreate {
         spec: super::peer_launch::TargetSpec,
         label: String,
         cwd: std::path::PathBuf,
         gate_argv: Vec<String>,
+        directory_context: Option<crate::protocol::handoff::LaunchDirectoryContext>,
     },
     InternalDaemonDetach {
         program: std::path::PathBuf,
@@ -683,6 +689,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Update(_)
         | CliAction::InternalStoreCheck
         | CliAction::InternalPeerTargetCreate { .. }
+        | CliAction::InternalPeerHandoffLaunch { .. }
         | CliAction::InternalDaemonDetach { .. }
         | CliAction::InternalLaunchGate { .. }
         | CliAction::Picker(_)
@@ -1426,6 +1433,15 @@ enum InternalSub {
     /// Open the existing node store of --state-dir at this build's schema, applying its
     /// migrations, without a daemon (`update` judges a store this way).
     StoreCheck,
+    /// Launch the harness of a peer handoff request on a pane of --host-endpoint: preflight,
+    /// stage the request's thread and message on this node, then start it (run only by this
+    /// node's daemon for a recorded request).
+    PeerHandoffLaunch {
+        #[arg(long, value_name = "ID")]
+        request: String,
+        #[arg(long, value_name = "PANE")]
+        pane: String,
+    },
     /// Create the tab or terminal of a peer-requested launch on --host-endpoint (run only
     /// by this node's daemon for a recorded request; prints the root pane or the terminal).
     /// `peer-tab-create` is the previous name, kept for one release.
@@ -1439,6 +1455,9 @@ enum InternalSub {
         label: String,
         #[arg(long, value_name = "DIR")]
         cwd: std::path::PathBuf,
+        /// The frozen profile directory context of a handoff tab; its env goes to the tab.
+        #[arg(long, value_name = "JSON", conflicts_with = "new_terminal")]
+        directory_context: Option<String>,
         /// What a herdr-core terminal starts (a Herdr tab takes none).
         #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
         gate_argv: Vec<String>,
@@ -1531,7 +1550,7 @@ enum SyncSub {
     },
     /// Check the journal invariants and every stored hash chain's linkage.
     Verify,
-    /// Parked or failed journal entries: `list` (default) or `replay`.
+    /// Parked or failed journal entries: `list` (default) or `replay`. A handoff message from a 3.0 node stays failed on an older node until it is upgraded and replayed.
     Unapplied {
         #[command(subcommand)]
         command: Option<UnappliedSub>,
@@ -2104,7 +2123,8 @@ struct HandoffArgs {
     #[arg(long)]
     cwd: Option<std::path::PathBuf>,
     /// Existing profile directory for --new-tab, distinct from native named profiles.
-    /// Guarded pane launches cannot change the profile directory.
+    /// Guarded pane launches cannot change the profile directory. For a handoff to another
+    /// machine: an absolute directory on that machine, checked there.
     #[arg(long)]
     profile_dir: Option<std::path::PathBuf>,
     #[command(flatten)]
@@ -2121,7 +2141,7 @@ struct HandoffArgs {
     goal: Option<String>,
     /// One-line purpose the launched agent's first prompt shows (at most 200 bytes; default:
     /// --goal when it fits). It appears in native argv; the body never does and arrives as the
-    /// thread message. Local launches only.
+    /// thread message. Required for a handoff to another machine.
     #[arg(long, conflicts_with = "existing")]
     summary: Option<String>,
     #[arg(
@@ -2481,11 +2501,22 @@ fn terminal_machine(selector: &super::panes::PaneSelector) -> Result<Option<Stri
     }
 }
 
+/// The text of a `--cwd` / `--profile-dir` that names a directory on another machine (57 bytes
+/// on refusal). A path that is not UTF-8 is refused: the plan is JSON, and a lossy conversion
+/// would send a directory the user never named.
+const REMOTE_PATH_NOT_UTF8: &str = "--cwd and --profile-dir for another machine must be UTF-8";
+
+fn remote_path_text(path: std::path::PathBuf) -> Result<String, ApiError> {
+    path.into_os_string()
+        .into_string()
+        .map_err(|_| invalid(REMOTE_PATH_NOT_UTF8))
+}
+
 /// The `--cwd` of a new terminal on another machine: absolute, and checked only there
 /// (TRUST-POLICY N15).
 fn remote_terminal_cwd(cwd: Option<std::path::PathBuf>) -> Result<String, ApiError> {
     match cwd {
-        Some(cwd) if cwd.is_absolute() => Ok(cwd.to_string_lossy().into_owned()),
+        Some(cwd) if cwd.is_absolute() => remote_path_text(cwd),
         _ => Err(invalid(
             "a new terminal on another machine needs --cwd DIR (absolute, on that machine)",
         )),
@@ -2918,6 +2949,12 @@ fn parse_cli_in_registry(
     // Reject launch-only conflicts and normalize before reading instructions or
     // constructing selectors: no recipient resolution or publication can precede this.
     if let Top::Handoff(args) = &mut cli.command {
+        // A launching handoff to another machine: its `--profile-dir` names a directory there,
+        // which only that machine can check (TRUST-POLICY N15). It is accepted only for a new
+        // tab or terminal; a pane cannot change it (as a guarded local pane cannot).
+        let remote_target = !args.existing
+            && (remote_machine(&args.selector).is_some()
+                || (args.new_terminal && args.selector.space.is_some()));
         if (args.cwd.is_some() || args.profile_dir.is_some())
             && args.new_tab.is_none()
             && !args.new_terminal
@@ -2937,11 +2974,13 @@ fn parse_cli_in_registry(
                 .map(normalize_handoff_directory)
                 .transpose()?;
         }
-        args.profile_dir = args
-            .profile_dir
-            .take()
-            .map(normalize_handoff_directory)
-            .transpose()?;
+        if !remote_target {
+            args.profile_dir = args
+                .profile_dir
+                .take()
+                .map(normalize_handoff_directory)
+                .transpose()?;
+        }
     }
     if let Top::Launch(args) = &cli.command
         && args.cwd.is_some()
@@ -3379,6 +3418,7 @@ fn parse_cli_in_registry(
             claim: None,
             seat: args.seat.map(|_| placeholder_seat()),
             page: page(args.page)?,
+            seat_alerts: false,
         })),
         Top::Warnings(args) => match (
             args.seat.map(|_| placeholder_seat()).or_else(|| {
@@ -3713,6 +3753,9 @@ fn parse_cli_in_registry(
                     kind: args.kind,
                     argv: args.agent_args,
                     cwd: Some(cwd),
+                    profile_dir: None,
+                    handoff_prompt: None,
+                    message: None,
                 },
                 then: None,
             }))
@@ -3771,6 +3814,9 @@ fn parse_cli_in_registry(
                     kind: args.kind,
                     argv: args.agent_args,
                     cwd: None,
+                    profile_dir: None,
+                    handoff_prompt: None,
+                    message: None,
                 },
                 then: None,
             }))
@@ -3871,16 +3917,57 @@ fn parse_cli_in_registry(
                 None
             };
             if !args.existing && (remote_machine(&args.selector).is_some() || terminal.is_some()) {
-                if args.harness_binary.is_some()
-                    || args.name.is_some()
-                    || args.profile_dir.is_some()
-                    || args.summary.is_some()
-                {
+                if args.harness_binary.is_some() || args.name.is_some() {
                     return Err(invalid(
-                        "--harness-binary, --name, --profile-dir and --summary are not supported \
-                         for a handoff to another machine",
+                        "--harness-binary and --name are not supported for a handoff to another machine",
                     ));
                 }
+                if args.thread.is_some()
+                    || args.new_thread
+                    || args.thread_name.is_some()
+                    || args.topic.is_some()
+                    || args.goal.is_some()
+                {
+                    return Err(invalid(
+                        "--thread, --new-thread, --thread-name, --topic and --goal are not supported \
+                         for a handoff to another machine (it opens the 1:1 pair)",
+                    ));
+                }
+                if args.invite_deadline.is_some() {
+                    return Err(invalid(
+                        "--invite-deadline is not supported for a handoff to another machine \
+                         (a pair has no invitation)",
+                    ));
+                }
+                if args
+                    .profile_dir
+                    .as_ref()
+                    .is_some_and(|dir| !dir.is_absolute())
+                {
+                    return Err(invalid(
+                        "--profile-dir for another machine must be an absolute path there",
+                    ));
+                }
+                let ack_after_ms = match policy.deadline_millis {
+                    None => None,
+                    Some(ms) => Some(
+                        i64::try_from(ms)
+                            .ok()
+                            .filter(|ms| {
+                                *ms <= crate::store::handoff_obligations::OBLIGATION_TTL_MS
+                            })
+                            .ok_or_else(|| {
+                                invalid(
+                                    "--deadline for a handoff to another machine is at most 6 days",
+                                )
+                            })?,
+                    ),
+                };
+                let Some(summary) = args.summary.take() else {
+                    return Err(invalid(
+                        "--summary is required for a handoff to another machine",
+                    ));
+                };
                 let kind = args.kind.clone().expect("kind required");
                 let (machine, target) = match &args.new_tab {
                     Some(label) => {
@@ -3912,37 +3999,27 @@ fn parse_cli_in_registry(
                     }
                     None => remote_pane_target(&args.selector)?,
                 };
-                let then = super::topology_handoff::Request {
-                    policy: Some(policy),
-                    target: None,
-                    automatic: !args.new_thread && args.thread.is_none(),
-                    new_tab: None,
-                    new_terminal: false,
-                    existing: true,
-                    selector: super::panes::PaneSelector::default(),
-                    seat: None,
-                    cwd: None,
-                    profile_dir: None,
-                    thread: args.thread,
-                    thread_name: args.thread_name,
-                    topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
-                    goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
-                    summary: None,
-                    body,
-                    kind: None,
-                    binary: None,
-                    name: None,
-                    argv: Vec::new(),
+                let plan = crate::sync::frame::LaunchPlan {
+                    target,
+                    kind,
+                    argv: args.agent_args,
+                    cwd: args.cwd.map(remote_path_text).transpose()?,
+                    profile_dir: args.profile_dir.map(remote_path_text).transpose()?,
+                    handoff_prompt: Some(summary),
+                    // The unsigned draft: the sender's daemon fills the rest and signs.
+                    message: Some(Box::new(crate::sync::handoff_block::SenderBlock {
+                        body,
+                        priority: 0,
+                        require_ack: true,
+                        ack_after_ms,
+                        ..Default::default()
+                    })),
                 };
+                super::peer_launch::plan_size_precheck(&plan)?;
                 CliAction::RemoteLaunch(Box::new(super::peer_launch::RemoteLaunch {
                     machine,
-                    plan: crate::sync::frame::LaunchPlan {
-                        target,
-                        kind,
-                        argv: args.agent_args,
-                        cwd: args.cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
-                    },
-                    then: Some(Box::new(then)),
+                    plan,
+                    then: None,
                 }))
             } else if args.new_tab.is_some() || args.new_terminal || args.existing {
                 if args.existing
@@ -4173,12 +4250,16 @@ fn parse_cli_in_registry(
             command: InternalSub::StoreCheck,
         } => CliAction::InternalStoreCheck,
         Top::Internal {
+            command: InternalSub::PeerHandoffLaunch { request, pane },
+        } => CliAction::InternalPeerHandoffLaunch { request, pane },
+        Top::Internal {
             command:
                 InternalSub::PeerTargetCreate {
                     workspace,
                     new_terminal,
                     label,
                     cwd,
+                    directory_context,
                     gate_argv,
                 },
         } => CliAction::InternalPeerTargetCreate {
@@ -4194,6 +4275,12 @@ fn parse_cli_in_registry(
             label,
             cwd,
             gate_argv,
+            directory_context: directory_context
+                .map(|json| {
+                    serde_json::from_str::<crate::protocol::handoff::LaunchDirectoryContext>(&json)
+                })
+                .transpose()
+                .map_err(|_| invalid("internal peer-target-create: invalid --directory-context"))?,
         },
         Top::Internal {
             command: InternalSub::DaemonDetach { program, args },

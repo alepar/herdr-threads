@@ -198,6 +198,7 @@ fn query(
             claim: None,
             seat: Some(SeatId::new("b")),
             page: request,
+            seat_alerts: false,
         }),
         spec,
         &budget(),
@@ -859,6 +860,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
             claim: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -904,6 +906,7 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
                     limit: 1,
                     max_bytes: 2048,
                 },
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -1077,6 +1080,7 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
                     max_bytes: 256,
                     ..Default::default()
                 },
+                seat_alerts: false,
             }),
             &spec,
             &budget(),
@@ -1563,6 +1567,7 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
             claim: Some(claim()),
+            seat_alerts: false,
         }),
         Command::InboxBatchV2(InboxQuery {
             pushed: false,
@@ -1570,6 +1575,7 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
             claim: Some(claim()),
+            seat_alerts: false,
         }),
     ] {
         let result = herdr_threads::store::queries::query_with_output(
@@ -2090,6 +2096,7 @@ fn work_limited_pages_resume_without_skips() {
                     limit: 50,
                     max_bytes: 65536,
                 },
+                seat_alerts: false,
             }),
             &OutputSpec::default(),
             &budget(),
@@ -2190,6 +2197,7 @@ fn v1_cursor_is_invalid_cursor_with_the_older_daemon_detail() {
                 cursor: Some(v1),
                 ..Default::default()
             },
+            seat_alerts: false,
         }),
         &budget(),
     )

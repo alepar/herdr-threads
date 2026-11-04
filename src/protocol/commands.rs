@@ -170,12 +170,27 @@ pub enum Command {
     /// A plain `launch` onto a herdr-core records its gate-only record
     /// (`capabilities::LOCAL_LAUNCH_GATE_V1`).
     LocalLaunchGate(Box<crate::protocol::handoff::LocalLaunchGate>),
+    /// The target's one-transaction staging of a remote handoff request
+    /// (`capabilities::PEER_HANDOFF_STAGE_V1`, TRUST-POLICY N15). Local and caller-less: the
+    /// `peer_requests` row of `request` is the authority.
+    PeerHandoffStage {
+        request: String,
+        seat: SeatId,
+    },
+    /// Read-only: the stored plan, frozen prompt and state of a handoff request of this node
+    /// (`capabilities::PEER_HANDOFF_STAGE_V1`), for its launch child.
+    PeerRequestView {
+        request: String,
+    },
     /// Verify an `Ambiguous` caller by nearest ancestor (`capabilities::LOCATE_CALLER_V1`).
     LocateCaller(crate::protocol::locate::LocateCaller),
     /// Operator and status commands for cross-node sync (ht-5fr.8). The mutating
     /// ones are admitted only for the elected owner's peer UID.
     Sync(crate::protocol::sync_admin::SyncCommand),
 }
+
+/// Longest peer request id `Command::PeerHandoffStage` names.
+pub const MAX_PEER_REQUEST_ID_BYTES: usize = 64;
 
 /// Longest detail a hook report may carry: the CLI truncates to it
 /// ([`bounded_hook_detail`]) and validation rejects a longer one.
@@ -493,6 +508,11 @@ pub struct InboxQuery {
     /// messages above an active row's frontier are not offered. An explicit read leaves it unset.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pushed: bool,
+    /// Seat-addressed alerts (`inbox.seat_alerts_v1`; `InboxBatchV2` first page only): the page
+    /// carries one `HandoffOverdue` item per pending alert ahead of the merged rows. Sent only
+    /// to a daemon advertising the capability.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub seat_alerts: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1117,6 +1137,10 @@ pub struct AdvanceCursors {
     /// Invitations the in-turn display showed (only with `in_turn`). Nothing is accepted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invitations: Vec<InvitationId>,
+    /// Request ids of the seat-addressed alerts the display showed (`inbox.seat_alerts_v1`).
+    /// Cleared only for a top-level, non-readonly binding. Sent only under the capability.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alerts: Vec<String>,
 }
 
 /// What a [`BindingEvent`] reports.
@@ -1516,6 +1540,11 @@ impl Command {
         {
             return Err("a pushed inbox page is a v2 batch read only");
         }
+        if let Self::Inbox(v) | Self::InboxBatch(v) = self
+            && v.seat_alerts
+        {
+            return Err("seat alerts are a v2 batch read only");
+        }
         if let Self::InboxBatchV2(v) = self
             && v.pushed
             && (v.page.cursor.is_some() || v.thread.is_some())
@@ -1632,6 +1661,11 @@ impl Command {
             Self::ContinuityCheckIn(continuity) => continuity.validate(),
             Self::RecordManagedLaunch(launch) => launch.validate(),
             Self::LocalLaunchGate(gate) => gate.validate(),
+            Self::PeerHandoffStage { request, .. } | Self::PeerRequestView { request }
+                if request.is_empty() || request.len() > MAX_PEER_REQUEST_ID_BYTES =>
+            {
+                Err("invalid peer request id")
+            }
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }

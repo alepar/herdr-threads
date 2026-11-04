@@ -2283,6 +2283,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
                 p.launch.harness,
                 &p.launch.argv,
                 p.launch.summary_prompt.as_ref(),
+                p.launch.sender_prompt.as_deref(),
                 thread.as_str(),
                 &child.context,
                 &id.claim.instance,
@@ -3395,6 +3396,9 @@ fn peer_row(id: &str) -> crate::store::peer_requests::PeerRequest {
         pane: None,
         seat: None,
         detail: None,
+        handoff_thread: None,
+        handoff_message: None,
+        handoff_prompt: None,
         created_at: 1,
         updated_at: 0,
     }

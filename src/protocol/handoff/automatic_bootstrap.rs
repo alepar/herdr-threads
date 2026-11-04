@@ -257,6 +257,7 @@ impl AutomaticBootstrapIdentity {
                 startup_input: p.startup_input.clone(),
                 // The topology launch prompt follows the frozen `p.launch.summary_prompt`.
                 summary: None,
+                sender_prompt: None,
             })),
         )
     }
@@ -827,6 +828,7 @@ impl AutomaticBootstrapIdentity {
                 .ok_or("modern automatic origin lacks startup template")?;
             for prompt in crate::cli::handoff::retained_prompts(
                 p.launch.summary_prompt.as_ref(),
+                p.launch.sender_prompt.as_deref(),
                 thread.as_str(),
                 &context,
                 &self.claim.instance,

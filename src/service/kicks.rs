@@ -165,6 +165,9 @@ const DEADLINE_TABLES: &[&str] = &[
 /// lane). A new table must be added to one list; the exhaustive
 /// classification test fails until it is.
 pub const KNOWN_UNMAPPED: &[&str] = &[
+    // The sender's atomic-handoff ledger (ht-8lem): its writers bump attention themselves and it
+    // schedules no lane.
+    "handoff_obligations",
     // Pair identity is passive; its ordinary invitation/membership writes kick their own lanes.
     "direct_threads",
     // Transient attribution staged and taken inside one writer transaction (ht-5fr.4.15).

@@ -275,6 +275,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
         startup_input: None,
         bootstrap_input: None,
         summary_prompt: None,
+        sender_prompt: None,
         request: HandoffRequest {
             summary: None,
             policy: None,

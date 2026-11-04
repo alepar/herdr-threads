@@ -1,0 +1,16 @@
+## Generated-input provenance
+Captured range: 1e620fdb570ab6e8a254cee334fca7a484d79354..aaefcd47f280fdf72bfba3a03550a02b05e48610
+Selection: unavailable; selected product/input paths: 183; omitted historical payloads: 0.
+diffstat.txt describes selected product/input paths. Reports, findings and collection metadata remain ordinary review inputs.
+- Selection/evidence gap (unavailable): aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:44: malformed collection record: record outside approvals or invalid prefix
+- Selection/evidence gap (unavailable): aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:72: malformed collection record: record outside approvals or invalid prefix
+- Selection/evidence gap (unavailable): aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:75: malformed collection record: record outside approvals or invalid prefix
+- Selection/evidence gap (unavailable): 1e620fdb570ab6e8a254cee334fca7a484d79354:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51 inv-8759cc82-264d-4506-beaa-307c9600bb8d: invalid failed assembly archive: failed bounded archive contains successful assembly or split claims
+- Selection/evidence gap (unavailable): 1e620fdb570ab6e8a254cee334fca7a484d79354:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58 inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f: invalid failed assembly archive: failed bounded archive contains successful assembly or split claims
+- Selection/evidence gap (unavailable): aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51 inv-8759cc82-264d-4506-beaa-307c9600bb8d: invalid failed assembly archive: failed bounded archive contains successful assembly or split claims
+- Selection/evidence gap (unavailable): aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58 inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f: invalid failed assembly archive: failed bounded archive contains successful assembly or split claims
+- Selection/evidence gap (unavailable): aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:33 inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb: incomplete claimed collection
+- Selection/evidence gap (unavailable): aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:33 inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb: incomplete claimed final report
+- Selection/evidence gap (unavailable): aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:33 inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb: invalid failed assembly archive: missing bounded evidence: final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb.md
+- Selection/evidence gap (unavailable): aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:33 inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb: incomplete assembled bundle: digest.md
+Open each report/archive at its recorded revision. Omission supplies no finding disposition or verdict.

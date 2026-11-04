@@ -861,6 +861,7 @@ mod binding_presentation {
                     claim: claim.clone(),
                     operation: OperationId::new("body-read-b"),
                     displayed: vec![MessageId::new("m")],
+                    alerts: Vec::new(),
                 },
                 &budget(),
             )
@@ -1011,6 +1012,7 @@ mod binding_presentation {
                     claim: claim.clone(),
                     operation: OperationId::new(operation),
                     displayed: vec![MessageId::new("m")],
+                    alerts: Vec::new(),
                 },
                 &budget(),
             )
@@ -1041,6 +1043,7 @@ mod binding_presentation {
                         limit: 32,
                         max_bytes: 65_536,
                     },
+                    seat_alerts: false,
                 }),
                 &ReadContext {
                     instance: "34750f98bd59fcfc946da45aaabe933b".into(),

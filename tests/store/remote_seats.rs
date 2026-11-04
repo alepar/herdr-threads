@@ -920,6 +920,9 @@ fn peer_requests_record_once_settle_once_and_fail_interrupted_runs() {
         pane: None,
         seat: None,
         detail: None,
+        handoff_thread: None,
+        handoff_message: None,
+        handoff_prompt: None,
         created_at: at,
         updated_at: 0,
     };
@@ -986,6 +989,214 @@ fn peer_requests_record_once_settle_once_and_fail_interrupted_runs() {
     assert_eq!(by_node.len(), 1);
     assert_eq!(by_node[0].1, 3);
     assert_eq!(by_node[0].2.id, id4, "the newest");
+}
+
+// Kills (ht-8lem.18): a recorded Failed answer that drops `staged` (the sender would drop its
+// obligation for a message that stands), invents it from one column, or carries it on a
+// launched or refused row.
+mod peer_answer_staged {
+    use super::fixture;
+    use herdr_threads::store::peer_requests::{self, PeerRequest};
+    use herdr_threads::sync::frame::{LaunchStaged, LaunchState};
+
+    const NOW: i64 = 1_000;
+
+    fn insert(db: &rusqlite::Connection, id: &str, pane: Option<&str>) {
+        let row = PeerRequest {
+            id: id.into(),
+            node_uuid: "ab".repeat(16),
+            requester_seat: None,
+            kind: "pane".into(),
+            plan: "{}".into(),
+            state: "running".into(),
+            pane: pane.map(Into::into),
+            seat: None,
+            detail: None,
+            handoff_thread: None,
+            handoff_message: None,
+            handoff_prompt: None,
+            created_at: NOW,
+            updated_at: 0,
+        };
+        peer_requests::insert_or_get(db, &row).unwrap();
+    }
+
+    fn set_columns(
+        db: &rusqlite::Connection,
+        id: &str,
+        thread: Option<&str>,
+        message: Option<&str>,
+    ) {
+        db.execute(
+            "UPDATE peer_requests SET handoff_thread=?2, handoff_message=?3 WHERE id=?1",
+            rusqlite::params![id, thread, message],
+        )
+        .unwrap();
+    }
+
+    fn answer(db: &rusqlite::Connection, id: &str) -> LaunchState {
+        peer_requests::get(db, id).unwrap().unwrap().answer()
+    }
+
+    fn staged() -> Option<LaunchStaged> {
+        Some(LaunchStaged {
+            thread: "dTHREAD".into(),
+            message: "mMESSAGE".into(),
+        })
+    }
+
+    #[test]
+    fn failed_row_with_handoff_columns_answers_staged() {
+        let f = fixture();
+        insert(&f.db, "00000000-0000-0000-0000-000000000001", None);
+        set_columns(
+            &f.db,
+            "00000000-0000-0000-0000-000000000001",
+            Some("dTHREAD"),
+            Some("mMESSAGE"),
+        );
+        assert!(
+            peer_requests::record(
+                &f.db,
+                "00000000-0000-0000-0000-000000000001",
+                "failed",
+                None,
+                None,
+                Some("boom"),
+                NOW
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            answer(&f.db, "00000000-0000-0000-0000-000000000001"),
+            LaunchState::Failed {
+                detail: "boom".into(),
+                pane: None,
+                unconfirmed: false,
+                staged: staged(),
+            }
+        );
+    }
+
+    #[test]
+    fn failed_row_without_handoff_columns_has_no_staged() {
+        let f = fixture();
+        insert(&f.db, "00000000-0000-0000-0000-000000000002", None);
+        peer_requests::record(
+            &f.db,
+            "00000000-0000-0000-0000-000000000002",
+            "failed",
+            None,
+            None,
+            Some("boom"),
+            NOW,
+        )
+        .unwrap();
+        assert!(matches!(
+            answer(&f.db, "00000000-0000-0000-0000-000000000002"),
+            LaunchState::Failed { staged: None, .. }
+        ));
+    }
+
+    #[test]
+    fn one_column_only_is_not_staged() {
+        let f = fixture();
+        for (id, thread, message) in [
+            (
+                "00000000-0000-0000-0000-000000000013",
+                Some("dTHREAD"),
+                None,
+            ),
+            (
+                "00000000-0000-0000-0000-000000000023",
+                None,
+                Some("mMESSAGE"),
+            ),
+        ] {
+            insert(&f.db, id, None);
+            set_columns(&f.db, id, thread, message);
+            peer_requests::record(&f.db, id, "failed", None, None, Some("boom"), NOW).unwrap();
+            assert!(
+                matches!(answer(&f.db, id), LaunchState::Failed { staged: None, .. }),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn settle_at_start_interrupted_row_answers_staged() {
+        let f = fixture();
+        // No pane (not unconfirmed) and a named pane (unconfirmed): both carry staged.
+        for (id, pane) in [
+            ("00000000-0000-0000-0000-000000000014", None),
+            ("00000000-0000-0000-0000-000000000024", Some("w1:p5")),
+        ] {
+            insert(&f.db, id, pane);
+            set_columns(&f.db, id, Some("dTHREAD"), Some("mMESSAGE"));
+        }
+        let failed = peer_requests::settle_at_start(&f.db, NOW + 1).unwrap();
+        assert_eq!(failed.len(), 2);
+        assert!(matches!(
+            answer(&f.db, "00000000-0000-0000-0000-000000000014"),
+            LaunchState::Failed { unconfirmed: false, staged, .. } if staged == self::staged()
+        ));
+        assert!(matches!(
+            answer(&f.db, "00000000-0000-0000-0000-000000000024"),
+            LaunchState::Failed { unconfirmed: true, staged, .. } if staged == self::staged()
+        ));
+    }
+
+    #[test]
+    fn refused_and_launched_rows_never_carry_staged() {
+        let f = fixture();
+        insert(&f.db, "00000000-0000-0000-0000-000000000015", None);
+        set_columns(
+            &f.db,
+            "00000000-0000-0000-0000-000000000015",
+            Some("dTHREAD"),
+            Some("mMESSAGE"),
+        );
+        peer_requests::record(
+            &f.db,
+            "00000000-0000-0000-0000-000000000015",
+            "refused",
+            None,
+            None,
+            Some("no"),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            answer(&f.db, "00000000-0000-0000-0000-000000000015"),
+            LaunchState::Refused {
+                detail: "no".into()
+            }
+        );
+        insert(&f.db, "00000000-0000-0000-0000-000000000025", None);
+        set_columns(
+            &f.db,
+            "00000000-0000-0000-0000-000000000025",
+            Some("dTHREAD"),
+            Some("mMESSAGE"),
+        );
+        peer_requests::record(
+            &f.db,
+            "00000000-0000-0000-0000-000000000025",
+            "launched",
+            Some("w1:p2"),
+            Some("sAAA"),
+            None,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            answer(&f.db, "00000000-0000-0000-0000-000000000025"),
+            LaunchState::Launched {
+                seat: "sAAA".into(),
+                pane: "w1:p2".into()
+            }
+        );
+    }
 }
 
 // Kills (ht-hldp): `--label` that misses a local seat matching its pane's

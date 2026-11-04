@@ -1683,6 +1683,8 @@ struct ComposedSync {
 struct ComposedIncarnations {
     stop: Cancellation,
     join: std::thread::JoinHandle<()>,
+    /// The handoff re-send thread (ht-8lem.4); ends with the same token.
+    resend: std::thread::JoinHandle<()>,
 }
 
 /// How long shutdown waits for the discovery worker to notice the stop.
@@ -1878,7 +1880,7 @@ where
                     &mut conn,
                     Arc::clone(&identity),
                     &host_label(),
-                    crate::sync::facts::FactRegistry::builtins(),
+                    crate::sync::facts::daemon_registry(),
                 )
                 .map_err(|error| {
                     io::Error::other(format!(
@@ -1999,6 +2001,7 @@ where
             let apply_store = sqlite.clone();
             let apply_identity = Arc::clone(&identity);
             let sync_identity = Arc::clone(&identity);
+            let factory_identity = Arc::clone(&identity);
             let sync_store = sqlite.clone();
             let discovery_store = sqlite.clone();
             let publisher_store = sqlite.clone();
@@ -2375,7 +2378,21 @@ where
                 log: sync_log.clone(),
                 runtime: sync_admin_runtime.clone(),
                 discovery: Some(Arc::clone(&discovery_status)),
+                identity: Arc::clone(&factory_identity),
             });
+            let resend = crate::service::peer_handoff::start_resend_task(
+                crate::service::peer_handoff::ResendDeps {
+                    store: Arc::clone(&incarnations_store),
+                    writer: Arc::clone(&writer),
+                    clock: Arc::clone(&factory_clock),
+                    identity: Arc::clone(&factory_identity),
+                    log: sync_log.clone(),
+                    sync: sync_handle.clone(),
+                    runtime: sync_admin_runtime.clone(),
+                },
+                incarnations_stop.clone(),
+            )
+            .map_err(|error| io::Error::other(format!("handoff resend task: {error}")))?;
             let incarnations_join = crate::sync::incarnations::IncarnationsWorker::start(
                 crate::sync::incarnations::WorkerDeps {
                     sink: incarnations_sink,
@@ -2399,6 +2416,7 @@ where
                 Some(ComposedIncarnations {
                     stop: incarnations_stop,
                     join: incarnations_join,
+                    resend,
                 });
             // Idle exit (spec §15): a store-only daemon with no host, link,
             // target or client stops through the same shutdown as `Stop`.
@@ -2880,9 +2898,12 @@ where
                 .lock()
                 .map_err(|_| io::Error::other("incarnations slot poisoned"))?
                 .take();
-            if let Some(ComposedIncarnations { stop, join }) = incarnations {
+            if let Some(ComposedIncarnations { stop, join, resend }) = incarnations {
                 stop.cancel();
-                let joined = tokio::task::spawn_blocking(move || join.join());
+                let joined = tokio::task::spawn_blocking(move || {
+                    let _ = resend.join();
+                    join.join()
+                });
                 match tokio::time::timeout(SYNC_STOP_BOUND, joined).await {
                     Ok(Ok(Ok(()))) => eprintln!("sync: incarnations worker stopped"),
                     Ok(_) => eprintln!("sync: incarnations worker panicked"),

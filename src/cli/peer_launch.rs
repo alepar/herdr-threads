@@ -13,12 +13,14 @@
 use std::{io::Write, path::Path, sync::Arc, time::Duration};
 
 use super::RunError;
+use crate::store::{handoff_obligations::OBLIGATION_TTL_MS, peer_requests::MAX_PLAN_BYTES};
 use crate::{
     ports::{
         CreateTargetOutcome, CreateTargetPort, CreateTargetRequest, HostCallContext, HostWitness,
         Placement,
     },
     protocol::{
+        handoff::LaunchDirectoryContext,
         ids::{HostCallId, HostTargetId},
         results::{ApiError, ErrorCode},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
@@ -38,12 +40,15 @@ pub enum TargetSpec {
 }
 
 /// Creates the target on the host at `endpoint` and prints it.
+// Allowed: the entry point carries the dispatcher's pieces, as the other launch runners do.
+#[allow(clippy::too_many_arguments)]
 pub fn create_target<W: Write>(
     endpoint: &Path,
     spec: &TargetSpec,
     label: &str,
     cwd: &Path,
     gate_argv: Vec<String>,
+    directory_context: Option<&LaunchDirectoryContext>,
     clock: Arc<dyn Clock>,
     out: &mut W,
 ) -> Result<(), RunError> {
@@ -59,22 +64,28 @@ pub fn create_target<W: Write>(
         spec,
         label,
         cwd,
+        directory_context,
         budget,
         out,
     )
 }
 
 /// [`create_target`] against a given port: generic over the host.
+#[allow(clippy::too_many_arguments)]
 pub fn create_with<P: CreateTargetPort + ?Sized, W: Write>(
     port: &P,
     witness: HostWitness,
     spec: &TargetSpec,
     label: &str,
     cwd: &Path,
+    directory_context: Option<&LaunchDirectoryContext>,
     budget: CallBudget,
     out: &mut W,
 ) -> Result<(), RunError> {
     let invalid = |detail: &'static str| ApiError::new(ErrorCode::InvalidRequest, detail);
+    if directory_context.is_some() && matches!(spec, TargetSpec::Terminal) {
+        return Err(invalid("a directory context needs a tab").into());
+    }
     let placement = match spec {
         TargetSpec::Tab(workspace) => Placement::NewTab {
             space: HostTargetId::parse(workspace.clone()).map_err(invalid)?,
@@ -89,8 +100,8 @@ pub fn create_with<P: CreateTargetPort + ?Sized, W: Write>(
         cwd: cwd.to_path_buf(),
         label: label.to_owned(),
         focus: false,
-        env: Default::default(),
-        directory_context: None,
+        env: directory_context.map(|c| c.env.clone()).unwrap_or_default(),
+        directory_context: directory_context.cloned(),
         expected_witness: witness,
         gate_argv: Vec::new(),
     };
@@ -131,6 +142,50 @@ pub struct RemoteLaunch {
     /// The handoff to run once the seat exists here: `--existing --seat`.
     pub then: Option<Box<super::topology_handoff::Request>>,
 }
+
+impl RemoteLaunch {
+    /// Whether this launch carries a signed-draft handoff message (an atomic remote handoff).
+    pub fn is_handoff(&self) -> bool {
+        self.plan.handoff().is_some()
+    }
+}
+
+/// Refuses a handoff `plan` whose final serialized form would exceed [`MAX_PLAN_BYTES`]: the
+/// target stores and bounds the plan after the sender's daemon fills the block, so the CLI
+/// measures it with every filled field at its final size.
+pub fn plan_size_precheck(plan: &crate::sync::frame::LaunchPlan) -> Result<(), ApiError> {
+    if final_plan_len(plan) > MAX_PLAN_BYTES {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "launch plan too large",
+        ));
+    }
+    Ok(())
+}
+
+/// The serialized length `plan` has once the sender's daemon filled and signed its block: each
+/// filled field at its longest.
+fn final_plan_len(plan: &crate::sync::frame::LaunchPlan) -> usize {
+    let mut sized = plan.clone();
+    if let Some(block) = sized.message.as_mut() {
+        block.v = 1;
+        block.request = uuid::Uuid::nil();
+        block.sender_node = Some(crate::node::NodeUuid::from_bytes([0; 16]));
+        block.author = Some(crate::protocol::ids::SeatId::new(
+            "s".repeat(PLACEHOLDER_ID_LEN),
+        ));
+        block.author_role = Some(crate::protocol::summary::AuthorRole::Service);
+        block.message = Some(crate::protocol::ids::MessageId::new(
+            "m".repeat(PLACEHOLDER_ID_LEN),
+        ));
+        block.requested_at = i64::MAX;
+        block.sig = "0".repeat(128);
+    }
+    serde_json::to_vec(&sized).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// The length of a public id (`<prefix><tag><8 base62 chars>`): a seat or a message.
+const PLACEHOLDER_ID_LEN: usize = 12;
 
 /// How long the CLI keeps asking how a remote launch stands.
 pub const REMOTE_LAUNCH_TIMEOUT: Duration = Duration::from_secs(120);
@@ -239,11 +294,16 @@ fn remove_record(file: &Path) -> std::io::Result<()> {
 /// The key of this launch's request: the whole frozen intent (the resolved
 /// node, the requesting seat, the plan and the handoff that follows it), so a
 /// rerun of the same command finds its request and any other command (another
-/// task, another seat) never does.
+/// task, another seat) never does. A handoff plan hashes under the `v4` tag; a plain launch
+/// keeps `v3`, so a pending 2.x request file is still found after an upgrade.
 fn request_key(node_uuid: &str, requester_seat: Option<&str>, remote: &RemoteLaunch) -> String {
     use sha2::Digest;
     let mut hash = sha2::Sha256::new();
-    hash.update(b"herdr-threads remote launch v3\0");
+    hash.update(if remote.is_handoff() {
+        b"herdr-threads remote launch v4\0"
+    } else {
+        b"herdr-threads remote launch v3\0"
+    });
     hash.update(node_uuid.as_bytes());
     hash.update(b"\0");
     hash.update(requester_seat.unwrap_or_default().as_bytes());
@@ -440,9 +500,50 @@ pub fn after_handoff(result: &Result<(), RunError>, journaled: Option<&str>) -> 
 #[derive(Debug)]
 pub struct Launched {
     pub seat: String,
+    /// Empty when the sender's ledger answered a handoff (it does not hold the pane).
     pub pane: String,
+    /// A handoff's message id and 1:1 thread; `None` for a bare launch.
+    pub handoff: Option<HandoffIds>,
     id: uuid::Uuid,
     file: std::path::PathBuf,
+}
+
+/// The message a handoff signed and the pair thread it lives in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffIds {
+    pub thread: String,
+    pub message: String,
+}
+
+impl Launched {
+    /// The result of a started handoff on `machine`: text
+    /// `handoff seat=<s> pane=<p>@<machine> thread=<t> message=<m>` (`pane=` omitted when the
+    /// ledger answered, `message=` when the answer names no message), or the JSON envelope.
+    pub fn handoff_result(&self, machine: &str, json: bool) -> Option<String> {
+        let ids = self.handoff.as_ref()?;
+        let pane = (!self.pane.is_empty()).then_some(&self.pane);
+        let message = (!ids.message.is_empty()).then_some(ids.message.as_str());
+        Some(if json {
+            format!(
+                "{}\n",
+                serde_json::json!({ "handoff": {
+                    "outcome": "started",
+                    "seat": self.seat,
+                    "pane": pane,
+                    "machine": machine,
+                    "thread": ids.thread,
+                    "message": message,
+                }})
+            )
+        } else {
+            let pane = pane.map_or_else(String::new, |pane| format!(" pane={pane}@{machine}"));
+            let message = message.map_or_else(String::new, |message| format!(" message={message}"));
+            format!(
+                "handoff seat={}{pane} thread={}{message}\n",
+                self.seat, ids.thread
+            )
+        })
+    }
 }
 
 impl Launched {
@@ -484,17 +585,73 @@ impl Launched {
     }
 }
 
+/// What a CLI says to a daemon that lacks [`HANDOFF_ATOMIC_REMOTE_V1`] (43 bytes).
+const NO_ATOMIC_REMOTE: &str = "daemon predates remote handoffs; restart it";
+
+/// Removes request `file` when it still names `id` (a later run of the same command may have
+/// replaced it).
+fn settle_request(file: &Path, id: uuid::Uuid) {
+    if let Ok(_lock) = RecordLock::take(file)
+        && std::fs::read_to_string(file)
+            .ok()
+            .and_then(|text| RequestRecord::parse(&text))
+            .is_some_and(|record| record.id == id)
+    {
+        let _ = remove_record(file);
+    }
+}
+
+/// Whether request `file` was minted more than [`OBLIGATION_TTL_MS`] ago (its mtime: the file is
+/// written once, when its id is minted), so the sender's ledger holds no live row for it.
+fn request_file_stale(file: &Path) -> bool {
+    std::fs::metadata(file)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age.as_millis() > OBLIGATION_TTL_MS as u128)
+}
+
 /// Runs a remote launch to its outcome: the launched seat (now held here as
-/// that machine's) and its pane, or a refusal.
+/// that machine's) and its pane, or a refusal. A handoff plan also needs the
+/// caller's `claim`, and ends in the started handoff (seat, pane when known,
+/// thread, message) or the sender ledger's answer.
 pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
     remote: &RemoteLaunch,
     requester_seat: Option<&str>,
+    claim: Option<&crate::protocol::authority::CallerClaim>,
     node_dir: &Path,
     client: &C,
     clock: &dyn Clock,
     stderr: &mut W,
 ) -> Result<Launched, RunError> {
-    use crate::protocol::sync_admin::{LaunchReply, RemoteLaunchAnswer, SyncCommand, SyncReply};
+    run_remote_timed(
+        remote,
+        requester_seat,
+        claim,
+        node_dir,
+        client,
+        clock,
+        stderr,
+        (launch_timeout(), POLL),
+    )
+}
+
+/// [`run_remote`] with its `(timeout, poll)` pacing given (tests shorten both).
+#[allow(clippy::too_many_arguments)]
+fn run_remote_timed<C: crate::ports::LocalClient + ?Sized, W: Write>(
+    remote: &RemoteLaunch,
+    requester_seat: Option<&str>,
+    claim: Option<&crate::protocol::authority::CallerClaim>,
+    node_dir: &Path,
+    client: &C,
+    clock: &dyn Clock,
+    stderr: &mut W,
+    (timeout, poll): (Duration, Duration),
+) -> Result<Launched, RunError> {
+    use crate::protocol::ids::{SeatId, direct_thread_id};
+    use crate::protocol::sync_admin::{
+        HandoffLedgerOutcome, LaunchReply, RemoteLaunchAnswer, SyncCommand, SyncReply,
+    };
     use crate::sync::frame::{LaunchRequest, LaunchState};
     let budget = || CallBudget {
         deadline: MonoInstant(
@@ -505,6 +662,15 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
         ),
         cancellation: Cancellation::default(),
     };
+    let handoff = remote.is_handoff();
+    if handoff
+        && !client.supports_capability(
+            crate::protocol::capabilities::HANDOFF_ATOMIC_REMOTE_V1,
+            &budget(),
+        )
+    {
+        return Err(ApiError::new(ErrorCode::Unsupported, NO_ATOMIC_REMOTE).into());
+    }
     let node = match client.call(
         crate::protocol::commands::Command::Sync(SyncCommand::ResolveMachine {
             machine: remote.machine.clone(),
@@ -526,25 +692,23 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
             .into());
         }
     };
-    let (record, file) = request_id(node_dir, &node.uuid, requester_seat, remote, |reference| {
-        intent_pending(node_dir, reference)
-    })?;
-    let id = record.id;
-    let request = LaunchRequest {
+    let (mut record, mut file) =
+        request_id(node_dir, &node.uuid, requester_seat, remote, |reference| {
+            intent_pending(node_dir, reference)
+        })?;
+    let mut id = record.id;
+    // A request file older than the ledger's lifetime is only asked about, never signed again.
+    let mut resume_only = handoff && request_file_stale(&file);
+    let mut plan = remote.plan.clone();
+    if let (Some(block), Some(seat)) = (plan.message.as_mut(), requester_seat) {
+        block.author = Some(SeatId::new(seat));
+    }
+    let request_of = |id| LaunchRequest {
         id,
         requester_seat: requester_seat.unwrap_or_default().to_owned(),
-        plan: remote.plan.clone(),
+        plan: plan.clone(),
     };
-    let settle = || {
-        if let Ok(_lock) = RecordLock::take(&file)
-            && std::fs::read_to_string(&file)
-                .ok()
-                .and_then(|text| RequestRecord::parse(&text))
-                .is_some_and(|record| record.id == id)
-        {
-            let _ = remove_record(&file);
-        }
-    };
+    let mut request = request_of(id);
     let refuse =
         |code: ErrorCode, detail: String| -> RunError { ApiError::new(code, detail).into() };
     let started = std::time::Instant::now();
@@ -555,6 +719,8 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
             crate::protocol::commands::Command::Sync(SyncCommand::RemoteLaunch {
                 machine: node.uuid.clone(),
                 request: Box::new(request.clone()),
+                claim: if handoff { claim.cloned() } else { None },
+                resume_only,
             }),
             &budget(),
         )?;
@@ -565,8 +731,12 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
             ));
         };
         let resolved = &node.uuid;
-        let (node, answer) = match reply {
-            LaunchReply::Remote { node, answer } if &node.uuid == resolved => (node, answer),
+        let (node, answer, handoff_message) = match reply {
+            LaunchReply::Remote {
+                node,
+                answer,
+                handoff_message,
+            } if &node.uuid == resolved => (node, answer, handoff_message),
             // Another node, or none: the request stays, nothing is settled.
             _ => {
                 return Err(refuse(
@@ -583,23 +753,35 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
         let pending = match answer {
             RemoteLaunchAnswer::Answered { state } => match state {
                 LaunchState::Launched { seat, pane } => {
-                    writeln!(
-                        stderr,
-                        "launched: {} on {}@{} (request {})",
-                        one_line(&seat),
-                        one_line(&pane),
-                        node.tag,
-                        &id.to_string()[..8]
-                    )?;
+                    let ids = handoff.then(|| HandoffIds {
+                        thread: direct_thread_id(
+                            &SeatId::new(requester_seat.unwrap_or_default()),
+                            &SeatId::new(&seat),
+                        )
+                        .map(|thread| thread.as_str().to_owned())
+                        .unwrap_or_default(),
+                        message: handoff_message.unwrap_or_default(),
+                    });
+                    if !handoff {
+                        writeln!(
+                            stderr,
+                            "launched: {} on {}@{} (request {})",
+                            one_line(&seat),
+                            one_line(&pane),
+                            node.tag,
+                            &id.to_string()[..8]
+                        )?;
+                    }
                     return Ok(Launched {
                         seat,
                         pane,
+                        handoff: ids,
                         id,
                         file: file.clone(),
                     });
                 }
                 LaunchState::Refused { detail } => {
-                    settle();
+                    settle_request(&file, id);
                     return Err(refuse(
                         ErrorCode::InvalidRequest,
                         format!("{label} refused the launch: {}", one_line(&detail)),
@@ -609,11 +791,12 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                     detail,
                     pane,
                     unconfirmed,
+                    staged,
                 } => {
                     // An unconfirmed start keeps the id: a rerun reports the same, never a
                     // second agent in a pane that may already run one.
                     if !unconfirmed {
-                        settle();
+                        settle_request(&file, id);
                     }
                     let left = pane.map_or_else(String::new, |p| {
                         format!("; it left tab pane {} there", one_line(&p))
@@ -626,10 +809,18 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                     } else {
                         ""
                     };
+                    // The target staged the message before it failed: it stands there.
+                    let staged = staged.map_or_else(String::new, |staged| {
+                        format!(
+                            "; message {} stands in thread {}",
+                            one_line(&staged.message),
+                            one_line(&staged.thread)
+                        )
+                    });
                     return Err(refuse(
                         ErrorCode::HostUnavailable,
                         format!(
-                            "launch on {label} failed: {}{left}{escape}",
+                            "launch on {label} failed: {}{left}{escape}{staged}",
                             one_line(&detail)
                         ),
                     ));
@@ -639,23 +830,75 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
                 LaunchState::Unknown => "unknown answer".to_owned(),
             },
             RemoteLaunchAnswer::NoCap { version, cap } => {
-                settle();
+                settle_request(&file, id);
                 let cap = if cap.is_empty() {
                     crate::sync::frame::PEER_LAUNCH_CAP
                 } else {
                     cap.as_str()
                 };
+                let version = version.as_deref().unwrap_or("unknown");
                 return Err(refuse(
                     ErrorCode::Unsupported,
-                    format!(
-                        "machine {label} cannot launch for other machines (needs {cap}; version {})",
-                        version.as_deref().unwrap_or("unknown")
-                    ),
+                    if cap == crate::sync::frame::PEER_HANDOFF_CAP {
+                        format!(
+                            "machine {label} cannot take a handoff (needs {cap}; version \
+                             {version}); upgrade it to 3.0.0 or later"
+                        )
+                    } else {
+                        format!(
+                            "machine {label} cannot launch for other machines (needs {cap}; \
+                             version {version})"
+                        )
+                    },
                 ));
             }
             RemoteLaunchAnswer::Unreachable { .. } => "unreachable".to_owned(),
             RemoteLaunchAnswer::Timeout { secs } => format!("no answer in {secs}s"),
             RemoteLaunchAnswer::NotReplicated { .. } => "launched; waiting for its seat".to_owned(),
+            // The sender's ledger answered; each terminal answer settles the request file.
+            RemoteLaunchAnswer::HandoffLedger { outcome } => match outcome {
+                HandoffLedgerOutcome::Linked {
+                    seat,
+                    thread,
+                    message,
+                } => {
+                    return Ok(Launched {
+                        seat,
+                        pane: String::new(),
+                        handoff: Some(HandoffIds { thread, message }),
+                        id,
+                        file: file.clone(),
+                    });
+                }
+                HandoffLedgerOutcome::Expired { seat } => {
+                    settle_request(&file, id);
+                    let req = &id.to_string()[..8];
+                    return Err(refuse(
+                        ErrorCode::HostUnavailable,
+                        match seat {
+                            None => format!("handoff {req} to {label} expired unconfirmed"),
+                            Some(seat) => format!(
+                                "handoff {req} to {label} expired unlinked: seat {}",
+                                one_line(&seat)
+                            ),
+                        },
+                    ));
+                }
+                // No row for a stale request file: it was pruned. That command is over; this
+                // run is a new one under a new id, never the old id signed again.
+                HandoffLedgerOutcome::Unknown if resume_only => {
+                    settle_request(&file, id);
+                    (record, file) =
+                        request_id(node_dir, &node.uuid, requester_seat, remote, |reference| {
+                            intent_pending(node_dir, reference)
+                        })?;
+                    id = record.id;
+                    request = request_of(id);
+                    resume_only = false;
+                    continue;
+                }
+                HandoffLedgerOutcome::Unknown => "unknown answer".to_owned(),
+            },
             RemoteLaunchAnswer::Unknown => "unknown answer".to_owned(),
         };
         if !announced {
@@ -666,16 +909,23 @@ pub fn run_remote<C: crate::ports::LocalClient + ?Sized, W: Write>(
             )?;
             announced = true;
         }
-        if started.elapsed() >= launch_timeout() {
+        if started.elapsed() >= timeout {
+            let req = &id.to_string()[..8];
             return Err(refuse(
                 ErrorCode::HostUnavailable,
-                format!(
-                    "launch on {label} still pending ({pending}): request {}; rerun to resume",
-                    &id.to_string()[..8]
-                ),
+                if handoff {
+                    format!(
+                        "handoff to {label} still pending: request {req} stays queued until it \
+                         starts or expires (6 days)"
+                    )
+                } else {
+                    format!(
+                        "launch on {label} still pending ({pending}): request {req}; rerun to resume"
+                    )
+                },
             ));
         }
-        std::thread::sleep(POLL);
+        std::thread::sleep(poll);
     }
 }
 
@@ -695,6 +945,9 @@ mod tests {
                 kind: "codex".into(),
                 argv: Vec::new(),
                 cwd: None,
+                profile_dir: None,
+                handoff_prompt: None,
+                message: None,
             },
             then: Some(Box::new(super::super::topology_handoff::Request {
                 policy: None,
@@ -719,6 +972,66 @@ mod tests {
                 argv: Vec::new(),
             })),
         }
+    }
+
+    struct Recording(std::sync::Mutex<Vec<CreateTargetRequest>>);
+
+    impl CreateTargetPort for Recording {
+        fn create_target(
+            &self,
+            request: &CreateTargetRequest,
+            _: &HostCallContext,
+        ) -> CreateTargetOutcome {
+            self.0.lock().unwrap().push(request.clone());
+            CreateTargetOutcome::NotSubmitted(ApiError::new(ErrorCode::HostUnavailable, "recorded"))
+        }
+    }
+
+    // Kills: a handoff tab created with an empty env (the agent then runs on the shell's default
+    // root while the CLI reports started), a context sent without its env or env without its
+    // context, env leaking into a bare tab, and a context accepted for a terminal.
+    #[test]
+    fn create_with_hands_the_frozen_context_to_the_request() {
+        let witness = HostWitness::HcCore {
+            core_id: "c".into(),
+            peer: crate::ports::HcPeer {
+                pid: 1,
+                start_seconds: 1,
+                uid: 1,
+            },
+        };
+        let budget = || CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Cancellation::default(),
+        };
+        let context = LaunchDirectoryContext {
+            profile_dir: "/p".into(),
+            cwd: "/w".into(),
+            env: [("PROFILE_ROOT".to_owned(), "/p".to_owned())].into(),
+        };
+        let port = Recording(Default::default());
+        let tab = TargetSpec::Tab("w1".into());
+        let run = |spec: &TargetSpec, ctx: Option<&LaunchDirectoryContext>| {
+            create_with(
+                &port,
+                witness.clone(),
+                spec,
+                "x",
+                Path::new("/w"),
+                ctx,
+                budget(),
+                &mut Vec::new(),
+            )
+        };
+        assert!(run(&tab, Some(&context)).is_err());
+        assert!(run(&tab, None).is_err());
+        assert!(run(&TargetSpec::Terminal, Some(&context)).is_err());
+        let seen = port.0.lock().unwrap();
+        assert_eq!(seen.len(), 2, "the terminal with a context creates nothing");
+        assert_eq!(seen[0].env, context.env);
+        assert_eq!(seen[0].directory_context.as_ref(), Some(&context));
+        assert!(seen[1].env.is_empty());
+        assert_eq!(seen[1].directory_context, None);
     }
 
     // Kills: one request id for two different handoffs (task B landing in the
@@ -785,6 +1098,7 @@ mod tests {
         let launched = Launched {
             seat: "s".into(),
             pane: "p".into(),
+            handoff: None,
             id: ids[0],
             file: file.clone(),
         };
@@ -803,6 +1117,7 @@ mod tests {
             id: uuid::Uuid::from_u128(1),
             seat: "s".into(),
             pane: "p".into(),
+            handoff: None,
             file: file.clone(),
         };
         assert!(stale.record_journaled("local:8").is_err());
@@ -828,6 +1143,7 @@ mod tests {
         Launched {
             seat: "s".into(),
             pane: "p".into(),
+            handoff: None,
             id: record.id,
             file: file.clone(),
         }
@@ -910,6 +1226,7 @@ mod tests {
                 }) => LaunchReply::Remote {
                     node: row(&self.resolved),
                     answer: RemoteLaunchAnswer::Unknown,
+                    handoff_message: None,
                 },
                 crate::protocol::commands::Command::Sync(SyncCommand::RemoteLaunch {
                     machine,
@@ -924,6 +1241,7 @@ mod tests {
                                 pane: "w1:p2".into(),
                             },
                         },
+                        handoff_message: None,
                     }
                 }
                 other => panic!("unexpected {other:?}"),
@@ -963,6 +1281,7 @@ mod tests {
         let Err(RunError::Api(error)) = run_remote(
             &remote("task"),
             Some("s1"),
+            None,
             &dir,
             &client,
             &crate::app::SystemClock::new(),
@@ -992,6 +1311,7 @@ mod tests {
         let launched = run_remote(
             &remote("task"),
             Some("s1"),
+            None,
             &dir,
             &client,
             &crate::app::SystemClock::new(),
@@ -1022,5 +1342,696 @@ mod tests {
         assert!(!handoff_settles(&Err(RunError::Io(std::io::Error::other(
             "lost"
         )))));
+    }
+
+    // ---- atomic remote handoff (ht-8lem.10) ----
+
+    fn handoff_remote(body: &str, summary: &str, profile: Option<&str>) -> RemoteLaunch {
+        let mut remote = remote("unused");
+        remote.then = None;
+        remote.plan.handoff_prompt = Some(summary.into());
+        remote.plan.profile_dir = profile.map(str::to_owned);
+        remote.plan.message = Some(Box::new(crate::sync::handoff_block::SenderBlock {
+            body: body.into(),
+            priority: 0,
+            require_ack: true,
+            ..Default::default()
+        }));
+        remote
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A daemon double: answers `ResolveMachine`, then each `RemoteLaunch` poll with the next
+    /// scripted `(answer, handoff_message)` (the last repeats), recording every command.
+    struct Script {
+        caps: bool,
+        node: String,
+        answers: std::sync::Mutex<
+            std::collections::VecDeque<(
+                crate::protocol::sync_admin::RemoteLaunchAnswer,
+                Option<String>,
+            )>,
+        >,
+        commands: std::sync::Mutex<Vec<crate::protocol::commands::Command>>,
+    }
+
+    impl Script {
+        fn new(
+            caps: bool,
+            answers: Vec<(
+                crate::protocol::sync_admin::RemoteLaunchAnswer,
+                Option<String>,
+            )>,
+        ) -> Self {
+            Self {
+                caps,
+                node: "ab".repeat(16),
+                answers: std::sync::Mutex::new(answers.into()),
+                commands: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn launches(
+            &self,
+        ) -> Vec<(
+            Box<crate::sync::frame::LaunchRequest>,
+            Option<crate::protocol::authority::CallerClaim>,
+            bool,
+        )> {
+            self.commands
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|command| match command {
+                    crate::protocol::commands::Command::Sync(
+                        crate::protocol::sync_admin::SyncCommand::RemoteLaunch {
+                            request,
+                            claim,
+                            resume_only,
+                            ..
+                        },
+                    ) => Some((request.clone(), claim.clone(), *resume_only)),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    impl crate::ports::LocalClient for Script {
+        fn supports_capability(&self, _: &str, _: &CallBudget) -> bool {
+            self.caps
+        }
+
+        fn call(
+            &self,
+            command: crate::protocol::commands::Command,
+            _: &CallBudget,
+        ) -> Result<crate::protocol::results::CommandResult, ApiError> {
+            use crate::protocol::sync_admin::{LaunchReply, MachineRow, RemoteLaunchAnswer};
+            let node = MachineRow {
+                uuid: self.node.clone(),
+                tag: "Q0V".into(),
+                host: Some("laptop".into()),
+            };
+            self.commands.lock().unwrap().push(command.clone());
+            let (answer, handoff_message) = match &command {
+                crate::protocol::commands::Command::Sync(
+                    crate::protocol::sync_admin::SyncCommand::RemoteLaunch { .. },
+                ) => {
+                    let mut answers = self.answers.lock().unwrap();
+                    if answers.len() > 1 {
+                        answers.pop_front().unwrap()
+                    } else {
+                        answers.front().cloned().unwrap()
+                    }
+                }
+                _ => (RemoteLaunchAnswer::Unknown, None),
+            };
+            Ok(crate::protocol::results::CommandResult::Sync(
+                crate::protocol::sync_admin::SyncReply::Launch(LaunchReply::Remote {
+                    node,
+                    answer,
+                    handoff_message,
+                }),
+            ))
+        }
+
+        fn call_with_output(
+            &self,
+            command: crate::protocol::commands::Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<crate::protocol::results::CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+
+    fn claim_of(seat: &str) -> crate::protocol::authority::CallerClaim {
+        use crate::protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            ids::{ExecutionId, HostLocator, HostTargetId, NativeSessionId, SeatId},
+        };
+        CallerClaim {
+            instance: "i".into(),
+            host: HostLocator::parse("/claim.sock").unwrap(),
+            seat: SeatId::new(seat),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("w1:p1"),
+            agent_id: None,
+            liveness: None,
+        }
+    }
+
+    fn answered(
+        state: crate::sync::frame::LaunchState,
+    ) -> crate::protocol::sync_admin::RemoteLaunchAnswer {
+        crate::protocol::sync_admin::RemoteLaunchAnswer::Answered { state }
+    }
+
+    /// Runs `remote` against `script` (fast pacing) in a fresh node dir.
+    fn drive(
+        remote: &RemoteLaunch,
+        script: &Script,
+        dir: &Path,
+        timeout_ms: u64,
+    ) -> (Result<Launched, RunError>, String) {
+        let mut stderr = Vec::new();
+        let claim = claim_of("sQ0Vsender001");
+        let result = run_remote_timed(
+            remote,
+            Some("sQ0Vsender001"),
+            Some(&claim),
+            dir,
+            script,
+            &crate::app::SystemClock::new(),
+            &mut stderr,
+            (Duration::from_millis(timeout_ms), Duration::from_millis(1)),
+        );
+        (result, String::from_utf8(stderr).unwrap())
+    }
+
+    fn detail(result: Result<Launched, RunError>) -> (ErrorCode, String) {
+        match result {
+            Err(RunError::Api(error)) => (error.code, error.detail),
+            other => panic!("expected an api error, got {other:?}"),
+        }
+    }
+
+    const MSG: &str = "mQ0Vabcd1234";
+
+    // Kills: the v3 tag surviving (an old request file adopted by a handoff plan), and a key
+    // that ignores the draft (two different tasks, summaries or profile dirs sharing an id).
+    #[test]
+    fn request_key_v4() {
+        use sha2::Digest;
+        let base = handoff_remote("task", "sum", Some("/p"));
+        let key = request_key("n1", Some("s1"), &base);
+        let mut hash = sha2::Sha256::new();
+        hash.update(b"herdr-threads remote launch v4\0n1\0s1\0");
+        hash.update(serde_json::to_vec(&base.plan).unwrap());
+        hash.update(b"\0");
+        hash.update(serde_json::to_vec(&base.then).unwrap());
+        let expected: String = hash
+            .finalize()
+            .iter()
+            .take(16)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(key, expected);
+        for other in [
+            handoff_remote("task 2", "sum", Some("/p")),
+            handoff_remote("task", "sum 2", Some("/p")),
+            handoff_remote("task", "sum", Some("/q")),
+            handoff_remote("task", "sum", None),
+        ] {
+            assert_ne!(key, request_key("n1", Some("s1"), &other));
+        }
+    }
+
+    // Kills: the v4 tag on a plain launch, which would rename the key of a pending 2.x request
+    // file after an upgrade and launch twice.
+    #[test]
+    fn request_key_v3_for_a_plain_launch() {
+        use sha2::Digest;
+        let mut bare = remote("ignored");
+        bare.then = None;
+        assert!(!bare.is_handoff());
+        let key = request_key("n1", Some("s1"), &bare);
+        let mut hash = sha2::Sha256::new();
+        hash.update(b"herdr-threads remote launch v3\0n1\0s1\0");
+        hash.update(serde_json::to_vec(&bare.plan).unwrap());
+        hash.update(b"\0");
+        hash.update(serde_json::to_vec(&bare.then).unwrap());
+        let expected: String = hash
+            .finalize()
+            .iter()
+            .take(16)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(key, expected);
+    }
+
+    // Kills: a handoff sent to a daemon that cannot take a claim (it would drop the claim and
+    // sign nothing), a different refusal text, and anything sent before the refusal.
+    #[test]
+    fn daemon_without_atomic_remote_cap() {
+        let dir = scratch("handoff-nocap");
+        let script = Script::new(false, vec![]);
+        let (result, _) = drive(&handoff_remote("t", "s", None), &script, &dir, 1000);
+        let (code, text) = detail(result);
+        assert_eq!(code, ErrorCode::Unsupported);
+        assert_eq!(text, "daemon predates remote handoffs; restart it");
+        assert_eq!(text.len(), 43);
+        assert!(script.commands.lock().unwrap().is_empty(), "nothing sent");
+        // A bare launch needs no such capability.
+        let bare = Script::new(
+            false,
+            vec![(
+                answered(crate::sync::frame::LaunchState::Launched {
+                    seat: "sQ0Vseat0001".into(),
+                    pane: "w1:p2".into(),
+                }),
+                None,
+            )],
+        );
+        assert!(drive(&remote("t"), &bare, &dir, 1000).0.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Kills: a claim not sent (the sender's daemon refuses it), sent on a bare launch, the
+    // draft's author left unset or set to another seat, and a polled id that changes.
+    #[test]
+    fn sends_claim_and_sets_the_author() {
+        let dir = scratch("handoff-claim");
+        let launched = answered(crate::sync::frame::LaunchState::Launched {
+            seat: "sQ0Vseat0001".into(),
+            pane: "w1:p2".into(),
+        });
+        let script = Script::new(true, vec![(launched, Some(MSG.into()))]);
+        let hand = handoff_remote("t", "s", None);
+        assert_eq!(hand.plan.message.as_ref().unwrap().author, None);
+        let (result, _) = drive(&hand, &script, &dir, 1000);
+        assert!(result.is_ok());
+        let sent = script.launches();
+        let [(request, claim, resume_only)] = sent.as_slice() else {
+            panic!("one poll: {sent:?}")
+        };
+        assert_eq!(claim, &Some(claim_of("sQ0Vsender001")));
+        assert!(!resume_only);
+        assert_eq!(request.requester_seat, "sQ0Vsender001");
+        let block = request.plan.message.as_ref().unwrap();
+        assert_eq!(
+            block.author.as_ref().map(|a| a.as_str()),
+            Some("sQ0Vsender001")
+        );
+        assert_eq!(block.sig, "");
+        // A bare launch carries no claim.
+        let bare = Script::new(
+            true,
+            vec![(
+                answered(crate::sync::frame::LaunchState::Launched {
+                    seat: "sQ0Vseat0001".into(),
+                    pane: "w1:p2".into(),
+                }),
+                None,
+            )],
+        );
+        assert!(drive(&remote("t2"), &bare, &dir, 1000).0.is_ok());
+        assert_eq!(bare.launches()[0].1, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Kills: a result line that drops the thread or message, a thread other than the sender's
+    // pair with the launched seat, a JSON envelope other than {"handoff":{..}}, and a ledger
+    // `linked` answer that prints a pane it does not hold.
+    #[test]
+    fn started_handoff_results() {
+        let dir = scratch("handoff-result");
+        let script = Script::new(
+            true,
+            vec![(
+                answered(crate::sync::frame::LaunchState::Launched {
+                    seat: "sQ0Vseat0001".into(),
+                    pane: "w1:p2".into(),
+                }),
+                Some(MSG.into()),
+            )],
+        );
+        let remote = handoff_remote("t", "s", None);
+        let (result, _) = drive(&remote, &script, &dir, 1000);
+        let launched = result.unwrap();
+        let thread = crate::protocol::ids::direct_thread_id(
+            &crate::protocol::ids::SeatId::new("sQ0Vsender001"),
+            &crate::protocol::ids::SeatId::new("sQ0Vseat0001"),
+        )
+        .unwrap();
+        let text = launched.handoff_result("Q0V", false).unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "handoff seat=sQ0Vseat0001 pane=w1:p2@Q0V thread={} message={MSG}\n",
+                thread.as_str()
+            )
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&launched.handoff_result("Q0V", true).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"handoff": {
+                "outcome": "started", "seat": "sQ0Vseat0001", "pane": "w1:p2",
+                "machine": "Q0V", "thread": thread.as_str(), "message": MSG,
+            }})
+        );
+        launched.settle();
+        assert!(
+            std::fs::read_dir(dir.join("remote-launch"))
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .all(|e| !e.file_name().to_string_lossy().ends_with(".id")),
+            "the started handoff settled its request file"
+        );
+        // The ledger's `linked` answer: no pane.
+        use crate::protocol::sync_admin::{HandoffLedgerOutcome, RemoteLaunchAnswer};
+        let linked = Script::new(
+            true,
+            vec![(
+                RemoteLaunchAnswer::HandoffLedger {
+                    outcome: HandoffLedgerOutcome::Linked {
+                        seat: "sQ0Vseat0001".into(),
+                        thread: "tQ0Vthread001".into(),
+                        message: MSG.into(),
+                    },
+                },
+                Some(MSG.into()),
+            )],
+        );
+        let launched = drive(&remote, &linked, &dir, 1000).0.unwrap();
+        assert_eq!(
+            launched.handoff_result("Q0V", false).unwrap(),
+            format!("handoff seat=sQ0Vseat0001 thread=tQ0Vthread001 message={MSG}\n")
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&launched.handoff_result("Q0V", true).unwrap()).unwrap();
+        assert_eq!(json["handoff"]["pane"], serde_json::Value::Null);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Kills: an empty ` message=` (and `"message": ""`) when the target's answer names no message.
+    #[test]
+    fn handoff_result_omits_an_empty_message() {
+        let dir = scratch("handoff-nomsg");
+        let script = Script::new(
+            true,
+            vec![(
+                answered(crate::sync::frame::LaunchState::Launched {
+                    seat: "sQ0Vseat0001".into(),
+                    pane: "w1:p2".into(),
+                }),
+                Some(MSG.into()),
+            )],
+        );
+        let mut launched = drive(&handoff_remote("t", "s", None), &script, &dir, 1000)
+            .0
+            .unwrap();
+        launched.handoff.as_mut().unwrap().message.clear();
+        let thread = launched.handoff.as_ref().unwrap().thread.clone();
+        assert_eq!(
+            launched.handoff_result("Q0V", false).unwrap(),
+            format!("handoff seat=sQ0Vseat0001 pane=w1:p2@Q0V thread={thread}\n")
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&launched.handoff_result("Q0V", true).unwrap()).unwrap();
+        assert_eq!(json["handoff"]["message"], serde_json::Value::Null);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Kills: target refusals and failures leaving the exit code or frame, a staged failure that
+    // hides the message standing in the pair, an upgrade error with the wrong capability text,
+    // other capabilities losing today's text, and a refused/failed request left on disk.
+    #[test]
+    fn refusals_failures_and_upgrade_error() {
+        use crate::protocol::sync_admin::RemoteLaunchAnswer;
+        use crate::sync::frame::{LaunchStaged, LaunchState};
+        let dir = scratch("handoff-refusals");
+        let remote = handoff_remote("t", "s", None);
+        let run = |answer: RemoteLaunchAnswer| {
+            let script = Script::new(true, vec![(answer, None)]);
+            detail(drive(&remote, &script, &dir, 1000).0)
+        };
+        let kept = || {
+            std::fs::read_dir(dir.join("remote-launch"))
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".id"))
+                .count()
+        };
+        let (code, text) = run(answered(LaunchState::Refused {
+            detail: "profile_dir is not a directory".into(),
+        }));
+        assert_eq!(code, ErrorCode::InvalidRequest);
+        assert_eq!(
+            text,
+            "Q0V laptop refused the launch: profile_dir is not a directory"
+        );
+        assert_eq!(kept(), 0);
+        let (code, text) = run(answered(LaunchState::Failed {
+            detail: "interrupted".into(),
+            pane: None,
+            unconfirmed: false,
+            staged: Some(LaunchStaged {
+                thread: "tQ0Vthread001".into(),
+                message: MSG.into(),
+            }),
+        }));
+        assert_eq!(code, ErrorCode::HostUnavailable);
+        assert_eq!(
+            text,
+            format!(
+                "launch on Q0V laptop failed: interrupted; message {MSG} stands in thread \
+                 tQ0Vthread001"
+            )
+        );
+        assert_eq!(kept(), 0);
+        let (_, text) = run(answered(LaunchState::Failed {
+            detail: "interrupted".into(),
+            pane: None,
+            unconfirmed: false,
+            staged: None,
+        }));
+        assert_eq!(text, "launch on Q0V laptop failed: interrupted");
+        let (code, text) = run(RemoteLaunchAnswer::NoCap {
+            version: Some("2.9.0".into()),
+            cap: "peer.handoff.v1".into(),
+        });
+        assert_eq!(code, ErrorCode::Unsupported);
+        assert_eq!(
+            text,
+            "machine Q0V laptop cannot take a handoff (needs peer.handoff.v1; version 2.9.0); \
+             upgrade it to 3.0.0 or later"
+        );
+        let (_, text) = run(RemoteLaunchAnswer::NoCap {
+            version: None,
+            cap: "peer.launch.v1".into(),
+        });
+        assert_eq!(
+            text,
+            "machine Q0V laptop cannot launch for other machines (needs peer.launch.v1; \
+             version unknown)"
+        );
+        assert_eq!(kept(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Kills: Unavailable ending the wait early, a poll end that keeps today's "rerun to resume"
+    // line for a handoff, and a still-pending request settled (a rerun would mint a new id).
+    #[test]
+    fn unavailable_keeps_polling_and_the_pending_line_ends_it() {
+        use crate::sync::frame::LaunchState;
+        let dir = scratch("handoff-pending");
+        let remote = handoff_remote("t", "s", None);
+        let unavailable = answered(LaunchState::Unavailable {
+            reason: "sender node key not replicated here yet".into(),
+        });
+        let launched = answered(LaunchState::Launched {
+            seat: "sQ0Vseat0001".into(),
+            pane: "w1:p2".into(),
+        });
+        let script = Script::new(
+            true,
+            vec![
+                (unavailable.clone(), None),
+                (unavailable.clone(), None),
+                (launched, Some(MSG.into())),
+            ],
+        );
+        let (result, stderr) = drive(&remote, &script, &dir, 60_000);
+        assert!(result.is_ok());
+        assert_eq!(script.launches().len(), 3, "polled until it started");
+        assert!(stderr.starts_with("launching on Q0V laptop (request "));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir = scratch("handoff-pending-end");
+        let script = Script::new(true, vec![(unavailable, None)]);
+        let (result, _) = drive(&remote, &script, &dir, 0);
+        let (code, text) = detail(result);
+        assert_eq!(code, ErrorCode::HostUnavailable);
+        let (record, _) = request_id(&dir, &script.node, Some("sQ0Vsender001"), &remote, |_| {
+            Ok(false)
+        })
+        .unwrap();
+        let req = &record.id.to_string()[..8];
+        assert_eq!(
+            text,
+            format!(
+                "handoff to Q0V laptop still pending: request {req} stays queued until it \
+                 starts or expires (6 days)"
+            )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Kills: a ledger answer printed as a pending poll (looping to the timeout), an expired row
+    // reported as started, and a terminal answer leaving the request file behind.
+    #[test]
+    fn ledger_answers_print_and_settle() {
+        use crate::protocol::sync_admin::{HandoffLedgerOutcome, RemoteLaunchAnswer};
+        let dir = scratch("handoff-ledger");
+        let remote = handoff_remote("t", "s", None);
+        let expired = |seat: Option<&str>| {
+            let script = Script::new(
+                true,
+                vec![(
+                    RemoteLaunchAnswer::HandoffLedger {
+                        outcome: HandoffLedgerOutcome::Expired {
+                            seat: seat.map(str::to_owned),
+                        },
+                    },
+                    None,
+                )],
+            );
+            let (result, _) = drive(&remote, &script, &dir, 1000);
+            let (_, record) = (
+                (),
+                request_id(&dir, &script.node, Some("sQ0Vsender001"), &remote, |_| {
+                    Ok(false)
+                })
+                .unwrap()
+                .0,
+            );
+            (detail(result), record.id.to_string())
+        };
+        let ((code, text), next) = expired(None);
+        assert_eq!(code, ErrorCode::HostUnavailable);
+        // The request file was settled, so the id seen now is a fresh one; the text names the
+        // settled one.
+        let req = text
+            .strip_prefix("handoff ")
+            .and_then(|t| t.strip_suffix(" to Q0V laptop expired unconfirmed"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert_eq!(req.len(), 8);
+        assert!(!next.starts_with(req), "a new id after the ledger answer");
+        let ((_, text), _) = expired(Some("sQ0Vseat0001"));
+        assert!(
+            text.starts_with("handoff ")
+                && text.ends_with(" to Q0V laptop expired unlinked: seat sQ0Vseat0001"),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Kills: a stale request file signed again (resume_only unset), a fresh file sent as
+    // resume-only, and `Unknown` for a stale file not continuing as a new command under a new
+    // id (or reusing the old one).
+    #[test]
+    fn a_stale_request_file_resumes_only_and_unknown_starts_anew() {
+        use crate::protocol::sync_admin::{HandoffLedgerOutcome, RemoteLaunchAnswer};
+        let dir = scratch("handoff-stale");
+        let remote = handoff_remote("t", "s", None);
+        let script_for = || {
+            Script::new(
+                true,
+                vec![
+                    (
+                        RemoteLaunchAnswer::HandoffLedger {
+                            outcome: HandoffLedgerOutcome::Unknown,
+                        },
+                        None,
+                    ),
+                    (
+                        answered(crate::sync::frame::LaunchState::Launched {
+                            seat: "sQ0Vseat0001".into(),
+                            pane: "w1:p2".into(),
+                        }),
+                        Some(MSG.into()),
+                    ),
+                ],
+            )
+        };
+        // A fresh file: not resume-only.
+        let fresh = script_for();
+        let (result, _) = drive(&remote, &fresh, &dir, 1000);
+        let first_id = {
+            let sent = fresh.launches();
+            assert!(!sent[0].2);
+            sent[0].0.id
+        };
+        drop(result);
+        // Age that request file past the ledger's lifetime.
+        let (record, file) = request_id(&dir, &fresh.node, Some("sQ0Vsender001"), &remote, |_| {
+            Ok(false)
+        })
+        .unwrap();
+        assert_eq!(record.id, first_id);
+        let old =
+            std::time::SystemTime::now() - Duration::from_millis(OBLIGATION_TTL_MS as u64 + 60_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let stale = script_for();
+        let (result, _) = drive(&remote, &stale, &dir, 1000);
+        let launched = result.unwrap();
+        let sent = stale.launches();
+        let ids: Vec<_> = sent.iter().map(|(r, _, resume)| (r.id, *resume)).collect();
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert_eq!(
+            ids[0],
+            (first_id, true),
+            "the stale file was only asked about"
+        );
+        assert_ne!(ids[1].0, first_id, "Unknown continued under a new id");
+        assert!(!ids[1].1, "the new command signs");
+        assert!(launched.handoff_result("Q0V", false).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Kills: a placeholder block smaller than the real one (a plan the target then refuses), an
+    // off-by-one at the limit, and a placeholder message id not the length of a real one.
+    #[test]
+    fn plan_size_precheck_measures_the_final_plan() {
+        let with_body = |n: usize| handoff_remote(&"a".repeat(n), "s", None).plan;
+        let base = final_plan_len(&with_body(0));
+        let at_limit = with_body(MAX_PLAN_BYTES - base);
+        assert_eq!(final_plan_len(&at_limit), MAX_PLAN_BYTES);
+        assert!(plan_size_precheck(&at_limit).is_ok());
+        let over = with_body(MAX_PLAN_BYTES - base + 1);
+        let error = plan_size_precheck(&over).unwrap_err();
+        assert_eq!(error.detail, "launch plan too large");
+        // Quotes double when escaped: 65 536 of them already overflow.
+        let quotes = handoff_remote(&"\"".repeat(65_536), "s", None).plan;
+        assert!(plan_size_precheck(&quotes).is_err());
+        // The placeholders are at least as long as a real signed block, and the id lengths are
+        // the real ones.
+        let tag: crate::node::NodeTag = "Q0V".parse().unwrap();
+        let message = crate::protocol::ids::generate_public_id("m", &tag);
+        let seat = crate::protocol::ids::generate_public_id("s", &tag);
+        assert_eq!(message.len(), PLACEHOLDER_ID_LEN);
+        assert_eq!(seat.len(), PLACEHOLDER_ID_LEN);
+        let mut real = with_body(100);
+        let block = real.message.as_mut().unwrap();
+        block.v = 1;
+        block.request = uuid::Uuid::new_v4();
+        block.sender_node = Some(crate::node::NodeUuid::from_bytes([0xab; 16]));
+        block.author = Some(crate::protocol::ids::SeatId::new(seat));
+        block.author_role = Some(crate::protocol::summary::AuthorRole::Agent);
+        block.message = Some(crate::protocol::ids::MessageId::new(message));
+        block.requested_at = 1_788_000_000_000;
+        block.sig = "f".repeat(128);
+        let real_len = serde_json::to_vec(&real).unwrap().len();
+        let sized = final_plan_len(&with_body(100));
+        assert!(sized >= real_len, "{sized} < {real_len}");
+        // Only the timestamp (19 vs 13 digits) and the role ("service" vs "agent") differ.
+        assert_eq!(sized - real_len, (19 - 13) + (7 - 5));
     }
 }

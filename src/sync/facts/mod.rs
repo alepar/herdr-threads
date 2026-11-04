@@ -272,6 +272,15 @@ impl FactRegistryBuilder {
         self
     }
 
+    /// Registers `K`, replacing any handler of the same `(NAME, MAJOR)`: a test stands in an
+    /// older node's handler for a shipped kind with it.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn replacing<K: FactKind>(mut self) -> Self {
+        self.handlers.insert((K::NAME, K::MAJOR), erased_apply::<K>);
+        self
+    }
+
     pub fn build(self) -> FactRegistry {
         FactRegistry {
             handlers: self.handlers,
@@ -338,6 +347,20 @@ impl FactRegistry {
 
 /// The shipped registry.
 pub fn registry() -> &'static FactRegistry {
+    FactRegistry::builtins()
+}
+
+/// The registry a daemon applies with: the shipped one. In a `test-support` build,
+/// `HT_TEST_LEGACY_MESSAGE_SENT=<file>` naming an existing file swaps in the pre-3.0
+/// `message.sent` handler, standing in for an older node; removing the file and restarting is
+/// the upgrade.
+pub fn daemon_registry() -> &'static FactRegistry {
+    #[cfg(feature = "test-support")]
+    if std::env::var_os("HT_TEST_LEGACY_MESSAGE_SENT")
+        .is_some_and(|flag| std::path::Path::new(&flag).exists())
+    {
+        return FactRegistry::builtins_plus(|b| b.replacing::<message::LegacyMessageSent>());
+    }
     FactRegistry::builtins()
 }
 

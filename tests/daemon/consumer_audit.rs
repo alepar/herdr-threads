@@ -62,6 +62,14 @@ impl AuditHost {
         space: None,
     };
     /// The named-host shape: no wake, no evidence, non-closing, no launch.
+    /// The same host listing `space` as its one space.
+    pub(super) const fn with_space(self, space: &'static str) -> AuditHost {
+        AuditHost {
+            space: Some(space),
+            ..self
+        }
+    }
+
     const NAMED: AuditHost = AuditHost {
         kind: HostKind::Herdr,
         wake: false,
@@ -183,8 +191,8 @@ pub(super) struct Rig {
     _isolation: TestIsolation,
     world: Arc<FakeHostWorld>,
     pub(super) sessions: Arc<HostSessions>,
-    store: Arc<SqliteStore>,
-    clock: Arc<dyn Clock>,
+    pub(super) store: Arc<SqliteStore>,
+    pub(super) clock: Arc<dyn Clock>,
     /// The dialled hosts that hold a resolved local seat (what `SessionDeps::seated` answers).
     seated: Arc<std::sync::Mutex<std::collections::BTreeSet<crate::ports::HostId>>>,
 }
@@ -226,6 +234,20 @@ impl Rig {
             clock,
             seated,
         }
+    }
+
+    /// A new directory `name` under the rig's scratch root.
+    pub(super) fn dir(&self, name: &str) -> std::path::PathBuf {
+        let path = self._isolation.path(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    /// A second connection to the rig's store file, for fixture rows.
+    pub(super) fn db(&self) -> rusqlite::Connection {
+        let db = rusqlite::Connection::open(self._isolation.path("store.db")).unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        db
     }
 
     fn budget(&self) -> CallBudget {

@@ -1,0 +1,11 @@
+{"inspected":[
+{"path":"migrations/node/0015_atomic_remote_handoff.sql","hunks":["@@ -0,0 +1,62 @@"]},
+{"path":"src/store/receipts.rs","hunks":["@@ -1,8 +1,10 @@","@@ -42,7 +44,7 @@ use super::{","@@ -1016,7 +1018,11 @@ pub struct DueScanResult {","@@ -1078,7 +1084,7 @@ fn repair_receipt_discovery(","@@ -1352,7 +1358,7 @@ pub fn scan_extension_lapses("]},
+{"path":"src/store/schema.rs","hunks":["@@ -6,7 +6,9 @@ use crate::{","@@ -24,6 +26,7 @@ use super::connection::{DecisionInstant, StoreContext, api_error, store_error};","@@ -151,6 +154,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[","@@ -1455,6 +1463,14 @@ fn overdue_wake(","@@ -1476,13 +1492,13 @@ fn overdue_wake(","@@ -1829,7 +1845,7 @@ pub fn clear_warning_condition_for_invitation(","@@ -1838,22 +1854,37 @@ pub fn record_overdue_with_decision_seq(","@@ -1863,8 +1894,23 @@ fn obligation_authored_here(","@@ -1947,6 +1993,42 @@ fn record_overdue_inner(","@@ -2014,11 +2096,18 @@ fn record_overdue_inner(","@@ -2040,6 +2129,7 @@ fn record_overdue_inner(","@@ -2081,6 +2171,14 @@ fn record_overdue_inner(","@@ -2097,6 +2195,9 @@ fn record_overdue_inner(","@@ -2107,6 +2208,7 @@ fn record_overdue_inner("]},
+{"path":"src/store/peer_handoff.rs","hunks":["@@ -0,0 +1,220 @@"]},
+{"path":"src/store/handoff_obligations.rs","hunks":["@@ -0,0 +1,603 @@"]},
+{"path":"src/scheduler/deadlines.rs","hunks":["@@ -53,6 +53,11 @@ pub trait DeadlinePort {","@@ -404,6 +409,10 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {"]},
+{"path":"src/service/peer_launcher.rs","hunks":["@@ -237,6 +237,115 @@ fn short(id: &str) -> &str {","@@ -453,11 +562,99 @@ impl PeerLaunchService {"]},
+{"path":"src/store/messages.rs","hunks":["@@ -863,6 +863,8 @@ pub(super) enum PublicationAuthor<'a> {","@@ -974,9 +976,10 @@ pub(super) fn insert_publication_suppressing(","@@ -1190,6 +1193,7 @@ pub(super) fn build_message_sent(","@@ -1483,6 +1487,8 @@ pub fn materialize_message(","@@ -1519,15 +1525,30 @@ pub fn materialize_message("]},
+{"path":"tests/store/schema.rs","hunks":["@@ -7278,6 +7278,102 @@ fn delta_0013_columns_indexes_tables() {"]}
+]}

@@ -15,7 +15,7 @@
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::sync::frame::LaunchState;
+use crate::sync::frame::{LaunchStaged, LaunchState};
 
 /// How a recorded detail of a start that may have happened begins: the row's
 /// own marker, read back only by [`PeerRequest::answer`] on this node.
@@ -39,12 +39,21 @@ pub struct PeerRequest {
     pub pane: Option<String>,
     pub seat: Option<String>,
     pub detail: Option<String>,
+    /// The pair thread and message a handoff staged here (set together), else `None`.
+    pub handoff_thread: Option<String>,
+    pub handoff_message: Option<String>,
+    /// The handoff prompt frozen at decide, else `None`.
+    pub handoff_prompt: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 impl PeerRequest {
     /// The state a repeat of this request is answered with.
+    ///
+    /// The only place a recorded `Failed` is built: the worker's failure, `settle_at_start`'s
+    /// interrupted rows and repeat ids all read it back, so `staged` is set exactly when both
+    /// handoff columns are, whatever the pane and the unconfirmed marker say.
     pub fn answer(&self) -> LaunchState {
         let detail = || self.detail.clone().unwrap_or_default();
         match self.state.as_str() {
@@ -63,6 +72,13 @@ impl PeerRequest {
                     .detail
                     .as_deref()
                     .is_some_and(|d| d.starts_with(UNCONFIRMED)),
+                staged: match (&self.handoff_thread, &self.handoff_message) {
+                    (Some(thread), Some(message)) => Some(LaunchStaged {
+                        thread: thread.clone(),
+                        message: message.clone(),
+                    }),
+                    _ => None,
+                },
             },
         }
     }
@@ -81,11 +97,14 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PeerRequest> {
         detail: r.get(8)?,
         created_at: r.get(9)?,
         updated_at: r.get(10)?,
+        handoff_thread: r.get(11)?,
+        handoff_message: r.get(12)?,
+        handoff_prompt: r.get(13)?,
     })
 }
 
-const COLUMNS: &str =
-    "id,node_uuid,requester_seat,kind,plan,state,pane,seat,detail,created_at,updated_at";
+const COLUMNS: &str = "id,node_uuid,requester_seat,kind,plan,state,pane,seat,detail,created_at,updated_at,\
+     handoff_thread,handoff_message,handoff_prompt";
 
 pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<PeerRequest>> {
     conn.query_row(
@@ -103,8 +122,8 @@ pub fn insert_or_get(
     new: &PeerRequest,
 ) -> rusqlite::Result<(PeerRequest, bool)> {
     let inserted = conn.execute(
-        "INSERT INTO peer_requests(id,node_uuid,requester_seat,kind,plan,state,pane,seat,detail,created_at,updated_at) \
-         VALUES (?1,?2,?3,?4,?5,'running',?7,NULL,NULL,?6,?6) ON CONFLICT(id) DO NOTHING",
+        "INSERT INTO peer_requests(id,node_uuid,requester_seat,kind,plan,state,pane,seat,detail,created_at,updated_at,handoff_prompt) \
+         VALUES (?1,?2,?3,?4,?5,'running',?7,NULL,NULL,?6,?6,?8) ON CONFLICT(id) DO NOTHING",
         params![
             new.id,
             new.node_uuid,
@@ -112,7 +131,8 @@ pub fn insert_or_get(
             new.kind,
             new.plan,
             new.created_at,
-            new.pane
+            new.pane,
+            new.handoff_prompt
         ],
     )?;
     let stored = get(conn, &new.id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
@@ -169,24 +189,75 @@ pub fn record_gate_launch(
     Ok(changed == 1)
 }
 
+/// What staging reads of a handoff request: the row's plan and its staged thread and message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffView {
+    pub node_uuid: String,
+    pub plan: String,
+    pub state: String,
+    pub seat: Option<String>,
+    pub handoff_thread: Option<String>,
+    pub handoff_message: Option<String>,
+}
+
+/// The handoff columns of request `id`; `None` for no row.
+pub fn handoff_view(conn: &Connection, id: &str) -> rusqlite::Result<Option<HandoffView>> {
+    conn.query_row(
+        "SELECT node_uuid,plan,state,seat,handoff_thread,handoff_message FROM peer_requests WHERE id=?1",
+        [id],
+        |r| {
+            Ok(HandoffView {
+                node_uuid: r.get(0)?,
+                plan: r.get(1)?,
+                state: r.get(2)?,
+                seat: r.get(3)?,
+                handoff_thread: r.get(4)?,
+                handoff_message: r.get(5)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// Records the staged pair thread and message of a `running` handoff request in one write; false
+/// when the row is not `running`.
+pub fn record_handoff(
+    conn: &Connection,
+    id: &str,
+    thread: &str,
+    message: &str,
+    now: i64,
+) -> rusqlite::Result<bool> {
+    let changed = conn.execute(
+        "UPDATE peer_requests SET handoff_thread=?2, handoff_message=?3, updated_at=?4 \
+         WHERE id=?1 AND state='running'",
+        params![id, thread, message, now],
+    )?;
+    Ok(changed == 1)
+}
+
 /// The launch gate's read of a gate-only record; `None` for no row or a row without a gate.
-/// There is no local Send on a peer launch (N15), so a recorded creation is the release.
+/// A launch-only request has no local Send (N15), so a recorded creation is the release. A
+/// handoff request (its plan carries a sender block) releases only on its staged Send: the
+/// message `stage` wrote exists, as a local hc handoff releases on its staged Send.
 pub fn gate_view(
     db: &Connection,
     id: &str,
     attempt: crate::protocol::handoff::BootstrapAttempt,
 ) -> Result<Option<crate::ports::LaunchGateView>, crate::protocol::results::ApiError> {
     use crate::store::connection::store_error;
-    let found: Option<(u32, Option<String>, String)> = db
+    type Found = (u32, Option<String>, String, String, bool);
+    let found: Option<Found> = db
         .query_row(
-            "SELECT gate_attempt, gate_created, state FROM peer_requests \
-             WHERE id=?1 AND gate_attempt IS NOT NULL",
+            "SELECT gate_attempt, gate_created, state, plan, \
+             handoff_message IS NOT NULL AND EXISTS(SELECT 1 FROM messages WHERE id=handoff_message) \
+             FROM peer_requests WHERE id=?1 AND gate_attempt IS NOT NULL",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
         .map_err(store_error)?;
-    let Some((gate_attempt, created, state)) = found else {
+    let Some((gate_attempt, created, state, plan, message_exists)) = found else {
         return Ok(None);
     };
     let created = created
@@ -197,8 +268,11 @@ pub fn gate_view(
                 "peer launch gate record: {e}"
             ))
         })?;
+    // An unreadable plan is a launch-only row: the gate never waits on a message it cannot name.
+    let handoff = serde_json::from_str::<crate::sync::frame::LaunchPlan>(&plan)
+        .is_ok_and(|plan| plan.handoff().is_some());
     Ok(Some(crate::ports::LaunchGateView {
-        send_staged: created.is_some(),
+        send_staged: created.is_some() && (!handoff || message_exists),
         created,
         current_attempt: gate_attempt == attempt.get(),
         cancelled: matches!(state.as_str(), "failed" | "refused"),
@@ -245,7 +319,7 @@ pub fn by_node(conn: &Connection) -> rusqlite::Result<Vec<(String, u64, PeerRequ
     statement
         .query_map([], |r| {
             let request = row(r)?;
-            let count: i64 = r.get(11)?;
+            let count: i64 = r.get(14)?;
             Ok((
                 request.node_uuid.clone(),
                 u64::try_from(count).unwrap_or(0),

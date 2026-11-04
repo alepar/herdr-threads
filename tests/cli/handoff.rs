@@ -11,6 +11,7 @@ use std::sync::Mutex;
 struct AutomaticClient {
     body: String,
     supported: bool,
+    sender_v2: bool,
     calls: Mutex<Vec<Command>>,
     thread: Mutex<Option<ThreadId>>,
     sent: Mutex<bool>,
@@ -27,6 +28,7 @@ impl AutomaticClient {
         Self {
             body: "secret durable task".into(),
             supported: true,
+            sender_v2: false,
             calls: Mutex::new(vec![]),
             thread: Mutex::new(None),
             sent: Mutex::new(false),
@@ -41,6 +43,14 @@ impl AutomaticClient {
     }
 }
 impl LocalClient for AutomaticClient {
+    fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+        self.sender_v2
+            && [
+                crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
+                crate::protocol::capabilities::HANDOFF_SENDER_PROMPT_V2,
+            ]
+            .contains(&name)
+    }
     fn call_with_output(
         &self,
         command: Command,
@@ -55,17 +65,28 @@ impl LocalClient for AutomaticClient {
             Command::Capabilities => Ok(CommandResult::Capabilities(
                 crate::protocol::results::CapabilityList {
                     capabilities: if self.supported {
-                        vec![
+                        let mut caps = vec![
                             crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
                             crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.into(),
                             crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
                             crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into(),
-                        ]
+                        ];
+                        if self.sender_v2 {
+                            caps.push(
+                                crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1.into(),
+                            );
+                            caps.push(
+                                crate::protocol::capabilities::HANDOFF_SENDER_PROMPT_V2.into(),
+                            );
+                        }
+                        caps
                     } else {
                         vec![]
                     },
                 },
             )),
+            // The sender's name lookup is display data: a failed read gives the id alone.
+            Command::SeatInspect(_) => Err(ApiError::new(ErrorCode::NotFound, "seat not found")),
             Command::AutomaticHandoffDelivery(request) => {
                 use crate::protocol::handoff::AutomaticDeliveryAction;
                 if *self.binding_changed.lock().unwrap()
@@ -190,7 +211,12 @@ impl HandoffLauncher for AutomaticLauncher {
         gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
     ) -> Result<super::super::launch::LaunchReport, RunError> {
         assert_eq!(seat.as_str(), "recipient");
-        assert!(request.argv.iter().any(|arg| arg.contains("t-pair")));
+        assert!(
+            request
+                .argv
+                .iter()
+                .any(|arg| arg.contains("t-pair") || arg.contains(" \u{2014} from: ")),
+        );
         gate(true)?;
         self.starts += 1;
         if self.lose_start {
@@ -467,6 +493,74 @@ fn automatic_launched_pane_uses_ensure_send_and_one_start() {
     assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Ensure(_)))).count(), 1);
     assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Send(_)))).count(), 1);
     assert!(!bytes.is_empty());
+}
+
+#[test]
+fn automatic_launched_pane_freezes_and_launches_v2_prompt() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--summary",
+        "Fix the wake test",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong parser route")
+    };
+    assert!(request.automatic);
+    let (_temp, journal) = journal();
+    let mut client = AutomaticClient::new();
+    client.sender_v2 = true;
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/host.sock".into());
+    let mut bytes = vec![];
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let expected = format!(
+        "Fix the wake test \u{2014} from: {}",
+        original_claim.seat.as_str()
+    );
+    let result = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut bytes,
+    );
+    assert!(result.is_ok(), "automatic launch failed: {result:?}");
+    assert_eq!(launcher.starts, 1);
+    let argv = launcher.full_report.as_ref().unwrap()["argv"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        argv.iter()
+            .any(|arg| arg.as_str() == Some(expected.as_str()))
+    );
+    assert!(
+        !argv
+            .iter()
+            .any(|arg| arg.as_str().unwrap().contains("t-pair"))
+    );
+    let reference =
+        crate::cli::handoff_delivery::resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    let original =
+        crate::cli::handoff_delivery::load_automatic_original(&journal, &reference).unwrap();
+    let frozen = serde_json::to_string(&original.semantic).unwrap();
+    assert!(frozen.contains("\"sender_prompt\""), "{frozen}");
+    assert!(frozen.contains("Fix the wake test"), "{frozen}");
 }
 
 #[test]
@@ -1053,7 +1147,7 @@ fn bootstrap(
     context: &crate::protocol::output::ContinuationContext,
     _instance: &str,
 ) -> String {
-    super::pane_prompt(request().summary.as_deref(), thread.as_str(), context)
+    super::pane_prompt(request().summary.as_deref(), None, thread.as_str(), context)
 }
 fn request() -> HandoffRequest {
     HandoffRequest {
@@ -1894,6 +1988,7 @@ fn frozen_in(
                     startup_input: None,
                     bootstrap_input: None,
                     summary_prompt: None,
+                    sender_prompt: None,
                     request: request(),
                     context,
                     recipient: SeatId::new("recipient"),
@@ -2294,6 +2389,7 @@ fn expected_plan_bootstrap(plan: &HandoffPlan) -> String {
     } else {
         launch_prompt(
             plan.summary_prompt.as_ref(),
+            plan.sender_prompt.as_ref(),
             "t1",
             &plan.context,
             &claim().instance,
@@ -2969,6 +3065,7 @@ fn registered_plan_fixture(
         startup_input: None,
         bootstrap_input: None,
         summary_prompt: None,
+        sender_prompt: None,
         request: req,
         context,
         recipient: SeatId::new("recipient"),
@@ -3244,6 +3341,7 @@ fn handoff_manual_recovery_preserves_frozen_options_without_reentry() {
             startup_input: None,
             bootstrap_input: None,
             summary_prompt: None,
+            sender_prompt: None,
             request,
             context: Default::default(),
             recipient: SeatId::new("recipient"),
@@ -3385,6 +3483,7 @@ fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
         startup_input: None,
         bootstrap_input: None,
         summary_prompt: None,
+        sender_prompt: None,
         request,
         context: Default::default(),
         recipient: SeatId::new("recipient"),
@@ -4222,14 +4321,14 @@ fn task48_envelope_true_reserved_bounds_and_opaque_slot_are_exact() {
     let mut template = StartupInputTemplate::positional(req.argv.len());
     template.prefix = "--initial=".into();
     template.suffix = "suffix".into();
-    let envelope = startup_envelope(&req, &context, None, None, &template).unwrap();
+    let envelope = startup_envelope(&req, &context, None, None, None, &template).unwrap();
     assert!(!envelope.slot_token.contains("task for thread t"));
     let measured = envelope.slot_token.len() + 128;
     template.max_arg_bytes = measured;
-    let exact = startup_envelope(&req, &context, None, None, &template).unwrap();
+    let exact = startup_envelope(&req, &context, None, None, None, &template).unwrap();
     validate_whole_input(&exact, &exact.request.argv).unwrap();
     template.max_arg_bytes = measured - 1;
-    assert!(startup_envelope(&req, &context, None, None, &template).is_err());
+    assert!(startup_envelope(&req, &context, None, None, None, &template).is_err());
     let mut duplicated = exact.request.argv.clone();
     duplicated.push(exact.slot_token.clone());
     assert!(validate_whole_input(&exact, &duplicated).is_err());
@@ -4238,16 +4337,26 @@ fn task48_envelope_true_reserved_bounds_and_opaque_slot_are_exact() {
     assert!(validate_whole_input(&exact, &transformed).is_err());
     let thread = ThreadId::new("x".repeat(128));
     template.max_arg_bytes = measured;
-    let known = startup_envelope(&req, &context, None, Some(&thread), &template).unwrap();
+    let known = startup_envelope(&req, &context, None, None, Some(&thread), &template).unwrap();
     assert_eq!(known.slot_token.len(), exact.slot_token.len() + 128);
     assert_eq!(known.reserve, 0);
-    assert!(startup_envelope(&req, &context, Some(&"x".repeat(16385)), None, &template).is_err());
+    assert!(
+        startup_envelope(
+            &req,
+            &context,
+            Some(&"x".repeat(16385)),
+            None,
+            None,
+            &template
+        )
+        .is_err()
+    );
     let escaped = crate::protocol::output::ContinuationContext {
         state_dir: Some("/tmp/'quoted\nstate".into()),
         host: Some("/tmp/'quoted\nhost".into()),
     };
     template.max_arg_bytes = 16384;
-    let envelope = startup_envelope(&req, &escaped, None, None, &template).unwrap();
+    let envelope = startup_envelope(&req, &escaped, None, None, None, &template).unwrap();
     assert!(!envelope.slot_token.contains(['\n', '\r']));
     assert!(envelope.slot_token.contains("\\n"));
 }
@@ -4432,6 +4541,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
                                 startup_input: None,
                                 bootstrap_input: None,
                                 summary_prompt: None,
+                                sender_prompt: None,
                                 request: HandoffRequest {
                                     automatic: false,
                                     launch,
@@ -4780,6 +4890,7 @@ fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
         startup_input: None,
         bootstrap_input: None,
         summary_prompt: None,
+        sender_prompt: None,
         request: request(),
         context: v1_context("/state", "/host.sock"),
         recipient: SeatId::new("recipient"),
@@ -5162,6 +5273,7 @@ fn legacy_handoff_origin_overflow_refuses_before_publication_or_effects() {
         SemanticMutation::Handoff(Box::new(HandoffPlan {
             bootstrap_input: None,
             summary_prompt: None,
+            sender_prompt: None,
             startup_input: Some(crate::harness::adapter::StartupInputTemplate::positional(
                 request.launch.argv.len(),
             )),
@@ -5479,6 +5591,7 @@ fn summary_prompt_plans_validate_only_their_own_frozen_prompt() {
         composed_argv: None,
         startup_input: None,
         summary_prompt: prompt,
+        sender_prompt: None,
     };
     let retained = |prompt: &str| {
         Some(serde_json::json!(
@@ -5564,4 +5677,341 @@ fn frozen_prompt_follows_the_daemon_capability() {
         frozen_prompt(&Caps(false), &TestClock, Some("Fix it")),
         None
     );
+}
+
+fn sender_line_for(name: Option<&str>) -> summary_prompt::SenderLine {
+    summary_prompt::SenderLine {
+        name: name.map(str::to_owned),
+        id: "s12345678901".into(),
+    }
+}
+
+#[test]
+fn from_separator_is_11_bytes() {
+    assert_eq!(summary_prompt::FROM.len(), 11);
+    assert_eq!(summary_prompt::FROM, " \u{2014} from: ");
+}
+
+#[test]
+fn render_v2_golden_without_name() {
+    let summary = "Fix the wake test";
+    let text = summary_prompt::render_v2(Some(summary), &sender_line_for(None));
+    assert_eq!(text, "Fix the wake test \u{2014} from: s12345678901");
+    assert_eq!(text.len() - summary.len(), 23);
+}
+
+#[test]
+fn render_v2_golden_with_name() {
+    let summary = "Fix the wake test";
+    let text = summary_prompt::render_v2(Some(summary), &sender_line_for(Some("reviewer")));
+    assert_eq!(
+        text,
+        "Fix the wake test \u{2014} from: reviewer (s12345678901)"
+    );
+    assert_eq!(text.len() - summary.len(), 26 + "reviewer".len());
+}
+
+#[test]
+fn render_v2_fallback_handoff() {
+    let text = summary_prompt::render_v2(None, &sender_line_for(None));
+    assert_eq!(text, "Handoff \u{2014} from: s12345678901");
+    assert!(text.starts_with("Handoff \u{2014} from: "));
+    assert_eq!("Handoff".len(), 7);
+}
+
+#[test]
+fn render_v2_max_size() {
+    let summary = "x".repeat(summary_prompt::MAX_BYTES);
+    summary_prompt::validate(&summary).unwrap();
+    let name = "n".repeat(64);
+    let text = summary_prompt::render_v2(Some(&summary), &sender_line_for(Some(&name)));
+    assert_eq!(text.len(), 290);
+}
+
+#[test]
+fn render_v2_is_one_line_and_passes_argv_validation() {
+    for name in [None, Some("reviewer")] {
+        let text = summary_prompt::render_v2(Some("Fix the wake test"), &sender_line_for(name));
+        assert!(!text.contains('\n') && !text.contains('\r'));
+        crate::ports::NativeLaunchRequest::validate_argv(&["--model".into(), text]).unwrap();
+    }
+}
+
+/// A client that serves a chosen capability set and a `SeatInspect` answer with an optional name.
+struct SenderCaps {
+    sender_v2: bool,
+    name: Option<&'static str>,
+    inspect_fails: bool,
+}
+impl LocalClient for SenderCaps {
+    fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
+        self.sender_v2 && name == crate::protocol::capabilities::HANDOFF_SENDER_PROMPT_V2
+    }
+    fn call(
+        &self,
+        command: Command,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let Command::SeatInspect(query) = command else {
+            unreachable!("only SeatInspect")
+        };
+        assert_eq!(query.page.limit, 1);
+        if self.inspect_fails {
+            return Err(ApiError::new(ErrorCode::NotFound, "seat not found"));
+        }
+        let directory = self
+            .name
+            .map(|name| serde_json::json!({"node":"n","state":"idle","name":name}));
+        Ok(CommandResult::SeatInspect(
+            serde_json::from_value(serde_json::json!({
+                "summary":{"seat":"s12345678901","continuity":"resolved","target":"w1:p2","generation":1,"created_at":1,"retired_at":null},
+                "mapping":{"state":"resolved","target":"w1:p2","detail_argv":null},
+                "hold":null,"retirement":null,"open_binding":null,
+                "history":{"items":[],"next_cursor":null,"next_argv":null,"high_water_ordinal":1,"scope_revision":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live"},
+                "directory":directory
+            }))
+            .unwrap(),
+        ))
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+}
+
+#[test]
+fn new_local_handoff_freezes_v2_prompt() {
+    let seat = SeatId::new("s12345678901");
+    let freeze = |name, summary| {
+        let client = SenderCaps {
+            sender_v2: true,
+            name,
+            inspect_fails: false,
+        };
+        let frozen = frozen_sender_prompt(&client, &TestClock, summary, &seat).unwrap();
+        summary_prompt::render_v2_from(frozen.summary.as_deref(), &frozen.from)
+    };
+    assert_eq!(
+        freeze(None, Some("Fix it")),
+        "Fix it \u{2014} from: s12345678901"
+    );
+    assert_eq!(
+        freeze(Some("reviewer"), Some("Fix it")),
+        "Fix it \u{2014} from: reviewer (s12345678901)"
+    );
+    assert_eq!(freeze(None, None), "Handoff \u{2014} from: s12345678901");
+    // The frozen prompt and the direct render agree byte for byte.
+    assert_eq!(
+        freeze(Some("reviewer"), Some("Fix it")),
+        summary_prompt::render_v2(Some("Fix it"), &sender_line_for(Some("reviewer")))
+    );
+}
+
+#[test]
+fn sender_name_lookup_failure_falls_back_to_id() {
+    let client = SenderCaps {
+        sender_v2: true,
+        name: Some("reviewer"),
+        inspect_fails: true,
+    };
+    let line = sender_line(&client, &TestClock, &SeatId::new("s12345678901"));
+    assert_eq!(line, sender_line_for(None));
+}
+
+#[test]
+fn older_daemon_keeps_v1_render() {
+    let client = SenderCaps {
+        sender_v2: false,
+        name: Some("reviewer"),
+        inspect_fails: false,
+    };
+    assert_eq!(
+        frozen_sender_prompt(&client, &TestClock, Some("Fix it"), &SeatId::new("s1")),
+        None
+    );
+    let context = v1_context("/state", "/host.sock");
+    let instance = claim().instance;
+    // No sender prompt: launch_prompt and pane_prompt are today's v1 / summary renders.
+    assert_eq!(
+        launch_prompt(None, None, "t1", &context, &instance),
+        bootstrap_v1::prompt("t1", &context, &instance)
+    );
+    assert_eq!(
+        pane_prompt(Some("Fix it"), None, "t1", &context),
+        summary_prompt::render(Some("Fix it"), "t1", &context)
+    );
+}
+
+#[test]
+fn sender_prompt_wins_in_launch_pane_and_retained_prompts() {
+    use crate::protocol::handoff::{SenderPrompt, SummaryPrompt};
+    let context = v1_context("/state", "/host.sock");
+    let instance = claim().instance;
+    let sender = SenderPrompt {
+        summary: Some("Fix it".into()),
+        from: "reviewer (s1)".into(),
+    };
+    let expected = "Fix it \u{2014} from: reviewer (s1)";
+    let summary = SummaryPrompt {
+        summary: Some("other".into()),
+    };
+    assert_eq!(
+        launch_prompt(Some(&summary), Some(&sender), "t1", &context, &instance),
+        expected
+    );
+    assert_eq!(
+        pane_prompt(Some("ignored"), Some(&sender), "t1", &context),
+        expected
+    );
+    assert_eq!(
+        retained_prompts(None, Some(&sender), "t1", &context, &instance),
+        vec![expected.to_owned()]
+    );
+}
+
+/// Retained V1 records keep their exact bytes: with no sender prompt `retained_prompts` is the
+/// V1 outcomes (null routing for an invalid instance) or the one summary prompt.
+#[test]
+fn retained_v1_records_relaunch_byte_identically() {
+    use crate::protocol::handoff::SummaryPrompt;
+    let context = v1_context("/state", "/host.sock");
+    let instance = claim().instance;
+    assert_eq!(
+        retained_prompts(None, None, "t9", &context, &instance),
+        bootstrap_v1::retained_prompts("t9", &context, &instance)
+    );
+    let summary = SummaryPrompt {
+        summary: Some("Fix the wake test".into()),
+    };
+    assert_eq!(
+        retained_prompts(Some(&summary), None, "t1", &context, &instance),
+        vec![
+            "Handoff: Fix the wake test \u{2014} full task in thread t1 (arrives as a \
+             herdr-threads message; if not shown, run `herdr-threads --state-dir /state \
+             --host-endpoint /host.sock inbox`)."
+                .to_owned()
+        ]
+    );
+}
+
+/// A bootstrap plan that froze a sender prompt validates only prompt v2's exact bytes (never
+/// the v1 or summary text), for both plan versions.
+#[test]
+fn v2_bootstrap_plan_retained_launch_validates() {
+    use crate::protocol::handoff::{BootstrapLaunch, SenderPrompt};
+    let context = v1_context("/state", "/host.sock");
+    let instance = claim().instance;
+    let launch = BootstrapLaunch {
+        harness: crate::protocol::authority::Harness::Claude,
+        binary: None,
+        name: None,
+        argv: vec!["--model".into(), "m".into()],
+        composed_argv: None,
+        startup_input: None,
+        summary_prompt: None,
+        sender_prompt: Some(Box::new(SenderPrompt {
+            summary: Some("Fix it".into()),
+            from: "s1".into(),
+        })),
+    };
+    let retained = |prompt: &str| {
+        Some(serde_json::json!(
+            crate::harness::launch::compose_bootstrap_v1_argv(
+                crate::protocol::authority::Harness::Claude,
+                vec!["--model".into(), "m".into(), prompt.to_owned()],
+            )
+            .unwrap()
+        ))
+    };
+    let matches = |text: &str| {
+        retained_launch_argv_matches(&launch, "t1", &context, &instance, retained(text).as_ref())
+            .unwrap()
+    };
+    assert!(matches("Fix it \u{2014} from: s1"));
+    assert!(!matches(&bootstrap_v1::prompt("t1", &context, &instance)));
+    assert!(!matches(&summary_prompt::render(
+        Some("Fix it"),
+        "t1",
+        &context
+    )));
+    assert!(!matches("Fix it \u{2014} from: s2"));
+}
+
+// Kills: a peer-request author that walks the caller's create/invite/send phases (or calls the
+// daemon more than once), loses the staged thread/message, or saves a number of times other
+// than once.
+struct PeerStageClient {
+    calls: Mutex<Vec<Command>>,
+}
+impl LocalClient for PeerStageClient {
+    fn call_with_output(
+        &self,
+        c: Command,
+        _: &OutputSpec,
+        b: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(c, b)
+    }
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command);
+        Ok(CommandResult::PeerHandoffStaged {
+            thread: ThreadId::new("pair-thread"),
+            message: MessageId::new("m-staged"),
+        })
+    }
+}
+
+#[test]
+fn peer_request_author_makes_one_stage_call() {
+    let client = PeerStageClient {
+        calls: Mutex::new(vec![]),
+    };
+    let recipient = SeatId::new("recipient-seat");
+    let key = OperationId::new("unused");
+    let mut staged = StagedWork::default();
+    let mut phase = "unset";
+    let mut saves = 0;
+    stage_work(
+        Staging {
+            policy: None,
+            channel: &crate::protocol::handoff::HandoffChannel::Automatic,
+            body: "",
+            recipient: &recipient,
+            create_key: &key,
+            invite_key: &key,
+            send_key: &key,
+            skip_joined: false,
+        },
+        &mut staged,
+        &mut phase,
+        StagingAuthor::PeerRequest { request: "req-1" },
+        &mut |_| {
+            saves += 1;
+            Ok(())
+        },
+        &client,
+        &TestClock,
+    )
+    .unwrap();
+    assert_eq!(
+        *client.calls.lock().unwrap(),
+        [Command::PeerHandoffStage {
+            request: "req-1".into(),
+            seat: recipient,
+        }]
+    );
+    assert_eq!(staged.thread, Some(ThreadId::new("pair-thread")));
+    assert_eq!(
+        staged.message,
+        Some(CommandResult::PeerHandoffStaged {
+            thread: ThreadId::new("pair-thread"),
+            message: MessageId::new("m-staged"),
+        })
+    );
+    assert!(staged.invitation.is_none() && !staged.invitation_attempted);
+    assert_eq!(saves, 1);
 }

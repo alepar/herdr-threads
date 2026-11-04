@@ -165,6 +165,10 @@ pub struct AutomaticHandoffPlan {
     /// no `--goal`). None: the prompt names only the thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The frozen v2 launch prompt (summary plus from line), recorded only against a daemon
+    /// advertising `handoff.sender_prompt_v2`. None: the thread-naming v1 prompt applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_prompt: Option<crate::protocol::handoff::SenderPrompt>,
 }
 impl AutomaticHandoffPlan {
     pub fn validate(&self) -> Result<(), &'static str> {

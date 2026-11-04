@@ -79,7 +79,7 @@ linked node answers remote resolution"); N13 unchanged; no new provenance value.
 
 Amended 2026-10-28 for remote handoff and launch (`SEAT@MACHINE`, phase 2): a linked peer node may ask this node
 to launch an agent here (a new tab or an existing pane), which this node decides against its own view and records
-with the new provenance `peer_request:<node_uuid>` (A3, A5, N15); a handoff to a seat on another node stays a set of
+with the new provenance `peer_request:<node_uuid>` (A3, A5, N15; `peer_handoff:<node_uuid>` for a remote handoff's staged facts); a handoff to a seat on another node stays a set of
 facts authored by the sender's node (N15); N5 unchanged; two cross-node accepted limits.
 
 Amended 2026-10-28 for relayed user statements (skill guidance): a receiving agent acts on a statement a message
@@ -545,6 +545,7 @@ records there are replay machinery, never its identity.
 | `direct_auto_join` | join observations and events of a 1:1 pair seat's auto-join only | The seat's home node joined it because its pair was created (main D7): in the creating transaction when the seat is local to the creator, else when its node applied the pair's `thread.direct` (N4). No binding acted; the derived event's `actor_seat` is the pair creator. Never on bindings or receipts; authorizes nothing (amended 2026-10-15, main v1 reconcile §2.2). |
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it establishes no availability. Receipt deadlines start at send time independently of this binding. A host-guarded launch (herdr-core `terminal.run`) starts `internal launch-gate` instead of the harness: the shim blanks the leaked environment (the K5 list minus `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, `HC_SCOPE`, all `HERDR_*`, each adapter's session and pid variables, `child_scrub_vars`), sets the caller's config roots, waits a bounded time for the daemon to authorize its `(core, tN)` witness against the bootstrap `<compound>:<attempt>`, then `exec`s the harness. `exec` keeps the pid, so the record is the same single root-pid fingerprint of the terminal's process (two-phase launch); the shim decides nothing (the daemon authorizes against the canonical view, A2), and a refusal, a transport error or the deadline never execs the harness. |
 | `peer_request:<node_uuid>` | launch and bootstrap audit of a peer-requested launch on the executing node only (`peer_requests`, bootstrap attempts) | The linked peer node `<node_uuid>`, on its authenticated direct link (N6) with cap `peer.launch.v1`, asked this node to launch an agent here; this node decided and executed it (N15). The requesting seat travels as a claim and is recorded as claimed, never as actor. Never on bindings (the launched agent's binding is `managed_launch`, then its own check-in), receipts, invitations, memberships or messages, and never replicated: it authorizes only that one launch. |
+| `peer_handoff:<node_uuid>` | the target's audit of a remote handoff's three staged facts on the executing node only (`peer_requests.handoff_thread`, `handoff_message`, `handoff_prompt`, and the staging `daemon.log` line) | The linked peer node `<node_uuid>`, on its authenticated direct link (N6) with cap `peer.handoff.v1`, asked this node to launch an agent with a task message signed by that node (N15 *Remote handoff*); this node verified the sender block and staged the pair thread, the recipient's join and the signed message in one transaction. Never on bindings or receipts, and never replicated. |
 | `cooperative_named_seat` | named-host observation (snapshot rows of the built-in named host) | The named host's enumeration is a store read of the live local seats with `host_id = named` (`NamedSeatSource::live_named`), and `observe_current_target(name)` reports every valid `SeatName` present (generation 1, terminal `named:<name>`, fixed per-node boot and incarnation `named-host:node=<uuid>`). It is cooperative: presence is what the store says, not host evidence. Its snapshot is complete and stamped with the host's fixed boot and incarnation (`CoherentVerified` by `stamp_fixed_structure`, see Named presence), but the host is `NonClosing`, so it authorizes no absence closure; the host is `NonClosing`, and reconcile plans no `BeginRetirement` and no `MarkUnresolved` for a named seat an enumeration does not show. It names the observation only: a binding's provenance stays the caller's. Also the named-continuity record (C1): the reattachment of an unresolved named seat by the resolve of its name is written to seat history as a `cooperative_continuity` decision whose `operator_label` is `cooperative_named_seat`. Never on bindings or receipts. Named presence (SA17): the observation lane publishes the named capture with the host's fixed boot/incarnation stamped by reconcile (so the store admits it; closure authority stays `NonClosing`), the publication gives each resolved named seat its structural proof so the C4 carry keeps live bindings available across a daemon restart, and the named host never arms `baseline_hold_unclaimed` or a recovery hold (one unresolved named row never silences the liveness of the others; a publication releases any open hold). A named seat goes offline only when its bindings end, then shows inactive, unavailable since T, with one `recipient_unavailable` per episode. |
 | `cooperative_self_retire` | local `allocation_decisions.operator_label` (`cooperative_self_retire:<binding>`) of a self retirement only | A named seat's own top-level binding retired the seat with `seat retire --self` (`Command::SelfRetire`, a cooperative mutation: a declared subagent is refused). The daemon decides against A2: the seat is live, local and named (a pane or terminal seat is refused, M20), and no other top-level binding of the seat is connected unless `--force` (M18, which names the other bindings). It is scoped `self-retire:<seat>:<operation>` and checked before the live-seat precheck, so a replay returns the stored result. **Replicates as `RetireReason::Operator`:** the wire enum is closed (no `serde(other)`), so peers cannot tell a self retirement from an operator one; the distinction is node-local, in `seat inspect`'s allocation decisions. A same-user cooperative claim, not proof: anything that can act as the seat's binding can retire it. Never on bindings or receipts. |
 | `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
@@ -1834,6 +1835,14 @@ section 17):
   deliver its seat's message to any seat of another node, including a non-member; the delivery carries the true
   author and `replicated_from:<origin>` provenance and never a local binding. Accepted limit (cooperative same-user
   nodes);
+- except a handoff `message.sent` that embeds a sender block (`handoff`, N15): it is authorized from the home
+  node of its single ACK recipient, in the 1:1 pair thread of author and recipient, when the block's signature
+  (domain `HTHOFF01`) verifies under the genesis key of the block's `sender_node`, that node is the author's
+  replicated home node, and the payload repeats the block's message id, author, role, body, priority, ACK
+  policy and deadline, with every field the block does not carry at its default (no human relay, no recorded
+  human intent). Every input is in the fact or replicated identity (never `peer_requests` or the sender's
+  ledger), so every node decides it alike. A node that cannot verify (older software) marks it `failed`; it is
+  replayable after upgrade (best effort);
 - the creator's home node for `thread.created`;
 - the home node of either pair seat for `thread.direct`;
 - for `seat.created`, the node whose tag the seat ID carries: the ID's tag is one the origin has held (from its
@@ -1860,8 +1869,14 @@ and retirement-by-observation never touch it, and a forgotten or gone home node 
 seats are not occupiable: a claim, a binding open or connect, a check-in or an operator action naming a seat whose
 home is another node is refused with CallerUnverified "cooperative seat is not local" (enforced by ht-5fr.2.6
 through `seats::is_local_seat`). So no action is ever attributed on this node to a remote seat, and no fact is
-authored for it. Delivery rows, wakes and deadlines are created only for local seats; the sender's node owns the
-deadline and overdue decision for an obligation it authored. A seat's nudge threshold is node-local: only the
+authored for it except a signed handoff message (below). Delivery rows, wakes and deadlines are created only for local seats; the sender's node owns the
+deadline and overdue decision for an obligation it authored. For a handoff message (N15) the deadline and overdue
+decision belong to the block's `sender_node` (`messages.deadline_node`), not to the authoring node: the sender's
+node records the obligation under the request id when it sends the request (`handoff_obligations`) and links it to
+the message when that message applies there; its clock anchors the deadline (`requested_at`). Until the in-thread
+warning can be written (the recipient seat known and the pair thread held on the sender's node), an overdue handoff
+is raised to the author's own seat as a seat-addressed alert; after that, in the pair thread. The recipient's home node authors that one message for the remote sender seat as signed (N15);
+no other fact is authored on a node for a remote seat. A seat's nudge threshold is node-local: only the
 seat's home node stores and reads it, the wake decision for a replicated message is made there against the
 message's replicated priority and the seat's current threshold, and setting the threshold of a remote seat is
 refused like any other action naming it (amended 2026-10-15, main v1 reconcile §1.1). Catch-up extensions exist only for local bindings, so a remote recipient
@@ -1951,8 +1966,8 @@ A node that cannot answer (no direct link, no cap, no answer in time, no live He
 the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs` `resolve_at`,
 `src/service/remote_resolver.rs`).
 
-**N15. A peer-requested launch is this node's decision; a cross-node handoff is the sender's facts.**
-- *A new terminal on a herdr-core* (`LaunchTarget::NewTerminal`, cap `peer.launch.terminal.v1`) is sent only to a peer that advertised the cap and is decided here like any peer launch: the terminal gets no parent and no caller (`internal peer-target-create`, alias `peer-tab-create`), and no seat arrives from the request. This node's launcher allocates the seat, for a new terminal and for a new tab on a herdr-core alike, after the terminal exists and before its gate opens: an ordinary guarded resolution of that terminal with no caller, then a `managed_launch` binding on the gate shim's process, the same process the harness becomes. The launch stays attributed to the peer node in its `peer_requests` row (`peer_request:<node_uuid>`); the binding's provenance is `managed_launch`, as for a Herdr peer launch (a binding carrying the peer provenance would fall out of every `managed_launch` check, such as the first check-in's replacement of the placeholder). The requesting seat is not used, no bootstrap record exists here and nothing is sent here: the gate reads a gate-only record on the `peer_requests` row (see the launch gate paragraph in H3).
+**N15. A peer-requested launch is this node's decision; a cross-node handoff is the sender's facts, or one signed request.**
+- *A new terminal on a herdr-core* (`LaunchTarget::NewTerminal`, cap `peer.launch.terminal.v1`) is sent only to a peer that advertised the cap and is decided here like any peer launch: the terminal gets no parent and no caller (`internal peer-target-create`, alias `peer-tab-create`), and no seat arrives from the request. This node's launcher allocates the seat, for a new terminal and for a new tab on a herdr-core alike, after the terminal exists and before its gate opens: an ordinary guarded resolution of that terminal with no caller, then a `managed_launch` binding on the gate shim's process, the same process the harness becomes. The launch stays attributed to the peer node in its `peer_requests` row (`peer_request:<node_uuid>`); the binding's provenance is `managed_launch`, as for a Herdr peer launch (a binding carrying the peer provenance would fall out of every `managed_launch` check, such as the first check-in's replacement of the placeholder). The requesting seat is not used, no bootstrap record exists here and for a bare launch nothing is sent here and the gate reads a gate-only record on the `peer_requests` row (see the launch gate paragraph in H3); a handoff's gate opens on its staged Send (*Remote handoff*).
 - *Handoff into an existing remote seat* adds no remote action. The thread, invitation, task message and ACK
   request are facts authored by the sender's home node for the sender's seat (A2 there, N3, N4), addressed to a
   seat the sender's node holds as remote (N5); the recipient's home node delivers and wakes them under the
@@ -1974,7 +1989,17 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs
   in `[from <tag>]`, the requesting node's tag. It never verifies the requesting seat (cooperative, A1, same user), and it never acts as
   that seat: the launch is attributed to the peer node (`peer_request:<node_uuid>`), the new seat is a local
   seat of this node, and its binding is `managed_launch` until its own agent checks in. A request names only
-  a launch; it cannot send, ACK, invite, join, repair, rebind or retire anything here.
+  a launch; besides a handoff's three facts below it cannot send, ACK, invite, join, repair, rebind or retire
+  anything here.
+- *Remote handoff* (`handoff --pane P@M`, `--new-tab --space S@M`, `--new-terminal --space @M`, cap
+  `peer.handoff.v1`): the request may also carry a profile directory on this node (for a new tab or terminal; a pane request carrying one is refused, as a guarded local pane cannot change its profile directory), the sender's summary and the
+  task message signed by the sender's node (a sender block). This node checks the block against the link's node
+  and the sender seat's replicated home before anything else; any failed check refuses and writes nothing (a
+  sender node key or sender seat not replicated here yet answers "unavailable", unrecorded, and the requester
+  asks again). It then allocates the seat, writes the pair's `thread.direct` (when the pair has none), the
+  recipient's join and the signed `message.sent` in one transaction, and only then launches (Herdr) or opens
+  the gate on that staged Send (hc), so a launched agent always has its task. The request still cannot ACK,
+  invite, settle, retire or act as the sender seat in any other way.
 - The request's id is derived by the requester from its frozen intent, so a retry after a link drop, a crash
   or a restart repeats the same id; this node records each id and its progress (received, tab created with its
   pane, launched with its seat) in `peer_requests` before each step and answers a repeat with the recorded
@@ -1986,7 +2011,8 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs
 - Every peer-requested launch is visible here: one `daemon.log` line per request and outcome naming the
   requesting node and the request id, and `peer list` shows each node's peer-requested launches.
 - A peer without `peer.launch.v1` gets no frame, and the requester refuses with that reason; nothing is ever
-  launched through the requester's own Herdr instead.
+  launched through the requester's own Herdr instead. A handoff to a peer without `peer.handoff.v1` is refused with
+  an upgrade error; there is no two-step fallback.
 
 **N16. Forgetting a dead node is a local view repair.** `peer prune` (an operator command; a dry run unless
 `--yes`, recorded `operator:local-user:<uid>` per A3 in `sync_forgotten_nodes` and one `daemon.log` line per node)
@@ -2741,10 +2767,11 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   also reveals panes that hold no seat (`no_seat` with its path and pane ID) and every candidate of an ambiguous
   name, more than `seat_status` shares; in-contract between this user's own nodes (A1). Design
   `docs/superpowers/specs/2026-10-27-remote-addresses-design.md`.
-- **A harness launched for a peer on a herdr-core can start before its task exists.** The gate releases on the
-  recorded creation, not on a Send (N15), so the agent may start idle and receive the task by normal delivery once
-  the sender's node authors it, or never, if that node goes away first. The same holds for a Herdr peer launch. The
-  seat and a live terminal remain; `keep: false` retires the seat when the worker exits.
+- **A harness launched for a peer on a herdr-core can start before its task exists.** This now applies only to a
+  bare remote `launch`: its gate releases on the recorded creation, not on a Send (N15), so the agent may start idle
+  with nothing to read. A remote handoff's gate waits for its staged Send (`peer_requests.handoff_message` and its
+  message row, written in the target's staging transaction), so that agent always has its task. The same holds for a
+  bare Herdr peer launch. The seat and a live terminal remain; `keep: false` retires the seat when the worker exits.
 - **A plain launch onto a herdr-core starts idle, with no hook preflight.** The gate releases on the recorded
   creation, so the agent starts with nothing to read, as a Herdr launch does, and a missing hook shows only as a
   seat that never checks in. A launcher that dies between the creation and its record leaves a terminal whose shim
@@ -2762,10 +2789,23 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   replicated view (it exists here as that node's nonretired seat; holds and bindings are not replicated), and
   the CLI says so. The task then
   waits on the recipient's node like any message to a seat in that state, and the sender's node reports the
-  ACK overdue on its own clock (N5 accepted limit). A remote launch's `Launched` answer names a seat that the
-  sender's node must hold as that node's seat (after replication) before the handoff is authored; a seat that
-  never replicates leaves the handoff refused after the launch, which a retry of the same intent resumes at
-  delivery, never relaunching.
+  ACK overdue on its own clock (N5 accepted limit). For `--existing --seat X@M`
+  only: a remote launch's `Launched` answer names a seat that the sender's node must hold as that node's seat
+  (after replication) before the handoff is authored; a seat that never replicates leaves the handoff refused after
+  the launch, which a retry of the same intent resumes at delivery, never relaunching. A remote launch handoff is
+  one signed request and the target authors the message (N15 *Remote handoff*), so none of this applies to it.
+- **A 2.x node holds a handoff message `failed` until it is replayed.** A remote handoff's `message.sent` is
+  authored by the target's node for a pair whose sender seat lives elsewhere. A node that predates the embedded
+  sender block applies it under `SeatHome(author)`, finds the origin is the recipient's node, and rejects it as
+  `failed`; after it upgrades, `sync unapplied replay` applies it. Best effort; all other sync with older nodes is
+  unchanged.
+- **A target crash after the message transaction leaves the task with no agent; it is never resumed.** The staged
+  facts stand, `settle_at_start` records the request `failed`, and the answer carries `staged`; the sender keeps
+  its obligation and its overdue warning fires. Nothing relaunches automatically; a new command launches anew.
+- **An unanswered remote handoff stops being re-sent after 6 days and is reported expired unconfirmed.** The
+  requester's obligation (`OBLIGATION_TTL_MS`, 6 days) is strictly shorter than the target's 7-day duplicate guard,
+  so a re-send never meets a forgotten id. Expiry writes a `daemon.log` line and a `peer list` line. A target
+  offline throughout never launches the agent; a message that arrives later still applies.
 - **A forgotten node is unknown until it links (N16).** While a tombstone stands, this node pulls nothing the
   forgotten node authors. When that node comes back only through relays (it links to other nodes but never to this
   one), what it sent this node's seats waits unpulled until it links here directly or the operator runs
@@ -3053,7 +3093,7 @@ a label, never a path the client names) and authorizes only when the attempt is 
 creation's witness is that core and `tN`, a fresh same-response `terminal.get` through an attached host session
 shows that terminal on that core and serving process, and the bootstrap Send is already published. The Send is staged
 before the reply, so a harness never runs before its first message exists (C4: the recipient's receipt keeps its
-honest availability and deadline). One exception, a peer-requested launch onto a herdr-core (N15): there is no bootstrap here and no local Send, because the request carries no task and the sender's home node authors it after `Launched{seat}`. Its gate reads a gate-only record on the `peer_requests` row (attempt and `CreatedTarget`, behind the same view), and a recorded creation, written in one update with the launcher's seat, releases it, so that harness can start before its first message exists, as a Herdr peer launch does (Accepted limits). A local handoff into a herdr-core always needs its staged Send; a peer row never stands in for it. A second exception, a plain local `launch --new-tab` or `--new-terminal` onto a herdr-core: `launch` has no first message by design, as on Herdr. Its gate reads a gate-only record of its own (`local_launch_gates`, behind the same view, never a `peer_requests` row): the CLI opens it before the terminal exists, and after the creation the daemon allocates the seat for that `(core, tN)`, writes the `managed_launch` binding on the shim's process, and records the `CreatedTarget` with the seat in one update, which releases the gate. The decision stays the daemon's alone: the client names only a record id and a creation, and the witness comparison and the same-response `terminal.get` decide. A handoff always keeps its staged Send: a bootstrap's compound is read first, and a gate-only record never stands in for it. The wait polls the view with one short read per poll, holding no store turn and no
+honest availability and deadline). One exception, a bare peer-requested launch onto a herdr-core (N15): there is no bootstrap here and no local Send, because that request carries no task. A peer-requested handoff is not that case: its row releases only on its staged Send (`peer_requests.handoff_message` and its message row, written in the staging transaction), never on a recorded creation alone. A bare peer launch's gate reads a gate-only record on the `peer_requests` row (attempt and `CreatedTarget`, behind the same view), and a recorded creation, written in one update with the launcher's seat, releases it, so that harness can start before its first message exists, as a Herdr peer launch does (Accepted limits). A local handoff into a herdr-core always needs its staged Send; a peer row without a staged handoff message never stands in for it. A second exception, a plain local `launch --new-tab` or `--new-terminal` onto a herdr-core: `launch` has no first message by design, as on Herdr. Its gate reads a gate-only record of its own (`local_launch_gates`, behind the same view, never a `peer_requests` row): the CLI opens it before the terminal exists, and after the creation the daemon allocates the seat for that `(core, tN)`, writes the `managed_launch` binding on the shim's process, and records the `CreatedTarget` with the seat in one update, which releases the gate. The decision stays the daemon's alone: the client names only a record id and a creation, and the witness comparison and the same-response `terminal.get` decide. A handoff always keeps its staged Send: a bootstrap's compound is read first, and a gate-only record never stands in for it. The wait polls the view with one short read per poll, holding no store turn and no
 writer lane, and is bounded by the request's `timeout_ms` (at most 30 s) and the call budget; the daemon's request bound for it is that wait plus 1 s (a plain `launch`'s `Record`, which allocates the seat, gets its 6 s seat budget plus 1 s), never the ordinary 5 s, so the typed answer is written before the shim's own call gives up, and the seat allocation ends with the request's budget and cancellation; a mismatch, a stale or
 unknown bootstrap, a cancelled bootstrap or the deadline is a refusal and the shim exits without `exec`. A refusal
 authorizes nothing and records nothing. `handoff --new-tab --space`, `--new-terminal` and a plain-shell handoff

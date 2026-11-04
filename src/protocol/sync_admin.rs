@@ -90,6 +90,14 @@ pub enum SyncCommand {
         machine: String,
         #[serde(default)]
         request: Box<crate::sync::frame::LaunchRequest>,
+        /// The caller's claim for a handoff draft (local protocol under
+        /// `HANDOFF_ATOMIC_REMOTE_V1`).
+        #[serde(default)]
+        claim: Option<crate::protocol::authority::CallerClaim>,
+        /// The request file is older than `OBLIGATION_TTL_MS`: answer from the ledger and
+        /// never sign.
+        #[serde(default)]
+        resume_only: bool,
     },
     /// Which node `machine` names, asked of nobody: answered as a
     /// [`LaunchReply`] whose `Remote.answer` is `Unknown` (not asked).
@@ -218,6 +226,29 @@ pub struct PeerRow {
     pub reach: String,
     pub attempts: u32,
     pub last_error: Option<String>,
+}
+
+/// One sender-ledger handoff row, as `peer list` shows it (display data only).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffLedgerRow {
+    /// The request id (36 characters).
+    #[serde(default)]
+    pub request: String,
+    /// The target node's tag, else its uuid prefix.
+    #[serde(default)]
+    pub node: String,
+    /// `sent`, `launched`, `linked`, `expired` or `failed`.
+    #[serde(default)]
+    pub state: String,
+    /// The target's seat, when known.
+    #[serde(default)]
+    pub seat: Option<String>,
+    /// `overdue_seq` is set.
+    #[serde(default)]
+    pub overdue: bool,
+    /// With `failed`: the stored answer's one-line detail.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// One known peer node, as `peer list` shows it (ht-xg88 node status).
@@ -466,6 +497,9 @@ pub enum SyncReply {
         /// Nodes `peer prune` forgot, left out of `nodes`.
         #[serde(default, skip_serializing_if = "is_zero")]
         forgotten: u64,
+        /// The sender's handoff ledger rows worth a line: overdue unconfirmed or unlinked, expired, failed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        handoffs: Vec<HandoffLedgerRow>,
     },
     Status(Box<StatusReply>),
     Verified {
@@ -642,6 +676,10 @@ pub enum LaunchReply {
         node: MachineRow,
         #[serde(default)]
         answer: RemoteLaunchAnswer,
+        /// The message id the sender's ledger holds for a handoff request (local protocol only,
+        /// never on the peer wire).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handoff_message: Option<String>,
     },
     #[serde(other)]
     Unknown,
@@ -677,6 +715,33 @@ pub enum RemoteLaunchAnswer {
     NotReplicated {
         #[serde(default)]
         seat: String,
+    },
+    /// The sender's handoff ledger answered (local only, never on the peer wire).
+    HandoffLedger {
+        #[serde(default)]
+        outcome: HandoffLedgerOutcome,
+    },
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// What the sender's handoff ledger holds for one request id. `Unknown` doubles as "no row for
+/// a `resume_only` id".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum HandoffLedgerOutcome {
+    Linked {
+        #[serde(default)]
+        seat: String,
+        #[serde(default)]
+        thread: String,
+        #[serde(default)]
+        message: String,
+    },
+    Expired {
+        #[serde(default)]
+        seat: Option<String>,
     },
     #[default]
     #[serde(other)]
@@ -776,4 +841,46 @@ pub enum RemoteAddress {
     #[default]
     #[serde(other)]
     Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_launch_old_json_decodes() {
+        let old = r#"{"op":"remote_launch","machine":"m","request":{}}"#;
+        let SyncCommand::RemoteLaunch {
+            claim, resume_only, ..
+        } = serde_json::from_str(old).unwrap()
+        else {
+            panic!("not a remote launch");
+        };
+        assert!(claim.is_none());
+        assert!(!resume_only);
+    }
+
+    #[test]
+    fn handoff_ledger_answer_round_trips_and_unknown_stays_unknown() {
+        for outcome in [
+            HandoffLedgerOutcome::Unknown,
+            HandoffLedgerOutcome::Expired { seat: None },
+            HandoffLedgerOutcome::Linked {
+                seat: "sA".into(),
+                thread: "d1".into(),
+                message: "m1".into(),
+            },
+        ] {
+            let answer = RemoteLaunchAnswer::HandoffLedger { outcome };
+            let text = serde_json::to_string(&answer).unwrap();
+            assert_eq!(
+                serde_json::from_str::<RemoteLaunchAnswer>(&text).unwrap(),
+                answer
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<RemoteLaunchAnswer>(r#"{"k":"from_the_future","x":1}"#).unwrap(),
+            RemoteLaunchAnswer::Unknown
+        );
+    }
 }

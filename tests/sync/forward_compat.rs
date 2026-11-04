@@ -352,7 +352,7 @@ fn launch_frames_are_unknown_to_2_1_1() {
         AddrResolve, AddrTarget, LaunchPlan, LaunchReply, LaunchRequest, LaunchState, LaunchTarget,
     };
     for frame in [
-        PeerFrame::LaunchRequest(LaunchRequest {
+        PeerFrame::LaunchRequest(Box::new(LaunchRequest {
             id: Uuid::from_u128(7),
             requester_seat: "sQ0Vseat0001".into(),
             plan: LaunchPlan {
@@ -363,8 +363,11 @@ fn launch_frames_are_unknown_to_2_1_1() {
                 kind: "codex".into(),
                 argv: vec!["--model".into(), "x".into()],
                 cwd: Some("/tmp".into()),
+                profile_dir: None,
+                handoff_prompt: None,
+                message: None,
             },
-        }),
+        })),
         PeerFrame::LaunchReply(LaunchReply {
             id: Uuid::from_u128(7),
             state: LaunchState::Launched {

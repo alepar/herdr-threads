@@ -3203,6 +3203,23 @@ pub trait BootstrapStorePort: Send + Sync {
     ) -> Result<bool, ApiError> {
         Err(ApiError::unsupported("local launch gate unavailable"))
     }
+    /// Stages a remote handoff request in one transaction (`store::peer_handoff::stage`).
+    fn peer_handoff_stage(
+        &self,
+        _request: &str,
+        _seat: &crate::protocol::ids::SeatId,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("peer handoff staging unavailable"))
+    }
+    /// Reads a handoff request's plan, frozen prompt and state (`store::peer_requests::get`).
+    fn peer_request_view(
+        &self,
+        _request: &str,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("peer handoff staging unavailable"))
+    }
     fn automatic_bootstrap_recovery_replay(
         &self,
         _canonical: &crate::protocol::handoff::HandoffNamespace,
@@ -3859,6 +3876,11 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         request: DueScanRequest,
         budget: &CallBudget,
     ) -> Result<DueScanProgress, ApiError>;
+    /// Runs the sender ledger's handoff due step (`store::handoff_obligations::due_pass`);
+    /// returns the in-thread warnings added. A store without the ledger adds none.
+    fn due_handoffs(&self, _budget: &CallBudget) -> Result<usize, ApiError> {
+        Ok(0)
+    }
     fn begin_retirement(
         &self,
         seat: SeatId,

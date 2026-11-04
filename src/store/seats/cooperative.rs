@@ -1522,7 +1522,8 @@ fn mod_seat_view_mode(
             i64::MAX,
         )?
         .count()
-        .0 + waking_warnings,
+        .0 + waking_warnings
+            + super::super::attention::seat_alerts(db, seat.as_str())?.0,
         binding_generation: binding.as_ref().map(|b| b.generation),
     };
     // Notices above the binding's own frontier (spec §2 Hook notifications); the seat view's

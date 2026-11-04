@@ -783,6 +783,9 @@ pub struct CoordinatorOptions {
     /// Advertise [`crate::sync::frame::PEER_LAUNCH_TERMINAL_CAP`] (default; only with
     /// `advertise_peer_launch`).
     pub advertise_peer_launch_terminal: bool,
+    /// Advertise [`crate::sync::frame::PEER_HANDOFF_CAP`] (default; only with
+    /// `advertise_peer_launch`).
+    pub advertise_peer_handoff: bool,
     /// The stall thresholds of node status.
     pub timings: StallTimings,
 }
@@ -795,6 +798,7 @@ impl Default for CoordinatorOptions {
             advertise_addr_check: true,
             advertise_peer_launch: true,
             advertise_peer_launch_terminal: true,
+            advertise_peer_handoff: true,
             timings: StallTimings::default(),
         }
     }
@@ -822,22 +826,63 @@ impl CoordinatorOptions {
             }
             // A node of an older release: these caps stay out of the hello.
             if let Ok(caps) = std::env::var("HT_TEST_WITHHOLD_CAPS") {
-                let withheld: Vec<&str> = caps.split(',').map(str::trim).collect();
-                if withheld.contains(&crate::sync::frame::ADDR_RESOLVE_CAP) {
-                    options.advertise_addr_resolve = false;
-                }
-                if withheld.contains(&crate::sync::frame::ADDR_CHECK_CAP) {
-                    options.advertise_addr_check = false;
-                }
-                if withheld.contains(&crate::sync::frame::PEER_LAUNCH_CAP) {
-                    options.advertise_peer_launch = false;
-                }
-                if withheld.contains(&crate::sync::frame::PEER_LAUNCH_TERMINAL_CAP) {
-                    options.advertise_peer_launch_terminal = false;
-                }
+                options.withhold(&caps);
             }
         }
         options
+    }
+
+    /// The capabilities the hello advertises, in order.
+    fn caps(&self) -> Vec<String> {
+        use crate::sync::frame::{
+            ADDR_CHECK_CAP, ADDR_RESOLVE_CAP, PEER_HANDOFF_CAP, PEER_LAUNCH_CAP,
+            PEER_LAUNCH_TERMINAL_CAP,
+        };
+        let mut caps = vec![FORK_CAP];
+        if self.advertise_opaque {
+            caps.push(OPAQUE_CAP);
+        }
+        caps.push(NODE_INFO_CAP);
+        caps.push(SEAT_STATUS_CAP);
+        if self.advertise_addr_resolve {
+            caps.push(ADDR_RESOLVE_CAP);
+            if self.advertise_peer_launch {
+                caps.push(PEER_LAUNCH_CAP);
+                if self.advertise_peer_launch_terminal {
+                    caps.push(PEER_LAUNCH_TERMINAL_CAP);
+                }
+                if self.advertise_peer_handoff {
+                    caps.push(PEER_HANDOFF_CAP);
+                }
+            }
+            if self.advertise_addr_check {
+                caps.push(ADDR_CHECK_CAP);
+            }
+        }
+        caps.into_iter().map(str::to_owned).collect()
+    }
+
+    /// Stops advertising the comma-separated capabilities in `caps` (a node of an older
+    /// release); names this node does not gate are ignored.
+    #[cfg(feature = "test-support")]
+    fn withhold(&mut self, caps: &str) {
+        let withheld: Vec<&str> = caps.split(',').map(str::trim).collect();
+        let has = |cap: &str| withheld.contains(&cap);
+        if has(crate::sync::frame::ADDR_RESOLVE_CAP) {
+            self.advertise_addr_resolve = false;
+        }
+        if has(crate::sync::frame::ADDR_CHECK_CAP) {
+            self.advertise_addr_check = false;
+        }
+        if has(crate::sync::frame::PEER_LAUNCH_CAP) {
+            self.advertise_peer_launch = false;
+        }
+        if has(crate::sync::frame::PEER_LAUNCH_TERMINAL_CAP) {
+            self.advertise_peer_launch_terminal = false;
+        }
+        if has(crate::sync::frame::PEER_HANDOFF_CAP) {
+            self.advertise_peer_handoff = false;
+        }
     }
 }
 
@@ -925,32 +970,7 @@ impl SyncCoordinator {
             since: deps.clock.monotonic_now(),
         });
         let mut hello = LocalHello::new(deps.identity.clone(), deps.boot);
-        hello.caps.push(FORK_CAP.to_owned());
-        if options.advertise_opaque {
-            hello.caps.push(OPAQUE_CAP.to_owned());
-        }
-        hello.caps.push(NODE_INFO_CAP.to_owned());
-        hello.caps.push(SEAT_STATUS_CAP.to_owned());
-        if options.advertise_addr_resolve {
-            hello
-                .caps
-                .push(crate::sync::frame::ADDR_RESOLVE_CAP.to_owned());
-            if options.advertise_peer_launch {
-                hello
-                    .caps
-                    .push(crate::sync::frame::PEER_LAUNCH_CAP.to_owned());
-                if options.advertise_peer_launch_terminal {
-                    hello
-                        .caps
-                        .push(crate::sync::frame::PEER_LAUNCH_TERMINAL_CAP.to_owned());
-                }
-            }
-            if options.advertise_addr_check {
-                hello
-                    .caps
-                    .push(crate::sync::frame::ADDR_CHECK_CAP.to_owned());
-            }
-        }
+        hello.caps.extend(options.caps());
         let me = Arc::new(hello);
         let actor = Actor {
             me,
@@ -1856,7 +1876,7 @@ impl Actor {
                 return;
             }
             PeerFrame::LaunchRequest(request) => {
-                self.on_launch_request(link_id, request);
+                self.on_launch_request(link_id, *request);
                 return;
             }
             PeerFrame::LaunchReply(reply) => {
@@ -3016,6 +3036,30 @@ fn held_genesis_pubkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Kills: a node that never advertises `peer.handoff.v1` (every handoff refused with an
+    // upgrade error), one that advertises it without `peer.launch.v1` (a gated frame it cannot
+    // take), or a withhold list that does not reach it.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn advertises_handoff_cap() {
+        use crate::sync::frame::{PEER_HANDOFF_CAP, PEER_LAUNCH_CAP};
+        let has = |options: &CoordinatorOptions, cap: &str| options.caps().iter().any(|c| c == cap);
+        let mut options = CoordinatorOptions::default();
+        assert!(has(&options, PEER_HANDOFF_CAP));
+        assert!(has(&options, PEER_LAUNCH_CAP));
+        options.withhold("peer.handoff.v1");
+        assert!(!has(&options, PEER_HANDOFF_CAP));
+        assert!(
+            has(&options, PEER_LAUNCH_CAP),
+            "only the named cap is withheld"
+        );
+        let mut older = CoordinatorOptions::default();
+        older.withhold(" peer.launch.v1 , other");
+        assert!(!has(&older, PEER_LAUNCH_CAP));
+        assert!(!has(&older, PEER_HANDOFF_CAP), "no handoff without launch");
+    }
+
     use crate::daemon::transport::{self, MAX_FRAME_BYTES};
     use crate::store::sync_contacts::ContactVia;
     use crate::store::sync_dial_targets::{DialTarget, DialTransition};

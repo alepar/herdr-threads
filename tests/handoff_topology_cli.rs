@@ -801,20 +801,12 @@ impl Fixture {
         assert_eq!(&argv[..frozen.len()], frozen);
         assert_eq!(argv.len(), frozen.len() + 1);
         let bootstrap = argv.last().unwrap();
-        // A new client against a new daemon launches with the summary prompt, never V1 text.
-        assert!(bootstrap.starts_with("Handoff: "), "{bootstrap}");
+        // A new client against a new daemon launches with prompt v2 (summary plus from line),
+        // never V1 text and without routing or a thread id.
+        assert!(bootstrap.contains(" \u{2014} from: s"), "{bootstrap}");
         assert!(!bootstrap.contains("Expected handoff command routing"));
-        assert!(bootstrap.contains(self.context.state_dir.to_str().unwrap()));
-        assert!(
-            bootstrap.contains(
-                self.context
-                    .host_endpoint
-                    .clone()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-            )
-        );
+        assert!(!bootstrap.contains(self.context.state_dir.to_str().unwrap()));
+        assert!(!bootstrap.contains('\n'), "{bootstrap}");
         assert!(!bootstrap.contains(BODY));
         let host = self.host.state.lock().unwrap();
         assert_eq!(host.helpers.len(), 1);
@@ -1073,7 +1065,7 @@ fn automatic_new_tab_summary_reaches_the_prompt_and_passes_retained_validation()
             .unwrap();
     let prompt = argv.last().unwrap();
     assert!(
-        prompt.starts_with("Handoff: Fix the wake test \u{2014} full task in thread "),
+        prompt.starts_with("Fix the wake test \u{2014} from: s"),
         "{prompt}"
     );
     assert!(!prompt.contains(BODY));
@@ -2225,8 +2217,8 @@ fn final_sdd_actual_native_maximum_completes_and_historical_retry_never_relaunch
             serde_json::from_value(starts[0]["params"]["args"].clone()).unwrap();
         assert_eq!(actual.len(), 64);
         assert_eq!(&actual[..63], frozen);
-        assert!(actual[63].contains(f.context.state_dir.to_str().unwrap()));
-        assert!(actual[63].contains(f.context.host_endpoint.clone().unwrap().to_str().unwrap()));
+        // Prompt v2 carries no routing: summary plus from line.
+        assert!(actual[63].contains(" \u{2014} from: s"), "{}", actual[63]);
         assert!(actual[63].len() <= 4096);
         let reference = first["handoff"]["recovery_ref"].as_str().unwrap();
         let retry = successful(f.run(&["retry", reference], "'malformed"));
@@ -2438,7 +2430,7 @@ fn final_sdd_longest_pinned_namespace_summary_prompt_fits_retained_report_cap() 
         serde_json::from_value(f.host.requests("agent.start")[0]["params"]["args"].clone())
             .unwrap();
     let prompt = argv.last().unwrap();
-    assert!(prompt.starts_with("Handoff: "), "{prompt}");
+    assert!(prompt.contains(" \u{2014} from: s"), "{prompt}");
     assert!(prompt.len() <= 4096, "{}", prompt.len());
 }
 

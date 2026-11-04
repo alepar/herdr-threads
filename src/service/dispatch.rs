@@ -897,6 +897,38 @@ impl DomainService {
         }
     }
 
+    /// The target's staging of a remote handoff request (N15): no caller claim, the request row
+    /// is the authority. Served to the elected owner's peer only, under the domain writer.
+    fn peer_handoff_stage(
+        &self,
+        request: &str,
+        seat: &crate::protocol::ids::SeatId,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let store = self.bootstrap_store.as_ref().ok_or_else(|| {
+            ApiError::unsupported("peer handoff staging needs the bootstrap store")
+        })?;
+        let writer = self.elected_writer(peer)?;
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        store.peer_handoff_stage(request, seat, budget)
+    }
+
+    /// A handoff request's stored plan for its launch child: same authority as the staging.
+    fn peer_request_view(
+        &self,
+        request: &str,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let store = self.bootstrap_store.as_ref().ok_or_else(|| {
+            ApiError::unsupported("peer handoff staging needs the bootstrap store")
+        })?;
+        let writer = self.elected_writer(peer)?;
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        store.peer_request_view(request, budget)
+    }
+
     /// The launch gate's decision for a shim in a herdr-core terminal. The store is read per
     /// poll and the wait holds no store turn and no writer lane.
     fn authorize_launch_gate(
@@ -2310,6 +2342,10 @@ impl LocalService for DomainService {
             )),
             Command::AuthorizeLaunchGate(request) => self.authorize_launch_gate(&request, budget),
             Command::LocalLaunchGate(request) => self.local_launch_gate(&request, peer, budget),
+            Command::PeerHandoffStage { request, seat } => {
+                self.peer_handoff_stage(&request, &seat, peer, budget)
+            }
+            Command::PeerRequestView { request } => self.peer_request_view(&request, peer, budget),
             Command::Health
             | Command::Capabilities
             | Command::HookParseFailure(_)
@@ -2442,6 +2478,7 @@ mod operator_tests {
             },
             claim,
             thread: None,
+            seat_alerts: false,
         };
         let digest = AttentionDigestQuery {
             seat: SeatId::new("seat"),

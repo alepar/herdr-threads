@@ -2014,3 +2014,98 @@ fn inbox_row_shows_the_sender_label_with_its_priority_marker() {
     );
     assert!(rows[2].contains(" from s1 [p0] bytes "), "{}", rows[2]);
 }
+
+#[test]
+fn handoff_overdue_row_is_byte_exact() {
+    use crate::protocol::results::{HandoffOverdue, InboxBatchV2Item};
+    let result = CommandResult::InboxBatchV2(Page {
+        items: vec![InboxBatchV2Item::HandoffOverdue(HandoffOverdue {
+            request: "0123456789abcdef".into(),
+            node_tag: "Pq7".into(),
+            seat: None,
+        })],
+        next_cursor: None,
+        next_argv: None,
+        high_water_ordinal: 0,
+        scope_revision: None,
+        has_more: false,
+        stop_reason: StopReason::Rows,
+        consistency: Consistency::BoundedLive,
+    });
+    let text = String::from_utf8(
+        encode_selected(
+            &result,
+            &OutputSpec {
+                format: OutputFormat::Text,
+                context: ContinuationContext::default(),
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        text,
+        "warning overdue_handoff 01234567 to Pq7: not confirmed by that machine\n"
+    );
+    // 68 bytes plus the tag, and no read: line.
+    assert_eq!(text.len(), 68 + "Pq7".len());
+}
+
+#[test]
+fn handoff_overdue_launched_row_is_byte_exact() {
+    use crate::protocol::results::{HandoffOverdue, InboxBatchV2Item};
+    let result = CommandResult::InboxBatchV2(Page {
+        items: vec![InboxBatchV2Item::HandoffOverdue(HandoffOverdue {
+            request: "0123456789abcdef".into(),
+            node_tag: "Pq7".into(),
+            seat: Some("sZZZseat0001".into()),
+        })],
+        next_cursor: None,
+        next_argv: None,
+        high_water_ordinal: 0,
+        scope_revision: None,
+        has_more: false,
+        stop_reason: StopReason::Rows,
+        consistency: Consistency::BoundedLive,
+    });
+    let text = String::from_utf8(
+        encode_selected(
+            &result,
+            &OutputSpec {
+                format: OutputFormat::Text,
+                context: ContinuationContext::default(),
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        text,
+        "warning overdue_handoff 01234567 to Pq7: unlinked: seat sZZZseat0001\n"
+    );
+    // 54 bytes plus the tag and the seat.
+    assert_eq!(text.len(), 54 + "Pq7".len() + "sZZZseat0001".len());
+}
+
+#[test]
+fn seat_alert_fields_are_wire_optional() {
+    use crate::protocol::commands::InboxQuery;
+    let query: InboxQuery =
+        serde_json::from_str(r#"{"seat":null,"page":{"cursor":null,"limit":5,"max_bytes":1000}}"#)
+            .unwrap();
+    assert!(!query.seat_alerts);
+    assert!(
+        !serde_json::to_string(&query)
+            .unwrap()
+            .contains("seat_alerts")
+    );
+    let on = InboxQuery {
+        seat_alerts: true,
+        ..query
+    };
+    assert!(
+        serde_json::to_string(&on)
+            .unwrap()
+            .contains("\"seat_alerts\":true")
+    );
+}

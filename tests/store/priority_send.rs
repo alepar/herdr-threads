@@ -691,6 +691,7 @@ fn mixed_ack_merged_pages_and_completion() {
                 claim: None,
                 seat: Some(SeatId::new(seat)),
                 page: PageRequest::default(),
+                seat_alerts: false,
             }),
             &OutputSpec::default(),
             &budget(),

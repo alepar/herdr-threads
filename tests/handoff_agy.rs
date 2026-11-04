@@ -49,8 +49,9 @@ fn handoff_kind_agy_composes_through_bootstrap_v2_and_starts() {
     assert_eq!(&argv[..3], ["--model", "gemini-3", "--prompt-interactive"]);
     assert_eq!(argv.len(), 4, "{argv:?}");
     let bootstrap = &argv[3];
-    // A new client against a new daemon launches with the summary prompt, never V1 text.
-    assert!(bootstrap.starts_with("Handoff: "), "{bootstrap}");
+    // A new client against a new daemon launches with prompt v2 (summary plus from line), never V1 text.
+    assert!(bootstrap.contains(" \u{2014} from: s"), "{bootstrap}");
+    assert!(!bootstrap.contains('\n'), "{bootstrap}");
     assert!(!bootstrap.contains("Expected handoff command routing"));
     assert!(!bootstrap.contains(BODY), "the work body is not in argv");
     // The owned fake host runs the stand-in agy with this exact argv and asserts it echoed back.

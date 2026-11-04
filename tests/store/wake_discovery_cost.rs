@@ -246,8 +246,8 @@ fn every_access_path_prepares_indexed_by() {
     paths.push(("occupant_bindings_open", WAKE_SEAT_WALK));
     assert_eq!(
         paths.len(),
-        10,
-        "eight pending probes (including canonical receipt origins), the live seat walk and the human exclusion"
+        11,
+        "nine pending probes (including canonical receipt origins), the live seat walk and the human exclusion"
     );
     for (index, sql) in paths {
         assert!(

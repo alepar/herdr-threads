@@ -5289,7 +5289,9 @@ fn pending_warning_count(
         }
         None => super::attention::seat_pending_warnings(db, seat.as_str(), &check)?,
     };
-    Ok(pending.count())
+    let (count, has_more) = pending.count();
+    let (alerts, _) = super::attention::seat_alerts(db, seat.as_str())?;
+    Ok((count + alerts, has_more))
 }
 
 fn warning_cursor(
@@ -6791,6 +6793,7 @@ pub(super) fn ordinary_presentation_page(
             limit: 32,
             max_bytes: 65536,
         },
+        seat_alerts: false,
     };
     let result = inbox_v2::query_mode(
         db,

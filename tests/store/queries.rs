@@ -647,6 +647,7 @@ fn inbox_counts_published_warning_and_receipt_in_same_snapshot() {
         claim: None,
         seat: Some(SeatId::new("s")),
         page: page(None),
+        seat_alerts: false,
     });
     let CommandResult::Inbox(result) =
         query(&store, "34750f98bd59fcfc946da45aaabe933b", &q, &budget()).unwrap()
@@ -674,6 +675,7 @@ fn invitation_relevance_inbox_supplies_canonical_goal_without_joining() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: PageRequest::default(),
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -732,6 +734,7 @@ fn invitation_relevance_goal_yields_to_bounded_inspection_without_skipping() {
                     max_bytes: 2048,
                     ..PageRequest::default()
                 },
+                seat_alerts: false,
             }),
             &output,
             &budget(),
@@ -768,6 +771,7 @@ fn inbox_batch_displays_pending_body_and_only_complete_agent_receipt_is_candidat
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -832,6 +836,7 @@ fn inbox_v2_current_agent_counts_registered_harnesses_only() {
                 seat: Some(SeatId::new("s")),
                 page: page(None),
                 claim: None,
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -902,6 +907,7 @@ fn sender_label_is_the_name_locally_and_name_at_tag_remotely() {
             seat: Some(SeatId::new("s")),
             page: page(None),
             claim: None,
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -945,6 +951,7 @@ fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -1004,6 +1011,7 @@ fn inbox_batch_pages_101_receipts_without_acknowledging_or_skipping() {
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -1056,6 +1064,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: request.clone(),
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -1076,6 +1085,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -1107,6 +1117,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
                 limit: 100,
                 max_bytes: 65_536,
             },
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -1145,6 +1156,7 @@ fn inbox_batch_finds_unprojected_active_warning_for_frozen_member() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -1189,6 +1201,7 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -1226,6 +1239,7 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -1371,6 +1385,7 @@ fn warning_continuations_keep_published_identity_during_projection() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: inbox_page.clone(),
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -1414,6 +1429,7 @@ fn warning_continuations_keep_published_identity_during_projection() {
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: inbox_page.clone(),
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -1472,6 +1488,7 @@ fn queued_close_hides_active_condition_without_inventing_clear_and_allows_reopen
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -1573,6 +1590,7 @@ fn inbox_clear_recipient_is_frozen_at_close_decision_before_projection() {
                 claim: None,
                 seat: Some(SeatId::new(seat)),
                 page: page(None),
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -1708,6 +1726,7 @@ fn inbox_pages_205_invited_threads_without_skipping() {
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -1749,6 +1768,7 @@ fn inbox_continuation_stales_when_published_receipt_enters_examined_thread() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
+            seat_alerts: false,
         })
     };
     let CommandResult::Inbox(first) = query(
@@ -1798,6 +1818,7 @@ fn inbox_continuation_stales_on_new_invitation_in_examined_thread() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
+            seat_alerts: false,
         })
     };
     let CommandResult::Inbox(first) = query(
@@ -1838,6 +1859,7 @@ fn inbox_continuation_stales_at_committed_retirement_fence() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
+            seat_alerts: false,
         })
     };
     let CommandResult::Inbox(first) = query(
@@ -1892,6 +1914,7 @@ fn inbox_validation_pages_unrelated_publications_before_advancing() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
+            seat_alerts: false,
         })
     };
     let CommandResult::Inbox(first) = query(
@@ -2005,6 +2028,7 @@ fn inbox_continuation_survives_projection_of_already_published_receipt() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page,
+            seat_alerts: false,
         })
     };
     let CommandResult::Inbox(first) = query(
@@ -2049,6 +2073,7 @@ fn inbox_continuation_ignores_hidden_preparation_for_same_seat() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
+            seat_alerts: false,
         })
     };
     let CommandResult::Inbox(first) = query(
@@ -2837,6 +2862,7 @@ fn retired_seat_has_no_actionable_pending_invitation_before_cleanup() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -5511,6 +5537,7 @@ fn adapter_inbox_batch_stale_generation_cannot_offer_display_ack() {
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
+            seat_alerts: false,
         }),
         &budget(),
     )
@@ -5569,6 +5596,7 @@ fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
+                seat_alerts: false,
             }),
             &budget(),
         )
@@ -5676,6 +5704,7 @@ fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
                             claim: None,
                             seat: Some(SeatId::new("s")),
                             page: request.clone(),
+                            seat_alerts: false,
                         }),
                         &budget(),
                     )
@@ -6189,6 +6218,7 @@ fn human_guidance_canonical_requesting_caller_before_page_fit() {
             limit: 1,
             ..page(None)
         },
+        seat_alerts: false,
     });
     for (caller, human) in [
         (None, false),
@@ -6722,6 +6752,7 @@ fn v2_invitation_goal_and_revision_fit_or_yield_to_usable_pending_inspection() {
                     max_bytes,
                     ..PageRequest::default()
                 },
+                seat_alerts: false,
             }),
             output,
             &budget(),
@@ -7071,6 +7102,7 @@ fn presentation_publication_observes_old_staging_only_after_late_manifest() {
             relays_user: false,
             user_intent: None,
             decision_at: 200,
+            deadline_node: None,
         },
     )
     .unwrap();

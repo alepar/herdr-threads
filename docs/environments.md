@@ -51,6 +51,7 @@ herdr-threads launch --kind claude --new-terminal --space @MACHINE --cwd /abs/di
 
 - `--new-tab` onto a core needs `--space`. `--new-terminal` is herdr-core only.
 - A launched agent starts idle. `--harness-binary` and `--name` are refused onto a core, and `handoff --thread` / `--new-thread` into a core are refused.
+- A handoff to another machine: `handoff --pane PANE@MACHINE | --new-tab LABEL --space SPACE@MACHINE --cwd /abs/dir [--profile-dir /abs/dir/there] | --new-terminal --space @MACHINE --cwd /abs/dir [--profile-dir /abs/dir/there] --kind K --summary 'one line' [--deadline SECS] -- "task"`. `--summary` is required, `--profile-dir` is an absolute path on that machine (checked there), accepted with `--new-tab` and `--new-terminal` (the `--pane` form refuses it and `--cwd`), and `--deadline` is at most 6 days. It opens the 1:1 pair, so `--thread`, `--new-thread`, `--thread-name`, `--topic`, `--goal`, `--invite-deadline`, `--harness-binary` and `--name` are refused. The task is signed by this machine and delivered with the launch; a rerun of the same command reports the recorded outcome.
 - The agent runs under the launching side's harness profile. A launch requested by another machine with no profile starts the harness in its default mode.
 
 ## Accepted limits

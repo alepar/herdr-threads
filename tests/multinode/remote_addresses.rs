@@ -279,24 +279,32 @@ fn handoff_into_a_remote_seat_is_authored_by_the_sender() {
 }
 
 /// The stand-in for the launching node's children (`internal
-/// peer-tab-create`, `launch`): records each call's argv and environment in
-/// the log dir, waits while `hold` exists, and answers like the real ones.
-const LAUNCH_STUB: &str = r#"#!/bin/sh
+/// peer-tab-create`, `launch`, `peer-handoff-launch`): records each call's argv and environment in
+/// the log dir, waits while `hold` exists, and answers like the real ones. With a `real` file in
+/// the log dir the handoff child is the real one (`HT_TEST_REAL_BIN`), which stages the request's
+/// facts and records its launch request in `HT_TEST_HANDOFF_LAUNCH_RECORD` instead of starting a
+/// harness; a `pane` file there names the pane a created tab answers with.
+pub(crate) const LAUNCH_STUB: &str = r#"#!/bin/sh
 log="$HT_TEST_PEER_LAUNCH_LOG"
 n=$(ls "$log" | grep -c '^call-' )
 { printf '%s\n' "$@"; echo '--env--'; env; } > "$log/call-$n"
 while [ -e "$log/hold" ]; do sleep 0.1; done
 [ -e "$log/killself" ] && kill -9 $$
+case " $* " in
+  *" peer-handoff-launch "*) [ -e "$log/real" ] && exec "$HT_TEST_REAL_BIN" "$@";;
+esac
 for a in "$@"; do
   case "$a" in
-    peer-target-create) echo '{"pane":"w1:p9","tab":"w1:t9"}'; exit 0;;
-    launch) printf '{"launch":{"outcome":"started","seat":"%s"}}\n' "$(cat "$log/seat")"; exit 0;;
+    peer-target-create)
+      pane=w1:p9; [ -e "$log/pane" ] && pane=$(cat "$log/pane")
+      printf '{"pane":"%s","tab":"w1:t9"}\n' "$pane"; exit 0;;
+    launch|peer-handoff-launch) printf '{"launch":{"outcome":"started","seat":"%s"}}\n' "$(cat "$log/seat")"; exit 0;;
   esac
 done
 exit 1
 "#;
 
-fn calls(log: &std::path::Path) -> Vec<String> {
+pub(crate) fn calls(log: &std::path::Path) -> Vec<String> {
     let mut names: Vec<_> = std::fs::read_dir(log)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -343,6 +351,12 @@ fn remote_launch_runs_on_the_target_machine_once() {
         // A stray caller pane and session in the daemon's own environment.
         (1, "HERDR_PANE_ID".to_owned(), "w1:p1".to_owned()),
         (1, "CODEX_SESSION_ID".to_owned(), "stray".to_owned()),
+        (1, "HT_TEST_REAL_BIN".to_owned(), crate::BIN.to_owned()),
+        (
+            1,
+            "HT_TEST_HANDOFF_LAUNCH_RECORD".to_owned(),
+            calls_dir.join("launch-record").display().to_string(),
+        ),
     ];
     env.push((
         2,
@@ -360,7 +374,7 @@ fn remote_launch_runs_on_the_target_machine_once() {
         },
     );
     cluster.add_host(0, &[P1]);
-    cluster.add_host(1, &[P1, P2, P3]);
+    cluster.add_host(1, &[P1, P2, P3, "w1:p4"]);
     cluster.add_host(2, &[P1]);
     // Handoff needs a daemon started with its host (guarded bootstrap).
     cluster.stop_node(0);
@@ -480,6 +494,8 @@ fn remote_launch_runs_on_the_target_machine_once() {
             "/nonexistent/herdr-threads-test",
             "--kind",
             "claude",
+            "--summary",
+            "review it",
             "--",
             "task",
         ],
@@ -490,8 +506,8 @@ fn remote_launch_runs_on_the_target_machine_once() {
         "{stderr}"
     );
 
-    // A remote handoff into a new tab, labelled with the requesting node; the
-    // task then reaches the launched seat (the stub names b's).
+    // A remote handoff into a new tab, labelled with the requesting node (the
+    // stub child; `handoff_atomic` runs the real staging child).
     let (code, stdout, stderr) = cluster.text_as(
         Some(&a),
         0,
@@ -505,11 +521,14 @@ fn remote_launch_runs_on_the_target_machine_once() {
             "/tmp",
             "--kind",
             "claude",
+            "--summary",
+            "review it",
             "--",
             "look at this",
         ],
     );
     assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.starts_with("handoff seat="), "{stdout}");
     let tab_call = calls(&calls_dir)
         .into_iter()
         .find(|c| c.contains("peer-target-create"))
@@ -518,50 +537,33 @@ fn remote_launch_runs_on_the_target_machine_once() {
         tab_call.contains(&format!("--label=review [from {a_tag}]")),
         "{tab_call}"
     );
-    cluster.wait_until("b to get the handed-off task", crate::WAIT, || {
-        let data = cluster.ok_as(Some(&b), 1, &["inbox"]);
-        data["items"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|i| i.to_string().contains("look at this")))
-            .then_some(())
-    });
 
-    // A remote handoff whose launched seat cannot take the task (b's pane is
-    // held now): refused for good, so the launch is settled and a rerun of
-    // the same command launches a new agent instead of retrying forever.
-    cluster.write_sql(
-        1,
-        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) \
-         SELECT host_id,'w1:p1','fixture',0,'fixture' FROM herdr_hosts WHERE kind='herdr' LIMIT 1",
-    );
+    // A remote handoff into a pane that is held for recovery is refused on
+    // node 1 before any child runs, and nothing is authored there.
     let before = calls(&calls_dir).len();
-    let refused_handoff = || {
-        cluster.text_as(
-            Some(&a),
-            0,
-            &[
-                "handoff",
-                "--pane",
-                &format!("{P2}@{b_tag}"),
-                "--kind",
-                "claude",
-                "--",
-                "will not land",
-            ],
-        )
-    };
-    let (code, _, stderr) = refused_handoff();
-    assert_ne!(code, 0);
-    assert!(stderr.contains("cannot take a handoff"), "{stderr}");
-    assert!(stderr.contains("a rerun launches a new agent"), "{stderr}");
-    assert_eq!(calls(&calls_dir).len(), before + 1);
-    let (code, _, _) = refused_handoff();
-    assert_ne!(code, 0);
-    assert_eq!(
-        calls(&calls_dir).len(),
-        before + 2,
-        "settled: the rerun launched anew"
+    // (The earlier handoff's pair thread is still replicating to node 1.)
+    cluster.wait_converged(crate::WAIT);
+    let messages = cluster.kinds(1);
+    let (code, _, stderr) = cluster.text_as(
+        Some(&a),
+        0,
+        &[
+            "handoff",
+            "--pane",
+            &format!("{P3}@{b_tag}"),
+            "--kind",
+            "claude",
+            "--summary",
+            "review it",
+            "--",
+            "will not land",
+        ],
     );
+    assert_ne!(code, 0);
+    assert!(stderr.contains("held for recovery"), "{stderr}");
+    assert_eq!(calls(&calls_dir).len(), before, "no child ran");
+    cluster.wait_converged(crate::WAIT);
+    assert_eq!(cluster.kinds(1), messages, "nothing authored on node 1");
 
     // A launch child killed before it answered (it may have started the
     // agent): recorded unconfirmed, the request kept, so a rerun reports the
@@ -583,7 +585,7 @@ fn remote_launch_runs_on_the_target_machine_once() {
 
     // peer list on node 1 shows node 0's launches.
     let (_, peers, _) = cluster.text_as(None, 1, &["peer", "list"]);
-    assert!(peers.contains("peer_launches=9 last=failed:"), "{peers}");
+    assert!(peers.contains("peer_launches=8 last=failed:"), "{peers}");
 
     // An older peer without peer.launch.v1: refused, nothing local.
     let (code, _, stderr) = cluster.text_as(

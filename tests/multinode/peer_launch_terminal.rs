@@ -3,7 +3,7 @@
 //! `internal peer-target-create`.
 
 use crate::support::{self, P1, P2};
-use herdr_threads::sync::frame::PEER_LAUNCH_TERMINAL_CAP;
+use herdr_threads::sync::frame::PEER_HANDOFF_CAP;
 use herdr_threads::test_support::fake_hc::FakeHc;
 use herdr_threads::test_support::multinode::{Cluster, ClusterOptions};
 
@@ -45,7 +45,16 @@ fn handoff_into(
     };
     let mut args = vec!["handoff"];
     args.extend(target.iter().map(String::as_str));
-    args.extend(["--cwd", "/tmp", "--kind", "claude", "--", "look at this"]);
+    args.extend([
+        "--cwd",
+        "/tmp",
+        "--kind",
+        "claude",
+        "--summary",
+        "review the change",
+        "--",
+        "look at this",
+    ]);
     cluster.text_as_env(Some(seat), 0, &args, &env)
 }
 
@@ -231,8 +240,8 @@ fn assert_run_params(params: &serde_json::Value) {
     assert!(!hint.trim().is_empty(), "{params}");
 }
 
-// Kills: a NewTerminal sent to a peer that never advertised the capability (an older
-// peer reads it as `unknown`), a capable peer's terminal not created on its herdr-core,
+// Kills: a handoff into a new terminal sent to a peer that never advertised the handoff
+// capability (an older peer reads the target as `unknown` and drops the message), a capable peer's terminal not created on its herdr-core,
 // and a terminal that inherits a parent, notifies the coordinator or is kept.
 #[test]
 fn incapable_peer_never_sent_new_terminal() {
@@ -245,7 +254,7 @@ fn incapable_peer_never_sent_new_terminal() {
             env: vec![(
                 1,
                 "HT_TEST_WITHHOLD_CAPS".to_owned(),
-                PEER_LAUNCH_TERMINAL_CAP.to_owned(),
+                PEER_HANDOFF_CAP.to_owned(),
             )],
             ..Default::default()
         },
@@ -261,7 +270,7 @@ fn incapable_peer_never_sent_new_terminal() {
     let (code, stdout, stderr) = handoff_terminal(&cluster, &a, &b_tag);
     assert_ne!(code, 0, "{stdout}");
     assert!(
-        stderr.contains(&format!("needs {PEER_LAUNCH_TERMINAL_CAP}")),
+        stderr.contains(&format!("needs {PEER_HANDOFF_CAP}")),
         "{stderr}"
     );
     // Nothing reached node 1's launcher: no request row.
@@ -446,4 +455,214 @@ fn peer_tab_create_alias_matches_peer_target_create() {
         p
     };
     assert_eq!(strip(runs[0].params.clone()), strip(runs[1].params.clone()));
+}
+
+/// A handoff into a new terminal on `machine` with `--profile-dir dir`.
+fn handoff_terminal_with_profile(
+    cluster: &Cluster,
+    seat: &herdr_threads::test_support::multinode::Seat,
+    machine: &str,
+    dir: &std::path::Path,
+) -> (i32, String, String) {
+    let target = format!("@{machine}");
+    cluster.text_as_env(
+        Some(seat),
+        0,
+        &[
+            "handoff",
+            "--new-terminal",
+            "--space",
+            &target,
+            "--cwd",
+            "/tmp",
+            "--kind",
+            "claude",
+            "--summary",
+            "review the change",
+            "--profile-dir",
+            dir.to_str().unwrap(),
+            "--",
+            "look at this",
+        ],
+        &[("HT_TEST_REMOTE_LAUNCH_TIMEOUT_MS", "30000")],
+    )
+}
+
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let dir = herdr_threads::test_support::scratch::temp_path(format!(
+        "ht-{name}-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.canonicalize().unwrap()
+}
+
+// Kills: a gate argv without the frozen prompt or the profile root, a harness released before
+// the staged Send exists (the gate view must stay closed until the task message is on the
+// target), and a gate that does not open once it is.
+#[test]
+fn handoff_new_terminal_gate_waits_for_staging() {
+    use herdr_threads::test_support::spawn::{SpawnOwned, command};
+    let hc = FakeHc::start();
+    let (cluster, a, b_tag, marker) = core_cluster("mn-peer-term-handoff", &hc);
+    let profile = scratch_dir("profile");
+    let (code, stdout, stderr) = cluster.wait_until("the link to node 1", crate::WAIT, || {
+        let out = handoff_terminal_with_profile(&cluster, &a, &b_tag, &profile);
+        (!out.2.contains("unreachable")).then_some(out)
+    });
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let runs = hc.calls_to("terminal.run");
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_run_params(&runs[0].params);
+    let argv: Vec<String> = runs[0].params["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    let at = argv.iter().position(|x| x == "--config-root").unwrap();
+    assert_eq!(
+        argv[at + 1],
+        format!("claude={}", profile.display()),
+        "{argv:?}"
+    );
+    let tail = argv[argv.iter().rposition(|x| x == "--").unwrap()..].join(" ");
+    assert!(
+        tail.contains("review the change") && tail.contains(&format!("from: {}", a.id)),
+        "the harness argv carries the prompt: {tail}"
+    );
+    assert_gate_launch(&cluster, &hc, &marker, "t1", &stdout);
+
+    // Close the gate: un-stage the message. A second shim for the same bootstrap must wait,
+    // not exec the harness; once the message is back it proceeds.
+    let id = cluster
+        .scalar(1, "SELECT id FROM peer_requests", &[])
+        .unwrap();
+    let staged = cluster
+        .scalar(1, "SELECT handoff_message FROM peer_requests", &[])
+        .expect("a staged message");
+    cluster.write_sql(1, "UPDATE peer_requests SET handoff_message=NULL");
+    let (dir, path) = standin();
+    let _ = dir;
+    let second = marker.with_file_name("second-marker");
+    let mut child = command(crate::BIN)
+        .env("PATH", &path)
+        .env("HC_TERMINAL_ID", "t1")
+        .env("HC_TERMINAL_SOCKET", hc.socket())
+        .env("HT_STANDIN_MARKER", &second)
+        .arg("--state-dir")
+        .arg(cluster.state_dir(1))
+        .args([
+            "internal",
+            "launch-gate",
+            "--bootstrap",
+            &format!("{id}:1"),
+            "--",
+        ])
+        .arg("claude")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn_owned()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(
+        child.try_wait().unwrap().is_none() && !second.exists(),
+        "the gate released a harness without the staged Send"
+    );
+    cluster.write_sql(
+        1,
+        &format!("UPDATE peer_requests SET handoff_message='{staged}'"),
+    );
+    cluster.wait_until("the gate to open on the staged Send", crate::WAIT, || {
+        second.exists().then_some(())
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+// Kills: a handoff refused by the target (a profile directory that is not there) that still
+// creates a terminal or authors a fact, and a refusal that leaves the sender without a ledger
+// answer.
+#[test]
+fn handoff_new_terminal_refusal_creates_no_terminal() {
+    let hc = FakeHc::start();
+    let (cluster, a, b_tag, _marker) = core_cluster("mn-peer-term-refuse", &hc);
+    cluster.wait_until("the link to node 1", crate::WAIT, || {
+        let out = cluster.text_as_env(Some(&a), 0, &["peer", "list"], &[]);
+        out.1.contains("linked").then_some(())
+    });
+    let before = (cluster.kinds(0), cluster.kinds(1));
+    let missing = scratch_dir("missing").join("not-there");
+    let (code, _, stderr) = handoff_terminal_with_profile(&cluster, &a, &b_tag, &missing);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("refused"), "{stderr}");
+    assert!(
+        hc.calls_to("terminal.run").is_empty(),
+        "a terminal was created"
+    );
+    assert_eq!((cluster.kinds(0), cluster.kinds(1)), before);
+    assert_eq!(
+        cluster
+            .scalar(0, "SELECT state FROM handoff_obligations", &[])
+            .as_deref(),
+        Some("failed")
+    );
+}
+
+// Kills: a bare `launch --new-terminal` turned into a handoff (a prompt or config root in the
+// gate argv, a ledger row, a message).
+#[test]
+fn bare_new_terminal_unchanged() {
+    let hc = FakeHc::start();
+    let (cluster, a, b_tag, _marker) = core_cluster("mn-peer-term-bare", &hc);
+    let target = format!("@{b_tag}");
+    let (code, stdout, stderr) = cluster.wait_until("the link to node 1", crate::WAIT, || {
+        let out = cluster.text_as_env(
+            Some(&a),
+            0,
+            &[
+                "launch",
+                "--new-terminal",
+                "--space",
+                &target,
+                "--cwd",
+                "/tmp",
+                "--kind",
+                "claude",
+            ],
+            &[("HT_TEST_REMOTE_LAUNCH_TIMEOUT_MS", "30000")],
+        );
+        (!out.2.contains("unreachable")).then_some(out)
+    });
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let runs = hc.calls_to("terminal.run");
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    let argv = runs[0].params["argv"].to_string();
+    assert!(
+        !argv.contains("--config-root") && !argv.contains("from:"),
+        "{argv}"
+    );
+    assert_eq!(
+        cluster
+            .scalar(0, "SELECT count(*) FROM handoff_obligations", &[])
+            .as_deref(),
+        Some("0")
+    );
+    for node in 0..2 {
+        assert!(
+            !cluster.kinds(node).contains_key("message.sent"),
+            "no message authored (node {node})"
+        );
+    }
+    assert_eq!(
+        cluster
+            .scalar(
+                1,
+                "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                &[]
+            )
+            .as_deref(),
+        Some("0")
+    );
 }

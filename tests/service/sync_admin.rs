@@ -285,6 +285,7 @@ impl Rig {
             log: Arc::new(move |line: &str| lines.lock().unwrap().push(line.to_owned())),
             runtime: runtime.handle().clone(),
             discovery: None,
+            identity: Arc::new(NodeIdentity::from_seed(SEED_A)),
         };
         Self {
             node,
@@ -1389,6 +1390,7 @@ fn node_rows_render_compactly() {
                 rows: vec![],
                 discovery: None,
                 nodes,
+                handoffs: vec![],
             })
         })
     };
@@ -1430,6 +1432,63 @@ fn node_rows_render_compactly() {
     );
     // `empty` only when there is neither a target nor a node; an older
     // daemon's reply has no `nodes`: no node lines.
+    let old: Reply =
+        serde_json::from_value(serde_json::json!({"op": "peers", "rows": []})).unwrap();
+    assert_eq!(text(old), "peers\nempty\n");
+}
+
+// Kills: a handoff ledger row rendered with other fixed text (51, 36, 32, 36 and 21 bytes plus the
+// 8-character request id and the node label), a line for a row `peer list` hides, a detail
+// that spans lines (escaped to one), and an older daemon's reply (no handoffs) printing any.
+#[test]
+fn handoff_ledger_lines_render_compactly() {
+    use crate::protocol::sync_admin::HandoffLedgerRow;
+    let request = "0123456789abcdef0123456789abcdef0123";
+    let row =
+        |state: &str, seat: Option<&str>, overdue: bool, detail: Option<&str>| HandoffLedgerRow {
+            request: request.into(),
+            node: "Q0V".into(),
+            state: state.into(),
+            seat: seat.map(str::to_owned),
+            overdue,
+            detail: detail.map(str::to_owned),
+        };
+    let rendered = text(Reply::Peers {
+        forgotten: 0,
+        rows: vec![],
+        discovery: None,
+        nodes: vec![],
+        handoffs: vec![
+            row("sent", None, true, None),
+            row("launched", Some("s8"), true, None),
+            row("expired", None, true, None),
+            row("expired", Some("s9"), true, None),
+            row("failed", None, false, Some("no such\nprofile")),
+            // Hidden: linked, an open row that is not overdue, a launched row that is not.
+            row("linked", Some("s9"), false, None),
+            row("sent", None, false, None),
+            row("launched", Some("s9"), false, None),
+        ],
+    });
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "peers",
+            "handoff 01234567 to Q0V overdue: not confirmed by that machine",
+            "handoff 01234567 to Q0V overdue unlinked: seat s8",
+            "handoff 01234567 to Q0V expired unconfirmed",
+            "handoff 01234567 to Q0V expired unlinked: seat s9",
+            "handoff 01234567 to Q0V failed: no such\\nprofile",
+        ]
+    );
+    // Fixed text, without the 8-character id and the 3-character tag (and seat or detail).
+    let fixed = |line: &str, extra: usize| line.len() - 8 - 3 - extra;
+    assert_eq!(fixed(lines[1], 0), 51);
+    assert_eq!(fixed(lines[2], 2), 36);
+    assert_eq!(fixed(lines[3], 0), 32);
+    assert_eq!(fixed(lines[4], 2), 36);
+    assert_eq!(fixed(lines[5], "no such\\nprofile".len()), 21);
     let old: Reply =
         serde_json::from_value(serde_json::json!({"op": "peers", "rows": []})).unwrap();
     assert_eq!(text(old), "peers\nempty\n");

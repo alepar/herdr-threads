@@ -833,3 +833,40 @@ fn view_reports_the_newest_pending_notice_outside_the_fingerprint() {
     assert!(second > first, "{first:?} {second:?}");
     assert_eq!(fp(&store), before, "notices are not in the fingerprint");
 }
+
+// Kills: the seat-addressed handoff alert missing from the mod's other_pending.
+#[test]
+fn other_pending_counts_the_handoff_alert() {
+    use crate::store::handoff_obligations as ledger;
+    let (store, _conn, _) = fixture();
+    let before = fp(&store).other_pending;
+    {
+        let turn = store.writer(&budget()).unwrap();
+        ledger::insert_or_get(
+            &turn,
+            &ledger::NewObligation {
+                request: "000000000000000000000000000000000001",
+                target_node: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                author: "s",
+                message: "m1",
+                requested_at: 1,
+                deadline_at: Some(2),
+                request_bytes: b"r",
+            },
+        )
+        .unwrap();
+        assert!(ledger::mark_overdue(&turn, "000000000000000000000000000000000001", 3).unwrap());
+    }
+    assert_eq!(fp(&store).other_pending, before + 1);
+    {
+        let turn = store.writer(&budget()).unwrap();
+        ledger::mark_alerts_shown(
+            &turn,
+            "s",
+            &["000000000000000000000000000000000001".to_string()],
+            4,
+        )
+        .unwrap();
+    }
+    assert_eq!(fp(&store).other_pending, before);
+}

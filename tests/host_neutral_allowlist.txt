@@ -22,4 +22,5 @@ src/host/target_creator.rs # host construction by probed kind (H3)
 src/host/named.rs # the named host adapter: owns its env names and its kind
 src/test_support/ # test support, not in a release daemon; env_remove keeps private tmux isolated
 src/service/host_sessions.rs::tests # unit-test fixtures name kinds to set up rows and fakes
+src/service/peer_launcher.rs::tests # unit-test fixtures name the hc kind to build the expected gate argv
 src/store/hosts.rs::tests # unit-test fixtures name kinds to set up rows and fakes

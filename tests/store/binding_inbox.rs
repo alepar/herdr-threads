@@ -308,6 +308,7 @@ fn page_in(fx: &Fx, claim: Option<&CallerClaim>, thread: Option<&str>) -> Vec<Ro
                 max_bytes: 60_000,
                 cursor: None,
             },
+            seat_alerts: false,
         }),
         &OutputSpec::default(),
         &budget(),
@@ -350,6 +351,7 @@ fn advance(fx: &Fx, claim: &CallerClaim, op: &str, displayed: &[&MessageId]) {
                 claim: claim.clone(),
                 operation: OperationId::new(op),
                 displayed: displayed.iter().map(|m| (*m).clone()).collect(),
+                alerts: Vec::new(),
             },
             &budget(),
         )
@@ -764,6 +766,7 @@ fn warning_refs(fx: &Fx, claim: &CallerClaim) -> Vec<String> {
                 max_bytes: 60_000,
                 cursor: None,
             },
+            seat_alerts: false,
         }),
         &OutputSpec::default(),
         &budget(),
@@ -889,6 +892,7 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
                 max_bytes: 60_000,
                 cursor: Some("v2:anything".into()),
             },
+            seat_alerts: false,
         }),
         &OutputSpec::default(),
         &budget(),
@@ -1019,6 +1023,7 @@ fn traverse(
                     max_bytes,
                     cursor: cursor.take(),
                 },
+                seat_alerts: false,
             }),
             &OutputSpec::default(),
             &budget(),
@@ -1400,6 +1405,7 @@ fn display(store: &crate::store::SqliteStore, op: &str, page: &[Shown]) {
                     claim: claim_b1(),
                     operation: OperationId::new(format!("adv-{op}")),
                     displayed: whole,
+                    alerts: Vec::new(),
                 },
                 &budget(),
             )
@@ -1468,3 +1474,74 @@ fn deadline_traversals_show_every_item_exactly_once() {
 
 #[path = "readonly_bindings.rs"]
 mod readonly_bindings;
+
+#[test]
+fn seat_alerts_ride_the_first_page_only() {
+    let mut fx = fx("seat-alerts-first-page-only");
+    for n in 0..3 {
+        send(&mut fx, &format!("m{n}"));
+    }
+    crate::store::handoff_obligations::insert_or_get(
+        &fx.conn,
+        &crate::store::handoff_obligations::NewObligation {
+            request: "000000000000000000000000000000000001",
+            target_node: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            author: "b",
+            message: "m1",
+            requested_at: 1,
+            deadline_at: Some(2),
+            request_bytes: b"A",
+        },
+    )
+    .unwrap();
+    assert!(
+        crate::store::handoff_obligations::mark_overdue(
+            &fx.conn,
+            "000000000000000000000000000000000001",
+            3
+        )
+        .unwrap()
+    );
+    let mut cursor = None;
+    let mut alert_pages = Vec::new();
+    let mut pages = 0;
+    for page_no in 0..20 {
+        pages += 1;
+        let CommandResult::InboxBatchV2(page) = query_with_output(
+            &fx.context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
+                thread: None,
+                claim: Some(claim_b1()),
+                seat: Some(SeatId::new("b")),
+                page: PageRequest {
+                    limit: 2,
+                    max_bytes: 60_000,
+                    cursor: cursor.take(),
+                },
+                seat_alerts: true,
+            }),
+            &OutputSpec::default(),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!("v2 page")
+        };
+        if page
+            .items
+            .iter()
+            .any(|i| matches!(i, InboxBatchV2Item::HandoffOverdue(_)))
+        {
+            alert_pages.push(page_no);
+        }
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert!(cursor.is_none(), "the traversal ends");
+    // The traversal spans several pages, and only the first carries the alert.
+    assert!(pages >= 2, "{pages} pages");
+    assert_eq!(alert_pages, [0]);
+}

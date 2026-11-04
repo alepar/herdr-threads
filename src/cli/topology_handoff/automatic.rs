@@ -871,6 +871,7 @@ fn effective_launch(
         .ok_or_else(|| invalid("automatic child lacks frozen startup input"))?;
     let prompt = crate::cli::handoff::launch_prompt(
         id.plan.payload.launch.summary_prompt.as_ref(),
+        id.plan.payload.launch.sender_prompt.as_deref(),
         thread.as_str(),
         &plan.context,
         &id.claim.instance,

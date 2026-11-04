@@ -8,7 +8,7 @@
     "repeat=true",
     "--config",
     "caller=\"quoted value\"",
-    "Handoff: Golden goal — full task in thread <thread> (arrives as a herdr-threads message; if not shown, run `herdr-threads --state-dir <root>/state --host-endpoint <root>/host.sock inbox`)."
+    "Golden goal — from: sender"
   ],
   "kind": "codex",
   "name": "seat-recipien",

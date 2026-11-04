@@ -331,6 +331,32 @@ fn with_requirements(
     Ok(class)
 }
 
+/// The seat's pending seat-addressed handoff alerts (ht-8lem Q4): their count and the frontier
+/// key `(overdue_seq, 0)` of the newest one.
+pub(crate) fn seat_alerts(
+    db: &Connection,
+    seat_id: &str,
+) -> Result<(u64, Option<LogicalPublicationKey>), ApiError> {
+    let count =
+        u64::try_from(super::handoff_obligations::alert_count(db, seat_id).map_err(store_error)?)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative alert count"))?;
+    if count == 0 {
+        return Ok((0, None));
+    }
+    let seq = super::handoff_obligations::latest_alert_seq(db, seat_id)
+        .map_err(store_error)?
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative alert sequence"))?;
+    Ok((
+        count,
+        seq.map(|decision_seq| LogicalPublicationKey {
+            decision_seq,
+            event_offset: 0,
+        }),
+    ))
+}
+
 fn frontier_key(set: &PendingSet) -> Result<Option<LogicalPublicationKey>, ApiError> {
     set.items
         .first()
@@ -463,10 +489,15 @@ fn digest_for(
     let (invitation_class, receipt_thread_steps) =
         invitation_class(db, seat_id, decision_seq, &invitations, &receipt_class)?;
     check_budget()?;
+    let (alerts, alert_key) = seat_alerts(db, seat_id)?;
+    let mut warning_class = class(&warnings)?;
+    // The seat-addressed handoff alert has no thread, so it is counted but never listed.
+    warning_class.count += alerts;
+    warning_class.has_more = warning_class.count > warning_class.items.len() as u64;
     let frontier = LogicalAttentionFrontier {
         invitation: frontier_key(&invitations)?,
         addressed_receipt: frontier_key(&receipts)?,
-        actionable_warning: frontier_key(&warnings)?,
+        actionable_warning: frontier_key(&warnings)?.max(alert_key),
         lazy: None,
     };
     let pair = |key: Option<LogicalPublicationKey>| key.map(|k| (k.decision_seq, k.event_offset));
@@ -491,7 +522,7 @@ fn digest_for(
         },
         invitations: with_requirements(db, seat_id, invitation_class)?,
         receipts: receipt_class,
-        warnings: class(&warnings)?,
+        warnings: warning_class,
         unavailability_open: open != 0,
         lazy: None,
         mail: match &mail {
@@ -1515,10 +1546,10 @@ pub struct WakeProbe {
     pub sql: &'static str,
 }
 
-/// The eight pending access paths wake discovery probes per live non-human
+/// The nine pending access paths wake discovery probes per live non-human
 /// seat (spec D2), in probe order. Each is an `INDEXED BY` seat-leading
 /// existence lookup. `wake_work` is deliberately not probed.
-pub const WAKE_PROBES: [WakeProbe; 8] = [
+pub const WAKE_PROBES: [WakeProbe; 9] = [
     WakeProbe {
         index: "digest_pending_invitations_seat",
         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1)",
@@ -1551,9 +1582,13 @@ pub const WAKE_PROBES: [WakeProbe; 8] = [
         index: "warning_conditions_invitation_origin",
         sql: "SELECT EXISTS(SELECT 1 FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND invitation_originator_seat_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL)",
     },
+    WakeProbe {
+        index: "handoff_obligations_alert",
+        sql: "SELECT EXISTS(SELECT 1 FROM handoff_obligations INDEXED BY handoff_obligations_alert WHERE author=?1 AND overdue_seq IS NOT NULL AND thread_warned_at IS NULL AND alert_shown_at IS NULL AND state!='linked')",
+    },
 ];
 
-/// Does any pending access path hold a row for the seat? At most eight O(1)
+/// Does any pending access path hold a row for the seat? At most nine O(1)
 /// probes, then the delivery-row wake seeks of `has_wake_rows` (whose rows pass the seat-level
 /// unread post-filter, connected top-level bindings), stopping at the first hit. A hit is only a reason to examine the
 /// seat: the canonical judges still decide whether the work is actionable.
@@ -1750,7 +1785,9 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
     let invitations = pending_confirming_invitations(db, seat_id, None, decision_seq)?;
     let receipts = pending_receipts(db, seat_id, None)?;
     let warnings = wake_warnings(db, seat_id, seat_pending_warnings(db, seat_id, &|| Ok(()))?)?;
-    let latest_warning_seq = warnings.items.first().map(|item| item.key.0);
+    let (_, alert_key) = seat_alerts(db, seat_id)?;
+    let alert_seq = alert_key.map(|key| i64::try_from(key.decision_seq).unwrap_or(i64::MAX));
+    let latest_warning_seq = warnings.items.first().map(|item| item.key.0).max(alert_seq);
     // A pending delivery row wakes the seat iff its priority is admitted by the seat's current
     // nudge threshold; rows it does not admit leave the lazy frontier absent.
     let lazy = super::lazy_delivery::wake_frontier(
@@ -1766,7 +1803,7 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
             frontier: LogicalAttentionFrontier {
                 invitation: frontier_key(&invitations)?,
                 addressed_receipt: frontier_key(&receipts)?,
-                actionable_warning: frontier_key(&warnings)?,
+                actionable_warning: frontier_key(&warnings)?.max(alert_key),
                 lazy,
             },
         },

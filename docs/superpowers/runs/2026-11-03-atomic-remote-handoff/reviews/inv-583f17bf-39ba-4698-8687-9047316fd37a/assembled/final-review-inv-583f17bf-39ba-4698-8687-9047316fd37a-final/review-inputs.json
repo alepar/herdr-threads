@@ -1,0 +1,1286 @@
+{
+  "base": "1e620fdb570ab6e8a254cee334fca7a484d79354",
+  "head": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+  "sourceAvailable": true,
+  "wholeRangeReady": false,
+  "status": "unavailable",
+  "changed": [
+    "TRUST-POLICY.md",
+    "docs/environments.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-design.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-design-1-step-back-keys.txt",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-design-1-step-back.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-design-1.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-design-2.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-pr-1-final-review-keys.txt",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-pr-1-punch-list.txt",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-pr-1-scope-keys.txt",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-pr-1-step-back-keys.txt",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-pr-1-step-back.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-pr-1.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/2026-11-03-atomic-remote-handoff-roast-pr-2.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/amend-design-1.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/coverage-amend-design-1-requirements.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/coverage-findings-round-1.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/coverage-findings-round-2.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/coverage-ledger.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/coverage-round-1-requirements.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/coverage-round-1-review-1.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/coverage-round-1-review-2.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/coverage-round-2-requirements.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/design-tree.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/findings-ledger-design.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/findings-ledger.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/findings-overrides-design.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/findings-overrides.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/friction.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/profile-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb.json",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/profile-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/profile-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4.json",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/profile-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb/assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/bounded-coverage.json",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb/assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/bounded-draft.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb/assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/diffstat.txt",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb/assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/generated-input-provenance.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb/assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/review-inputs.json",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-b56f0808-bb7b-4018-9456-fe8dc04793a4/assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/bounded-coverage.json",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-b56f0808-bb7b-4018-9456-fe8dc04793a4/assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/bounded-draft.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-b56f0808-bb7b-4018-9456-fe8dc04793a4/assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/diffstat.txt",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-b56f0808-bb7b-4018-9456-fe8dc04793a4/assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/generated-input-provenance.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-b56f0808-bb7b-4018-9456-fe8dc04793a4/assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/review-inputs.json",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-b56f0808-bb7b-4018-9456-fe8dc04793a4/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4.md",
+    "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md",
+    "docs/superpowers/specs/INDEX.md",
+    "evidence/ht-8lem.4/lib-tests.log",
+    "integrations/skill/SKILL.md",
+    "migrations/node/0015_atomic_remote_handoff.sql",
+    "scripts/check-wire-compat",
+    "scripts/tests/test_check_wire_compat.py",
+    "src/app.rs",
+    "src/cli/accept_delivery.rs",
+    "src/cli/commands.rs",
+    "src/cli/handoff.rs",
+    "src/cli/handoff_delivery.rs",
+    "src/cli/help.rs",
+    "src/cli/hook_inbox.rs",
+    "src/cli/launch.rs",
+    "src/cli/launch_new.rs",
+    "src/cli/mod.rs",
+    "src/cli/peer_handoff_launch.rs",
+    "src/cli/peer_launch.rs",
+    "src/cli/topology_handoff.rs",
+    "src/cli/topology_handoff/automatic.rs",
+    "src/cli/watch.rs",
+    "src/daemon/control.rs",
+    "src/daemon/mod.rs",
+    "src/delivery/assemble.rs",
+    "src/ports.rs",
+    "src/protocol/authority.rs",
+    "src/protocol/capabilities.rs",
+    "src/protocol/commands.rs",
+    "src/protocol/handoff.rs",
+    "src/protocol/handoff/automatic.rs",
+    "src/protocol/handoff/automatic_bootstrap.rs",
+    "src/protocol/output_compact.rs",
+    "src/protocol/results.rs",
+    "src/protocol/sync_admin.rs",
+    "src/scheduler/deadlines.rs",
+    "src/service/delivery_pull.rs",
+    "src/service/dispatch.rs",
+    "src/service/kicks.rs",
+    "src/service/mod.rs",
+    "src/service/peer_handoff.rs",
+    "src/service/peer_launcher.rs",
+    "src/service/sync_admin.rs",
+    "src/service/workers.rs",
+    "src/store/attention.rs",
+    "src/store/control.rs",
+    "src/store/control/direct.rs",
+    "src/store/handoff_obligations.rs",
+    "src/store/materialize.rs",
+    "src/store/messages.rs",
+    "src/store/mod.rs",
+    "src/store/peer_handoff.rs",
+    "src/store/peer_requests.rs",
+    "src/store/queries.rs",
+    "src/store/queries/inbox_v2/mod.rs",
+    "src/store/receipts.rs",
+    "src/store/schema.rs",
+    "src/store/seats/cooperative.rs",
+    "src/store/topology_handoff/automatic.rs",
+    "src/store/topology_handoff/runtime.rs",
+    "src/sync/coordinator.rs",
+    "src/sync/coordinator/remote_launch.rs",
+    "src/sync/facts/message.rs",
+    "src/sync/facts/mod.rs",
+    "src/sync/frame.rs",
+    "src/sync/handoff_block.rs",
+    "src/sync/mod.rs",
+    "src/test_support/multinode.rs",
+    "tests/cli/commands.rs",
+    "tests/cli/cooperative.rs",
+    "tests/cli/follow_retry.rs",
+    "tests/cli/golden_contract.rs",
+    "tests/cli/handoff.rs",
+    "tests/cli/handoff_delivery.rs",
+    "tests/cli/hook_inbox.rs",
+    "tests/combined.rs",
+    "tests/contracts.rs",
+    "tests/daemon/consumer_audit.rs",
+    "tests/daemon/multi_host.rs",
+    "tests/daemon/peer_handoff_decide.rs",
+    "tests/fixtures/golden/handoff/claude.new-tab.bootstrap-argv.json",
+    "tests/fixtures/golden/handoff/claude.new-tab.json",
+    "tests/fixtures/golden/handoff/claude.new-tab.text",
+    "tests/fixtures/golden/handoff/claude.pane.bootstrap-argv.json",
+    "tests/fixtures/golden/handoff/claude.pane.json",
+    "tests/fixtures/golden/handoff/claude.pane.text",
+    "tests/fixtures/golden/handoff/codex.new-tab.bootstrap-argv.json",
+    "tests/fixtures/golden/handoff/codex.new-tab.json",
+    "tests/fixtures/golden/handoff/codex.new-tab.text",
+    "tests/fixtures/golden/handoff/codex.pane.bootstrap-argv.json",
+    "tests/fixtures/golden/handoff/codex.pane.json",
+    "tests/fixtures/golden/handoff/codex.pane.text",
+    "tests/handoff_agy.rs",
+    "tests/handoff_topology_authority.rs",
+    "tests/handoff_topology_cli.rs",
+    "tests/integration/channel_activation.rs",
+    "tests/integration/lazy_attention.rs",
+    "tests/integration/notice_wake.rs",
+    "tests/integration/summary_flow.rs",
+    "tests/integration/topology_activation.rs",
+    "tests/lifecycle_ux.rs",
+    "tests/multinode.rs",
+    "tests/multinode/handoff_atomic.rs",
+    "tests/multinode/peer_launch_terminal.rs",
+    "tests/multinode/remote_addresses.rs",
+    "tests/protocol/capabilities.rs",
+    "tests/protocol/output.rs",
+    "tests/scheduler/deadlines.rs",
+    "tests/service/cooperative.rs",
+    "tests/service/delivery_pull.rs",
+    "tests/service/graph_d2.rs",
+    "tests/service/host_routing.rs",
+    "tests/service/peer_handoff.rs",
+    "tests/service/sync_admin.rs",
+    "tests/store/archival_legacy.rs",
+    "tests/store/attention.rs",
+    "tests/store/binding_inbox.rs",
+    "tests/store/control.rs",
+    "tests/store/cooperative_checkin.rs",
+    "tests/store/deadline_window.rs",
+    "tests/store/facade.rs",
+    "tests/store/first_contact.rs",
+    "tests/store/handoff_obligations.rs",
+    "tests/store/invitation_content.rs",
+    "tests/store/lazy_inbox.rs",
+    "tests/store/materialize.rs",
+    "tests/store/mod_seat_view.rs",
+    "tests/store/nudge_threshold.rs",
+    "tests/store/peer_handoff.rs",
+    "tests/store/priority_send.rs",
+    "tests/store/queries.rs",
+    "tests/store/query_work_q4.rs",
+    "tests/store/remote_seats.rs",
+    "tests/store/schema.rs",
+    "tests/store/topology_attachment_guard.rs",
+    "tests/store/topology_handoff.rs",
+    "tests/store/wake_discovery_cost.rs",
+    "tests/sync/facts_message.rs",
+    "tests/sync/forward_compat.rs"
+  ],
+  "slices": [],
+  "archives": [
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 51,
+      "invocationId": "inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/bounded-original-draft.md",
+          "sha256": "3e95b9346deda8956adefbd62333b67d381e28eb522071278793358838e0bc0b"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/coverage.json",
+          "sha256": "57737e3dd8ae4dc3d47cc76f614c7ddca330dd180bb64ca18952b0854bc664ba"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/diffstat.txt",
+          "sha256": "6d0e0b9d6d24d4bec04418078d19f99565158189c84a00a83ec83590a23d7a89"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/digest.md",
+          "sha256": "4eb3f3df8b2bb88945b3431665893e9c5c1aeff0d3e86b47e46b7bf46b3bbf3f"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/generated-input-provenance.md",
+          "sha256": "36eb6457c7100233d00b582fb41983ec091a6d8e4bab4a287c827f6d1f80d12b"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/review-inputs.json",
+          "sha256": "1a41bf538b43254bee5684b3e82a2ce05256b64bbef5391d977e14e44c744509"
+        },
+        {
+          "path": "final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md",
+          "sha256": "f08ee9cf5c4082715305142a7160277f32deab4b66d8c77cf83e93e4b51b53f0"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 58,
+      "invocationId": "inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/bounded-coverage.json",
+          "sha256": "171e924c711f045dda3466a143c72685fc64987f850387afa2d115f40a81b07c"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/bounded-draft.md",
+          "sha256": "65f29c97477956f8c183bd61e5a98d330e90fa0dfd6516ce3b8e7f315a49e4a4"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/diffstat.txt",
+          "sha256": "04f9782919ade98f3377348588c0e35818108e6a31ff0f4ca2ab7caf9b247ff8"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/digest.md",
+          "sha256": "0c69a5996894474a58d5c88624cd7bb35434b4b4845374c05bbc817c474662d6"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/generated-input-provenance.md",
+          "sha256": "e2bf6e81470eb0adecf7775d7f6ac7ae971d5f1047e1ec74b422fb97c0a63aed"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/review-inputs.json",
+          "sha256": "b11e675492e2f1ca076869120b688baf45091b9c482b1db8089786526f187a9d"
+        },
+        {
+          "path": "final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md",
+          "sha256": "d5f7d4e5796abf5d6c8bd65e878522d620bd7f9da34909ff64024881126f7abb"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 62,
+      "invocationId": "inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/clusters.json",
+          "sha256": "5b0704d424f7f988f66067f3878514d5995eb22b69d436e4dbdd3b3560fe164c"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/diffstat.txt",
+          "sha256": "cf1a5d8e7b57332c649889c815fb558153a94d49a93937d67cedd9341a85f1b6"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/digest.md",
+          "sha256": "af53a06f3fc0c0ad11f27d6b8b46ea0c5c4fa7ec94bacb2f97d31fb83940c7d6"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/generated-input-provenance.md",
+          "sha256": "5af5013b67c1ede799aa87ccc739ade9fb933388dd54207fe9cc2afd461205f4"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/review-inputs.json",
+          "sha256": "6e4f6503d21c2d4adb4fedb767cbdd7a52956b1d931a024514c8b18a1934fb95"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000001.diff",
+          "sha256": "cf579b72c8ec3307219b3bffe7cdb994f33d10415510a8b6760d93ecf0298aea"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000002.diff",
+          "sha256": "a6ef17c6f95e206d15cadf97d1bbe71bce19151e3604c8f027815c6bd20c8c33"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000003.diff",
+          "sha256": "773275fdb3ac0d9f72196eb5e7080aa46cbfae5c8245c5126a70ff8758746d70"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000004.diff",
+          "sha256": "eafe872a4071c6cf9f32762c49133109b73acac267b10030b4582d14c520c89d"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000005.diff",
+          "sha256": "b69e78fb6bddc8f71b0cb2daf6c4da95c089f705cef36bee0200f4496352fa6f"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000006.diff",
+          "sha256": "66e1b5659e11f5729dda924312ae4ec447f186620a7729bf6a43b8557d25e631"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000007.diff",
+          "sha256": "9a7e1df6decedae9d7c3b7546caabbe5a27907990a944c500c786810915fac4a"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000008.diff",
+          "sha256": "306a921a824d610c3b1b665cb94f89db2d2408318f4b1646505193f15186cf79"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000009.diff",
+          "sha256": "555defd2f0ef6ab490851d4259b4340619f0db732364abf318089888df3e40b2"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000010.diff",
+          "sha256": "7f30cbc8e7cc76fef717a691c476c9ff88df219cc0a931aadffa597ac7046f75"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000011.diff",
+          "sha256": "606eb0b564f4b194c9797fd0dc6fa970ff8bfb9bd99211e5fb777205f63686fb"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000012.diff",
+          "sha256": "930bd2db2f9ce62e3fac9fda14323d50e4e614a3d329820dace6caceb6b6a81a"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000013.diff",
+          "sha256": "bb13317b9ca4b365965c5b48785afddf308c416509a1a322c5d76b7b5c8a02a6"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000014.diff",
+          "sha256": "8feb9013a39a5c931500c6f0a8bf9511a298c173db8aba3e38d55cbc4d79979e"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000015.diff",
+          "sha256": "408b4cd22a6f06688cfbbf2a22387aeafa43150e8e87fafc8b62e27e38cb1946"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000016.diff",
+          "sha256": "bff6c92a46f05becb3aaf182d7bddcbb1891e4506d0c39aafe4328604b1ac886"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000017.diff",
+          "sha256": "dc97748efb1ef2b5f59c8f6f2a64b2a09c883b840fc7a6c755ed2da31fcdbcb7"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000018.diff",
+          "sha256": "ab361ba0f723fd5804fe0c47f4c33d17e01c89194f99659ebb87c74e26b94e40"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000019.diff",
+          "sha256": "0f580a074d10fd97dea9a4ab167b38ff4a220d3c2bd5320a58dd40282d9bc27c"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000020.diff",
+          "sha256": "ecf0e1a72e7c28b36d5dd66a6b9628b3c26cc64fd95917d7ab18f89e44cdf74e"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000021.diff",
+          "sha256": "4be6f1fc40c1d600bc6431698fc813c4b90ac843e129e149fb846d6db5a2540d"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000022.diff",
+          "sha256": "184d0adfb2a51d0cfdde10fee04466225edd06d7eec876d24e1415250e9765a2"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000023.diff",
+          "sha256": "d508e000d59bfae079696bc50a0b590f4e5d9161eb29a3f62264ecc2cadc43a2"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000024.diff",
+          "sha256": "330cb7b5fa62326420f2b6af39048d6b3f6a53fca9e11074c47ff1f4ef5d0357"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000025.diff",
+          "sha256": "0335ad9d3a0295f75328be49c1be7efb3c15aed4c277d3c7360ef29d3429c5f0"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000026.diff",
+          "sha256": "04fa541f24cdfed2e0ac97c00046f2416d4d92565713f527b517ad3dd64e44d4"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000027.diff",
+          "sha256": "3767e8b09e9ffe0692d31d0cb70ac2f67a6877536689ca3924324e0017104160"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000028.diff",
+          "sha256": "ebe59b75d68c94a76aa681df1392ed127305761f767ee4130b3efe312912dfc5"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000029.diff",
+          "sha256": "8fe3cc3f4d00a594c740763504995d874ee56ef9d2e48f2cfa07bffc3dce4f62"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000030.diff",
+          "sha256": "09d6acc97b7b818dcc253913d7e84571940d2c9248fbe40791c72908a2c42a0f"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000031.diff",
+          "sha256": "95d0ad897fdc597a2fa1a77c92136dc60f0e08ed78cdf489a535c70255ce0eb6"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000032.diff",
+          "sha256": "e46cb2cddd69d4ea508eaf8976b2ba4e014b379bf5f71a1fe525ce81235a149c"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000033.diff",
+          "sha256": "a27a606e2edd4999bf79e915ec74c5f7d52cf37832d049a2145102aa6833848d"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000034.diff",
+          "sha256": "315f5cf0ca6d9e78cbdcf496ed206148a6bfb8d5801adbeea09e107bfd88a650"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000035.diff",
+          "sha256": "6d4e394bbbf102987ee5dcaf90a64ca4ff9c8fb999a4e38bcc0ac180e5c1565f"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000036.diff",
+          "sha256": "c69ab2fd04d57a6777c16f262f38525f752e4c09ffa3c0d1960c4ca1c025302b"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000037.diff",
+          "sha256": "3fe5b8826216233efca4b5bb1b89eac5527e8423a7e911b078d117c0a18c9766"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000038.diff",
+          "sha256": "b7ae584d9b350d8a6c3be2dadf603e11014c1e557ad819b5aa14c5642a3b9dff"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000039.diff",
+          "sha256": "1875e17d30a9306b0c39b74a56192e978cbc3ee647f4646d4000478c118f9df1"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000040.diff",
+          "sha256": "cc13bf17b3bdfb6279739b71974de7896223ea9c562645044ac44bb860eabc87"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000041.diff",
+          "sha256": "a142372a7a144d60afd0dd34e6c231e5c47d9901cc43103f9c499402028b042d"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000042.diff",
+          "sha256": "f552833f053a6451a06d7cd65c6bfea51e2246c27905bc20a0ff96a3ecffea99"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000043.diff",
+          "sha256": "56552b85fc1f4d126e2c9779a8a05cbef858a8e0086ca8f7cd5f6eae3047cf9f"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000044.diff",
+          "sha256": "81ca240a0a48c676173506abad255a64c1c1e0d2fefc7b768e632e88c8c616cf"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000045.diff",
+          "sha256": "5c6d553428e6a6eb477b81f46fd1f0c5cb98fb2d9d3aacacfbc22b4d1616c3a2"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000046.diff",
+          "sha256": "2fddd08628830be366ef14f7e613d23c2a345fe405d3f7eb8f8f3437ed0af62e"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000047.diff",
+          "sha256": "e646d49e51c90b00b296322e8ed1b8b493a95103f90bfcf1adc56c6bf26744b0"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000048.diff",
+          "sha256": "570e9fe0700440e1e3f63fb946b90ac0545ec3d0acf4845472e20c23361edabd"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000049.diff",
+          "sha256": "992e349a7cf1c6187e7419d01510c3e7e29dcdf2c3c57565c5f53559d12b1c3b"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000050.diff",
+          "sha256": "1e21d7cce8c3267fe00e03188e680ae78757e3cd49d63d5edb2b088a95989ae7"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000051.diff",
+          "sha256": "40849bfa3c87ab230f2f7edadbbd692c533eab0b069e17e1deaf932ac7821e45"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000052.diff",
+          "sha256": "ad36d5c702ec970c15453d8c5f1bdfeaea8688eeabe99991d54126d4f327b45f"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000053.diff",
+          "sha256": "15d370f20520f0de25c6a1d9f687005d151eee5cdd95e6ba2c9b35d952b1b7aa"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000054.diff",
+          "sha256": "66c620fa086bbcb2d78d58bb7f640536e695fa033d36d26f4c2ce99ea7c0b628"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000055.diff",
+          "sha256": "a5f0d730201f9f2527e7d545403772f669545ccf6188865acd72806786b571ac"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000056.diff",
+          "sha256": "257e2300b3ad79caab1ef078c1d0770274bd0081310ceb4301d2e574bb949ad0"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000057.diff",
+          "sha256": "8baac808bde6f880253ca6dd1a40d62eca05c706e3012eae102988e415c0fd0a"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000058.diff",
+          "sha256": "3999a044da88d8af7328096906b38eedc65c2321ed9b8c386ac683732b9898bb"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000059.diff",
+          "sha256": "5e3fbb7297fc48eec77973d8214d54afda0d2086bd2580daaad3c0c35fc8c10e"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000060.diff",
+          "sha256": "65b452ff146eca6987dc513e0fc976c00e4db063c1c8b9af8ee6cf07b5c973b6"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000061.diff",
+          "sha256": "eed8aea9a6ec562a1a38475ed9856ea8ebbca8a858cdd4f41665e51274fa1de4"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000062.diff",
+          "sha256": "67312fd9683dafd6068865a95ca786bd68e951b104b8074e1c455480b79fb79a"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000063.diff",
+          "sha256": "68d9b0fd6a7bcf78f1a882a1ff3f92843fa5aa6435508325ab17fd1ec2685c21"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000064.diff",
+          "sha256": "4f70f1dae1038374f4590bf9e49326883c21ab6d5d6c786f3a506f1dfb71ed4a"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000065.diff",
+          "sha256": "2a36012c3aaf780c8d694d7342ca655e2ad17ad1fd16e4967246675572ec24a3"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000066.diff",
+          "sha256": "8b08aab6e365605f8a49915422a13d73df85d9cf01270452065cab059e051edc"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000067.diff",
+          "sha256": "68f792aa22f7969872c823dca7f9545f9ea1fa663de9d40db3b764a2decc8c38"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000068.diff",
+          "sha256": "2d0b45ced64f70d33d0bbc23aec0c5d4fdcb46e880f022772bfb3128b5297fc2"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000069.diff",
+          "sha256": "8e9291e1949184729b6b9df244e587c0dea0936e55d577bf5c7ae454271f64e7"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000070.diff",
+          "sha256": "11b1c186f954807373218479465a371c9f07920b9bd52d1848856924b0c0774c"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000071.diff",
+          "sha256": "c89d9496bbf646a18060dd3236de8f6b72ace954b3bce6cacca05d2428008ff7"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000072.diff",
+          "sha256": "856464705121380dab0919d7d241662608fc8a17981115682ba374e1e0ac112d"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000073.diff",
+          "sha256": "9b0dcceaad2a54354f10376db9e2aae570ed623dd0f1535f85536f39972311b9"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000074.diff",
+          "sha256": "4c094ebdceb78bb15363c563267cf2a7604d23ed27d6dcf85fc96022cfd5e3d9"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000075.diff",
+          "sha256": "23bba3763bdba7315adbdf9f64dc1fa00ad0b511fad6fa1c48b193c86a8a4b29"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000076.diff",
+          "sha256": "952011362ce6ca87e67054ab9f2e7667d18a4e7a320429bbf729bdb111867a37"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000077.diff",
+          "sha256": "b49e14f2f2666a619981b232a19af54e0fefb60130d004d3abb36d321938703c"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000078.diff",
+          "sha256": "291d7697e038a7acf7a3a28dc71ecf3c430aab1237ddf904b297ed6eccc31736"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000079.diff",
+          "sha256": "840a759d4ac39e85d5c83fb195e5d58587dfcf697394b929d845f0410b43a42c"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000080.diff",
+          "sha256": "77e8eeab6dbabf81a4a01e340f2d4669d3bbe49152e1fbaeb61c416c15616a52"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000081.diff",
+          "sha256": "4f4ba036542820a491525f5c313fb9ca8b58257cbd948423f4a28b4ec16db33d"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000082.diff",
+          "sha256": "4834ab15977cf1ed553008051bab98e85ecdacf434d2688fb562e366d92331d7"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000083.diff",
+          "sha256": "d4556f198c206bcd6c2e7b9d2000de98ae3322c48077bf374e419ae49fe47d4d"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000084.diff",
+          "sha256": "da889efcbc29e526cbbc9eff8148a1d7f2ca0eb23c1efcb04ba3d1f42cad4abc"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000085.diff",
+          "sha256": "46cbdf9123d8df8c2ce6b2b60b243146e70aa76688e11b71dbed0bd73b09ba88"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000086.diff",
+          "sha256": "6e54a592feb83361395d0c5cb632154e397b5198d272787273b2c788d98f76a5"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000087.diff",
+          "sha256": "133c10a89045c90d346884633e54bbb31bb5681491d6c1d44d05a29b5451a2dd"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000088.diff",
+          "sha256": "1f4adff431ae5791fd014fd223f2cf1d0687ceaeb61a4239007f48d133405c8c"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000089.diff",
+          "sha256": "7122d716c4f6bda55d93e2ef65d7bf4eb160b6802b034305fcaed900464390c8"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000090.diff",
+          "sha256": "e3b7b3af79cdb76ef73aac930a12d316720de5b1d4a213412ab9c478e7be67ee"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000091.diff",
+          "sha256": "ad27805b9730478aaba79537b8f060e17db4c3668421a873685fdb82976d46ed"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000092.diff",
+          "sha256": "ab3e427d940afd68614122be755d99e31e825234fdd89b5bc8c59c06e4942ec4"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000093.diff",
+          "sha256": "04faa39119c12a4115c38bbe57b44925a246f30b9ce97ad6c1e8555f1df3d89f"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000094.diff",
+          "sha256": "d0fb1714f66420a7fd4af828651399abb00e66fae236b42ec0118817d6843ea1"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000095.diff",
+          "sha256": "cf0538121f203322a920a3d4e87161b5c23bdd93e1d1b07899900f81a49127ff"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000096.diff",
+          "sha256": "77b05fef2b62efc502ec41702912172e990273c01573bbf5322c854b85026933"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000097.diff",
+          "sha256": "3f80066869bbf33c514a8bd817228db4c3feb0fe528dbb4b18b628bd9fd381b0"
+        },
+        {
+          "path": "assembled/final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14-final/slices/000098.diff",
+          "sha256": "e2f5b0ae57538c062f31c630207431fb78f8c64019046db24b14c03954ea04b3"
+        },
+        {
+          "path": "final-review-inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14.md",
+          "sha256": "f2622e831d6d9f4d754743922454d77304290286067ad55168bca30c006cdb29"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-18-bytes-first-journal/run.md",
+      "recordLine": 20,
+      "invocationId": "inv-239E1565-1CFB-44FF-9208-D3750DC138F8",
+      "archive": "docs/superpowers/runs/2026-10-18-bytes-first-journal/reviews/inv-239E1565-1CFB-44FF-9208-D3750DC138F8",
+      "report": "docs/superpowers/runs/2026-10-18-bytes-first-journal/reviews/inv-239E1565-1CFB-44FF-9208-D3750DC138F8/final-review-inv-239E1565-1CFB-44FF-9208-D3750DC138F8.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-239E1565-1CFB-44FF-9208-D3750DC138F8-final/bounded-coverage.json",
+          "sha256": "676b2b3d89354d3388674675e51fcd271e8ab91c8c7b9da1717d614be544120e"
+        },
+        {
+          "path": "assembled/final-review-inv-239E1565-1CFB-44FF-9208-D3750DC138F8-final/bounded-draft.md",
+          "sha256": "0f16d4878340c2b011161954994b38c776b8e73209d39776ab66258a73a16d51"
+        },
+        {
+          "path": "assembled/final-review-inv-239E1565-1CFB-44FF-9208-D3750DC138F8-final/diffstat.txt",
+          "sha256": "47ddc09024bf4302660917cad8e16a276a5a275867ace294d9969336ee33b8fb"
+        },
+        {
+          "path": "assembled/final-review-inv-239E1565-1CFB-44FF-9208-D3750DC138F8-final/generated-input-provenance.md",
+          "sha256": "652c0d850b99189c97e1c57e34de4dc3626465b8c0be6fb80937b8d4ff3d1fb4"
+        },
+        {
+          "path": "assembled/final-review-inv-239E1565-1CFB-44FF-9208-D3750DC138F8-final/review-inputs.json",
+          "sha256": "d84309d3f6fb0f8c6c75b5eadbd7f864160a6738ba355d09500706539cd80284"
+        },
+        {
+          "path": "final-review-inv-239E1565-1CFB-44FF-9208-D3750DC138F8.md",
+          "sha256": "991d35632a1c74dc9351ad184b1f9ee1c1afa6982de1610fd241df2dea3fe3b4"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-18-bytes-first-journal/run.md",
+      "recordLine": 24,
+      "invocationId": "inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3",
+      "archive": "docs/superpowers/runs/2026-10-18-bytes-first-journal/reviews/inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3",
+      "report": "docs/superpowers/runs/2026-10-18-bytes-first-journal/reviews/inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3/final-review-inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3-final/bounded-coverage.json",
+          "sha256": "51ac0b8bb18e9b99889cf5845cad0ba1d8b1b730d10151fb8ee33ff1765030bf"
+        },
+        {
+          "path": "assembled/final-review-inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3-final/bounded-draft.md",
+          "sha256": "e86e3b3da0ac62dbdfb05b5359df1b88fd6bbb106710688e9db66ac0a7a686d0"
+        },
+        {
+          "path": "assembled/final-review-inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3-final/diffstat.txt",
+          "sha256": "9c699b852e7dd44c8ff3d0f9ec85d8547009f27cca343d305af2b3a606a07dbc"
+        },
+        {
+          "path": "assembled/final-review-inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3-final/generated-input-provenance.md",
+          "sha256": "7564994f374522387b62703158337338a55895e14251603d0f3f97c9136bb0b6"
+        },
+        {
+          "path": "assembled/final-review-inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3-final/review-inputs.json",
+          "sha256": "033e63146fbb28de3e3f3a2b1a095d1ebab49910dd4a35c59a6a615b227b9584"
+        },
+        {
+          "path": "final-review-inv-4A9435FD-FDDB-4EB7-AF22-DFF91E3F97A3.md",
+          "sha256": "43a2f06e6c300d4f4fdc5862c4ede156402322a32cabf425bdd85e36d3f656c8"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/run.md",
+      "recordLine": 23,
+      "invocationId": "inv-A50B5B16-478E-47B7-A35A-E9FB071E2127",
+      "archive": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/reviews/inv-A50B5B16-478E-47B7-A35A-E9FB071E2127",
+      "report": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/reviews/inv-A50B5B16-478E-47B7-A35A-E9FB071E2127/final-review-inv-A50B5B16-478E-47B7-A35A-E9FB071E2127.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-A50B5B16-478E-47B7-A35A-E9FB071E2127-final/bounded-coverage.json",
+          "sha256": "1098e04e7d3ade69eff1953ed465ee2bbc9a90550554f2af63abe8a9e3910303"
+        },
+        {
+          "path": "assembled/final-review-inv-A50B5B16-478E-47B7-A35A-E9FB071E2127-final/bounded-draft.md",
+          "sha256": "d1ff814221928a4e064853814f7d28245af31d490e47b4d56b60116a3745c0f4"
+        },
+        {
+          "path": "assembled/final-review-inv-A50B5B16-478E-47B7-A35A-E9FB071E2127-final/diffstat.txt",
+          "sha256": "a42bdc758cee145d7844c80d58431f8a4fd6a53ba4c3fe9fde58a433232edba6"
+        },
+        {
+          "path": "assembled/final-review-inv-A50B5B16-478E-47B7-A35A-E9FB071E2127-final/generated-input-provenance.md",
+          "sha256": "db67a4c20c56fc5ac37481209ac5795858c3a2f5c94ab0a34924efef59c2ca78"
+        },
+        {
+          "path": "assembled/final-review-inv-A50B5B16-478E-47B7-A35A-E9FB071E2127-final/review-inputs.json",
+          "sha256": "be520c512a7bbaff5f0296e22b053946b8b9c48f63c5aec38c0b0f2fe383de9a"
+        },
+        {
+          "path": "final-review-inv-A50B5B16-478E-47B7-A35A-E9FB071E2127.md",
+          "sha256": "c57847c5e6210722092823804f188f76f4b521fc3691c0240d23da1eff674fe1"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/run.md",
+      "recordLine": 27,
+      "invocationId": "inv-79743B9E-C426-482C-B438-4B73A762CC61",
+      "archive": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/reviews/inv-79743B9E-C426-482C-B438-4B73A762CC61",
+      "report": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/reviews/inv-79743B9E-C426-482C-B438-4B73A762CC61/final-review-inv-79743B9E-C426-482C-B438-4B73A762CC61.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-79743B9E-C426-482C-B438-4B73A762CC61-final/bounded-coverage.json",
+          "sha256": "92c7edede4a6af57d9b880bb06b28808bbe60303b2e272944653ba61d395579c"
+        },
+        {
+          "path": "assembled/final-review-inv-79743B9E-C426-482C-B438-4B73A762CC61-final/bounded-draft.md",
+          "sha256": "b3a3baa3714e94bc5768f338de656eb69ac16c925afa4a42d77bb0c77b921673"
+        },
+        {
+          "path": "assembled/final-review-inv-79743B9E-C426-482C-B438-4B73A762CC61-final/diffstat.txt",
+          "sha256": "59c17971895a48555d040d39b2a7c2d775be6e26f51d8cf430c905f7c3718b6d"
+        },
+        {
+          "path": "assembled/final-review-inv-79743B9E-C426-482C-B438-4B73A762CC61-final/generated-input-provenance.md",
+          "sha256": "da205f9f30469481acd7cce0bc31bc5c45dfeba4880fe7f1053c097c3b3ee38f"
+        },
+        {
+          "path": "assembled/final-review-inv-79743B9E-C426-482C-B438-4B73A762CC61-final/review-inputs.json",
+          "sha256": "f8d9fab13e8885bc51797c297e0efc036940b0a4a647b6151b53c81063c3ac42"
+        },
+        {
+          "path": "final-review-inv-79743B9E-C426-482C-B438-4B73A762CC61.md",
+          "sha256": "e9e43085d02fd8648bf92b38d47ccf1dbcab5ae6de4f8d6bc680289ff660a9db"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/run.md",
+      "recordLine": 31,
+      "invocationId": "inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D",
+      "archive": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/reviews/inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D",
+      "report": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/reviews/inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D/final-review-inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D-final/bounded-coverage.json",
+          "sha256": "58b8c21d626746e410111667369e53a83bc3f06b7941a0e3ac8a65fdd60276d4"
+        },
+        {
+          "path": "assembled/final-review-inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D-final/bounded-draft.md",
+          "sha256": "61706217aa7d29e042c8d3f9f9c8152c6e7184ef01350af531e758c8f5b7a571"
+        },
+        {
+          "path": "assembled/final-review-inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D-final/diffstat.txt",
+          "sha256": "da0ba33a30641f0298435dfd444d0bf1189e54d1be7a38cde20f7ed0b46d8e68"
+        },
+        {
+          "path": "assembled/final-review-inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D-final/generated-input-provenance.md",
+          "sha256": "d723159d3d9bfdcec4ddee2cabd9fd01024cd3029b8d011a4ea14bdb864e1e83"
+        },
+        {
+          "path": "assembled/final-review-inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D-final/review-inputs.json",
+          "sha256": "d71ce6ffa524b2b25853ff8342c6868905e73dd0842269d0658509c3480447ff"
+        },
+        {
+          "path": "final-review-inv-500DAF36-28F5-45F2-A74C-453F5BD4A30D.md",
+          "sha256": "1626db6d1022c69f58d54c723116557ea68f3a2cce7db8e473ca7beaee51242b"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/run.md",
+      "recordLine": 35,
+      "invocationId": "inv-C5C25646-606E-488A-9E26-B95392105A15",
+      "archive": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/reviews/inv-C5C25646-606E-488A-9E26-B95392105A15",
+      "report": "docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/reviews/inv-C5C25646-606E-488A-9E26-B95392105A15/final-review-inv-C5C25646-606E-488A-9E26-B95392105A15.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-C5C25646-606E-488A-9E26-B95392105A15-final/bounded-coverage.json",
+          "sha256": "2224d54308c9238655eb37c87e5d427a13b1eff07a6fd8edfa43e915d55e2601"
+        },
+        {
+          "path": "assembled/final-review-inv-C5C25646-606E-488A-9E26-B95392105A15-final/bounded-draft.md",
+          "sha256": "02a503f47c0abbfdd595bd3ed6fb0b09fd3a0b3ad19036b02ba4e870909fda47"
+        },
+        {
+          "path": "assembled/final-review-inv-C5C25646-606E-488A-9E26-B95392105A15-final/diffstat.txt",
+          "sha256": "bb437aad231e3bd3e0d0d1ecc02749784ac1abf56d90cc9707d64cd42ffc52a8"
+        },
+        {
+          "path": "assembled/final-review-inv-C5C25646-606E-488A-9E26-B95392105A15-final/generated-input-provenance.md",
+          "sha256": "a22c4856901952623e2265f49e79f8beb82572291e50b624c8b71a271f264914"
+        },
+        {
+          "path": "assembled/final-review-inv-C5C25646-606E-488A-9E26-B95392105A15-final/review-inputs.json",
+          "sha256": "490b147004c4ffc884bf1bfb60d8182226c593ec95e289f3b1c0f42df3e7d7ba"
+        },
+        {
+          "path": "final-review-inv-C5C25646-606E-488A-9E26-B95392105A15.md",
+          "sha256": "3054e4dd4535711d77b6291ceb80875d32508b68381b9d451c4c1e04da6adcbd"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md",
+      "recordLine": 52,
+      "invocationId": "inv-1",
+      "archive": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-1",
+      "report": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-1/final-review-inv-1.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-1-final/bounded-coverage.json",
+          "sha256": "1e866fa014abeb08d799296311f625c4d4fb15b64e49876fed340077ebde5e03"
+        },
+        {
+          "path": "assembled/final-review-inv-1-final/bounded-draft.md",
+          "sha256": "4db18907fc7ca51215e845e0bb8443e8320f9d75970c02ef95e9b7dd856e9f24"
+        },
+        {
+          "path": "assembled/final-review-inv-1-final/diffstat.txt",
+          "sha256": "e2a894046293ab376d604865138d899f14e8fffa16ec98acb7f1e70a00d14c06"
+        },
+        {
+          "path": "assembled/final-review-inv-1-final/generated-input-provenance.md",
+          "sha256": "7fdf851744da95352f8a259b1002ad1f9ca52e6c3531598a58d41b6e570dcec7"
+        },
+        {
+          "path": "assembled/final-review-inv-1-final/review-inputs.json",
+          "sha256": "f57efc31a26c30f94df491d89ad7ff7de14499f14c482033b09175e4e22b75a4"
+        },
+        {
+          "path": "final-review-inv-1.md",
+          "sha256": "9035734337f610659efcf40eca454b5d4cb7a2e19856484ae996e5e20214608c"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md",
+      "recordLine": 57,
+      "invocationId": "inv-2",
+      "archive": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-2",
+      "report": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-2/final-review-inv-2.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-2-final/bounded-coverage.json",
+          "sha256": "a80bf5877a2052e7e7452bb23c7396242418c2804e5878a9abb0275a3bb6347b"
+        },
+        {
+          "path": "assembled/final-review-inv-2-final/bounded-draft.md",
+          "sha256": "99cd17e9629bade75c3d70ce061fea17047fed32d1252c651501c3059ced494b"
+        },
+        {
+          "path": "assembled/final-review-inv-2-final/diffstat.txt",
+          "sha256": "40870801b899dd9f0e845fe0b14a4c198cf0aa86febc6428eb84509f397c22c4"
+        },
+        {
+          "path": "assembled/final-review-inv-2-final/generated-input-provenance.md",
+          "sha256": "d1c1b7d5ea8d497f0bdcd0b15f3574ea821f79c4400f9e4216c361ca4b6198c6"
+        },
+        {
+          "path": "assembled/final-review-inv-2-final/review-inputs.json",
+          "sha256": "1e605dd4fe19820e2ca55ca25a844f691ac9868a824fac85add342eebef1469b"
+        },
+        {
+          "path": "final-review-inv-2.md",
+          "sha256": "6ac2e368b6005bd867f7d34f0ced714159fa7969c6fcd3636e833e59882561ff"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md",
+      "recordLine": 61,
+      "invocationId": "inv-3",
+      "archive": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-3",
+      "report": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-3/final-review-inv-3.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-3-final/bounded-coverage.json",
+          "sha256": "4624f59ae3ad11105083113050223c1ece7cf628a4873f71e647a767ef364c2e"
+        },
+        {
+          "path": "assembled/final-review-inv-3-final/bounded-draft.md",
+          "sha256": "15aa9304149f26f072e4fd59326b5abdebd4f60b7f1b63095d76b45d659a5471"
+        },
+        {
+          "path": "assembled/final-review-inv-3-final/diffstat.txt",
+          "sha256": "47db262c4df8f82f80c56e5b19d2a4796f21b5f2bf8898ee10f031fb237b87d5"
+        },
+        {
+          "path": "assembled/final-review-inv-3-final/generated-input-provenance.md",
+          "sha256": "156510661d6835efff68d3e169f15142c3156512128a6dff5aa9e037437765bd"
+        },
+        {
+          "path": "assembled/final-review-inv-3-final/review-inputs.json",
+          "sha256": "5659b50a055558d5f30794f8290989f66ec20f849df73206144a0e99bbbbfa2b"
+        },
+        {
+          "path": "final-review-inv-3.md",
+          "sha256": "055b2aa8e6b36c9a2e8fc47db67ae9290803f18ed17b8674a1e8c63f275eb927"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md",
+      "recordLine": 67,
+      "invocationId": "inv-4",
+      "archive": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-4",
+      "report": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-4/final-review-inv-4.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-4-final/bounded-coverage.json",
+          "sha256": "faa9baedaec864a8fe82513af4e0b4044f158039749c8570d8d02789a48a3ba9"
+        },
+        {
+          "path": "assembled/final-review-inv-4-final/bounded-draft.md",
+          "sha256": "9108160218adece212d8c62676ae5e6c2c31f817766507c4763ef8d8dee3d329"
+        },
+        {
+          "path": "assembled/final-review-inv-4-final/diffstat.txt",
+          "sha256": "f23b8348dff23c60c4fdb7df2d6869032e5b07e19bd6695d11e46e172ab6b06a"
+        },
+        {
+          "path": "assembled/final-review-inv-4-final/generated-input-provenance.md",
+          "sha256": "8d788c2b4855eeeca4d3d768b7dc44b923e150dff5e25e9aba3c98fb58da1ae8"
+        },
+        {
+          "path": "assembled/final-review-inv-4-final/review-inputs.json",
+          "sha256": "e7cbd4bdc8da28a973cad6550341d5a63ae85bceb04c103f6ac7c8e88fb00c6f"
+        },
+        {
+          "path": "final-review-inv-4.md",
+          "sha256": "49c89e3eb1393b25493777d2e6e6a12e73619c863dafe4dcab160802e2c12455"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md",
+      "recordLine": 73,
+      "invocationId": "inv-5",
+      "archive": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-5",
+      "report": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-5/final-review-inv-5.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-5-final/bounded-coverage.json",
+          "sha256": "ef8a5dc8f0f6c214a7c9ff32f5a2d60a8479508ec8d4861d990c2e6e400edcc3"
+        },
+        {
+          "path": "assembled/final-review-inv-5-final/bounded-draft.md",
+          "sha256": "64ea6f478afea21d655d9dc85a6de0713e6258039d691e9a5af547c0b419d7c1"
+        },
+        {
+          "path": "assembled/final-review-inv-5-final/diffstat.txt",
+          "sha256": "f2222a20fde0ecc5b13416c45e302444cca76dae6f1948405e2bc6502b5b1369"
+        },
+        {
+          "path": "assembled/final-review-inv-5-final/generated-input-provenance.md",
+          "sha256": "2884a846a25ba67589a2ddfb7f7d73d4aea52259e1232194dad6ffac6d7c1746"
+        },
+        {
+          "path": "assembled/final-review-inv-5-final/review-inputs.json",
+          "sha256": "7fbb4ac6ce0cdf7aeb78540b914048076f6566fec8ff11ea70e829cfd1f884ca"
+        },
+        {
+          "path": "final-review-inv-5.md",
+          "sha256": "fced45daf3fa3934545f790e986d6a57288e86eb0c2dee8809ac136118a412ac"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md",
+      "recordLine": 78,
+      "invocationId": "inv-6",
+      "archive": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-6",
+      "report": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-6/final-review-inv-6.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-6-final/bounded-coverage.json",
+          "sha256": "a653109cab7ef9a27b7c007485bbf3933419573063e43ca87e5199aa2bda02d8"
+        },
+        {
+          "path": "assembled/final-review-inv-6-final/bounded-draft.md",
+          "sha256": "20cf982700b033413595a474c2be80041fdf9b3bbb8ae779d75af6b6660557c3"
+        },
+        {
+          "path": "assembled/final-review-inv-6-final/diffstat.txt",
+          "sha256": "70db68320ecc05e76a06a4d470326184faff94b9fc3a9169b8497c303c556386"
+        },
+        {
+          "path": "assembled/final-review-inv-6-final/generated-input-provenance.md",
+          "sha256": "0fc433b08b39cea40e44aac3626871dd3979e9398558c9222af16d6a04c55e79"
+        },
+        {
+          "path": "assembled/final-review-inv-6-final/review-inputs.json",
+          "sha256": "8f0b97edc9c1451318780e56a516e8331bf92f95853f36af075dedb2dd95864b"
+        },
+        {
+          "path": "final-review-inv-6.md",
+          "sha256": "027c4680ba070f107a28416b1aa19760d2cbd04232145dc030181a01197fbf7d"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md",
+      "recordLine": 83,
+      "invocationId": "inv-7",
+      "archive": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-7",
+      "report": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-7/final-review-inv-7.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-7-final/bounded-coverage.json",
+          "sha256": "11949949f528f88e52d5431aa27895304c97d00ab3b709273a0e4e15764cdb1c"
+        },
+        {
+          "path": "assembled/final-review-inv-7-final/bounded-draft.md",
+          "sha256": "277c5cfa70e4b75b0f1d640c665d829a4f253fbf7c596ecd793cc3949c79b7b8"
+        },
+        {
+          "path": "assembled/final-review-inv-7-final/diffstat.txt",
+          "sha256": "5a2e210403aee6c021224eb8e2cf5fbf83f5917a42f55b3e9284238c943047db"
+        },
+        {
+          "path": "assembled/final-review-inv-7-final/generated-input-provenance.md",
+          "sha256": "7be86aece3253fc43f91e85ede4bfc3d99d618bd11a3f1053c217ed2bdc24fb2"
+        },
+        {
+          "path": "assembled/final-review-inv-7-final/review-inputs.json",
+          "sha256": "5edef9b2259ec27447a0cbcd240a442e198cf1315140bb783bd40a2413044e26"
+        },
+        {
+          "path": "final-review-inv-7.md",
+          "sha256": "90fd3eece5dba73aa46b2f0461ccee5e369b55784045c0b64beb5128f818a6a7"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md",
+      "recordLine": 88,
+      "invocationId": "inv-8",
+      "archive": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-8",
+      "report": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-8/final-review-inv-8.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-8-final/bounded-coverage.json",
+          "sha256": "9e32cfd002d73f3769ce6a7a977086eda277bd781ec556fe86f15479d2d18ea0"
+        },
+        {
+          "path": "assembled/final-review-inv-8-final/bounded-draft.md",
+          "sha256": "cfe1c5fafe23caac751eafa0b119775cfe071898e620b16454bd5d7fe583677b"
+        },
+        {
+          "path": "assembled/final-review-inv-8-final/diffstat.txt",
+          "sha256": "771990117e1365c6c8536ce0b15d6f0a052a1807f9858ce890a3c68a1ba4a2b8"
+        },
+        {
+          "path": "assembled/final-review-inv-8-final/generated-input-provenance.md",
+          "sha256": "15cbe67dd905961a4cd6354b46eda30829f976a581cc3291bdfe40d1e54c782f"
+        },
+        {
+          "path": "assembled/final-review-inv-8-final/review-inputs.json",
+          "sha256": "cbe3307ec9834525e37d2bea4391a104eb023ad62bd690ac8c63a83de0df16b3"
+        },
+        {
+          "path": "final-review-inv-8.md",
+          "sha256": "8fb6b68a64405f496dd733b634781d13c78d2556642b66019baee3ac44246838"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/run.md",
+      "recordLine": 93,
+      "invocationId": "inv-9",
+      "archive": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-9",
+      "report": "docs/superpowers/runs/2026-10-31-environments-named-seats-herdr-app/reviews/inv-9/final-review-inv-9.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-9-final/bounded-coverage.json",
+          "sha256": "d4daae6600d97d55790896be7c3c7af24b0138580c2ba37dbff1f93b2a33fb0b"
+        },
+        {
+          "path": "assembled/final-review-inv-9-final/bounded-draft.md",
+          "sha256": "440d9ebcc6730950b5fc81ee221a4bad6ac42c267a5e0ff957db03fdc62119be"
+        },
+        {
+          "path": "assembled/final-review-inv-9-final/diffstat.txt",
+          "sha256": "f2f4819216a6af92b00fa8c78e4a6648f5c99d9c9679a47b5174021ed3aa8953"
+        },
+        {
+          "path": "assembled/final-review-inv-9-final/generated-input-provenance.md",
+          "sha256": "2e3d7870c87600e1a106d99cb88c0bcab9872ab731fdf3e05301fd7e4eb3ff1b"
+        },
+        {
+          "path": "assembled/final-review-inv-9-final/review-inputs.json",
+          "sha256": "f2cf4a8ef551198f99ab8c709f8660a9e9a278cdbe34bd07504a929b1d2ddffd"
+        },
+        {
+          "path": "final-review-inv-9.md",
+          "sha256": "2b4beb072e5aa0a25ebc7c72d68c1dde977699a0dc0628a3916ab32d708d5b19"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md",
+      "recordLine": 33,
+      "invocationId": "inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb",
+      "archive": "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb",
+      "report": "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/bounded-coverage.json",
+          "sha256": "2604a7572461d9aa17b8575befaa72a6acfd546441e4d68398c6d9802988f2fe"
+        },
+        {
+          "path": "assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/bounded-draft.md",
+          "sha256": "49317924685066f221d20007cd9b73fe5b444cf2ec4f3a5eb5f4fcecb23b6441"
+        },
+        {
+          "path": "assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/diffstat.txt",
+          "sha256": "4eb6561f15a904fd3e6a5ac4099d73f4168389ff71344a5e26dec28c0a259032"
+        },
+        {
+          "path": "assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/generated-input-provenance.md",
+          "sha256": "7ffe5717ab412c05018c6308466e935fbfc6f017dbd9c112c1ee413d0fb1ba83"
+        },
+        {
+          "path": "assembled/final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb-final/review-inputs.json",
+          "sha256": "43ac3e9b44046ddf523f6e422e6e007cfab1dea443103bc3d9d98ba952d6ffee"
+        }
+      ]
+    },
+    {
+      "revision": "aaefcd47f280fdf72bfba3a03550a02b05e48610",
+      "run": "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md",
+      "recordLine": 35,
+      "invocationId": "inv-b56f0808-bb7b-4018-9456-fe8dc04793a4",
+      "archive": "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-b56f0808-bb7b-4018-9456-fe8dc04793a4",
+      "report": "docs/superpowers/runs/2026-11-03-atomic-remote-handoff/reviews/inv-b56f0808-bb7b-4018-9456-fe8dc04793a4/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/bounded-coverage.json",
+          "sha256": "c2ce555c7b4d722ef192c2466ac75984a45256c71eb209501e629bd3e933bdda"
+        },
+        {
+          "path": "assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/bounded-draft.md",
+          "sha256": "b42aa730e881aa0597d6f70b130e572d0b66469117f6558a3a085c85cde750b4"
+        },
+        {
+          "path": "assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/diffstat.txt",
+          "sha256": "ea36a5f89c3584a95e65b2ffbc27a085a64c7cae18e02122193212c64779d534"
+        },
+        {
+          "path": "assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/generated-input-provenance.md",
+          "sha256": "66d0986a4e02a5ea50a4939a098c8d9fad942f0af869ba13af3ee4e5ca86d847"
+        },
+        {
+          "path": "assembled/final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4-final/review-inputs.json",
+          "sha256": "a3e41f81983cfd29b90d72decbf97032165e19667459b5be8cb82c166dd94748"
+        },
+        {
+          "path": "final-review-inv-b56f0808-bb7b-4018-9456-fe8dc04793a4.md",
+          "sha256": "be4894c58dd12d9fdfbf8ba4a7d69f26f3b3c10b66492f9e523bb80955dc572f"
+        }
+      ]
+    }
+  ],
+  "collectionOrigins": [],
+  "omitted": [],
+  "gaps": [
+    "aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:44: malformed collection record: record outside approvals or invalid prefix",
+    "aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:72: malformed collection record: record outside approvals or invalid prefix",
+    "aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:75: malformed collection record: record outside approvals or invalid prefix",
+    "1e620fdb570ab6e8a254cee334fca7a484d79354:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51 inv-8759cc82-264d-4506-beaa-307c9600bb8d: invalid failed assembly archive: failed bounded archive contains successful assembly or split claims",
+    "1e620fdb570ab6e8a254cee334fca7a484d79354:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58 inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f: invalid failed assembly archive: failed bounded archive contains successful assembly or split claims",
+    "aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51 inv-8759cc82-264d-4506-beaa-307c9600bb8d: invalid failed assembly archive: failed bounded archive contains successful assembly or split claims",
+    "aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:58 inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f: invalid failed assembly archive: failed bounded archive contains successful assembly or split claims",
+    "aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:33 inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb: incomplete claimed collection",
+    "aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:33 inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb: incomplete claimed final report",
+    "aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:33 inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb: invalid failed assembly archive: missing bounded evidence: final-review-inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb.md",
+    "aaefcd47f280fdf72bfba3a03550a02b05e48610:docs/superpowers/runs/2026-11-03-atomic-remote-handoff/run.md:33 inv-632e6c0e-7964-4e4d-99dc-6a1aa9e38efb: incomplete assembled bundle: digest.md"
+  ]
+}

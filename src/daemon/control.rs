@@ -331,6 +331,8 @@ where
                         .chain([
                             crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
                             crate::protocol::capabilities::HANDOFF_SUMMARY_PROMPT_V1,
+                            crate::protocol::capabilities::HANDOFF_SENDER_PROMPT_V2,
+                            crate::protocol::capabilities::HANDOFF_ATOMIC_REMOTE_V1,
                         ])
                         .chain(bootstrap.then_some(
                             crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,

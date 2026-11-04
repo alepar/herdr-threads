@@ -17,7 +17,7 @@ use herdr_threads::protocol::authority::{
 use herdr_threads::protocol::commands::{DeliveryMode, SendMessage};
 use herdr_threads::protocol::ids::{
     ExecutionId, HostTargetId, MessageId, NativeSessionId, OperationId, SeatId, ThreadId,
-    generate_public_id, prefix, send_message_id_for_preparation,
+    generate_public_id, prefix, send_message_id_for_preparation, send_preparation_id_for_message,
 };
 use herdr_threads::protocol::results::{ApiError, CommandResult, ErrorCode};
 use herdr_threads::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis};
@@ -77,6 +77,7 @@ pub fn sent(
         sent_at: SENT_AT,
         duration_ms,
         recipients,
+        handoff: None,
     }
 }
 
@@ -296,6 +297,7 @@ fn round_trip() {
             ),
             spec(&SeatId::new("sCCCC12345678"), ReceiptObligation::None, None),
         ],
+        handoff: None,
     };
     let json = serde_json::to_string(&payload).unwrap();
     assert_eq!(
@@ -1572,4 +1574,440 @@ fn sibling_bookkeeping_keeps_legacy_peer_audience_compatible() {
         0,
         "local sibling bookkeeping never replicates"
     );
+}
+
+// ---- remote handoff messages (spec 4.2, 4.3) ---------------------------------------
+//
+// S is the sender node (author A homed there), T the recipient's home (R homed there, the
+// origin of the handoff `message.sent`), W a third node.
+
+mod handoff {
+    use super::*;
+    use herdr_threads::node::NodeIdentity;
+    use herdr_threads::ports::TimeBasis;
+    use herdr_threads::store::handoff_obligations::{self, NewObligation};
+    use herdr_threads::store::schema;
+    use herdr_threads::sync::handoff_block::SenderBlock;
+
+    const S_SEED: u8 = 100;
+
+    struct World {
+        s: Node,
+        t: Node,
+        w: Node,
+        a: SeatId,
+        r: SeatId,
+    }
+
+    fn world(base: u8, reg: &'static FactRegistry) -> World {
+        let (s, t, w) = (
+            Node::with(base, reg),
+            Node::with(base + 1, reg),
+            Node::with(base + 2, reg),
+        );
+        let (a, r) = (s.local_seat(), t.local_seat());
+        s.publish(&a).unwrap();
+        t.publish(&r).unwrap();
+        sync_all(&[&s, &t, &w]);
+        s.author_direct(&a, &r).expect("direct thread");
+        sync_all(&[&s, &t, &w]);
+        assert!(
+            t.seat(&a).is_some() && w.seat(&r).is_some(),
+            "seats replicated"
+        );
+        World { s, t, w, a, r }
+    }
+
+    fn message_for(node: &Node) -> MessageId {
+        MessageId::new(
+            send_message_id_for_preparation(&generate_public_id(
+                prefix::SEND_PREPARATION,
+                &tag_for(node.id, 0),
+            ))
+            .unwrap(),
+        )
+    }
+
+    fn block(sender: &Node, author: &SeatId, message: &MessageId, signer: u8) -> SenderBlock {
+        let mut block = SenderBlock {
+            v: 1,
+            request: uuid::Uuid::from_u128(11),
+            sender_node: Some(sender.id),
+            author: Some(author.clone()),
+            author_role: None,
+            message: Some(message.clone()),
+            body: "take over".into(),
+            priority: 0,
+            require_ack: true,
+            requested_at: SENT_AT,
+            ack_after_ms: Some(FIVE_MIN),
+            sig: String::new(),
+        };
+        block.sign(&NodeIdentity::from_seed([signer; 32])).unwrap();
+        block
+    }
+
+    fn payload(block: &SenderBlock, recipient: &SeatId) -> MessageSentPayload {
+        block.expected_payload(recipient, SENT_AT).unwrap()
+    }
+
+    /// The `failed` message.sent detail on `node`, if it failed.
+    fn failed_detail(node: &Node) -> Option<String> {
+        node.journal()
+            .into_iter()
+            .find(|(k, state, _)| k == "message.sent" && state == "failed")
+            .map(|(_, _, e)| e.unwrap_or_default())
+    }
+
+    fn deadline_node(node: &Node, message: &MessageId) -> Option<Option<String>> {
+        node.query(
+            &format!(
+                "SELECT deadline_node FROM messages WHERE id='{}'",
+                message.as_str()
+            ),
+            |r| r.get(0),
+        )
+        .into_iter()
+        .next()
+    }
+
+    fn authored_here(node: &Node, message: &MessageId, seat: &SeatId) -> bool {
+        let mut conn = node.raw();
+        let tx = conn.transaction().unwrap();
+        let outcome = schema::record_overdue_if_pending(
+            &tx,
+            &ObligationRef::Receipt {
+                message: message.clone(),
+                seat: seat.clone(),
+            },
+            &TimeBasis::Decision,
+            UtcMillis(SENT_AT + FIVE_MIN + 1),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        outcome.inserted
+    }
+
+    #[test]
+    fn handoff_from_recipient_home_applies() {
+        let w = world(S_SEED, registry());
+        let message = message_for(&w.t);
+        let block = block(&w.s, &w.a, &message, S_SEED);
+        w.t.author_sent(&payload(&block, &w.r)).unwrap();
+        sync_all(&[&w.s, &w.t, &w.w]);
+        for node in [&w.s, &w.t, &w.w] {
+            assert!(
+                node.message_row(&message).is_some(),
+                "message on {}",
+                node.id
+            );
+            assert_eq!(failed_detail(node), None);
+            assert_eq!(
+                deadline_node(node, &message),
+                Some(Some(w.s.id.to_string())),
+                "deadline_node from the block on {}",
+                node.id
+            );
+        }
+    }
+
+    #[test]
+    fn authority_mismatches_are_rejected_and_listed() {
+        // (name, build) -> the fact T authors; S and W must fail it.
+        let w = world(S_SEED + 10, registry());
+        let other_author = w.w.local_seat();
+        let other_recipient = w.w.local_seat();
+        w.w.publish(&other_author).unwrap();
+        w.w.publish(&other_recipient).unwrap();
+        sync_all(&[&w.s, &w.t, &w.w]);
+        let pair_wa = w.w.author_direct(&other_author, &w.r).expect("direct");
+        let pair_sw = w.s.author_direct(&w.a, &other_recipient).expect("direct");
+        sync_all(&[&w.s, &w.t, &w.w]);
+        let s_seed = S_SEED + 10;
+        let cases: Vec<(&str, MessageSentPayload)> = {
+            let m = |n: &Node| message_for(n);
+            let ok = |msg: &MessageId| block(&w.s, &w.a, msg, s_seed);
+            let mut cases = Vec::new();
+            // Signed by W's key although the block names S.
+            let msg = m(&w.t);
+            cases.push((
+                "signer is not the author's home",
+                payload(&block(&w.s, &w.a, &msg, s_seed + 2), &w.r),
+            ));
+            // The author is homed on W, the block names S.
+            let msg = m(&w.t);
+            let mut p = payload(&block(&w.s, &other_author, &msg, s_seed), &w.r);
+            assert_eq!(p.thread, pair_wa);
+            p.sent_at = SENT_AT;
+            cases.push(("author homed elsewhere", p));
+            // The recipient is homed on W, the origin (T) is not its home.
+            let msg = m(&w.t);
+            let p = payload(&ok(&msg), &other_recipient);
+            assert_eq!(p.thread, pair_sw);
+            cases.push(("origin is not the recipient's home", p));
+            // A tampered signature (restated consistently).
+            let msg = m(&w.t);
+            let mut b = ok(&msg);
+            let first = if b.sig.starts_with('0') { "1" } else { "0" };
+            b.sig.replace_range(0..1, first);
+            cases.push(("signature tampered", payload(&b, &w.r)));
+            cases
+        };
+        for (name, payload) in &cases {
+            w.t.author_sent(payload)
+                .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        }
+        sync_all(&[&w.s, &w.t, &w.w]);
+        let failed: Vec<_> =
+            w.s.journal()
+                .into_iter()
+                .filter(|(k, state, _)| k == "message.sent" && state == "failed")
+                .collect();
+        assert_eq!(failed.len(), cases.len(), "{failed:?}");
+        for (_, _, error) in &failed {
+            assert!(
+                error
+                    .as_deref()
+                    .unwrap()
+                    .contains("is not the authorized author of message.sent for"),
+                "{error:?}"
+            );
+        }
+        for (name, payload) in &cases {
+            assert!(w.s.message_row(&payload.message).is_none(), "{name}");
+            assert!(w.w.message_row(&payload.message).is_none(), "{name}");
+        }
+        let page = w.s.query(
+            "SELECT count(*) FROM journal WHERE kind='message.sent' AND apply_state='failed'",
+            |r| r.get::<_, i64>(0),
+        );
+        assert_eq!(page[0] as usize, cases.len());
+    }
+
+    #[test]
+    fn origin_equal_to_the_sender_node_is_rejected_elsewhere() {
+        let w = world(S_SEED + 20, registry());
+        let message = message_for(&w.s);
+        let b = block(&w.s, &w.a, &message, S_SEED + 20);
+        w.s.author_sent(&payload(&b, &w.r)).unwrap();
+        sync_all(&[&w.s, &w.t, &w.w]);
+        for node in [&w.t, &w.w] {
+            assert!(failed_detail(node).is_some(), "failed on {}", node.id);
+            assert!(node.message_row(&message).is_none());
+        }
+    }
+
+    #[test]
+    fn restates_failures_are_rejected_before_any_row() {
+        let w = world(S_SEED + 30, registry());
+        let seed = S_SEED + 30;
+        let third = w.w.local_seat();
+        w.w.publish(&third).unwrap();
+        sync_all(&[&w.s, &w.t, &w.w]);
+        let mut cases: Vec<(&str, MessageSentPayload)> = Vec::new();
+        let mk = || {
+            let m = message_for(&w.t);
+            let b = block(&w.s, &w.a, &m, seed);
+            (b.clone(), payload(&b, &w.r))
+        };
+        let (_, mut p) = mk();
+        p.body.push('!');
+        cases.push(("body differs", p));
+        let (_, mut p) = mk();
+        p.recipients
+            .push(herdr_threads::sync::facts::payload::RecipientSpec {
+                seat: third,
+                receipt: ReceiptObligation::Ack,
+                deadline_at: p.recipients[0].deadline_at,
+            });
+        p.recipients.sort_by(|a, b| a.seat.cmp(&b.seat));
+        cases.push(("two recipients", p));
+        let (_, mut p) = mk();
+        p.thread = w.t.create_thread(&w.r, "wrong", None).unwrap();
+        cases.push(("wrong thread", p));
+        let (_, mut p) = mk();
+        p.relays_user = true;
+        cases.push(("relays_user", p));
+        let (_, mut p) = mk();
+        p.user_intent = Some(herdr_threads::protocol::summary::UserIntent::Rule);
+        cases.push(("user_intent", p));
+        for (name, payload) in cases {
+            let err = w.t.author_sent(&payload).expect_err(name);
+            assert_eq!(err.code, ErrorCode::InvalidRequest, "{name}");
+            assert!(w.t.message_row(&payload.message).is_none(), "{name}");
+        }
+    }
+
+    /// The pre-3.0 `message.sent`: `SeatHome(author)` only, `handoff` ignored.
+    struct OldMessageSent;
+    impl FactKind for OldMessageSent {
+        const NAME: &'static str = "message.sent";
+        const MAJOR: u32 = 1;
+        type Payload = MessageSentPayload;
+        fn creates(p: &MessageSentPayload) -> Option<EntityKey> {
+            MessageSent::creates(p)
+        }
+        fn needs(p: &MessageSentPayload) -> Vec<EntityKey> {
+            MessageSent::needs(p)
+        }
+        fn apply(
+            tx: &rusqlite::Transaction<'_>,
+            cx: &mut herdr_threads::sync::facts::ApplyContext<'_>,
+            payload: MessageSentPayload,
+        ) -> Result<(), herdr_threads::sync::facts::FactError> {
+            payload
+                .check()
+                .map_err(herdr_threads::sync::facts::FactError::Rejected)?;
+            herdr_threads::sync::facts::with_input(cx, |m| {
+                herdr_threads::store::materialize::require_author(
+                    tx,
+                    m,
+                    Self::NAME,
+                    &herdr_threads::store::materialize::AuthorRule::SeatHome(
+                        payload.author.clone(),
+                    ),
+                )?;
+                messages::materialize_message(tx, m, &payload)
+            })
+        }
+    }
+
+    #[test]
+    fn older_node_simulation() {
+        let old = FactRegistry::builtins_plus(|b| b.replacing::<OldMessageSent>());
+        let seed = S_SEED + 40;
+        let s = Node::with(seed, old);
+        let t = Node::with(seed + 1, registry());
+        let (a, r) = (s.local_seat(), t.local_seat());
+        s.publish(&a).unwrap();
+        t.publish(&r).unwrap();
+        sync_all(&[&s, &t]);
+        t.author_direct(&r, &a).expect("direct thread");
+        sync_all(&[&s, &t]);
+        let message = message_for(&t);
+        let b = block(&s, &a, &message, seed);
+        t.author_sent(&payload(&b, &r)).unwrap();
+        fact_exchange::sync(&s.store, &t.store);
+        let detail = failed_detail(&s).expect("the old node marks it failed");
+        assert!(detail.contains("is not the authorized author"), "{detail}");
+        assert!(s.message_row(&message).is_none());
+        let listed = herdr_threads::store::sync_status::unapplied_page(&s.raw(), None, 10)
+            .expect("unapplied page");
+        assert_eq!((listed.failed, listed.rows.len()), (1, 1), "{listed:?}");
+
+        // Upgrade: the same store under the shipped registry; replay applies it.
+        let snapshot = s.snapshot("old-node.db");
+        let upgraded = Node::open_restored(seed, 7_000, registry(), &snapshot, false);
+        drop(s);
+        let progress = upgraded
+            .store
+            .replay_unapplied(&crate::facts_seat::budget())
+            .unwrap();
+        assert_eq!(progress.applied, 1, "{progress:?}");
+        assert!(upgraded.message_row(&message).is_some());
+        assert_eq!(
+            deadline_node(&upgraded, &message),
+            Some(Some(upgraded.id.to_string()))
+        );
+    }
+
+    fn insert_obligation(s: &Node, t: &Node, a: &SeatId, message: &MessageId) {
+        let conn = s.raw();
+        let (_, inserted) = handoff_obligations::insert_or_get(
+            &conn,
+            &NewObligation {
+                request: &uuid::Uuid::from_u128(11).to_string(),
+                target_node: &t.id.to_string(),
+                author: a.as_str(),
+                message: message.as_str(),
+                requested_at: SENT_AT,
+                deadline_at: Some(SENT_AT + FIVE_MIN),
+                request_bytes: b"{}",
+            },
+        )
+        .expect("insert the obligation");
+        assert!(inserted);
+    }
+
+    fn ledger(s: &Node, message: &MessageId) -> (String, Option<String>) {
+        s.query(
+            &format!(
+                "SELECT state,seat FROM handoff_obligations WHERE message='{}'",
+                message.as_str()
+            ),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .remove(0)
+    }
+
+    #[test]
+    fn sender_node_materializes_without_binding_and_links() {
+        let w = world(S_SEED + 50, registry());
+        let message = message_for(&w.t);
+        insert_obligation(&w.s, &w.t, &w.a, &message);
+        assert_eq!(ledger(&w.s, &message), ("sent".into(), None));
+        let b = block(&w.s, &w.a, &message, S_SEED + 50);
+        w.t.author_sent(&payload(&b, &w.r)).unwrap();
+        sync_all(&[&w.s, &w.t, &w.w]);
+        let row =
+            w.s.message_row(&message)
+                .expect("materialized on the sender node");
+        assert_eq!(row.0.as_deref(), Some(w.a.as_str()), "local author");
+        assert_eq!(row.1, w.t.id.to_string(), "non-local origin");
+        assert_eq!(row.4, None, "no sender binding");
+        assert_eq!(
+            w.s.count(&format!(
+                "SELECT count(*) FROM send_preparations WHERE origin='local' AND id='{}'",
+                send_preparation_id_for_message(message.as_str()).unwrap()
+            )),
+            0,
+            "no local preparation adopted"
+        );
+        assert_eq!(
+            ledger(&w.s, &message),
+            ("linked".into(), Some(w.r.as_str().to_owned()))
+        );
+    }
+
+    #[test]
+    fn link_rolls_back_with_the_apply_transaction() {
+        let w = world(S_SEED + 60, registry());
+        let message = message_for(&w.t);
+        insert_obligation(&w.s, &w.t, &w.a, &message);
+        let b = block(&w.s, &w.a, &message, S_SEED + 60);
+        w.t.author_sent(&payload(&b, &w.r)).unwrap();
+        // Fault the ledger update after the message insert: the whole apply aborts.
+        w.s.raw()
+            .execute_batch("CREATE TRIGGER ht_test_fault_link BEFORE UPDATE ON handoff_obligations BEGIN SELECT RAISE(ABORT, 'link fault'); END;")
+            .unwrap();
+        fact_exchange::sync(&w.s.store, &w.t.store);
+        assert!(
+            w.s.message_row(&message).is_none(),
+            "message insert rolled back"
+        );
+        assert_eq!(ledger(&w.s, &message), ("sent".into(), None));
+    }
+
+    #[test]
+    fn non_handoff_message_keeps_null_deadline_node_and_origin_rule() {
+        let f = Fixture::new(190);
+        let payload = f.ordinary();
+        f.node.author_sent(&payload).unwrap();
+        assert_eq!(deadline_node(&f.node, &payload.message), Some(None));
+        assert_eq!(f.node.count("SELECT count(*) FROM handoff_obligations"), 0);
+    }
+
+    #[test]
+    fn linked_handoff_overdue_only_on_sender() {
+        let w = world(S_SEED + 70, registry());
+        let message = message_for(&w.t);
+        insert_obligation(&w.s, &w.t, &w.a, &message);
+        let b = block(&w.s, &w.a, &message, S_SEED + 70);
+        w.t.author_sent(&payload(&b, &w.r)).unwrap();
+        sync_all(&[&w.s, &w.t, &w.w]);
+        // The target never decides, whatever its clock says; the sender does.
+        assert!(!authored_here(&w.t, &message, &w.r), "target");
+        assert!(!authored_here(&w.w, &message, &w.r), "third node");
+        assert!(authored_here(&w.s, &message, &w.r), "sender");
+    }
 }

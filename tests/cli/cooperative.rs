@@ -3942,6 +3942,8 @@ mod scoped_runtime {
             "w1:p2@laptop",
             "--kind",
             "codex",
+            "--summary",
+            "s",
             "--",
             "task",
         ]));
@@ -6287,6 +6289,7 @@ fn inbox_empty_work_selection_preserves_bounds_and_continuations() {
                     limit: 1,
                     max_bytes: 1024,
                 },
+                seat_alerts: false,
             };
             let result = super::select_display_inbox_page(
                 if version == 0 {
@@ -6413,6 +6416,7 @@ fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
             limit: 1,
             max_bytes: 1024,
         },
+        seat_alerts: false,
     });
     let clock = crate::app::SystemClock::new();
     let spec = OutputSpec::default();
@@ -7362,10 +7366,12 @@ mod main539_composition {
             },
             &mut progress,
             &mut phase,
-            &|semantic, key| {
-                assert_eq!(semantic, invite);
-                assert_eq!(key, &reference.operation);
-                Ok(CommandResult::Joined(ThreadId::new("t")))
+            crate::cli::handoff::StagingAuthor::Caller {
+                call: &|semantic, key| {
+                    assert_eq!(semantic, invite);
+                    assert_eq!(key, &reference.operation);
+                    Ok(CommandResult::Joined(ThreadId::new("t")))
+                },
             },
             &mut |_| Ok(()),
             &f.client,
@@ -8392,4 +8398,119 @@ fn restore_hold_bare_diagnostics_without_a_seat_falls_back_to_health() {
         parsed.action,
         crate::cli::commands::CliAction::Daemon(crate::cli::commands::DaemonAction::Health)
     ));
+}
+
+/// Kills: a Human-harness text inbox asking for seat alerts without per-binding cursors, so the
+/// alert row is displayed but never cleared (no AdvanceCursors) and reprints on every read.
+#[test]
+fn human_text_inbox_requests_no_seat_alerts_and_claude_does() {
+    use crate::harness::context::{
+        ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
+    };
+    use crate::protocol::{
+        authority::LivenessFingerprint,
+        pagination::{Consistency, Page, StopReason},
+        results::{ApiError, CapabilityList},
+        time::CallBudget,
+    };
+    use std::sync::Mutex;
+    struct Client(Mutex<Vec<Command>>);
+    impl crate::ports::LocalClient for Client {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.0.lock().unwrap().push(command.clone());
+            match command {
+                Command::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
+                    capabilities: vec![
+                        crate::protocol::capabilities::INBOX_BATCH_V2.into(),
+                        crate::protocol::capabilities::BINDING_CURSORS.into(),
+                        crate::protocol::capabilities::INBOX_SEAT_ALERTS_V1.into(),
+                    ],
+                })),
+                Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
+                    items: vec![],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 1,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: StopReason::Complete,
+                    consistency: Consistency::BoundedLive,
+                })),
+                Command::AdvanceCursors(_) => {
+                    Ok(CommandResult::CursorsAdvanced(Default::default()))
+                }
+                other => panic!("an inbox read sent {other:?}"),
+            }
+        }
+    }
+    let seat_alerts_requested = |harness: ContextHarness| {
+        let argv: &[&str] = if harness == ContextHarness::Human {
+            &["herdr-threads", "human", "inbox"]
+        } else {
+            &["herdr-threads", "inbox"]
+        };
+        let root = crate::test_support::scratch::temp_path_canonical(format!(
+            "alerts-inbox-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let instance = crate::node::NodeUuid::from_u128(1);
+        let context = OccupantContext {
+            format_version: 1,
+            instance,
+            seat: "seat-test".into(),
+            target: "w1:p1".into(),
+            harness,
+            binding_generation: 1,
+            execution: uuid::Uuid::from_u128(2),
+            session: SessionReference::Native("sess-1".into()),
+            role: Role::TopLevel,
+        };
+        let contexts = ContextJournal::open(
+            &root,
+            instance,
+            "seat-test",
+            std::time::Duration::from_millis(20),
+        )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap()
+        .with_agent_caller(context, LivenessFingerprint::TEST)
+        .unwrap();
+        let journal = Journal::open(root.join("intents")).unwrap();
+        let client = Client(Mutex::new(vec![]));
+        let parsed = crate::cli::commands::parse_argv(argv.iter().copied()).unwrap();
+        let mut out = vec![];
+        crate::cli::run_cooperative(
+            parsed,
+            &journal,
+            &contexts,
+            None,
+            Role::TopLevel,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut out,
+        )
+        .unwrap();
+        let calls = client.0.lock().unwrap().clone();
+        std::fs::remove_dir_all(root).unwrap();
+        calls.iter().find_map(|call| match call {
+            Command::InboxBatchV2(query) => Some(query.seat_alerts),
+            _ => None,
+        })
+    };
+    assert_eq!(seat_alerts_requested(ContextHarness::Human), Some(false));
+    assert_eq!(seat_alerts_requested(ContextHarness::Claude), Some(true));
 }

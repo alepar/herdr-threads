@@ -847,6 +847,7 @@ impl PageSource for ClientPageSource<'_> {
                         limit: PAGE_MAX_ITEMS as u16,
                         max_bytes: PAGE_MAX_BYTES as u32,
                     },
+                    seat_alerts: false,
                 }),
                 &cooperative_budget(self.clock),
             )

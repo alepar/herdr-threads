@@ -251,3 +251,6 @@ mod config_user_intent;
 
 #[path = "multinode/remote_addresses.rs"]
 mod remote_addresses;
+
+#[path = "multinode/handoff_atomic.rs"]
+mod handoff_atomic;

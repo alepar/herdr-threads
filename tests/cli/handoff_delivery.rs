@@ -1823,11 +1823,13 @@ fn actor_prerequisite_retained_human_delivery_refuses_before_canonical_or_cleanu
         },
         &mut staged,
         &mut "create",
-        &|semantic, key| {
-            Ok(live_client.call(
-                semantic.to_command(key.clone(), Some(human.clone()))?,
-                &super::super::cooperative_budget(&TestClock),
-            )?)
+        handoff::StagingAuthor::Caller {
+            call: &|semantic, key| {
+                Ok(live_client.call(
+                    semantic.to_command(key.clone(), Some(human.clone()))?,
+                    &super::super::cooperative_budget(&TestClock),
+                )?)
+            },
         },
         &mut |_| Ok(()),
         &live_client,

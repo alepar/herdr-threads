@@ -11,6 +11,7 @@ pub(crate) mod delivery_tail;
 pub mod effective;
 pub mod first_contact;
 pub mod handoff;
+pub mod handoff_obligations;
 pub mod harness_evidence;
 pub mod hosts;
 pub mod incarnations;
@@ -29,6 +30,7 @@ pub mod node_directory;
 pub mod node_prune;
 pub mod operator;
 pub mod page_fit;
+pub mod peer_handoff;
 pub mod peer_requests;
 pub mod poke;
 mod presentation_reader;
@@ -1616,6 +1618,9 @@ impl crate::sync::discovery::DiscoveryStore for SqliteStore {
     }
 }
 
+/// Handoff ledger rows one scheduler pass runs the due step for.
+const HANDOFF_DUE_BATCH_LIMIT: usize = 16;
+
 impl StorePort for SqliteStore {
     fn presentation_render_selection(
         &self,
@@ -2956,6 +2961,14 @@ impl StorePort for SqliteStore {
         }
         let mut writer = self.writer(budget)?;
         seats::record_reconciliation_pass(&self.context, &mut writer, published, budget)
+    }
+    fn due_handoffs(&self, budget: &CallBudget) -> Result<usize, ApiError> {
+        let mut writer = self.writer(budget)?;
+        handoff_obligations::due_pass(
+            &mut writer,
+            self.clock().utc_now().0,
+            HANDOFF_DUE_BATCH_LIMIT,
+        )
     }
     fn due_obligations(
         &self,

@@ -1,0 +1,50 @@
+super-roast verdict: Nit (3 confirmed) [converged]
+mode: PR        iteration: post-cap audit
+profile (assumed): herdr-threads is a Rust CLI plus local daemon that gives coding agents durable message threads across a single user's own machines (cooperative, same-user trust model per TRUST-POLICY; no adversarial caller verification). Data is agent messages and receipts in a node-local SQLite store synced between the user's nodes; no money and no third-party data. It ships as versioned releases to a small number of plugin users; rollback is a reinstall, but store migrations are schema-version gated. Blast radius is low; delivery guarantees (wake, ACK, overdue) and truthful reporting of them are the product's core promise.
+inputs: super-auto/atomic-remote-handoff@2b35b5746 vs @67053aeb2 (post-loop changes)
+delta vs prior: 2 new confirmed (0 Blocking) · 1 carried (0 Blocking) · 2 resolved · 0 regressed (0 Blocking) · 6 punch-listed (open)
+coverage: scouts 15/15 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, regression, testing, test-causality-lifecycle, test-isolation-environment, test-suite-cost, hygiene-docs, api-contract, data-migrations, observability) · raw 4 → deduped 2 → panel 2 · spot 0 · promoted 0 · judge completion 100% · remainder-capped: 0 · review readiness: coverage complete, provenance available — basis: "captured base 67053aeb202537e87fc8a2c97e9584c80db482de and head 2b35b5746ce0ea325f375dc390ab907d112646d6 in repo"
+independence: same-family (Claude) — seat-differentiated panel · rung: Workflow
+seat-agreement: panels 2 · rr 0.50 · rg 1.00 · fg 0.50 · unanimous 0.50 · ground-loo 1.00 (n=1) · reproduce 2/0/0 · refute 1/1/0 · ground 2/0/0
+lane-yield (found/confirmed/unique/refuted): correctness 0/0/0/0 · security 0/0/0/0 · premortem 0/0/0/0 · simplicity-design 0/0/0/0 · hot-path-perf 0/0/0/0 · concurrency-async 0/0/0/0 · regression 1/1/0/0 · testing 0/0/0/0 · test-causality-lifecycle 1/1/0/0 · test-isolation-environment 1/1/0/0 · test-suite-cost 0/0/0/0 · hygiene-docs 1/1/0/0 · api-contract 0/0/0/0 · data-migrations 0/0/0/0 · observability 0/0/0/0
+
+## Confirmed findings
+- [Nit] src/store/schema.rs:1900; src/store/schema.rs:2178 — Commit 9987863fd (ht-8lem.43) makes handoff_warning_of return the pre-link overdue:handoff warning only while its receipt condition is open, so a linked handoff message can now record a second in-thread overdue:receipt warning after the first was cleared; the design doc's "one in-thread warning per handoff" decision (l.840-841, 956, 989-992) and the schema.rs:2178 comment still state the old rule without exception. [fix-regression] (new this iteration; a consequence of the fix for the iteration-2 Should-fix at schema.rs:2178) [lanes: regression, hygiene-docs]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: schema.rs ~1897: `SELECT m.id FROM messages m JOIN warning_conditions c ON c.open_warning_id = m.id AND c.clear_warning_id IS NULL WHERE m.event_key = ?1`; a cleared pre-link warning returns None and `append_event_once_at_seq` inserts a fresh `overdue:receipt:` row. tests/store/handoff_obligations.rs `cleared_prelink_warning_lets_the_linked_message_warn` asserts `keys.len() == 2` (overdue:handoff then overdue:receipt). schema.rs:2178 comment still reads "One in-thread warning per handoff: the handoff overdue that already fired stands for the linked message's receipt obligation". `git log 67053aeb2..2b35b5746 -- <design doc> TRUST-POLICY.md` is empty; 9987863fd touches only schema.rs and the test. All three seats agree the behaviour change is intentional and correct (a still-unACKed linked message whose only warning was cleared would otherwise never warn) and that the common open-condition path is unchanged. The refute seat REJECTed as "stale prose, a documentation suggestion"; the two CONFIRMs rest on the same facts and concede the same scope, so the dissent is a classification difference, not a disproved premise: default route stands at Nit. The "dead code" aside (the `active` query above may already cover every open-condition case) was not established by any seat and is not part of the confirmed claim.
+  fix-shape hint: amend the schema.rs:2178 comment and the design doc's "Overdue across linking" decision to "while the pre-link warning's receipt condition is still open; a cleared one no longer stands for the linked message"; optionally check whether the override after the join is still reachable and delete it if not.
+
+- [Nit] tests/service/peer_handoff.rs:1010; tests/service/peer_handoff.rs:963 — The new test cli_poll_after_a_slow_resend_stays_inside_the_bound (release_after = 500 ms case) depends on real wall-clock margins: the end-time assertion tolerates only ~50 ms between poll's send_window computation and Slow::send recording `at`, and the release-to-send wake chain must complete within ~500 ms, so CPU starvation under the parallel nextest pool can fail it while the code under test is correct. (new this iteration; test added by 09d27f3ef, the fix for the iteration-2 Should-fix at src/service/peer_handoff.rs:243) [lanes: test-causality-lifecycle, test-isolation-environment]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: `wall_budget` switches the TestClock to `mono + started.elapsed()`; `bound` = REPLICA_WAIT_MS + SETTLE_MARGIN_MS + 1_000 = 7000 ms, so the send window is ~1000 ms. The assertion `at + wait <= start + (bound - REPLICA_WAIT_MS - SETTLE_MARGIN_MS + 50ms)` holds only while the gap between `send_window` returning (src/service/peer_handoff.rs ~l.296) and `Instant::now()` inside Slow::send stays under ~50 ms. Separately, the helper thread sleeps 500 ms then calls `slow.release()`; the resend wake, `drop(slot)` kick, `wait_slot` return, SQLite `sync_read` and `send_window` recompute must fit in the remaining ~500 ms or the poll settles Timeout without sending and `.expect("the poll sent after the slot freed")` panics. The test is in no nextest group (`test-threads = 18`). Source risk only: no seat reproduced it; both evidence full-suite runs passed (~2.3 s). Unanimous Nit.
+  fix-shape hint: assert the window against the injected clock inside the sender (Slow::send checks `clock.monotonic_now() + wait + REPLICA_WAIT_MS + SETTLE_MARGIN_MS <= budget.deadline` on the same TestClock) and gate the release on the poll entering wait_slot, or widen the budget so the 500 ms release leaves seconds of slack; not a retry and not a longer fixed sleep.
+
+- [Nit] tests/multinode/handoff_atomic.rs:936; tests/multinode/handoff_atomic.rs:937 — overdue_while_partitioned's post-heal assertions are all satisfied by the link path alone, so the test never forces or observes the Launched-before-link ordering and its header claim of killing a broken background re-send is vacuous. (still-open, see iteration 2; carried on the iteration-2 panel evidence, not re-judged this round) [lanes: testing, test-causality-lifecycle]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓) — iteration-2 panel
+  evidence: no commit in 67053aeb2..2b35b5746 touches overdue_while_partitioned (the two handoff_atomic.rs commits in the range, cb39dfe0b and 2da1a489c, change tampered_block_three_nodes and the older-third-node test); at head the header (l.886-889) still claims the test kills "a `Launched` answer that never reaches the ledger after the partition heals (the re-send)". The iteration-2 evidence stands: after the heal the test asserts only `warnings(0) == 1` (any `overdue:%` key), `wait_ledger("linked")` and `seat IS NOT NULL`, all of which the materializer's link() path satisfies without the re-send. This round's scouts did not re-surface it; it is carried because the git history shows it unaddressed, not because a seat re-confirmed it.
+  fix-shape hint: hold the target's staging until node 0's ledger reads `launched` with a seat via the re-send, then release staging so the link comes second, and assert the key is `overdue:handoff:%`; or correct the header to what the test actually kills.
+
+## Not verified (beyond panel cap)
+- none
+
+## Not verified (dedupe failed or judge lost)
+- none
+
+## Beyond remainder cap (count only)
+- none
+
+## Rejected (with reason)
+- none this iteration. Prior rejections (src/scheduler/deadlines.rs:412, src/cli/commands.rs:3952, src/store/attention.rs:495, src/store/peer_handoff.rs:96, src/sync/handoff_block.rs:93, src/service/peer_handoff.rs:513/:529/:534/:597, src/sync/facts/message.rs:193) stand; none was re-surfaced.
+
+## Unverified nits (spot-checked)
+- none this round (spot 0). The iteration-2 unverified nit at tests/multinode/handoff_atomic.rs:832 (linked_then_overdue_on_the_sender_only's fixed `--deadline 8` window) was not re-surfaced and was not re-checked; its spot verdict (CONFIRM Nit, source-level only) stands as recorded.
+
+## Escalations (need human)
+- none
+
+## Prior report tracking
+- resolved: [Should-fix] src/service/peer_handoff.rs:243/:245/:241/:240 (09d27f3ef, ht-8lem.42: Requester::poll recomputes the send window after wait_slot; the accompanying test is the new Nit at tests/service/peer_handoff.rs:1010 above).
+- resolved: [Should-fix] src/store/schema.rs:2178 (9987863fd, ht-8lem.43: handoff_warning_of joins warning_conditions on clear_warning_id IS NULL and the store test the review asked for was added; the stale comment and design-doc sentence it leaves behind are the new Nit at schema.rs:1900/:2178 above).
+- still-open: [Nit] tests/multinode/handoff_atomic.rs:936/:937 (no commit in the range touches overdue_while_partitioned; carried above).
+- punch-listed (open): [Nit] src/store/handoff_obligations.rs:503; [Nit] src/cli/peer_launch.rs:291; [Nit] integrations/skill/SKILL.md:64; [Nit] src/service/peer_handoff.rs:606; [Nit] src/cli/handoff.rs:840; [Nit] src/store/handoff_obligations.rs:339. None re-surfaced; none fixed.
+- Convergence: no Blocking of any provenance this round (0 new, 0 regressed, 0 carried); convergenceEligible true, lowCoverage false, no panel-cap qualifier, so `[converged]` applies. The three confirmed Nits do not block it.

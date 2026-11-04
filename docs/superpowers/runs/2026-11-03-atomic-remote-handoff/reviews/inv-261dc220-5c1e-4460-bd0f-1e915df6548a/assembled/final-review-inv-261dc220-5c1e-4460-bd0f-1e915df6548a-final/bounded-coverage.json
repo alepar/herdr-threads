@@ -1,0 +1,13 @@
+{"inspected":[
+{"path":"src/store/handoff_obligations.rs","hunks":["@@ -0,0 +1,693 @@"]},
+{"path":"src/service/peer_handoff.rs","hunks":["@@ -0,0 +1,785 @@"]},
+{"path":"src/store/peer_handoff.rs","hunks":["@@ -0,0 +1,221 @@"]},
+{"path":"migrations/node/0015_atomic_remote_handoff.sql","hunks":["@@ -0,0 +1,63 @@"]},
+{"path":"src/store/materialize.rs","hunks":["@@ -15,7 +15,7 @@","@@ -26,6 +26,7 @@ use crate::store::{schema, seats};","@@ -329,6 +330,12 @@ pub enum AuthorRule {","@@ -337,10 +344,47 @@ fn subject(rule: &AuthorRule) -> String {","@@ -398,6 +442,9 @@ pub fn require_author("]},
+{"path":"src/cli/peer_launch.rs","hunks":["@@ -38,12 +40,15 @@ pub enum TargetSpec {","@@ -59,22 +64,28 @@ pub fn create_target<W: Write>(","@@ -89,8 +100,8 @@ pub fn create_with<P: CreateTargetPort + ?Sized, W: Write>(","@@ -239,11 +294,16 @@ fn remove_record(file: &Path) -> std::io::Result<()> {","@@ -721,6 +974,66 @@ mod tests {"]},
+{"path":"src/cli/commands.rs","hunks":["@@ -1439,6 +1455,9 @@ enum InternalSub {","@@ -2481,11 +2501,22 @@ fn terminal_machine(selector: &super::panes::PaneSelector) -> Result<Option<Stri","@@ -4179,6 +4259,7 @@ fn parse_cli_in_registry(","@@ -4194,6 +4275,12 @@ fn parse_cli_in_registry("]},
+{"path":"src/service/peer_launcher.rs","hunks":["@@ -637,18 +835,28 @@ pub fn plan_refusal(plan: &crate::sync::frame::LaunchPlan, plan_bytes: usize) ->","@@ -658,6 +866,12 @@ pub fn target_args(","@@ -1052,12 +1394,23 @@ impl Worker {"]},
+{"path":"src/protocol/output_compact.rs","hunks":["@@ -86,6 +86,14 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String","@@ -1226,6 +1234,41 @@ fn node_row(node: &NodeRow, now: i64, out: &mut String) {"]},
+{"path":"src/store/attention.rs","hunks":["@@ -1551,9 +1582,13 @@ pub const WAKE_PROBES: [WakeProbe; 8] = ["]},
+{"path":"src/store/queries/inbox_v2/mod.rs","hunks":["@@ -270,6 +270,19 @@ pub(super) fn query_mode("]}
+]}

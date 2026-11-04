@@ -1,0 +1,223 @@
+{
+ "inspected": [
+  {
+   "path": "src/sync/handoff_block.rs",
+   "hunks": [
+    "@@ -0,0 +1,478 @@"
+   ]
+  },
+  {
+   "path": "src/store/materialize.rs",
+   "hunks": [
+    "@@ -26,6 +26,7 @@ use crate::store::{schema, seats};",
+    "@@ -329,6 +330,12 @@ pub enum AuthorRule {",
+    "@@ -337,10 +344,48 @@ fn subject(rule: &AuthorRule) -> String {",
+    "@@ -398,6 +443,9 @@ pub fn require_author("
+   ]
+  },
+  {
+   "path": "src/sync/facts/message.rs",
+   "hunks": [
+    "@@ -69,6 +69,10 @@ pub struct MessageSentPayload {",
+    "@@ -178,13 +182,57 @@ impl FactKind for MessageSent {"
+   ]
+  },
+  {
+   "path": "src/sync/facts/mod.rs",
+   "hunks": [
+    "@@ -272,6 +272,15 @@ impl FactRegistryBuilder {",
+    "@@ -341,6 +350,20 @@ pub fn registry() -> &'static FactRegistry {"
+   ]
+  },
+  {
+   "path": "src/store/messages.rs",
+   "hunks": [
+    "@@ -863,6 +863,8 @@ pub(super) enum PublicationAuthor<'a> {",
+    "@@ -974,9 +976,10 @@ pub(super) fn insert_publication_suppressing(",
+    "@@ -1190,6 +1193,7 @@ pub(super) fn build_message_sent(",
+    "@@ -1483,6 +1487,8 @@ pub fn materialize_message(",
+    "@@ -1519,15 +1525,30 @@ pub fn materialize_message("
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -6,7 +6,9 @@ use crate::{",
+    "@@ -24,6 +26,7 @@ use super::connection::{DecisionInstant, StoreContext, api_error, store_error};",
+    "@@ -151,6 +154,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[",
+    "@@ -1455,6 +1463,14 @@ fn overdue_wake(",
+    "@@ -1476,13 +1492,13 @@ fn overdue_wake(",
+    "@@ -1829,7 +1845,7 @@ pub fn clear_warning_condition_for_invitation(",
+    "@@ -1841,19 +1857,17 @@ pub fn record_overdue_with_decision_seq(",
+    "@@ -1863,8 +1877,23 @@ fn obligation_authored_here(",
+    "@@ -1947,6 +1976,42 @@ fn record_overdue_inner(",
+    "@@ -2014,11 +2079,18 @@ fn record_overdue_inner(",
+    "@@ -2040,6 +2112,7 @@ fn record_overdue_inner(",
+    "@@ -2081,6 +2154,14 @@ fn record_overdue_inner(",
+    "@@ -2097,6 +2178,9 @@ fn record_overdue_inner(",
+    "@@ -2107,6 +2191,7 @@ fn record_overdue_inner("
+   ]
+  },
+  {
+   "path": "migrations/node/0015_atomic_remote_handoff.sql",
+   "hunks": [
+    "@@ -0,0 +1,35 @@"
+   ]
+  },
+  {
+   "path": "src/store/handoff_obligations.rs",
+   "hunks": [
+    "@@ -0,0 +1,603 @@"
+   ]
+  },
+  {
+   "path": "src/service/peer_handoff.rs",
+   "hunks": [
+    "@@ -0,0 +1,635 @@"
+   ]
+  },
+  {
+   "path": "src/store/peer_handoff.rs",
+   "hunks": [
+    "@@ -0,0 +1,220 @@"
+   ]
+  },
+  {
+   "path": "src/service/peer_launcher.rs",
+   "hunks": [
+    "@@ -237,6 +237,112 @@ fn short(id: &str) -> &str {",
+    "@@ -453,11 +559,96 @@ impl PeerLaunchService {",
+    "@@ -502,6 +693,9 @@ impl PeerLaunchService {",
+    "@@ -527,10 +721,18 @@ impl PeerLaunchService {",
+    "@@ -601,6 +803,7 @@ impl PeerLaunchService {",
+    "@@ -670,8 +873,10 @@ pub fn target_args(",
+    "@@ -679,6 +884,7 @@ pub fn gate_argv(",
+    "@@ -705,7 +911,26 @@ pub fn gate_argv(",
+    "@@ -748,6 +973,30 @@ pub fn launch_args(pane: &str, plan: &crate::sync::frame::LaunchPlan) -> Vec<Str",
+    "@@ -883,6 +1132,22 @@ fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::Joi",
+    "@@ -970,6 +1235,52 @@ impl Worker {",
+    "@@ -1036,15 +1347,35 @@ impl Worker {",
+    "@@ -1096,16 +1427,31 @@ impl Worker {",
+    "@@ -1142,7 +1488,7 @@ impl Worker {",
+    "@@ -1217,6 +1563,9 @@ mod tests {",
+    "@@ -1275,6 +1624,95 @@ mod tests {",
+    "@@ -1288,6 +1726,9 @@ mod tests {",
+    "@@ -1433,6 +1874,9 @@ mod tests {",
+    "@@ -1450,6 +1894,7 @@ mod tests {",
+    "@@ -1487,6 +1932,7 @@ mod tests {",
+    "@@ -1511,6 +1957,7 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/sync/coordinator.rs",
+   "hunks": [
+    "@@ -783,6 +783,9 @@ pub struct CoordinatorOptions {",
+    "@@ -795,6 +798,7 @@ impl Default for CoordinatorOptions {",
+    "@@ -822,22 +826,63 @@ impl CoordinatorOptions {",
+    "@@ -925,32 +970,7 @@ impl SyncCoordinator {",
+    "@@ -1856,7 +1876,7 @@ impl Actor {",
+    "@@ -3016,6 +3036,30 @@ fn held_genesis_pubkey("
+   ]
+  },
+  {
+   "path": "src/sync/coordinator/remote_launch.rs",
+   "hunks": [
+    "@@ -18,8 +18,8 @@ use std::sync::OnceLock;",
+    "@@ -46,7 +46,7 @@ pub enum LaunchAnswer {",
+    "@@ -93,6 +93,16 @@ fn bounded(text: &str) -> String {",
+    "@@ -117,12 +127,42 @@ fn malformed(request: &LaunchRequest) -> Option<&'static str> {",
+    "@@ -151,17 +191,7 @@ impl Actor {",
+    "@@ -180,7 +210,7 @@ impl Actor {",
+    "@@ -198,13 +228,7 @@ impl Actor {",
+    "@@ -311,10 +335,15 @@ fn bound_state(state: LaunchState) -> LaunchState {",
+    "@@ -337,10 +366,52 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/sync/frame.rs",
+   "hunks": [
+    "@@ -71,6 +71,10 @@ pub const PEER_LAUNCH_CAP: &str = \"peer.launch.v1\";",
+    "@@ -573,6 +577,37 @@ pub struct LaunchPlan {",
+    "@@ -648,6 +683,10 @@ pub enum LaunchState {",
+    "@@ -659,6 +698,15 @@ pub enum LaunchState {",
+    "@@ -767,7 +815,7 @@ pub enum PeerFrame {",
+    "@@ -1725,4 +1773,94 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "TRUST-POLICY.md",
+   "hunks": [
+    "@@ -79,7 +79,7 @@ linked node answers remote resolution\"); N13 unchanged; no new provenance value.",
+    "@@ -545,6 +545,7 @@ records there are replay machinery, never its identity.",
+    "@@ -1834,6 +1835,14 @@ section 17):",
+    "@@ -1860,8 +1869,14 @@ and retirement-by-observation never touch it, and a forgotten or gone home node",
+    "@@ -1951,8 +1966,8 @@ A node that cannot answer (no direct link, no cap, no answer in time, no live He",
+    "@@ -1974,7 +1989,17 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs",
+    "@@ -1986,7 +2011,8 @@ the CLI never resolves its location locally instead (`src/cli/seat_resolution.rs",
+    "@@ -2741,10 +2767,11 @@ These are decisions, not bugs. Each is safe to rely on only as stated.",
+    "@@ -2762,10 +2789,23 @@ These are decisions, not bugs. Each is safe to rely on only as stated.",
+    "@@ -3053,7 +3093,7 @@ a label, never a path the client names) and authorizes only when the attempt is"
+   ]
+  },
+  {
+   "path": "scripts/check-wire-compat",
+   "hunks": [
+    "@@ -33,7 +33,7 @@",
+    "@@ -77,6 +77,7 @@ export LC_ALL=C"
+   ]
+  },
+  {
+   "path": "integrations/skill/SKILL.md",
+   "hunks": [
+    "@@ -14,7 +14,7 @@ Use `thread list --all --search TEXT` to discover existing threads, then explici"
+   ]
+  },
+  {
+   "path": "src/store/peer_requests.rs",
+   "hunks": [
+    "@@ -15,7 +15,7 @@",
+    "@@ -39,12 +39,21 @@ pub struct PeerRequest {",
+    "@@ -63,6 +72,13 @@ impl PeerRequest {",
+    "@@ -81,11 +97,14 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PeerRequest> {",
+    "@@ -103,8 +122,8 @@ pub fn insert_or_get(",
+    "@@ -112,7 +131,8 @@ pub fn insert_or_get(",
+    "@@ -169,24 +189,75 @@ pub fn record_gate_launch(",
+    "@@ -197,8 +268,11 @@ pub fn gate_view(",
+    "@@ -245,7 +319,7 @@ pub fn by_node(conn: &Connection) -> rusqlite::Result<Vec<(String, u64, PeerRequ"
+   ]
+  },
+  {
+   "path": "src/store/attention.rs",
+   "hunks": [
+    "@@ -331,6 +331,32 @@ fn with_requirements(",
+    "@@ -463,10 +489,15 @@ fn digest_for(",
+    "@@ -491,7 +522,7 @@ fn digest_for(",
+    "@@ -1515,10 +1546,10 @@ pub struct WakeProbe {",
+    "@@ -1551,9 +1582,13 @@ pub const WAKE_PROBES: [WakeProbe; 8] = [",
+    "@@ -1750,7 +1785,9 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt",
+    "@@ -1766,7 +1803,7 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt"
+   ]
+  },
+  {
+   "path": "src/scheduler/deadlines.rs",
+   "hunks": [
+    "@@ -53,6 +53,11 @@ pub trait DeadlinePort {",
+    "@@ -404,6 +409,10 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {"
+   ]
+  },
+  {
+   "path": "tests/scheduler/deadlines.rs",
+   "hunks": [
+    "@@ -55,6 +55,8 @@ struct FakePort {",
+    "@@ -75,6 +77,10 @@ impl DeadlinePort for FakePort {",
+    "@@ -128,6 +134,22 @@ fn tick_uses_store_decision_clock_at_exact_boundary_after_wall_jumps() {"
+   ]
+  },
+  {
+   "path": "tests/store/schema.rs",
+   "hunks": [
+    "@@ -7278,6 +7278,95 @@ fn delta_0013_columns_indexes_tables() {"
+   ]
+  }
+ ]
+}

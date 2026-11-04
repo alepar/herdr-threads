@@ -1994,6 +1994,7 @@ fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
         claim: None,
         seat: None,
         page: PageRequest::default(),
+        seat_alerts: false,
     });
     let CommandResult::Inbox(page) = StorePort::query(&store, &inbox, &read, &budget()).unwrap()
     else {

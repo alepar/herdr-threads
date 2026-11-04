@@ -2807,6 +2807,7 @@ fn refit_read_floor_applies_only_to_history_search_and_body() {
         claim: None,
         thread: None,
         pushed: false,
+        seat_alerts: false,
     });
     let directory = Command::Directory(DirectoryQuery {
         recent: false,

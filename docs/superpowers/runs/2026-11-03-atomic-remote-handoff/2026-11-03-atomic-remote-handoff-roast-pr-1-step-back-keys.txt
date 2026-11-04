@@ -1,0 +1,15 @@
+r1 [Blocking] src/store/receipts.rs:1019; src/store/schema.rs:1867; src/store/receipts.rs:3
+r1 [Blocking] tests/store/schema.rs:7357
+r1 [Should-fix] tests/multinode/handoff_atomic.rs:340; tests/multinode/handoff_atomic.rs:325
+r1 [Should-fix] tests/multinode/handoff_atomic.rs:885; tests/multinode/handoff_atomic.rs:960
+r1 [Should-fix] tests/store/handoff_obligations.rs:519; tests/store/handoff_obligations.rs:521
+r1 [Should-fix] src/service/peer_launcher.rs:601
+r1 [Should-fix] tests/multinode/handoff_atomic.rs:286; tests/multinode/handoff_atomic.rs:345
+r1 [Nit] src/store/handoff_obligations.rs:503
+r1 [Nit] src/service/peer_handoff.rs:538
+r1 [Nit] src/cli/peer_launch.rs:291
+r1 [Nit] integrations/skill/SKILL.md:64
+r1 [Nit] src/service/peer_handoff.rs:606
+r1 [Nit] src/cli/handoff.rs:840
+r1 [Nit] src/store/handoff_obligations.rs:339
+r1 [Must-fix] untested: whole-epic review

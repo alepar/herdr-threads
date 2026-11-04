@@ -53,6 +53,11 @@ pub trait DeadlinePort {
         request: DueScanRequest,
         budget: &CallBudget,
     ) -> Result<DueScanProgress, ApiError>;
+    /// Run the due step of the sender ledger's handoff rows (spec §2.3, "Overdue before
+    /// linking"); returns the in-thread warnings it added. The default has no ledger.
+    fn due_handoffs(&self, _budget: &CallBudget) -> Result<usize, ApiError> {
+        Ok(0)
+    }
     /// Enumerate pending retirements under a frozen high water. This excludes
     /// terminal history and cannot establish full-history recovery coverage.
     fn pending_retirement_jobs(
@@ -404,6 +409,10 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
             }
             outcome.due_examined_candidates = progress.examined_candidates;
             outcome.due_warnings_added = progress.warnings_added;
+            let handoffs = self.port.due_handoffs(budget)?;
+            outcome.due_warnings_added = outcome
+                .due_warnings_added
+                .saturating_add(u16::try_from(handoffs).unwrap_or(u16::MAX));
             self.due_continuation = progress.has_more
                 && ((run_invitations
                     && !progress.state.invitations_complete

@@ -4089,6 +4089,7 @@ mod hermes_lineage {
                     claim: session_claim("S", 7),
                     operation: OperationId::new("s-plain"),
                     displayed: Vec::new(),
+                    alerts: Vec::new(),
                 },
                 &budget(),
             )

@@ -118,6 +118,7 @@ pub fn read_page<C: LocalClient + ?Sized>(
                     max_bytes: PAGE_READ_BYTES,
                 },
                 pushed,
+                seat_alerts: false,
             }),
             &output,
             budget,
@@ -153,7 +154,8 @@ fn whole(item: &InboxBatchV2Item) -> bool {
         } => *body_start == 0 && body_end == body_len,
         InboxBatchV2Item::Invitation { .. }
         | InboxBatchV2Item::Warning { .. }
-        | InboxBatchV2Item::FirstContact(_) => true,
+        | InboxBatchV2Item::FirstContact(_)
+        | InboxBatchV2Item::HandoffOverdue(_) => true,
     }
 }
 
@@ -395,6 +397,7 @@ impl LazyCommit {
                     displayed: self.displayed,
                     in_turn: self.in_turn,
                     invitations,
+                    alerts: Vec::new(),
                 }),
                 &budget,
             )? {

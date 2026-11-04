@@ -1,0 +1,6 @@
+[Nit] src/store/handoff_obligations.rs:503
+[Nit] src/cli/peer_launch.rs:291
+[Nit] integrations/skill/SKILL.md:64
+[Nit] src/service/peer_handoff.rs:606
+[Nit] src/cli/handoff.rs:840
+[Nit] src/store/handoff_obligations.rs:339

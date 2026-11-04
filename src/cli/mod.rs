@@ -45,6 +45,7 @@ pub(crate) mod self_retire;
 pub mod site_capability;
 pub mod update;
 pub use crate::protocol::address as seat_selector;
+pub mod peer_handoff_launch;
 pub mod peer_launch;
 pub(crate) mod send_priority;
 pub mod setup;
@@ -700,6 +701,7 @@ fn run_parsed_in_pane<W: Write>(
         label,
         cwd,
         gate_argv,
+        directory_context,
     } = &parsed.action
     {
         let endpoint =
@@ -712,6 +714,7 @@ fn run_parsed_in_pane<W: Write>(
             label,
             cwd,
             gate_argv.clone(),
+            directory_context.as_ref(),
             Arc::new(crate::app::SystemClock::new()),
             writer,
         );
@@ -839,11 +842,13 @@ fn run_parsed_in_pane<W: Write>(
     // A remote handoff runs in `run_selected`, after the caller checks a
     // handoff needs.
     if let CliAction::RemoteLaunch(remote) = &parsed.action
+        && !remote.is_handoff()
         && remote.then.is_none()
     {
         let (_, _, client) = connect(&paths, &clock)?;
         let launched = peer_launch::run_remote(
             remote,
+            None,
             None,
             &paths.node_dir,
             &client,
@@ -1088,6 +1093,9 @@ fn run_parsed_in_pane<W: Write>(
     }
     if let CliAction::Launch(request) = &parsed.action {
         return run_launch(request, &parsed, &context, &paths, &clock, writer);
+    }
+    if let CliAction::InternalPeerHandoffLaunch { request, pane } = &parsed.action {
+        return peer_handoff_launch::run(request, pane, &parsed, &context, &paths, &clock, writer);
     }
     if let CliAction::LaunchNew(request) = &parsed.action {
         return launch_new::run(
@@ -1410,6 +1418,7 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::Launch(_)
         | CliAction::LaunchNew(_)
         | CliAction::RemoteLaunch(_)
+        | CliAction::InternalPeerHandoffLaunch { .. }
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::TopologyRecover(_) => {
@@ -1467,7 +1476,7 @@ fn caller_needs_identity(action: &CliAction) -> bool {
             | CliAction::Handoff(_)
             | CliAction::TopologyHandoff(_)
             | CliAction::TopologyRecover(_)
-    ) || matches!(action, CliAction::RemoteLaunch(remote) if remote.then.is_some())
+    ) || matches!(action, CliAction::RemoteLaunch(remote) if remote.then.is_some() || remote.is_handoff())
 }
 
 /// The update notice (`crate::update::check`): one line on top of a text command, the pending
@@ -2011,6 +2020,7 @@ fn advance_over_body_read<C: LocalClient + ?Sized>(
             displayed: vec![message],
             in_turn: false,
             invitations: Vec::new(),
+            alerts: Vec::new(),
         }),
         &cooperative_budget(clock),
     );
@@ -2652,6 +2662,17 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     if binding_cursors {
         request.claim = Some(claim.clone());
     }
+    // Seat-addressed alerts ride the text display's first page, only under the capability.
+    request.seat_alerts = v2
+        && binding_cursors
+        && !subagent
+        && output_spec.format == crate::protocol::output::OutputFormat::Text
+        && request.page.cursor.is_none()
+        && request.thread.is_none()
+        && capabilities
+            .iter()
+            .any(|name| name == crate::protocol::capabilities::INBOX_SEAT_ALERTS_V1);
+    let request_seat_alerts = request.seat_alerts;
     let supported = capabilities
         .iter()
         .any(|name| name == crate::protocol::capabilities::INBOX_BATCH);
@@ -2690,15 +2711,31 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
                         crate::protocol::results::InboxBatchV2Item::FirstContact(_)
                     ))
                 );
-            let empty: [MessageId; 0] = [];
-            let batches: Vec<&[MessageId]> = if candidates.displayed.is_empty() && showed_history {
-                vec![&empty[..]]
-            } else {
-                candidates
-                    .displayed
-                    .chunks(crate::protocol::commands::MAX_BATCH_ITEMS)
-                    .collect()
+            // The alerts the page showed: the first advance clears them (a request made
+            // without `seat_alerts` carries none).
+            let mut alerts: Vec<String> = match &result {
+                CommandResult::InboxBatchV2(page) if request_seat_alerts => page
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        crate::protocol::results::InboxBatchV2Item::HandoffOverdue(alert) => {
+                            Some(alert.request.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
             };
+            let empty: [MessageId; 0] = [];
+            let batches: Vec<&[MessageId]> =
+                if candidates.displayed.is_empty() && (showed_history || !alerts.is_empty()) {
+                    vec![&empty[..]]
+                } else {
+                    candidates
+                        .displayed
+                        .chunks(crate::protocol::commands::MAX_BATCH_ITEMS)
+                        .collect()
+                };
             for batch in batches {
                 let _ = client.call(
                     Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
@@ -2709,6 +2746,7 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
                         displayed: batch.to_vec(),
                         in_turn: false,
                         invitations: Vec::new(),
+                        alerts: std::mem::take(&mut alerts),
                     }),
                     &cooperative_budget(clock),
                 );
@@ -3262,6 +3300,28 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         // until the handoff journals its own intent (whose `retry` then owns the
         // work and never relaunches) or is refused for good; a transient failure
         // before that keeps it, so a rerun resumes at delivery.
+        // An atomic remote handoff (spec §2.2): the sender's daemon signs the message and the
+        // target delivers it with the launch, so there is no follow-on handoff here.
+        if let CliAction::RemoteLaunch(remote) = &parsed.action
+            && remote.is_handoff()
+        {
+            let done = peer_launch::run_remote(
+                remote,
+                Some(claim.seat.as_str()),
+                Some(&claim),
+                &paths.node_dir,
+                client,
+                clock,
+                &mut io::stderr(),
+            )?;
+            let out = done
+                .handoff_result(&remote.machine, parsed.output.format == OutputFormat::Json)
+                .expect("a handoff plan ends in a handoff result");
+            done.settle();
+            writer.write_all(out.as_bytes())?;
+            writer.flush()?;
+            return Ok(());
+        }
         let mut parsed = parsed;
         let mut launched = None;
         if let CliAction::RemoteLaunch(remote) = &parsed.action {
@@ -3269,6 +3329,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             let done = peer_launch::run_remote(
                 &remote,
                 Some(claim.seat.as_str()),
+                None,
                 &paths.node_dir,
                 client,
                 clock,
@@ -3756,7 +3817,9 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller
         | CliAction::Watch(_)
         | CliAction::WatchAck(_) => CallerNeed::Selection,
         // A remote handoff needs the top-level caller before it launches there.
-        CliAction::RemoteLaunch(remote) if remote.then.is_some() => CallerNeed::Selection,
+        CliAction::RemoteLaunch(remote) if remote.then.is_some() || remote.is_handoff() => {
+            CallerNeed::Selection
+        }
         CliAction::TopologyRecover(_) => CallerNeed::None,
         CliAction::Retry(recovery) => {
             // Retry needs the daemon; report it unavailable (exit 3, intent

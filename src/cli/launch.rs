@@ -606,6 +606,7 @@ impl<C: LocalClient + ?Sized> HandoffReader for C {
                     limit: 16,
                     max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
                 },
+                seat_alerts: false,
             }),
             budget,
         )?;

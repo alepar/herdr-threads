@@ -50,6 +50,7 @@ pub(super) fn identity() -> BootstrapIdentity {
             env: Default::default(),
             launch: BootstrapLaunch {
                 summary_prompt: None,
+                sender_prompt: None,
                 harness: herdr_threads::protocol::authority::Harness::Codex,
                 binary: None,
                 name: None,

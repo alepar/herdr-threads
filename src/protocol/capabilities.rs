@@ -11,6 +11,12 @@ pub const BOOTSTRAP_INSPECTED_RECOVERY_V1: &str = "handoff.bootstrap_inspected_r
 
 pub const BOOTSTRAP_GUARDED_RESOLUTION_V1: &str = "handoff.bootstrap_guarded_resolution_v1";
 
+/// Atomic remote handoff: the CLI's draft (`SyncCommand::RemoteLaunch.claim`) and the daemon's
+/// ledger answers. A local capability, not advertised until its feature lands.
+pub const HANDOFF_ATOMIC_REMOTE_V1: &str = "handoff.atomic_remote_v1";
+/// `Command::PeerHandoffStage`: the target's one-transaction staging of a handoff request.
+pub const PEER_HANDOFF_STAGE_V1: &str = "handoff.peer_stage_v1";
+
 pub const PICKER_DIRECTORY_V1: &str = "picker.directory_v1";
 
 pub const HISTORY_FULL_BODIES: &str = "history.full_bodies";
@@ -71,6 +77,9 @@ pub const AUTOMATIC_HANDOFF_V1: &str = "handoff.automatic_v1";
 pub const HANDOFF_LAUNCH_DIRECTORIES_V1: &str = "handoff.launch_directories_v1";
 /// Handoff plans may freeze a `summary`; their launch prompt is the one-line summary prompt.
 pub const HANDOFF_SUMMARY_PROMPT_V1: &str = "handoff.summary_prompt_v1";
+/// Handoff plans may freeze a `sender_prompt`; their launch prompt is prompt v2 (summary plus from line).
+/// A CLI freezes one only when the daemon advertises this; an older daemon keeps the v1 render.
+pub const HANDOFF_SENDER_PROMPT_V2: &str = "handoff.sender_prompt_v2";
 
 pub const THREAD_JOIN: &str = "thread.join_v1";
 
@@ -128,6 +137,11 @@ pub const INBOX_THREAD_SCOPE: &str = "inbox.thread_scope_v1";
 /// hold (spec section 7) to the page, as the attention digest does (a hook's inbox check-in
 /// offer). An explicit `inbox` read never sets it.
 pub const INBOX_PUSHED_HOLD: &str = "inbox.pushed_hold_v1";
+
+/// Seat-addressed alerts (handoff overdue, Q4): `InboxQuery.seat_alerts` on an `InboxBatchV2`
+/// first page adds one `HandoffOverdue` item per pending alert, and `AdvanceCursors.alerts`
+/// from a top-level binding clears the ones the display showed.
+pub const INBOX_SEAT_ALERTS_V1: &str = "inbox.seat_alerts_v1";
 
 /// `Command::LocateCaller`: nearest-ancestor verification of a two-family caller (ht-kqrt F8).
 pub const LOCATE_CALLER_V1: &str = "caller.locate_v1";
@@ -220,6 +234,7 @@ pub const ADVERTISED: &[&str] = &[
     SEAT_NUDGE_THRESHOLD_V1,
     DIRECT_AUTO_JOIN_V1,
     INBOX_PUSHED_HOLD,
+    INBOX_SEAT_ALERTS_V1,
     CLI_PENDING_HINT,
     TURN_END_DUE,
     WAKE_STATUS_V1,
@@ -233,6 +248,7 @@ pub const ADVERTISED: &[&str] = &[
     AUTOMATIC_TARGET_V1,
     LAUNCH_GATE_V1,
     LOCAL_LAUNCH_GATE_V1,
+    PEER_HANDOFF_STAGE_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

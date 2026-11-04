@@ -20,6 +20,7 @@ FRAME = "src/sync/frame.rs"
 ENVELOPE = "src/sync/envelope.rs"
 SCANNED = [
     FRAME,
+    "src/sync/handoff_block.rs",
     ENVELOPE,
     "src/sync/facts/payload.rs",
     "src/sync/facts/node_genesis.rs",

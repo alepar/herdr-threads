@@ -214,6 +214,7 @@ impl PageSource for StorePageSource<'_> {
                 limit: PAGE_MAX_ITEMS as u16,
                 max_bytes: PAGE_MAX_BYTES as u32,
             },
+            seat_alerts: false,
         });
         match self.store.query(&command, self.read, self.budget) {
             Ok(CommandResult::InboxBatchV2(page)) => {

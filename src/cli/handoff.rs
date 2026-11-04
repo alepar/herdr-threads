@@ -51,6 +51,10 @@ pub struct HandoffPlan {
     /// Template-free (frozen) path only: the bootstrap's frozen summary prompt; absent, V1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_prompt: Option<crate::protocol::handoff::SummaryPrompt>,
+    /// Pane path and bootstrap plans made against a daemon advertising `HANDOFF_SENDER_PROMPT_V2`:
+    /// the frozen prompt v2 (summary plus from line); absent, the v1 text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_prompt: Option<crate::protocol::handoff::SenderPrompt>,
     pub request: HandoffRequest,
     pub context: crate::protocol::output::ContinuationContext,
     pub recipient: SeatId,
@@ -149,17 +153,47 @@ pub(crate) struct Staging<'a> {
     pub send_key: &'a OperationId,
     pub skip_joined: bool,
 }
+/// Who authors the staged work, chosen once at `stage_work` entry (phases never branch on it).
+pub(crate) enum StagingAuthor<'a> {
+    /// A local caller: each phase is its own keyed mutation, claimed by `call`.
+    Caller {
+        call: &'a dyn Fn(SemanticMutation, &OperationId) -> Result<CommandResult, RunError>,
+    },
+    /// A peer's handoff request this node accepted: one caller-less `Command::PeerHandoffStage`
+    /// authors the thread, the recipient's join and the message (TRUST-POLICY N15). Only
+    /// `Staging::recipient` is read; the channel, body and keys belong to a caller's phases.
+    PeerRequest { request: &'a str },
+}
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn stage_work<C: LocalClient + ?Sized>(
     plan: Staging<'_>,
     progress: &mut StagedWork,
     phase: &mut &'static str,
-    call: &dyn Fn(SemanticMutation, &OperationId) -> Result<CommandResult, RunError>,
+    author: StagingAuthor<'_>,
     save: &mut dyn FnMut(&StagedWork) -> Result<(), RunError>,
     client: &C,
     clock: &dyn Clock,
 ) -> Result<(), RunError> {
     use crate::protocol::handoff::HandoffChannel;
+    let call = match author {
+        StagingAuthor::Caller { call } => call,
+        StagingAuthor::PeerRequest { request } => {
+            *phase = "stage";
+            let CommandResult::PeerHandoffStaged { thread, message } = client.call(
+                Command::PeerHandoffStage {
+                    request: request.to_owned(),
+                    seat: plan.recipient.clone(),
+                },
+                &super::cooperative_budget(clock),
+            )?
+            else {
+                return Err(super::invalid_request("unexpected peer stage result"));
+            };
+            progress.thread = Some(thread.clone());
+            progress.message = Some(CommandResult::PeerHandoffStaged { thread, message });
+            return save(progress);
+        }
+    };
     *phase = "create";
     if progress.thread.is_none() {
         progress.thread = Some(match plan.channel {
@@ -603,6 +637,7 @@ fn startup_envelope(
     request: &LaunchRequest,
     context: &crate::protocol::output::ContinuationContext,
     summary: Option<&str>,
+    sender: Option<&crate::protocol::handoff::SenderPrompt>,
     thread: Option<&ThreadId>,
     template: &crate::harness::adapter::StartupInputTemplate,
 ) -> Result<StartupEnvelope, RunError> {
@@ -620,14 +655,28 @@ fn startup_envelope(
             "handoff routing input exceeds bounded encoding",
         ));
     }
-    let text = pane_prompt(summary, thread.map_or("", ThreadId::as_str), context);
+    let text = pane_prompt(
+        summary,
+        sender,
+        thread.map_or("", ThreadId::as_str),
+        context,
+    );
+    let reserve = if thread.is_some() { 0 } else { 128 };
+    envelope_for_text(request, &text, template, reserve)
+}
+/// The launch request with `text` in the adapter's startup-input slot, bounded.
+fn envelope_for_text(
+    request: &LaunchRequest,
+    text: &str,
+    template: &crate::harness::adapter::StartupInputTemplate,
+    reserve: usize,
+) -> Result<StartupEnvelope, RunError> {
     if text.len() > template.max_arg_bytes {
         return Err(super::invalid_request(
             "handoff startup input exceeds bounded native input",
         ));
     }
-    let reserve = if thread.is_some() { 0 } else { 128 };
-    let (argv, slot) = template.apply(&request.argv, &text)?;
+    let (argv, slot) = template.apply(&request.argv, text)?;
     if argv[slot]
         .len()
         .checked_add(reserve)
@@ -672,6 +721,7 @@ fn prepare_saved_startup(
         &plan.request.launch,
         &plan.context,
         plan.request.summary.as_deref(),
+        plan.sender_prompt.as_ref(),
         thread,
         template,
     )?;
@@ -682,6 +732,21 @@ fn prepare_saved_startup(
     }
     validate_whole_input(&envelope, &prepared.native_argv)?;
     Ok(envelope)
+}
+
+/// A peer handoff's launch request: `launch` with the frozen `prompt` in the adapter's
+/// startup-input slot, preflighted on its pane. Returns the request to launch and the seat the
+/// pane resolves to. The prompt is the whole text (no thread id is appended), so no reserve.
+pub(crate) fn prepare_peer_startup(
+    launcher: &mut dyn HandoffLauncher,
+    launch: &LaunchRequest,
+    prompt: &str,
+) -> Result<(LaunchRequest, SeatId), RunError> {
+    let template = launcher.select_startup_input(launch)?;
+    let envelope = envelope_for_text(launch, prompt, &template, 0)?;
+    let prepared = launcher.preflight_startup(launch, &envelope.request)?;
+    validate_whole_input(&envelope, &prepared.native_argv)?;
+    Ok((envelope.request, prepared.recipient))
 }
 
 pub(crate) fn prepare_automatic_startup(
@@ -697,6 +762,7 @@ pub(crate) fn prepare_automatic_startup(
         &plan.launch,
         &plan.context,
         plan.summary.as_deref(),
+        plan.sender_prompt.as_ref(),
         Some(thread),
         template,
     )?;
@@ -766,10 +832,13 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
     };
     namespace.validate().map_err(super::invalid_request)?;
     let template = launcher.select_startup_input(&request.launch)?;
+    let sender_prompt =
+        frozen_sender_prompt(client, clock, request.summary.as_deref(), &claim.seat);
     let envelope = startup_envelope(
         &request.launch,
         &output.context,
         request.summary.as_deref(),
+        sender_prompt.as_ref(),
         None,
         &template,
     )?;
@@ -790,6 +859,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
         context: output.context.clone(),
         startup_input: Some(template.clone()),
         summary: request.summary.clone(),
+        sender_prompt: sender_prompt.clone(),
     }));
     super::handoff_delivery::validate_automatic_local_admission(
         journal,
@@ -806,6 +876,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
         context: output.context.clone(),
         startup_input: Some(template),
         summary: request.summary,
+        sender_prompt,
     }));
     let preparation = super::handoff_delivery::automatic_envelope(&claim, original.clone())?;
     match client.call(
@@ -868,10 +939,13 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
         request.goal.get_or_insert_with(|| topic.clone());
     }
     let template = launcher.select_startup_input(&request.launch)?;
+    let sender_prompt =
+        frozen_sender_prompt(client, clock, request.summary.as_deref(), &claim.seat);
     let envelope = startup_envelope(
         &request.launch,
         &output.context,
         request.summary.as_deref(),
+        sender_prompt.as_ref(),
         request.thread.as_ref(),
         &template,
     )?;
@@ -885,6 +959,7 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
         startup_input: Some(template),
         bootstrap_input: None,
         summary_prompt: None,
+        sender_prompt,
         request,
         context: output.context.clone(),
         recipient,
@@ -1014,6 +1089,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
                     &plan.request.launch,
                     &plan.context,
                     plan.request.summary.as_deref(),
+                    plan.sender_prompt.as_ref(),
                     Some(thread),
                     template,
                 )
@@ -1135,6 +1211,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
                     &plan.request.launch,
                     &plan.context,
                     plan.request.summary.as_deref(),
+                    plan.sender_prompt.as_ref(),
                     Some(thread),
                     &template,
                 )?;
@@ -1231,7 +1308,7 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
             },
             &mut staged,
             &mut phase,
-            &call,
+            StagingAuthor::Caller { call: &call },
             &mut |staged| {
                 progress.thread = staged.thread.clone();
                 progress.invitation = staged.invitation.clone();
@@ -1264,6 +1341,7 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
             let mut request = plan.request.launch.clone();
             let prompt = launch_prompt(
                 plan.summary_prompt.as_ref(),
+                plan.sender_prompt.as_ref(),
                 thread.as_str(),
                 &plan.context,
                 &claim.instance,
@@ -1551,11 +1629,15 @@ fn cleanup_completed<W: Write>(
 /// a retained pane plan renders with today's text.
 fn pane_prompt(
     summary: Option<&str>,
+    sender: Option<&crate::protocol::handoff::SenderPrompt>,
     thread: &str,
     context: &crate::protocol::output::ContinuationContext,
 ) -> String {
     #[allow(unused_mut)]
-    let mut text = summary_prompt::render(summary, thread, context);
+    let mut text = match sender {
+        Some(sender) => summary_prompt::render_v2_from(sender.summary.as_deref(), &sender.from),
+        None => summary_prompt::render(summary, thread, context),
+    };
     #[cfg(any(test, feature = "test-support"))]
     if let Some(suffix) = crate::harness::launch::current_drift::prompt_suffix() {
         text.push_str(suffix);
@@ -1771,16 +1853,18 @@ pub(crate) mod bootstrap_v1 {
     /// composition of `caller` plus one retained prompt (V1 text, or the summary
     /// prompt when the plan froze a summary). The frozen grammar still
     /// refuses caller arguments V1 never admitted.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn retained_argv_matches(
         harness: crate::protocol::authority::Harness,
         caller: &[String],
         prompt: Option<&crate::protocol::handoff::SummaryPrompt>,
+        sender: Option<&crate::protocol::handoff::SenderPrompt>,
         thread: &str,
         context: &ContinuationContext,
         instance: &str,
         retained: Option<&serde_json::Value>,
     ) -> Result<bool, crate::protocol::results::ApiError> {
-        for prompt in super::retained_prompts(prompt, thread, context, instance) {
+        for prompt in super::retained_prompts(prompt, sender, thread, context, instance) {
             let mut argv = caller.to_vec();
             argv.push(prompt);
             let expected = crate::harness::launch::compose_bootstrap_v1_argv(harness, argv)?;
@@ -1852,6 +1936,44 @@ pub(crate) mod summary_prompt {
         out
     }
 
+    /// The v2 from-line separator: space, U+2014, space, `from: ` (11 bytes).
+    pub(crate) const FROM: &str = " \u{2014} from: ";
+    /// The first part of a local v2 prompt with no summary (7 bytes).
+    const NO_SUMMARY_V2: &str = "Handoff";
+
+    /// Who sent a handoff, from the store only: the replicated `seats.name` (no `@tag`) and
+    /// the seat id.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct SenderLine {
+        pub(crate) name: Option<String>,
+        pub(crate) id: String,
+    }
+
+    impl SenderLine {
+        /// The from part: `<name> (<id>)`, or `<id>` without a name.
+        pub(crate) fn render(&self) -> String {
+            match &self.name {
+                Some(name) => format!("{name} ({})", self.id),
+                None => self.id.clone(),
+            }
+        }
+    }
+
+    /// Prompt v2 (spec section 6): one line on every host, no thread id, no inbox hint:
+    /// `<summary> \u{2014} from: <name> (<id>)`, or `<summary> \u{2014} from: <id>` without a name.
+    pub(crate) fn render_v2(summary: Option<&str>, from: &SenderLine) -> String {
+        render_v2_from(summary, &from.render())
+    }
+
+    /// The one place that joins summary (or `Handoff`), [`FROM`] and the rendered from part;
+    /// frozen prompts (`SenderPrompt`) call it with their stored from part.
+    pub(crate) fn render_v2_from(summary: Option<&str>, from: &str) -> String {
+        let mut out = String::from(summary.unwrap_or(NO_SUMMARY_V2));
+        out.push_str(FROM);
+        out.push_str(from);
+        out
+    }
+
     /// The startup prompt of a plan that creates its target before the thread exists (V3): it
     /// names no thread, because the harness argv is frozen at creation and the handoff
     /// arrives by ordinary delivery. 79 bytes plus the summary and the command with a
@@ -1916,14 +2038,66 @@ pub(crate) fn frozen_prompt<C: LocalClient + ?Sized>(
     })
 }
 
+/// The sender's from line, display data from the store only: one `SeatInspect` read; the name
+/// of a local named seat. Any error or missing entry gives the id alone (a handoff never fails
+/// for a name).
+pub(crate) fn sender_line<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    seat: &SeatId,
+) -> summary_prompt::SenderLine {
+    let name = match client.call(
+        Command::SeatInspect(crate::protocol::commands::SeatInspectQuery {
+            seat: seat.clone(),
+            page: crate::protocol::pagination::PageRequest {
+                limit: 1,
+                ..Default::default()
+            },
+        }),
+        &super::cooperative_budget(clock),
+    ) {
+        Ok(CommandResult::SeatInspect(inspection)) => {
+            inspection.directory.and_then(|entry| entry.name)
+        }
+        _ => None,
+    };
+    summary_prompt::SenderLine {
+        name,
+        id: seat.as_str().to_owned(),
+    }
+}
+
+/// The frozen v2 sender prompt a new local handoff records: `Some` only when the daemon
+/// advertises [`HANDOFF_SENDER_PROMPT_V2`]; otherwise the v1 path applies unchanged.
+pub(crate) fn frozen_sender_prompt<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    summary: Option<&str>,
+    seat: &SeatId,
+) -> Option<crate::protocol::handoff::SenderPrompt> {
+    client
+        .supports_capability(
+            crate::protocol::capabilities::HANDOFF_SENDER_PROMPT_V2,
+            &super::cooperative_budget(clock),
+        )
+        .then(|| crate::protocol::handoff::SenderPrompt {
+            summary: summary.map(str::to_owned),
+            from: sender_line(client, clock, seat).render(),
+        })
+}
+
 /// The prompt a launch of a frozen plan carries: the summary prompt when it froze one, else
 /// the frozen V1 text (pre-upgrade records and plans made against an older daemon).
 pub(crate) fn launch_prompt(
     prompt: Option<&crate::protocol::handoff::SummaryPrompt>,
+    sender: Option<&crate::protocol::handoff::SenderPrompt>,
     thread: &str,
     context: &crate::protocol::output::ContinuationContext,
     instance: &str,
 ) -> String {
+    if let Some(sender) = sender {
+        return summary_prompt::render_v2_from(sender.summary.as_deref(), &sender.from);
+    }
     match prompt {
         Some(prompt) => summary_prompt::render(prompt.summary.as_deref(), thread, context),
         None => bootstrap_v1::prompt(thread, context, instance),
@@ -1934,10 +2108,17 @@ pub(crate) fn launch_prompt(
 /// or the V1 outcomes for a plan without one.
 pub(crate) fn retained_prompts(
     prompt: Option<&crate::protocol::handoff::SummaryPrompt>,
+    sender: Option<&crate::protocol::handoff::SenderPrompt>,
     thread: &str,
     context: &crate::protocol::output::ContinuationContext,
     instance: &str,
 ) -> Vec<String> {
+    if let Some(sender) = sender {
+        return vec![summary_prompt::render_v2_from(
+            sender.summary.as_deref(),
+            &sender.from,
+        )];
+    }
     match prompt {
         Some(prompt) => vec![summary_prompt::render(
             prompt.summary.as_deref(),
@@ -1960,6 +2141,7 @@ pub(crate) fn retained_argv_matches_v2(
     composed: &[String],
     template: &crate::harness::adapter::StartupInputTemplate,
     prompt: Option<&crate::protocol::handoff::SummaryPrompt>,
+    sender: Option<&crate::protocol::handoff::SenderPrompt>,
     thread: &str,
     context: &crate::protocol::output::ContinuationContext,
     instance: &str,
@@ -1974,7 +2156,7 @@ pub(crate) fn retained_argv_matches_v2(
             ),
         ));
     }
-    for text in retained_prompts(prompt, thread, context, instance) {
+    for text in retained_prompts(prompt, sender, thread, context, instance) {
         let Ok((argv, _)) = template.apply(caller, &text) else {
             continue;
         };
@@ -2007,6 +2189,7 @@ pub(crate) fn retained_launch_argv_matches(
                 )
             })?,
             launch.summary_prompt.as_ref(),
+            launch.sender_prompt.as_deref(),
             thread,
             context,
             instance,
@@ -2016,6 +2199,7 @@ pub(crate) fn retained_launch_argv_matches(
             launch.harness,
             &launch.argv,
             launch.summary_prompt.as_ref(),
+            launch.sender_prompt.as_deref(),
             thread,
             context,
             instance,
@@ -2123,6 +2307,7 @@ fn report_core(
         if let Some(template) = &plan.startup_input {
             let text = pane_prompt(
                 plan.request.summary.as_deref(),
+                plan.sender_prompt.as_ref(),
                 thread.as_str(),
                 &plan.context,
             );
@@ -2137,6 +2322,7 @@ fn report_core(
             // transport. Template-free plans carry the frozen V1 input.
             let prompt = launch_prompt(
                 plan.summary_prompt.as_ref(),
+                plan.sender_prompt.as_ref(),
                 thread.as_str(),
                 &plan.context,
                 &claim.instance,

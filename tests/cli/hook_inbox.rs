@@ -776,6 +776,7 @@ fn cli_inbox_prints_first_contact_once() {
         seat: None,
         page: PageRequest::default(),
         claim: None,
+        seat_alerts: false,
     };
     let daemon = Unenrolled {
         enrolled: Default::default(),

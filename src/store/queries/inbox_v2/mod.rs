@@ -270,6 +270,23 @@ pub(super) fn query_mode(
             }
         }
     }
+    // Seat-addressed alerts (Q4): first page only, ahead of the merged rows. Reading does not
+    // clear them; the display's AdvanceCursors does.
+    if q.seat_alerts && q.page.cursor.is_none() && q.thread.is_none() {
+        for (request, target_node, _, seat) in
+            crate::store::handoff_obligations::pending_alerts(db, seat.as_str())
+                .map_err(crate::store::connection::store_error)?
+        {
+            let node_tag = crate::store::handoff_obligations::target_label(db, &target_node)?;
+            items.push(Item::HandoffOverdue(
+                crate::protocol::results::HandoffOverdue {
+                    request,
+                    node_tag,
+                    seat,
+                },
+            ));
+        }
+    }
     let filter = row_filter(db, &subset, &reader, seat)?;
     // A retired body consumes one of the existing candidate visits.
     let mut merge = Merge::new(

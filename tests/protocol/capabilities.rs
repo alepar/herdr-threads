@@ -258,6 +258,7 @@ fn probe_inbox_batch() {
         claim: None,
         seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
         page: Default::default(),
+        seat_alerts: false,
     });
     assert!(command.validate().is_ok());
     let json = serde_json::to_value(&command).unwrap();
@@ -290,6 +291,7 @@ fn capability_constants_are_stable() {
     assert_eq!(IN_TURN_OFFER, "inbox.in_turn_offer_v1");
     assert_eq!(INBOX_THREAD_SCOPE, "inbox.thread_scope_v1");
     assert_eq!(INBOX_PUSHED_HOLD, "inbox.pushed_hold_v1");
+    assert_eq!(INBOX_SEAT_ALERTS_V1, "inbox.seat_alerts_v1");
     assert_eq!(CLI_PENDING_HINT, "attention.cli_pending_hint_v1");
     assert_eq!(TURN_END_DUE, "turn_end.due_v1");
     assert_eq!(WAKE_STATUS_V1, "seat.wake_status_v1");
@@ -302,6 +304,7 @@ fn capability_constants_are_stable() {
     assert_eq!(AUTOMATIC_TARGET_V1, "handoff.automatic_target_v1");
     assert_eq!(LAUNCH_GATE_V1, "launch.gate_v1");
     assert_eq!(LOCAL_LAUNCH_GATE_V1, "launch.local_gate_v1");
+    assert_eq!(PEER_HANDOFF_STAGE_V1, "handoff.peer_stage_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -345,6 +348,7 @@ fn capability_constants_are_stable() {
             "seat.nudge_threshold_v1",
             "direct.auto_join_v1",
             "inbox.pushed_hold_v1",
+            "inbox.seat_alerts_v1",
             "attention.cli_pending_hint_v1",
             "turn_end.due_v1",
             "seat.wake_status_v1",
@@ -357,7 +361,8 @@ fn capability_constants_are_stable() {
             "seat.terminal_sites_v1",
             "handoff.automatic_target_v1",
             "launch.gate_v1",
-            "launch.local_gate_v1"
+            "launch.local_gate_v1",
+            "handoff.peer_stage_v1"
         ]
     );
 }
@@ -441,6 +446,7 @@ fn every_advertised_capability_has_a_handler() {
                     claim: None,
                     seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
                     page: Default::default(),
+                    seat_alerts: false,
                 });
                 assert!(command.validate().is_ok());
                 assert_eq!(
@@ -637,6 +643,32 @@ fn every_advertised_capability_has_a_handler() {
                 );
                 // The control service's domain stub answers like the other probes; the
                 // handler is driven end to end by `tests/hc_handoff.rs`.
+                assert_eq!(
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            PEER_HANDOFF_STAGE_V1 => {
+                let command = Command::PeerHandoffStage {
+                    request: "00000000-0000-0000-0000-000000000001".into(),
+                    seat: crate::protocol::ids::SeatId::new("sAbc12345678"),
+                };
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                let empty = Command::PeerHandoffStage {
+                    request: String::new(),
+                    seat: crate::protocol::ids::SeatId::new("sAbc12345678"),
+                };
+                assert!(empty.validate().is_err());
+                // The control service's domain stub answers like the other probes; the staging
+                // itself is driven by `tests/store/peer_handoff.rs`.
                 assert_eq!(
                     daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
                         .handle(command, PeerIdentity::from_kernel(501), &budget())
@@ -859,6 +891,7 @@ fn every_advertised_capability_has_a_handler() {
             BINDING_CURSORS => probe_binding_cursors(),
             INBOX_THREAD_SCOPE => probe_inbox_thread_scope(),
             INBOX_PUSHED_HOLD => probe_inbox_pushed_hold(),
+            INBOX_SEAT_ALERTS_V1 => probe_inbox_seat_alerts(),
             IN_TURN_OFFER => {
                 // The in-turn flag and its invitations are on the wire only when set and
                 // round-trip; the store records them
@@ -883,6 +916,7 @@ fn every_advertised_capability_has_a_handler() {
                     invitations: vec![crate::protocol::ids::InvitationId::new(
                         "34750f98bd59fcfc946da45aaabe933b",
                     )],
+                    alerts: Vec::new(),
                 });
                 assert!(command.validate().is_ok());
                 let json = serde_json::to_value(&command).unwrap();
@@ -1153,6 +1187,7 @@ fn probe_binding_cursors() {
         },
         operation: OperationId::new("op"),
         displayed: vec![MessageId::new("m")],
+        alerts: Vec::new(),
     });
     // A subagent may send it: validation does not refuse the role.
     assert!(command.validate().is_ok());
@@ -1316,6 +1351,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.nudge_threshold_v1",
             "direct.auto_join_v1",
             "inbox.pushed_hold_v1",
+            "inbox.seat_alerts_v1",
             "attention.cli_pending_hint_v1",
             "turn_end.due_v1",
             "seat.wake_status_v1",
@@ -1329,8 +1365,11 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "handoff.automatic_target_v1",
             "launch.gate_v1",
             "launch.local_gate_v1",
+            "handoff.peer_stage_v1",
             "invitation.confirmation_v1",
-            "handoff.summary_prompt_v1"
+            "handoff.summary_prompt_v1",
+            "handoff.sender_prompt_v2",
+            "handoff.atomic_remote_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);
@@ -2104,7 +2143,12 @@ fn v2_capability_is_negotiated_only_with_recorder() {
             .iter()
             .filter(|name| **name != HARNESS_HEALTH_V2)
             .copied()
-            .chain([INVITATION_CONFIRMATION_V1, HANDOFF_SUMMARY_PROMPT_V1])
+            .chain([
+                INVITATION_CONFIRMATION_V1,
+                HANDOFF_SUMMARY_PROMPT_V1,
+                HANDOFF_SENDER_PROMPT_V2,
+                HANDOFF_ATOMIC_REMOTE_V1,
+            ])
             .collect::<Vec<_>>()
     );
     let d = crate::harness::claude::ClaudeAdapter.contracts()[0];
@@ -3008,6 +3052,7 @@ fn probe_inbox_pushed_hold() {
         claim: None,
         thread: None,
         pushed,
+        seat_alerts: false,
     };
     let pushed = Command::InboxBatchV2(query(true, None));
     assert!(pushed.validate().is_ok());
@@ -3023,6 +3068,31 @@ fn probe_inbox_pushed_hold() {
             .validate()
             .is_err()
     );
+}
+
+/// `inbox.seat_alerts_v1`: `InboxQuery.seat_alerts` and `AdvanceCursors.alerts` are on the wire
+/// only when set and round-trip; only a v2 batch read may carry the flag. The store serves them
+/// (`first_contact::inbox_first_page_carries_seat_alerts`,
+/// `first_contact::advance_cursors_clears_alerts_top_level_only`).
+fn probe_inbox_seat_alerts() {
+    use crate::protocol::{commands::InboxQuery, ids::SeatId, pagination::PageRequest};
+    let query = |seat_alerts: bool| InboxQuery {
+        seat: Some(SeatId::new("s")),
+        page: PageRequest::default(),
+        claim: None,
+        thread: None,
+        pushed: false,
+        seat_alerts,
+    };
+    let on = Command::InboxBatchV2(query(true));
+    assert!(on.validate().is_ok());
+    let json = serde_json::to_value(&on).unwrap();
+    assert_eq!(json.to_string().matches("\"seat_alerts\":true").count(), 1);
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), on);
+    let plain = serde_json::to_value(Command::InboxBatchV2(query(false))).unwrap();
+    assert!(!plain.to_string().contains("seat_alerts"), "{plain}");
+    assert!(Command::Inbox(query(true)).validate().is_err());
+    assert!(Command::InboxBatch(query(true)).validate().is_err());
 }
 
 /// `inbox.thread_scope_v1` (ht-br0): `InboxQuery.thread` is on the wire only when set and
@@ -3043,6 +3113,7 @@ fn probe_inbox_thread_scope() {
         },
         claim: None,
         thread: thread.map(ThreadId::new),
+        seat_alerts: false,
     };
     let scoped = Command::InboxBatchV2(query(Some("t"), None));
     assert!(scoped.validate().is_ok());
