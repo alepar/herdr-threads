@@ -61,7 +61,16 @@ impl Rig {
         std::fs::write(&stub, LAUNCH_STUB).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(log.join("real"), b"").unwrap();
+        // The launch resolves the harness executable on node 1's PATH before the stub runs; a
+        // stand-in `claude` keeps the test independent of the host's harnesses.
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let claude = bin.join("claude");
+        std::fs::write(&claude, "#!/bin/sh\nprintf '%s\\n' '2.0.0 (Claude Code)'\n").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = std::env::var("PATH").unwrap_or_default();
         let mut env = vec![
+            (1, "PATH".to_owned(), format!("{}:{path}", bin.display())),
             (
                 1,
                 "HT_TEST_PEER_LAUNCH_STUB".to_owned(),
