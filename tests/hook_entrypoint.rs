@@ -6519,13 +6519,22 @@ mod continuity {
             self.db().query_row(sql, [], |r| r.get(0)).unwrap()
         }
 
-        /// The daemon's first reconciliation pass has finished (marker for
-        /// the current recovery boot/epoch) and a snapshot is published.
+        /// The daemon's first reconciliation pass of the fixture's Herdr host
+        /// has finished (marker for the current recovery boot/epoch) and a
+        /// snapshot is published. Only that host's row counts: the built-in
+        /// named host publishes an empty, already-reconciled snapshot at
+        /// daemon start, before the Herdr host's pass arms its restore hold.
         pub fn wait_reconciled(&self) {
             let until = Instant::now() + Duration::from_secs(15);
-            while self.count(
-                "SELECT count(*) FROM herdr_hosts WHERE active_snapshot_id IS NOT NULL AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",
-            ) == 0
+            while self
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM herdr_hosts WHERE endpoint=?1 AND active_snapshot_id IS NOT NULL AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",
+                    [self.host_locator().as_str()],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                == 0
             {
                 assert!(
                     Instant::now() < until,
