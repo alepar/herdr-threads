@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "generated_from": "harness-canary cf13ed76c1c2871b321ad290d03229cb785c400e",
-  "generated_at": "2026-11-05T14:43:40Z",
+  "generated_at": "2026-11-06T14:37:29Z",
   "latest_release": "3.0.0",
   "contracts": {
     "claude": "59c0d06240ed2ce9",
@@ -99,6 +99,21 @@
       "known_broken": []
     },
     {
+      "harness": "claude",
+      "version": "2.1.319",
+      "status": "verified",
+      "evidence": "no_model",
+      "contract_id": "59c0d06240ed2ce9",
+      "source": "canary",
+      "supported_since": "3.0.0",
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    },
+    {
       "harness": "codex",
       "version": "0.157.1",
       "status": "verified",
@@ -166,6 +181,21 @@
       "contract_id": "80e2f1c9b6b255fa",
       "source": "canary",
       "supported_since": "2.8.0",
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    },
+    {
+      "harness": "codex",
+      "version": "0.167.0",
+      "status": "verified",
+      "evidence": "no_model",
+      "contract_id": "80e2f1c9b6b255fa",
+      "source": "canary",
+      "supported_since": "3.0.0",
       "broken_event": null,
       "broken_field": null,
       "last_working": null,
