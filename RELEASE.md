@@ -64,7 +64,7 @@ After the tag, `scripts/freeze-peer-wire X.Y.Z --at vX.Y.Z --check` confirms the
 
 ## 8. Record and announce
 
-Add the release record to `docs/release.md` under "Current release status": source SHA, what changed, qualification results (commands and counts, plus what was reused and from which SHA), CI run links, archive verification outcome, install hashes. Commit and push `main`. Announce on `herdr-threads-dev` (version, headline changes, any one-way upgrade, what to do). Tell any tab waiting on the release.
+Add the release record to `docs/release.md` under "Current release status": source SHA, what changed, qualification results (commands and counts, plus what was reused and from which SHA), CI run links, archive verification outcome. The repository is public: leave out the local setup (host names, installs, local paths, evidence locations, credential profiles). Commit and push `main`. Announce on `herdr-threads-dev` (version, headline changes, any one-way upgrade, what to do). Tell any tab waiting on the release.
 
 ## 9. Clean up
 
