@@ -6508,6 +6508,47 @@ fn graph_clone_identity_upgrade_keeps_seats_retirements_and_decisions() {
     assert!(column_exists(&db, "occupant_bindings", "liveness_boot"));
 }
 
+/// Node schema 17 (ht-22wz). Kills: losing or changing a kept claim on upgrade, an old row that
+/// claims a boot it was never stamped with, a boot column without its length bound.
+#[test]
+fn kept_claim_boot_upgrade_keeps_claims_with_an_unknown_boot() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, &schema::NODE_DELTAS[..15]).unwrap();
+    assert_eq!(user_version(&db), 16);
+    crate::test_support::attach_test_host_to_connection(&db);
+    db.execute(
+        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at,continuity_key)
+           VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane-x','claude','sess','{}',5,'k')",
+        [],
+    )
+    .unwrap();
+    let snapshot = |db: &Connection| -> String {
+        db.query_row(
+            "SELECT json_group_array(json_array(host_id,target_id,harness,native_session,command_json,received_at,continuity_key)) FROM kept_continuity_claims",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let before = snapshot(&db);
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
+    assert_eq!(snapshot(&db), before);
+    let unknown: i64 = db
+        .query_row(
+            "SELECT count(*) FROM kept_continuity_claims WHERE liveness_boot IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unknown, 1, "an older daemon's claim has an unknown boot");
+    let stamp =
+        |boot: &str| db.execute("UPDATE kept_continuity_claims SET liveness_boot=?1", [boot]);
+    assert!(stamp("").is_err());
+    assert!(stamp(&"b".repeat(65)).is_err());
+    stamp(&"b".repeat(64)).unwrap();
+}
+
 /// Node schema 16 (ht-ma6i.5). Kills: a dropped CHECK, UNIQUE or AUTOINCREMENT on the new tables.
 #[test]
 fn graph_clone_identity_tables_enforce_their_checks() {

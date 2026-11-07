@@ -359,8 +359,10 @@ reply to the session is unchanged. After each completed reconciliation pass of t
 the observation worker decides each kept claim through the ordinary C1 transaction against the canonical view (A2),
 under its own operation key, so the session's later resubmission replays the same result. Each decision makes two
 bounded Herdr reads, as at intake: the C1 `agent_session` diagnostic and the target read, which is the lane's own
-(no extra capture, no wait for one); so at most two reads per claim per pass. A kept claim whose fingerprinted process has exited
-is dropped undecided; a decided one, either way, is dropped, but never a newer claim that replaced the row
+(no extra capture, no wait for one); so at most two reads per claim per pass. A kept claim records the kernel boot id it
+was kept under beside its liveness fingerprint (ht-22wz), as bindings do. A kept claim whose fingerprinted process has
+exited, or whose recorded boot is not the running one or is unknown (an unreadable boot, or a claim an older daemon kept
+before the boot was recorded), is dropped undecided: a reboot can repeat a pid and start tick; a decided one, either way, is dropped, but never a newer claim that replaced the row
 meanwhile. The claim and its evidence are the session's own; the daemon only defers the decision. Client-local intent
 files are never read by the daemon.
 

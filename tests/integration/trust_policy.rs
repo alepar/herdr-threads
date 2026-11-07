@@ -2295,6 +2295,54 @@ fn kept_claim_survives_a_daemon_restart() {
     assert_eq!(world.continuity_decisions(), 1);
 }
 
+/// ht-22wz: a kept claim recorded under another kernel boot is dropped undecided, even while its
+/// fingerprinted process looks alive: a reboot can repeat a pid and start tick, so the claim's
+/// process cannot be the one running now. Kills: a kept-claim gate on liveness alone.
+#[test]
+fn kept_claim_of_another_boot_is_dropped_undecided() {
+    let mut world = World::start(
+        "htkb",
+        vec![claude("w1:p1", "term-a", "SA"), pane("w1:p2", "term-b")],
+    );
+    let a = world.resolve("w1:p1");
+    let (code, _, stderr) =
+        world.hook("claude", "w1:p1", &session_start("claude", "SA", "startup"));
+    assert_eq!(code, 0, "{stderr}");
+    world.herdr.kill();
+    world.hook_unanswered("claude", "w1:p1", &session_start("claude", "SA", "resume"));
+    assert_eq!(world.kept_claims(), 1);
+    {
+        let path = world.find("herdr-threads.db").expect("daemon database");
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(Duration::from_secs(5)).unwrap();
+        let stamped: Option<String> = db
+            .query_row(
+                "SELECT liveness_boot FROM kept_continuity_claims",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(stamped.is_some(), "the claim records the running boot");
+        db.execute(
+            "UPDATE kept_continuity_claims SET liveness_boot='another-boot'",
+            [],
+        )
+        .unwrap();
+    }
+    world.herdr.set_panes(vec![
+        claude("w1:p1", "term-a2", "SA"),
+        pane("w1:p2", "term-b2"),
+    ]);
+    world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
+    world.kick_observation();
+    world.wait_for_recovery("the kept claim of another boot to be dropped", |world| {
+        world.kept_claims() == 0
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(world.continuity_decisions(), 0);
+    assert_eq!(world.seat_state(&a), "unresolved");
+}
+
 /// ht-ma6i.2: a keyed claim kept during lag is decided by the observation worker with its key, with
 /// no further event: a fresh session no binding names reattaches the key's seat, binding open, with
 /// `cooperative_continuity_key` in seat history. Kills: a kept claim decided without its key (it

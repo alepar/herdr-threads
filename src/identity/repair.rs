@@ -498,8 +498,10 @@ impl OrdinaryIdentity {
     /// costs two bounded reads per pass (the C1 diagnostic and the target) at
     /// the lane's own cadence. Each is the ordinary
     /// C1 decision under its own operation key (a session's later
-    /// resubmission replays the result). A claim whose process is gone, or that
-    /// was decided either way, is dropped; one whose evidence is still not
+    /// resubmission replays the result). A claim whose process is gone, whose
+    /// recorded kernel boot is not the running one or is unknown (ht-22wz: a
+    /// reboot can repeat a pid and start tick), or that was decided either way,
+    /// is dropped; one whose evidence is still not
     /// ready is kept, unrefreshed, until it expires. A drop removes only the
     /// row as loaded, never a newer claim of the same session.
     pub fn decide_kept_continuity(&self) -> Result<(), ApiError> {
@@ -514,7 +516,10 @@ impl OrdinaryIdentity {
                 break;
             }
             let command = &claim.command;
-            let alive = command
+            let alive = crate::identity::process_continuity::same_boot(
+                &processes,
+                claim.liveness_boot.as_deref(),
+            ) && command
                 .liveness
                 .is_some_and(|fingerprint| fingerprint.is_alive(&processes));
             let settled = !alive || {

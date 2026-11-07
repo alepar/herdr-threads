@@ -30,13 +30,18 @@ pub const KEPT_CLAIMS_PER_PASS: i64 = 16;
 pub struct KeptClaim {
     pub command: ContinuityCheckIn,
     pub received_at: i64,
+    /// The kernel boot the claim was kept under (ht-22wz), stamped beside its liveness
+    /// fingerprint from `node_kernel_boot`; `None` when unknown (no fingerprint, an unreadable
+    /// boot, or a row an older daemon kept).
+    pub liveness_boot: Option<String>,
 }
 
 /// Keep `command` for `host`, replacing the same session's earlier claim on the
 /// same target (its age still runs from the first one: a session that keeps
 /// claiming does not outlive [`KEPT_CLAIM_TTL_MS`]) and superseding the
 /// process's claims for other sessions there ([`supersede`]). `false` when the
-/// cap is reached (the claim is not kept).
+/// cap is reached (the claim is not kept). A claim with a liveness fingerprint is
+/// stamped with the running kernel boot (`node_kernel_boot`), as bindings are.
 pub fn keep(
     tx: &Transaction<'_>,
     host: HostId,
@@ -71,10 +76,10 @@ pub fn keep(
         }
     }
     tx.execute(
-        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at,continuity_key) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7) \
+        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at,continuity_key,liveness_boot) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,CASE WHEN ?8 THEN (SELECT boot FROM node_kernel_boot WHERE id=1) END) \
          ON CONFLICT(host_id,target_id,harness,native_session) DO UPDATE SET \
-           command_json=excluded.command_json,continuity_key=excluded.continuity_key",
+           command_json=excluded.command_json,continuity_key=excluded.continuity_key,liveness_boot=excluded.liveness_boot",
         params![
             host.get(),
             command.target.as_str(),
@@ -82,7 +87,8 @@ pub fn keep(
             command.native_session.as_str(),
             json,
             now,
-            command.continuity_key.as_ref().map(|key| key.as_str())
+            command.continuity_key.as_ref().map(|key| key.as_str()),
+            command.liveness.is_some()
         ],
     )
     .map_err(store_error)?;
@@ -150,24 +156,25 @@ pub fn due(tx: &Transaction<'_>, host: HostId, now: i64) -> Result<Vec<KeptClaim
         params![host.get(), now.saturating_sub(KEPT_CLAIM_TTL_MS)],
     )
     .map_err(store_error)?;
-    let rows: Vec<(String, String, String, String, i64)> = tx
+    let rows: Vec<(String, String, String, String, i64, Option<String>)> = tx
         .prepare(
-            "SELECT target_id,harness,native_session,command_json,received_at FROM kept_continuity_claims \
+            "SELECT target_id,harness,native_session,command_json,received_at,liveness_boot FROM kept_continuity_claims \
              WHERE host_id=?1 ORDER BY received_at, target_id, harness, native_session LIMIT ?2",
         )
         .map_err(store_error)?
         .query_map(params![host.get(), KEPT_CLAIMS_PER_PASS], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
         })
         .map_err(store_error)?
         .collect::<Result<_, _>>()
         .map_err(store_error)?;
     let mut claims = Vec::with_capacity(rows.len());
-    for (target, harness, session, json, received_at) in rows {
+    for (target, harness, session, json, received_at, liveness_boot) in rows {
         match serde_json::from_str::<ContinuityCheckIn>(&json) {
             Ok(command) => claims.push(KeptClaim {
                 command,
                 received_at,
+                liveness_boot,
             }),
             Err(_) => {
                 tx.execute(

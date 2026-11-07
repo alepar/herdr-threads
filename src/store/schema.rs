@@ -167,6 +167,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
             sql_after: include_str!("../../migrations/node/0016_graph_clone_identity_after.sql"),
         }),
     },
+    NodeDelta {
+        version: 17,
+        sql: include_str!("../../migrations/node/0017_kept_claim_boot.sql"),
+        rebuild: None,
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.

@@ -170,3 +170,38 @@ fn a_known_session_of_the_same_process_supersedes_its_older_claim() {
     forget(&db, host, &by(claim("w1:p3", "T"), 7), None).unwrap();
     assert_eq!(sessions(&mut db, host), ["O", "S", "T"]);
 }
+
+/// ht-22wz. Kills: a kept claim with no record of the kernel boot it was kept under (a reboot can
+/// repeat its pid and start tick); a repeat that keeps the first claim's boot; a boot stamped on a
+/// claim with no fingerprint.
+#[test]
+fn a_fingerprinted_claim_records_the_running_kernel_boot() {
+    let (mut db, host) = store();
+    let set_boot = |db: &rusqlite::Connection, boot: &str| {
+        db.execute(
+            "INSERT INTO node_kernel_boot(id,boot) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET boot=excluded.boot",
+            [boot],
+        )
+        .unwrap();
+    };
+    set_boot(&db, "boot-1");
+    assert!(keep_at(&mut db, host, &by(claim("w1:p1", "S"), 7), 1));
+    assert!(keep_at(&mut db, host, &claim("w1:p2", "S2"), 2));
+    let boots = |db: &mut rusqlite::Connection| -> Vec<Option<String>> {
+        due_at(db, host, 3)
+            .into_iter()
+            .map(|kept| kept.liveness_boot)
+            .collect()
+    };
+    assert_eq!(boots(&mut db), vec![Some("boot-1".into()), None]);
+    set_boot(&db, "boot-2");
+    assert!(keep_at(&mut db, host, &by(claim("w1:p1", "S"), 8), 4));
+    assert_eq!(boots(&mut db), vec![Some("boot-2".into()), None]);
+    db.execute("DELETE FROM node_kernel_boot", []).unwrap();
+    assert!(keep_at(&mut db, host, &by(claim("w1:p1", "S"), 9), 5));
+    assert_eq!(
+        boots(&mut db),
+        vec![None, None],
+        "an unreadable boot is unknown"
+    );
+}
