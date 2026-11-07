@@ -1,5 +1,24 @@
 # Changelog
 
+## v3.1.0
+
+One-way store upgrade to node schema 17 (migrations 0016, graph clone identity, and 0017, the kept claim's kernel boot). Binaries before 3.1.0 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. Restart the daemon after upgrading. A service client built on 3.1.0 registers `service_session_v3`, which an older daemon refuses, so upgrade the daemon first. Peer wire: two new replicated seat facts, `seat.retired_reversible` and `seat.unretired`; a 3.0.x node parks them and shows such a seat live until its final retirement.
+
+### Added
+
+- **Continuity keys.** A launcher sets `HERDR_THREADS_CONTINUITY_KEY` on the agents it starts, and a registered service reserves the key (optionally binding it to an existing seat). A keyed check-in reattaches its unresolved seat after a restart; a conflicting one holds the pane and raises an alert (`ContinuityAlerts`) instead of creating a second seat. `seat inspect` shows the key.
+- **Reversible retirement.** Closing the pane of a keyed seat retires it reversibly: peers see it retired, its memberships stay, and its receipt deadlines are frozen. The key's owner can `UnretireSeat` (the seat waits, unresolved, for its keyed agent) or `FinalizeRetirement`. `seat inspect` shows `retirement_state: reversible`.
+
+### Changed
+
+- **Live handoff keeps every pane seat.** Seats with no agent, an exited agent or only a managed launch reattach after `herdr update --handoff` from the pane's surviving shell (pid, start time, session, tty, kernel boot).
+- **Seats whose pane never comes back retire.** An unresolved seat whose pane is absent after a Herdr restart retires after 10 observed minutes, reversibly when it holds a key.
+- Process-continuity fingerprints carry the kernel boot id, so a reboot never passes for a live handoff.
+
+### Known limits
+
+- Real-Herdr qualification did not cover a cold restart with a client attached: the stand-in agent cannot make Herdr record a resumable session. Reattaching a resumed session is covered by the C1 suites.
+
 ## v3.0.0
 
 Breaking peer wire change: a remote handoff needs both machines on 3.0.0 (capability `peer.handoff.v1`); a 2.x peer is refused with an upgrade error, with no two-step fallback. One-way store upgrade to node schema 15 (migration 0015, atomic remote handoff). Binaries before 3.0.0 refuse an upgraded store; `install.sh` and `herdr-threads update` back it up first. Restart the daemon after upgrading, and run `herdr-threads update --setup` so the skill refreshes.
