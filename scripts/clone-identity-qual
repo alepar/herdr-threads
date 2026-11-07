@@ -21,8 +21,9 @@ never touched.
 The report (Markdown: release x case, PASS / FAIL / SKIP with the reason) goes to --report,
 by default docs/superpowers/runs/2026-11-04-graph-clone-identity/qual/report-<sha>.md. Exit 0
 only when every selected release passes: nextest green, every `qual_` case present, no case
-FAIL, and the leak check clean. A SKIP (a case that cannot run on this host or release, with
-its reason) does not fail the run but is listed. Release-gating for the clone identity work,
+FAIL, and the leak check clean. A SKIP of a qual_ case (one that cannot run on this host or
+release, with its reason) fails the run: it is coverage that did not happen. The release matrix's
+own herdr_release_smoke cases, which share the binary, are excluded (scripts/herdr-release-smoke runs them). Release-gating for the clone identity work,
 not CI: it drives real Herdr servers for several minutes per release.
 """
 from __future__ import annotations
@@ -49,7 +50,7 @@ BINARY = "clone_identity_sweep"
 NOT_OUTCOMES = {"START", "SLOW", "RUNNING", "TRY", "RETRY", "DELAY", "TERMINATING", "KILLING",
                 "SETUP", "STDOUT", "STDERR", "CANCEL", "CANCELLING", "SUMMARY"}
 STATUS = re.compile(r"^\s*(?:TRY \d+ )?([A-Z][A-Z0-9-]*)\s+\[[^\]]*\]\s+(?:\(\s*\d+/\d+\)\s+)?"
-                    + BINARY + r"\s+(\S+)\s*$")
+                    + r"(?:\S+::)?" + BINARY + r"\s+(\S+)\s*$")
 PANIC = re.compile(r"^thread '([^']+)' panicked at (.*)$")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -81,7 +82,9 @@ def command() -> list[str]:
     return runner() + ["sh", "-c", 'PATH="$HT_CLONE_QUAL_HERDR_DIR:$PATH"; export PATH; exec "$@"', "sh",
                        "cargo", "nextest", "run", "--locked", "--all-features", "--test", BINARY,
                        "--run-ignored", "all", "--no-fail-fast", "--color", "never",
-                       "--status-level", "pass", "--failure-output", "immediate"]
+                       "--status-level", "pass", "--failure-output", "immediate",
+                       # The release matrix's own cases (scripts/herdr-release-smoke) share this binary.
+                       "-E", "not test(/^herdr_release_smoke::/)"]
 
 
 def parse(output: str) -> tuple[dict[str, str], dict[str, str]]:
@@ -152,11 +155,15 @@ def run_release(smoke, version: str, asset: str, digest: str, cache: Path, logs:
     row["cases"] = cases
     row["time"] = time.monotonic() - started
     failed = [name for name, (result, _) in cases.items() if result == "FAIL"]
+    # A skipped qualification case is coverage that did not happen: it fails the run.
+    skipped = [name for name, (result, _) in cases.items() if result == "SKIP" and name.startswith("qual_")]
     if not outcomes:
         row["detail"] = f"nextest exit {code} with no test results (build or start failure)"
     elif code != 0 and not failed:
         row["detail"] = f"nextest exit {code}"
-    ok = code == 0 and not failed and leak.returncode == 0
+    if skipped and not row["detail"]:
+        row["detail"] = "skipped: " + ", ".join(skipped)
+    ok = code == 0 and not failed and not skipped and leak.returncode == 0
     row["result"] = "PASS" if ok else "FAIL"
     print(f"=== herdr {version}: {row['result']} in {row['time']:.1f}s", flush=True)
     return row
