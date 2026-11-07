@@ -74,10 +74,9 @@ pub(crate) enum KeyCapability {
     Unread,
 }
 
-/// The daemon's key capability. The client caches a failed read as no capabilities, so a daemon
-/// not known to advertise is asked afresh: only a definitive answer is a no. A fresh list naming the
-/// capability is `Unread` too: this process's cached reading stands for every other key it sends,
-/// and the next call reads again.
+/// The daemon's key capability. A daemon the cached reading does not show advertising (a failed read
+/// is not cached, so it may only have failed) is asked afresh: a fresh list answers either way, and
+/// only a definitive answer is a no. Anything else is `Unread`.
 pub(crate) fn key_capability<C: LocalClient + ?Sized>(
     client: &C,
     budget: &CallBudget,
@@ -86,6 +85,14 @@ pub(crate) fn key_capability<C: LocalClient + ?Sized>(
         return KeyCapability::Advertised;
     }
     match client.call_definitive(Command::Capabilities, budget) {
+        Ok(Ok(CommandResult::Capabilities(list)))
+            if list
+                .capabilities
+                .iter()
+                .any(|c| c == SEAT_CONTINUITY_KEY_V1) =>
+        {
+            KeyCapability::Advertised
+        }
         Ok(Ok(CommandResult::Capabilities(list)))
             if !list
                 .capabilities
@@ -529,13 +536,22 @@ mod tests {
         // Not a list: the daemon answered nothing about the capability.
         let other = Fresh(|| Ok(Ok(CommandResult::SeatResolved(SeatId::new("s")))));
         assert_eq!(presentation(&other), PresentedKey::Unknown);
-        // The cached reading was no: this process waits for the next event's read.
+    }
+
+    /// Kills: a fresh list naming the capability, after the cached read failed in transport, kept
+    /// as `Unread` (ht-mq64): a failed read is not cached, so the daemon's own answer is the
+    /// reading, and a keyed turn hook delivers instead of ending quiet.
+    #[test]
+    fn a_fresh_list_naming_the_capability_is_advertised() {
         let naming = Fresh(|| {
             Ok(Ok(CommandResult::Capabilities(CapabilityList {
                 capabilities: vec![SEAT_CONTINUITY_KEY_V1.to_owned()],
             })))
         });
-        assert_eq!(presentation(&naming), PresentedKey::Unknown);
+        assert_eq!(
+            presentation(&naming),
+            PresentedKey::Present(ContinuityKey::new("clone-1"))
+        );
     }
 
     #[test]
