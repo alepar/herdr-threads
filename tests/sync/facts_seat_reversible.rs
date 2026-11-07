@@ -701,6 +701,11 @@ fn old_node_message_stays_frozen_with_the_rest() {
 /// the peer during the window and the home node only after the un-retire. Returns the window, the
 /// message, the invitation and the invitation's deadline as written during the window.
 fn late_window_arrival(seed: u8) -> (Window, MessageId, InvitationId, i64) {
+    late_window_arrival_at(seed, SENT_AT)
+}
+
+/// [`late_window_arrival`] with the message sent at `sent_at` (its ACK due five minutes later).
+fn late_window_arrival_at(seed: u8, sent_at: i64) -> (Window, MessageId, InvitationId, i64) {
     let w = window(seed);
     w.freeze();
     rev(&w.home, &w.guest, T1);
@@ -708,25 +713,34 @@ fn late_window_arrival(seed: u8) -> (Window, MessageId, InvitationId, i64) {
     let message = w
         .sender
         .stage_prep(&w.thread, "ordinary", &[(&w.seat, FIVE_MIN, true)], &[]);
-    w.sender
-        .author_sent(&sent(
-            &message,
-            &w.thread,
-            &w.author,
-            DeliveryMode::Ordinary,
-            FIVE_MIN,
-            vec![spec(
-                &w.seat,
-                ReceiptObligation::Ack,
-                Some(SENT_AT + FIVE_MIN),
-            )],
-        ))
-        .unwrap();
+    let mut payload = sent(
+        &message,
+        &w.thread,
+        &w.author,
+        DeliveryMode::Ordinary,
+        FIVE_MIN,
+        vec![spec(
+            &w.seat,
+            ReceiptObligation::Ack,
+            Some(sent_at + FIVE_MIN),
+        )],
+    );
+    payload.sent_at = sent_at;
+    w.sender.author_sent(&payload).unwrap();
     let invitation = w.sender.invite_fact(&w.thread, &w.author, &w.guest);
     // Only the peer hears of them while the seat is frozen.
     fact_exchange::sync(&w.sender.store, &w.peer.store);
     w.peer.drive_send(&message);
-    w.assert_frozen_pending(&w.peer, &message);
+    assert_eq!(
+        receipt_row(&w.peer, &message, &w.seat),
+        ("pending".to_owned(), Some(sent_at + FIVE_MIN), None),
+        "no terminal row"
+    );
+    assert_eq!(
+        effective_state(&w.peer, &message, &w.seat),
+        EffectiveReceiptState::RecipientRetired,
+        "it still reads retired"
+    );
     let invitation_deadline = invitation_row(&w.peer, &invitation).1.unwrap();
     assert!(
         w.home
@@ -766,6 +780,38 @@ fn a_window_message_arriving_after_unretire_gets_the_owners_deadline() {
                 Some(invitation_deadline + WINDOW),
                 None
             )
+        );
+    }
+}
+
+/// A message created mid-window on a peer, frozen there only from its creation, reaches the home
+/// node after the un-retire. Kills: the late copy shifting by the whole window instead of its own
+/// frozen time (`unretired_at - max(retired_at, created_at)`), so it disagrees with the copies the
+/// un-retire shifted.
+#[test]
+fn a_mid_window_message_arriving_after_unretire_gets_the_owners_deadline() {
+    let created = T1 + WINDOW / 3;
+    let (w, message, _, _) = late_window_arrival_at(47, created);
+    let frozen = T1 + WINDOW - created;
+    assert!(frozen < WINDOW);
+    for node in w.nodes() {
+        assert_eq!(
+            receipt_row(node, &message, &w.seat),
+            (
+                "pending".to_owned(),
+                Some(created + FIVE_MIN + frozen),
+                None
+            ),
+            "node {:?}",
+            node.id
+        );
+        assert_eq!(
+            effective_state(node, &message, &w.seat),
+            EffectiveReceiptState::Pending
+        );
+        assert_eq!(
+            receipt_deadline(node, &message, &w.seat),
+            Some(created + FIVE_MIN + frozen)
         );
     }
 }
