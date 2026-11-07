@@ -1,0 +1,58 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-13.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-13.md
+new file mode 100644
+index 000000000..cb59c6036
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-13.md
+@@ -0,0 +1,52 @@
++# Final review: cluster 13 (src-protocol), epic ht-ma6i
++
++## Review basis
++
++Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7, both verified as commits. The caller checkout stood at that head with a clean status at the start and at the last read; no change was observed.
++
++Inputs: slices 000042 to 000050 (`src/protocol/authority.rs`, `capabilities.rs`, `commands.rs`, `ids.rs`, `output.rs`, `output_compact.rs`, `pagination.rs`, `results.rs`, `service.rs`), the digest, and the design at `docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md`. Other files were opened only to check a named risk.
++
++Evidence was read at the head SHA. `scripts/check-wire-compat --base <base>` passed (0 violations, 0 stale) and `scripts/check-harness-neutral` passed (0 violations), both run in the caller worktree. No cargo build or test ran in this review: the epic's owner runs the full suite once, so the tests below are named from source and were not executed here.
++
++## Conformance to spec 4.5 and 4.2
++
++- Every name in spec 4.5 matches: the five operations, their request and result shapes, `ContinuityConflictKind` with its snake_case wire names, `ContinuityKeyBinding`, `SeatContinuityKey`, `ContinuityKeyConflict`, `SeatRetirementState`, `ContinuityAlert`. `SeatInspection.continuity_key` is boxed; the wire shape is the struct, as a test pins.
++- `ContinuityKey` comes from the shared `id!` macro, whose `parse` is exactly the 1 to 128 ASCII-graphic rule, also applied on deserialization. The `continuity_key` field on `ResolveSeat`, `ContinuityCheckIn` and `CheckIn` carries the specified serde attributes, so a keyless request's bytes do not change, and a unit test pins that for all three.
++- `ServiceSessionLevel` is the one exhaustive match. `service_connection.rs` keeps the negotiated level and answers `Unsupported` naming the required capability when `level < required`. `tests/daemon/service_session_capability.rs` covers v1 and v2 refusing the v3 operations and v3 serving every generation.
++- `CursorScope::ContinuityAlerts` is appended at the end of `SCOPE_CODES`, keeping existing wire codes stable. `tests/store/continuity_keys.rs` refuses a foreign cursor.
++- `ErrorCode::ContinuityKeyPending` is in the variant list, has no default class (pinned in `tests/protocol/error_class.rs`), exits 1 through the existing catch-all in `api_exit_code`, and is definitive under `is_continuity_refusal`, so a claimless refusal is neither retried nor kept. That is what spec 4.2's gap fill asks for.
++- `COOPERATIVE_CONTINUITY_KEY_PROVENANCE` is written by `store/seats/continuity.rs:940`, allowed by the schema delta's `kind` CHECK, and defined in TRUST-POLICY.md, per AGENTS.md's trust rule.
++- Text output: `seat inspect` drops the raw `continuity_key` and `retirement_state` fields and prints the two compact lines. The stated sizes are right (6 bytes plus key and owner; 28 bytes). The key and owner are `id!` values, so neither can inject a line. A final retirement prints nothing new.
++
++## Risks checked and cleared
++
++- `SeatInspection` is `deny_unknown_fields`, and `retirement_state` is now present on every retired seat, so an older client would fail to decode one. `daemon/lifecycle.rs` already requires software version equality between CLI and daemon, and the herdr-graph source has no `SeatInspect` caller, so this skew is not reachable through either.
++- `SeatInspection` is not peer wire, and the wire-compat check passes.
++- `ReserveContinuityKey.seat` has no `serde(default)`, but a missing `Option` field reads as `None` under serde's derive, so a request omitting it decodes as the ordinary reservation.
++
++## Baseline trace within this cluster
++
++- B1: the key type, the three command fields, the capability and the reservation operations are present, and the dispatch to `continuity_keys::reserve` and `release` exists in `store/service_controls.rs`. Presentation by hook, watch and bridge, and the verdict itself, leave this cluster for the seam reviewer.
++- B2: `UnretireSeat` and `FinalizeRetirement` pass the session gate and dispatch to `reversible::unretire` and `reversible::finalize`. The result types and the `retired (reversible)` read surface are here. The service-side producer leaves this cluster; see the first item under the untested heading.
++- B3: nothing in this cluster changes what happens to memberships when an agent exits.
++- B4: nothing in this cluster changes a Herdr call or shape.
++
++## Verdict
++ready
++
++## Must fix before landing
++- none
++
++## Untested scope
++- Seam reviewer, B2 and B1 producer: `PersistentServiceClient` still registers `service_session_v2` (`src/client/service.rs:560`) and `result_matches` (`:906`) has no arm for any v3 result, while herdr-graph's real adapter is built on that client (`herdr-graph/src/threads/adapter.rs:1,146,179`); the only v3 path is the one `docs/programmatic-service-client.md` line 40 documents, where the caller frames `ServiceWireRequest` on its own socket with its own operation keys, and only tests do that today, so the seam reviewer should decide whether this counts as a supported producer for "graph undo reverses it"; this path leaves the cluster and `src/client/service.rs` is outside the diff, so this review does not call the row undelivered.
++- Seam reviewer, epic scope: beads ht-ma6i.1 (G2), ht-ma6i.4 (G5) and ht-ma6i.11 (integration sweep) are open at this head and no `decide_shell_continuity` exists in `src/`, only the schema tables and a table list entry in `src/service/kicks.rs`; G2 and G5 are not baseline rows but are in the epic's goal, and this cluster holds no shell-continuity provenance constant because that bead has not landed.
++- The wire spelling `"final"` of `SeatRetirementState::Final` is not pinned: `tests/cli/launch.rs:1409` pins `"reversible"` and absence, while the store and human tests compare the enum value, so a rename would pass them.
++- `ServiceSessionLevel::required_by` has a unit assertion only for `Send` and the five v3 operations; the V1 arms are covered indirectly by the daemon session test's v1 flow, and each arm is forced by the exhaustive match but its chosen level is not individually pinned.
++- This review ran no cargo tests on the cluster; the tests it cites were read at the head SHA and their results come from the owners' reports and the caller's later full-suite run.
++
++## Deferred OK
++- `seat inspect` text shows no conflict and no `bound_by` (`tests/protocol/output.rs` pins this): spec 4.7 defines only the key line, spec 4.2's conflict display is met in `--json`, and an operator reading text output has to ask for `--json` to see a standing conflict.
++- Spec 4.7's sizes (`4 bytes plus the key and owner`, `9 bytes more than retired`) and its bare `retired (reversible)` differ from the shipped `key KEY OWNER` (6 bytes plus) and `state: retired (reversible)` (28 bytes); the code comments state the true sizes and the spec text should be corrected in a post-implementation note.
++- `KEY_CONFLICT_CAUSE` classifies a conflict by a string prefix on `ApiError.detail` rather than a typed code, as recorded for ht-ma6i.6; the constant is shared with the store's formatter, so the two cannot drift, but a typed code would be sturdier.
++- `docs/programmatic-service-client.md` line 53 lists `InvalidCursor` and `InvalidBudget` for `ContinuityAlerts`, while the task 6 record says an invalid page request returns `InvalidRequest`; this is the doc drift already recorded for ht-ma6i.9, and it is still present at this head.
++- `ContinuityAlerts` has no resume cursor, so a poller rereads up to 256 rows and skips ordinals it has seen; the doc states this, and adding one would be a later protocol change.

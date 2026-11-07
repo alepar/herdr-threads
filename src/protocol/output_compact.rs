@@ -23,7 +23,8 @@ use crate::protocol::{
     results::{
         CheckInResult, CommandResult, InboxBatchItem, InboxBatchV2Item, InboxItem, MessageContent,
         MessageDetails, MessageKind, MessageSummary, Participant, PendingReceipt,
-        PresenceAvailability, SeatDirectory, SeatSummary, ThreadDetails, WarningRef,
+        PresenceAvailability, SeatContinuityKey, SeatDirectory, SeatRetirementState, SeatSummary,
+        ThreadDetails, WarningRef,
     },
     service::EventAuthor,
     time::UtcMillis,
@@ -921,6 +922,26 @@ fn seat_row(seat: &SeatSummary, now: i64, out: &mut String) {
     }
     out.push_str(&labels_tail(directory));
     out.push('\n');
+}
+
+/// The `key` line of `seat inspect` while the seat holds a key: `key KEY LABEL`, 6 bytes plus the
+/// key and the owner's short label (11 plus the key for `graph`). The label is the author id before
+/// its first `:` (`graph` for `graph:<64 hex>`), the whole id when it has none; one author per
+/// instance, so it is unambiguous on a node, and `--json` keeps the full id. A key and an author id
+/// are one graphic token each, so nothing needs escaping.
+pub(super) fn inspect_key_line(key: &SeatContinuityKey) -> String {
+    let owner = key.owner.as_str();
+    let label = owner.split_once(':').map_or(owner, |(label, _)| label);
+    format!("key {} {label}\n", key.key.as_str())
+}
+
+/// The state line of `seat inspect` for a reversibly retired seat, 28 bytes. A final retirement
+/// carries no `retirement_state`: `summary` and `mapping` already read `retired`, so its output is
+/// unchanged.
+pub(super) fn inspect_retirement_line(state: SeatRetirementState) -> &'static str {
+    match state {
+        SeatRetirementState::Reversible => "state: retired (reversible)\n",
+    }
 }
 
 /// The `directory:` line of `seat inspect` for a remote seat, about 50-70

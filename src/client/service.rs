@@ -9,7 +9,7 @@ use crate::{
         pagination::Page,
         results::{ApiError, DeliveryInspection, ErrorCode, MessageSummary},
         service::{
-            SERVICE_SESSION_CAPABILITY_V2, ServiceHistoryQuery, ServiceMessageSent,
+            SERVICE_SESSION_CAPABILITY_V3, ServiceHistoryQuery, ServiceMessageSent,
             ServiceOperation, ServiceReceiptsQuery, ServiceRegister, ServiceRegistration,
             ServiceRequest, ServiceResult, ServiceSend, ServiceWireRequest, ServiceWireResponse,
         },
@@ -544,8 +544,8 @@ impl PersistentServiceClient {
     }
     /// Registration is connection-local. An ambiguous response closes the socket;
     /// the caller can reconnect after that close, without a durable mutation key.
-    /// Registers `service_session_v2`: an old daemon rejects it with
-    /// "unsupported service capability" and there is no silent fallback to v1.
+    /// Registers `service_session_v3`: an old daemon rejects it with
+    /// "unsupported service capability" and there is no silent fallback to v2 or v1.
     pub async fn register(&self, budget: &CallBudget) -> Result<ServiceRegistration, ApiError> {
         let mut held = self.admit(budget).await?;
         if let Some(session) = held.as_ref() {
@@ -557,7 +557,7 @@ impl PersistentServiceClient {
             _ = budget.cancellation.cancelled() => return Err(error(ErrorCode::Cancelled, "request cancelled before connect")),
         };
         let request = self.request(ServiceRequest::Register(ServiceRegister {
-            capability: SERVICE_SESSION_CAPABILITY_V2.into(),
+            capability: SERVICE_SESSION_CAPABILITY_V3.into(),
         }));
         let response = self.exchange(&mut stream, &request, budget).await?;
         match response.result {
@@ -873,6 +873,14 @@ impl PersistentServiceClient {
                         pending: Some(key.clone()),
                     });
                 }
+                // Retryable: nothing was applied and the session stays, so the intent stays
+                // pending for `replay` under the same key instead of completing as a refusal.
+                if failure.code == ErrorCode::ServiceBusy {
+                    return Err(ServiceCallError::Api {
+                        error: failure,
+                        pending: Some(key.clone()),
+                    });
+                }
                 if invalidates_session(&failure) {
                     *held = None;
                 }
@@ -939,6 +947,21 @@ fn result_matches(request: &ServiceWireRequest, result: &ServiceResult) -> bool 
         ) | (
             ServiceRequest::Operation(ServiceOperation::Receipts(_)),
             ServiceResult::Receipts(_)
+        ) | (
+            ServiceRequest::Operation(ServiceOperation::ReserveContinuityKey(_)),
+            ServiceResult::ContinuityKeyReserved(_)
+        ) | (
+            ServiceRequest::Operation(ServiceOperation::ReleaseContinuityKey(_)),
+            ServiceResult::ContinuityKeyReleased(_)
+        ) | (
+            ServiceRequest::Operation(ServiceOperation::UnretireSeat(_)),
+            ServiceResult::SeatUnretired(_)
+        ) | (
+            ServiceRequest::Operation(ServiceOperation::FinalizeRetirement(_)),
+            ServiceResult::RetirementFinalized(_)
+        ) | (
+            ServiceRequest::Operation(ServiceOperation::ContinuityAlerts(_)),
+            ServiceResult::ContinuityAlerts(_)
         )
     )
 }
@@ -947,9 +970,13 @@ fn result_matches(request: &ServiceWireRequest, result: &ServiceResult) -> bool 
 mod tests {
     use super::*;
     use crate::protocol::{
-        ids::ThreadId,
+        ids::{ContinuityKey, SeatId, ThreadId},
         pagination::PageRequest,
-        service::{EnsureManagedThread, ManagedThread, ServiceMembershipQuery},
+        service::{
+            ContinuityKeyReservation, EnsureManagedThread, FinalizeRetirement, ManagedThread,
+            ReleaseContinuityKey, ReserveContinuityKey, SeatUnretired,
+            ServiceContinuityAlertsQuery, ServiceMembershipQuery, UnretireSeat,
+        },
         time::{Cancellation, MonoInstant, UtcMillis},
     };
     use tokio::net::UnixListener;
@@ -1789,7 +1816,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn register_negotiates_service_session_v2() {
+    async fn register_negotiates_service_session_v3() {
         let root = temp();
         fs::create_dir_all(&root).unwrap();
         let socket = root.join("socket");
@@ -1799,13 +1826,201 @@ mod tests {
             let register = incoming(&mut stream).await;
             assert!(
                 matches!(&register.service, ServiceRequest::Register(ServiceRegister { capability })
-                    if capability == SERVICE_SESSION_CAPABILITY_V2),
+                    if capability == SERVICE_SESSION_CAPABILITY_V3),
                 "{register:?}"
             );
             respond(&mut stream, &register, BOOT, Ok(registration())).await;
         });
         let client = make_client(socket, &root.join("intents"));
         client.register(&budget()).await.unwrap();
+        server.await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn v3_refusal_is_typed_with_no_fallback() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            respond(
+                &mut stream,
+                &register,
+                BOOT,
+                Err(error(
+                    ErrorCode::Unsupported,
+                    "unsupported service capability",
+                )),
+            )
+            .await;
+            // No second register on this connection, and no second connection.
+            let again = tokio::time::timeout(Duration::from_millis(200), read_frame(&mut stream));
+            assert!(!matches!(again.await, Ok(Ok(_))), "a second frame arrived");
+            let second = tokio::time::timeout(Duration::from_millis(200), listener.accept());
+            assert!(second.await.is_err(), "a second connection arrived");
+        });
+        let client = make_client(socket, &root.join("intents"));
+        let refused = client.register(&budget()).await.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Unsupported);
+        assert_eq!(refused.detail, "unsupported service capability");
+        assert!(client.registration().await.is_none());
+        server.await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn v3_pairs() -> Vec<(ServiceOperation, ServiceResult)> {
+        let seat = SeatId::new("s1");
+        let key = ContinuityKey::new("k1");
+        let operation = OperationId::new("op");
+        vec![
+            (
+                ServiceOperation::ReserveContinuityKey(ReserveContinuityKey {
+                    key: key.clone(),
+                    seat: None,
+                    operation: operation.clone(),
+                }),
+                ServiceResult::ContinuityKeyReserved(ContinuityKeyReservation {
+                    key: key.clone(),
+                    owner: ServiceAuthorId::new("graph"),
+                    seat: None,
+                    reserved_at: UtcMillis(1),
+                }),
+            ),
+            (
+                ServiceOperation::ReleaseContinuityKey(ReleaseContinuityKey {
+                    key: key.clone(),
+                    operation: operation.clone(),
+                }),
+                ServiceResult::ContinuityKeyReleased(key),
+            ),
+            (
+                unretire_operation("op"),
+                ServiceResult::SeatUnretired(SeatUnretired {
+                    seat: seat.clone(),
+                    generation: 2,
+                }),
+            ),
+            (
+                ServiceOperation::FinalizeRetirement(FinalizeRetirement {
+                    seat: seat.clone(),
+                    operation,
+                }),
+                ServiceResult::RetirementFinalized(seat),
+            ),
+            (
+                ServiceOperation::ContinuityAlerts(ServiceContinuityAlertsQuery {
+                    page: PageRequest::default(),
+                }),
+                ServiceResult::ContinuityAlerts(empty_page()),
+            ),
+        ]
+    }
+
+    fn unretire_operation(key: &str) -> ServiceOperation {
+        ServiceOperation::UnretireSeat(UnretireSeat {
+            seat: SeatId::new("s1"),
+            operation: OperationId::new(key),
+        })
+    }
+
+    #[tokio::test]
+    async fn v3_results_match_only_their_operations() {
+        let pairs = v3_pairs();
+        for (index, (operation, _)) in pairs.iter().enumerate() {
+            let request = ServiceWireRequest {
+                version: PROTOCOL_VERSION,
+                request_id: "request".into(),
+                expected_instance: INSTANCE.into(),
+                service: ServiceRequest::Operation(operation.clone()),
+            };
+            for (other, (_, result)) in pairs.iter().enumerate() {
+                assert_eq!(
+                    result_matches(&request, result),
+                    index == other,
+                    "{operation:?} against {result:?}"
+                );
+            }
+        }
+
+        // The wrong v3 result through a real submit: unknown outcome, key still pending.
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+            let unretire = incoming(&mut stream).await;
+            let wrong = ServiceResult::RetirementFinalized(SeatId::new("s1"));
+            respond(&mut stream, &unretire, BOOT, Ok(wrong)).await;
+        });
+        let client = make_client(socket, &root.join("intents"));
+        client.register(&budget()).await.unwrap();
+        let key = OperationId::new("unretire-1");
+        match client
+            .submit(unretire_operation("unretire-1"), &budget())
+            .await
+        {
+            Err(ServiceCallError::Api { error, pending }) => {
+                assert_eq!(error.code, ErrorCode::UnknownOutcome);
+                assert_eq!(pending.as_ref(), Some(&key));
+            }
+            other => panic!("expected an unknown outcome, got {other:?}"),
+        }
+        assert_eq!(client.journal().pending().unwrap(), vec![key]);
+        assert!(client.journal().completed().unwrap().is_empty());
+        server.await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Kills: `ServiceBusy` journaled as definitive, which would refuse the documented retry under
+    /// the same key with "operation already completed"; the session dropped for a retryable answer.
+    #[tokio::test]
+    async fn service_busy_stays_pending_and_replays_under_the_same_key() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+            let first = incoming(&mut stream).await;
+            let busy = error(ErrorCode::ServiceBusy, "own history catching up");
+            respond(&mut stream, &first, BOOT, Err(busy)).await;
+            let replayed = incoming(&mut stream).await;
+            assert_eq!(replayed.service, first.service);
+            let unretired = ServiceResult::SeatUnretired(SeatUnretired {
+                seat: SeatId::new("s1"),
+                generation: 2,
+            });
+            respond(&mut stream, &replayed, BOOT, Ok(unretired)).await;
+        });
+        let client = make_client(socket, &root.join("intents"));
+        client.register(&budget()).await.unwrap();
+        let key = OperationId::new("unretire-1");
+        match client
+            .submit(unretire_operation("unretire-1"), &budget())
+            .await
+        {
+            Err(ServiceCallError::Api { error, pending }) => {
+                assert_eq!(error.code, ErrorCode::ServiceBusy);
+                assert_eq!(pending.as_ref(), Some(&key));
+            }
+            other => panic!("expected a retryable refusal, got {other:?}"),
+        }
+        assert!(client.registration().await.is_some());
+        assert_eq!(client.journal().pending().unwrap(), vec![key.clone()]);
+        assert!(client.journal().completed().unwrap().is_empty());
+
+        let result = client.replay(&key, &budget()).await.unwrap();
+        assert!(matches!(result, ServiceResult::SeatUnretired(_)));
+        assert!(client.journal().pending().unwrap().is_empty());
+        assert_eq!(client.journal().completed().unwrap(), vec![key]);
         server.await.unwrap();
         fs::remove_dir_all(root).unwrap();
     }

@@ -54,6 +54,10 @@ Amended 2026-10-31 for herdr-core closure (H1c-closure, ht-kqrt.67): an hc host'
 finality, keyed on `(keep, reason)` (D10, "hc host closure" under C2); a kept terminal waiting for a restart unresolves
 its seat as recoverable and the core's restart of the same `tN` reattaches it (C1); no new provenance or wire value.
 
+Amended 2026-11-05 for target absence (G5, ht-ma6i.4): an unresolved seat whose saved target coherent publications
+of the current recovery do not show for 10 observed minutes retires (C2), reversibly when it holds a continuity key;
+the retirement records `absence_evidence = restored_target_absent`, one accepted limit; no new wire value.
+
 Amended 2026-10-27 for restored-pane retirement (ht-wpq4): a seat a new Herdr incarnation left unresolved retires
 when the pane watched at its target closes within that incarnation and no claim names it for an observed grace
 (C2); the retirement records `closure_evidence = restored_pane_closed`, two accepted limits; no new wire value.
@@ -98,6 +102,48 @@ top-level harness binding's own fingerprinted process lives in the session and c
 Herdr reports for the seat's saved target (C1 process continuity, C2); new seat-history provenance
 `structural_process_continuity`; person seats stay under the restore holds; three accepted limits; no new wire
 value.
+
+Amended 2026-11-05 for the continuity key ledger (ht-ma6i.8): `bound_by` `check_in` and `service_reservation`
+(C1 continuity key binding); one accepted limit; no seat moves on it yet.
+
+Amended 2026-11-05 for the launcher-supplied continuity key (ht-ma6i.2): a new C1 way (*Continuity key*); new
+seat-history provenance `cooperative_continuity_key`; a key conflict holds ordinary resolution of that target only; two
+accepted limits.
+
+Amended 2026-11-05 for shell continuity (ht-ma6i.1): after a new Herdr incarnation, the daemon resolves an unresolved
+seat with no live process for the ht-hsyg path whose recorded shell fingerprint is still the shell Herdr reports at its
+saved target (C1 *Shell continuity*); no binding opens; new seat-history provenance `structural_shell_continuity`; three
+accepted limits; no new wire value.
+
+Amended 2026-11-05 for reversible retirement (ht-ma6i.3): a `Closed` retirement of a seat that holds a continuity
+key defers its job until the owning service un-retires or finalizes it (*Reversible retirement*, under C2); provenance
+`service_unretire` and `service_finalize`; four accepted limits; every final retirement releases the key.
+
+Amended 2026-11-06 for the Hermes gateway and the continuity key (ht-ma6i.23): a Hermes 0.22.1+ gateway session never
+sees `HERDR_THREADS_CONTINUITY_KEY`, so a keyed Hermes clone behaves as a keyless one; one accepted limit; no new wire
+value.
+
+Amended 2026-11-06 for continuity key conflicts and episode facts (ht-ma6i.35, ht-ma6i.22): an alert-only conflict also
+clears when the owner it was judged against unresolves, retires or moves; two episodes of one seat in one millisecond
+read as one; one accepted limit; no new wire value.
+
+Amended 2026-11-06 for target absence (G5, ht-ma6i.41, ht-ma6i.42): a target shown holding a pane a live seat (not
+retired, or an open binding) names in the current incarnation counts as absent; a pane named only by a departed
+claimant leaves the seat waiting; one accepted limit amended; no new provenance or wire value.
+
+Amended 2026-11-06 for the continuity key (ht-ma6i.47): a session reattach binds a free presented key; the key's seat is
+judged first among session matches; no new provenance or wire value.
+Amended 2026-11-06 (ht-ma6i.49): the key inheritance accepted limit states that an inherited key reattaches an
+unresolved seat in another pane; no new provenance or wire value.
+
+Amended 2026-11-06 for the kernel boot id (ht-ma6i.44): process and shell continuity fingerprints carry the kernel boot
+id, compared before any other fact; one accepted limit; no new provenance or wire value.
+
+Amended 2026-11-06 for an unread key capability (ht-ma6i.45): a keyed caller never falls back to a keyless resolve or
+claim; no new provenance or wire value.
+
+Amended 2026-11-06 for the un-retire deadline shift (ht-ma6i.48): per-obligation frozen time, applied to late arrivals
+from durable windows; no new provenance or wire value.
 
 ## Abstract
 
@@ -183,15 +229,18 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 
 ## Continuity invariants
 
-**C1. How a seat's mapping may change.** Exactly four ways:
+**C1. How a seat's mapping may change.** Only these ways:
 
 | Path | Trigger | Recorded as |
 |---|---|---|
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation; for an hc host the same `tN` under the same core id boot (ids are monotonic and never reused, so a finished `tN` never names another terminal), including the `tN` of a seat unresolved while its kept terminal waited for a restart that the core has now done | automatic, no new provenance |
 | Cooperative continuity | A top-level lifecycle or turn event, or a push-channel harness's in-process watch for its own session (ht-dtx0), carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
 | Named continuity | A seat-acting resolve on the built-in named host of a name equal to the name of an unresolved named seat, with no live seat of that name. The seat keeps its id, history and obligations; no new seat is made. Retire ends continuity for good: a retired name mints a new seat | `cooperative_named_seat` (seat history only) |
-| Process continuity (ht-hsyg) | After a new or unknown Herdr incarnation, a top-level harness binding (not human, `managed_launch` or subagent) of an unresolved seat (reason `other`) that its latest unresolve ended while open and connected, placed under an earlier incarnation than the current one, has a live fingerprinted process (same pid and start stamp) that is the shell Herdr reports for the seat's saved target in the current incarnation or belongs to the session that shell leads, on that shell's controlling terminal; no other such binding of another seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, the pane has no resolved owner, and the session's unique C1 match is that seat at the judged generation | `structural_process_continuity` |
+| Process continuity (ht-hsyg) | After a new or unknown Herdr incarnation, a top-level harness binding (not human, `managed_launch` or subagent) of an unresolved seat (reason `other`) that its latest unresolve ended while open and connected, placed under an earlier incarnation than the current one, has a live fingerprinted process (same pid and start stamp, recorded under the current kernel boot id) that is the shell Herdr reports for the seat's saved target in the current incarnation or belongs to the session that shell leads, on that shell's controlling terminal; no other such binding of another seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, the pane has no resolved owner, and the session's unique C1 match is that seat at the judged generation | `structural_process_continuity` |
+| Shell continuity (ht-ma6i.1) | After a new or unknown Herdr incarnation, an unresolved local unnamed seat (reason `other`) on a Herdr host, with a saved target, a recorded fingerprint of an earlier incarnation there and a newest top-level binding that is not `human`, has no live undeclined process continuity candidate, and the shell Herdr reports at that target is the fingerprinted process (same pid and start stamp, recorded under the current kernel boot id), leading its session, on the recorded controlling terminal; no other non-retired seat's fingerprint of the same kernel boot names that process, no other seat saved at that target has its process in that pane (or unreadable), no kept C1 claim names the target, and the pane has no resolved owner. A key conflict row on the target does not block it, and the decision clears the row. No binding opens (*Shell continuity* below) | `structural_shell_continuity` |
+| Continuity key (ht-ma6i.2) | A top-level claim on a Herdr host presenting a reserved key bound to an unresolved seat, at a pane with no resolved owner, its native session matching no unresolved seat but the key's own, or matching the key's seat among others (the key's seat is then chosen). The session need not match any binding: the key is the evidence (*Continuity key* below) | `cooperative_continuity_key` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
+| Service un-retire (ht-ma6i.3) | `UnretireSeat` by the service that owns the seat's continuity key, for a reversibly retired seat. The mapping only clears: the seat comes back unresolved with no target and no binding; it is placed later by a C1 path like any unresolved seat. | `service_unretire` |
 
 Named rule. The named host is not host evidence and never closes by absence: reconcile plans no
 `BeginRetirement` and no `MarkUnresolved` for it, and the store refuses `RetireReason::Closed` for a named seat (only
@@ -202,11 +251,79 @@ host never satisfies `wait:host`: an own-seat restore needs a Herdr or herdr-cor
 restored seat goes to a host row only when every non-named host row of the node has one kind (else the entry waits
 for the operator on `wait:host`).
 
+Continuity key binding (ht-ma6i). A registered service reserves a continuity key
+(`store::continuity_keys`), bound to at most one seat, a seat holding at most one key. `continuity_keys.bound_by`
+records the evidence for the binding: `check_in` means the agent presented the key on its own check-in;
+`service_reservation` means the service asserted it, naming the seat in `ReserveContinuityKey`. A reservation that
+names a seat is accepted only for a local, resolved or unresolved, unnamed seat on a Herdr host; threads does not
+record who resolved the seat, so that state is the whole guard. The binding moves nothing: it writes no seat row and
+no seat history, and reattachment still needs an agent presenting the key.
+
+**Continuity key (ht-ma6i.2).** A launcher presents a reserved key on `ContinuityCheckIn`, `ResolveSeat` and `CheckIn`
+(`continuity_key`, `seat.continuity_key_v1`). It is cooperative evidence, like a resumed session id: any same-uid process
+could present it. The daemon judges it in the deciding transaction after the target and evidence guards, with one pure
+judge (`store::seats::key_verdict`) at all three entry points. "Lag" is a host whose first reconciliation pass of the
+current recovery epoch has not run. Only pane seats on a Herdr host: a key presented on another host kind is ignored, a
+named seat's continuity being its name and a herdr-core terminal's its core.
+
+| The key K | At a pane with | Outcome |
+|---|---|---|
+| unreserved | anything | ignored; today's behaviour |
+| bound to S, S unresolved | no resolved owner, a claim | S reattaches through the C1 transaction: hold released, successor `cooperative_top_level` binding, `cooperative_continuity_key` in seat history, the pane's conflict row cleared |
+| bound to S, S unresolved | no resolved owner, a claim whose session's C1 match is another seat | conflict `session_matches_other_seat` |
+| bound to S, S unresolved | no resolved owner, no claim (`ResolveSeat`) | refused definitively with `ContinuityKeyPending`: no seat, no rebind, no conflict row, no alert |
+| bound to S, S resolved here | the same seat | no-op |
+| bound to S, S resolved elsewhere | no resolved owner | conflict `key_live_elsewhere` |
+| bound to S, S `retired` | no resolved owner | conflict `key_retired_reversibly`; no new seat. A key with a seat row implies its retirement is not final, because finalization releases the key |
+| bound to S | a resolved owner T != S | conflict `pane_owned_by_other_seat`; T keeps working, unbound |
+| reserved, unbound | seat T with no key | bound to T with `bound_by` `check_in`, at T's check-in or resolve |
+| reserved, unbound | seat T holding K2 | conflict `seat_holds_other_key`; T keeps working, K stays unbound |
+| reserved, unbound | no owner | C1 by native session if it matches, else ordinary enrollment under ordinary guards; bound to the resulting seat at that enrollment or its check-in |
+
+A claim whose session reattaches a seat through cooperative continuity, presenting a free reserved key, binds that key to
+the seat in the same transaction (`check_in`) when the seat holds no key.
+
+During lag, a pane with a resolved owner or a key whose seat is resolved answers `ServiceBusy` and records nothing: a pass
+can still unresolve either. A claim answered so is kept with its key (`kept_continuity_claims.continuity_key`) and the
+observation worker decides it after the pass with no further event. A check-in commits rather than refuses: it binds, or
+records an alert-only conflict, and during lag records nothing. A retired seat is not lag-dependent.
+
+A conflict that refuses a claim or a resolve is recorded through `store::continuity_keys` after the refused transaction
+rolls back, so it survives the refusal; the refusal is definitive, never retried or kept, and it moves no seat. One row
+per pane; one alert when the row is new or its key or kind changed. `key_live_elsewhere`, `key_retired_reversibly` and
+`session_matches_other_seat` hold: while the row stands and the pane has no resolved owner, ordinary resolution of that
+target (`ResolveSeat`, top-level enrollment, `me init`, bootstrap creation) is refused with `continuity key conflict
+<kind> on <pane>`, its own cause and never the restore-hold text. C1, process continuity, shell continuity and operator
+repair do not pass through that check. A row clears on any rebind onto the target (a later claim from the pane included),
+on an operator fresh seat there, when a reconciled coherent publication no longer shows the target, and when the key it
+names is released. `pane_owned_by_other_seat` and `seat_holds_other_key` never hold: the pane's owner resolves and checks
+in as ever, a claim there is answered `TargetAlreadyOwned` as a keyless one is, and the row clears at the check-in of an
+owner other than the one it was judged against, and when the owner it was judged against stops owning the pane: it
+unresolves, retires or moves (`clear_alert_only_of_departed_owner`, in the same transaction as the seat's transition). A
+replicated final retirement of a local seat row does not clear it; the next check-in on the pane does.
+
+A claim with no key, and a keyless resolve or check-in, digest and behave as before, except that a pane under a holding
+conflict row refuses them like any ordinary resolution, and a keyless hook there ends quietly; one with a key digests
+under its own domain.
+
+The client reads `HERDR_THREADS_CONTINUITY_KEY` through one helper (`caller_continuity_key`) and sends it only for a
+top-level, non-subagent caller of a daemon that advertises `seat.continuity_key_v1`; an invalid value is absent, with no
+diagnostic. A keyed caller whose capability read fails sends nothing keyless: a CLI resolve refuses with the retryable
+`ServiceBusy` before anything is sent or journaled, and a hook ends quietly with its kept intent untouched; the next call
+reads again. A hook presents it on its C1 claim, enrollment and check-in, and the watch on its claim. `ResolveSeat` presents
+it only for the caller's own pane. The retained continuity intent stores the key, a replay presents it, and a changed key
+records a fresh intent. A hook answered with a key refusal (a conflict or `ContinuityKeyPending`) succeeds with no enrollment
+and shows the model nothing; the refusal goes to its stderr diagnostic and the next event presents the key again. A keyed
+claim answered `ServiceBusy` keeps its intent the same way, unseen, and never falls back to a keyless enrollment. Limits:
+*Hookless harnesses and the continuity key*, *Key inheritance outside threads* (`## Accepted limits`).
+
 A herdr-threads daemon upgrade can leave a still-running native session needing recovery;
 C1 does not require that session to restart or emit a resumed SessionStart. Non-resume
 hooks attempt C1 only without a resolved pane mapping, so steady turns do not probe or
 replay continuity. Resume keeps its existing fresh-target probe even when the mapping
-appears resolved. Both claims use the same canonical unique-candidate and ownership
+appears resolved, and a lifecycle event presenting a continuity key probes the same way: a restored
+pane keeps its id, so a fresh keyed agent's pane can read resolved until the first pass, and its
+claim must be kept then, because it may have no later event. Both claims use the same canonical unique-candidate and ownership
 guards; neither permits a new native session to take an old seat. Subagents, child
 agent ids, `plugin_context:` sessions, human and `managed_launch` candidate bindings
 remain excluded. Claims and replay are cooperative, not process attestation. Existing
@@ -368,15 +485,97 @@ it: the old shells are gone, and a process that survived the hangup lost its con
 while a candidate of another seat saved at the same target has its process in that pane or cannot be read (the pane's
 process could be either's; every such seat is listed, never a bounded page), while a kept C1 claim names the target,
 when the pane has an owner, or when the session's unique C1 match is not the judged seat at its judged generation; nor
-on an unreadable fact. A candidate the facts rule out, or that a definitive C1 refusal answers, is not read again for
-10 minutes for that seat generation and fingerprint; that memory is the daemon process's own (a restart forgets it).
-A gone process, an unread fact or a not-ready refusal is retried next pass. Person seats, named seats (their continuity
-is their name) and `managed_launch` bindings are not covered, and a host with no pane shell read (named, herdr-core)
-decides nothing here. The decision is the C1 transaction, so the cross-kind rebind refusal holds.
+on an unreadable fact. The kernel boot id (Linux `/proc/sys/kernel/random/boot_id`, macOS `kern.bootsessionuuid`) is
+recorded with the fingerprint by the daemon; a fingerprint of another boot never matches (a reboot can repeat a pid,
+start tick and terminal), and an unreadable boot id on either side decides nothing. A candidate the facts rule out, or
+that a definitive C1 refusal answers, is not read again for 10 minutes for that seat generation and fingerprint; that
+memory is the daemon process's own (a restart forgets it). A gone process, an unread fact or a not-ready refusal is
+retried next pass. Person seats, named seats (their continuity is their name) and `managed_launch` bindings are not
+covered, and a host with no pane shell read (named, herdr-core) decides nothing here. The decision is the C1
+transaction, so the cross-kind rebind refusal holds.
+
+**Shell continuity (ht-ma6i.1).** A seat with no live agent has no binding process for the path above: a bare pane (also
+the pre-agent clone's shape), an agent that exited, a launch that never checked in. Its pane's shell survives a live
+handoff all the same. After each completed reconciliation pass the observation lane records a local fingerprint
+(`seat_shell_fingerprints`: pid, start stamp, session, controlling terminal; never replicated) for up to 16 resolved
+local unnamed seats on a Herdr host with no row for their current (boot, incarnation, terminal), by one `pane
+process-info` read and the process table, under a cursor, so an unreadable shell cannot starve the rest. A terminal's shell
+does not change while its id stands, so a current row is never read again. A seat proved on another incarnation than the
+published one records nothing. A named or hc seat never has a row. Allocation asks the lane for a capture, so a new seat's
+row needs no other trigger.
+
+After the ht-hsyg path, the lane judges each unresolved seat (reason `other`) a new incarnation left at a saved target
+with a fingerprint of an earlier incarnation there. A seat whose newest top-level binding has harness `human` is out of
+scope and stays an operator case. A seat with a live candidate ht-hsyg has not declined is left to that path, which also
+reopens a binding. The saved target only selects the pane to ask, one read per seat; the kernel facts are the evidence:
+Herdr's shell pid equals the recorded one, that process is alive with the same start stamp, it leads its session, and its
+controlling terminal is the recorded one. A cold restart cannot satisfy it: the old shells are gone. Nothing is decided
+when another non-retired seat's fingerprint names the same process (a retired seat's row, including a reversible seat's,
+is no rival), when another seat saved at that target has its process in that pane or cannot be read, when a kept C1 claim
+names the target, when the pane has a resolved owner, or on an unreadable fact. The kernel boot id (Linux
+`/proc/sys/kernel/random/boot_id`, macOS `kern.bootsessionuuid`) is recorded with the fingerprint by the daemon; a
+fingerprint of another boot never matches (a reboot can repeat a pid, start tick and terminal), and an unreadable boot
+id on either side decides nothing. A candidate the facts rule out, or that a definitive refusal answers, is not read
+again for 10 minutes, keyed by (seat, generation, pid, start); a dead shell, an unread pane and a not-ready refusal are
+retried next pass.
+
+The decision is its own transaction, pinned to the judged seat and generation, under a daemon operation key per (seat,
+generation, pid, start): `rebind_unresolved_seat`, which clears a key conflict row on the target (that hold binds only
+ordinary resolution), the pane's hold released, the structural proof recorded so later passes reconfirm the seat, and one
+`allocation_decisions` row of kind `structural_shell_continuity`. It opens no binding: there is no session to attach, so
+the seat stays unavailable until an agent checks in on the now resolved pane. A row is deleted when its seat retires
+finally and when it is un-retired, so a replaced seat in a surviving shell recovers on the next handoff.
+
+**Reversible retirement (ht-ma6i.3).** A `Closed` retirement of a seat that holds a continuity key (same-incarnation
+close, closure proof, restored-pane close, target absence) is undoable by the service that owns the key. `begin_retirement_authored`
+is the one place that chooses; a keyless seat's close, and every operator retire and `--replace`, stays final.
+- *The fence is real.* The seat reads retired: `retired_at`, `retired_seq`, bindings ended `seat_retired`, offers and
+  wake work cleared. A `reversible_retirements` row holds the job's inputs instead of a `retirements` row. With no job
+  nothing is settled: memberships and intervals, requirement episodes, receipts and invitations stay as they are, and
+  the existing read sites show them retired. A send to the seat is refused as retired. An agent exiting with its pane
+  open is not a close: it writes no row, retires nothing and keeps the seat for a relaunch in that pane (B3).
+- *Frozen.* What the seat owes is skipped by the due scans (overdue, soft poke, invitation due), so a frozen row
+  neither warns nor fills a page. Its own outgoing requests keep their deadlines. It stays a live member for archival,
+  and a recipient of its invitations' overdue and clear warnings, so they are there on reattach.
+- *Un-retire.* `UnretireSeat`, the key owner only (another author or no key row is `Unauthorized`; a seat that is not
+  reversible is not found), makes the seat `unresolved` (reason `other`) with no target and no structural proof,
+  clears `retired_at` and `retired_seq`, bumps its generation and opens a new unavailability episode. Each pending
+  obligation's deadline moves forward by the time it spent frozen, `unretired_at - max(retired_at, created_at)` per
+  un-retired episode, on every node: obligations present at the un-retire move then, and one that arrives later (a
+  window message from a node that had not seen the retirement) moves when it is first written, from the seat's
+  recorded windows. So the remaining time resumes. It never places the seat, opens a binding or changes a hold.
+  Memberships and episodes were never released, so nothing is re-accepted.
+- *Waiting.* The row reads `unretired` until the seat rebinds or retires. Such a seat has no pane to protect: it blocks
+  no hold lift, is left out of repair guidance and `daemon health`, and the reconciliation plan never acts on it. A send
+  to it succeeds with the ordinary unavailable warning.
+- *Finalization.* `FinalizeRetirement` by the key owner, or the operator's `seat retire` on a seat with a row. A
+  reversible seat gets the deferred job with the original cutover and evidence, and `retired_seq` advances to this
+  decision, so the job also settles what a window fact wrote; an unretired seat takes an ordinary final retirement with
+  reason `operator`, so it cannot go reversible again.
+- *A final retirement releases the key.* The writer of a `retirements` row deletes the seat's key and its conflict rows
+  in the same transaction, on every route, so the key can be reserved again.
+- *Cross-node (ht-ma6i.7).* A published seat authors `seat.retired_reversible` at the fence and `seat.unretired` at
+  un-retire; an unpublished seat authors nothing, and the restore-window hold refuses both as retryable. Finalization is
+  the ordinary `seat.retired` with the original `retired_at`, so a peer of any version retires the seat for good. On a
+  peer the first reads retired with a reversible row and no job, so the peer's sends, explicit ACK recipients and
+  invitations to it are refused as retired and its due scans skip it; the second restores `remote`, shifts the peer's own
+  copies of the seat's pending deadlines by the same per-obligation amount and deletes the row (a peer has no waiting
+  state); `seat.retired` on a reversible row inserts the job with `retired_seq` advanced to that fact. Each fact acts
+  only on the episode its `retired_at` names (two episodes in one millisecond: *Two episodes in one millisecond*,
+  `## Accepted limits`), and `seat.retired_reversible` on a finally retired row is a no-op. Per episode the
+  outcome does not depend on arrival order or re-issue (N7): a copy whose episode already took effect on this node is a
+  no-op, judged from a mark on the journal row of the copy that took effect (the fence's own copy included), so an ended
+  episode never runs again and a copy that changed nothing never guards it; a `seat.unretired` that arrives before its
+  episode's `seat.retired_reversible` changes nothing and is kept in the journal, and that retire, when it lands,
+  retires and un-retires the seat in one transaction with the one deadline shift. A local row replayed
+  from the own log takes the fence's or un-retire's transition, with no key and no closure inputs. A message or
+  invitation fact applied during the window, on the home node or a peer, writes `pending` with no terminal row or
+  membership: the obligation stays frozen with the rest, resumes on un-retire and settles on finalization.
 
 **Restored-pane retirement (ht-wpq4).** A seat that a new incarnation left unresolved (reason `other`) keeps a
-saved target from the old one, which proves nothing (C2), so its absence never retires the seat. What retires it
-is structural, same-incarnation evidence about the pane the current incarnation shows at that target:
+saved target from the old one, which proves nothing (C2), so its absence is no closure under this rule (target
+absence, below, is its own rule). What retires it here is structural, same-incarnation evidence about the pane the
+current incarnation shows at that target:
 - *Watch.* A reconciliation pass whose coherent publication shows terminal T at the seat's target A, while A is a
   member of the current recovery baseline with no release (held for repair, no seat has claimed it) and no other
   seat's structural proof or binding names T in this incarnation, records a durable watch (server, boot,
@@ -396,7 +595,30 @@ Then, in one transaction against the active publication (A2), the seat retires t
 close (`seat.retired` reason `closed`), its retirement records `closure_evidence = restored_pane_closed`, and
 the restore holds lift once no unresolved seat of that server remains. The saved address only selects which pane
 to watch; it is never the evidence. A seat whose target was not held when a pass saw it, or whose pane closed
-before any pass of the incarnation saw it, is never retired this way and waits for the operator, as before.
+before any pass of the incarnation saw it, is never retired this way; it waits for the operator or for target
+absence, next.
+
+**Target absence after a restart (G5, ht-ma6i.4).** An unresolved (reason `other`) seat with a saved target and no
+current watch, on a Herdr host, stops waiting when its target stays gone. This is the one rule that decides on the
+saved address itself, and only on its absence for an observed grace in the current recovery, never to place a seat:
+- *Absent.* A coherent publication of the current recovery does not show the target, or shows it holding a pane
+  that a live seat's structural proof (another seat, not retired) or open binding (another seat's, not ended) names
+  in the current incarnation (that pane is the other seat's, so this seat's own is gone), with no watch to start (one is started first if the target is shown and held). Each such pass adds the time since the previous one, at most
+  30 s, to a local `restored_target_absence` row keyed by (seat, server, boot, incarnation, target, seat generation);
+  a row of another key is ignored and replaced.
+- *Reset.* A publication that shows the target with a pane no other live seat names deletes the row and the watch rule above takes over; a watch that
+  starts deletes it too. A later absence owes the full grace again. A pane named only by a retired seat's retained
+  proof or an ended binding is neither watched (the watch rule withholds it) nor counted: the seat waits for its
+  session's check-in or the operator.
+- *Blocked.* A kept C1 claim on that server, of any age, for any of the seat's top-level sessions or carrying the
+  seat's continuity key, or a reconciliation marker that does not name the current recovery boot and epoch, adds no
+  time. The same kept-claim test guards the watch.
+- *Retire.* At 10 observed minutes the seat retires in one transaction through the same fence as a pane close
+  (`seat.retired` reason `closed`, reversible when it holds a continuity key), its retirement or reversible row
+  recording `absence_evidence = restored_target_absent` with `closure_evidence` NULL, and the restore holds lift
+  once no unresolved seat of that server remains.
+Named and hc seats are outside it by host kind (no absence authority here; hc closes on the core's own finality),
+and an `unretired` seat has no target.
 
 A retirement of a published seat is also a `seat.retired` fact. Other nodes retire their remote copy of the seat
 only on that fact from the seat's home node (a fact from any other origin is recorded `failed` and retires
@@ -538,7 +760,11 @@ records there are replay machinery, never its identity.
 | `cooperative_hook_context` | receipt action observation and lazy completion claim | A top-level standard native hook **of a harness whose adapter declares no hook-pull delivery** wrote and flushed output whose context carried the message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`; its exact receipt candidates, source and original caller claim are frozen into the accountable payload digest. Receipt observations preserve binding provenance separately. Lazy rows store no per-row source. Not proof that the harness ingested it or the model read it. A prefix never carries it. The daemon refuses this claim from a hook-pull binding. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because the same native harness session id matched (C1). Never on receipts. |
+| `service_unretire` | seat history (`allocation_decisions`) only | The service that owns the seat's continuity key undid its reversible retirement. Records the row's closure target; places nothing. Never on receipts. |
+| `service_finalize` | seat history (`allocation_decisions`) only | The service that owns the seat's continuity key made its reversible or unretired retirement final. An operator's finalization records `operator:local-user:<uid>` under `operator_retire` instead. Never on receipts. |
 | `structural_process_continuity` | seat rebinds only | The seat's top-level binding process (same fingerprint) was observed as, or in the session of, the shell Herdr reports for the pane, on that shell's controlling terminal, after a new incarnation (C1 process continuity, ht-hsyg). The reopened binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
+| `structural_shell_continuity` | seat rebinds only | The shell Herdr reports for the seat's saved target was observed to be the process the seat's fingerprint recorded (same pid and start stamp), leading its session on the recorded controlling terminal, after a new incarnation (C1 *Shell continuity*, ht-ma6i.1). No binding opens. Never on receipts. |
+| `cooperative_continuity_key` | seat rebinds only | The seat was reattached because its top-level claim presented the reserved continuity key bound to the seat (C1 *Continuity key*, ht-ma6i.2). The session need not match any binding. The reopened or enrolled binding keeps its own `cooperative_top_level` provenance. Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. Also covers `sync clone-cleared` and the other mutating sync, peer and legacy commands (`sync resync`, `peer add`, `peer forget`, `legacy purge`). |
 | `replicated_from:<node_uuid>` | receipts, invitation answers (the accept and reject rows) and events applied from another node's fact (bindings never) | Applied as given from a fact authored and signed by node `<node_uuid>`; the authoring node's own provenance travels inside the fact. Never written for a locally authored fact. |
 | `local_journal` | receipts, invitation answers and events materialized from an own old incarnation's entry with no staged local attribution | A wipe or restore pull-back re-applied this node's own earlier fact; the original binding is not known here. Never on bindings. |
@@ -1819,8 +2045,8 @@ columns are never replicated.
 **N4. Origin authority.** A receiver rejects, as `failed` (counted as processed, visible in `sync unapplied`, and
 replayable with `sync unapplied replay`), a fact whose origin is not the kind's authorized author (fact-kinds
 section 17):
-- the seat's home node for the seat-scoped kinds (`seat.*` retirement via `seat.retired`, `membership.*` i.e.
-  `membership.joined` and `membership.left`, `invitation.answered` for the invitee's seat, and `receipt.settled`
+- the seat's home node for the seat-scoped kinds (`seat.*` retirement via `seat.retired`,
+  `seat.retired_reversible` and `seat.unretired`, `membership.*` i.e. `membership.joined` and `membership.left`, `invitation.answered` for the invitee's seat, and `receipt.settled`
   for the receipt's seat);
 - for `invitation.created`, by its issuer kind (`inviter_kind`): a `seat` invitation names its inviter seat and
   is authorized only from that seat's home node; a `service` invitation (a registered service author) or an
@@ -2045,6 +2271,61 @@ A tombstone is removed, and the node is shown and its logs wanted again, in exac
 
 ## Accepted limits
 
+- Process continuity across the kernel boot upgrade (ht-ma6i.44). A binding whose fingerprint was recorded before the
+  daemon recorded kernel boot ids has none, so process continuity decides nothing for it until its session's next claim
+  restamps it; that session's own check-in reattaches it cooperatively.
+- Continuity key conflict cap (ht-ma6i.2). The conflict table holds 256 rows. Past that a conflict claim is still
+  refused and the daemon logs it, but nothing is recorded, so that pane has no hold against keyless resolution and no
+  alert. Accepted because 256 concurrent conflicts is pathological.
+- First-turn hooks and the continuity key (ht-ma6i.2). A harness whose hook does not fire until its first turn (the
+  Codex TUI) presents no key while idle, so it reattaches on its first turn. A launcher that needs the seat at once
+  starts it with a prompt.
+- A service that never acts (ht-ma6i.3). A seat reversibly retired or unretired stays that way until its service acts
+  or an operator retires it: threads runs no timer, so obligations it owes stay frozen or pending. The owning service
+  owns the undo window; `herdr-threads human seat retire --operator` always finalizes.
+- A keyless seat's close stays final (ht-ma6i.3). Only a seat holding a continuity key can be un-retired; a seat gains
+  a key at keyed check-in or through a reservation that names it.
+- A frozen seat misses ACK warnings (ht-ma6i.3). ACK-request warnings reach their origin through SQL triggers that skip
+  a retired seat, so an origin frozen when one fires gets no row, and sees the state in `pending-receipts` on reattach.
+  Rewriting the triggers for one informational warning is not worth it; invitation warnings do reach it.
+- A store restored from its own log (ht-ma6i.3, ht-ma6i.7). Keys are local and facts do not carry them, so a seat
+  restored reversible keeps its row and reads retired with no key row: `UnretireSeat` and `FinalizeRetirement` answer
+  `Unauthorized`, and only an operator can finalize it.
+- A node that does not know the reversible kinds (ht-ma6i.7). A pre-3.1 node parks `seat.retired_reversible` and
+  `seat.unretired`, shows the seat live until `seat.retired` arrives and keeps its overdue running; a message it sends
+  meanwhile reaches the home node as an ordinary fact whose receipt stays frozen with the rest. After the upgrade it
+  replays the parked facts in order and lands in the state of a node that knew them, except that a deadline it held
+  through an episode a `seat.retired` then ended was never shifted; that obligation has settled. A replayed
+  `seat.unretired` shifts only obligations created by its `unretired_at`, judged against the origin's clock, so one
+  created within clock skew of the un-retire can land on either side. A signed hash-chained
+  log cannot be filtered per link, so the fact registry is the capability gate.
+- Hookless harnesses and the continuity key (ht-ma6i.6). A plain CLI resolve presents the key for the caller's own pane
+  (never `launch` or a recipient resolving another pane), so a key bound elsewhere mints no seat there. It carries no
+  native session or liveness, so it cannot claim a reattachment: a hookless harness (plain-CLI Codex) does not reattach by
+  key, and its pane stays unresolved until a hooked agent or the operator acts.
+- Two episodes in one millisecond (ht-ma6i.22). A reversible episode is named by its seat and `retired_at`, so a second
+  episode of the same seat whose retirement lands in the same millisecond as the first reads as a copy of it
+  (`episode_effect_recorded`) and its `seat.retired_reversible`, `seat.unretired` or `seat.retired` changes nothing on a
+  node where the first took effect. A retirement, un-retire and second retirement within one millisecond is not a real
+  sequence.
+- Hermes gateway and the continuity key (ht-ma6i.23). Observed on Hermes 0.22.1 and later: the gateway's client
+  environment filter refuses any variable name containing `KEY`, even when listed in
+  `terminal.client_env_passthrough`, so `HERDR_THREADS_CONTINUITY_KEY` never reaches a gateway session's hook. A keyed
+  Hermes clone behaves as a keyless one: a restored pane gets a new seat or stays seatless. The agreed variable name
+  stays, because herdr-graph launches no Hermes.
+- Key inheritance outside threads (ht-ma6i.6). threads' own `launch` and `handoff` start nothing with the key: Herdr
+  `agent.start` carries argv only, and the launch-gate shim, the detached daemon and a peer launch child drop it. A
+  process an agent starts in another pane with its own environment presents the key there. While the key's seat is
+  live it gets a `key_live_elsewhere` conflict: the key's seat is unharmed and the pane stays seatless, its hook quiet,
+  whatever key it presents next. While the key's seat is unresolved (after a Herdr restart, before its own session
+  claims it) and that pane has no resolved owner, the claim reattaches the key's seat in that pane (the key is the
+  evidence, `cooperative_continuity_key`); the seat's own session then finds its seat placed elsewhere and an operator
+  `seat rebind` moves it back. Unsetting the variable does not lift the hold. The exits are an operator `seat rebind` or `seat
+  resolve --new-seat` on the pane, the pane's close (a coherent publication no longer shows it), the key's release, or
+  a C1 claim that rebinds an unresolved seat there.
+- Service-asserted key binding (ht-ma6i). A service that names the wrong seat in `ReserveContinuityKey` makes that
+  seat reversible and reattachable by the key. Accepted because the model is cooperative and the service is the
+  same user; `bound_by` `service_reservation` records that the agent did not present the key itself.
 - Live-holder guard (named seats). The guard compares process fingerprints and parent chains from the
   daemon's process table; a same-user process that fakes a fingerprint, runs under a holder's ancestor, or
   starts after a holder's liveness row disconnected is admitted. Two unrelated sessions sharing a name through
@@ -2455,6 +2736,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   when the session first enrolled a fresh seat in its new pane and then `/resume`d (an owned target); a kept
   claim decided as a refusal or pruned undecided once past its TTL; and person seats, which have no C1 path. Such a session's next claim finds no
   match and meets the ordinary guards.
+- **A seat whose session lives elsewhere can lose it to target absence (G5, ht-ma6i.4).** The race is the one above:
+  a session running in another pane with no kept claim does not stop the 10 observed minutes, so its seat retires
+  while its saved target stays gone. For a seat with a continuity key that retirement is reversible, so its service
+  can undo it; a keyless seat's is final. That includes a session whose claim was refused and that enrolled a fresh
+  seat in the pane at the seat's target, while that fresh seat is live (not retired, its binding open): that pane is
+  the fresh seat's, so it counts as absent. A pane at the target named only by a departed claimant (a retired seat's
+  retained proof, an ended binding) does not count, and is not watched either: such a seat waits for its session's
+  next check-in or the operator, as before G5 (ht-ma6i.42).
 - **The watched pane is whichever pane the current baseline held at the target (ht-wpq4).** The baseline is
   retaken after every daemon restart within one incarnation, and the watch needs only that the pane at the
   target was in it, unclaimed. So the watched pane need not be one Herdr restored: when nothing was restored at
@@ -2578,6 +2867,15 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Process continuity proves the process, not its current session (ht-hsyg).** The reopened binding keeps the
   session the process last claimed; a process that switched sessions without a hook firing is corrected by its
   next claim (supersede rules unchanged).
+- **An idle agent the shell path cannot tie to the shell (ht-ma6i.1).** A live agent whose process the ht-hsyg path could
+  not tie to the shell (setsid, tmux) leaves its seat to *Shell continuity*, which opens no binding. The agent reconnects
+  on its next hook through ordinary check-in on the now resolved pane; until then that idle agent is not woken, the same
+  limit ht-hsyg documents.
+- **No fingerprint row at handoff (ht-ma6i.1).** A seat with no row when a handoff happens (allocated just before it, or
+  queued behind the 16-per-pass cap right after an upgrade) has nothing to match and waits as it does today: an agent's
+  check-in or an operator.
+- **A pane process that never leads a session on a tty (ht-ma6i.1).** Such a process has no fingerprint, is re-read each
+  pass and its seat waits, as it does today.
 - **Unavailability window after a live handoff (ht-hsyg).** Between the new incarnation's first reconciliation
   pass and the process continuity decision that follows it, the seat is unresolved: sends warn and wakes wait, and
   the rebind bumps the seat generation. Person seats and launched agents that have not checked in stay unresolved
@@ -2820,6 +3118,26 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 
 ## Decision record
 
+### Launcher-supplied continuity key (2026-11-05, ht-ma6i.2)
+
+A clone restarted by its launcher runs a fresh native session, so neither C1 by session id nor process continuity can
+find its seat, and ordinary enrollment would split the role. The launcher already knows which clone this is, so a key it
+reserved and presents is the evidence, recorded as `cooperative_continuity_key`. It is the same cooperative class as a
+resumed session id; a key is never adversarial proof. One pure judge holds the outcome table so the three entry points
+cannot drift. A conflict is durable and holds the pane against ordinary resolution so no new seat appears, but it binds
+ordinary resolution only, because every other path already has evidence of its own. A refused claim records its conflict
+after the rollback, in its own transaction. Conflicts on a pane with a resolved owner only alert: refusing them would
+take a working seat's CLI away over someone else's inherited variable. Design and rejected alternatives:
+`docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md`, section 4.2.
+
+### Reversible retirement (2026-11-05, ht-ma6i.3)
+
+A service can place a clone back in service after its pane closed, and today that close is final. Decision: the seat
+really retires and only the job is deferred, because a retired seat already reads correctly at about 80 sites and an
+overlay or a new seat state would be 80 places to forget. Only the paths that write durable state during the window
+compose the frozen fragment. Un-retire restores nothing, since a job that never ran released nothing. It is scoped to
+key holders, because the key is the evidence that a service answers for the seat. Operator decisions stay final.
+
 ### Process continuity across a Herdr live handoff (2026-10-31, ht-hsyg)
 
 A live handoff gives every pane a new terminal id under a new server process, so C2 unresolved every seat and idle
@@ -2830,6 +3148,14 @@ handoff, Herdr still reports the shell's pid, and session plus controlling termi
 terminal. That is structural evidence of the same kind as a terminal id, decided per seat with every C1 guard,
 applied after the reconciliation pass rather than inside it (the invalidation path is unchanged). Design and the
 rejected alternatives (Herdr lineage, the successor's `--handoff-import` argv token) are in the bead ht-hsyg.
+
+Extended 2026-11-05 (ht-ma6i.1): that path needs a binding's own process, so a bare pane, an exited agent and a launch that
+never checked in stayed unresolved, and a service's pre-agent clone had no way back. The pane's shell is the same kind of
+evidence, so *Shell continuity* judges it, and records a fingerprint once per terminal to judge it against. A fingerprint
+is the only way to tell a surviving shell from a new one that Herdr reports at the same pane after a cold restart. Rejected:
+a Herdr read per seat per pass (ht-kaw9: a stalled host read multiplied by seat count) and columns on `seats`, whose writes
+are replicated-state-guarded (the fingerprint is local evidence). It is a store decision of its own, not a
+`ContinuityEvidence` variant, because it opens no binding.
 
 ### Cross-node sync trust model (2026-10-14, ht-5fr)
 

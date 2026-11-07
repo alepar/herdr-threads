@@ -1,0 +1,353 @@
+{
+ "inspected": [
+  {
+   "path": "src/cli/caller.rs",
+   "hunks": [
+    "@@ -103,6 +103,22 @@ pub(super) fn active() -> Option<CallerOrigin> {"
+   ]
+  },
+  {
+   "path": "src/cli/caller_location.rs",
+   "hunks": [
+    "@@ -38,7 +38,11 @@ use std::ffi::OsString;",
+    "@@ -173,6 +177,7 @@ impl CallerEnv {",
+    "@@ -202,6 +207,12 @@ impl CallerEnv {",
+    "@@ -309,6 +320,32 @@ impl CallerEnv {",
+    "@@ -453,14 +490,19 @@ pub fn claim_recovery_env(host: &HostLocator, target: &str) -> Vec<String> {"
+   ]
+  },
+  {
+   "path": "src/cli/hook.rs",
+   "hunks": [
+    "@@ -46,7 +46,7 @@ use crate::{",
+    "@@ -381,6 +381,12 @@ enum Failure {",
+    "@@ -1929,6 +1935,13 @@ fn enroll_pane(",
+    "@@ -1937,6 +1950,7 @@ fn enroll_pane(",
+    "@@ -1957,6 +1971,21 @@ fn enroll_pane(",
+    "@@ -2033,12 +2062,13 @@ fn check_in(",
+    "@@ -2062,8 +2092,9 @@ fn check_in(",
+    "@@ -2094,8 +2125,9 @@ fn check_in(",
+    "@@ -2106,6 +2138,7 @@ fn check_in(",
+    "@@ -2113,16 +2146,25 @@ fn check_in(",
+    "@@ -2396,10 +2438,54 @@ impl PaneCall<'_> {",
+    "@@ -2415,6 +2501,7 @@ impl PaneCall<'_> {",
+    "@@ -2423,10 +2510,12 @@ impl PaneCall<'_> {",
+    "@@ -2464,6 +2553,7 @@ impl PaneCall<'_> {",
+    "@@ -2564,7 +2654,7 @@ impl PaneCall<'_> {",
+    "@@ -3031,6 +3121,7 @@ impl PaneCall<'_> {"
+   ]
+  },
+  {
+   "path": "src/cli/site_capability.rs",
+   "hunks": [
+    "@@ -5,13 +5,14 @@",
+    "@@ -38,6 +39,112 @@ pub fn require_readonly<C: LocalClient + ?Sized>(",
+    "@@ -116,7 +223,7 @@ mod tests {",
+    "@@ -130,8 +237,14 @@ mod tests {",
+    "@@ -174,6 +287,7 @@ mod tests {",
+    "@@ -224,6 +338,252 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/cli/launch.rs",
+   "hunks": [
+    "@@ -284,18 +284,22 @@ impl<'a> DaemonSeatResolver<'a> {",
+    "@@ -326,7 +330,8 @@ pub(crate) fn resolve_named<C: LocalClient + ?Sized>(",
+    "@@ -350,6 +355,7 @@ fn resolve_result(",
+    "@@ -363,6 +369,7 @@ fn resolve_result(",
+    "@@ -410,12 +417,14 @@ impl LaunchSeatResolver for DaemonSeatResolver<'_> {"
+   ]
+  },
+  {
+   "path": "src/cli/me.rs",
+   "hunks": [
+    "@@ -20,8 +20,8 @@",
+    "@@ -52,10 +52,22 @@ fn resolve_seat(",
+    "@@ -65,6 +77,7 @@ fn resolve_seat(",
+    "@@ -213,7 +226,15 @@ pub(crate) fn run_me_init<W: Write>("
+   ]
+  },
+  {
+   "path": "src/harness/bridge.rs",
+   "hunks": [
+    "@@ -402,11 +402,13 @@ pub fn prepare_event_as(",
+    "@@ -490,6 +492,7 @@ pub fn prepare_qualified_turn(",
+    "@@ -1368,6 +1371,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>("
+   ]
+  },
+  {
+   "path": "src/harness/context.rs",
+   "hunks": [
+    "@@ -439,6 +439,8 @@ pub struct ContextJournal {",
+    "@@ -503,8 +505,20 @@ impl ContextJournal {"
+   ]
+  },
+  {
+   "path": "src/host/mod.rs",
+   "hunks": [
+    "@@ -23,6 +23,10 @@ pub const PANE_SCOPED_ENV_VARS: &[&str] = &[",
+    "@@ -33,6 +37,7 @@ pub fn child_env_scrub_list() -> Vec<&'static str> {"
+   ]
+  },
+  {
+   "path": "src/service/dispatch.rs",
+   "hunks": [
+    "@@ -670,6 +670,7 @@ impl DomainService {",
+    "@@ -760,6 +761,7 @@ impl DomainService {",
+    "@@ -1236,6 +1238,7 @@ impl DomainService {",
+    "@@ -1311,6 +1314,7 @@ impl DomainService {",
+    "@@ -2493,6 +2497,7 @@ mod operator_tests {",
+    "@@ -2602,6 +2607,7 @@ mod operator_tests {",
+    "@@ -2617,6 +2623,7 @@ mod operator_tests {"
+   ]
+  },
+  {
+   "path": "src/store/seats/cooperative.rs",
+   "hunks": [
+    "@@ -596,6 +596,17 @@ pub fn check_in_payload(command: &CheckIn) -> impl serde::Serialize + '_ {",
+    "@@ -940,12 +951,19 @@ pub fn register_available(",
+    "@@ -1023,6 +1041,21 @@ pub fn register_available("
+   ]
+  },
+  {
+   "path": "src/store/seats/resolution.rs",
+   "hunks": [
+    "@@ -20,6 +20,7 @@ use crate::{",
+    "@@ -114,6 +115,10 @@ fn ordinary_resolution_digest(",
+    "@@ -206,6 +211,17 @@ pub(crate) fn current_resolution_owner(",
+    "@@ -258,7 +274,7 @@ pub(crate) fn current_resolution_owner(",
+    "@@ -266,7 +282,7 @@ fn resolution_recovery_refusal(",
+    "@@ -423,6 +439,22 @@ fn resolve_observed(",
+    "@@ -440,23 +472,35 @@ fn resolve_observed(",
+    "@@ -527,6 +571,7 @@ fn resolve_bootstrap_seat_impl("
+   ]
+  },
+  {
+   "path": "src/sync/facts/seat.rs",
+   "hunks": [
+    "@@ -1,4 +1,5 @@",
+    "@@ -6,6 +7,9 @@",
+    "@@ -94,6 +98,35 @@ impl ReferencedSeats for SeatRetiredPayload {",
+    "@@ -128,3 +161,69 @@ impl FactKind for SeatRetired {"
+   ]
+  },
+  {
+   "path": "src/sync/facts/mod.rs",
+   "hunks": [
+    "@@ -303,6 +303,8 @@ impl FactRegistry {"
+   ]
+  },
+  {
+   "path": "scripts/wire-compat-baseline.txt",
+   "hunks": [
+    "@@ -182,6 +182,12 @@ field SeatCreatedPayload.seat"
+   ]
+  },
+  {
+   "path": "src/store/materialize.rs",
+   "hunks": [
+    "@@ -137,6 +137,8 @@ pub const HELD_KINDS: &[&str] = &["
+   ]
+  },
+  {
+   "path": "src/store/materialization.rs",
+   "hunks": [
+    "@@ -727,16 +727,21 @@ fn project_receipt("
+   ]
+  },
+  {
+   "path": "src/store/archival.rs",
+   "hunks": [
+    "@@ -4,7 +4,7 @@ use super::{",
+    "@@ -357,12 +357,21 @@ pub(crate) const MIGRATED_ARCHIVAL_GRACE_MS: i64 = 24 * 60 * 60 * 1000;",
+    "@@ -406,13 +415,14 @@ pub(crate) fn member_active_for_archival("
+   ]
+  },
+  {
+   "path": "src/store/invitation_due.rs",
+   "hunks": [
+    "@@ -14,6 +14,7 @@ use std::collections::HashMap;",
+    "@@ -48,7 +49,11 @@ pub(crate) struct AdvisoryPage {"
+   ]
+  },
+  {
+   "path": "src/store/poke.rs",
+   "hunks": [
+    "@@ -10,6 +10,7 @@",
+    "@@ -113,6 +114,11 @@ fn collect(",
+    "@@ -120,7 +126,7 @@ fn collect("
+   ]
+  },
+  {
+   "path": "src/store/control/invitation.rs",
+   "hunks": [
+    "@@ -840,9 +840,10 @@ pub(crate) enum Placement {",
+    "@@ -897,7 +898,9 @@ pub(crate) fn insert_invitation("
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -159,6 +159,14 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[",
+    "@@ -1735,7 +1743,11 @@ pub(crate) fn clear_warning_condition_at_snapshot(",
+    "@@ -1854,6 +1866,15 @@ pub fn record_overdue_with_decision_seq(",
+    "@@ -2258,7 +2279,11 @@ fn record_overdue_inner("
+   ]
+  },
+  {
+   "path": "src/store/effective.rs",
+   "hunks": [
+    "@@ -1822,6 +1822,26 @@ pub fn effective_receipt("
+   ]
+  },
+  {
+   "path": "src/store/receipts.rs",
+   "hunks": [
+    "@@ -45,6 +45,7 @@ use super::{",
+    "@@ -1021,6 +1022,8 @@ pub struct DueScanResult {",
+    "@@ -1150,7 +1153,7 @@ pub fn scan_due(",
+    "@@ -1358,7 +1361,7 @@ pub fn scan_extension_lapses("
+   ]
+  },
+  {
+   "path": "src/store/service_controls.rs",
+   "hunks": [
+    "@@ -22,7 +22,9 @@ use crate::{",
+    "@@ -71,6 +73,15 @@ pub fn operate(",
+    "@@ -186,7 +197,38 @@ pub fn operate("
+   ]
+  },
+  {
+   "path": "src/service/workers.rs",
+   "hunks": [
+    "@@ -2549,6 +2549,10 @@ where"
+   ]
+  },
+  {
+   "path": "src/daemon/transport/service_connection.rs",
+   "hunks": [
+    "@@ -4,8 +4,8 @@ use super::*;",
+    "@@ -188,8 +188,25 @@ pub async fn serve_registered(",
+    "@@ -248,14 +265,8 @@ pub async fn serve_registered(",
+    "@@ -264,7 +275,7 @@ pub async fn serve_registered("
+   ]
+  },
+  {
+   "path": "migrations/node/0016_graph_clone_identity.sql",
+   "hunks": [
+    "@@ -0,0 +1,119 @@"
+   ]
+  },
+  {
+   "path": "migrations/node/0016_graph_clone_identity_after.sql",
+   "hunks": [
+    "@@ -0,0 +1,7 @@"
+   ]
+  },
+  {
+   "path": "src/store/seats/reversible.rs",
+   "hunks": [
+    "@@ -0,0 +1,750 @@"
+   ]
+  },
+  {
+   "path": "src/store/seats/key_verdict.rs",
+   "hunks": [
+    "@@ -0,0 +1,457 @@"
+   ]
+  },
+  {
+   "path": "src/identity/shell_continuity.rs",
+   "hunks": [
+    "@@ -0,0 +1,224 @@"
+   ]
+  },
+  {
+   "path": "src/store/control/retirement.rs",
+   "hunks": [
+    "@@ -2,18 +2,25 @@",
+    "@@ -21,7 +28,7 @@ pub fn begin_retirement(",
+    "@@ -43,9 +50,14 @@ pub fn begin_retirement(",
+    "@@ -99,32 +111,37 @@ pub fn begin_retirement(",
+    "@@ -132,11 +149,8 @@ pub(crate) fn begin_retirement_authored(",
+    "@@ -153,17 +167,53 @@ pub(crate) fn begin_retirement_authored(",
+    "@@ -175,26 +225,14 @@ pub(crate) fn begin_retirement_authored(",
+    "@@ -207,7 +245,34 @@ pub(crate) fn begin_retirement_fence(",
+    "@@ -217,22 +282,33 @@ pub(crate) fn begin_retirement_fence(",
+    "@@ -241,6 +317,32 @@ pub(crate) fn begin_retirement_fence("
+   ]
+  },
+  {
+   "path": "src/host/native.rs",
+   "hunks": [
+    "@@ -1029,6 +1029,23 @@ impl NativeCli {",
+    "@@ -1402,17 +1419,32 @@ impl HostPort for NativeCli {",
+    "@@ -6969,6 +7001,119 @@ pub(crate) mod tests {"
+   ]
+  },
+  {
+   "path": "integrations/claude/mod/hooks/register.js",
+   "hunks": [
+    "@@ -1207,7 +1207,10 @@ export const register = (on) => {"
+   ]
+  },
+  {
+   "path": "integrations/claude/mod/tests/frame_golden.test.ts",
+   "hunks": [
+    "@@ -19,7 +19,7 @@ for (const [name, golden] of Object.entries(cases)) {"
+   ]
+  },
+  {
+   "path": "integrations/claude/mod/tests/named_watch_env.test.ts",
+   "hunks": [
+    "@@ -108,6 +108,21 @@ test('a pane seat still stops permanently on no_pane', async () => {"
+   ]
+  },
+  {
+   "path": "integrations/hermes/README.md",
+   "hunks": [
+    "@@ -64,6 +64,9 @@ environment passthrough, merged with any names already listed there:"
+   ]
+  },
+  {
+   "path": "integrations/hermes/__init__.py",
+   "hunks": [
+    "@@ -34,8 +34,9 @@ HOOKS = (\"pre_llm_call\", \"post_tool_call\", \"on_session_start\", \"on_session_reset"
+   ]
+  },
+  {
+   "path": "src/store/seats/observation.rs",
+   "hunks": [
+    "@@ -1,15 +1,17 @@",
+    "@@ -696,7 +698,7 @@ pub fn publish_snapshot_stage(",
+    "@@ -1392,13 +1394,116 @@ fn restored_pane_grace_ms() -> i64 {",
+    "@@ -1406,31 +1511,31 @@ struct RestoredPaneFacts {",
+    "@@ -1460,19 +1565,27 @@ fn restored_pane_evidence(",
+    "@@ -1481,37 +1594,17 @@ fn restored_pane_evidence(",
+    "@@ -1563,7 +1656,8 @@ pub fn saved_seats_page(",
+    "@@ -1614,7 +1708,7 @@ pub fn saved_seats_page(",
+    "@@ -1925,7 +2019,7 @@ pub(crate) fn lift_baseline_hold_if_clear(",
+    "@@ -2013,6 +2107,12 @@ pub fn record_reconciliation_pass(",
+    "@@ -2063,6 +2163,7 @@ fn mark_seat_unresolved(",
+    "@@ -2375,6 +2476,9 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2382,7 +2486,7 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2419,7 +2523,10 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2735,6 +2842,7 @@ pub fn apply_reconciliation_transition("
+   ]
+  },
+  {
+   "path": "src/client/service.rs",
+   "hunks": [
+    "@@ -873,6 +873,14 @@ impl PersistentServiceClient {",
+    "@@ -939,6 +947,21 @@ fn result_matches(request: &ServiceWireRequest, result: &ServiceResult) -> bool"
+   ]
+  },
+  {
+   "path": "integrations/hermes/test_bridge.py",
+   "hunks": [
+    "@@ -34,7 +34,7 @@ from pathlib import Path",
+    "@@ -294,7 +294,8 @@ class BridgeTests(unittest.TestCase):"
+   ]
+  }
+ ]
+}

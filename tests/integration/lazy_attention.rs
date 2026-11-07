@@ -184,6 +184,7 @@ impl Fixture {
             },
             claim,
             operation: OperationId::new(op),
+            continuity_key: None,
         };
         let permit = self
             .store
@@ -940,6 +941,8 @@ fn lazy_addressed_survives_leave_retire_archive_and_excludes_postjoin() {
             },
             &budget(),
         )
+        .unwrap()
+        .into_job()
         .unwrap();
     let mut complete = false;
     for _ in 0..100 {

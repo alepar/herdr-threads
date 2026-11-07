@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use herdr_threads::cli::caller_location::{
     CallerEnv, CallerLocator, EnvMode, Located, LocatorError,
 };
+use herdr_threads::protocol::ids::HostTargetId;
 
 fn env(pairs: &[(&str, &str)]) -> CallerEnv {
     let owned: Vec<(String, String)> = pairs
@@ -23,6 +24,7 @@ fn ambient(name: &str) -> Option<OsString> {
     [
         "HERDR_THREADS_SEAT_NAME",
         "HERDR_THREADS_SEAT_READONLY",
+        "HERDR_THREADS_CONTINUITY_KEY",
         "HERDR_PANE_ID",
     ]
     .contains(&name)
@@ -32,7 +34,11 @@ fn ambient(name: &str) -> Option<OsString> {
 #[test]
 fn seat_variables_are_hidden_from_a_library_caller() {
     use herdr_threads::cli::caller_location::seat_filter;
-    for name in ["HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY"] {
+    for name in [
+        "HERDR_THREADS_SEAT_NAME",
+        "HERDR_THREADS_SEAT_READONLY",
+        "HERDR_THREADS_CONTINUITY_KEY",
+    ] {
         assert_eq!(seat_filter(false, name, ambient), None, "{name} hidden");
         assert_eq!(
             seat_filter(true, name, ambient),
@@ -551,4 +557,13 @@ fn verified_terminal_reads_as_a_lone_terminal() {
     }
     assert!(verified.herdr_env());
     assert_eq!(verified.pane(EnvMode::Cli), None);
+}
+
+#[test]
+fn is_own_pane_needs_the_callers_server() {
+    let caller = env(&[("HERDR_PANE_ID", "w1:p1")]);
+    let own = HostTargetId::new("w1:p1");
+    assert!(caller.is_own_pane(&own, true));
+    assert!(!caller.is_own_pane(&own, false), "same id, another server");
+    assert!(!caller.is_own_pane(&HostTargetId::new("w1:p2"), true));
 }

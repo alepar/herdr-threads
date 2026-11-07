@@ -1,0 +1,76 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-3.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-3.md
+new file mode 100644
+index 000000000..7ac50fd9b
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-3.md
+@@ -0,0 +1,70 @@
++# Final review, cluster 3 (integrations), epic ht-ma6i
++
++Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7, both verified. The caller checkout stayed on head and clean throughout.
++
++Cluster files: `integrations/claude/mod/hooks/register.js`, `integrations/claude/mod/tests/named_watch_env.test.ts`, `integrations/hermes/README.md`, `integrations/hermes/__init__.py`, `integrations/hermes/test_bridge.py`. All five changes come from one commit, 7a87f5209.
++
++## Claude mod path
++
++Traced and sound.
++
++- `register.js:1211-1213` reads the key with `$.env.get` and forwards it. The `a || b || c ? x : y` gate parses as intended.
++- `named` at `register.js:311` still looks only at the name and the terminal id, so a keyed pane seat still stops permanently on `no_pane`. A test pins this.
++- The earlier unverified assumption (`progress.md:81`, task 7 report line 65) is now resolved. The engine types for Claude Code 2.1.318 state for `ProcessSpawnRequest`: "the host's environment with `env` over it". A keyed pane seat therefore keeps `HERDR_PANE_ID`, and passing `env` is safe.
++- On the watch side, `watch_continuity` takes `CallerEnv::for_site`, which reads the key through `from_process` at a real entry point. The event is `Role::TopLevel` with no agent id, so the key is presented. From there the path leaves this cluster and is the seam reviewer's to trace.
++
++## Hermes bridge path
++
++Classic Hermes (before 0.22.1) works: `pane_env()` returns None and the hook child inherits the key.
++
++Hermes 0.22.1 and later does not work. This is every current Hermes, since the shared gateway is the only topology and v0.22.7 is the latest release.
++
++- Under the gateway, `pane_env()` removes every `PANE_ENV` name from the gateway's environment and restores only what `bound_client_env()` holds. The removal is correct: a gateway's own key must not be presented.
++- The client map never contains this variable. Hermes filters it on the client side in `collect_client_env` and on the gateway side in `accept_client_env`.
++- Both filters use `_kept`, which requires `_travels(name)`. `_travels` returns false for any name containing a substring from `_SECRET_SUBSTRINGS`, "even when listed", in its own docstring's words (`agent/session_client_env.py:48-54` at v0.22.7).
++- That list starts with `KEY` (`tools/code_execution_env.py:29`, at both v0.22.1 and v0.22.7). `HERDR_THREADS_CONTINUITY_KEY` contains `KEY`. A check of the other carried names against the list (`HERDR_PANE_ID`, `HERDR_ENV`, `HERDR_THREADS_SEAT_NAME`, `HC_TERMINAL_SOCKET`) found none of them hit, so the existing seat variables are unaffected.
++- This repository already recorded the trap for another tool's variable. `docs/research/2026-10-23-integration-alternatives/alternatives/cross-agent-teams-mcp-jtianling/hermes.md:145-147` says `XATS_IDENTITY_KEY` is blocked "even when listed in `client_env_passthrough`", marked VERIFIED.
++
++Consequences:
++
++- The new README sentence at `integrations/hermes/README.md:67` tells a launcher to add the key to the passthrough list "or the key never reaches the hook". The key does not reach the hook either way. The setup notes in `src/harness/hermes.rs` and `tests/fixtures/golden/help/setup.txt` repeat the instruction.
++- `test_gateway_child_takes_the_session_continuity_key_not_the_gateway_key` (`test_bridge.py:480`) places the key directly into a stubbed `bound_client_env`, a state production Hermes cannot produce. The test passes and the path stays dead.
++- The Hermes README says "There is no resume continuity", so Hermes is exactly the source design's case G3(b), a clone with no resumable session, where the key is the only evidence. The hook runs keyless, so ordinary enrollment mints a new seat or a restore hold leaves the agent seatless.
++- TRUST-POLICY has no accepted limit covering this, and the baseline lists no human scope change for it.
++- Spec §4.2 defers "live harness env filtering" to a qualification outside this run. Under the baseline rule that sentence cannot lower B1, and the filter is readable in source today.
++- The source design's name was `HERDR_GRAPH_CLONE`, which passes the filter. The filter problem arrived with the neutral rename to `HERDR_THREADS_CONTINUITY_KEY`.
++
++Scope, stated plainly: herdr-graph at 0dbe477 does not name Hermes anywhere in its tree, and its tests configure Claude and Codex. Today's graph launches therefore do not hit this path. B1's source text says the graph launches "every clone agent", threads' spec names the Hermes bridge as a carrier, and threads ships the instruction, so it stands as a delivery gap and a false document in this cluster.
++
++Codex hooks were checked for the same trap and are clear. `codex-rs/hooks/src/engine/command_runner.rs` filters only the exact-name `NON_INHERITABLE_ENV_VARS` list.
++
++## Gateway-inherited key in tool subprocesses
++
++Source-traced, not run.
++
++- `toolchain_environ` strips only names in the session's rule list, and that list is itself filtered by `_travels`. A secret-named variable in the gateway's own environment is therefore neither stripped nor replaced, and it stays in every local session's terminal tool environment (`_make_run_env` in `tools/environments/local.py`).
++- The bridge's docstring states the gateway inherits the environment of whichever pane started it. If a keyed launch starts the gateway, a model's plain CLI in another pane presents that pane's id with the first pane's key, on the `ResolveSeat` paths using `own_pane_continuity_key` (`me.rs:60`, `seat resolve`, recipient resolution of the own pane).
++- For a reserved unbound key the table's verdict is to bind it to that pane's seat. No hook could have bound it first, because the hook path drops the key on the gateway.
++- The trigger is narrow, since these are not routine agent calls. The existing limit *Key inheritance outside threads* describes only the `key_live_elsewhere` outcome, not a wrong-seat binding.
++- A name that passes the filter closes this as well: `toolchain_environ` replaces or unsets a travelling listed name per session.
++
++## Test evidence used
++
++No test was rerun here. The task 7 report (`task-7-report.md`) records `test_bridge.py` at 50 tests OK and `scripts/test-claude-mod` at 181 pass and 1 fail. It records that failure ("the golden cases cover every DP2 case") as present at its base too, so it is not attributed to this cluster. The report's tested tree is 2c35ebebd, not this head, and no later commit in base..head touches `integrations/`.
++
++## Verdict
++not ready (B1: on Hermes 0.22.1+ the secret-name filter blocks HERDR_THREADS_CONTINUITY_KEY, so a launcher's key never reaches the hook, and the README's remedy cannot work)
++
++## Must fix before landing
++- B1 (Hermes gateway): on Hermes 0.22.1 and later `HERDR_THREADS_CONTINUITY_KEY` can never reach the hook, because `_travels` refuses any name containing `KEY` even when listed in `terminal.client_env_passthrough` (`agent/session_client_env.py:48-54`, `tools/code_execution_env.py:29`, recorded in this repo at `docs/research/2026-10-23-integration-alternatives/alternatives/cross-agent-teams-mcp-jtianling/hermes.md:145-147`), and `pane_env()` correctly drops the gateway's copy, so `integrations/hermes/__init__.py:38` and the instruction at `integrations/hermes/README.md:67` (repeated in `src/harness/hermes.rs` setup notes and `tests/fixtures/golden/help/setup.txt`) deliver nothing and a keyed Hermes clone in a restored pane gets a new seat or stays seatless; fix by carrying the key under a name that passes the filter (no `KEY`, `TOKEN`, `AUTH` and so on, for example renaming the variable before it ships, which changes the §4.5 name agreed with the graph session and so needs coordinating with it), or obtain a human scope change row excluding the Hermes gateway and correct the README and setup notes, since a spec-level accepted limit alone cannot lower B1.
++
++## Untested scope
++- No live Hermes ran: `hermes` is not installed here, and the upstream policy was read from source at v0.22.7, plus the secret list at v0.22.1 (`session_client_env.py` at v0.22.1 could not be fetched in this pass). An attempt to execute the upstream module against the variable name was refused by the permission layer, so the filter behaviour is source-read and not executed.
++- `test_gateway_child_takes_the_session_continuity_key_not_the_gateway_key` (`integrations/hermes/test_bridge.py:480`) stubs `bound_client_env`, so nothing in the suite exercises Hermes' real client-env filter; a regression test should assert the chosen variable name passes `_SECRET_SUBSTRINGS`.
++- The bridge has no test for a classic Hermes child inheriting the key (`pane_env()` returning None); only the gateway branch gained one. The behaviour is plain inheritance.
++- The mod's key forward is tested only against the mocked `process.spawn` event; a real watch child presenting the key to a real daemon is the seam reviewer's to trace.
++- Whether a Codex tool subprocess keeps the key was not settled: Codex's `shell_environment_policy` has `*KEY*` default excludes behind `ignore_default_excludes`, and the default was not confirmed. It affects only the plain CLI `ResolveSeat` path, which is outside this cluster and the seam reviewer's to trace.
++
++## Deferred OK
++- Gateway-inherited key in tool subprocesses (source-traced, not run): a keyed launch that starts the gateway leaves the key in other sessions' terminal tool environments, so a plain `ResolveSeat` from another pane can bind a reserved unbound key to the wrong seat; the trigger is narrow and a filter-passing name closes it, but if the human scope change route is taken instead, TRUST-POLICY *Key inheritance outside threads* must state the wrong-seat outcome.
++- `register.js:1211-1213` forwards a value `process.spawn` already inherits from the host environment, so the forward is redundant for a pane seat; §4.2 asks for it and it is harmless, and the note only records that `env` on a keyed pane seat carries no new information.

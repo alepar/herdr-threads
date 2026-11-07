@@ -6,6 +6,7 @@ pub(crate) mod attribution;
 pub mod bindings;
 pub mod catch_up;
 pub mod connection;
+pub mod continuity_keys;
 pub mod control;
 pub(crate) mod delivery_tail;
 pub mod effective;
@@ -71,7 +72,7 @@ use crate::{
         HostObservation, HostObservationAdmission, InvalidationSeatPage, OperationReadScope,
         OperatorRequest, PokeDue, PokeReceipt, PokeReservation, PriorLadder, PruneProgress,
         PublishedSnapshot, ReadContext, ReceiptSparseCursor, ReconciliationOutcome,
-        RegisterAvailableRequest, RetirementJob, RetirementProgress, RetirementSummary,
+        RegisterAvailableRequest, RetirementProgress, RetirementStart, RetirementSummary,
         SendPreparationProgress, SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader,
         SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate,
         WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
@@ -333,6 +334,17 @@ impl SqliteStore {
                 )?;
             }
         }
+        // The kernel boot id bindings stamp beside their liveness fingerprint (ht-ma6i.44). A
+        // daemon never outlives a reboot, so the row written here is the current boot while it
+        // runs; an unreadable boot leaves no row, and fingerprints then record none.
+        match context.processes().kernel_boot() {
+            Some(boot) => writer.execute(
+                "INSERT INTO node_kernel_boot(id,boot) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET boot=excluded.boot",
+                [boot],
+            ),
+            None => writer.execute("DELETE FROM node_kernel_boot", []),
+        }
+        .map_err(store_error)?;
         // A store stuck with a hold nothing protects (reconciliation already
         // finished, no unresolved seat) is cleared once at daemon start.
         // Each remembered host's hold is judged on its own; a store with no host row has none to
@@ -2340,6 +2352,55 @@ impl StorePort for SqliteStore {
     ) -> Result<crate::ports::ProcessContinuityListing, ApiError> {
         seats::process_continuity_candidates(&self.context, &self.instance, host, &page, budget)
     }
+    fn shell_fingerprint_gaps(
+        &self,
+        host: crate::ports::HostId,
+        after: Option<SeatId>,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::ports::ShellFingerprintGap>, ApiError> {
+        seats::shell_fingerprint_gaps(&self.context, &self.instance, host, after.as_ref(), budget)
+    }
+    fn record_shell_fingerprint(
+        &self,
+        gap: &crate::ports::ShellFingerprintGap,
+        fingerprint: &crate::identity::shell_continuity::ShellFingerprint,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let now = self.context.clock().utc_now();
+        let writer = self.writer(budget)?;
+        seats::record_shell_fingerprint(&writer, gap, fingerprint, now)
+    }
+    fn shell_continuity_candidates(
+        &self,
+        host: crate::ports::HostId,
+        after: Option<SeatId>,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::ports::ShellContinuityCandidate>, ApiError> {
+        seats::shell_continuity_candidates(
+            &self.context,
+            &self.instance,
+            host,
+            after.as_ref(),
+            budget,
+        )
+    }
+    fn shell_rival_exists(
+        &self,
+        seat: &SeatId,
+        fingerprint: &crate::identity::shell_continuity::ShellFingerprint,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        seats::shell_rival_exists(&db, seat, fingerprint)
+    }
+    fn decide_shell_continuity(
+        &self,
+        request: crate::ports::ShellContinuityRequest,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::decide_shell_continuity(&self.context, &mut writer, &self.instance, request)
+    }
     fn kept_continuity_claims(
         &self,
         host: crate::ports::HostId,
@@ -3143,7 +3204,7 @@ impl StorePort for SqliteStore {
         seat: SeatId,
         proof: ClosureEvidence,
         budget: &CallBudget,
-    ) -> Result<RetirementJob, ApiError> {
+    ) -> Result<RetirementStart, ApiError> {
         let mut writer = self.writer(budget)?;
         control::begin_retirement(&self.context, &mut writer, seat, proof)
     }
@@ -3775,7 +3836,7 @@ pub fn cooperative_permit_request(
             v.claim.clone(),
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
-            schema::canonical_digest(&seats::check_in_payload(v))?,
+            seats::check_in_digest(v)?,
             Some(v.mode),
         ),
         PermitMutation::BeginHandoff(v) => (

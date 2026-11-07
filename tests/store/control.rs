@@ -22,7 +22,11 @@ fn begin_retirement(
 ) -> Result<crate::ports::RetirementJob, crate::protocol::results::ApiError> {
     #[cfg(feature = "test-support")]
     let _guard = crate::test_support::write_guard::arm(conn);
-    super::begin_retirement(context, conn, seat, proof)
+    super::begin_retirement(context, conn, seat, proof).map(|start| {
+        start
+            .into_job()
+            .expect("a keyless seat's retirement has a job")
+    })
 }
 /// `join`, `leave` and `create_thread` author membership facts, so every call in
 /// this suite runs (in test-support builds) with the write guard armed: they
@@ -4799,6 +4803,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         operation: OperationId::new("resolve"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let guard =
         crate::ports::OrdinaryResolutionGuard::try_new(&ordinary, observation.clone(), &admission)
@@ -4967,6 +4972,7 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         operation: OperationId::new("resolve-once"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let guard =
         || OrdinaryResolutionGuard::try_new(&request, observation.clone(), &admission).unwrap();
@@ -5105,6 +5111,7 @@ fn ordinary_allocation_refuses_a_moved_terminal_until_its_seat_follows() {
             operation: OperationId::new(operation),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         let guard = OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
         seats::resolve_seat(
@@ -5184,6 +5191,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         operation: OperationId::new("ordinary-empty-proof"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let observation = HostObservation {
         focused: false,
@@ -5911,6 +5919,7 @@ fn registration_ignores_an_exhausted_binding_history_generation_and_rolls_back_w
         },
         claim: claim("s2"),
         operation: OperationId::new("exhausted-check-in"),
+        continuity_key: None,
     };
     let digest =
         crate::store::schema::canonical_digest(&seats::check_in_payload(&command)).unwrap();
@@ -7082,6 +7091,7 @@ fn ordinary_resolution_guard_rejects_unqualified_or_mismatched_read() {
         operation: OperationId::new("resolve"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let mut observation = snapshot_for_test(2, &["pane-new"]).targets.remove(0);
     observation.terminal = Some(TerminalId::new("terminal-new"));
@@ -7193,6 +7203,7 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
         operation: OperationId::new("first-resolve"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     assert_eq!(
         store
@@ -7338,6 +7349,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
             operation: OperationId::new(key),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         let guard =
             OrdinaryResolutionGuard::try_new(&request, current.clone(), &admission).unwrap();
@@ -7380,6 +7392,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
         operation: OperationId::new("concurrent-a"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     assert_eq!(
         crate::store::seats::resolve_seat(
@@ -7421,6 +7434,7 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
             operation: OperationId::new("resolve"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
         let Outcome::Resolved(seat) = store
@@ -7591,6 +7605,7 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
             operation: OperationId::new("resolve"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
         match state {
@@ -7670,6 +7685,7 @@ fn ordinary_resolution_cancelled_writer_wait_has_no_seat_or_operation_effect() {
         operation: OperationId::new("cancelled-resolve"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     let guard = OrdinaryResolutionGuard::try_new(&request, current, &admission).unwrap();
@@ -8069,6 +8085,7 @@ fn registration_requires_and_records_reconfirmation_evidence() {
         },
         claim: claim("s2"),
         operation: OperationId::new("check-in-1"),
+        continuity_key: None,
     };
     let digest =
         crate::store::schema::canonical_digest(&seats::check_in_payload(&command)).unwrap();
@@ -8544,6 +8561,75 @@ fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
     drop(conn2);
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(path2);
+}
+
+/// TRUST-POLICY C1 continuity key (spec 4.2): any rebind onto a target clears its conflict row, in
+/// `rebind_unresolved_seat`, the one chokepoint for operator, C1, key and shell rebinds.
+/// Kills: a standing hold on a target its seat was just rebound to; a clear reaching another
+/// target's row.
+#[test]
+fn continuity_keys_rebind_clears_the_targets_conflict_row() {
+    use crate::{
+        ports::{OperatorRequest, OperatorTargetGuard},
+        protocol::{
+            commands::{OperatorCommand, OperatorRebind},
+            results::ContinuityConflictKind,
+        },
+        store::{continuity_keys, seats},
+    };
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["new-target", "other-target"]);
+    conn.execute(
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        [],
+    )
+    .unwrap();
+    let host = crate::test_support::test_host_id();
+    for target in ["new-target", "other-target"] {
+        continuity_keys::record_conflict(
+            &conn,
+            &continuity_keys::ConflictFacts {
+                host,
+                target: target.to_owned(),
+                key: ContinuityKey::new("clone-1"),
+                kind: ContinuityConflictKind::KeyLiveElsewhere,
+                seat: Some(SeatId::new("s2")),
+                owner: None,
+            },
+            UtcMillis(100),
+        )
+        .unwrap();
+    }
+    let command = OperatorRebind {
+        host: crate::test_support::test_host_locator(),
+        seat: SeatId::new("s1"),
+        target: HostTargetId::new("new-target"),
+        operation: OperationId::new("rebind-clears"),
+    };
+    let guard = OperatorTargetGuard::try_new(
+        "34750f98bd59fcfc946da45aaabe933b",
+        host,
+        &OperatorCommand::Rebind(command.clone()),
+        b5_fresh_observation("new-target"),
+    )
+    .unwrap();
+    seats::mutate_operator(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        OperatorRequest::Rebind(command, guard),
+        b5_actor(),
+        None,
+    )
+    .unwrap();
+    let held = |target: &str| continuity_keys::hold_kind(&conn, host, target).unwrap();
+    assert_eq!(held("new-target"), None);
+    assert_eq!(
+        held("other-target"),
+        Some(ContinuityConflictKind::KeyLiveElsewhere)
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -9285,6 +9371,7 @@ fn c1_command(
             pid: 4242,
             start: 7,
         }),
+        continuity_key: None,
     }
 }
 
@@ -10056,6 +10143,7 @@ fn continuity_for_an_unknown_session_is_final_while_reconciliation_lags() {
         operation: OperationId::new("kaw9-enroll"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let mut observation = b5_fresh_observation("new-pane");
     observation.observation_sequence = 4;
@@ -10265,11 +10353,17 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
     c1_bind(&conn, "s-old", 2, "claude", "sess-new");
     let tx = conn.transaction().unwrap();
     let ask = |harness: &str, session: &str| {
-        continuity_candidates(&tx, "34750f98bd59fcfc946da45aaabe933b", harness, session)
-            .unwrap()
-            .into_iter()
-            .map(|seat| seat.as_str().to_owned())
-            .collect::<Vec<_>>()
+        continuity_candidates(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            harness,
+            session,
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|seat| seat.as_str().to_owned())
+        .collect::<Vec<_>>()
     };
     assert!(ask("claude", "sess-r").is_empty(), "retired seat");
     assert!(ask("claude", "plugin_context:abc").is_empty(), "sentinel");
@@ -10531,6 +10625,7 @@ fn continuity_prefers_the_seat_where_the_session_was_live_at_unresolve() {
             "34750f98bd59fcfc946da45aaabe933b",
             "claude",
             "sess-1",
+            None,
         )
         .unwrap();
         drop(tx);
@@ -13111,6 +13206,7 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
                 claim: claim("s2"),
                 operation: OperationId::new("registration-not-acceptance"),
                 lineage_parent: None,
+                continuity_key: None,
             };
             let hash = crate::store::schema::canonical_digest(
                 &crate::store::seats::check_in_payload(&checkin),
@@ -13954,6 +14050,7 @@ fn restore_hold_refusal_names_cause_blockers_and_exact_operator_repairs() {
         operation: OperationId::new("held-resolve"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     conn.execute(
@@ -14007,6 +14104,7 @@ fn restore_hold_explicit_refusal_carries_exact_repair_guidance() {
         operation: OperationId::new("explicit-resolve"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "pane-new");
@@ -14126,4 +14224,371 @@ fn same_session_continuity_digest_is_distinct_and_resume_digest_is_compatible() 
         crate::store::seats::continuity_digest("i", &current).unwrap(),
         old_digest
     );
+    // Captured before the keyed branch existed: a keyless resume digest stays these bytes.
+    let hex = |digest: [u8; 32]| {
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(
+        hex(crate::store::seats::continuity_digest("i", &resume).unwrap()),
+        "2eb809d29174b20e484570192db2746e2d1144c732200c84524b9bf6a44d0cc3"
+    );
+    assert_eq!(
+        crate::store::seats::continuity_digest("i", &current).unwrap(),
+        crate::store::schema::canonical_digest(&(
+            "same_session_continuity_check_in",
+            "i",
+            &resume.target,
+            &resume.harness,
+            &resume.native_session,
+            &resume.execution,
+        ))
+        .unwrap()
+    );
+    let keyed = |command: &crate::protocol::commands::ContinuityCheckIn, key: &str| {
+        let mut command = command.clone();
+        command.continuity_key = Some(crate::protocol::ids::ContinuityKey::new(key));
+        crate::store::seats::continuity_digest("i", &command).unwrap()
+    };
+    let keyed_resume = keyed(&resume, "clone-1");
+    assert_ne!(keyed_resume, old_digest, "keyed differs from keyless");
+    assert_ne!(
+        keyed_resume,
+        keyed(&current, "clone-1"),
+        "keyed resume differs from keyed same-session"
+    );
+    assert_ne!(
+        keyed_resume,
+        keyed(&resume, "clone-2"),
+        "another key differs"
+    );
+}
+
+/// `--replace` of a live key holder: final, and the key can be reserved again. Kills: the replace
+/// route writing a `retirements` row and keeping the key or going reversible.
+#[test]
+fn operator_replace_of_a_key_holder_is_final_and_releases_the_key() {
+    use crate::{
+        protocol::results::ContinuityConflictKind,
+        store::{continuity_keys, seats, service_substrate},
+    };
+    let (context, mut conn, path, _clock) = b5_replace_fixture();
+    let author = {
+        let tx = conn.transaction().unwrap();
+        let author = service_substrate::ensure_reserved_author(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            UtcMillis(0),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        author
+    };
+    let key = ContinuityKey::new("clone-new");
+    conn.execute(
+        "INSERT INTO continuity_keys(key,owner_author_id,seat_id,reserved_at,bound_at,bound_by) VALUES ('clone-new',?1,'s2',1,1,'service_reservation')",
+        [author.as_str()],
+    )
+    .unwrap();
+    continuity_keys::record_conflict(
+        &conn,
+        &continuity_keys::ConflictFacts {
+            host: crate::test_support::test_host_id(),
+            target: "elsewhere".to_owned(),
+            key: key.clone(),
+            kind: ContinuityConflictKind::KeyLiveElsewhere,
+            seat: Some(SeatId::new("s2")),
+            owner: None,
+        },
+        UtcMillis(100),
+    )
+    .unwrap();
+    seats::mutate_operator(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        b5_replace_request("s1", "s2", "s2", "replace-key"),
+        b5_actor(),
+        None,
+    )
+    .unwrap();
+    let (jobs, rows): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM retirements WHERE seat_id='s2'),(SELECT count(*) FROM reversible_retirements WHERE seat_id='s2')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((jobs, rows), (1, 0));
+    assert_eq!(continuity_keys::lookup_key(&conn, &key).unwrap(), None);
+    assert_eq!(continuity_keys::conflict_of_key(&conn, &key).unwrap(), None);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Spec 4.2: an alert-only row clears when its judged owner stops being the pane's resolved owner.
+/// Seat `s1` (A) holds key `clone-a`; seat `s2` (B) owns pane `s2`. A `pane_owned_by_other_seat`
+/// row on `s2` and a `seat_holds_other_key` row on `q` were judged against B, and a hold-bearing
+/// row on `h` names B too. Returns the host.
+fn alert_only_owner_setup(conn: &Connection) -> crate::ports::HostId {
+    use crate::{
+        protocol::results::ContinuityConflictKind as Kind,
+        store::{continuity_keys, service_substrate},
+    };
+    let author = {
+        let tx = conn.unchecked_transaction().unwrap();
+        let author = service_substrate::ensure_reserved_author(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            UtcMillis(0),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        author
+    };
+    conn.execute(
+        "INSERT INTO continuity_keys(key,owner_author_id,seat_id,reserved_at,bound_at,bound_by) VALUES ('clone-a',?1,'s1',1,1,'service_reservation')",
+        [author.as_str()],
+    )
+    .unwrap();
+    let host = crate::test_support::test_host_id();
+    for (target, key, kind, seat) in [
+        ("s2", "clone-a", Kind::PaneOwnedByOtherSeat, Some("s1")),
+        ("q", "clone-a", Kind::SeatHoldsOtherKey, None),
+        ("h", "clone-h", Kind::KeyLiveElsewhere, Some("s1")),
+    ] {
+        continuity_keys::record_conflict(
+            conn,
+            &continuity_keys::ConflictFacts {
+                host,
+                target: target.to_owned(),
+                key: ContinuityKey::new(key),
+                kind,
+                seat: seat.map(SeatId::new),
+                owner: Some(SeatId::new("s2")),
+            },
+            UtcMillis(100),
+        )
+        .unwrap();
+    }
+    assert!(
+        continuity_keys::seat_view(conn, &SeatId::new("s1"))
+            .unwrap()
+            .unwrap()
+            .conflict
+            .is_some()
+    );
+    host
+}
+
+/// The alert-only rows judged against `s2` are gone, `SeatInspect` of A shows no conflict, and
+/// the hold-bearing row stays.
+fn assert_alert_only_owner_rows_cleared(conn: &Connection, host: crate::ports::HostId) {
+    use crate::{protocol::results::ContinuityConflictKind as Kind, store::continuity_keys};
+    let rows: Vec<String> = conn
+        .prepare("SELECT target_id FROM continuity_key_conflicts ORDER BY target_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(rows, ["h"]);
+    assert_eq!(
+        continuity_keys::seat_view(conn, &SeatId::new("s1"))
+            .unwrap()
+            .unwrap()
+            .conflict,
+        None
+    );
+    assert_eq!(
+        continuity_keys::hold_kind(conn, host, "h").unwrap(),
+        Some(Kind::KeyLiveElsewhere)
+    );
+}
+
+/// A coherent publication of `targets`, every seat left as it was.
+fn alert_only_owner_publication(
+    context: &StoreContext,
+    conn: &mut Connection,
+    snapshot: crate::ports::HostSnapshot,
+) -> crate::ports::PublishedSnapshot {
+    use crate::store::seats;
+    let budget = b5_budget();
+    let admission = seats::begin_host_observation(
+        context,
+        conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
+    let stage = staged_test_snapshot(context, conn, admission, &snapshot, &budget);
+    seats::publish_snapshot_stage(context, conn, &stage, &budget).unwrap()
+}
+
+/// Kills: an unresolve of the judged owner leaving its alert-only rows on a pane still published.
+#[test]
+fn continuity_keys_alert_only_row_clears_when_its_owner_unresolves() {
+    use crate::{
+        ports::{GuardedSeatTransition, ReconciliationAction, ReconciliationOutcome},
+        store::seats,
+    };
+    let (context, mut conn, path, _) = fixture(100);
+    let host = alert_only_owner_setup(&conn);
+    let publication = alert_only_owner_publication(
+        &context,
+        &mut conn,
+        snapshot_for_test(2, &["s1", "s2", "q", "h"]),
+    );
+    let outcome = seats::apply_reconciliation_transition(
+        &context,
+        &mut conn,
+        GuardedSeatTransition {
+            publication,
+            seat: SeatId::new("s2"),
+            expected_binding_generation: 1,
+            expected_target: Some(HostTargetId::new("s2")),
+            expected_terminal: None,
+            action: ReconciliationAction::MarkUnresolved,
+        },
+        &b5_budget(),
+    )
+    .unwrap();
+    assert_eq!(outcome, ReconciliationOutcome::Applied);
+    assert_alert_only_owner_rows_cleared(&conn, host);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a final (operator) retirement of the judged owner leaving its alert-only rows.
+#[test]
+fn continuity_keys_alert_only_row_clears_when_its_owner_retires_finally() {
+    use crate::{ports::OperatorRequest, protocol::commands::OperatorRetire, store::seats};
+    let (context, mut conn, path, _) = fixture(100);
+    let host = alert_only_owner_setup(&conn);
+    alert_only_owner_publication(
+        &context,
+        &mut conn,
+        snapshot_for_test(2, &["s1", "s2", "q", "h"]),
+    );
+    seats::mutate_operator(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        OperatorRequest::Retire(OperatorRetire {
+            seat: SeatId::new("s2"),
+            operation: OperationId::new("retire-owner"),
+        }),
+        b5_actor(),
+        None,
+    )
+    .unwrap();
+    let jobs: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM retirements WHERE seat_id='s2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(jobs, 1, "final");
+    assert_alert_only_owner_rows_cleared(&conn, host);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a reversible (closure) retirement of a key-holding judged owner leaving its alert-only
+/// rows. Its own key's conflicts are none, so only the owner rule can clear them.
+#[test]
+fn continuity_keys_alert_only_row_clears_when_its_owner_retires_reversibly() {
+    use crate::ports::{ClosureEvidence, RetirementStart};
+    let (context, mut conn, path, _) = fixture(100);
+    let host = alert_only_owner_setup(&conn);
+    conn.execute(
+        "INSERT INTO continuity_keys(key,owner_author_id,seat_id,reserved_at,bound_at,bound_by) VALUES ('clone-b',(SELECT owner_author_id FROM continuity_keys WHERE key='clone-a'),'s2',1,1,'service_reservation')",
+        [],
+    )
+    .unwrap();
+    let start = {
+        #[cfg(feature = "test-support")]
+        let _guard = crate::test_support::write_guard::arm(&conn);
+        super::begin_retirement(
+            &context,
+            &mut conn,
+            SeatId::new("s2"),
+            ClosureEvidence {
+                host_boot: HostBootId::new("b"),
+                epoch: 1,
+                target: HostTargetId::new("s2"),
+                generation: 1,
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(start, RetirementStart::Reversible);
+    assert_alert_only_owner_rows_cleared(&conn, host);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a guarded move of the judged owner to another pane leaving its alert-only rows on the
+/// panes it left, which stay published.
+#[test]
+fn continuity_keys_alert_only_row_clears_when_its_owner_moves() {
+    use crate::{
+        ports::{
+            EvidenceKind, ExecutionEvidence, GuardedSeatTransition, NativeOccupant,
+            ReconciliationAction, ReconciliationOutcome,
+        },
+        store::seats,
+    };
+    let (context, mut conn, path, _) = fixture(100);
+    let host = alert_only_owner_setup(&conn);
+    conn.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at) VALUES ('s2',1,'s2','terminal-2','test-incarnation','b',1,1,'codex','native-2','execution-2','verified_current_target',100)",
+        [],
+    )
+    .unwrap();
+    let mut snapshot = snapshot_for_test(2, &["moved-target", "s1", "s2", "q", "h"]);
+    snapshot.targets[0].terminal = Some(TerminalId::new("terminal-2"));
+    snapshot.targets[0].occupancy = crate::ports::StructuralOccupancy::Occupied;
+    snapshot.targets[0].execution = ExecutionEvidence::Verified {
+        execution: ExecutionId::new("execution-2"),
+        evidence_kind: EvidenceKind::NativeCurrentTarget,
+    };
+    snapshot.targets[0].occupant = Some(NativeOccupant {
+        harness: Harness::Codex,
+        session: NativeSessionId::new("native-2"),
+        execution: ExecutionId::new("execution-2"),
+        is_top_level: true,
+    });
+    let publication = alert_only_owner_publication(&context, &mut conn, snapshot);
+    let outcome = seats::apply_reconciliation_transition(
+        &context,
+        &mut conn,
+        GuardedSeatTransition {
+            publication,
+            seat: SeatId::new("s2"),
+            expected_binding_generation: 1,
+            expected_target: Some(HostTargetId::new("s2")),
+            expected_terminal: Some(TerminalId::new("terminal-2")),
+            action: ReconciliationAction::Move {
+                target: HostTargetId::new("moved-target"),
+                terminal: TerminalId::new("terminal-2"),
+            },
+        },
+        &b5_budget(),
+    )
+    .unwrap();
+    assert_eq!(outcome, ReconciliationOutcome::Applied);
+    let target: String = conn
+        .query_row("SELECT target_id FROM seats WHERE id='s2'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(target, "moved-target");
+    assert_alert_only_owner_rows_cleared(&conn, host);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
 }

@@ -1,0 +1,50 @@
+# Final review, cluster 25: tests-integration (ht-ma6i)
+
+Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7. Files: `tests/integration/lazy_attention.rs`, `tests/integration/notice_wake.rs`, `tests/integration/trust_policy.rs`.
+
+## What the cluster changes
+
+`lazy_attention.rs` and `notice_wake.rs` are mechanical: `continuity_key: None` on the fixture's `CheckIn`, and `.unwrap().into_job().unwrap()` on `begin_retirement`, which is correct for a keyless seat because `RetirementStart::into_job` is `Some` only for `Job`.
+
+`trust_policy.rs` adds one test, `kept_keyed_claim_is_decided_after_lag_with_no_further_event`. It keeps a claim with Herdr down, writes the key into the kept row and reserves it by SQL, brings Herdr back, and checks the seat resolved, the kept row gone, one `cooperative_continuity_key` decision, no `cooperative_continuity` decision, and a `cooperative_top_level` binding on the fresh session.
+
+The cluster's code has no defect. The gap is what spec §4.8 requires of the integration suite and what is not there at this head.
+
+## Verification run
+
+All runs were in a review-owned detached worktree at the head, seeded with `scripts/seed-worktree-target`, through `heavy tb cargo test --locked --all-features`.
+
+- The added test passes at the head.
+- Mutation of its first `Kills:` claim: `decide_kept_continuity` passing `ContinuityEvidence::Cooperative` instead of `claim_evidence(command)` makes it fail with "timed out waiting for the kept keyed claim to reattach the seat". The claim holds.
+- Probe of the real client path, not for landing: the same flow with the key reserved by SQL before the kill, no write to `kept_continuity_claims`, and `HERDR_THREADS_CONTINUITY_KEY=clone-1` passed to the installed hook through `hook_with_env`. It passes: the kept row carries `continuity_key='clone-1'`, and the worker reattaches the seat with `cooperative_continuity_key`. The same mutation fails it.
+- `lazy_attention::` and `notice_wake::` in the `combined` target: 15 passed.
+- `scripts/check-no-leaked-processes --run-id` is clean on the later two runs. The first run's check flagged only the `tail` in its own pipe, which inherited the run id.
+- Not run: the full suite, which the ledger defers to the caller.
+
+## Baseline trace
+
+- B1, kept-claim lag path: traced from the installed hook through `reattach_by_continuity`, `Identity::continuity`, `kept_continuity::keep` and `decide_kept_continuity` to `claim_evidence`. Delivered for this path; the probe confirms it through the real binary and a real daemon with a stand-in Herdr.
+- B1 other rows, B2 and B3: their production paths leave this cluster and are the seam reviewer's to trace. This review does not call them undelivered.
+- B4: nothing in this cluster touches Herdr. The tests use the stand-in fixture.
+
+## Observed state outside the cluster
+
+- `ht-ma6i.11`, `ht-ma6i.1` and `ht-ma6i.4` are open, and branches `task-ht-ma6i.1` and `task-ht-ma6i.4` are ancestors of the head with no commits of their own to land. The ledger's last detector round reads "0 ready ... waiting on deps 3".
+- At the head, `decide_shell_continuity` has no match in `src`, and `seat_shell_fingerprints` and `restored_target_absence` appear in `src` only in the table list in `src/service/kicks.rs`. Whether G2 and G5 block landing as product gaps is for the composing reviewer; they are not baseline rows. This cluster reports only the test obligation.
+
+## Verdict
+not ready (spec §4.8's end-to-end integration tests are absent: ht-ma6i.11 is open and nothing at this head substitutes for them; the cluster's own diff has no defect)
+
+## Must fix before landing
+- Spec §4.8's end-to-end integration test does not exist at the head (reserve, launch with key, enroll, bind, close pane, send refused, un-retire, relaunch in a new pane, same seat id, ACK deadline resumed, memberships intact): `tests/clone_identity_sweep.rs` from the plan's task 11 is absent, `ht-ma6i.11` is open, no test under `tests/service`, `tests/integration` or the root `tests/*.rs` names `HERDR_THREADS_CONTINUITY_KEY`, and `tests/service/reversible_session.rs` makes its seat reversible by raw SQL with an unavailable host, so the B1 and B2 chain has never run through a real hook, a real service session and a real pane close; land ht-ma6i.11 before this branch.
+- Spec §4.8's live handoff test on bare and exited-agent panes is absent: `tests/integration` adds no such case and the G2 code it would exercise is not at the head (`ht-ma6i.1` open); land ht-ma6i.1 and this test, or obtain a human scope change, since the spec's goal names this recovery.
+
+## Untested scope
+- Real-binary keyed flows other than the lag path, each an ht-ma6i.11 acceptance item: a keyed relaunch before un-retire held with one `key_retired_reversibly` alert, a second agent presenting a live key, reserve-with-seat followed by close and reattach, `FinalizeRetirement` over a real session, and agent exit with the pane open keeping the seat (B3).
+- The kept key blocking the G5 count (spec §4.2, §4.4) has no test because G5 is not at the head (`ht-ma6i.4` open).
+- The added test does not assert the hold release or the absence of a new seat on the kept path; `tests/store/continuity_key_decisions.rs` covers the hold release at store level, and `kick_observation` makes a whole-table seat count unreliable in this fixture, so an assertion would have to be scoped to pane `w1:p1`.
+- The real-binary probe above is review evidence only and is not committed, so the client-to-kept-row step stays unpinned at this level until ht-ma6i.11 lands.
+
+## Deferred OK
+- The added test still writes the key into `kept_continuity_claims` by SQL, and its comment "What a keyed claim's hook sends is the client leaf's" is stale now that ht-ma6i.6 has landed; the ledger's task 3 note says the client leaf must replace this and it did not. The test still kills its named mutation, and the probe shows the fix is small: reserve before the kill and pass the variable through `hook_with_env`. It can go with ht-ma6i.11.
+- The test seeds `service_authors` and `continuity_keys` with raw SQL because the `World` fixture has no service client; this is acceptable for a kept-claim test, and ht-ma6i.11 covers the real reservation.

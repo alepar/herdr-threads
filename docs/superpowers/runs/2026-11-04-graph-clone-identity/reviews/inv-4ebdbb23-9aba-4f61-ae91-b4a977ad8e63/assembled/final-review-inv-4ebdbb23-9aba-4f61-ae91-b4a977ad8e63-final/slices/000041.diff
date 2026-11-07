@@ -1,0 +1,95 @@
+diff --git a/src/ports.rs b/src/ports.rs
+index 99c05175e..9d0811f66 100644
+--- a/src/ports.rs
++++ b/src/ports.rs
+@@ -599,6 +599,37 @@ pub struct RetirementJob {
+     pub processed_units: u64,
+ }
+ 
++/// What a retirement decision takes: the columns of the `retirements` row, or of the reversible row
++/// that holds them until finalization. Evidence is named here, so no caller updates `retirements`
++/// after the decision.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct RetirementInputs {
++    pub boot: String,
++    pub epoch: i64,
++    pub target: String,
++    pub generation: i64,
++    pub closure_evidence: Option<&'static str>,
++    pub absence_evidence: Option<&'static str>,
++}
++
++/// What a retirement decision yielded. A reversible retirement (TRUST-POLICY *Reversible
++/// retirement*) has no job, so no caller may assume one.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum RetirementStart {
++    Job(RetirementJob),
++    Reversible,
++}
++
++impl RetirementStart {
++    /// The job of a final retirement.
++    pub fn into_job(self) -> Option<RetirementJob> {
++        match self {
++            Self::Job(job) => Some(job),
++            Self::Reversible => None,
++        }
++    }
++}
++
+ /// Result of the writer's startup binding-evidence verification: bindings
+ /// whose terminal/incarnation evidence was backfilled from the seat's own
+ /// matching structural proof, and latest bindings of non-retired seats that
+@@ -1332,6 +1363,8 @@ pub enum ReconciliationOutcome {
+     /// no seat is ever decided on it).
+     Stale(StaleReason),
+     RetirementStarted(RetirementJob),
++    /// The seat retired reversibly: there is no job to advance.
++    RetiredReversibly,
+ }
+ 
+ /// Why the store refused a reconciliation transition: a stable snake_case
+@@ -1869,6 +1902,10 @@ pub enum ContinuityEvidence {
+     /// The decision is valid only for the judged seat at the judged generation: the deciding
+     /// transaction refuses when the session's unique match is another seat, or the seat moved.
+     Process { seat: SeatId, seat_generation: u64 },
++    /// The claim presents `continuity_key` (TRUST-POLICY C1, ht-ma6i.2). The deciding transaction
++    /// judges the key from the command; a reattachment it decides records
++    /// `cooperative_continuity_key`, anything else falls through as `Cooperative`.
++    Key,
+ }
+ 
+ /// One C1 process continuity listing. `full`: the bounded page filled up (counted before rows of
+@@ -3886,7 +3923,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
+         seat: SeatId,
+         proof: ClosureEvidence,
+         budget: &CallBudget,
+-    ) -> Result<RetirementJob, ApiError>;
++    ) -> Result<RetirementStart, ApiError>;
+     fn advance_retirement(
+         &self,
+         job: RetirementJobId,
+@@ -5416,6 +5453,7 @@ mod allocation_tests {
+             operation: OperationId::new("resolve"),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         };
+         let admission = HostObservationAdmission {
+             instance: "i".into(),
+@@ -5722,6 +5760,7 @@ mod allocation_tests {
+             operation: OperationId::new("op1"),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         };
+         let observation = HostObservation {
+             focused: false,
+@@ -6031,6 +6070,7 @@ mod contract_adapter_tests {
+             operation: OperationId::new("op1"),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         };
+         let observation = adapter
+             .observe_current_target(&request.target, &context)

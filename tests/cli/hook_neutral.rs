@@ -42,6 +42,8 @@ impl LocalClient for Seats {
                     open_binding: None,
                     history: page(vec![]),
                     directory: None,
+                    continuity_key: None,
+                    retirement_state: None,
                 }))
             }
             other => panic!("unexpected {other:?}"),

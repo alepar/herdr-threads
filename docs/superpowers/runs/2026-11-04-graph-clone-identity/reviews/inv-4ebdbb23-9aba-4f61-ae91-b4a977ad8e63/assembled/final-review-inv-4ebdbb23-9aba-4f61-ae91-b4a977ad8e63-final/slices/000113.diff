@@ -1,0 +1,36 @@
+diff --git a/tests/hook_entrypoint.rs b/tests/hook_entrypoint.rs
+index 8aab8e6b4..7958c9adc 100644
+--- a/tests/hook_entrypoint.rs
++++ b/tests/hook_entrypoint.rs
+@@ -6749,6 +6749,7 @@ mod continuity {
+                         target: HostTargetId::new(PANE),
+                     },
+                     SemanticMutation::ResolveSeat {
++                        continuity_key: None,
+                         host: fx.host_locator(),
+                         target: HostTargetId::new(PANE),
+                     },
+@@ -7567,6 +7568,7 @@ mod continuity {
+                     target: HostTargetId::new(PANE),
+                 },
+                 SemanticMutation::ContinuityCheckIn {
++                    continuity_key: None,
+                     host: fx.host_locator(),
+                     target: HostTargetId::new(PANE),
+                     harness: if harness == "codex" {
+@@ -7731,6 +7733,7 @@ mod continuity {
+                         target: HostTargetId::new(PANE),
+                     },
+                     SemanticMutation::ContinuityCheckIn {
++                        continuity_key: None,
+                         host: fx.host_locator(),
+                         target: HostTargetId::new(PANE),
+                         harness: herdr_threads::protocol::authority::Harness::Claude,
+@@ -7868,6 +7871,7 @@ mod continuity {
+                         target: HostTargetId::new(PANE),
+                     },
+                     SemanticMutation::ContinuityCheckIn {
++                        continuity_key: None,
+                         host: fx.host_locator(),
+                         target: HostTargetId::new(PANE),
+                         harness: if harness == "codex" {

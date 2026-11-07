@@ -1,0 +1,34 @@
+diff --git a/src/harness/context.rs b/src/harness/context.rs
+index ead527df3..e463c205d 100644
+--- a/src/harness/context.rs
++++ b/src/harness/context.rs
+@@ -439,6 +439,8 @@ pub struct ContextJournal {
+     /// persisted context has none (it is the caller's environment, not its identity), so a handle
+     /// that builds claims gets it from the caller's `RuntimeContext` ([`Self::with_host`]).
+     host: Option<crate::protocol::ids::HostLocator>,
++    /// The continuity key this handle's check-ins present ([`Self::with_continuity_key`]).
++    continuity_key: Option<crate::protocol::ids::ContinuityKey>,
+ }
+ /// The calling agent session, from the harness environment or hook payload (spec §1, decision
+ /// 15). It replaces the journal's saved `current` context: an agent's identity is never read
+@@ -503,8 +505,20 @@ impl ContextJournal {
+             lock_timeout,
+             agent: None,
+             host: None,
++            continuity_key: None,
+         })
+     }
++    /// Check-ins through this handle present `key`; the caller decided it may be sent.
++    pub(crate) fn with_continuity_key(
++        mut self,
++        key: Option<crate::protocol::ids::ContinuityKey>,
++    ) -> Self {
++        self.continuity_key = key;
++        self
++    }
++    pub(crate) fn continuity_key(&self) -> Option<&crate::protocol::ids::ContinuityKey> {
++        self.continuity_key.as_ref()
++    }
+     /// Set the claim host (see the `host` field); claims fail without one.
+     pub fn with_host(mut self, host: crate::protocol::ids::HostLocator) -> Self {
+         self.host = Some(host);

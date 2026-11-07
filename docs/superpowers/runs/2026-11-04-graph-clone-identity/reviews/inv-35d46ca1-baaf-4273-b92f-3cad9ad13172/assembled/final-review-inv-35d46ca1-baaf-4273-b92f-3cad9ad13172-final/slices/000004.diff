@@ -1,0 +1,65 @@
+diff --git a/docs/programmatic-service-client.md b/docs/programmatic-service-client.md
+index 3dddaaf6d..2c3ed3ea4 100644
+--- a/docs/programmatic-service-client.md
++++ b/docs/programmatic-service-client.md
+@@ -1,6 +1,6 @@
+ # Programmatic service client
+ 
+-`PersistentServiceClient` holds one registered Unix socket and serializes calls on it. Construct it with the instance UUID, socket path, a clock, an optional expected daemon boot UUID, and a private `ServiceIntentJournal` directory under an existing durable parent. Use a separate journal directory per instance and programmatic author. Call `register` before `query`, `submit`, `send`, `history`, `receipts`, or `replay`. `register` sends `service_session_v2`; there is no fallback to v1. A daemon that does not know v2 (an older build) refuses the register with "unsupported service capability", and the daemon advertises `service.send_v1` once it serves send and the two reads. A raw session registered with `service_session_v1` still runs the v1 operations but gets `Unsupported` for `Send`, `History` and `Receipts`. The returned author ID and connection generation are diagnostics; authority remains with the socket. A dropped or invalidated connection needs a new `register` call. An idle connection has no per-call deadline; each budgeted call checks its absolute deadline and cancellation before and after waiting for the session. `registration()` and `disconnect()` are administrative calls without a budget and may wait for an active exchange. Synchronous journal writes and `fsync` cannot be safely interrupted by cancellation, so a budget does not impose a hard bound on a durability operation already in progress.
++`PersistentServiceClient` holds one registered Unix socket and serializes calls on it. Construct it with the instance UUID, socket path, a clock, an optional expected daemon boot UUID, and a private `ServiceIntentJournal` directory under an existing durable parent. Use a separate journal directory per instance and programmatic author. Call `register` before `query`, `submit`, `send`, `history`, `receipts`, or `replay`. `register` sends `service_session_v3`. A daemon that does not know v3 (an older build) refuses the register with "unsupported service capability" and there is no fallback, so this client needs a daemon of this release or later. The daemon advertises `service.send_v1` once it serves send and the two reads. A raw session registered with `service_session_v1` still runs the v1 operations but gets `Unsupported` for `Send`, `History` and `Receipts`. The returned author ID and connection generation are diagnostics; authority remains with the socket. A dropped or invalidated connection needs a new `register` call. An idle connection has no per-call deadline; each budgeted call checks its absolute deadline and cancellation before and after waiting for the session. `registration()` and `disconnect()` are administrative calls without a budget and may wait for an active exchange. Synchronous journal writes and `fsync` cannot be safely interrupted by cancellation, so a budget does not impose a hard bound on a durability operation already in progress.
+ 
+ Use `query(ServiceOperation::Membership(...), budget)` for membership reads. For every mutation, construct the typed `ServiceOperation` with a caller-stable `OperationId`, then call `submit`. The client syncs the exact request envelope, including the operation key and payload, before writing to the socket. `submit` returns the key and result on success. If `ServiceCallError::pending_operation()` returns a key, inspect it with `journal().inspect(&key)` and decide whether to reconnect and call `replay(&key, budget)`. `journal().pending()` lists unresolved keys after a process restart. Registration and queries do not create intent records. A call rejected while waiting for the session does not create a mutation intent or send bytes; a rejected replay leaves its saved intent intact.
+ 
+@@ -35,6 +35,52 @@ let replies = client.history(ServiceHistoryQuery {
+ 
+ `Conflict` is definitive: nothing was published (the thread's audience kept changing beyond the daemon's bounded restart allowance), so resubmit under a **new** key. A pending error (`pending_operation()` returns a key) is ambiguous: reconnect, register, and `replay` the same key; the daemon answers the committed result once and never publishes a duplicate. Design: [service-send-amendment.md](design/graph-system-identity/service-send-amendment.md). D9 of the message-priority design (2026-10-14) supersedes that amendment's whole-audience obligation rule.
+ 
++## Clone identity (v3)
++
++`service_session_v3` adds five operations to v2, for a service that launches agents and keeps their seats across restarts. Registration is the only advertisement: an old daemon rejects the name with "unsupported service capability", and there is no fallback. A session below v3 gets `Unsupported` naming `service_session_v3` for each of them. `PersistentServiceClient` registers v3: `submit` carries the four mutations under their `operation` keys, journaled and replayed like any mutation, and `query` carries `ContinuityAlerts`. Spec: [graph clone identity](superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md), §4.2 to §4.5.
++
++A key is `HERDR_THREADS_CONTINUITY_KEY`, 1 to 128 ASCII-graphic bytes, in the environment of the agent the service launches. An invalid value counts as absent. An unreserved key is ignored. The key is local to the node and never replicated. A key is cooperative evidence, not a secret or a proof of the caller.
++
++Mutations carry `operation` and replay as above: the same key and payload return the first result, a different payload is `OperationPayloadMismatch`, and a refusal journals nothing.
++
++| Operation | Result | Refusals |
++|---|---|---|
++| `ReserveContinuityKey { key, seat: None, operation }` | `ContinuityKeyReserved { key, owner, seat, reserved_at }`; idempotent for the owner, and `seat` is the bound seat if there is one | `Conflict`: another service's key |
++| `ReserveContinuityKey { key, seat: Some(s), operation }` | The same, with the key bound to `s` at once (`bound_by: service_reservation`). Moves nothing and places nothing. A re-reserve to `s` is a no-op. For a clone already running, or already waiting, with no key | `Conflict`: another service's key, the key bound elsewhere, or `s` holding another key. `NotFound`: unknown seat. `InvalidRequest`: `s` is retired, named, remote or not on a Herdr host |
++| `ReleaseContinuityKey { key, operation }` | `ContinuityKeyReleased(key)`; deletes the key and its conflict rows | `Conflict`: another service's key, or a seat holds it. `NotFound`: not reserved |
++| `UnretireSeat { seat, operation }` | `SeatUnretired { seat, generation }`; the seat reads `unresolved` with no target, its memberships and requirements are intact, and its pending deadlines move forward by the time it was retired | `Unauthorized`: the caller does not own the seat's key, or the key is gone. `NotFound`: not reversibly retired. `ServiceBusy` (retryable, not definitive): the node's own history is catching up and nothing was applied; retry under the same operation key (`replay`: the client keeps the key pending) |
++| `FinalizeRetirement { seat, operation }` | `RetirementFinalized(seat)`, for a reversible or unretired seat; releases the key and its conflict rows, and the retirement job settles obligations | `Unauthorized`: as above. `NotFound`: neither reversible nor unretired. `ServiceBusy`: retryable, as above; nothing was applied, retry under the same operation key |
++| `ContinuityAlerts { page }` | `ContinuityAlerts(Page<ContinuityAlert>)`; a query: no operation key, nothing journaled | `InvalidCursor`, `InvalidBudget` |
++
++A seat binds to a key at the check-in of an agent presenting it (`bound_by: check_in`) or at a reservation naming the seat. One key has one seat, and one seat one key. A `Closed` retirement of a key-holding seat is reversible: it reads `retired`, nothing is settled, and only what it owes freezes. A keyless seat's retirement stays final. An operator's `seat retire` of a reversible seat finalizes it.
++
++**Required order.**
++
++1. `ReserveContinuityKey` before launch. An unreserved key does nothing.
++2. `UnretireSeat` before relaunching a reversible seat's agent. Otherwise the agent stays seatless under a `key_retired_reversibly` conflict and its pane is held.
++3. `FinalizeRetirement` when the undo window ends. Threads has no timer: the service owns the window, and a service that disappears leaves its seats retired-reversible, their obligations frozen, until an operator retires them.
++
++A launcher that needs the seat at once starts a harness whose hook waits for a first turn (Codex TUI) with a prompt: with no turn the agent presents no key while idle, and it reattaches on its first turn. A hookless plain CLI caller never reattaches by key.
++
++**Conflicts.** A refused or noted claim records one row per pane. The hook still succeeds, with no new model-visible text, and a later event presents the key again.
++
++| Kind | Meaning | Holds the pane |
++|---|---|---|
++| `key_live_elsewhere` | The key's seat is resolved at another pane | yes |
++| `key_retired_reversibly` | The key's seat is reversibly retired; unretire it first | yes |
++| `session_matches_other_seat` | The native session matches another seat | yes |
++| `pane_owned_by_other_seat` | The pane has another resolved owner, which keeps working | no |
++| `seat_holds_other_key` | The pane's resolved owner holds another key, and this key stays unbound | no |
++
++A holding row refuses ordinary resolution of a pane with no resolved owner, so no new seat appears there. It clears when a later claim from the pane succeeds, when a coherent publication no longer shows the pane, when an operator rebinds or creates a fresh seat on it, or when its key is released. An alert-only row clears when its owner stops being the pane's resolved owner. The table holds 256 rows; past that a claim is still refused but nothing is recorded, so that pane has no hold.
++
++**Alert paging.** `ContinuityAlerts` pages a pull feed, oldest first, with one row for each conflict row that is new or whose key or kind changed: `{ ordinal, key, seat, host, pane, kind, at }`. `seat` is the key's seat, absent for an unbound key. The log keeps the newest 256 rows, and ordinals keep increasing across eviction, so a gap means rows were evicted. Follow `next_cursor` while `has_more`. A cursor is frozen at its first page's `high_water_ordinal`, and the last page has no cursor, so poll from no cursor and skip ordinals already seen. `next_argv` is always absent: the feed has no CLI.
++
++**`SeatInspection` fields.** Both are absent when empty.
++
++- `continuity_key: { key, owner, bound_by, conflict }`: the key this seat holds. `bound_by` is `check_in` or `service_reservation`. `conflict: { host, pane, kind, first_seen_at }` is the most recently updated row naming the key, of any kind. A row naming an unbound key surfaces only in the alert feed. Text output prints `key <key> <owner>` when a key is held; `--json` has every field.
++- `retirement_state`: `reversible` or `final`, present iff the seat reads retired. `summary.continuity` stays `retired` for a reversible seat, and `retirement` (the job status) is `None` until it is finalized. After `UnretireSeat`, `summary.continuity` is `unresolved` with `target: None`.
++
+ ## Replay and completion
+ 
+ The caller chooses when to replay after an ambiguous outcome. Replaying reads the saved envelope and sends its original request ID, operation key, and payload. A different payload under an existing key cannot replace the saved intent. A definitive daemon response first publishes a durable `.complete` record containing the saved envelope and full correlated response, then removes the `.intent` file. The completed record remains until the caller explicitly calls `journal().forget_completed(&key)`. `journal().completed()` and `journal().inspect_completed(&key)` expose definitive results after restart; `journal().pending()` lists only unresolved intents. Neither reopen nor registration replays automatically, and a completed key cannot be replayed or reused for a different payload.

@@ -5081,6 +5081,7 @@ mod live {
                     operation: f.peer.identity.payload.resolve_key.clone(),
                     locator_hint: None,
                     tmux_hint: None,
+                    continuity_key: None,
                 },
                 crate::ports::BootstrapPaneObservation::try_new(
                     observation,
@@ -5659,6 +5660,7 @@ mod live {
                 operation: peer.identity.payload.resolve_key.clone(),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             },
             BootstrapPaneObservation::try_new(
                 observation,
@@ -5784,6 +5786,7 @@ mod live {
             operation: OperationId::new("preexisting-fixture"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         let guard = OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
         let OrdinaryResolutionOutcome::Resolved(seat) = crate::store::seats::resolve_seat(
@@ -6018,6 +6021,7 @@ mod live {
                     operation: f.peer.identity.payload.resolve_key.clone(),
                     locator_hint: None,
                     tmux_hint: None,
+                    continuity_key: None,
                 },
                 response,
                 &admission,
@@ -7389,6 +7393,7 @@ mod live {
                         uuid::Uuid::new_v4().to_string(),
                     ),
                     lineage_parent: None,
+                    continuity_key: None,
                 };
                 let budget = super::super::super::super::cooperative_budget(&self.base.clock);
                 // Held from issuance until the check-in returns (see [`AutomaticPermitClock`]).
@@ -7503,6 +7508,7 @@ mod live {
                         operation: identity.plan.payload.keys.resolve.clone(),
                         locator_hint: None,
                         tmux_hint: None,
+                        continuity_key: None,
                     },
                     BootstrapPaneObservation::try_new_terminal(
                         observation,
@@ -7527,6 +7533,7 @@ mod live {
                         operation: identity.plan.payload.keys.resolve.clone(),
                         locator_hint: None,
                         tmux_hint: None,
+                        continuity_key: None,
                     },
                     BootstrapPaneObservation::try_new(
                         observation,
@@ -10905,6 +10912,7 @@ mod live {
                 claim: recipient,
                 operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
                 lineage_parent: None,
+                continuity_key: None,
             };
             let permit = peer
                 .store

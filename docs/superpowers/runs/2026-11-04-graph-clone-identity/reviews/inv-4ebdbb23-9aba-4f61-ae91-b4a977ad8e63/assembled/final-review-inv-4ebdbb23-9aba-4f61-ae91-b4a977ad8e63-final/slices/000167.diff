@@ -1,0 +1,25 @@
+diff --git a/tests/support/peer_wire_freeze.rs b/tests/support/peer_wire_freeze.rs
+index e65d8727b..1ec3d9d2b 100644
+--- a/tests/support/peer_wire_freeze.rs
++++ b/tests/support/peer_wire_freeze.rs
+@@ -97,6 +97,20 @@ pub const KINDS: &[(&str, u32)] = &[
+     ),
+ ];
+ 
++/// Registered kinds with no envelope in the chain, which has to stay the chain frozen in the 2.1.1
++/// fixtures (`current_encoders_reproduce_2_1_1_fixtures`). Listing a kind here is a decision: its
++/// payload round trip lives with the kind's own tests, not in the frozen wire.
++pub const UNCHAINED_KINDS: &[(&str, u32)] = &[
++    (
++        <seat::SeatRetiredReversible as FactKind>::NAME,
++        <seat::SeatRetiredReversible as FactKind>::MAJOR,
++    ),
++    (
++        <seat::SeatUnretired as FactKind>::NAME,
++        <seat::SeatUnretired as FactKind>::MAJOR,
++    ),
++];
++
+ const BASE_MS: u64 = 1_760_000_000_000;
+ const SEAT_A: &str = "sAbc12345678";
+ const SEAT_B: &str = "sXyz98765432";

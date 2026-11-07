@@ -1,0 +1,8 @@
+baseline + field SeatRetiredReversiblePayload.reason
+baseline + field SeatRetiredReversiblePayload.retired_at
+baseline + field SeatRetiredReversiblePayload.seat
+baseline + field SeatUnretiredPayload.retired_at
+baseline + field SeatUnretiredPayload.seat
+baseline + field SeatUnretiredPayload.unretired_at
+check-wire-compat: ok — 0 violations, 0 stale, 456 fields, 24 variants, 274 baseline entries
+wire-exit=0

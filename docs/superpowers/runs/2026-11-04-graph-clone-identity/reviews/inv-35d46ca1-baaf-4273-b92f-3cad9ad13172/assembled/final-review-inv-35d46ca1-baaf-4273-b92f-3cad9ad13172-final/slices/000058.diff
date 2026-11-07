@@ -1,0 +1,27 @@
+diff --git a/src/cli/caller.rs b/src/cli/caller.rs
+index 41efa0643..2245b01bd 100644
+--- a/src/cli/caller.rs
++++ b/src/cli/caller.rs
+@@ -103,6 +103,22 @@ pub(super) fn active() -> Option<CallerOrigin> {
+     ACTIVE.with(|active| active.borrow().clone())
+ }
+ 
++/// Whether the running command's caller is a top-level session: a person, an unattributed plain
++/// call or a top-level agent. A subagent and a refused origin are not.
++pub(super) fn active_is_top_level() -> bool {
++    is_top_level(active().as_ref())
++}
++
++/// Whether `origin` is a top-level session, as [`active_is_top_level`] words it, for a branch that
++/// runs outside the caller guard and derives the origin itself.
++pub(super) fn is_top_level(origin: Option<&CallerOrigin>) -> bool {
++    match origin {
++        Some(CallerOrigin::Agent(claim)) => claim.role == CallerRole::TopLevel,
++        Some(CallerOrigin::Refused(_)) => false,
++        _ => true,
++    }
++}
++
+ /// Keeps `origin` active for the command running on this thread until dropped.
+ pub(super) struct ActiveGuard(Option<CallerOrigin>);
+ impl ActiveGuard {

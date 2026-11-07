@@ -588,6 +588,7 @@ mod tests {
                 operation: id.payload.resolve_key.clone(),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             },
             BootstrapPaneObservation::try_new(
                 observation,

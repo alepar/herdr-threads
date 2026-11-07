@@ -1,0 +1,39 @@
+diff --git a/src/protocol/output.rs b/src/protocol/output.rs
+index 6e6a326c0..60ca7457c 100644
+--- a/src/protocol/output.rs
++++ b/src/protocol/output.rs
+@@ -475,8 +475,13 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api
+             if is_command_field(name, fields) {
+                 continue;
+             }
+-            // Shown as its own compact line below (ht-xg88).
+-            if name == "directory" && matches!(result, CommandResult::SeatInspect(_)) {
++            // Shown as their own compact lines below (ht-xg88, ht-ma6i); `--json` keeps the rest
++            // of the key's fields.
++            if matches!(
++                name.as_str(),
++                "directory" | "continuity_key" | "retirement_state"
++            ) && matches!(result, CommandResult::SeatInspect(_))
++            {
+                 continue;
+             }
+             text.push_str(name);
+@@ -499,6 +504,18 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api
+         {
+             text.push_str(&compact::inspect_directory_line(directory));
+         }
++        if let CommandResult::SeatInspect(inspection) = result
++            && let Some(key) = &inspection.continuity_key
++        {
++            text.push_str(&compact::inspect_key_line(key));
++        }
++        if let CommandResult::SeatInspect(inspection) = result
++            && let Some(line) = inspection
++                .retirement_state
++                .and_then(compact::inspect_retirement_line)
++        {
++            text.push_str(line);
++        }
+     } else {
+         text.push_str("value: ");
+         text.push_str(&text_json(data));

@@ -71,17 +71,18 @@ pub fn keep(
         }
     }
     tx.execute(
-        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) \
-         VALUES (?1,?2,?3,?4,?5,?6) \
+        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at,continuity_key) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7) \
          ON CONFLICT(host_id,target_id,harness,native_session) DO UPDATE SET \
-           command_json=excluded.command_json",
+           command_json=excluded.command_json,continuity_key=excluded.continuity_key",
         params![
             host.get(),
             command.target.as_str(),
             command.harness.as_str(),
             command.native_session.as_str(),
             json,
-            now
+            now,
+            command.continuity_key.as_ref().map(|key| key.as_str())
         ],
     )
     .map_err(store_error)?;

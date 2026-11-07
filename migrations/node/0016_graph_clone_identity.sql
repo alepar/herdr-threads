@@ -1,0 +1,141 @@
+-- Graph clone identity (ht-ma6i, spec 2026-11-04 section 4.5). Local tables, never replicated. This
+-- delta adds the boundary only; the leaves that follow write the rows. This file creates the
+-- replacement decision table with the extended kind list; seats::copy_allocation_decisions copies
+-- every row and 0016_graph_clone_identity_after.sql swaps it in.
+CREATE TABLE allocation_decisions_new (
+    ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
+    target_id TEXT NOT NULL,
+    seat_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('ordinary', 'operator_fresh', 'operator_rebind', 'operator_retire', 'operator_human_override', 'cooperative_continuity', 'structural_process_continuity', 'structural_shell_continuity', 'cooperative_continuity_key', 'service_unretire', 'service_finalize')),
+    decided_at INTEGER NOT NULL,
+    host_boot TEXT NOT NULL,
+    epoch INTEGER NOT NULL CHECK(epoch >= 0),
+    generation INTEGER NOT NULL CHECK(generation >= 0),
+    operator_label TEXT,
+    continuity_diagnostic TEXT CHECK(continuity_diagnostic IS NULL OR continuity_diagnostic IN ('match', 'mismatch', 'absent', 'read_error'))
+) STRICT;
+
+-- G2: one pane shell's kernel identity, recorded once per terminal (spec 4.1). `kernel_boot` is
+-- the kernel boot id the shell ran under (ht-ma6i.44): a reboot can repeat pid, start and tty.
+CREATE TABLE seat_shell_fingerprints (
+    seat_id TEXT PRIMARY KEY REFERENCES seats(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
+    target_id TEXT NOT NULL,
+    host_boot TEXT NOT NULL,
+    incarnation TEXT NOT NULL,
+    terminal_id TEXT NOT NULL,
+    pid INTEGER NOT NULL CHECK(pid > 0),
+    start INTEGER NOT NULL CHECK(start >= 0),
+    session INTEGER NOT NULL CHECK(session > 0),
+    tty INTEGER NOT NULL CHECK(tty >= 0),
+    kernel_boot TEXT NOT NULL CHECK(length(kernel_boot) BETWEEN 1 AND 64),
+    recorded_at INTEGER NOT NULL
+) STRICT;
+
+-- ht-ma6i.44: the kernel boot id the daemon runs under, written once at store start (no row:
+-- unreadable). A daemon never outlives a reboot, so while it runs the row is the current boot.
+-- Bindings stamp it beside their liveness fingerprint (NULL: unknown). Local, never replicated.
+CREATE TABLE node_kernel_boot (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    boot TEXT NOT NULL CHECK(length(boot) BETWEEN 1 AND 64)
+) STRICT;
+ALTER TABLE occupant_bindings ADD COLUMN liveness_boot TEXT;
+
+-- D1: a key reserved by the registered service, bound to at most one seat (spec 4.2). The primary
+-- key and the UNIQUE on seat_id are the "one live seat per key" rule.
+CREATE TABLE continuity_keys (
+    key TEXT PRIMARY KEY CHECK(length(CAST(key AS BLOB)) BETWEEN 1 AND 128),
+    owner_author_id TEXT NOT NULL REFERENCES service_authors(id),
+    seat_id TEXT UNIQUE REFERENCES seats(id),
+    reserved_at INTEGER NOT NULL,
+    bound_at INTEGER,
+    bound_by TEXT CHECK(bound_by IN ('check_in','service_reservation')),
+    CHECK((seat_id IS NULL) = (bound_at IS NULL)),
+    CHECK((seat_id IS NULL) = (bound_by IS NULL))
+) STRICT;
+
+-- D1: one standing conflict per pane. `seat_id` is the key's seat; `owner_seat_id` is the pane's
+-- resolved owner the row was judged against. Capped by store::continuity_keys.
+CREATE TABLE continuity_key_conflicts (
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
+    target_id TEXT NOT NULL CHECK(length(CAST(target_id AS BLOB)) BETWEEN 1 AND 512),
+    key TEXT NOT NULL CHECK(length(CAST(key AS BLOB)) BETWEEN 1 AND 128),
+    kind TEXT NOT NULL CHECK(kind IN ('key_live_elsewhere','key_retired_reversibly','pane_owned_by_other_seat','session_matches_other_seat','seat_holds_other_key')),
+    seat_id TEXT REFERENCES seats(id),
+    owner_seat_id TEXT REFERENCES seats(id),
+    first_seen_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(host_id, target_id)
+) STRICT;
+CREATE INDEX continuity_key_conflicts_key ON continuity_key_conflicts(key, updated_at);
+
+-- D1: the pull feed of ServiceOperation::ContinuityAlerts, capped to the newest rows by
+-- store::continuity_keys. AUTOINCREMENT keeps ordinals increasing across eviction. A row outlives
+-- its key, so `key` references nothing.
+CREATE TABLE continuity_alerts (
+    ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL CHECK(length(CAST(key AS BLOB)) BETWEEN 1 AND 128),
+    seat_id TEXT REFERENCES seats(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
+    target_id TEXT NOT NULL CHECK(length(CAST(target_id AS BLOB)) BETWEEN 1 AND 512),
+    kind TEXT NOT NULL CHECK(kind IN ('key_live_elsewhere','key_retired_reversibly','pane_owned_by_other_seat','session_matches_other_seat','seat_holds_other_key')),
+    at INTEGER NOT NULL
+) STRICT;
+
+-- D2: a real state='retired' seat whose retirement job is deferred; the row holds the job's inputs
+-- (spec 4.3). 'unretired' marks a seat waiting with no pane. A peer's row has no closure inputs.
+CREATE TABLE reversible_retirements (
+    seat_id TEXT PRIMARY KEY REFERENCES seats(id),
+    state TEXT NOT NULL CHECK(state IN ('reversible','unretired')),
+    cutover_at INTEGER NOT NULL,
+    reason TEXT NOT NULL CHECK(reason IN ('closed','operator')),
+    closure_boot TEXT,
+    closure_epoch INTEGER CHECK(closure_epoch >= 0),
+    closure_target TEXT,
+    closure_generation INTEGER CHECK(closure_generation >= 0),
+    closure_evidence TEXT CHECK(closure_evidence IS NULL OR closure_evidence IN ('restored_pane_closed')),
+    absence_evidence TEXT CHECK(absence_evidence IS NULL OR absence_evidence IN ('restored_target_absent')),
+    unretired_at INTEGER,
+    CHECK((state = 'unretired') = (unretired_at IS NOT NULL))
+) STRICT;
+
+-- G5: observed absence of an unresolved seat's saved target after a restart (spec 4.4), beside
+-- restored_pane_watch. A row of another boot, incarnation or seat generation is ignored and replaced.
+CREATE TABLE restored_target_absence (
+    seat_id TEXT PRIMARY KEY REFERENCES seats(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
+    host_boot TEXT NOT NULL,
+    incarnation TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    seat_generation INTEGER NOT NULL CHECK(seat_generation >= 0),
+    absent_seen_at INTEGER,
+    absent_observed_ms INTEGER NOT NULL DEFAULT 0 CHECK(absent_observed_ms >= 0)
+) STRICT;
+
+ALTER TABLE kept_continuity_claims ADD COLUMN continuity_key TEXT
+    CHECK(continuity_key IS NULL OR length(CAST(continuity_key AS BLOB)) BETWEEN 1 AND 128);
+ALTER TABLE retirements ADD COLUMN absence_evidence TEXT
+    CHECK(absence_evidence IS NULL OR absence_evidence IN ('restored_target_absent'));
+
+-- A retired seat stays terminal unless it holds a reversible row in state reversible.
+DROP TRIGGER seats_retirement_terminal;
+CREATE TRIGGER seats_retirement_terminal BEFORE UPDATE OF state, retired_at ON seats
+WHEN OLD.state = 'retired' AND (NEW.state <> 'retired' OR NEW.retired_at <> OLD.retired_at)
+    AND NOT EXISTS (SELECT 1 FROM reversible_retirements r WHERE r.seat_id = OLD.id AND r.state = 'reversible')
+BEGIN SELECT RAISE(ABORT, 'retired seat is terminal'); END;
+
+-- Set to 1 on the journal row of a seat.retired_reversible or seat.unretired copy whose episode
+-- effect happened on this node, never cleared: the re-issue guard counts only such a copy (N7).
+ALTER TABLE journal ADD COLUMN episode_effect INTEGER CHECK(episode_effect IS NULL OR episode_effect = 1);
+
+-- D2: one row per un-retired episode of a seat, kept so an obligation first written after the
+-- un-retire (a window message from a node that had not seen the retirement) gets the same deadline
+-- shift as the copies present at it. Never pruned: bounded by the seat's episodes.
+CREATE TABLE reversible_windows (
+    seat_id TEXT NOT NULL REFERENCES seats(id),
+    retired_at INTEGER NOT NULL,
+    unretired_at INTEGER NOT NULL,
+    PRIMARY KEY(seat_id, retired_at),
+    CHECK(unretired_at >= retired_at)
+) STRICT;

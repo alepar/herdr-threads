@@ -111,6 +111,8 @@ fn retirement_fixture() -> (std::path::PathBuf, String, crate::ports::Retirement
             cancellation: Cancellation::default(),
         },
     )
+    .unwrap()
+    .into_job()
     .unwrap();
     drop(store);
     (path, instance, job)

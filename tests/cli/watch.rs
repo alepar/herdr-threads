@@ -1279,6 +1279,8 @@ fn watch_claim_carries_pane_host() {
                     open_binding: None,
                     history: page(vec![], None),
                     directory: None,
+                    continuity_key: None,
+                    retirement_state: None,
                 })),
                 other => panic!("unexpected command {other:?}"),
             }),

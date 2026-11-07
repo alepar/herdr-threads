@@ -1,0 +1,56 @@
+diff --git a/src/cli/mod.rs b/src/cli/mod.rs
+index 621c12719..0d4b8822c 100644
+--- a/src/cli/mod.rs
++++ b/src/cli/mod.rs
+@@ -1312,13 +1312,24 @@ fn run_parsed_in_pane<W: Write>(
+                 &target,
+             )?;
+             let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
++            let continuity_key = site_capability::own_pane_continuity_key(
++                &caller_location::CallerEnv::for_site(parsed.caller_site.as_ref()),
++                &target,
++                caller::active_is_top_level(),
++                &client,
++                &budget(),
++            );
+             retry::run_new_api_to_writer_discarding_rejection(
+                 &journal,
+                 IntentScope::ServiceAllocation {
+                     instance: instance.to_string(),
+                     target: target.clone(),
+                 },
+-                SemanticMutation::ResolveSeat { target, host },
++                SemanticMutation::ResolveSeat {
++                    target,
++                    host,
++                    continuity_key,
++                },
+                 clock.utc_now().0,
+                 || {
+                     Err(io::Error::new(
+@@ -3910,13 +3921,24 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
+         None => recipient_host(context, output, site, &target)?,
+     };
+     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
++    let continuity_key = site_capability::own_pane_continuity_key(
++        &caller_location::CallerEnv::for_site(site),
++        &target,
++        caller::active_is_top_level(),
++        client,
++        &cooperative_budget(clock),
++    );
+     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
+         &journal,
+         IntentScope::ServiceAllocation {
+             instance: instance.to_string(),
+             target: target.clone(),
+         },
+-        SemanticMutation::ResolveSeat { target, host },
++        SemanticMutation::ResolveSeat {
++            target,
++            host,
++            continuity_key,
++        },
+         clock.utc_now().0,
+         || {
+             Err(io::Error::new(

@@ -118,6 +118,7 @@ impl Fx {
             operation: OperationId::new(format!("resolve-{name}")),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         let CommandResult::NamedSeatResolved { seat, .. } = resolve_named_seat(
             &self.context,

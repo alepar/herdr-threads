@@ -1,0 +1,36 @@
+diff --git a/tests/fixtures/herdr-matrix/codex.js b/tests/fixtures/herdr-matrix/codex.js
+index 1d1c6df24..34980330b 100644
+--- a/tests/fixtures/herdr-matrix/codex.js
++++ b/tests/fixtures/herdr-matrix/codex.js
+@@ -14,7 +14,7 @@ though the content is Python). It behaves like the parts of Codex that Herdr and
+   Codex integration too, whichever events a release's integration hooks. Each hook's `hookSpecificOutput.additionalContext` is the context the model
+   would get.
+ 
+-A submitted line is a turn, except `/side`, which only switches the empty composer's placeholder to Codex's `/side`
++`resume <id>` keeps that session id and its SessionStart carries `source: resume`. A submitted line is a turn, except `/side`, which only switches the empty composer's placeholder to Codex's `/side`
+ one (`Ask a follow-up question`; the stand-in models no forked session). `run: CMD` runs CMD as a Bash tool call (PreToolUse first, then CMD as
+ a child with CODEX_SESSION_ID set), and `run: A ;; B` runs two calls in the same turn; `exit` ends the session; anything else is just a prompt.
+ Every event is appended to `$FAKE_CODEX_LOG_DIR/<session>.jsonl` (default `.fake-codex` in the
+@@ -31,10 +31,11 @@ import tty
+ import uuid
+ 
+ HOME = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+-SESSION = str(uuid.uuid4())
++RESUMED = len(sys.argv) > 2 and sys.argv[1] == "resume"
++SESSION = sys.argv[2] if RESUMED else str(uuid.uuid4())
+ LOG_DIR = os.environ.get("FAKE_CODEX_LOG_DIR") or os.path.join(os.getcwd(), ".fake-codex")
+ os.makedirs(LOG_DIR, exist_ok=True)
+-LOG = os.path.join(LOG_DIR, f"{SESSION}.jsonl")
++LOG = os.path.join(LOG_DIR, f"{SESSION}.{os.getpid()}.jsonl" if RESUMED else f"{SESSION}.jsonl")
+ transcript = [">_ OpenAI Codex (fake)", f"   session {SESSION}"]
+ buffer = ""
+ placeholder = "Ask Codex to do anything"
+@@ -155,7 +156,7 @@ def main():
+         return
+     log("start", argv=sys.argv[1:], cwd=os.getcwd(),
+         config_home=HOME, declared_config_home=os.environ.get("CODEX_HOME"), home=os.environ.get("HOME"))
+-    run_hooks("SessionStart", source="startup")
++    run_hooks("SessionStart", source="resume" if RESUMED else "startup")
+     global TTY, queued
+     fd = TTY = sys.stdin.fileno()
+     saved = termios.tcgetattr(fd)

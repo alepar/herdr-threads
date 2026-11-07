@@ -951,6 +951,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
                 target: HostTargetId::new("w1:p1"),
             },
             SemanticMutation::ResolveSeat {
+                continuity_key: None,
                 host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
             },

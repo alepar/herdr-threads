@@ -1,0 +1,13 @@
+diff --git a/tests/cli/watch.rs b/tests/cli/watch.rs
+index 753a1bb80..c5a2c5338 100644
+--- a/tests/cli/watch.rs
++++ b/tests/cli/watch.rs
+@@ -1279,6 +1279,8 @@ fn watch_claim_carries_pane_host() {
+                     open_binding: None,
+                     history: page(vec![], None),
+                     directory: None,
++                    continuity_key: None,
++                    retirement_state: None,
+                 })),
+                 other => panic!("unexpected command {other:?}"),
+             }),

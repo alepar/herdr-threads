@@ -1,0 +1,1178 @@
+//! The continuity key ledger (ht-ma6i.8, spec 4.2): reservation, binding, conflict rows, the alert
+//! log and their clearing rules. Mounted from `src/store/continuity_keys.rs`. The operator rebind
+//! that clears a target's row is `continuity_keys_rebind_clears_the_targets_conflict_row` in
+//! `tests/store/control.rs`, beside the published-baseline fixtures it needs.
+use super::*;
+use crate::protocol::{
+    ids::OperationId,
+    results::ContinuityConflictKind as Kind,
+    service::ReserveContinuityKey,
+    time::{Clock, MonoInstant},
+};
+use crate::store::{connection::StoreContext, service_substrate};
+use rusqlite::types::Value;
+use std::{path::PathBuf, sync::Arc};
+
+const INSTANCE: &str = "34750f98bd59fcfc946da45aaabe933b";
+const HOLD_KINDS: [Kind; 3] = [
+    Kind::KeyLiveElsewhere,
+    Kind::KeyRetiredReversibly,
+    Kind::SessionMatchesOtherSeat,
+];
+const ALERT_ONLY_KINDS: [Kind; 2] = [Kind::PaneOwnedByOtherSeat, Kind::SeatHoldsOtherKey];
+
+struct FixedClock;
+impl Clock for FixedClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(100)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(1)
+    }
+}
+
+struct Fx {
+    conn: Connection,
+    author: ServiceAuthorId,
+    other: ServiceAuthorId,
+    host: HostId,
+    path: PathBuf,
+}
+impl Drop for Fx {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn fx() -> Fx {
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-continuity-keys-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
+    let mut conn = context.open_writer().unwrap();
+    let author = {
+        let tx = conn.transaction().unwrap();
+        let author =
+            service_substrate::ensure_reserved_author(&tx, INSTANCE, UtcMillis(0)).unwrap();
+        tx.commit().unwrap();
+        author
+    };
+    // service_authors holds one author per node; the second one references no node row.
+    conn.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('other-author','other-instance',0);
+         PRAGMA foreign_keys=ON;",
+    )
+    .unwrap();
+    let fx = Fx {
+        conn,
+        author,
+        other: ServiceAuthorId::new("other-author"),
+        host: crate::test_support::test_host_id(),
+        path,
+    };
+    for seat in ["s1", "s2", "s3"] {
+        fx.seat(seat, "resolved");
+    }
+    fx
+}
+
+impl Fx {
+    fn seat(&self, seat: &str, state: &str) {
+        let target = (state == "resolved").then_some(seat);
+        let retired_at = (state == "retired").then_some(1_i64);
+        self.conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id,retired_at) VALUES (?1,?2,?3,'native',?4,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts),?5)",
+            params![seat, INSTANCE, state, target, retired_at]).unwrap();
+    }
+
+    fn reserve(&self, key: &str, seat: Option<&str>) -> Result<ContinuityKeyReservation, ApiError> {
+        self.reserve_as(&self.author, key, seat, 10)
+    }
+
+    fn reserve_as(
+        &self,
+        author: &ServiceAuthorId,
+        key: &str,
+        seat: Option<&str>,
+        at: i64,
+    ) -> Result<ContinuityKeyReservation, ApiError> {
+        reserve(
+            &self.conn,
+            author,
+            &ReserveContinuityKey {
+                key: ContinuityKey::new(key),
+                seat: seat.map(SeatId::new),
+                operation: OperationId::new("unused-at-the-store"),
+            },
+            UtcMillis(at),
+        )
+    }
+
+    fn record(
+        &self,
+        target: &str,
+        key: &str,
+        kind: Kind,
+        seat: Option<&str>,
+        owner: Option<&str>,
+        at: i64,
+    ) -> ConflictRecord {
+        record_conflict(
+            &self.conn,
+            &ConflictFacts {
+                host: self.host,
+                target: target.to_owned(),
+                key: ContinuityKey::new(key),
+                kind,
+                seat: seat.map(SeatId::new),
+                owner: owner.map(SeatId::new),
+            },
+            UtcMillis(at),
+        )
+        .unwrap()
+    }
+
+    fn count(&self, table: &str) -> i64 {
+        self.conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn table(&self, sql: &str) -> Vec<Vec<Value>> {
+        let mut statement = self.conn.prepare(sql).unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|i| row.get::<_, Value>(i))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn seats(&self) -> Vec<Vec<Value>> {
+        self.table("SELECT * FROM seats ORDER BY id")
+    }
+
+    /// (key, kind, seat, owner, first_seen_at, updated_at) of the row on `target`.
+    #[allow(clippy::type_complexity)]
+    fn conflict(
+        &self,
+        target: &str,
+    ) -> Option<(String, String, Option<String>, Option<String>, i64, i64)> {
+        self.conn
+            .query_row(
+                "SELECT key,kind,seat_id,owner_seat_id,first_seen_at,updated_at FROM continuity_key_conflicts WHERE target_id=?1",
+                [target],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .optional()
+            .unwrap()
+    }
+}
+
+fn code(result: Result<impl std::fmt::Debug, ApiError>) -> ErrorCode {
+    result.unwrap_err().code
+}
+
+/// Kills: a second reservation that moves `reserved_at` or drops the bound seat, another author
+/// reserving, reading or rebinding a key it does not own.
+#[test]
+fn reserve_is_idempotent_for_the_owner_and_refused_for_another() {
+    let fx = fx();
+    let first = fx.reserve_as(&fx.author, "k1", None, 10).unwrap();
+    assert_eq!(
+        first,
+        ContinuityKeyReservation {
+            key: ContinuityKey::new("k1"),
+            owner: fx.author.clone(),
+            seat: None,
+            reserved_at: UtcMillis(10),
+        }
+    );
+    assert_eq!(fx.reserve_as(&fx.author, "k1", None, 20).unwrap(), first);
+    assert_eq!(fx.count("continuity_keys"), 1);
+    assert_eq!(
+        code(fx.reserve_as(&fx.other, "k1", None, 20)),
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        code(fx.reserve_as(&fx.other, "k1", Some("s1"), 20)),
+        ErrorCode::Conflict
+    );
+    assert_eq!(key_of_seat(&fx.conn, &SeatId::new("s1")).unwrap(), None);
+
+    // A key bound since: the owner's plain re-reservation returns the bound seat.
+    bind(
+        &fx.conn,
+        &ContinuityKey::new("k1"),
+        &SeatId::new("s1"),
+        ContinuityKeyBinding::CheckIn,
+        UtcMillis(30),
+    )
+    .unwrap();
+    let again = fx.reserve_as(&fx.author, "k1", None, 40).unwrap();
+    assert_eq!(again.seat, Some(SeatId::new("s1")));
+    assert_eq!(again.reserved_at, UtcMillis(10));
+}
+
+/// Kills: release of a bound key, of another service's key, or one that leaves its conflict rows.
+#[test]
+fn release_unbound_ok_bound_conflict() {
+    let fx = fx();
+    let key = ContinuityKey::new("k1");
+    assert_eq!(
+        code(release(&fx.conn, &fx.author, &key)),
+        ErrorCode::NotFound
+    );
+    fx.reserve("k1", None).unwrap();
+    fx.record("pane-a", "k1", Kind::KeyLiveElsewhere, None, None, 11);
+    fx.record(
+        "pane-b",
+        "other-key",
+        Kind::KeyLiveElsewhere,
+        None,
+        None,
+        11,
+    );
+    assert_eq!(
+        code(release(&fx.conn, &fx.other, &key)),
+        ErrorCode::Conflict
+    );
+    assert_eq!(fx.count("continuity_keys"), 1);
+    assert_eq!(release(&fx.conn, &fx.author, &key).unwrap(), key);
+    assert_eq!(lookup_key(&fx.conn, &key).unwrap(), None);
+    assert_eq!(fx.conflict("pane-a"), None);
+    assert!(fx.conflict("pane-b").is_some());
+    // The alert log outlives the key.
+    assert_eq!(fx.count("continuity_alerts"), 2);
+
+    fx.reserve("k2", Some("s1")).unwrap();
+    let bound = ContinuityKey::new("k2");
+    assert_eq!(
+        code(release(&fx.conn, &fx.author, &bound)),
+        ErrorCode::Conflict
+    );
+    assert!(lookup_key(&fx.conn, &bound).unwrap().is_some());
+}
+
+/// Kills: a key rebound to a second seat, a seat taking a second key, a re-bind that overwrites
+/// the recorded evidence, a lookup reading the wrong row.
+#[test]
+fn bind_enforces_one_key_per_seat_and_one_seat_per_key() {
+    let fx = fx();
+    let (k1, k2) = (ContinuityKey::new("k1"), ContinuityKey::new("k2"));
+    let (s1, s2) = (SeatId::new("s1"), SeatId::new("s2"));
+    let check_in = ContinuityKeyBinding::CheckIn;
+    assert_eq!(
+        code(bind(&fx.conn, &k1, &s1, check_in, UtcMillis(20))),
+        ErrorCode::NotFound
+    );
+    fx.reserve("k1", None).unwrap();
+    fx.reserve("k2", None).unwrap();
+    bind(&fx.conn, &k1, &s1, check_in, UtcMillis(20)).unwrap();
+    let row = KeyRow {
+        key: k1.clone(),
+        owner: fx.author.clone(),
+        seat: Some(s1.clone()),
+        reserved_at: UtcMillis(10),
+        bound_by: Some(check_in),
+    };
+    assert_eq!(lookup_key(&fx.conn, &k1).unwrap().as_ref(), Some(&row));
+    assert_eq!(key_of_seat(&fx.conn, &s1).unwrap().as_ref(), Some(&row));
+    assert_eq!(key_of_seat(&fx.conn, &s2).unwrap(), None);
+
+    // Already bound to it: Ok, the first evidence stands.
+    bind(
+        &fx.conn,
+        &k1,
+        &s1,
+        ContinuityKeyBinding::ServiceReservation,
+        UtcMillis(30),
+    )
+    .unwrap();
+    assert_eq!(key_of_seat(&fx.conn, &s1).unwrap().as_ref(), Some(&row));
+    let bound_at = |key: &str| -> Option<i64> {
+        fx.conn
+            .query_row(
+                "SELECT bound_at FROM continuity_keys WHERE key=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(bound_at("k1"), Some(20));
+
+    assert_eq!(
+        code(bind(&fx.conn, &k1, &s2, check_in, UtcMillis(40))),
+        ErrorCode::Conflict,
+        "one seat per key"
+    );
+    assert_eq!(
+        code(bind(&fx.conn, &k2, &s1, check_in, UtcMillis(40))),
+        ErrorCode::Conflict,
+        "one key per seat"
+    );
+    assert_eq!(key_of_seat(&fx.conn, &s2).unwrap(), None);
+    assert_eq!(bound_at("k2"), None);
+
+    bind(
+        &fx.conn,
+        &k2,
+        &s2,
+        ContinuityKeyBinding::ServiceReservation,
+        UtcMillis(50),
+    )
+    .unwrap();
+    assert_eq!(
+        key_of_seat(&fx.conn, &s2).unwrap().unwrap().bound_by,
+        Some(ContinuityKeyBinding::ServiceReservation)
+    );
+}
+
+/// Kills: a seat state, name or host kind outside the guard being bound; a reservation that writes
+/// the seat row; a re-reserve that rewrites the evidence; a refusal that leaves a row behind.
+#[test]
+fn reserve_with_seat_binds_at_once_and_moves_nothing() {
+    let fx = fx();
+    fx.seat("waiting", "unresolved");
+    fx.seat("gone", "retired");
+    fx.conn
+        .execute(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at,kind) VALUES ((SELECT id FROM local_node),'/run/hc.sock',0,'hc'),((SELECT id FROM local_node),'named-host',0,'named')",
+            [],
+        )
+        .unwrap();
+    for (seat, kind, name) in [
+        ("on-hc", "hc", None),
+        ("on-named", "named", Some("reviewer")),
+        ("kindless-name", "herdr", Some("worker")),
+    ] {
+        fx.conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id,name) VALUES (?1,?2,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts WHERE kind=?3),?4)",
+            params![seat, INSTANCE, kind, name]).unwrap();
+    }
+    fx.conn
+        .execute_batch(&format!(
+            "PRAGMA foreign_keys=OFF;
+             INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) VALUES ('peer','{INSTANCE}','remote','native',1,0,'ffffffffffffffffffffffffffffffff',0,'agent',1);
+             PRAGMA foreign_keys=ON;"
+        ))
+        .unwrap();
+    let seats = fx.seats();
+
+    // Resolved and unresolved are accepted, with the service's evidence recorded.
+    for (key, seat) in [("k-resolved", "s1"), ("k-unresolved", "waiting")] {
+        let reservation = fx.reserve_as(&fx.author, key, Some(seat), 10).unwrap();
+        assert_eq!(reservation.seat, Some(SeatId::new(seat)));
+        assert_eq!(reservation.reserved_at, UtcMillis(10));
+        let row = key_of_seat(&fx.conn, &SeatId::new(seat)).unwrap().unwrap();
+        assert_eq!(row.key.as_str(), key);
+        assert_eq!(row.bound_by, Some(ContinuityKeyBinding::ServiceReservation));
+    }
+    assert_eq!(fx.seats(), seats);
+
+    // A reserved key gains its seat later, keeping its reservation time.
+    fx.reserve_as(&fx.author, "k-later", None, 5).unwrap();
+    let later = fx
+        .reserve_as(&fx.author, "k-later", Some("s2"), 50)
+        .unwrap();
+    assert_eq!(later.reserved_at, UtcMillis(5));
+    assert_eq!(later.seat, Some(SeatId::new("s2")));
+
+    // Re-reserve to the same seat: no write at all, even of the evidence.
+    fx.conn
+        .execute(
+            "UPDATE continuity_keys SET bound_by='check_in',bound_at=7 WHERE key='k-resolved'",
+            [],
+        )
+        .unwrap();
+    let rows = fx.table("SELECT * FROM continuity_keys ORDER BY key");
+    let again = fx
+        .reserve_as(&fx.author, "k-resolved", Some("s1"), 60)
+        .unwrap();
+    assert_eq!(again.seat, Some(SeatId::new("s1")));
+    assert_eq!(fx.table("SELECT * FROM continuity_keys ORDER BY key"), rows);
+
+    // Key bound elsewhere, seat holding another key: Conflict.
+    assert_eq!(
+        code(fx.reserve("k-resolved", Some("s3"))),
+        ErrorCode::Conflict
+    );
+    fx.reserve("k-free", None).unwrap();
+    assert_eq!(code(fx.reserve("k-free", Some("s1"))), ErrorCode::Conflict);
+    assert_eq!(code(fx.reserve("k-new", Some("s1"))), ErrorCode::Conflict);
+    assert_eq!(
+        lookup_key(&fx.conn, &ContinuityKey::new("k-new")).unwrap(),
+        None
+    );
+
+    // Refused seats leave no row, and a free key stays free.
+    for seat in ["gone", "on-hc", "on-named", "kindless-name", "peer"] {
+        assert_eq!(
+            code(fx.reserve("k-free", Some(seat))),
+            ErrorCode::InvalidRequest,
+            "{seat}"
+        );
+        assert_eq!(
+            code(fx.reserve("k-refused", Some(seat))),
+            ErrorCode::InvalidRequest,
+            "{seat}"
+        );
+    }
+    assert_eq!(
+        code(fx.reserve("k-free", Some("nobody"))),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        lookup_key(&fx.conn, &ContinuityKey::new("k-refused")).unwrap(),
+        None
+    );
+    assert_eq!(
+        lookup_key(&fx.conn, &ContinuityKey::new("k-free"))
+            .unwrap()
+            .unwrap()
+            .seat,
+        None
+    );
+    assert_eq!(fx.seats(), seats, "no reservation moves a seat");
+    assert_eq!(fx.count("continuity_key_conflicts"), 0);
+    assert_eq!(fx.count("continuity_alerts"), 0);
+}
+
+/// Kills: a conflict row with no alert or an alert with no row, either surviving the caller's
+/// rollback, and a repeat that appends or touches the row.
+#[test]
+fn conflict_and_alert_are_one_write_and_a_repeat_writes_neither() {
+    let mut fx = fx();
+    let facts = ConflictFacts {
+        host: fx.host,
+        target: "pane-a".into(),
+        key: ContinuityKey::new("k1"),
+        kind: Kind::KeyLiveElsewhere,
+        seat: Some(SeatId::new("s1")),
+        owner: None,
+    };
+    {
+        let tx = fx.conn.transaction().unwrap();
+        assert_eq!(
+            record_conflict(&tx, &facts, UtcMillis(10)).unwrap(),
+            ConflictRecord::Written
+        );
+        tx.rollback().unwrap();
+    }
+    assert_eq!(fx.count("continuity_key_conflicts"), 0);
+    assert_eq!(fx.count("continuity_alerts"), 0);
+
+    assert_eq!(
+        fx.record("pane-a", "k1", Kind::KeyLiveElsewhere, Some("s1"), None, 10),
+        ConflictRecord::Written
+    );
+    assert_eq!(fx.count("continuity_key_conflicts"), 1);
+    assert_eq!(
+        fx.table("SELECT key,seat_id,target_id,kind,at FROM continuity_alerts"),
+        vec![vec![
+            Value::Text("k1".into()),
+            Value::Text("s1".into()),
+            Value::Text("pane-a".into()),
+            Value::Text("key_live_elsewhere".into()),
+            Value::Integer(10),
+        ]]
+    );
+    assert_eq!(
+        fx.record("pane-a", "k1", Kind::KeyLiveElsewhere, Some("s1"), None, 20),
+        ConflictRecord::Unchanged
+    );
+    assert_eq!(fx.count("continuity_key_conflicts"), 1);
+    assert_eq!(fx.count("continuity_alerts"), 1);
+}
+
+/// Kills: a re-judge that moves `first_seen_at`, leaves a column stale, alerts without a key or
+/// kind change, or stays silent on one.
+#[test]
+fn rejudged_row_updates_key_kind_seat_owner_and_keeps_first_seen() {
+    let fx = fx();
+    fx.record("pane-a", "k1", Kind::KeyLiveElsewhere, Some("s1"), None, 10);
+
+    // Kind changed: updated, one alert.
+    assert_eq!(
+        fx.record(
+            "pane-a",
+            "k1",
+            Kind::PaneOwnedByOtherSeat,
+            Some("s1"),
+            Some("s2"),
+            20
+        ),
+        ConflictRecord::Written
+    );
+    assert_eq!(
+        fx.conflict("pane-a").unwrap(),
+        (
+            "k1".to_owned(),
+            "pane_owned_by_other_seat".to_owned(),
+            Some("s1".to_owned()),
+            Some("s2".to_owned()),
+            10,
+            20
+        )
+    );
+    assert_eq!(fx.count("continuity_alerts"), 2);
+
+    // Key changed: updated, one alert naming the new key.
+    assert_eq!(
+        fx.record(
+            "pane-a",
+            "k2",
+            Kind::PaneOwnedByOtherSeat,
+            None,
+            Some("s2"),
+            30
+        ),
+        ConflictRecord::Written
+    );
+    assert_eq!(
+        fx.conflict("pane-a").unwrap(),
+        (
+            "k2".to_owned(),
+            "pane_owned_by_other_seat".to_owned(),
+            None,
+            Some("s2".to_owned()),
+            10,
+            30
+        )
+    );
+    assert_eq!(fx.count("continuity_alerts"), 3);
+    assert_eq!(fx.count("continuity_key_conflicts"), 1);
+
+    // The same key and kind judged against a new owner: the row follows, and no alert.
+    assert_eq!(
+        fx.record(
+            "pane-a",
+            "k2",
+            Kind::PaneOwnedByOtherSeat,
+            None,
+            Some("s3"),
+            40
+        ),
+        ConflictRecord::Written
+    );
+    assert_eq!(
+        fx.conflict("pane-a").unwrap(),
+        (
+            "k2".to_owned(),
+            "pane_owned_by_other_seat".to_owned(),
+            None,
+            Some("s3".to_owned()),
+            10,
+            40
+        )
+    );
+    assert_eq!(fx.count("continuity_alerts"), 3);
+}
+
+/// Kills: an unchanged refusal bumping `updated_at`, or writing any row.
+#[test]
+fn unchanged_refusal_writes_nothing() {
+    let fx = fx();
+    fx.record(
+        "pane-a",
+        "k1",
+        Kind::KeyRetiredReversibly,
+        Some("s1"),
+        Some("s2"),
+        10,
+    );
+    let conflicts = fx.table("SELECT * FROM continuity_key_conflicts");
+    let alerts = fx.table("SELECT * FROM continuity_alerts");
+    assert_eq!(
+        fx.record(
+            "pane-a",
+            "k1",
+            Kind::KeyRetiredReversibly,
+            Some("s1"),
+            Some("s2"),
+            99
+        ),
+        ConflictRecord::Unchanged
+    );
+    assert_eq!(
+        fx.table("SELECT * FROM continuity_key_conflicts"),
+        conflicts
+    );
+    assert_eq!(fx.table("SELECT * FROM continuity_alerts"), alerts);
+}
+
+/// Kills: the table growing past its cap, a full table still alerting, or a full table refusing a
+/// re-judge of a row it already holds.
+#[test]
+fn full_conflict_table_records_nothing_and_says_so() {
+    let fx = fx();
+    for i in 0..MAX_CONFLICT_ROWS {
+        assert_eq!(
+            fx.record(
+                &format!("pane-{i}"),
+                "k1",
+                Kind::KeyLiveElsewhere,
+                None,
+                None,
+                i
+            ),
+            ConflictRecord::Written
+        );
+    }
+    assert_eq!(fx.count("continuity_key_conflicts"), MAX_CONFLICT_ROWS);
+    let ordinal = |fx: &Fx| -> i64 {
+        fx.conn
+            .query_row("SELECT max(ordinal) FROM continuity_alerts", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+    let before = ordinal(&fx);
+    assert_eq!(
+        fx.record("pane-new", "k1", Kind::KeyLiveElsewhere, None, None, 500),
+        ConflictRecord::TableFull
+    );
+    assert_eq!(fx.count("continuity_key_conflicts"), MAX_CONFLICT_ROWS);
+    assert_eq!(fx.conflict("pane-new"), None);
+    assert_eq!(ordinal(&fx), before);
+
+    // A held row can still be re-judged, and a freed slot takes the next conflict.
+    assert_eq!(
+        fx.record("pane-0", "k2", Kind::KeyLiveElsewhere, None, None, 500),
+        ConflictRecord::Written
+    );
+    clear_conflict_on_target(&fx.conn, fx.host, "pane-1").unwrap();
+    assert_eq!(
+        fx.record("pane-new", "k1", Kind::KeyLiveElsewhere, None, None, 500),
+        ConflictRecord::Written
+    );
+}
+
+/// Kills: an alert log that grows past its cap, evicts the newest, reuses ordinals or stops
+/// alerting at the cap.
+#[test]
+fn alert_log_evicts_oldest_with_increasing_ordinals() {
+    let fx = fx();
+    let mut last = 0_i64;
+    for i in 1..=(MAX_ALERT_ROWS + 1) {
+        let target = format!("pane-{i}");
+        assert_eq!(
+            fx.record(&target, "k1", Kind::KeyLiveElsewhere, None, None, i),
+            ConflictRecord::Written
+        );
+        clear_conflict_on_target(&fx.conn, fx.host, &target).unwrap();
+        let newest: (i64, String) = fx
+            .conn
+            .query_row(
+                "SELECT ordinal,target_id FROM continuity_alerts ORDER BY ordinal DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(newest.0 > last, "ordinal {} after {last}", newest.0);
+        assert_eq!(newest.1, target);
+        last = newest.0;
+    }
+    assert_eq!(fx.count("continuity_alerts"), MAX_ALERT_ROWS);
+    assert_eq!(last, 257);
+    let oldest: i64 = fx
+        .conn
+        .query_row("SELECT min(ordinal) FROM continuity_alerts", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(oldest, 2, "only the oldest row was evicted");
+}
+
+/// Kills: a final retirement that keeps the key or another key's rows, or fails on a seat with no
+/// key.
+#[test]
+fn release_on_final_removes_key_and_its_conflicts() {
+    let fx = fx();
+    fx.reserve("k1", Some("s1")).unwrap();
+    fx.reserve("k2", Some("s2")).unwrap();
+    fx.record("pane-a", "k1", Kind::KeyLiveElsewhere, Some("s1"), None, 10);
+    fx.record("pane-b", "k2", Kind::KeyLiveElsewhere, Some("s2"), None, 10);
+    let alerts = fx.count("continuity_alerts");
+    release_for_final(&fx.conn, &SeatId::new("s1")).unwrap();
+    assert_eq!(
+        lookup_key(&fx.conn, &ContinuityKey::new("k1")).unwrap(),
+        None
+    );
+    assert_eq!(fx.conflict("pane-a"), None);
+    assert!(
+        lookup_key(&fx.conn, &ContinuityKey::new("k2"))
+            .unwrap()
+            .is_some()
+    );
+    assert!(fx.conflict("pane-b").is_some());
+    assert_eq!(fx.count("continuity_alerts"), alerts);
+    release_for_final(&fx.conn, &SeatId::new("s3")).unwrap();
+    assert_eq!(fx.count("continuity_keys"), 1);
+}
+
+/// Kills: a clear reaching another key's row, another target's row or another host's row.
+#[test]
+fn conflicts_clear_by_key_and_by_target() {
+    let fx = fx();
+    fx.conn
+        .execute(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at) VALUES ((SELECT id FROM local_node),'/run/second.sock',0)",
+            [],
+        )
+        .unwrap();
+    let second = crate::test_support::host_id_for_test(fx.conn.last_insert_rowid());
+    for (target, key) in [("pane-a", "k1"), ("pane-b", "k1"), ("pane-c", "k2")] {
+        fx.record(target, key, Kind::KeyLiveElsewhere, None, None, 10);
+    }
+    record_conflict(
+        &fx.conn,
+        &ConflictFacts {
+            host: second,
+            target: "pane-c".into(),
+            key: ContinuityKey::new("k3"),
+            kind: Kind::KeyLiveElsewhere,
+            seat: None,
+            owner: None,
+        },
+        UtcMillis(10),
+    )
+    .unwrap();
+
+    clear_conflict_on_target(&fx.conn, second, "pane-c").unwrap();
+    assert_eq!(
+        fx.conflict("pane-c").unwrap().0,
+        "k2",
+        "the other host's row"
+    );
+    assert_eq!(fx.count("continuity_key_conflicts"), 3);
+
+    clear_conflict_on_target(&fx.conn, fx.host, "pane-a").unwrap();
+    assert_eq!(fx.conflict("pane-a"), None);
+    assert!(fx.conflict("pane-b").is_some());
+
+    clear_conflicts_of_key(&fx.conn, &ContinuityKey::new("k1")).unwrap();
+    assert_eq!(fx.conflict("pane-b"), None);
+    assert_eq!(fx.conflict("pane-c").unwrap().0, "k2");
+}
+
+/// Kills: clearing while the judged owner still owns the pane, keeping a row after the owner went,
+/// or touching a hold-bearing row.
+#[test]
+fn alert_only_row_clears_when_its_owner_stops_owning_the_pane() {
+    let fx = fx();
+    let (s2, s3) = (SeatId::new("s2"), SeatId::new("s3"));
+    for kind in ALERT_ONLY_KINDS {
+        for now_owner in [Some(&s3), None] {
+            fx.record("pane-a", "k1", kind, None, Some("s2"), 10);
+            clear_alert_only_if_owner_changed(&fx.conn, fx.host, "pane-a", Some(&s2)).unwrap();
+            assert!(fx.conflict("pane-a").is_some(), "{kind:?}: still the owner");
+            clear_alert_only_if_owner_changed(&fx.conn, fx.host, "pane-a", now_owner).unwrap();
+            assert_eq!(fx.conflict("pane-a"), None, "{kind:?}: {now_owner:?}");
+        }
+    }
+    for kind in HOLD_KINDS {
+        fx.record("pane-a", "k1", kind, None, Some("s2"), 10);
+        clear_alert_only_if_owner_changed(&fx.conn, fx.host, "pane-a", Some(&s3)).unwrap();
+        clear_alert_only_if_owner_changed(&fx.conn, fx.host, "pane-a", None).unwrap();
+        assert!(fx.conflict("pane-a").is_some(), "{kind:?} holds");
+        clear_conflict_on_target(&fx.conn, fx.host, "pane-a").unwrap();
+    }
+}
+
+/// Kills: clearing a row on the pane the owner still owns, keeping one on a pane it left, touching
+/// a hold-bearing row or another owner's row.
+#[test]
+fn alert_only_rows_of_a_departed_owner_clear() {
+    for kind in ALERT_ONLY_KINDS {
+        let fx = fx();
+        let s2 = SeatId::new("s2");
+        fx.record("s2", "k1", kind, None, Some("s2"), 10);
+        fx.record("pane-x", "k2", kind, None, Some("s2"), 10);
+        fx.record("pane-h", "k3", Kind::KeyLiveElsewhere, None, Some("s2"), 10);
+        fx.record("pane-o", "k4", kind, None, Some("s3"), 10);
+
+        clear_alert_only_of_departed_owner(&fx.conn, &s2).unwrap();
+        assert!(fx.conflict("s2").is_some(), "{kind:?}: s2 still owns it");
+        assert_eq!(fx.conflict("pane-x"), None, "{kind:?}: s2 left it");
+        assert!(fx.conflict("pane-h").is_some(), "{kind:?}: hold row");
+        assert!(fx.conflict("pane-o").is_some(), "{kind:?}: s3's row");
+
+        fx.conn
+            .execute(
+                "UPDATE seats SET state='unresolved',target_id=NULL WHERE id='s2'",
+                [],
+            )
+            .unwrap();
+        clear_alert_only_of_departed_owner(&fx.conn, &s2).unwrap();
+        assert_eq!(fx.conflict("s2"), None, "{kind:?}: s2 unresolved");
+        assert!(fx.conflict("pane-h").is_some(), "{kind:?}: hold row");
+        assert!(fx.conflict("pane-o").is_some(), "{kind:?}: s3's row");
+    }
+}
+
+/// Kills: an alert-only kind reading as a hold, a hold kind reading as none, a hold on the wrong
+/// target. `conflict_of_key` reads every kind and the newest row.
+#[test]
+fn hold_kind_reads_only_hold_bearing_rows() {
+    let fx = fx();
+    let key = ContinuityKey::new("k1");
+    assert_eq!(hold_kind(&fx.conn, fx.host, "pane-a").unwrap(), None);
+    assert_eq!(conflict_of_key(&fx.conn, &key).unwrap(), None);
+    for (at, kind) in (1..).zip(HOLD_KINDS) {
+        fx.record("pane-a", "k1", kind, None, None, at);
+        assert_eq!(
+            hold_kind(&fx.conn, fx.host, "pane-a").unwrap(),
+            Some(kind),
+            "{kind:?}"
+        );
+        assert_eq!(hold_kind(&fx.conn, fx.host, "pane-b").unwrap(), None);
+    }
+    for (at, kind) in (10..).zip(ALERT_ONLY_KINDS) {
+        fx.record("pane-a", "k1", kind, None, Some("s2"), at);
+        assert_eq!(
+            hold_kind(&fx.conn, fx.host, "pane-a").unwrap(),
+            None,
+            "{kind:?}"
+        );
+        assert_eq!(
+            conflict_of_key(&fx.conn, &key).unwrap(),
+            Some(ConflictRow {
+                host: fx.host,
+                target: "pane-a".into(),
+                kind,
+                first_seen_at: UtcMillis(1),
+            })
+        );
+    }
+    fx.record("pane-b", "k1", Kind::KeyLiveElsewhere, None, None, 50);
+    fx.record("pane-c", "k2", Kind::KeyLiveElsewhere, None, None, 60);
+    assert_eq!(
+        conflict_of_key(&fx.conn, &key).unwrap().unwrap().target,
+        "pane-b",
+        "the newest row naming the key"
+    );
+}
+
+/// Kills: an unknown stored value read as a kind or a binding instead of `StoreCorrupt`.
+#[test]
+fn unknown_stored_names_are_corrupt() {
+    assert_eq!(
+        kind_from_row::<Kind>("no_such_kind".into())
+            .unwrap_err()
+            .code,
+        ErrorCode::StoreCorrupt
+    );
+    assert_eq!(
+        kind_from_row::<ContinuityKeyBinding>("no_such_binding".into())
+            .unwrap_err()
+            .code,
+        ErrorCode::StoreCorrupt
+    );
+    for kind in HOLD_KINDS.into_iter().chain(ALERT_ONLY_KINDS) {
+        assert_eq!(
+            kind_from_row::<Kind>(kind_name(&kind).unwrap()).unwrap(),
+            kind
+        );
+    }
+}
+
+impl Fx {
+    /// The public `SeatInspect` read of `seat`.
+    fn inspect(&self, seat: &str) -> crate::protocol::results::SeatInspection {
+        use crate::protocol::{
+            commands::{Command, SeatInspectQuery},
+            pagination::PageRequest,
+            results::CommandResult,
+            time::{CallBudget, Cancellation},
+        };
+        let context = StoreContext::new(self.path.clone(), Arc::new(FixedClock)).with_test_host();
+        let result = crate::store::queries::query(
+            &context,
+            INSTANCE,
+            &Command::SeatInspect(SeatInspectQuery {
+                seat: SeatId::new(seat),
+                page: PageRequest::default(),
+            }),
+            &CallBudget {
+                deadline: MonoInstant(2_000),
+                cancellation: Cancellation::default(),
+            },
+        )
+        .unwrap();
+        let CommandResult::SeatInspect(inspection) = result else {
+            panic!("seat inspect answered {result:?}");
+        };
+        inspection
+    }
+
+    fn alerts(
+        &self,
+        limit: u16,
+        cursor: Option<String>,
+    ) -> Result<Page<ContinuityAlert>, ApiError> {
+        alerts_page(
+            &self.conn,
+            INSTANCE,
+            &PageRequest {
+                cursor,
+                limit,
+                ..PageRequest::default()
+            },
+        )
+    }
+
+    fn ordinals(page: &Page<ContinuityAlert>) -> Vec<u64> {
+        page.items.iter().map(|alert| alert.ordinal).collect()
+    }
+}
+
+/// Kills: a read of the oldest row, of only the holding kinds, or of the first sight's time; the
+/// wrong owner or `bound_by`; the conflict dropped from the page the inspect returns.
+#[test]
+fn seat_inspect_shows_key_owner_bound_by_and_newest_conflict() {
+    let fx = fx();
+    fx.reserve("k1", Some("s1")).unwrap();
+    fx.reserve("k2", None).unwrap();
+    bind(
+        &fx.conn,
+        &ContinuityKey::new("k2"),
+        &SeatId::new("s2"),
+        ContinuityKeyBinding::CheckIn,
+        UtcMillis(11),
+    )
+    .unwrap();
+
+    let by_service = fx.inspect("s1").continuity_key.unwrap();
+    assert_eq!(by_service.key, ContinuityKey::new("k1"));
+    assert_eq!(by_service.owner, fx.author);
+    assert_eq!(
+        by_service.bound_by,
+        ContinuityKeyBinding::ServiceReservation
+    );
+    assert_eq!(by_service.conflict, None);
+    let by_check_in = fx.inspect("s2").continuity_key.unwrap();
+    assert_eq!(by_check_in.bound_by, ContinuityKeyBinding::CheckIn);
+
+    let k1 = Some("s1");
+    fx.record("pane-a", "k1", Kind::KeyLiveElsewhere, k1, None, 20);
+    fx.record("pane-b", "k1", Kind::KeyRetiredReversibly, k1, None, 30);
+    // A row of another key on a later clock never shows on this seat.
+    fx.record("pane-c", "k2", Kind::KeyLiveElsewhere, Some("s2"), None, 40);
+    let newest = fx.inspect("s1").continuity_key.unwrap().conflict.unwrap();
+    assert_eq!(newest.pane, HostTargetId::new("pane-b"));
+    assert_eq!(newest.kind, Kind::KeyRetiredReversibly);
+    assert_eq!(newest.first_seen_at, UtcMillis(30));
+    assert_eq!(newest.host, crate::test_support::test_host_locator());
+
+    // Re-judged on the older pane, it is the newest again and keeps its first sight; an alert-only
+    // kind shows like any other.
+    fx.record(
+        "pane-a",
+        "k1",
+        Kind::PaneOwnedByOtherSeat,
+        k1,
+        Some("s3"),
+        50,
+    );
+    let rejudged = fx.inspect("s1").continuity_key.unwrap().conflict.unwrap();
+    assert_eq!(rejudged.pane, HostTargetId::new("pane-a"));
+    assert_eq!(rejudged.kind, Kind::PaneOwnedByOtherSeat);
+    assert_eq!(rejudged.first_seen_at, UtcMillis(20));
+}
+
+/// Kills: a key shown on a seat that holds none, or the optional fields on the wire when empty.
+#[test]
+fn seat_inspect_key_absent_when_empty() {
+    let fx = fx();
+    fx.reserve("k1", Some("s1")).unwrap();
+    let inspection = fx.inspect("s2");
+    assert_eq!(inspection.continuity_key, None);
+    let wire = serde_json::to_value(&inspection).unwrap();
+    assert!(wire.get("continuity_key").is_none(), "{wire}");
+    let held = serde_json::to_value(fx.inspect("s1")).unwrap();
+    assert!(held["continuity_key"].get("conflict").is_none(), "{held}");
+    assert_eq!(held["continuity_key"]["key"], "k1");
+}
+
+/// Kills: a row reaching a seat through its pane or its owner column rather than the key it holds.
+#[test]
+fn unbound_key_conflict_surfaces_only_in_alerts() {
+    let fx = fx();
+    fx.reserve("unbound", None).unwrap();
+    fx.reserve("held", Some("s2")).unwrap();
+    // s2 owns the pane and holds another key; the row names the unbound key.
+    fx.record(
+        "s2",
+        "unbound",
+        Kind::SeatHoldsOtherKey,
+        None,
+        Some("s2"),
+        20,
+    );
+    assert_eq!(fx.inspect("s2").continuity_key.unwrap().conflict, None);
+    // s1 owns the pane and holds no key at all.
+    fx.record(
+        "s1",
+        "unbound",
+        Kind::SeatHoldsOtherKey,
+        None,
+        Some("s1"),
+        21,
+    );
+    assert_eq!(fx.inspect("s1").continuity_key, None);
+
+    let page = fx.alerts(10, None).unwrap();
+    let keys: Vec<_> = page.items.iter().map(|a| a.key.as_str()).collect();
+    assert_eq!(keys, ["unbound", "unbound"]);
+    assert!(page.items.iter().all(|alert| alert.seat.is_none()));
+}
+
+/// Kills: newest-first order, a repeated or skipped row between pages, a cursor that ignores the
+/// page's high water, a dropped field, a page past its byte budget, a foreign cursor accepted.
+#[test]
+fn alerts_page_oldest_first_across_pages() {
+    let fx = fx();
+    let empty = fx.alerts(10, None).unwrap();
+    assert!(empty.items.is_empty());
+    assert_eq!(empty.next_cursor, None);
+    assert_eq!(empty.stop_reason, StopReason::Complete);
+
+    fx.reserve("k1", Some("s1")).unwrap();
+    for n in 1..=5_i64 {
+        let kind = if n == 1 {
+            Kind::KeyRetiredReversibly
+        } else {
+            Kind::KeyLiveElsewhere
+        };
+        fx.record(&format!("pane-{n}"), "k1", kind, Some("s1"), None, 100 + n);
+    }
+
+    let first = fx.alerts(2, None).unwrap();
+    assert_eq!(Fx::ordinals(&first), [1, 2]);
+    assert!(first.has_more);
+    assert_eq!(first.stop_reason, StopReason::Rows);
+    assert_eq!(first.high_water_ordinal, 5);
+    assert_eq!(first.next_argv, None);
+    assert_eq!(
+        first.items[0],
+        ContinuityAlert {
+            ordinal: 1,
+            key: ContinuityKey::new("k1"),
+            seat: Some(SeatId::new("s1")),
+            host: crate::test_support::test_host_locator(),
+            pane: HostTargetId::new("pane-1"),
+            kind: Kind::KeyRetiredReversibly,
+            at: UtcMillis(101),
+        }
+    );
+
+    // An alert written between pages waits for the next read from the start.
+    fx.record(
+        "pane-6",
+        "k1",
+        Kind::KeyLiveElsewhere,
+        Some("s1"),
+        None,
+        106,
+    );
+    let second = fx.alerts(2, first.next_cursor.clone()).unwrap();
+    assert_eq!(Fx::ordinals(&second), [3, 4]);
+    let third = fx.alerts(2, second.next_cursor.clone()).unwrap();
+    assert_eq!(Fx::ordinals(&third), [5]);
+    assert!(!third.has_more);
+    assert_eq!(third.next_cursor, None);
+    assert_eq!(third.stop_reason, StopReason::Complete);
+    assert_eq!(fx.alerts(10, None).unwrap().high_water_ordinal, 6);
+
+    // A byte budget cuts the page short and the cursor resumes at the first row it left out.
+    let bytes = |max_bytes: u32, cursor: Option<String>| {
+        alerts_page(
+            &fx.conn,
+            INSTANCE,
+            &PageRequest {
+                cursor,
+                limit: 10,
+                max_bytes,
+            },
+        )
+    };
+    let cut = bytes(600, None).unwrap();
+    assert!(!cut.items.is_empty() && cut.items.len() < 6, "{cut:?}");
+    assert_eq!(cut.stop_reason, StopReason::Bytes);
+    assert!(
+        serde_json::to_vec(&ServiceResult::ContinuityAlerts(cut.clone()))
+            .unwrap()
+            .len()
+            <= 600
+    );
+    let last = *Fx::ordinals(&cut).last().unwrap();
+    let rest = bytes(4096, cut.next_cursor).unwrap();
+    assert_eq!(Fx::ordinals(&rest).first(), Some(&(last + 1)));
+    let too_small = bytes(256, None).unwrap_err();
+    assert_eq!(too_small.code, ErrorCode::InvalidBudget);
+
+    // A cursor of another instance, or another scope, is refused.
+    let foreign = alerts_page(
+        &fx.conn,
+        "00000000000000000000000000000000",
+        &PageRequest {
+            cursor: first.next_cursor.clone(),
+            ..PageRequest::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(foreign.code, ErrorCode::InvalidCursor);
+    let other_scope = Cursor {
+        scope: CursorScope::ServiceMembership,
+        ..alert_cursor_fixture()
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(
+        fx.alerts(2, Some(other_scope)).unwrap_err().code,
+        ErrorCode::InvalidCursor
+    );
+}
+
+fn alert_cursor_fixture() -> Cursor {
+    Cursor {
+        instance: INSTANCE.into(),
+        scope: CursorScope::ContinuityAlerts,
+        scope_key: ALERTS_SCOPE_KEY.into(),
+        filter_digest: ALERTS_FILTER.into(),
+        direction: CursorDirection::Ascending,
+        order_version: 1,
+        last_examined_key: None,
+        after_ordinal: 1,
+        high_water_ordinal: 2,
+        scope_revision: None,
+        filter_revision: None,
+        search: None,
+        inbox: None,
+        attention: None,
+        binding: None,
+    }
+}
+
+/// Kills: the feed reading rows past the cap, or ordinals restarting after an eviction: the gap in
+/// ordinals is how a reader sees evicted rows.
+#[test]
+fn alerts_page_starts_at_the_oldest_kept_row() {
+    let fx = fx();
+    for n in 0..=MAX_ALERT_ROWS {
+        let kind = if n % 2 == 0 {
+            Kind::KeyLiveElsewhere
+        } else {
+            Kind::KeyRetiredReversibly
+        };
+        fx.record("pane", "k1", kind, None, None, 100 + n);
+    }
+    let page = fx.alerts(1, None).unwrap();
+    assert_eq!(Fx::ordinals(&page), [2]);
+    assert_eq!(page.high_water_ordinal, MAX_ALERT_ROWS as u64 + 1);
+}

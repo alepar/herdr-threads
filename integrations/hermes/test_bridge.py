@@ -34,7 +34,7 @@ from pathlib import Path
 root=Path(sys.argv[sys.argv.index('--state-dir')+1])
 (root/'pid').write_text(str(os.getpid()))
 request=json.load(sys.stdin)
-pane={k:os.environ[k] for k in ('HERDR_PANE_ID','HERDR_ENV','HERDR_THREADS_SEAT_NAME','HERDR_THREADS_SEAT_READONLY','HC_TERMINAL_ID','HC_TERMINAL_SOCKET') if k in os.environ}
+pane={k:os.environ[k] for k in ('HERDR_PANE_ID','HERDR_ENV','HERDR_THREADS_SEAT_NAME','HERDR_THREADS_SEAT_READONLY','HC_TERMINAL_ID','HC_TERMINAL_SOCKET','HERDR_THREADS_CONTINUITY_KEY') if k in os.environ}
 with (root/'requests').open('a') as f: f.write(json.dumps({'argv':sys.argv[1:],'request':request,'pane':pane})+'\n')
 mode=(root/'mode').read_text()
 fixtures=json.loads((root/'results.json').read_text())
@@ -294,7 +294,8 @@ class BridgeTests(unittest.TestCase):
                     "HT_LEAK_RUN_ID") if key in os.environ}
                 kwargs["env"].update({key: source[key] for key in (
                     "HERDR_PANE_ID", "HERDR_ENV", "HERDR_THREADS_SEAT_NAME",
-                    "HERDR_THREADS_SEAT_READONLY", "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET") if key in source})
+                    "HERDR_THREADS_SEAT_READONLY", "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET",
+                    "HERDR_THREADS_CONTINUITY_KEY") if key in source})
                 kwargs["env"]["HT_TEST_OWNER"] = str(os.getpid())
                 self.fixture_live_pids = [child.pid for child in children if child.poll() is None]
                 super().__init__(*args, **kwargs)
@@ -475,6 +476,24 @@ class BridgeTests(unittest.TestCase):
             finally:
                 bound.reset(token)
         self.assertEqual(self.requests()[-1]["pane"], {"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1"})
+
+    def test_gateway_child_takes_the_session_continuity_key_not_the_gateway_key(self):
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_THREADS_CONTINUITY_KEY": "gateway-key", "_HERMES_GATEWAY": "1"}):
+            self.load()
+            token = bound.set({"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1", "HERDR_THREADS_CONTINUITY_KEY": "clone-1"})
+            try:
+                self.assertIsNotNone(self.request())
+            finally:
+                bound.reset(token)
+            pane = self.requests()[-1]["pane"]
+            token = bound.set({"HERDR_PANE_ID": "w1:p3", "HERDR_ENV": "1"})
+            try:
+                self.assertIsNotNone(self.request())
+            finally:
+                bound.reset(token)
+        self.assertEqual(pane["HERDR_THREADS_CONTINUITY_KEY"], "clone-1")
+        self.assertNotIn("HERDR_THREADS_CONTINUITY_KEY", self.requests()[-1]["pane"])
 
     def test_gateway_child_takes_the_session_name_with_no_pane(self):
         # A named seat needs no HERDR_PANE_ID: the client env's name (and read-only marker) reaches

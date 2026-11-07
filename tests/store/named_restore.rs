@@ -126,6 +126,7 @@ impl Fx {
             operation: OperationId::new(operation),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         match resolve_named_seat(
             &self.context,

@@ -1,0 +1,2 @@
+review: not ready
+[Must-fix] B2 not delivered on a peer under fork-repair ordering: an out-of-order `seat.unretired` is applied as a no-op yet journalled `applied`, so `episode_fact_applied` refuses every later copy and the peer seat stays retired and frozen (src/store/seats/publication.rs materialize_seat_unretired, src/store/seats/reversible.rs episode_fact_applied and unretire_by_fact; ledger line 152); no bead tracks it.

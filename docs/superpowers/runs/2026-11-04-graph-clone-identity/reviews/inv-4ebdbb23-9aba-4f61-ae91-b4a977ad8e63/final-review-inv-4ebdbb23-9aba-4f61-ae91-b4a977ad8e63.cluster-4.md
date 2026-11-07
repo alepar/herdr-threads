@@ -1,0 +1,66 @@
+# Final review, cluster 4: migrations (ht-ma6i)
+
+Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7. Both SHAs verified. The caller's checkout stayed at the head with a clean status throughout.
+
+Files reviewed: `migrations/node/0016_graph_clone_identity.sql`, `migrations/node/0016_graph_clone_identity_after.sql`. Sources opened to check a named risk: `src/store/schema.rs` (delta wiring), `src/store/seats/continuity.rs` (copy helper), `src/store/seats/reversible.rs`, `src/store/seats/operator.rs`, `src/store/seats/publication.rs`, `src/store/queries.rs` (seat history read), `src/protocol/ids.rs`, `tests/store/schema.rs`, `tests/store/reversible_facts.rs`.
+
+## Conformance of delta 16 to spec 4.5
+
+- Every table in spec 4.1 to 4.4 exists with the specified columns: `seat_shell_fingerprints`, `continuity_keys` (including `bound_by`), `continuity_key_conflicts` (including `owner_seat_id`, `updated_at`), `continuity_alerts`, `reversible_retirements` (with `closure_evidence` and `absence_evidence`), `restored_target_absence`.
+- `kept_continuity_claims.continuity_key` and `retirements.absence_evidence` are added as nullable columns, so old rows pass their CHECKs.
+- `allocation_decisions` is rebuilt in the 0012 pattern and admits the four new kinds. The copy helper's column list matches the new table. Ordinals are kept. `tests/store/schema.rs` pins that the sequence continues past the copied rows and that both indexes are back.
+- The conflict and alert `kind` lists match `ContinuityConflictKind`. The `bound_by` values match `ContinuityKeyBinding`. The `reason` values match the two `RetireReason` variants, which `reason_column` maps exhaustively.
+- `seats_retirement_terminal` keeps its old predicate and adds only the `reversible` row exemption. `unretire_local` and `unretire_by_fact` update the seat before they change the row, and `finalize` and `finalize_by_fact` never change `state` or `retired_at`, so each transition passes the trigger.
+
+## Risks checked and cleared
+
+- Foreign key parents are valid: `seats.id` is UNIQUE NOT NULL, and `service_authors.id` and `herdr_hosts.host_id` are keys. `src/` has no `DELETE FROM` on `seats`, `herdr_hosts` or `service_authors`, so the new references block nothing.
+- The 128-byte key CHECK matches `ContinuityKey`. The 512-byte target CHECK is wider than the 128-byte `HostTargetId` limit, so a conflict insert cannot fail on length and fail a hook.
+- `operator retire` selects under `LOCAL_SEAT`, so a peer's row with NULL `host_id` never reaches the NOT NULL `allocation_decisions.host_id`.
+- `retire_row` updates only `WHERE state!='retired'`, so a reversible row is not created on a finally retired seat. The schema does not enforce this itself; see the last section.
+- No trigger exists on `allocation_decisions`, so dropping the old table loses none.
+- A 33-test run filtered on `store::schema`, `graph_clone`, `seat_retirement_terminal` and `audit` passed at the head in a review-owned worktree, covering the upgrade from schema 15, the CHECK tests and the trigger test.
+
+## Requirement baseline in this cluster
+
+- B1: the key tables and the kept claim column are present. The hook-to-decision path leaves this cluster and is the seam reviewer's to trace.
+- B2: the reversible table and the relaxed trigger are present. Fence, un-retire and finalize callers exist at the head. The end-to-end path is the seam reviewer's to trace.
+- B3: no schema change is required, and delta 16 does not touch memberships.
+- B4: nothing in this cluster touches Herdr.
+
+## Reproduction of the empty-id panic
+
+A test added only to the review-owned worktree extended `operator_retire_finalizes_it` in `tests/store/reversible_facts.rs` with a `Command::SeatInspect` query after the finalize. Output at the head:
+
+- `allocation row: ("", "", "operator_retire")`
+- `panicked at src/protocol/ids.rs:72:1: valid opaque id: "invalid opaque id"`
+
+Cause: `read_row` defaults NULL closure columns to empty strings, and `reversible::allocation_decision` writes them into the NOT NULL `allocation_decisions.target_id` and `host_boot`. `seat_inspect` then calls `HostTargetId::new("")`, which panics at `expect`. A grep finds no `catch_unwind` in `src/daemon`, `src/service` or `src/client`; containment beyond that was not traced. The worktree has been removed.
+
+## Must fix before landing
+
+- `seat inspect` panics on a seat the operator finalized after a restore from its own log: `reversible::finalize` writes `target_id=''` and `host_boot=''` into `allocation_decisions` for a row with NULL closure inputs (`src/store/seats/reversible.rs` `read_row`, `allocation_decision`), and `src/store/queries.rs` then panics in `HostTargetId::new("")`. Reproduced at the head (see the reproduction above). Spec 4.3 makes this operator finalize the only way out for such a seat. The fix must keep the seat's history readable, by writing no unparsable ids or by reading empty ones safely, and `operator_retire_finalizes_it` must assert the inspect read.
+- Spec goal, 4.1 (G2) and 4.4 (G5) are not delivered at this head: delta 16 adds `seat_shell_fingerprints`, `restored_target_absence` and the `structural_shell_continuity` kind, and no production code writes them (no INSERT in `src/`, no `src/identity/shell_continuity.rs`), and no retirement ever sets `absence_evidence`. Beads ht-ma6i.1, ht-ma6i.4 and ht-ma6i.11 are open, and branches `task-ht-ma6i.1` and `task-ht-ma6i.4` hold no commits beyond the head. These are spec requirements, not baseline rows B1 to B4, and composing them with the rest of the branch is the seam reviewer's to trace. Landing now would also freeze those table shapes in a released schema before any writer has used them, so a shape change would need a new delta.
+
+## Verdict
+
+not ready (seat inspect panics after operator finalize of a restored reversible seat; G2 and G5 tables have no writer at this head)
+
+## Must fix before landing
+
+- `seat inspect` panics after an operator finalizes a reversible seat restored from its own log: `reversible::finalize` writes empty `target_id` and `host_boot` into `allocation_decisions`, and `src/store/queries.rs` panics in `HostTargetId::new("")` (reproduced at the head with output `valid opaque id: "invalid opaque id"`); keep the history readable and make `operator_retire_finalizes_it` assert the inspect read.
+- Spec goal, 4.1 (G2) and 4.4 (G5) are undelivered at this head: `seat_shell_fingerprints`, `restored_target_absence`, `structural_shell_continuity` and a non-NULL `absence_evidence` have no production writer, beads ht-ma6i.1, ht-ma6i.4 and ht-ma6i.11 are open, and their task branches hold no commits beyond the head; land those leaves first, because shipping delta 16 now freezes table shapes no writer has used (not baseline rows; composition is the seam reviewer's to trace).
+
+## Untested scope
+
+- `seat_shell_fingerprints` and `restored_target_absence` CHECKs (`pid > 0`, `session > 0`, `tty >= 0`, `start >= 0`, `seat_generation >= 0`, `absent_observed_ms >= 0`): the migration tests only assert the tables exist, and no test inserts a row.
+- Operator finalize of an own-log `unretired` row: it reaches the same empty-input path, and this review neither tested nor traced the seat history read for that state.
+- Panic containment on the daemon's read path for the `seat inspect` failure was not traced beyond the `catch_unwind` grep.
+- Full suite not run by this review; the ledger records it as deferred to the caller. This review ran only the filtered schema tests and the one reproduction test.
+
+## Deferred OK
+
+- `retirements_provenance_immutable` does not cover `absence_evidence`, and `tests/store/schema.rs` updates that column; `closure_evidence` has had the same gap since delta 9, and `RetirementInputs` is the convention that keeps callers from updating it.
+- The schema does not stop a seat holding both a `retirements` row and a `reversible_retirements` row, which would let the relaxed trigger un-retire a final seat; `retire_row` and `finalize` keep them exclusive today.
+- The relaxed trigger also permits changing `retired_at` while a `reversible` row stands, which would desynchronize it from `cutover_at`; no production statement does this.
+- `retire_seat` has a pre-existing path to an empty `allocation_decisions.target_id` (`latest_binding(...).unwrap_or_default()`) for a seat with no target and no binding; it is not introduced by this branch, but the fix for the panic above should cover the shared read.

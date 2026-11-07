@@ -137,6 +137,8 @@ pub const HELD_KINDS: &[&str] = &[
     "membership.left",
     "invitation.answered",
     "seat.retired",
+    "seat.retired_reversible",
+    "seat.unretired",
 ];
 
 /// The `detail` of the refusal [`FactRoute::emit`] returns while the restore-window

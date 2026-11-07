@@ -476,7 +476,8 @@ mod bootstrap_recovery {
                 operation: id.payload.resolve_key.clone(),
                 locator_hint: None,
                 tmux_hint: None,
-            },
+continuity_key: None,
+},
             &context.budget,
             |guard| {
                 fresh_reference = Some(guard.ordinary().call_id().clone());

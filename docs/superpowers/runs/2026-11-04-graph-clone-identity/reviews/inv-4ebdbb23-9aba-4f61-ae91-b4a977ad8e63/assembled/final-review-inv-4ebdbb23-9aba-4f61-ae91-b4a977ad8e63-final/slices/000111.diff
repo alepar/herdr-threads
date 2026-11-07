@@ -1,0 +1,12 @@
+diff --git a/tests/harness/agy_wake.rs b/tests/harness/agy_wake.rs
+index 65b4116cf..e0a11d14b 100644
+--- a/tests/harness/agy_wake.rs
++++ b/tests/harness/agy_wake.rs
+@@ -123,6 +123,7 @@ fn the_woken_turn_receives_the_bodies_by_injection() {
+                 claim: claim(),
+                 operation: crate::protocol::ids::OperationId::new("ci-1"),
+                 lineage_parent: None,
++                continuity_key: None,
+             }),
+             peer(),
+             &budget(),

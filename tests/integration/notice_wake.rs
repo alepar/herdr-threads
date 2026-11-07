@@ -167,6 +167,7 @@ impl Fixture {
             mode: CheckInMode::Current,
             claim: self.claim(seat),
             operation: OperationId::new(op),
+            continuity_key: None,
         };
         let permit = self
             .store

@@ -1,0 +1,61 @@
+diff --git a/src/store/schema.rs b/src/store/schema.rs
+index bd9ecff51..0876808ef 100644
+--- a/src/store/schema.rs
++++ b/src/store/schema.rs
+@@ -159,6 +159,14 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
+         sql: include_str!("../../migrations/node/0015_atomic_remote_handoff.sql"),
+         rebuild: None,
+     },
++    NodeDelta {
++        version: 16,
++        sql: include_str!("../../migrations/node/0016_graph_clone_identity.sql"),
++        rebuild: Some(Rebuild {
++            copy: super::seats::copy_allocation_decisions,
++            sql_after: include_str!("../../migrations/node/0016_graph_clone_identity_after.sql"),
++        }),
++    },
+ ];
+ 
+ /// Latest `PRAGMA user_version` supported by this binary's production schema.
+@@ -1735,7 +1743,11 @@ pub(crate) fn clear_warning_condition_at_snapshot(
+     if kind == "invitation"
+         && let Some(origin) = super::effective::invitation_originator(tx, &condition_id)?
+     {
+-        tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![clear.as_str(),origin,seq]).map_err(store_error)?;
++        tx.execute(
++            INVITATION_ORIGIN_RECIPIENT,
++            params![clear.as_str(), origin, seq],
++        )
++        .map_err(store_error)?;
+     }
+     Ok(())
+ }
+@@ -1854,6 +1866,15 @@ pub fn record_overdue_with_decision_seq(
+     record_overdue_inner(tx, obligation, basis, decision_at, Some(decision_seq))
+ }
+ 
++/// An invitation's originator as a recipient of its overdue and clear warnings: a retired seat is
++/// none, unless it can still return (a reversible or unretired row), so the warning is there on
++/// reattach (spec 4.3).
++const INVITATION_ORIGIN_RECIPIENT: &str = concat!(
++    "INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND (state!='retired' OR ",
++    crate::store::seats::reversible::held_open_seat_sql!("seats.id"),
++    ")"
++);
++
+ /// The one deadline-owner test (N5), as SQL over the message id expression `$message`: true when
+ /// this node owns the message's deadline, `COALESCE(messages.deadline_node, messages.origin_node)`
+ /// being the local node. A missing message row or both columns NULL count as local. Every receipt
+@@ -2258,7 +2279,11 @@ fn record_overdue_inner(
+             None,
+         )?;
+         if let Some(origin) = origin {
+-            tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![warning.as_str(),origin,event_seq]).map_err(store_error)?;
++            tx.execute(
++                INVITATION_ORIGIN_RECIPIENT,
++                params![warning.as_str(), origin, event_seq],
++            )
++            .map_err(store_error)?;
+             super::delivery_tail::DeliveryTail::attention_unless_retired(tx, &origin, 4)?;
+         }
+     }

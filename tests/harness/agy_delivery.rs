@@ -1481,6 +1481,7 @@ mod daemon {
                 claim,
                 operation: OperationId::new("ci-1"),
                 lineage_parent: None,
+                continuity_key: None,
             });
             match self.service.handle(command, peer(), &budget()).unwrap() {
                 CommandResult::CheckedIn(result) => result.context,
@@ -1664,6 +1665,7 @@ mod daemon {
             claim: next,
             operation: crate::protocol::ids::OperationId::new("ci-2"),
             lineage_parent: None,
+            continuity_key: None,
         });
         let CommandResult::CheckedIn(result) =
             world.service.handle(command, peer(), &budget()).unwrap()
@@ -1719,6 +1721,7 @@ mod daemon {
                     claim: origin,
                     operation: OperationId::new("origin-checkin"),
                     lineage_parent: None,
+                    continuity_key: None,
                 }),
                 peer(),
                 &budget(),

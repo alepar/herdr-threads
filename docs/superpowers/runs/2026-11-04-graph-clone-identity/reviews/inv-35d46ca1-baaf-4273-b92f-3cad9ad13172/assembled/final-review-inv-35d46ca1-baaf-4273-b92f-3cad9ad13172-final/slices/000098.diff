@@ -1,0 +1,27 @@
+diff --git a/src/store/materialization.rs b/src/store/materialization.rs
+index 91105700a..cba66be3c 100644
+--- a/src/store/materialization.rs
++++ b/src/store/materialization.rs
+@@ -727,16 +727,21 @@ fn project_receipt(
+         )
+         .optional()
+         .map_err(store_error)?;
++    // A recipient frozen in a reversible retirement owes this like the rest of what it owes: the
++    // row stays `pending`, resumes on un-retire and settles through the job on finalization.
++    let frozen = effective.state == EffectiveReceiptState::RecipientRetired
++        && super::seats::reversible::is_frozen(tx, &crate::protocol::ids::SeatId::new(seat))?;
+     let physical_state = match effective.state {
+         EffectiveReceiptState::Pending => "pending",
+         EffectiveReceiptState::Acknowledged => "acked",
++        EffectiveReceiptState::RecipientRetired if frozen => "pending",
+         EffectiveReceiptState::RecipientRetired => "recipient_retired",
+         EffectiveReceiptState::NotRequired => "pending",
+     };
+     let ack_required = i64::from(effective.state != EffectiveReceiptState::NotRequired);
+     // An ack recipient already retired when the message applies (its retirement
+     // fact came first) is projected `recipient_retired` at the seat's `retired_at`.
+-    let retired_at = (effective.state == EffectiveReceiptState::RecipientRetired)
++    let retired_at = (effective.state == EffectiveReceiptState::RecipientRetired && !frozen)
+         .then_some(effective.retired_at)
+         .flatten();
+     tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required,retired_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),ack_required=MIN(receipt_state.ack_required,excluded.ack_required) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,effective.deadline_at,ack_required,retired_at]).map_err(store_error)?;

@@ -1,0 +1,33 @@
+diff --git a/src/store/poke.rs b/src/store/poke.rs
+index 4a5a09edd..a23baac72 100644
+--- a/src/store/poke.rs
++++ b/src/store/poke.rs
+@@ -10,6 +10,7 @@
+ //! candidate came from; `soft_poked_at` is read through the effective receipt
+ //! projection. A receipt whose seat has an active catch-up row on its thread
+ //! is not a candidate until the row ends.
++use super::seats::reversible::frozen_seat_sql;
+ use super::{
+     connection::{api_error, store_error},
+     effective::{self, EffectiveReceipt, EffectiveReceiptState, ReceiptSource, SoftPoked},
+@@ -113,6 +114,11 @@ fn collect(
+             "(EXISTS(SELECT 1 FROM occupant_bindings ob WHERE ob.seat_id={table}.seat_id AND ob.ended_at IS NULL) \
+              OR (SELECT name FROM seats WHERE id={table}.seat_id) IS NULL)"
+         );
++        let not_frozen = if table == "receipt_state" {
++            concat!("NOT ", frozen_seat_sql!("receipt_state.seat_id"))
++        } else {
++            concat!("NOT ", frozen_seat_sql!("receipts.seat_id"))
++        };
+         let mut statement = conn
+             .prepare_cached(&format!(
+                 "SELECT message_id, seat_id FROM {table} INDEXED BY {index} \
+@@ -120,7 +126,7 @@ fn collect(
+                  AND deadline_at IS NOT NULL AND available_at IS NOT NULL \
+                  AND soft_poked_at IS NULL AND (?3 IS NULL OR seat_id=?3) \
+                  AND (?4 IS NULL OR (SELECT host_id FROM seats WHERE id=seat_id)=?4) AND {reservable} \
+-                 AND {not_offline_named} \
++                 AND {not_offline_named} AND {not_frozen} \
+                  AND deadline_at - (1.0-?1)*(deadline_at-available_at) - 1.0 <= ?2 \
+                  ORDER BY deadline_at, message_id, seat_id LIMIT {SCAN_ROWS}"
+             ))

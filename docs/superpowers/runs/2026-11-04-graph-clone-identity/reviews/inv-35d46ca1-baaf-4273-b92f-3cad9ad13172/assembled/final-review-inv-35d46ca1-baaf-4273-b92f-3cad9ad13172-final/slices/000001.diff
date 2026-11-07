@@ -1,0 +1,25 @@
+diff --git a/.config/nextest.toml b/.config/nextest.toml
+index 86eca3e38..7f5f818e1 100644
+--- a/.config/nextest.toml
++++ b/.config/nextest.toml
+@@ -16,6 +16,8 @@ hook-budget = { max-threads = 1 }
+ # budgets (100 ms). The long real-time ones (ran_in_own_process) are not in a
+ # group: under `cargo test` they already ran beside the chain.
+ integration-daemon = { max-threads = 1 }
++# Each test owns a private Herdr, a daemon and stand-in agents and waits on daemon passes (ht-ma6i.11).
++clone-identity-sweep = { max-threads = 2 }
+ service-daemon = { max-threads = 1 }
+ # The mod delivery sweep (ht-j16.10): each test runs an elected in-process
+ # daemon with an injected clock and real `watch` children, and one of them
+@@ -233,6 +235,11 @@ filter = "binary(config_smoke)"
+ priority = 60
+ test-group = "config-smoke"
+ 
++[[profile.default.overrides]]
++filter = "binary(clone_identity_sweep)"
++priority = 60
++test-group = "clone-identity-sweep"
++
+ [[profile.default.overrides]]
+ filter = "binary(integration_sweep)"
+ priority = 60

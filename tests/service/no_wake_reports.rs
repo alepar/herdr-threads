@@ -218,6 +218,7 @@ impl Rig {
                 operation: OperationId::new(format!("resolve-{name}")),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             }))
         else {
             panic!("named resolve")

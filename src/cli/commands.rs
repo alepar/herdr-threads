@@ -814,6 +814,7 @@ impl MutationSpec {
                     tmux_hint: super::caller_location::resolve_tmux_hint(&host),
                     host,
                     operation,
+                    continuity_key: None,
                 })
             }
             Self::Create { name, topic, goal } => WireCommand::CreateThread(CreateThread {
@@ -955,6 +956,7 @@ impl MutationSpec {
                 mode: crate::protocol::commands::CheckInMode::Current,
                 claim: claim.unwrap(),
                 operation,
+                continuity_key: None,
             }),
             Self::Rebind { seat, pane } => WireCommand::OperatorRebind(OperatorRebind {
                 seat,

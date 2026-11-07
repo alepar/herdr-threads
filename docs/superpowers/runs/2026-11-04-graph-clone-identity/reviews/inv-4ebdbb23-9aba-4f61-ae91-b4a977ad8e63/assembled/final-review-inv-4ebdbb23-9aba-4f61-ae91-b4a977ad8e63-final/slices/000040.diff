@@ -1,0 +1,52 @@
+diff --git a/src/identity/repair.rs b/src/identity/repair.rs
+index fc59c217d..df6cc6330 100644
+--- a/src/identity/repair.rs
++++ b/src/identity/repair.rs
+@@ -448,12 +448,8 @@ impl OrdinaryIdentity {
+         if let Some(result) = replay {
+             return Ok(result);
+         }
+-        let (result, not_ready) = self.decide_continuity_now(
+-            command.clone(),
+-            budget,
+-            false,
+-            crate::ports::ContinuityEvidence::Cooperative,
+-        );
++        let (result, not_ready) =
++            self.decide_continuity_now(command.clone(), budget, false, claim_evidence(&command));
+         // ht-dtx0: a claim refused only because the host evidence is not ready
+         // (reconciliation lag, a failed host read) is kept for the observation
+         // worker to decide once the epoch has reconciled; a decided claim
+@@ -510,7 +506,7 @@ impl OrdinaryIdentity {
+                             command.clone(),
+                             &budget,
+                             true,
+-                            crate::ports::ContinuityEvidence::Cooperative,
++                            claim_evidence(command),
+                         )
+                         .1
+                 })
+@@ -647,6 +643,7 @@ impl OrdinaryIdentity {
+             operation,
+             execution: candidate.execution.clone(),
+             liveness: Some(candidate.liveness),
++            continuity_key: None,
+         };
+         let (result, not_ready) = self.decide_continuity_now(
+             command,
+@@ -1147,6 +1144,15 @@ fn error(code: ErrorCode, detail: &str) -> ApiError {
+     ApiError::new(code, detail)
+ }
+ 
++/// What a session's own claim rests on, at intake and when a kept claim is decided.
++fn claim_evidence(command: &ContinuityCheckIn) -> crate::ports::ContinuityEvidence {
++    if command.continuity_key.is_some() {
++        crate::ports::ContinuityEvidence::Key
++    } else {
++        crate::ports::ContinuityEvidence::Cooperative
++    }
++}
++
+ /// ht-dtx0: whether a C1 decision's refusal only says the evidence is not
+ /// ready, so the claim is kept: a refusal the hook would retry
+ /// (`cli::retry::is_continuity_refusal` is false). A decision is never.

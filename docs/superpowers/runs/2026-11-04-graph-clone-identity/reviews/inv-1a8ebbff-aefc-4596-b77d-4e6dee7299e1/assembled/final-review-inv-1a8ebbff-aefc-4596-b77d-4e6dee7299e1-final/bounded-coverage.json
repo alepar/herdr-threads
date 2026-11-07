@@ -1,0 +1,214 @@
+{
+ "inspected": [
+  {
+   "path": "migrations/node/0016_graph_clone_identity.sql",
+   "hunks": [
+    "@@ -0,0 +1,115 @@"
+   ]
+  },
+  {
+   "path": "migrations/node/0016_graph_clone_identity_after.sql",
+   "hunks": [
+    "@@ -0,0 +1,7 @@"
+   ]
+  },
+  {
+   "path": "src/store/seats/reversible.rs",
+   "hunks": [
+    "@@ -0,0 +1,651 @@"
+   ]
+  },
+  {
+   "path": "src/store/control/retirement.rs",
+   "hunks": [
+    "@@ -2,18 +2,25 @@",
+    "@@ -21,7 +28,7 @@ pub fn begin_retirement(",
+    "@@ -43,9 +50,14 @@ pub fn begin_retirement(",
+    "@@ -99,32 +111,37 @@ pub fn begin_retirement(",
+    "@@ -132,11 +149,8 @@ pub(crate) fn begin_retirement_authored(",
+    "@@ -153,17 +167,53 @@ pub(crate) fn begin_retirement_authored(",
+    "@@ -175,26 +225,14 @@ pub(crate) fn begin_retirement_authored(",
+    "@@ -207,7 +245,34 @@ pub(crate) fn begin_retirement_fence(",
+    "@@ -217,22 +282,32 @@ pub(crate) fn begin_retirement_fence(",
+    "@@ -241,6 +316,32 @@ pub(crate) fn begin_retirement_fence("
+   ]
+  },
+  {
+   "path": "src/store/seats/observation.rs",
+   "hunks": [
+    "@@ -1,15 +1,17 @@",
+    "@@ -696,7 +698,7 @@ pub fn publish_snapshot_stage(",
+    "@@ -1392,13 +1394,116 @@ fn restored_pane_grace_ms() -> i64 {",
+    "@@ -1406,31 +1511,31 @@ struct RestoredPaneFacts {",
+    "@@ -1460,19 +1565,27 @@ fn restored_pane_evidence(",
+    "@@ -1481,37 +1594,17 @@ fn restored_pane_evidence(",
+    "@@ -1563,7 +1656,8 @@ pub fn saved_seats_page(",
+    "@@ -1614,7 +1708,7 @@ pub fn saved_seats_page(",
+    "@@ -1925,7 +2019,7 @@ pub(crate) fn lift_baseline_hold_if_clear(",
+    "@@ -2013,6 +2107,12 @@ pub fn record_reconciliation_pass(",
+    "@@ -2375,6 +2475,9 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2382,7 +2485,7 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2419,7 +2522,10 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2745,20 +2851,24 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2770,6 +2880,8 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2788,26 +2900,71 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2815,6 +2972,22 @@ pub fn apply_reconciliation_transition(",
+    "@@ -2891,7 +3064,7 @@ pub fn record_snapshot("
+   ]
+  },
+  {
+   "path": "src/store/seats/key_verdict.rs",
+   "hunks": [
+    "@@ -0,0 +1,457 @@"
+   ]
+  },
+  {
+   "path": "src/store/continuity_keys.rs",
+   "hunks": [
+    "@@ -0,0 +1,654 @@"
+   ]
+  },
+  {
+   "path": "src/cli/hook.rs",
+   "hunks": [
+    "@@ -46,7 +46,7 @@ use crate::{",
+    "@@ -381,6 +381,12 @@ enum Failure {",
+    "@@ -1929,6 +1935,13 @@ fn enroll_pane(",
+    "@@ -1937,6 +1950,7 @@ fn enroll_pane(",
+    "@@ -1957,6 +1971,21 @@ fn enroll_pane(",
+    "@@ -2033,12 +2062,13 @@ fn check_in(",
+    "@@ -2062,8 +2092,9 @@ fn check_in(",
+    "@@ -2094,8 +2125,9 @@ fn check_in(",
+    "@@ -2106,6 +2138,7 @@ fn check_in(",
+    "@@ -2113,16 +2146,25 @@ fn check_in(",
+    "@@ -2396,10 +2438,54 @@ impl PaneCall<'_> {",
+    "@@ -2415,6 +2501,7 @@ impl PaneCall<'_> {",
+    "@@ -2423,10 +2510,12 @@ impl PaneCall<'_> {",
+    "@@ -2464,6 +2553,7 @@ impl PaneCall<'_> {",
+    "@@ -2564,7 +2654,7 @@ impl PaneCall<'_> {",
+    "@@ -3031,6 +3121,7 @@ impl PaneCall<'_> {"
+   ]
+  },
+  {
+   "path": "src/cli/site_capability.rs",
+   "hunks": [
+    "@@ -5,13 +5,14 @@",
+    "@@ -38,6 +39,112 @@ pub fn require_readonly<C: LocalClient + ?Sized>(",
+    "@@ -116,7 +223,7 @@ mod tests {",
+    "@@ -130,8 +237,14 @@ mod tests {",
+    "@@ -174,6 +287,7 @@ mod tests {",
+    "@@ -224,6 +338,252 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/daemon/transport/service_connection.rs",
+   "hunks": [
+    "@@ -4,8 +4,8 @@ use super::*;",
+    "@@ -188,8 +188,25 @@ pub async fn serve_registered(",
+    "@@ -248,14 +265,8 @@ pub async fn serve_registered(",
+    "@@ -264,7 +275,7 @@ pub async fn serve_registered("
+   ]
+  },
+  {
+   "path": "src/store/service_controls.rs",
+   "hunks": [
+    "@@ -22,7 +22,9 @@ use crate::{",
+    "@@ -71,6 +73,15 @@ pub fn operate(",
+    "@@ -186,7 +197,38 @@ pub fn operate("
+   ]
+  },
+  {
+   "path": "src/service/dispatch.rs",
+   "hunks": [
+    "@@ -670,6 +670,7 @@ impl DomainService {",
+    "@@ -760,6 +761,7 @@ impl DomainService {",
+    "@@ -1236,6 +1238,7 @@ impl DomainService {",
+    "@@ -1311,6 +1314,7 @@ impl DomainService {",
+    "@@ -2493,6 +2497,7 @@ mod operator_tests {",
+    "@@ -2602,6 +2607,7 @@ mod operator_tests {",
+    "@@ -2617,6 +2623,7 @@ mod operator_tests {"
+   ]
+  },
+  {
+   "path": "src/store/seats/operator.rs",
+   "hunks": [
+    "@@ -1,7 +1,7 @@",
+    "@@ -257,10 +257,14 @@ pub fn mutate_operator(",
+    "@@ -290,6 +294,7 @@ pub fn mutate_operator(",
+    "@@ -376,6 +381,8 @@ pub(super) fn rebind_unresolved_seat(",
+    "@@ -516,8 +523,10 @@ fn operator_retire(",
+    "@@ -533,15 +542,27 @@ fn operator_retire(",
+    "@@ -590,10 +611,14 @@ pub(crate) fn retire_seat("
+   ]
+  },
+  {
+   "path": "src/store/materialization.rs",
+   "hunks": [
+    "@@ -727,16 +727,21 @@ fn project_receipt("
+   ]
+  },
+  {
+   "path": "src/store/control/invitation.rs",
+   "hunks": [
+    "@@ -840,9 +840,10 @@ pub(crate) enum Placement {",
+    "@@ -897,7 +898,9 @@ pub(crate) fn insert_invitation("
+   ]
+  },
+  {
+   "path": "src/store/archival.rs",
+   "hunks": [
+    "@@ -4,7 +4,7 @@ use super::{",
+    "@@ -357,12 +357,21 @@ pub(crate) const MIGRATED_ARCHIVAL_GRACE_MS: i64 = 24 * 60 * 60 * 1000;",
+    "@@ -406,13 +415,14 @@ pub(crate) fn member_active_for_archival("
+   ]
+  },
+  {
+   "path": "src/store/poke.rs",
+   "hunks": [
+    "@@ -10,6 +10,7 @@",
+    "@@ -113,6 +114,11 @@ fn collect(",
+    "@@ -120,7 +126,7 @@ fn collect("
+   ]
+  },
+  {
+   "path": "src/store/invitation_due.rs",
+   "hunks": [
+    "@@ -14,6 +14,7 @@ use std::collections::HashMap;",
+    "@@ -48,7 +49,11 @@ pub(crate) struct AdvisoryPage {"
+   ]
+  },
+  {
+   "path": "src/store/receipts.rs",
+   "hunks": [
+    "@@ -45,6 +45,7 @@ use super::{",
+    "@@ -1021,6 +1022,8 @@ pub struct DueScanResult {",
+    "@@ -1150,7 +1153,7 @@ pub fn scan_due(",
+    "@@ -1358,7 +1361,7 @@ pub fn scan_extension_lapses("
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -159,6 +159,14 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[",
+    "@@ -1735,7 +1743,11 @@ pub(crate) fn clear_warning_condition_at_snapshot(",
+    "@@ -1854,6 +1866,15 @@ pub fn record_overdue_with_decision_seq(",
+    "@@ -2258,7 +2279,11 @@ fn record_overdue_inner("
+   ]
+  },
+  {
+   "path": "src/sync/facts/seat.rs",
+   "hunks": [
+    "@@ -1,4 +1,5 @@",
+    "@@ -6,6 +7,9 @@",
+    "@@ -94,6 +98,35 @@ impl ReferencedSeats for SeatRetiredPayload {",
+    "@@ -128,3 +161,69 @@ impl FactKind for SeatRetired {"
+   ]
+  },
+  {
+   "path": "src/identity/shell_continuity.rs",
+   "hunks": [
+    "@@ -0,0 +1,224 @@"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,48 @@
+diff --git a/src/cli/me.rs b/src/cli/me.rs
+index f72e3b120..8c4a3cd40 100644
+--- a/src/cli/me.rs
++++ b/src/cli/me.rs
+@@ -52,10 +52,18 @@ fn resolve_seat(
+     instance: crate::node::NodeUuid,
+     host: &crate::protocol::ids::HostLocator,
+     pane: &HostTargetId,
++    env: &super::caller_location::CallerEnv,
+     clock: &dyn Clock,
+ ) -> Result<SeatId, RunError> {
+     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
+     let output = OutputSpec::default();
++    let continuity_key = super::site_capability::own_pane_continuity_key(
++        env,
++        pane,
++        super::caller::active_is_top_level(),
++        client,
++        &budget(clock, 5_000),
++    );
+     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
+         &journal,
+         journal::IntentScope::ServiceAllocation {
+@@ -65,6 +73,7 @@ fn resolve_seat(
+         journal::SemanticMutation::ResolveSeat {
+             target: pane.clone(),
+             host: host.clone(),
++            continuity_key,
+         },
+         clock.utc_now().0,
+         || {
+@@ -213,7 +222,15 @@ pub(crate) fn run_me_init<W: Write>(
+     .map_err(RunError::from)?;
+     let seat = match pane_seat_on(&client, &parsed.output, &pane, lookup_host, clock.as_ref())? {
+         Some(seat) => seat,
+-        None => resolve_seat(&client, paths, instance, &host, &pane, clock.as_ref())?,
++        None => resolve_seat(
++            &client,
++            paths,
++            instance,
++            &host,
++            &pane,
++            &super::caller_location::CallerEnv::for_site(parsed.caller_site.as_ref()),
++            clock.as_ref(),
++        )?,
+     };
+     let selection = CooperativeSelection {
+         seat: seat.clone(),

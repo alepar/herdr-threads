@@ -1,0 +1,16 @@
+# findings ledger — code — through r2
+triggers: none
+blocking: r1=0 r2=0 carriedB=0 regressedB=0 degraded=r1,r2 not-computable=no-progress,returned
+ignored-overrides: 0
+- [Should-fix] src/store/seats/reversible.rs:370 · raised r1@31cda24fefd3cfa661486da630903dd9903524e6 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-1.md
+- [Nit] src/store/seats/reversible.rs:412 · raised r1@31cda24fefd3cfa661486da630903dd9903524e6 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-1.md
+- [Nit] src/store/seats/cooperative.rs:1053 · raised r1@31cda24fefd3cfa661486da630903dd9903524e6 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-1.md
+- [Nit] src/identity/repair.rs:687 · raised r1@31cda24fefd3cfa661486da630903dd9903524e6 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-1.md
+- [Nit] tests/service/observation_lane.rs:1159 · raised r1@31cda24fefd3cfa661486da630903dd9903524e6 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-1.md
+- [Nit] tests/clone_identity_sweep.rs:945 · raised r1@31cda24fefd3cfa661486da630903dd9903524e6 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-1.md
+- [Nit] tests/service/continuity_key_session.rs:142 · raised r1@31cda24fefd3cfa661486da630903dd9903524e6 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-1.md
+- [Nit] docs/operations.md:286; docs/operations.md:290; docs/operations.md:249 · raised r1@31cda24fefd3cfa661486da630903dd9903524e6 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-1.md
+- [Nit] src/identity/repair.rs:727 · raised r1@31cda24fefd3cfa661486da630903dd9903524e6 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-1.md
+- [Should-fix] src/host/native.rs:1405; src/identity/repair.rs:706; src/identity/repair.rs:703; src/identity/repair.rs:704 · raised r2@06bae299f5958debac841c9baba530bc9449d8b0 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-2.md
+- [Should-fix] tests/service/observation_lane.rs:197 · raised r2@06bae299f5958debac841c9baba530bc9449d8b0 · open · source roast · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-2.md
+- [Must-fix] B2 not delivered on a peer under fork-repair ordering: an out-of-order `seat.unretired` is applied as a no-op yet journalled `applied`, so `episode_fact_applied` refuses every later copy and the peer seat stays retired and frozen (src/store/seats/publication.rs materialize_seat_unretired, src/store/seats/reversible.rs episode_fact_applied and unretire_by_fact; ledger line 152); no bead tracks it. · raised r2@- · open · source final-review · text docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-06-graph-clone-identity-roast-pr-2-final-review-keys.txt

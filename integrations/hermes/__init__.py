@@ -34,8 +34,9 @@ HOOKS = ("pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset
 CHILD_EVENTS = ("subagent_start", "subagent_stop")
 IDS = ("platform", "session_id", "parent_session_id", "task_id", "turn_id", "tool_call_id", "api_request_id")
 SLOT = "_herdr_threads_hermes_reader_schema1"
+# Hermes 0.22.1+ filters HERDR_THREADS_CONTINUITY_KEY on both sides, so it stays empty for a gateway session.
 PANE_ENV = ("HERDR_PANE_ID", "HERDR_ENV", "HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY",
-            "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET")
+            "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "HERDR_THREADS_CONTINUITY_KEY")
 CHILD_RESTRICTION = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent."
 # First 16 SHA-256 hex chars of sorted compact JSON of the normalized schema
 # declaration in testdata/callbacks.json. This identifies transport, not the

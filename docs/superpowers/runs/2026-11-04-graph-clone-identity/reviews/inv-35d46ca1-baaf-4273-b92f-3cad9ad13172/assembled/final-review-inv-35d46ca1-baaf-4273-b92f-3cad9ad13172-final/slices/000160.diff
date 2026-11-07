@@ -1,0 +1,12 @@
+diff --git a/tests/named_seats.rs b/tests/named_seats.rs
+index 609183f2d..3d1989eca 100644
+--- a/tests/named_seats.rs
++++ b/tests/named_seats.rs
+@@ -469,6 +469,7 @@ fn retry_of_a_journaled_intent_needs_no_herdr() {
+                 target: target.clone(),
+             },
+             SemanticMutation::ResolveSeat {
++                continuity_key: None,
+                 host: HostLocator::parse(herdr.to_string_lossy()).unwrap(),
+                 target,
+             },

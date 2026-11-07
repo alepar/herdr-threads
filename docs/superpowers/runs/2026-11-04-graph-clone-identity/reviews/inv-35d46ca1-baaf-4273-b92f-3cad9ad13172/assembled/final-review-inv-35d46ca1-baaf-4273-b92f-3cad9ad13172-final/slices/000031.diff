@@ -1,0 +1,54 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-24.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-24.md
+new file mode 100644
+index 000000000..a538b5a6a
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-24.md
+@@ -0,0 +1,48 @@
++# Final review, cluster 24 (tests-identity), epic ht-ma6i
++
++Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7. Both SHAs verified with `git rev-parse --verify`. The caller checkout stayed at the head with a clean status throughout.
++
++Inputs: `slices/000115.diff` (`tests/identity/kept_continuity_rules.rs`, +28) and `slices/000116.diff` (`tests/identity/reconcile.rs`, +2).
++
++## What the cluster changes
++
++`tests/identity/reconcile.rs`: two `continuity_key: None` lines on `ResolveSeat` literals (lines 1423 and 4434). Mechanical; the assertions are unchanged, and the keyless behaviour they pin is what spec 4.2's first table row requires.
++
++`tests/identity/kept_continuity_rules.rs`, mounted from `src/identity/repair.rs:1179` under `#[cfg(test)]`:
++
++- `TargetUnresolved` and `ContinuityKeyPending` join the definitive list of `transient_refusals_keep_the_claim_and_definitive_ones_do_not`. This matches spec 4.2: a key conflict's refusal is "definitive (not retried inside the callback, not kept)", and the claimless refusal is "refused definitively". Removing either code from `is_continuity_refusal` (`src/cli/retry.rs:378`) fails the assertion. `ServiceBusy` remains in the kept list, which is the "keyed claim during lag" rule.
++- `a_claim_rests_on_its_key_when_it_presents_one` pins `claim_evidence`: `Cooperative` with no key and `Key` with one. This matches the spec's new `ContinuityEvidence::Key` variant, and an inverted or constant helper fails it.
++
++## Checks run
++
++A review-owned detached worktree at the head, seeded by a copy-on-write clone and removed afterwards, ran `nice heavy tb cargo test --locked --all-features --lib -- identity::reconcile identity::repair::kept_continuity_rules`: 87 passed, 0 failed. The worktree had no tracked changes. No full-suite run was made; the caller owns that.
++
++## Reach of the keyed-claim test
++
++The new test's doc comment reads "Kills: a kept keyed claim decided without its key, at intake or by the observation worker." The test calls only the pure helper, so replacing `claim_evidence(..)` with `Cooperative` at either call site (`repair.rs:452` intake, `repair.rs:509` worker) leaves it green. Established by reading the test and call sites; no mutation was run.
++
++The worker site is covered elsewhere: `kept_keyed_claim_is_decided_after_lag_with_no_further_event` (`tests/integration/trust_policy.rs:2303`) would fail, since a keyless decision gives no match for `SFRESH`. That test writes the key into the kept row by SQL after a keyless intake, so it never exercises the intake site. A search of `tests/` found no test that drives a keyed `ContinuityCheckIn` through `OrdinaryIdentity::continuity`: `tests/store/continuity_key_decisions.rs` passes evidence directly and `tests/cli/hook.rs` uses a fake client. The production code at `repair.rs:452` is correct by reading, so this is a coverage gap and an overstated comment, not a defect.
++
++## Baseline rows and paths that leave the cluster
++
++The spec's baseline is B1 to B4. This cluster holds test code only and delivers no row by itself.
++
++- B1 (continuity key): the cluster pins the kept-or-definitive classification and the evidence selection. The rest of the path, from the hook through the daemon to the C1 transaction, leaves the cluster and is the seam reviewer's to trace.
++- B2 (pane close reverses by undo): `src/identity/reconcile.rs` gained `RetiredReversibly` arms, but `tests/identity/reconcile.rs` gained no test of them. The behaviour's trace is the seam reviewer's; the coverage gap is listed below.
++- B3 and B4: nothing here touches memberships on agent exit or Herdr.
++
++Observed at this head, outside this cluster: `ht-ma6i.1` (G2) and `ht-ma6i.4` (G5) are open in Beads, their task branches hold no task commits, and `src/identity/shell_continuity.rs` and `decide_shell_continuity` do not exist. That explains why `tests/identity/` has no shell-continuity or target-absence tests. The spec goal names both, but baseline rows B1 to B4 do not. Whether the epic can land without them is the seam reviewer's call; `final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-12.md` already reports them.
++
++## Verdict
++ready
++
++## Must fix before landing
++- none
++
++## Untested scope
++- `OrdinaryIdentity::continuity` intake with a keyed claim (`src/identity/repair.rs:452`): no test sends a keyed `ContinuityCheckIn` through it, so a regression to `Cooperative` at that call site would pass every test found, including `a_claim_rests_on_its_key_when_it_presents_one`.
++- `reconcile_published_page_for` with a `RetiredReversibly` outcome (`src/identity/reconcile.rs:572`): `tests/identity/reconcile.rs` has no case asserting that a reversible close counts in `transition_count` and not in `retirements_started`; `tests/store/restored_pane.rs:594` applies transitions below this function.
++- `reconcile_invalidated_page` refusing `RetiredReversibly` (`src/identity/reconcile.rs:644`): no test reaches this defensive arm, and its message `host invalidation cannot retire a seat` appears nowhere in `tests/`.
++
++## Deferred OK
++- Narrow the doc comment on `a_claim_rests_on_its_key_when_it_presents_one` (`tests/identity/kept_continuity_rules.rs:72`), which claims to kill call-site regressions that it does not; the helper's own behaviour is what it pins.

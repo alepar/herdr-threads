@@ -284,18 +284,22 @@ impl<'a> DaemonSeatResolver<'a> {
 
 /// Ordinary journaled canonical resolution shared by launch and top-level
 /// SessionStart enrollment. No caller claim, repair override or local authority.
+/// `continuity_key` is the caller's own pane's; launch resolves another pane and has none.
+// Allowed: the resolution's full address plus the key it presents.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_seat(
     client: &LocalSocketClient,
     journal: &Journal,
     instance: crate::node::NodeUuid,
     host: &crate::protocol::ids::HostLocator,
     target: &HostTargetId,
+    continuity_key: Option<crate::protocol::ids::ContinuityKey>,
     clock: &dyn Clock,
     budget: &CallBudget,
 ) -> Result<SeatId, ApiError> {
     let output = OutputSpec::default();
     let call = |command| client.call_with_output_definitive(command, &output, budget);
-    match resolve_result(journal, instance, host, target, clock, call)? {
+    match resolve_result(journal, instance, host, target, continuity_key, clock, call)? {
         CommandResult::SeatResolved(seat) | CommandResult::NamedSeatResolved { seat, .. } => {
             Ok(seat)
         }
@@ -326,7 +330,8 @@ pub(crate) fn resolve_named<C: LocalClient + ?Sized>(
     budget: &CallBudget,
 ) -> Result<NamedResolution, ApiError> {
     let call = |command| client.call_definitive(command, budget);
-    match resolve_result(journal, instance, host, target, clock, call)? {
+    // A named seat's continuity is its name: it presents no key.
+    match resolve_result(journal, instance, host, target, None, clock, call)? {
         CommandResult::NamedSeatResolved {
             seat,
             name,
@@ -350,6 +355,7 @@ fn resolve_result(
     instance: crate::node::NodeUuid,
     host: &crate::protocol::ids::HostLocator,
     target: &HostTargetId,
+    continuity_key: Option<crate::protocol::ids::ContinuityKey>,
     clock: &dyn Clock,
     call: impl Fn(Command) -> Result<Result<CommandResult, ApiError>, ApiError>,
 ) -> Result<CommandResult, ApiError> {
@@ -363,6 +369,7 @@ fn resolve_result(
         SemanticMutation::ResolveSeat {
             target: target.clone(),
             host: host.clone(),
+            continuity_key,
         },
         clock.utc_now().0,
         || {
@@ -410,12 +417,14 @@ impl LaunchSeatResolver for DaemonSeatResolver<'_> {
         _observation: &HostObservation,
         budget: &CallBudget,
     ) -> Result<SeatId, ApiError> {
+        // Launch resolves the pane it starts into, never the caller's own: no key (spec 4.2).
         resolve_seat(
             self.client,
             self.journal,
             self.instance,
             &self.host,
             target,
+            None,
             self.clock,
             budget,
         )

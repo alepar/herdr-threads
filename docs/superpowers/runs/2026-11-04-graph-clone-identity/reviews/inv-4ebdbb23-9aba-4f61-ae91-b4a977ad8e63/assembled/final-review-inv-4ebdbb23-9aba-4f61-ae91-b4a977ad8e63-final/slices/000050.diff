@@ -1,0 +1,372 @@
+diff --git a/src/protocol/service.rs b/src/protocol/service.rs
+index 975762ba4..7435106ea 100644
+--- a/src/protocol/service.rs
++++ b/src/protocol/service.rs
+@@ -6,9 +6,12 @@ use serde::{Deserialize, Serialize};
+ 
+ use super::{
+     commands::{HistoryRange, MAX_BATCH_ITEMS},
+-    ids::{InvitationId, MessageId, OperationId, RequirementId, SeatId, ServiceAuthorId, ThreadId},
++    ids::{
++        ContinuityKey, HostLocator, HostTargetId, InvitationId, MessageId, OperationId,
++        RequirementId, SeatId, ServiceAuthorId, ThreadId,
++    },
+     pagination::{Page, PageRequest},
+-    results::{DeliveryInspection, MessageKind, MessageSummary},
++    results::{ContinuityConflictKind, DeliveryInspection, MessageKind, MessageSummary},
+     time::UtcMillis,
+     wire::PROTOCOL_VERSION,
+ };
+@@ -18,16 +21,66 @@ pub const SERVICE_SESSION_CAPABILITY: &str = "service_session_v1";
+ /// with this name; an old daemon rejects it at register ("unsupported service
+ /// capability") and there is no silent fallback to v1.
+ pub const SERVICE_SESSION_CAPABILITY_V2: &str = "service_session_v2";
++/// The v2 operations plus the clone identity operations: `ReserveContinuityKey`,
++/// `ReleaseContinuityKey`, `UnretireSeat`, `FinalizeRetirement`, `ContinuityAlerts`. Registration is
++/// the only advertisement; an old daemon rejects the name and there is no silent fallback.
++pub const SERVICE_SESSION_CAPABILITY_V3: &str = "service_session_v3";
+ /// Same bound as native `store::messages::MAX_BODY_BYTES` (protocol must not
+ /// depend on store; a test pins equality).
+ pub const SERVICE_SEND_MAX_BODY_BYTES: usize = 65_536;
+ 
++/// The session version a service operation requires. Owns the capability names and the mapping
++/// from operation to level; a new operation is one arm in `required_by`. Never gates peer facts.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++pub enum ServiceSessionLevel {
++    V1,
++    V2,
++    V3,
++}
++
++impl ServiceSessionLevel {
++    pub fn from_capability(name: &str) -> Option<Self> {
++        match name {
++            SERVICE_SESSION_CAPABILITY => Some(Self::V1),
++            SERVICE_SESSION_CAPABILITY_V2 => Some(Self::V2),
++            SERVICE_SESSION_CAPABILITY_V3 => Some(Self::V3),
++            _ => None,
++        }
++    }
++
++    pub fn capability(self) -> &'static str {
++        match self {
++            Self::V1 => SERVICE_SESSION_CAPABILITY,
++            Self::V2 => SERVICE_SESSION_CAPABILITY_V2,
++            Self::V3 => SERVICE_SESSION_CAPABILITY_V3,
++        }
++    }
++
++    pub fn required_by(operation: &ServiceOperation) -> Self {
++        match operation {
++            ServiceOperation::EnsureThread(_)
++            | ServiceOperation::Invite(_)
++            | ServiceOperation::Notify(_)
++            | ServiceOperation::Membership(_)
++            | ServiceOperation::SetTopic(_)
++            | ServiceOperation::ReleaseRequirement(_)
++            | ServiceOperation::Archive(_)
++            | ServiceOperation::Reopen(_) => Self::V1,
++            ServiceOperation::Send(_)
++            | ServiceOperation::History(_)
++            | ServiceOperation::Receipts(_) => Self::V2,
++            ServiceOperation::ReserveContinuityKey(_)
++            | ServiceOperation::ReleaseContinuityKey(_)
++            | ServiceOperation::UnretireSeat(_)
++            | ServiceOperation::FinalizeRetirement(_)
++            | ServiceOperation::ContinuityAlerts(_) => Self::V3,
++        }
++    }
++}
++
+ /// Whether a registering client's capability name is one this build serves.
+ pub fn is_supported_service_capability(name: &str) -> bool {
+-    matches!(
+-        name,
+-        SERVICE_SESSION_CAPABILITY | SERVICE_SESSION_CAPABILITY_V2
+-    )
++    ServiceSessionLevel::from_capability(name).is_some()
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+@@ -154,6 +207,80 @@ pub enum ServiceOperation {
+     History(ServiceHistoryQuery),
+     /// Query, never journaled. Requires `service_session_v2`.
+     Receipts(ServiceReceiptsQuery),
++    /// Mutation, journaled. Requires `service_session_v3`.
++    ReserveContinuityKey(ReserveContinuityKey),
++    /// Mutation, journaled. Requires `service_session_v3`.
++    ReleaseContinuityKey(ReleaseContinuityKey),
++    /// Mutation, journaled. Requires `service_session_v3`.
++    UnretireSeat(UnretireSeat),
++    /// Mutation, journaled. Requires `service_session_v3`.
++    FinalizeRetirement(FinalizeRetirement),
++    /// Query, never journaled. Requires `service_session_v3`.
++    ContinuityAlerts(ServiceContinuityAlertsQuery),
++}
++
++/// Reserve a key for this service, optionally binding it to `seat` (spec 4.5).
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ReserveContinuityKey {
++    pub key: ContinuityKey,
++    pub seat: Option<SeatId>,
++    pub operation: OperationId,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ReleaseContinuityKey {
++    pub key: ContinuityKey,
++    pub operation: OperationId,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct UnretireSeat {
++    pub seat: SeatId,
++    pub operation: OperationId,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct FinalizeRetirement {
++    pub seat: SeatId,
++    pub operation: OperationId,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ServiceContinuityAlertsQuery {
++    pub page: PageRequest,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ContinuityKeyReservation {
++    pub key: ContinuityKey,
++    pub owner: ServiceAuthorId,
++    pub seat: Option<SeatId>,
++    pub reserved_at: UtcMillis,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct SeatUnretired {
++    pub seat: SeatId,
++    pub generation: u64,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ContinuityAlert {
++    pub ordinal: u64,
++    pub key: ContinuityKey,
++    pub seat: Option<SeatId>,
++    pub host: HostLocator,
++    pub pane: HostTargetId,
++    pub kind: ContinuityConflictKind,
++    pub at: UtcMillis,
+ }
+ 
+ /// Post an ordinary message into a service-managed thread. Under D9 only the explicit `recipients` owe
+@@ -279,6 +406,11 @@ pub enum ServiceResult {
+     MessageSent(ServiceMessageSent),
+     History(Page<MessageSummary>),
+     Receipts(DeliveryInspection),
++    ContinuityKeyReserved(ContinuityKeyReservation),
++    ContinuityKeyReleased(ContinuityKey),
++    SeatUnretired(SeatUnretired),
++    RetirementFinalized(SeatId),
++    ContinuityAlerts(Page<ContinuityAlert>),
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+@@ -400,7 +532,11 @@ impl ServiceOperation {
+             Self::ReleaseRequirement(request) => Some(&request.operation),
+             Self::Archive(request) | Self::Reopen(request) => Some(&request.operation),
+             Self::Send(request) => Some(&request.operation),
+-            Self::History(_) | Self::Receipts(_) => None,
++            Self::ReserveContinuityKey(request) => Some(&request.operation),
++            Self::ReleaseContinuityKey(request) => Some(&request.operation),
++            Self::UnretireSeat(request) => Some(&request.operation),
++            Self::FinalizeRetirement(request) => Some(&request.operation),
++            Self::History(_) | Self::Receipts(_) | Self::ContinuityAlerts(_) => None,
+         }
+     }
+ }
+@@ -430,6 +566,7 @@ impl ServiceOperation {
+             Self::Send(request) => request.validate(),
+             Self::History(request) => request.validate(),
+             Self::Receipts(request) => request.page.validate(),
++            Self::ContinuityAlerts(request) => request.page.validate(),
+             _ => Ok(()),
+         }
+     }
+@@ -552,15 +689,19 @@ mod contract_tests {
+     }
+ 
+     #[test]
+-    fn register_accepts_v1_and_v2_only() {
+-        for capability in [SERVICE_SESSION_CAPABILITY, SERVICE_SESSION_CAPABILITY_V2] {
++    fn register_accepts_v1_v2_and_v3_only() {
++        for capability in [
++            SERVICE_SESSION_CAPABILITY,
++            SERVICE_SESSION_CAPABILITY_V2,
++            SERVICE_SESSION_CAPABILITY_V3,
++        ] {
+             let mut request = registration();
+             request.service = ServiceRequest::Register(ServiceRegister {
+                 capability: capability.into(),
+             });
+             assert_eq!(request.validate(), Ok(()), "{capability}");
+         }
+-        for capability in ["service_session_v3", "", "future-service"] {
++        for capability in ["service_session_v4", "", "future-service"] {
+             let mut request = registration();
+             request.service = ServiceRequest::Register(ServiceRegister {
+                 capability: capability.into(),
+@@ -735,6 +876,144 @@ mod contract_tests {
+         assert!(serde_json::from_value::<ServiceResult>(extra).is_err());
+     }
+ 
++    fn clone_identity_ops() -> Vec<ServiceOperation> {
++        vec![
++            ServiceOperation::ReserveContinuityKey(ReserveContinuityKey {
++                key: ContinuityKey::new("clone-1"),
++                seat: None,
++                operation: OperationId::new("op-1"),
++            }),
++            ServiceOperation::ReleaseContinuityKey(ReleaseContinuityKey {
++                key: ContinuityKey::new("clone-1"),
++                operation: OperationId::new("op-2"),
++            }),
++            ServiceOperation::UnretireSeat(UnretireSeat {
++                seat: SeatId::new("s1"),
++                operation: OperationId::new("op-3"),
++            }),
++            ServiceOperation::FinalizeRetirement(FinalizeRetirement {
++                seat: SeatId::new("s1"),
++                operation: OperationId::new("op-4"),
++            }),
++            ServiceOperation::ContinuityAlerts(ServiceContinuityAlertsQuery {
++                page: PageRequest::default(),
++            }),
++        ]
++    }
++
++    #[test]
++    fn session_level_maps_capabilities_and_operations() {
++        for level in [
++            ServiceSessionLevel::V1,
++            ServiceSessionLevel::V2,
++            ServiceSessionLevel::V3,
++        ] {
++            assert_eq!(
++                ServiceSessionLevel::from_capability(level.capability()),
++                Some(level)
++            );
++        }
++        assert_eq!(
++            ServiceSessionLevel::from_capability("service_session_v4"),
++            None
++        );
++        assert!(ServiceSessionLevel::V1 < ServiceSessionLevel::V2);
++        assert!(ServiceSessionLevel::V2 < ServiceSessionLevel::V3);
++        assert_eq!(
++            ServiceSessionLevel::required_by(&send_op("hi", vec![], None)),
++            ServiceSessionLevel::V2
++        );
++        for operation in clone_identity_ops() {
++            assert_eq!(
++                ServiceSessionLevel::required_by(&operation),
++                ServiceSessionLevel::V3,
++                "{operation:?}"
++            );
++        }
++    }
++
++    #[test]
++    fn clone_identity_operations_round_trip() {
++        let page = serde_json::to_value(PageRequest::default()).unwrap();
++        for fixture in [
++            json!({"kind": "reserve_continuity_key", "args": {"key": "clone-1", "seat": null, "operation": "op-1"}}),
++            json!({"kind": "reserve_continuity_key", "args": {"key": "clone-1", "seat": "s1", "operation": "op-1"}}),
++            json!({"kind": "release_continuity_key", "args": {"key": "clone-1", "operation": "op-2"}}),
++            json!({"kind": "unretire_seat", "args": {"seat": "s1", "operation": "op-3"}}),
++            json!({"kind": "finalize_retirement", "args": {"seat": "s1", "operation": "op-4"}}),
++            json!({"kind": "continuity_alerts", "args": {"page": page}}),
++        ] {
++            let parsed: ServiceOperation = serde_json::from_value(fixture.clone()).unwrap();
++            assert_eq!(parsed.validate(), Ok(()), "{fixture}");
++            assert_eq!(serde_json::to_value(parsed).unwrap(), fixture);
++        }
++        for operation in clone_identity_ops() {
++            assert_eq!(
++                operation.operation_key().is_some(),
++                !matches!(operation, ServiceOperation::ContinuityAlerts(_)),
++                "{operation:?}"
++            );
++        }
++        assert!(
++            ServiceOperation::ContinuityAlerts(ServiceContinuityAlertsQuery {
++                page: PageRequest {
++                    limit: 0,
++                    ..PageRequest::default()
++                },
++            })
++            .validate()
++            .is_err()
++        );
++        let long_key = json!({"kind": "release_continuity_key", "args": {"key": "k".repeat(129), "operation": "op-2"}});
++        assert!(serde_json::from_value::<ServiceOperation>(long_key).is_err());
++        let extra = json!({"kind": "unretire_seat", "args": {"seat": "s1", "operation": "op-3", "force": true}});
++        assert!(serde_json::from_value::<ServiceOperation>(extra).is_err());
++    }
++
++    #[test]
++    fn clone_identity_results_round_trip() {
++        let page = |items: Value| {
++            json!({"items": items, "next_cursor": null, "next_argv": null,
++                "high_water_ordinal": 0, "scope_revision": null, "has_more": false,
++                "stop_reason": "complete", "consistency": "bounded_live"})
++        };
++        for fixture in [
++            json!({"kind": "continuity_key_reserved", "data": {"key": "clone-1", "owner": "graph", "seat": null, "reserved_at": 5}}),
++            json!({"kind": "continuity_key_released", "data": "clone-1"}),
++            json!({"kind": "seat_unretired", "data": {"seat": "s1", "generation": 3}}),
++            json!({"kind": "retirement_finalized", "data": "s1"}),
++            json!({"kind": "continuity_alerts", "data": page(json!([{"ordinal": 1, "key": "clone-1", "seat": null,
++                "host": "/run/h.sock", "pane": "w1:p1", "kind": "key_live_elsewhere", "at": 5}]))}),
++        ] {
++            let parsed: ServiceResult = serde_json::from_value(fixture.clone()).unwrap();
++            assert_eq!(serde_json::to_value(parsed).unwrap(), fixture);
++        }
++        for (kind, name) in [
++            (
++                ContinuityConflictKind::KeyLiveElsewhere,
++                "key_live_elsewhere",
++            ),
++            (
++                ContinuityConflictKind::KeyRetiredReversibly,
++                "key_retired_reversibly",
++            ),
++            (
++                ContinuityConflictKind::PaneOwnedByOtherSeat,
++                "pane_owned_by_other_seat",
++            ),
++            (
++                ContinuityConflictKind::SessionMatchesOtherSeat,
++                "session_matches_other_seat",
++            ),
++            (
++                ContinuityConflictKind::SeatHoldsOtherKey,
++                "seat_holds_other_key",
++            ),
++        ] {
++            assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
++        }
++    }
++
+     #[test]
+     fn send_body_bound_matches_native() {
+         assert_eq!(

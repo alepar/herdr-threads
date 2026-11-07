@@ -1,0 +1,12 @@
+diff --git a/tests/store/named_restore.rs b/tests/store/named_restore.rs
+index a1ca801fb..162805a1e 100644
+--- a/tests/store/named_restore.rs
++++ b/tests/store/named_restore.rs
+@@ -126,6 +126,7 @@ impl Fx {
+             operation: OperationId::new(operation),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         };
+         match resolve_named_seat(
+             &self.context,

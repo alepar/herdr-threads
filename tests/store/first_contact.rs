@@ -414,6 +414,7 @@ fn first_contact_is_attached_once_per_binding() {
         mode: crate::protocol::commands::CheckInMode::Current,
         claim: first.context.clone(),
         operation: OperationId::new("a3"),
+        continuity_key: None,
     };
     let current = check_in(&store, current).unwrap();
     assert!(current.first_contact.is_none());
@@ -663,6 +664,7 @@ fn plain_touch_never_fast_forwards() {
         mode: crate::protocol::commands::CheckInMode::Current,
         claim: bare,
         operation: OperationId::new("touch"),
+        continuity_key: None,
     };
     let touched = check_in(&store, current).unwrap();
     assert!(touched.fast_forward.is_none() && touched.first_contact.is_none());
@@ -691,6 +693,7 @@ fn plain_call_reconnect_never_fast_forwards() {
         mode: crate::protocol::commands::CheckInMode::Current,
         claim: first.context.clone(),
         operation: OperationId::new("touch"),
+        continuity_key: None,
     };
     let touched = check_in(&store, current).unwrap();
     assert!(touched.fast_forward.is_none() && touched.first_contact.is_none());

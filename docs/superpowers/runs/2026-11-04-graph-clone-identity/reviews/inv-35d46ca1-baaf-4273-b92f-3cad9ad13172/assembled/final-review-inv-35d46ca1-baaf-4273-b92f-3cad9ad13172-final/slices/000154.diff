@@ -1,0 +1,102 @@
+diff --git a/tests/identity/reconcile.rs b/tests/identity/reconcile.rs
+index e376257a5..a5a3b50da 100644
+--- a/tests/identity/reconcile.rs
++++ b/tests/identity/reconcile.rs
+@@ -1420,6 +1420,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
+         operation: OperationId::new("allocate-shell"),
+         locator_hint: None,
+         tmux_hint: None,
++        continuity_key: None,
+     };
+     let guard = || OrdinaryResolutionGuard::try_new(&request, fresh.clone(), &admission).unwrap();
+     let OrdinaryResolutionOutcome::Resolved(seat) = seats::resolve_seat(
+@@ -4430,6 +4431,7 @@ fn s1_named_allocation_race_and_carry_forward() {
+         operation: OperationId::new("s1-op"),
+         locator_hint: None,
+         tmux_hint: None,
++        continuity_key: None,
+     };
+     let seat = match seats::resolve_named_seat(
+         &context,
+@@ -4690,3 +4692,81 @@ fn begin_pass_forgets_the_finished_set() {
+     lane.promote_live();
+     assert_eq!(lane.published_live(), Some([SeatId::new("b")].as_slice()));
+ }
++
++/// G5: the store's target-absence evidence maps to its action, and no other seat state takes one.
++/// Kills: an arm crossed with another, or a retirement naming a target other than the saved one.
++#[test]
++fn target_absence_evidence_plans_its_action() {
++    use crate::ports::{
++        PublishedSnapshot, ReconciliationAction, RestoredPane, SeatState, SnapshotGenerationId,
++        SnapshotSavedSeat, SnapshotSeatPage, UnresolvedReason,
++    };
++    let plan = |restored_pane: RestoredPane, state: SeatState| {
++        let page = SnapshotSeatPage {
++            publication: PublishedSnapshot {
++                id: SnapshotGenerationId::store_issued("g5".into()),
++                instance: "instance-a".into(),
++                host_id: crate::test_support::test_host_id(),
++                boot: HostBootId::new("boot-a"),
++                epoch: 1,
++                observation_sequence: 3,
++                incarnation: "inc-a".into(),
++                target_count: 0,
++                invalidation_revision: 0,
++            },
++            high_water_ordinal: 1,
++            after_ordinal: 1,
++            visited: 1,
++            has_more: false,
++            seats: vec![SnapshotSavedSeat {
++                restored_pane,
++                ordinal: 1,
++                seat: SeatId::new("seat-a"),
++                state,
++                unresolved_reason: (state == SeatState::Unresolved)
++                    .then_some(UnresolvedReason::Other),
++                prior_published_observation: None,
++                structural_proof: None,
++                target: Some(HostTargetId::new("saved")),
++                terminal: None,
++                binding_generation: 1,
++                binding_execution: None,
++                active_binding_execution: None,
++                bound_epoch: None,
++                bound_boot: None,
++                bound_incarnation: None,
++                latest_binding_evidence: None,
++                observed_match: None,
++            }],
++        };
++        plan_page(&page).unwrap().remove(0).action
++    };
++    let unresolved = SeatState::Unresolved;
++    assert_eq!(
++        plan(RestoredPane::TargetShown, unresolved),
++        ReconciliationAction::ResetTargetAbsence
++    );
++    assert_eq!(
++        plan(RestoredPane::TargetAbsent, unresolved),
++        ReconciliationAction::NoteTargetAbsent
++    );
++    assert_eq!(
++        plan(RestoredPane::TargetGone, unresolved),
++        ReconciliationAction::RetireAbsentTarget {
++            absent_target: HostTargetId::new("saved")
++        }
++    );
++    assert_eq!(
++        plan(RestoredPane::None, unresolved),
++        ReconciliationAction::MarkUnresolved
++    );
++    for action in [
++        ReconciliationAction::ResetTargetAbsence,
++        ReconciliationAction::NoteTargetAbsent,
++        ReconciliationAction::RetireAbsentTarget {
++            absent_target: HostTargetId::new("saved"),
++        },
++    ] {
++        assert!(action.may_complete_past_refusal(), "{action:?}");
++    }
++}

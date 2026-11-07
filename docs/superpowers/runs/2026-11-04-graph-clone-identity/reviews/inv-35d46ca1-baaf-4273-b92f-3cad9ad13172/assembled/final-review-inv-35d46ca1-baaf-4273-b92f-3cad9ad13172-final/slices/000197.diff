@@ -1,0 +1,773 @@
+diff --git a/tests/store/restored_pane.rs b/tests/store/restored_pane.rs
+index af5ecf60f..ac43c2996 100644
+--- a/tests/store/restored_pane.rs
++++ b/tests/store/restored_pane.rs
+@@ -5,8 +5,9 @@ use super::*;
+ use crate::identity::reconcile::plan_page;
+ use crate::ports::{
+     EnumerationEvidence, EvidenceKind, ExecutionEvidence, GuardedSeatTransition, HostObservation,
+-    HostSnapshot, HostUiState, IncarnationEvidence, ObservationProvenance, ReconciliationAction,
+-    ReconciliationOutcome, SnapshotHeader, StructuralOccupancy,
++    HostSnapshot, HostUiState, IncarnationEvidence, ObservationProvenance,
++    OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome,
++    ReconciliationAction, ReconciliationOutcome, SnapshotHeader, StructuralOccupancy,
+ };
+ use crate::protocol::ids::HostCallId;
+ use crate::protocol::time::{Cancellation, Clock, MonoInstant};
+@@ -538,3 +539,756 @@ fn an_expired_kept_claim_blocks_and_a_lagging_marker_counts_nothing() {
+     }
+     assert!(passes >= RESTORED_PANE_GRACE_MS / STEP, "{passes}");
+ }
++
++/// Seat `s2` resolved on `w1:p2`, its structural proof in the current incarnation.
++fn seed_live_seat(fx: &Fx) {
++    fx.conn.execute(&format!("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES ('s2','{INSTANCE}','resolved','native','w1:p2',1,1,'term-b','inc-2','coherent_enumeration','b2',1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))"), []).unwrap();
++    fx.conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,liveness) VALUES ('s2',1,'w1:p2','term-b','inc-2','b2',1,1,'claude','SB','execution-2','cooperative_top_level',100,'connected')", []).unwrap();
++}
++
++/// Gives `seat` a continuity key, as a service's reserve-with-seat does.
++fn hold_key(fx: &mut Fx, seat: &str) {
++    let tx = fx.conn.transaction().unwrap();
++    let author =
++        crate::store::service_substrate::ensure_reserved_author(&tx, INSTANCE, UtcMillis(0))
++            .unwrap();
++    let key = crate::protocol::ids::ContinuityKey::new(format!("{seat}-key"));
++    crate::store::continuity_keys::reserve(
++        &tx,
++        &author,
++        &crate::protocol::service::ReserveContinuityKey {
++            key,
++            seat: Some(SeatId::new(seat)),
++            operation: crate::protocol::ids::OperationId::new("reserve"),
++        },
++        UtcMillis(1),
++    )
++    .unwrap();
++    tx.commit().unwrap();
++}
++
++fn reversible_count(fx: &Fx, seat: &str) -> i64 {
++    fx.conn
++        .query_row(
++            "SELECT count(*) FROM reversible_retirements WHERE seat_id=?1",
++            [seat],
++            |r| r.get(0),
++        )
++        .unwrap()
++}
++
++/// The two plan-driven `Closed` routes of a key holder. Kills: a reconcile path that still inserts
++/// a job (and so an outcome that advances one), or loses the closure evidence.
++#[test]
++fn closed_retirement_of_key_holder_by_the_plan_writes_a_reversible_row() {
++    // The same-incarnation close: the pane of a proved seat is gone from a coherent publication.
++    let mut fx = fixture();
++    fx.publish_and_pass(OPEN);
++    seed_live_seat(&fx);
++    hold_key(&mut fx, "s2");
++    let publication = fx.publish(&[("w1:p1", "term-a")]);
++    let (_, outcomes) = fx.pass(&publication);
++    assert!(
++        outcomes
++            .iter()
++            .any(|o| matches!(o, ReconciliationOutcome::RetiredReversibly)),
++        "{outcomes:?}"
++    );
++    assert!(
++        !outcomes
++            .iter()
++            .any(|o| matches!(o, ReconciliationOutcome::RetirementStarted(_)))
++    );
++    let state: String = fx
++        .conn
++        .query_row("SELECT state FROM seats WHERE id='s2'", [], |r| r.get(0))
++        .unwrap();
++    assert_eq!(state, "retired");
++    assert_eq!(reversible_count(&fx, "s2"), 1);
++
++    // The restored-pane close: the watch's grace elapses for a key holder.
++    let mut fx = fixture();
++    hold_key(&mut fx, "s1");
++    fx.publish_and_pass(OPEN);
++    fx.publish_and_pass(CLOSED);
++    for _ in 0..RESTORED_PANE_GRACE_MS / STEP {
++        fx.advance(STEP);
++        fx.publish_and_pass(CLOSED);
++    }
++    assert_eq!(fx.state(), "retired");
++    assert_eq!(fx.watch(), None);
++    let evidence: String = fx
++        .conn
++        .query_row(
++            "SELECT closure_evidence FROM reversible_retirements WHERE seat_id='s1'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(evidence, "restored_pane_closed");
++    let jobs: i64 = fx
++        .conn
++        .query_row(
++            "SELECT count(*) FROM retirements WHERE seat_id='s1'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(jobs, 0, "RetireRestoredPane no longer updates a job row");
++}
++
++/// A fresh current-target read of `target` in the fixture's current boot.
++fn fresh_observation(fx: &Fx, target: &str, terminal: Option<&str>) -> HostObservation {
++    HostObservation {
++        focused: false,
++        target: HostTargetId::new(target),
++        host_boot: HostBootId::new(fx.boot),
++        epoch: fx.epoch,
++        generation: 1,
++        observed_at_utc: UtcMillis(fx.now()),
++        observed_at_mono: MonoInstant(fx.now() as u64),
++        provenance: ObservationProvenance::FreshCurrentTarget,
++        occupant: None,
++        ui: HostUiState::Idle,
++        terminal: terminal.map(TerminalId::new),
++        occupancy: StructuralOccupancy::EmptyShell,
++        incarnation: IncarnationEvidence::Verified {
++            identity: fx.incarnation.into(),
++            evidence_kind: EvidenceKind::NativeCurrentTarget,
++        },
++        execution: ExecutionEvidence::Unknown,
++        call_id: HostCallId::new(format!("relaunch-{target}")),
++        connection_epoch: fx.epoch,
++        observation_sequence: fx.sequence + 1,
++        started_at_mono: MonoInstant(fx.now() as u64),
++        completed_at_mono: MonoInstant(fx.now() as u64),
++    }
++}
++
++/// Gives `seat` a joined membership and a pending requirement episode in thread `t`.
++fn seed_standing(fx: &mut Fx, seat: &str) {
++    let tx = fx.conn.transaction().unwrap();
++    let author =
++        crate::store::service_substrate::ensure_reserved_author(&tx, INSTANCE, UtcMillis(0))
++            .unwrap();
++    tx.execute(
++        &format!("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled,managed_owner_author_id) VALUES ('t','{INSTANCE}','topic','goal',0,0,1,0,'{}')", author.as_str()),
++        [],
++    )
++    .unwrap();
++    tx.execute(
++        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
++        [seat],
++    )
++    .unwrap();
++    tx.execute(
++        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv',?1,?2,1,'pending',1,1,100,9223372036854770000,(SELECT id FROM local_node))",
++        ["t", seat],
++    )
++    .unwrap();
++    tx.execute(
++        "INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES ('req','t',?1,?2,'inv','pending',1,1)",
++        [seat, author.as_str()],
++    )
++    .unwrap();
++    tx.commit().unwrap();
++}
++
++/// The seeded membership and requirement episode both still effective.
++fn assert_standing_effective(fx: &Fx, seat: &str, keyed: bool) {
++    let thread = crate::protocol::ids::ThreadId::new("t");
++    let seat = SeatId::new(seat);
++    let membership =
++        crate::store::service_substrate::effective_membership(&fx.conn, &thread, &seat).unwrap();
++    assert_eq!(
++        membership.voluntary,
++        crate::protocol::service::VoluntaryMembershipState::Joined,
++        "keyed={keyed}"
++    );
++    let requirement =
++        crate::store::service_substrate::current_requirement(&fx.conn, &thread, &seat).unwrap();
++    assert_eq!(
++        requirement.map(|current| current.requirement),
++        Some(crate::protocol::ids::RequirementId::new("req")),
++        "keyed={keyed}"
++    );
++}
++
++/// B3: an agent exiting with its pane open leaves the seat and its standing alone, keyless or
++/// key-holding, in the same incarnation and after a restart. Kills: agent exit read as a close,
++/// reversible or final, or costing a membership or a requirement episode.
++#[test]
++fn agent_exit_with_pane_open_keeps_the_seat() {
++    for keyed in [false, true] {
++        // Same incarnation: the binding ended, the pane still shown.
++        let mut fx = fixture();
++        fx.publish_and_pass(OPEN);
++        seed_live_seat(&fx);
++        if keyed {
++            hold_key(&mut fx, "s2");
++        }
++        seed_standing(&mut fx, "s2");
++        assert_standing_effective(&fx, "s2", keyed);
++        let exit_at = UtcMillis(fx.now());
++        let tx = fx.conn.transaction().unwrap();
++        let bindings =
++            crate::store::bindings::list_open_top_level(&tx, &SeatId::new("s2")).unwrap();
++        assert_eq!(bindings.len(), 1, "keyed={keyed}");
++        assert!(
++            crate::store::bindings::disconnect_with_hooks(
++                &tx,
++                &bindings[0],
++                crate::store::bindings::DisconnectReason::ProcessExit,
++                exit_at,
++                &[],
++            )
++            .unwrap(),
++            "keyed={keyed}"
++        );
++        tx.commit().unwrap();
++        for _ in 0..3 {
++            fx.advance(STEP);
++            fx.publish_and_pass(OPEN);
++        }
++        let (state, retirements): (String, i64) = fx
++            .conn
++            .query_row(
++                "SELECT state,(SELECT count(*) FROM retirements WHERE seat_id='s2') FROM seats WHERE id='s2'",
++                [],
++                |r| Ok((r.get(0)?, r.get(1)?)),
++            )
++            .unwrap();
++        assert_eq!(
++            (state.as_str(), retirements),
++            ("resolved", 0),
++            "keyed={keyed}"
++        );
++        assert_eq!(reversible_count(&fx, "s2"), 0, "keyed={keyed}");
++        assert_standing_effective(&fx, "s2", keyed);
++        // The relaunch keeps the seat: the pane's resolved owner answers, with or without its key.
++        for continuity_key in [
++            None,
++            keyed.then(|| crate::protocol::ids::ContinuityKey::new("s2-key")),
++        ] {
++            let request = crate::protocol::commands::ResolveSeat {
++                target: HostTargetId::new("w1:p2"),
++                host: crate::test_support::test_host_locator(),
++                operation: crate::protocol::ids::OperationId::new(format!(
++                    "relaunch-{}",
++                    uuid::Uuid::new_v4()
++                )),
++                locator_hint: None,
++                tmux_hint: None,
++                continuity_key,
++            };
++            fx.sequence += 1;
++            let observation = fresh_observation(&fx, "w1:p2", Some("term-b"));
++            let budget = budget();
++            let admission = begin_host_observation(
++                &fx.context,
++                &mut fx.conn,
++                INSTANCE,
++                crate::test_support::test_host_id(),
++                &budget,
++            )
++            .unwrap();
++            assert!(
++                publish_current_target_observation(
++                    &fx.context,
++                    &mut fx.conn,
++                    &admission,
++                    &observation,
++                    &budget
++                )
++                .unwrap()
++            );
++            let guard =
++                OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
++            let outcome = resolve_seat(
++                &fx.context,
++                &mut fx.conn,
++                INSTANCE,
++                request,
++                OrdinaryResolutionAttempt::Observed(guard),
++                &budget,
++            )
++            .unwrap();
++            assert_eq!(
++                outcome,
++                OrdinaryResolutionOutcome::Resolved(SeatId::new("s2")),
++                "keyed={keyed}"
++            );
++        }
++        assert_standing_effective(&fx, "s2", keyed);
++
++        // After a restart: unresolved, watched, never closed while the pane is shown.
++        let mut fx = fixture();
++        if keyed {
++            hold_key(&mut fx, "s1");
++        }
++        seed_standing(&mut fx, "s1");
++        for _ in 0..=(RESTORED_PANE_GRACE_MS / STEP) + 1 {
++            fx.advance(STEP);
++            fx.publish_and_pass(OPEN);
++        }
++        assert_eq!(fx.state(), "unresolved", "keyed={keyed}");
++        assert_eq!(reversible_count(&fx, "s1"), 0, "keyed={keyed}");
++        assert_standing_effective(&fx, "s1", keyed);
++        // The relaunch keeps the seat: its resumed session reattaches it to that pane.
++        let command = crate::protocol::commands::ContinuityCheckIn {
++            host: crate::test_support::test_host_locator(),
++            target: HostTargetId::new("w1:p1"),
++            harness: crate::protocol::authority::Harness::Claude,
++            native_session: crate::protocol::ids::NativeSessionId::new("SA"),
++            source: crate::protocol::commands::ContinuityCheckIn::RESUME_SOURCE.into(),
++            operation: crate::protocol::ids::OperationId::new("relaunch"),
++            execution: crate::protocol::ids::ExecutionId::new("execution-new"),
++            liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 42, start: 7 }),
++            continuity_key: keyed.then(|| crate::protocol::ids::ContinuityKey::new("s1-key")),
++        };
++        let observation = fresh_observation(&fx, "w1:p1", Some("term-a"));
++        let budget = budget();
++        let admission = begin_host_observation(
++            &fx.context,
++            &mut fx.conn,
++            INSTANCE,
++            crate::test_support::test_host_id(),
++            &budget,
++        )
++        .unwrap();
++        assert!(
++            publish_current_target_observation(
++                &fx.context,
++                &mut fx.conn,
++                &admission,
++                &observation,
++                &budget
++            )
++            .unwrap()
++        );
++        let guard = crate::ports::ContinuityTargetGuard::try_new(
++            INSTANCE,
++            crate::test_support::test_host_id(),
++            &command,
++            observation,
++        )
++        .unwrap();
++        decide_continuity(
++            &fx.context,
++            &mut fx.conn,
++            INSTANCE,
++            crate::ports::ContinuityRequest {
++                command,
++                guard,
++                diagnostic: "match",
++                evidence: crate::ports::ContinuityEvidence::Cooperative,
++            },
++        )
++        .unwrap();
++        assert_eq!(fx.state(), "resolved", "keyed={keyed}");
++        assert_eq!(reversible_count(&fx, "s1"), 0, "keyed={keyed}");
++        assert_standing_effective(&fx, "s1", keyed);
++    }
++}
++
++/// An unretired seat waits with no pane. Kills: the plan acting on it, or its row keeping the hold.
++#[test]
++fn an_unretired_seat_is_outside_the_reconciliation_plan() {
++    let mut fx = fixture();
++    fx.conn.execute_batch(
++        "UPDATE seats SET target_id=NULL WHERE id='s1';
++         INSERT INTO reversible_retirements(seat_id,state,cutover_at,reason,unretired_at) VALUES ('s1','unretired',1,'closed',2);",
++    ).unwrap();
++    let publication = fx.publish(OPEN);
++    let budget = budget();
++    let page =
++        saved_seats_page(&fx.context, &fx.conn, &publication.id, 0, None, 16, &budget).unwrap();
++    assert!(page.seats.is_empty());
++    assert!(!page.has_more);
++    assert!(plan_page(&page).unwrap().is_empty());
++    fx.pass(&publication);
++    assert_eq!(fx.state(), "unresolved");
++    let hold: i64 = fx
++        .conn
++        .query_row(
++            "SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE host_id=(SELECT min(host_id) FROM herdr_hosts)",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(hold, 0, "the waiting seat holds nothing");
++}
++
++// G5 (ht-ma6i.4): an unresolved seat whose saved target never returns.
++
++// The fixture's saved target `w1:p1` is absent from `CLOSED`, the baseline included.
++impl Fx {
++    /// The absence ledger's (boot, seen, observed) for `s1`.
++    fn absence(&self) -> Option<(String, Option<i64>, i64)> {
++        self.conn
++            .query_row(
++                "SELECT host_boot,absent_seen_at,absent_observed_ms FROM restored_target_absence WHERE seat_id='s1'",
++                [],
++                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
++            )
++            .optional()
++            .unwrap()
++    }
++    fn observed(&self) -> i64 {
++        self.absence().unwrap().2
++    }
++    fn hold(&self) -> i64 {
++        self.conn
++            .query_row(
++                "SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE host_id=(SELECT min(host_id) FROM herdr_hosts)",
++                [],
++                |r| r.get(0),
++            )
++            .unwrap()
++    }
++    fn keep_claim(&self, harness: &str, session: &str, key: Option<&str>) {
++        self.conn.execute(
++            "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at,continuity_key) VALUES ((SELECT min(host_id) FROM herdr_hosts),'w1:p7',?1,?2,'{}',0,?3)",
++            params![harness, session, key],
++        ).unwrap();
++    }
++    /// Baseline without the target, marker recorded, the count started at zero.
++    fn absence_started(&mut self) {
++        assert_eq!(self.publish_and_pass(CLOSED), RestoredPane::None);
++        assert_eq!(self.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++        assert_eq!(self.observed(), 0);
++    }
++    /// Runs twice the grace of passes, each `STEP` apart, all answering `expected`.
++    fn hold_for_twice_the_grace(&mut self, expected: RestoredPane) {
++        for _ in 0..2 * RESTORED_PANE_GRACE_MS / STEP {
++            self.advance(STEP);
++            assert_eq!(self.publish_and_pass(CLOSED), expected);
++        }
++        assert_eq!(self.state(), "unresolved");
++    }
++}
++
++/// Kills: no step cap, a grace off by one pass in either direction.
++#[test]
++fn absent_target_retires_after_ten_observed_minutes_with_step_cap() {
++    let mut fx = fixture();
++    fx.absence_started();
++    // A suspend between two passes counts one step.
++    fx.advance(100 * STEP);
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++    assert_eq!(fx.observed(), STEP);
++    for pass in 2..RESTORED_PANE_GRACE_MS / STEP {
++        fx.advance(STEP);
++        assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++        assert_eq!(fx.observed(), pass * STEP);
++        assert_eq!(fx.state(), "unresolved");
++    }
++    fx.advance(STEP);
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetGone);
++    assert_eq!(fx.state(), "retired");
++}
++
++/// Kills: evidence left off the job, `closure_evidence` set instead, a ledger row left behind, a
++/// hold not lifted.
++#[test]
++fn absence_evidence_is_recorded_and_holds_lift() {
++    let mut fx = fixture();
++    fx.absence_started();
++    assert_eq!(fx.hold(), 1, "the unresolved seat holds the baseline");
++    for _ in 1..RESTORED_PANE_GRACE_MS / STEP {
++        fx.advance(STEP);
++        fx.publish_and_pass(CLOSED);
++    }
++    fx.advance(STEP);
++    let publication = fx.publish(CLOSED);
++    let (evidence, outcomes) = fx.pass(&publication);
++    assert_eq!(evidence, RestoredPane::TargetGone);
++    assert!(
++        outcomes
++            .iter()
++            .any(|o| matches!(o, ReconciliationOutcome::RetirementStarted(_))),
++        "{outcomes:?}"
++    );
++    type JobRow = (Option<String>, Option<String>, String, i64, String, i64);
++    let row: JobRow = fx
++        .conn
++        .query_row(
++            "SELECT absence_evidence,closure_evidence,closure_boot,closure_epoch,closure_target,closure_generation FROM retirements WHERE seat_id='s1'",
++            [],
++            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
++        )
++        .unwrap();
++    assert_eq!(
++        row,
++        (
++            Some("restored_target_absent".into()),
++            None,
++            "b2".into(),
++            1,
++            "w1:p1".into(),
++            1
++        )
++    );
++    assert_eq!(fx.absence(), None);
++    assert_eq!(fx.hold(), 0);
++}
++
++/// Kills: a path around the disposition that writes a job or drops the evidence or the key.
++#[test]
++fn key_holder_retires_reversibly() {
++    let mut fx = fixture();
++    hold_key(&mut fx, "s1");
++    fx.absence_started();
++    for _ in 1..RESTORED_PANE_GRACE_MS / STEP {
++        fx.advance(STEP);
++        fx.publish_and_pass(CLOSED);
++    }
++    fx.advance(STEP);
++    let publication = fx.publish(CLOSED);
++    let (_, outcomes) = fx.pass(&publication);
++    assert!(
++        outcomes
++            .iter()
++            .any(|o| matches!(o, ReconciliationOutcome::RetiredReversibly)),
++        "{outcomes:?}"
++    );
++    assert_eq!(fx.state(), "retired");
++    let row: (Option<String>, Option<String>) = fx
++        .conn
++        .query_row(
++            "SELECT absence_evidence,closure_evidence FROM reversible_retirements WHERE seat_id='s1'",
++            [],
++            |r| Ok((r.get(0)?, r.get(1)?)),
++        )
++        .unwrap();
++    assert_eq!(row, (Some("restored_target_absent".into()), None));
++    let (jobs, keys): (i64, i64) = fx
++        .conn
++        .query_row(
++            "SELECT (SELECT count(*) FROM retirements WHERE seat_id='s1'),(SELECT count(*) FROM continuity_keys WHERE seat_id='s1')",
++            [],
++            |r| Ok((r.get(0)?, r.get(1)?)),
++        )
++        .unwrap();
++    assert_eq!((jobs, keys), (0, 1));
++    assert_eq!(fx.absence(), None);
++}
++
++/// Kills: a shown target that keeps the count (either path), and a reset that also ends the watch
++/// rule's turn.
++#[test]
++fn target_reappearing_resets_and_hands_over_to_the_watch() {
++    // The target is not in the baseline: the row resets and the watch rule watches nothing.
++    let mut fx = fixture();
++    fx.absence_started();
++    for _ in 0..4 {
++        fx.advance(STEP);
++        fx.publish_and_pass(CLOSED);
++    }
++    assert_eq!(fx.observed(), 4 * STEP);
++    assert_eq!(fx.publish_and_pass(OPEN), RestoredPane::TargetShown);
++    assert_eq!(fx.absence(), None);
++    assert_eq!(fx.publish_and_pass(OPEN), RestoredPane::None);
++    // Absent again: the full grace is owed from zero.
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++    assert_eq!(fx.observed(), 0);
++
++    // The baseline held it but no pass saw it: the watch rule takes over, with precedence, and
++    // the counted absence goes with it.
++    let mut fx = fixture();
++    fx.publish(OPEN);
++    fx.absence_started();
++    fx.advance(STEP);
++    fx.publish_and_pass(CLOSED);
++    assert_eq!(fx.observed(), STEP);
++    assert_eq!(fx.publish_and_pass(OPEN), RestoredPane::Observe);
++    assert_eq!(fx.absence(), None);
++    assert_eq!(fx.watch(), Some(("term-a".into(), None, 0)));
++    assert_eq!(fx.publish_and_pass(OPEN), RestoredPane::Watching);
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::Absent);
++    assert_eq!(fx.absence(), None, "the watch owns the closure now");
++}
++
++/// Kills: a block on any kept row, or none, and a block that forgets the count.
++#[test]
++fn kept_c1_claim_blocks_the_count() {
++    let mut fx = fixture();
++    fx.absence_started();
++    fx.advance(STEP);
++    fx.publish_and_pass(CLOSED);
++    // Another session's claim names nothing of this seat.
++    fx.keep_claim("claude", "SX", None);
++    fx.advance(STEP);
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++    assert_eq!(fx.observed(), 2 * STEP);
++    // The seat's own top-level session, of any age.
++    fx.keep_claim("claude", "SA", None);
++    fx.hold_for_twice_the_grace(RestoredPane::None);
++    assert_eq!(fx.observed(), 2 * STEP, "nothing counted");
++    fx.conn
++        .execute("DELETE FROM kept_continuity_claims", [])
++        .unwrap();
++    fx.advance(STEP);
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++    assert_eq!(fx.observed(), 3 * STEP);
++}
++
++/// Kills: a key test that matches any keyed claim, and a watch that does not share it.
++#[test]
++fn kept_claim_with_the_seats_key_blocks_the_count() {
++    let mut fx = fixture();
++    hold_key(&mut fx, "s1");
++    fx.absence_started();
++    fx.keep_claim("codex", "SZ", Some("another-key"));
++    fx.advance(STEP);
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++    assert_eq!(fx.observed(), STEP);
++    fx.keep_claim("codex", "SY", Some("s1-key"));
++    fx.hold_for_twice_the_grace(RestoredPane::None);
++    assert_eq!(fx.observed(), STEP, "nothing counted");
++
++    // The ht-wpq4 watch shares the guard.
++    let mut fx = fixture();
++    hold_key(&mut fx, "s1");
++    fx.publish_and_pass(OPEN);
++    fx.keep_claim("codex", "SY", Some("s1-key"));
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::Watching);
++}
++
++/// Kills: a count while the marker lags, and a catch-up that credits the lag beyond one step.
++#[test]
++fn lagging_marker_adds_nothing() {
++    let mut fx = fixture();
++    fx.absence_started();
++    fx.record_marker = false;
++    fx.conn
++        .execute(
++            "UPDATE herdr_hosts SET reconciled_boot=NULL,reconciled_epoch=NULL",
++            [],
++        )
++        .unwrap();
++    fx.hold_for_twice_the_grace(RestoredPane::None);
++    assert_eq!(fx.observed(), 0, "no absence time counted");
++    fx.record_marker = true;
++    fx.publish_and_pass(CLOSED);
++    fx.advance(STEP);
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++    assert!(fx.observed() <= 2 * STEP, "{}", fx.observed());
++    assert_eq!(fx.state(), "unresolved");
++}
++
++/// Kills: the rule on a host kind with no absence authority, or on a seat with no target.
++#[test]
++fn named_hc_and_unretired_seats_are_never_retired_this_way() {
++    for kind in ["named", "hc"] {
++        let mut fx = fixture();
++        fx.conn
++            .execute("UPDATE herdr_hosts SET kind=?1", [kind])
++            .unwrap();
++        assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::None, "{kind}");
++        fx.hold_for_twice_the_grace(RestoredPane::None);
++        assert_eq!(fx.absence(), None, "{kind}");
++    }
++
++    // An unretired seat has no target: no page row, and a forged action is refused.
++    let mut fx = fixture();
++    fx.conn.execute_batch(
++        "UPDATE seats SET target_id=NULL WHERE id='s1';
++         INSERT INTO reversible_retirements(seat_id,state,cutover_at,reason,unretired_at) VALUES ('s1','unretired',1,'closed',2);",
++    ).unwrap();
++    fx.publish_and_pass(CLOSED);
++    fx.hold_for_twice_the_grace(RestoredPane::None);
++    assert_eq!(fx.absence(), None);
++    let publication = fx.publish(CLOSED);
++    for expected_target in [None, Some(HostTargetId::new("w1:p1"))] {
++        let outcome = apply_reconciliation_transition(
++            &fx.context,
++            &mut fx.conn,
++            GuardedSeatTransition {
++                publication: publication.clone(),
++                seat: SeatId::new("s1"),
++                expected_binding_generation: 2,
++                expected_target,
++                expected_terminal: None,
++                action: ReconciliationAction::RetireAbsentTarget {
++                    absent_target: HostTargetId::new("w1:p1"),
++                },
++            },
++            &budget(),
++        )
++        .unwrap();
++        assert!(matches!(outcome, ReconciliationOutcome::Stale(_)));
++    }
++    assert_eq!(fx.state(), "unresolved");
++}
++
++/// Kills: a row of another boot, incarnation or generation counted, or left in place.
++#[test]
++fn stale_row_of_another_boot_is_replaced() {
++    let mut fx = fixture();
++    fx.absence_started();
++    for _ in 0..4 {
++        fx.advance(STEP);
++        fx.publish_and_pass(CLOSED);
++    }
++    assert_eq!(fx.observed(), 4 * STEP);
++    // A new boot: that row is not this count.
++    fx.boot = "b3";
++    fx.incarnation = "inc-3";
++    fx.sequence = 0;
++    fx.publish_and_pass(CLOSED);
++    fx.advance(STEP);
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++    let (boot, _, observed) = fx.absence().unwrap();
++    assert_eq!((boot.as_str(), observed), ("b3", 0));
++
++    // Another mapping generation voids the row too.
++    fx.advance(STEP);
++    fx.publish_and_pass(CLOSED);
++    assert_eq!(fx.observed(), STEP);
++    fx.conn
++        .execute("UPDATE seats SET generation=generation+1 WHERE id='s1'", [])
++        .unwrap();
++    fx.advance(STEP);
++    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::TargetAbsent);
++    assert_eq!(fx.observed(), 0);
++    let generation: i64 = fx
++        .conn
++        .query_row(
++            "SELECT seat_generation FROM restored_target_absence WHERE seat_id='s1'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(generation, 3);
++}
++
++/// Kills: an applier that trusts the plan's evidence instead of re-deriving it.
++#[test]
++fn the_applier_refuses_an_absent_retirement_whose_evidence_changed_after_the_page() {
++    let mut fx = fixture();
++    fx.absence_started();
++    for _ in 1..RESTORED_PANE_GRACE_MS / STEP {
++        fx.advance(STEP);
++        fx.publish_and_pass(CLOSED);
++    }
++    fx.advance(STEP);
++    let publication = fx.publish(CLOSED);
++    let budget = budget();
++    let page =
++        saved_seats_page(&fx.context, &fx.conn, &publication.id, 0, None, 16, &budget).unwrap();
++    let retire = plan_page(&page)
++        .unwrap()
++        .into_iter()
++        .find(|t| t.seat.as_str() == "s1")
++        .unwrap();
++    assert!(matches!(
++        retire.action,
++        ReconciliationAction::RetireAbsentTarget { .. }
++    ));
++    fx.keep_claim("claude", "SA", None);
++    let outcome =
++        apply_reconciliation_transition(&fx.context, &mut fx.conn, retire, &budget).unwrap();
++    assert!(matches!(outcome, ReconciliationOutcome::Stale(_)));
++    assert_eq!(fx.state(), "unresolved");
++}

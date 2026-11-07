@@ -1029,6 +1029,23 @@ impl NativeCli {
         )
     }
 
+    /// A witnessed read that, like [`Self::run_unfenced`], never invalidates the connection epoch.
+    fn run_witnessed_unfenced(
+        &self,
+        args: &[&str],
+        budget: &CallBudget,
+        limit: Duration,
+    ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
+        self.dispatch(
+            args,
+            budget,
+            limit,
+            super::continuity::PEER_WITNESS_SUPPORTED,
+            false,
+            false,
+        )
+    }
+
     /// `None` (a ping refused by the floor) clears the observation.
     fn record_release(&self, release: Option<super::compatibility::HostRelease>) {
         if let Ok(mut slot) = self.release.lock() {
@@ -1402,17 +1419,32 @@ impl HostPort for NativeCli {
             .unwrap_or_default())
     }
 
+    /// The pane's own process (`shell_pid`). Without an expected boot the read is advisory and
+    /// unwitnessed. With one, the epoch is checked before I/O and again after the response, and
+    /// the responding server's boot (from the witness of the read's own connection) must be the
+    /// expected boot; a platform without a witness refuses it. A failed read never moves the
+    /// connection epoch.
     fn pane_shell_pid(
         &self,
         target: &HostTargetId,
         context: &HostCallContext,
     ) -> Result<Option<u32>, ApiError> {
         self.check_context(context)?;
-        let raw = self.run_unfenced(
-            &["pane", "process-info", target.as_str()],
-            &context.budget,
-            Duration::from_millis(750),
-        )?;
+        let args = ["pane", "process-info", target.as_str()];
+        let limit = Duration::from_millis(750);
+        let raw = if context.expected_boot.is_some() {
+            let epoch = self.epoch();
+            let (raw, witness) = self.run_witnessed_unfenced(&args, &context.budget, limit)?;
+            self.check_epoch(epoch)?;
+            let incarnation = witness
+                .as_ref()
+                .map(ServerIncarnation::from_witness)
+                .transpose()?;
+            self.check_boot(context, incarnation.as_ref())?;
+            raw
+        } else {
+            self.run_unfenced(&args, &context.budget, limit)?
+        };
         Ok(serde_json::from_str(&raw)
             .ok()
             .and_then(|response: serde_json::Value| pane_shell_pid(&response)))
@@ -6967,6 +6999,119 @@ pub(crate) mod tests {
         );
         assert_eq!(pane_shell_pid(&info(serde_json::Value::Null)), None);
         assert_eq!(pane_shell_pid(&serde_json::json!({"error":{}})), None);
+    }
+
+    /// A `pane.process_info` result whose shell is `shell`.
+    fn process_info(shell: u64) -> Value {
+        json!({"type":"pane_process_info","process_info":{
+            "pane_id":"w4:p1","shell_pid":shell,"foreground_processes":[]
+        }})
+    }
+    fn fenced_shell_context(boot: &str, epoch: u64) -> HostCallContext {
+        HostCallContext {
+            expected_boot: Some(HostBootId::new(boot)),
+            expected_epoch: Some(epoch),
+            ..pane_agent_context()
+        }
+    }
+
+    /// Kills: a fenced shell read that never compares the responding server's boot (a Herdr
+    /// restart on the same socket leaves the connection epoch unchanged).
+    #[test]
+    fn fenced_pane_shell_pid_refuses_another_server_boot() {
+        let (socket, cli, worker) = fixture(|stream, request| {
+            assert_eq!(request["method"], "pane.process_info");
+            answer(stream, &request, process_info(42));
+        });
+        let before = cli.epoch();
+        let result = cli.pane_shell_pid(
+            &HostTargetId::new("w4:p1"),
+            &fenced_shell_context("proven-boot", before),
+        );
+        // The worker returns only after it read and answered the request.
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        assert_eq!(result.unwrap_err().code, ErrorCode::StaleHostObservation);
+        assert_epoch_untouched(&cli, before);
+    }
+
+    /// Kills: a fence that refuses every witnessed read.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn fenced_pane_shell_pid_reads_under_the_expected_boot() {
+        let (socket, cli, worker) =
+            serve_until(|stream, wire| match wire["method"].as_str().unwrap() {
+                "pane.get" => {
+                    answer(
+                        stream,
+                        wire,
+                        json!({"type":"pane_info","pane":{"pane_id":"w4:p1",
+                            "terminal_id":"term_1","workspace_id":"w4","tab_id":"w4:t1",
+                            "focused":false,"agent_status":"unknown","agent":"claude",
+                            "revision":2}}),
+                    );
+                    false
+                }
+                "pane.process_info" => {
+                    answer(stream, wire, process_info(42));
+                    true
+                }
+                other => panic!("unexpected {other}"),
+            });
+        let (_, witness) = cli
+            .pane_witnessed("w4:p1", &pane_agent_context().budget)
+            .unwrap();
+        let boot = ServerIncarnation::from_witness(&witness.expect("witnessed"))
+            .unwrap()
+            .boot;
+        let result = cli.pane_shell_pid(
+            &HostTargetId::new("w4:p1"),
+            &fenced_shell_context(boot.as_str(), cli.epoch()),
+        );
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        assert_eq!(result.unwrap(), Some(42));
+    }
+
+    /// Kills: a fenced shell read with no epoch check after the response.
+    #[test]
+    fn fenced_pane_shell_pid_refuses_an_epoch_moved_during_the_read() {
+        let slot: CliSlot = Arc::default();
+        let bump = Arc::clone(&slot);
+        let read: Exchange = Box::new(move |stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "pane.process_info");
+            // A concurrent fenced call failed while this read was being answered.
+            bump.get().unwrap().epoch.fetch_add(1, Ordering::AcqRel);
+            answer(stream, &request, process_info(42));
+        });
+        let (socket, cli, worker) = serve_sequence(vec![read]);
+        let cli = Arc::new(cli);
+        assert!(slot.set(Arc::clone(&cli)).is_ok());
+        let before = cli.epoch();
+        let result = cli.pane_shell_pid(
+            &HostTargetId::new("w4:p1"),
+            &fenced_shell_context("proven-boot", before),
+        );
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        let refused = result.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::StaleHostObservation);
+        assert_eq!(refused.detail, "host connection epoch changed");
+    }
+
+    /// Kills: the advisory (unfenced) shell read losing its answer or moving the epoch.
+    #[test]
+    fn unfenced_pane_shell_pid_stays_advisory() {
+        let (socket, cli, worker) = fixture(|stream, request| {
+            assert_eq!(request["method"], "pane.process_info");
+            answer(stream, &request, process_info(42));
+        });
+        let before = cli.epoch();
+        let result = cli.pane_shell_pid(&HostTargetId::new("w4:p1"), &pane_agent_context());
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        assert_eq!(result.unwrap(), Some(42));
+        assert_epoch_untouched(&cli, before);
     }
 
     /// Live 2026-10-11 (ht-54r.89, evidence/ht-54r.89): `codex` installed with npm is a `node`

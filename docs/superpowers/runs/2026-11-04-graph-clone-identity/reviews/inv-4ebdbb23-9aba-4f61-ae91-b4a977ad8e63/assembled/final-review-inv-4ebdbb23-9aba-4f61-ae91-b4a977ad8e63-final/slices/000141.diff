@@ -1,0 +1,1511 @@
+diff --git a/tests/store/continuity_key_decisions.rs b/tests/store/continuity_key_decisions.rs
+new file mode 100644
+index 000000000..2a8a06a90
+--- /dev/null
++++ b/tests/store/continuity_key_decisions.rs
+@@ -0,0 +1,1505 @@
++//! The daemon's decision on a presented continuity key at its three entry points (ht-ma6i.2, spec
++//! 4.2, TRUST-POLICY C1): `decide_continuity`, ordinary resolution and check-in, on a real store.
++//! Mounted from `src/store/seats/key_verdict.rs`. A kept claim decided by the observation worker
++//! is `kept_keyed_claim_is_decided_after_lag_with_no_further_event` in
++//! `tests/integration/trust_policy.rs`.
++use crate::{
++    cli::retry::is_continuity_refusal,
++    ports::{
++        ContinuityEvidence, ContinuityRequest, ContinuityTargetGuard, DurableWorkAdmission,
++        EnumerationEvidence, EvidenceKind, ExecutionEvidence, HostId, HostKind, HostObservation,
++        HostObservationAdmission, HostSnapshot, HostUiState, IncarnationEvidence,
++        ObservationProvenance, OperatorRequest, OperatorTargetGuard, OrdinaryResolutionAttempt,
++        OrdinaryResolutionGuard, OrdinaryResolutionOutcome, PublishedSnapshot, SnapshotHeader,
++        StructuralOccupancy,
++    },
++    protocol::{
++        authority::{Harness, LivenessFingerprint, OperatorActor},
++        commands::{
++            ContinuityCheckIn, OperatorCommand, OperatorFreshSeat, OperatorRebind, ResolveSeat,
++        },
++        ids::{
++            ContinuityKey, ExecutionId, HostBootId, HostCallId, HostLocator, HostTargetId,
++            NAMED_HOST_LOCATOR, NativeSessionId, OperationId, SeatId, ServiceAuthorId, TerminalId,
++        },
++        results::{
++            ApiError, CommandResult, ContinuityConflictKind as Kind, ContinuityKeyBinding,
++            ErrorCode,
++        },
++        service::ReserveContinuityKey,
++        time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
++    },
++    store::{connection::StoreContext, continuity_keys, kept_continuity, schema, seats},
++};
++use rusqlite::{Connection, params};
++use std::sync::Arc;
++
++const INSTANCE: &str = "34750f98bd59fcfc946da45aaabe933b";
++const KEY: &str = "clone-1";
++
++struct FixedClock;
++impl Clock for FixedClock {
++    fn utc_now(&self) -> UtcMillis {
++        UtcMillis(100)
++    }
++    fn monotonic_now(&self) -> MonoInstant {
++        MonoInstant(100)
++    }
++}
++
++fn budget() -> CallBudget {
++    CallBudget {
++        deadline: MonoInstant(10_000),
++        cancellation: Cancellation::default(),
++    }
++}
++
++fn key(name: &str) -> ContinuityKey {
++    ContinuityKey::new(name)
++}
++
++fn observation(target: &str, sequence: u64) -> HostObservation {
++    HostObservation {
++        focused: false,
++        target: HostTargetId::new(target),
++        host_boot: HostBootId::new("b"),
++        epoch: 1,
++        generation: 1,
++        observed_at_utc: UtcMillis(100),
++        observed_at_mono: MonoInstant(100),
++        provenance: ObservationProvenance::FreshCurrentTarget,
++        occupant: None,
++        ui: HostUiState::Idle,
++        terminal: Some(TerminalId::new(format!("term-{target}"))),
++        occupancy: StructuralOccupancy::EmptyShell,
++        incarnation: IncarnationEvidence::Verified {
++            identity: "inc".into(),
++            evidence_kind: EvidenceKind::CoherentEnumeration,
++        },
++        execution: ExecutionEvidence::Unknown,
++        call_id: HostCallId::new(format!("call-{target}-{sequence}")),
++        connection_epoch: 1,
++        observation_sequence: sequence,
++        started_at_mono: MonoInstant(100),
++        completed_at_mono: MonoInstant(100),
++    }
++}
++
++struct Fx {
++    context: StoreContext,
++    conn: Connection,
++    author: ServiceAuthorId,
++    host: HostId,
++    sequence: u64,
++    operation: u64,
++    published: PublishedSnapshot,
++}
++
++impl Fx {
++    /// A published coherent baseline of `panes`, reconciled (no lag).
++    fn new(panes: &[&str]) -> Self {
++        let path = crate::test_support::scratch::temp_path(format!(
++            "herdr-key-decisions-{}.db",
++            uuid::Uuid::new_v4()
++        ));
++        let context = StoreContext::new(path, Arc::new(FixedClock)).with_test_host();
++        let mut conn = context.open_writer().unwrap();
++        crate::store::journal::open(
++            &context,
++            &mut conn,
++            Arc::new(crate::node::NodeIdentity::from_seed(
++                crate::test_support::TEST_NODE_SEED,
++            )),
++            "test",
++            crate::sync::facts::FactRegistry::builtins(),
++        )
++        .unwrap();
++        conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
++            .unwrap();
++        let author = {
++            let tx = conn.transaction().unwrap();
++            let author = crate::store::service_substrate::ensure_reserved_author(
++                &tx,
++                INSTANCE,
++                UtcMillis(0),
++            )
++            .unwrap();
++            tx.commit().unwrap();
++            author
++        };
++        let host = crate::test_support::test_host_id();
++        let published = publish(&context, &mut conn, 2, panes);
++        let mut fx = Self {
++            context,
++            conn,
++            author,
++            host,
++            sequence: 2,
++            operation: 0,
++            published,
++        };
++        fx.set_lag(false);
++        fx
++    }
++
++    fn set_lag(&mut self, lag: bool) {
++        let sql = if lag {
++            "UPDATE herdr_hosts SET recovery_boot='b',recovery_epoch=1,reconciled_boot=NULL,reconciled_epoch=NULL"
++        } else {
++            "UPDATE herdr_hosts SET recovery_boot='b',recovery_epoch=1,reconciled_boot='b',reconciled_epoch=1"
++        };
++        self.conn.execute(sql, []).unwrap();
++    }
++
++    fn next_operation(&mut self) -> OperationId {
++        self.operation += 1;
++        OperationId::new(format!("op-{}", self.operation))
++    }
++
++    /// One explicit current-target read of `pane`, as a daemon makes before a decision.
++    fn read(&mut self, pane: &str) -> (HostObservation, HostObservationAdmission) {
++        self.sequence += 1;
++        let admission = seats::begin_host_observation(
++            &self.context,
++            &mut self.conn,
++            INSTANCE,
++            self.host,
++            &budget(),
++        )
++        .unwrap();
++        let fresh = observation(pane, self.sequence);
++        assert!(
++            seats::publish_current_target_observation(
++                &self.context,
++                &mut self.conn,
++                &admission,
++                &fresh,
++                &budget(),
++            )
++            .unwrap()
++        );
++        (fresh, admission)
++    }
++
++    fn resolve(&mut self, pane: &str, presented: Option<&str>) -> Result<SeatId, ApiError> {
++        let request = ResolveSeat {
++            host: crate::test_support::test_host_locator(),
++            target: HostTargetId::new(pane),
++            operation: self.next_operation(),
++            locator_hint: None,
++            tmux_hint: None,
++            continuity_key: presented.map(key),
++        };
++        let (fresh, admission) = self.read(pane);
++        let guard = OrdinaryResolutionGuard::try_new(&request, fresh, &admission).unwrap();
++        match seats::resolve_seat(
++            &self.context,
++            &mut self.conn,
++            INSTANCE,
++            request,
++            OrdinaryResolutionAttempt::Observed(guard),
++            &budget(),
++        )? {
++            OrdinaryResolutionOutcome::Resolved(seat) => Ok(seat),
++            OrdinaryResolutionOutcome::NeedsObservation => panic!("observed attempt"),
++        }
++    }
++
++    fn command(&mut self, pane: &str, session: &str, presented: Option<&str>) -> ContinuityCheckIn {
++        let operation = self.next_operation();
++        ContinuityCheckIn {
++            host: crate::test_support::test_host_locator(),
++            target: HostTargetId::new(pane),
++            harness: Harness::Claude,
++            native_session: NativeSessionId::new(session),
++            source: ContinuityCheckIn::RESUME_SOURCE.into(),
++            execution: ExecutionId::new(format!("exec-{}", operation.as_str())),
++            operation,
++            liveness: Some(LivenessFingerprint {
++                pid: 4242,
++                start: 7,
++            }),
++            continuity_key: presented.map(key),
++        }
++    }
++
++    fn decide(
++        &mut self,
++        command: &ContinuityCheckIn,
++        evidence: ContinuityEvidence,
++    ) -> Result<CommandResult, ApiError> {
++        let (fresh, _) = self.read(command.target.as_str());
++        let guard = ContinuityTargetGuard::try_new(INSTANCE, self.host, command, fresh).unwrap();
++        seats::decide_continuity(
++            &self.context,
++            &mut self.conn,
++            INSTANCE,
++            ContinuityRequest {
++                command: command.clone(),
++                guard,
++                diagnostic: "absent",
++                evidence,
++            },
++        )
++    }
++
++    /// A session's own claim, with the evidence `Identity::continuity` gives it.
++    fn claim(
++        &mut self,
++        pane: &str,
++        session: &str,
++        presented: Option<&str>,
++    ) -> Result<CommandResult, ApiError> {
++        let command = self.command(pane, session, presented);
++        let evidence = if presented.is_some() {
++            ContinuityEvidence::Key
++        } else {
++            ContinuityEvidence::Cooperative
++        };
++        self.decide(&command, evidence)
++    }
++
++    fn reserve(&self, name: &str, seat: Option<&SeatId>) {
++        continuity_keys::reserve(
++            &self.conn,
++            &self.author,
++            &ReserveContinuityKey {
++                key: key(name),
++                seat: seat.cloned(),
++                operation: OperationId::new(format!("reserve-{name}")),
++            },
++            UtcMillis(10),
++        )
++        .unwrap();
++    }
++
++    /// A resolved seat at `pane`, through ordinary resolution.
++    fn owner(&mut self, pane: &str) -> SeatId {
++        self.resolve(pane, None).unwrap()
++    }
++
++    /// An unresolved seat, last at `was`, with a top-level binding of `session`.
++    fn unresolved(&mut self, was: &str, session: &str) -> SeatId {
++        let seat = self.owner(was);
++        self.unresolve(&seat);
++        self.past_binding(&seat, session);
++        seat
++    }
++
++    fn unresolve(&self, seat: &SeatId) {
++        self.conn
++            .execute(
++                "UPDATE seats SET state='unresolved',target_id=NULL,structural_terminal_id=NULL,structural_incarnation=NULL,structural_incarnation_kind=NULL,structural_host_boot=NULL,structural_host_epoch=NULL,structural_connection_epoch=NULL,structural_observation_sequence=NULL WHERE id=?1",
++                [seat.as_str()],
++            )
++            .unwrap();
++    }
++
++    fn past_binding(&self, seat: &SeatId, session: &str) {
++        self.conn.execute(
++            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) VALUES (?1,1,1,'old-pane','b',1,'claude',?2,'exec-'||?1,'cooperative_top_level',10,10,50)",
++            params![seat.as_str(), session],
++        )
++        .unwrap();
++    }
++
++    /// A reversibly retired seat holding `name`.
++    fn retired_with_key(&self, name: &str) -> SeatId {
++        let seat = SeatId::new("retired-seat");
++        self.conn.execute(
++            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id,retired_at) VALUES (?1,?2,'resolved','native','retired-pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts),NULL)",
++            params![seat.as_str(), INSTANCE],
++        )
++        .unwrap();
++        self.reserve(name, Some(&seat));
++        self.conn
++            .execute(
++                "UPDATE seats SET state='retired',target_id=NULL,retired_at=1 WHERE id=?1",
++                [seat.as_str()],
++            )
++            .unwrap();
++        seat
++    }
++
++    fn hold(&self, pane: &str) {
++        self.conn.execute(
++            "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,?2,'b',1,'unresolved saved seat continuity')",
++            params![self.host.get(), pane],
++        )
++        .unwrap();
++    }
++
++    fn scalar(&self, sql: &str) -> i64 {
++        self.conn.query_row(sql, [], |r| r.get(0)).unwrap()
++    }
++
++    fn conflict_kind(&self, pane: &str) -> Option<String> {
++        self.conn
++            .query_row(
++                "SELECT kind FROM continuity_key_conflicts WHERE target_id=?1",
++                [pane],
++                |r| r.get(0),
++            )
++            .ok()
++    }
++
++    fn conflicts(&self) -> i64 {
++        self.scalar("SELECT count(*) FROM continuity_key_conflicts")
++    }
++
++    fn alerts(&self) -> i64 {
++        self.scalar("SELECT count(*) FROM continuity_alerts")
++    }
++
++    fn seats(&self) -> i64 {
++        self.scalar("SELECT count(*) FROM seats")
++    }
++
++    fn state_and_target(&self, seat: &SeatId) -> (String, Option<String>) {
++        self.conn
++            .query_row(
++                "SELECT state,target_id FROM seats WHERE id=?1",
++                [seat.as_str()],
++                |r| Ok((r.get(0)?, r.get(1)?)),
++            )
++            .unwrap()
++    }
++
++    fn decisions(&self, seat: &SeatId) -> Vec<String> {
++        self.conn
++            .prepare("SELECT kind FROM allocation_decisions WHERE seat_id=?1 ORDER BY ordinal")
++            .unwrap()
++            .query_map([seat.as_str()], |r| r.get(0))
++            .unwrap()
++            .collect::<Result<_, _>>()
++            .unwrap()
++    }
++
++    fn continuity_decisions(&self, seat: &SeatId) -> Vec<String> {
++        self.decisions(seat)
++            .into_iter()
++            .filter(|kind| kind != "ordinary")
++            .collect()
++    }
++
++    fn open_binding(&self, seat: &SeatId) -> Vec<(String, String, String)> {
++        self.conn
++            .prepare("SELECT harness,observation_provenance,native_session FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL")
++            .unwrap()
++            .query_map([seat.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
++            .unwrap()
++            .collect::<Result<_, _>>()
++            .unwrap()
++    }
++
++    fn bound_to(&self, name: &str) -> (Option<SeatId>, Option<ContinuityKeyBinding>) {
++        let row = continuity_keys::lookup_key(&self.conn, &key(name))
++            .unwrap()
++            .expect("key row");
++        (row.seat, row.bound_by)
++    }
++
++    fn operator_rebind(&mut self, seat: &SeatId, pane: &str) {
++        let (fresh, _) = self.read(pane);
++        let command = OperatorRebind {
++            host: crate::test_support::test_host_locator(),
++            seat: seat.clone(),
++            target: HostTargetId::new(pane),
++            operation: self.next_operation(),
++        };
++        let guard = OperatorTargetGuard::try_new(
++            INSTANCE,
++            self.host,
++            &OperatorCommand::Rebind(command.clone()),
++            fresh,
++        )
++        .unwrap();
++        seats::mutate_operator(
++            &self.context,
++            &mut self.conn,
++            INSTANCE,
++            OperatorRequest::Rebind(command, guard),
++            actor(),
++            None,
++        )
++        .unwrap();
++    }
++
++    fn operator_fresh(&mut self, pane: &str) {
++        let (fresh, _) = self.read(pane);
++        let command = OperatorFreshSeat {
++            host: crate::test_support::test_host_locator(),
++            target: HostTargetId::new(pane),
++            operation: self.next_operation(),
++        };
++        let guard = OperatorTargetGuard::try_new(
++            INSTANCE,
++            self.host,
++            &OperatorCommand::FreshSeat(command.clone()),
++            fresh,
++        )
++        .unwrap();
++        seats::mutate_operator(
++            &self.context,
++            &mut self.conn,
++            INSTANCE,
++            OperatorRequest::FreshSeat(command, guard),
++            actor(),
++            None,
++        )
++        .unwrap();
++    }
++}
++
++fn actor() -> OperatorActor {
++    OperatorActor::from_peer(
++        crate::protocol::authority::PeerIdentity::from_kernel(501),
++        501,
++    )
++    .unwrap()
++}
++
++fn publish(
++    context: &StoreContext,
++    conn: &mut Connection,
++    sequence: u64,
++    panes: &[&str],
++) -> PublishedSnapshot {
++    let capture = HostSnapshot {
++        boot: HostBootId::new("b"),
++        epoch: 1,
++        observation_sequence: sequence,
++        complete: true,
++        enumeration: EnumerationEvidence::CoherentVerified,
++        incarnation: IncarnationEvidence::Verified {
++            identity: "inc".into(),
++            evidence_kind: EvidenceKind::CoherentEnumeration,
++        },
++        targets: panes
++            .iter()
++            .map(|pane| HostObservation {
++                provenance: ObservationProvenance::CoherentEnumeration,
++                ..observation(pane, sequence)
++            })
++            .collect(),
++    };
++    let budget = budget();
++    let admission = seats::begin_host_observation(
++        context,
++        conn,
++        INSTANCE,
++        crate::test_support::test_host_id(),
++        &budget,
++    )
++    .unwrap();
++    let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
++    let stage = seats::begin_snapshot_stage(context, conn, header, &budget).unwrap();
++    crate::test_support::snapshot::stage_all(&capture.targets, |offset, targets| {
++        seats::stage_snapshot_targets(
++            context,
++            conn,
++            &stage.id,
++            offset,
++            targets,
++            DurableWorkAdmission::new(16).unwrap(),
++            &budget,
++        )
++    })
++    .unwrap();
++    seats::seal_snapshot_stage(context, conn, &stage.id, &budget).unwrap();
++    seats::publish_snapshot_stage(context, conn, &stage.id, &budget).unwrap()
++}
++
++fn reattached(result: Result<CommandResult, ApiError>) -> SeatId {
++    match result.unwrap() {
++        CommandResult::ContinuityReattached(reattachment) => reattachment.seat,
++        other => panic!("not a reattachment: {other:?}"),
++    }
++}
++
++/// Spec row "bound to S, S unresolved | no resolved owner", on a held and on an unowned pane.
++/// Kills: requiring a session match; leaving the hold; no successor binding; recording the
++/// cooperative kind; leaving a standing conflict on the pane.
++#[test]
++fn keyed_claim_reattaches_unresolved_seat_onto_held_pane_with_a_fresh_session() {
++    for held in [true, false] {
++        let mut fx = Fx::new(&["old", "pane"]);
++        let seat = fx.unresolved("old", "old-session");
++        fx.reserve(KEY, Some(&seat));
++        if held {
++            fx.hold("pane");
++        }
++        continuity_keys::record_conflict(
++            &fx.conn,
++            &continuity_keys::ConflictFacts {
++                host: fx.host,
++                target: "pane".into(),
++                key: key("another"),
++                kind: Kind::KeyLiveElsewhere,
++                seat: None,
++                owner: None,
++            },
++            UtcMillis(5),
++        )
++        .unwrap();
++        let got = reattached(fx.claim("pane", "fresh-session", Some(KEY)));
++        assert_eq!(got, seat);
++        assert_eq!(
++            fx.state_and_target(&seat),
++            ("resolved".into(), Some("pane".into()))
++        );
++        assert_eq!(
++            fx.scalar("SELECT count(*) FROM recovery_holds WHERE released_at IS NULL"),
++            0,
++            "the hold is released"
++        );
++        assert_eq!(
++            fx.open_binding(&seat),
++            vec![(
++                "claude".into(),
++                "cooperative_top_level".into(),
++                "fresh-session".into()
++            )]
++        );
++        assert_eq!(
++            fx.continuity_decisions(&seat),
++            vec!["cooperative_continuity_key"]
++        );
++        assert_eq!(fx.conflict_kind("pane"), None, "a successful claim clears");
++    }
++}
++
++/// Kills: a C1 match on the bound seat itself read as another seat, or recorded as plain C1.
++#[test]
++fn keyed_claim_whose_session_matches_the_bound_seat_records_the_key() {
++    let mut fx = Fx::new(&["old", "pane"]);
++    let seat = fx.unresolved("old", "same-session");
++    fx.reserve(KEY, Some(&seat));
++    assert_eq!(
++        reattached(fx.claim("pane", "same-session", Some(KEY))),
++        seat
++    );
++    assert_eq!(
++        fx.continuity_decisions(&seat),
++        vec!["cooperative_continuity_key"]
++    );
++}
++
++/// Spec lag: the state-dependent answers are retryable at the claim and at a resolve. Kills:
++/// recording a false conflict during a cold restart; a definitive code the hook would not retry.
++#[test]
++fn keyed_claim_during_lag_is_busy_and_records_nothing() {
++    let mut fx = Fx::new(&["elsewhere", "owned", "pane"]);
++    let live = fx.owner("elsewhere");
++    let owner = fx.owner("owned");
++    fx.reserve(KEY, Some(&live));
++    fx.set_lag(true);
++    for pane in ["pane", "owned"] {
++        let refusal = fx.claim(pane, "fresh", Some(KEY)).unwrap_err();
++        assert_eq!(refusal.code, ErrorCode::ServiceBusy, "{pane}");
++        assert!(!is_continuity_refusal(&refusal.code));
++        let refusal = fx.resolve(pane, Some(KEY)).unwrap_err();
++        assert_eq!(refusal.code, ErrorCode::ServiceBusy, "{pane}");
++    }
++    assert_eq!((fx.conflicts(), fx.alerts()), (0, 0));
++    assert_eq!(fx.state_and_target(&owner).0, "resolved");
++    // A retired seat is not lag-dependent: a pass cannot revive it.
++    let mut fx = Fx::new(&["pane"]);
++    fx.retired_with_key(KEY);
++    fx.set_lag(true);
++    assert_eq!(
++        fx.claim("pane", "fresh", Some(KEY)).unwrap_err().code,
++        ErrorCode::TargetUnresolved
++    );
++    assert_eq!(
++        fx.conflict_kind("pane").as_deref(),
++        Some("key_retired_reversibly")
++    );
++}
++
++/// Every conflict row at the claim entry: the refusal rolls back, its row and one alert stand, and
++/// a repeat writes neither. Kills: recording inside the refused transaction; a lost alert; moving
++/// a seat; a refusal of an owned pane the hook would not continue past.
++#[test]
++fn conflict_survives_the_refused_transaction() {
++    let mut fx = Fx::new(&["elsewhere", "pane"]);
++    let live = fx.owner("elsewhere");
++    fx.reserve(KEY, Some(&live));
++    let seats_before = fx.seats();
++    let refusal = fx.claim("pane", "fresh", Some(KEY)).unwrap_err();
++    assert_eq!(refusal.code, ErrorCode::TargetUnresolved);
++    assert_eq!(
++        fx.conflict_kind("pane").as_deref(),
++        Some("key_live_elsewhere")
++    );
++    assert_eq!(fx.alerts(), 1);
++    assert_eq!(fx.seats(), seats_before);
++    assert_eq!(fx.continuity_decisions(&live), Vec::<String>::new());
++    assert_eq!(
++        fx.scalar("SELECT count(*) FROM operations WHERE actor_scope LIKE 'continuity:%'"),
++        0,
++        "a refusal records no result"
++    );
++    fx.claim("pane", "fresh", Some(KEY)).unwrap_err();
++    assert_eq!(
++        (fx.conflicts(), fx.alerts()),
++        (1, 1),
++        "a repeat writes neither"
++    );
++
++    // key_retired_reversibly.
++    let mut fx = Fx::new(&["pane"]);
++    fx.retired_with_key(KEY);
++    let refusal = fx.claim("pane", "fresh", Some(KEY)).unwrap_err();
++    assert_eq!(refusal.code, ErrorCode::TargetUnresolved);
++    assert_eq!(
++        fx.conflict_kind("pane").as_deref(),
++        Some("key_retired_reversibly")
++    );
++
++    // session_matches_other_seat: the session is another unresolved seat's.
++    let mut fx = Fx::new(&["old-a", "old-b", "pane"]);
++    let bound = fx.unresolved("old-a", "session-a");
++    let other = fx.unresolved("old-b", "session-b");
++    fx.reserve(KEY, Some(&bound));
++    let refusal = fx.claim("pane", "session-b", Some(KEY)).unwrap_err();
++    assert_eq!(refusal.code, ErrorCode::TargetUnresolved);
++    assert_eq!(
++        fx.conflict_kind("pane").as_deref(),
++        Some("session_matches_other_seat")
++    );
++    assert_eq!(fx.state_and_target(&bound).0, "unresolved");
++    assert_eq!(fx.state_and_target(&other).0, "unresolved");
++
++    // pane_owned_by_other_seat and seat_holds_other_key answer as an owned pane does, so the
++    // owner's check-in proceeds; the row still survives.
++    let mut fx = Fx::new(&["old", "owned"]);
++    let bound = fx.unresolved("old", "session-a");
++    let owner = fx.owner("owned");
++    fx.reserve(KEY, Some(&bound));
++    let refusal = fx.claim("owned", "fresh", Some(KEY)).unwrap_err();
++    assert_eq!(refusal.code, ErrorCode::TargetAlreadyOwned);
++    assert!(
++        refusal.detail.contains("continuity key conflict"),
++        "{refusal:?}"
++    );
++    assert_eq!(
++        fx.conflict_kind("owned").as_deref(),
++        Some("pane_owned_by_other_seat")
++    );
++    assert_eq!(fx.state_and_target(&owner).0, "resolved");
++
++    let mut fx = Fx::new(&["owned"]);
++    let owner = fx.owner("owned");
++    fx.reserve("held-key", Some(&owner));
++    fx.reserve(KEY, None);
++    let refusal = fx.claim("owned", "fresh", Some(KEY)).unwrap_err();
++    assert_eq!(refusal.code, ErrorCode::TargetAlreadyOwned);
++    assert_eq!(
++        fx.conflict_kind("owned").as_deref(),
++        Some("seat_holds_other_key")
++    );
++    assert_eq!(fx.bound_to(KEY).0, None, "K stays unbound");
++}
++
++/// Spec row "bound to S, S resolved at this pane" at the claim and the resolve. Kills: a conflict
++/// against the seat's own pane; a second seat.
++#[test]
++fn the_keys_own_seat_at_its_pane_is_a_no_op() {
++    let mut fx = Fx::new(&["pane"]);
++    let seat = fx.owner("pane");
++    fx.reserve(KEY, Some(&seat));
++    let refusal = fx.claim("pane", "fresh", Some(KEY)).unwrap_err();
++    assert_eq!(refusal.code, ErrorCode::TargetAlreadyOwned, "as today");
++    assert_eq!(fx.resolve("pane", Some(KEY)).unwrap(), seat);
++    assert_eq!((fx.conflicts(), fx.alerts()), (0, 0));
++}
++
++/// The refusal is definitive (not retried, not kept), and it holds ordinary resolution with its own
++/// cause, keyless and keyed, even on a pane a restore hold also holds. Kills: a retryable code;
++/// restore-hold text or its repair list; a hold that only keyed callers see.
++#[test]
++fn conflict_hold_is_definitive_and_not_kept() {
++    let mut fx = Fx::new(&["elsewhere", "pane"]);
++    let live = fx.owner("elsewhere");
++    fx.reserve(KEY, Some(&live));
++    let refusal = fx.claim("pane", "fresh", Some(KEY)).unwrap_err();
++    assert!(is_continuity_refusal(&refusal.code));
++    let seats_before = fx.seats();
++    for presented in [None, Some(KEY), Some("unreserved")] {
++        let refusal = fx.resolve("pane", presented).unwrap_err();
++        assert_eq!(refusal.code, ErrorCode::TargetUnresolved, "{presented:?}");
++        assert!(
++            refusal
++                .detail
++                .contains("continuity key conflict key_live_elsewhere on pane"),
++            "{refusal:?}"
++        );
++        assert!(!refusal.detail.contains("restore"), "{refusal:?}");
++        assert!(!refusal.detail.contains("--new-seat"), "{refusal:?}");
++    }
++    fx.hold("pane");
++    let refusal = fx.resolve("pane", None).unwrap_err();
++    assert!(
++        refusal
++            .detail
++            .contains("continuity key conflict key_live_elsewhere on pane"),
++        "{refusal:?}"
++    );
++    assert_eq!(fx.seats(), seats_before, "no new seat appears");
++    assert_eq!(fx.alerts(), 1);
++}
++
++/// The hold binds ordinary resolution only. Kills: a C1, process-continuity or operator path that
++/// goes through the hold; a rebind or fresh seat that leaves the row behind.
++#[test]
++fn conflict_hold_binds_ordinary_resolution_only() {
++    let setup = |panes: &[&str]| {
++        let mut fx = Fx::new(panes);
++        let live = fx.owner("elsewhere");
++        fx.reserve(KEY, Some(&live));
++        fx.claim("pane", "fresh", Some(KEY)).unwrap_err();
++        assert_eq!(fx.conflicts(), 1);
++        fx
++    };
++    let panes = ["elsewhere", "old", "pane"];
++
++    // C1 by native session, keyless.
++    let mut fx = setup(&panes);
++    let seat = fx.unresolved("old", "own-session");
++    assert_eq!(reattached(fx.claim("pane", "own-session", None)), seat);
++    assert_eq!(
++        fx.continuity_decisions(&seat),
++        vec!["cooperative_continuity"]
++    );
++    assert_eq!(fx.conflicts(), 0, "the rebind clears the row");
++
++    // C1 process continuity (ht-hsyg).
++    let mut fx = setup(&panes);
++    let seat = fx.unresolved("old", "own-session");
++    let generation: u64 = fx
++        .conn
++        .query_row(
++            "SELECT generation FROM seats WHERE id=?1",
++            [seat.as_str()],
++            |r| r.get::<_, i64>(0),
++        )
++        .unwrap() as u64;
++    let command = fx.command("pane", "own-session", None);
++    reattached(fx.decide(
++        &command,
++        ContinuityEvidence::Process {
++            seat: seat.clone(),
++            seat_generation: generation,
++        },
++    ));
++    assert_eq!(
++        fx.continuity_decisions(&seat),
++        vec!["structural_process_continuity"]
++    );
++    assert_eq!(fx.conflicts(), 0);
++
++    // Operator rebind.
++    let mut fx = setup(&panes);
++    let seat = fx.unresolved("old", "own-session");
++    fx.operator_rebind(&seat, "pane");
++    assert_eq!(fx.state_and_target(&seat).1.as_deref(), Some("pane"));
++    assert_eq!(fx.conflicts(), 0);
++
++    // Operator fresh seat.
++    let mut fx = setup(&panes);
++    fx.operator_fresh("pane");
++    assert_eq!(fx.conflicts(), 0);
++}
++
++/// Spec "holds nothing on an owned pane". Kills: an alert-only row or a keyed resolve that refuses
++/// the pane's owner; a row that only the keyless path ignores; no alert at resolve.
++#[test]
++fn conflict_row_on_an_owned_pane_holds_nothing() {
++    // pane_owned_by_other_seat.
++    let mut fx = Fx::new(&["old", "owned"]);
++    let bound = fx.unresolved("old", "session-a");
++    let owner = fx.owner("owned");
++    fx.reserve(KEY, Some(&bound));
++    assert_eq!(fx.resolve("owned", Some(KEY)).unwrap(), owner);
++    assert_eq!(
++        fx.conflict_kind("owned").as_deref(),
++        Some("pane_owned_by_other_seat")
++    );
++    assert_eq!(fx.alerts(), 1);
++    assert_eq!(fx.resolve("owned", None).unwrap(), owner);
++    assert_eq!(fx.resolve("owned", Some(KEY)).unwrap(), owner);
++    assert_eq!(fx.alerts(), 1, "an unchanged row writes nothing");
++
++    // seat_holds_other_key.
++    let mut fx = Fx::new(&["owned"]);
++    let owner = fx.owner("owned");
++    fx.reserve("held-key", Some(&owner));
++    fx.reserve(KEY, None);
++    assert_eq!(fx.resolve("owned", Some(KEY)).unwrap(), owner);
++    assert_eq!(
++        fx.conflict_kind("owned").as_deref(),
++        Some("seat_holds_other_key")
++    );
++    assert_eq!(fx.resolve("owned", None).unwrap(), owner);
++    assert_eq!(fx.bound_to(KEY).0, None);
++
++    // A hold-bearing row is inert too once the pane has an owner.
++    let mut fx = Fx::new(&["elsewhere", "pane"]);
++    let live = fx.owner("elsewhere");
++    fx.reserve(KEY, Some(&live));
++    fx.claim("pane", "fresh", Some(KEY)).unwrap_err();
++    fx.conn
++        .execute(
++            "UPDATE seats SET target_id='pane' WHERE id=?1",
++            [live.as_str()],
++        )
++        .unwrap();
++    assert_eq!(
++        fx.resolve("pane", None).unwrap_err().detail,
++        "existing seat needs structural reconciliation",
++        "past the hold, the owner's own guards decide"
++    );
++}
++
++/// Kills: claim evidence or seat selection reacting to a keyless claim; a changed digest.
++#[test]
++fn keyless_claim_digest_and_outcome_are_unchanged() {
++    let mut fx = Fx::new(&["old", "pane"]);
++    let seat = fx.unresolved("old", "own-session");
++    let command = fx.command("pane", "own-session", None);
++    assert_eq!(
++        seats::continuity_digest(INSTANCE, &command).unwrap(),
++        schema::canonical_digest(&(
++            "continuity_check_in",
++            INSTANCE,
++            &command.target,
++            &command.harness,
++            &command.native_session,
++            &command.execution,
++        ))
++        .unwrap()
++    );
++    let mut keyed = command.clone();
++    keyed.continuity_key = Some(key(KEY));
++    assert_ne!(
++        seats::continuity_digest(INSTANCE, &keyed).unwrap(),
++        seats::continuity_digest(INSTANCE, &command).unwrap()
++    );
++    assert_eq!(
++        reattached(fx.decide(&command, ContinuityEvidence::Cooperative)),
++        seat
++    );
++    assert_eq!(
++        fx.continuity_decisions(&seat),
++        vec!["cooperative_continuity"]
++    );
++    assert_eq!((fx.conflicts(), fx.alerts()), (0, 0));
++    assert_eq!(
++        fx.scalar("SELECT count(*) FROM continuity_keys"),
++        0,
++        "nothing about keys appears"
++    );
++}
++
++/// Spec row "unreserved": ignored at the claim and the resolve. Kills: minting a key row;
++/// recording the key kind; a refusal of today's path.
++#[test]
++fn unreserved_key_is_ignored() {
++    let mut fx = Fx::new(&["old", "pane", "fresh-pane"]);
++    let seat = fx.unresolved("old", "own-session");
++    assert_eq!(reattached(fx.claim("pane", "own-session", Some(KEY))), seat);
++    assert_eq!(
++        fx.continuity_decisions(&seat),
++        vec!["cooperative_continuity"]
++    );
++    assert_eq!(
++        fx.claim("fresh-pane", "nobody", Some(KEY))
++            .unwrap_err()
++            .code,
++        ErrorCode::NotFound
++    );
++    fx.resolve("fresh-pane", Some(KEY)).unwrap();
++    assert_eq!(fx.scalar("SELECT count(*) FROM continuity_keys"), 0);
++    assert_eq!((fx.conflicts(), fx.alerts()), (0, 0));
++}
++
++/// Kills: judging a key on a host whose continuity is not a key.
++#[test]
++fn hc_and_named_keys_are_ignored() {
++    for kind in ["hc", "named"] {
++        let mut fx = Fx::new(&["elsewhere", "pane"]);
++        let live = fx.owner("elsewhere");
++        fx.reserve(KEY, Some(&live));
++        fx.conn
++            .execute("UPDATE herdr_hosts SET kind=?1", [kind])
++            .unwrap();
++        let host = fx.host;
++        let tx = fx.conn.transaction().unwrap();
++        let decision =
++            seats::key_decision(&tx, host, "pane", &key(KEY), seats::KeyCaller::Claim(None))
++                .unwrap();
++        assert_eq!(decision.verdict, super::KeyVerdict::Ignore, "{kind}");
++        drop(tx);
++        // The path of the same decision writes no row.
++        assert_eq!(
++            fx.claim("pane", "nobody", Some(KEY)).unwrap_err().code,
++            ErrorCode::NotFound,
++            "{kind}"
++        );
++        assert_eq!((fx.conflicts(), fx.alerts()), (0, 0), "{kind}");
++    }
++    // The named entry point never reads the key.
++    let mut fx = Fx::new(&[]);
++    fx.reserve(KEY, None);
++    let locator = HostLocator::parse(NAMED_HOST_LOCATOR).unwrap();
++    let (named, _) =
++        crate::store::hosts::attach_host(&mut fx.conn, &locator, 0, HostKind::Named).unwrap();
++    let request = ResolveSeat {
++        host: locator,
++        target: HostTargetId::new("reviewer"),
++        operation: OperationId::new("named"),
++        locator_hint: None,
++        tmux_hint: None,
++        continuity_key: Some(key(KEY)),
++    };
++    seats::resolve_named_seat(
++        &fx.context,
++        &mut fx.conn,
++        INSTANCE,
++        named,
++        &request,
++        &budget(),
++    )
++    .unwrap();
++    assert_eq!(fx.bound_to(KEY).0, None);
++}
++
++/// Spec row "claimless". Kills: minting a seat for a waiting clone; a conflict or alert for a
++/// caller that simply has no evidence; a retried code; reattaching on no evidence.
++#[test]
++fn claimless_resolve_with_key_bound_to_unresolved_seat_is_pending() {
++    let mut fx = Fx::new(&["old", "pane"]);
++    let seat = fx.unresolved("old", "own-session");
++    fx.reserve(KEY, Some(&seat));
++    let seats_before = fx.seats();
++    let refusal = fx.resolve("pane", Some(KEY)).unwrap_err();
++    assert_eq!(refusal.code, ErrorCode::ContinuityKeyPending);
++    assert!(is_continuity_refusal(&refusal.code));
++    assert_eq!(
++        refusal.detail,
++        "continuity key is bound to an unresolved seat; no seat minted"
++    );
++    assert_eq!(fx.seats(), seats_before);
++    assert_eq!(fx.state_and_target(&seat).0, "unresolved");
++    assert_eq!((fx.conflicts(), fx.alerts()), (0, 0));
++}
++
++/// Spec rows "reserved, unbound" at resolve. Kills: enrolling without the bind; `service_reservation`
++/// evidence; a bind that outlives a refused enrollment.
++#[test]
++fn plain_enrollment_binds_a_reserved_unbound_key() {
++    let mut fx = Fx::new(&["pane", "owned", "held"]);
++    fx.reserve(KEY, None);
++    let seat = fx.resolve("pane", Some(KEY)).unwrap();
++    assert_eq!(
++        fx.bound_to(KEY),
++        (Some(seat.clone()), Some(ContinuityKeyBinding::CheckIn))
++    );
++    assert_eq!(
++        continuity_keys::key_of_seat(&fx.conn, &seat)
++            .unwrap()
++            .unwrap()
++            .key,
++        key(KEY)
++    );
++    // The pane's owner with no key takes a free key.
++    let owner = fx.owner("owned");
++    fx.reserve("second", None);
++    assert_eq!(fx.resolve("owned", Some("second")).unwrap(), owner);
++    assert_eq!(fx.bound_to("second").0, Some(owner));
++    // Ordinary guards still decide a fresh pane: a refused enrollment leaves the key free.
++    fx.reserve("third", None);
++    fx.hold("held");
++    assert_eq!(
++        fx.resolve("held", Some("third")).unwrap_err().code,
++        ErrorCode::TargetUnresolved
++    );
++    assert_eq!(fx.bound_to("third").0, None);
++    assert_eq!((fx.conflicts(), fx.alerts()), (0, 0));
++    // A keyed resolve has its own digest domain; a keyless one is as before.
++    let request = ResolveSeat {
++        host: crate::test_support::test_host_locator(),
++        target: HostTargetId::new("fresh"),
++        operation: OperationId::new("same-operation"),
++        locator_hint: None,
++        tmux_hint: None,
++        continuity_key: None,
++    };
++    assert_eq!(
++        seats::resolve_seat(
++            &fx.context,
++            &mut fx.conn,
++            INSTANCE,
++            request,
++            OrdinaryResolutionAttempt::ReplayOnly,
++            &budget(),
++        )
++        .unwrap(),
++        OrdinaryResolutionOutcome::NeedsObservation
++    );
++}
++
++/// During lag a free key on an unowned pane is decided by the ordinary guards, as today, and an
++/// enrollment that goes through binds. Kills: re-judging after the allocation, which would read the
++/// new seat as an owner during lag and refuse the enrollment.
++#[test]
++fn enrollment_during_lag_binds_its_free_key() {
++    let mut fx = Fx::new(&["pane"]);
++    fx.reserve(KEY, None);
++    fx.set_lag(true);
++    let seat = fx.resolve("pane", Some(KEY)).unwrap();
++    assert_eq!(fx.bound_to(KEY).0, Some(seat));
++}
++
++/// The hold-bearing rows at the resolve entry point: refused, recorded after the rollback, and no
++/// seat. Kills: minting a seat for a key that lives elsewhere; a conflict lost with the rollback.
++#[test]
++fn claimless_resolve_records_a_hold_bearing_conflict() {
++    let mut fx = Fx::new(&["elsewhere", "pane"]);
++    let live = fx.owner("elsewhere");
++    fx.reserve(KEY, Some(&live));
++    let seats_before = fx.seats();
++    let refusal = fx.resolve("pane", Some(KEY)).unwrap_err();
++    assert_eq!(refusal.code, ErrorCode::TargetUnresolved);
++    assert_eq!(
++        refusal.detail,
++        "continuity key conflict key_live_elsewhere on pane; no seat moved"
++    );
++    assert_eq!(
++        fx.conflict_kind("pane").as_deref(),
++        Some("key_live_elsewhere")
++    );
++    assert_eq!((fx.seats(), fx.alerts()), (seats_before, 1));
++
++    let mut fx = Fx::new(&["pane"]);
++    fx.retired_with_key(KEY);
++    let seats_before = fx.seats();
++    assert_eq!(
++        fx.resolve("pane", Some(KEY)).unwrap_err().code,
++        ErrorCode::TargetUnresolved
++    );
++    assert_eq!(
++        fx.conflict_kind("pane").as_deref(),
++        Some("key_retired_reversibly")
++    );
++    assert_eq!(fx.seats(), seats_before);
++}
++
++/// The rows "reserved, unbound" at the claim entry point: the claim itself binds nothing, and C1
++/// still decides. Kills: a free key that takes over a C1 match or a no-match; a bind on a refusal.
++#[test]
++fn a_claim_with_a_free_key_decides_as_a_keyless_claim() {
++    let mut fx = Fx::new(&["old", "pane", "fresh-pane", "owned"]);
++    let seat = fx.unresolved("old", "own-session");
++    fx.reserve(KEY, None);
++    assert_eq!(reattached(fx.claim("pane", "own-session", Some(KEY))), seat);
++    assert_eq!(
++        fx.continuity_decisions(&seat),
++        vec!["cooperative_continuity"]
++    );
++    assert_eq!(fx.bound_to(KEY).0, None, "the following check-in binds");
++    assert_eq!(
++        fx.claim("fresh-pane", "nobody", Some(KEY))
++            .unwrap_err()
++            .code,
++        ErrorCode::NotFound
++    );
++    let owner = fx.owner("owned");
++    assert_eq!(
++        fx.claim("owned", "nobody", Some(KEY)).unwrap_err().code,
++        ErrorCode::TargetAlreadyOwned
++    );
++    assert_eq!(fx.bound_to(KEY).0, None);
++    assert_eq!((fx.conflicts(), fx.alerts()), (0, 0));
++    assert_eq!(fx.state_and_target(&owner).0, "resolved");
++}
++
++/// Kills: a kept row without its key; a repeat that keeps the stale key.
++#[test]
++fn kept_claim_keeps_its_key() {
++    let mut fx = Fx::new(&["pane"]);
++    let host = fx.host;
++    let command = fx.command("pane", "session", Some(KEY));
++    let column = |conn: &Connection| -> Option<String> {
++        conn.query_row(
++            "SELECT continuity_key FROM kept_continuity_claims",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap()
++    };
++    let tx = fx.conn.transaction().unwrap();
++    assert!(kept_continuity::keep(&tx, host, &command, 50).unwrap());
++    assert_eq!(column(&tx).as_deref(), Some(KEY));
++    let due = kept_continuity::due(&tx, host, 60).unwrap();
++    assert_eq!(due[0].command.continuity_key, Some(key(KEY)));
++    let mut keyless = command.clone();
++    keyless.continuity_key = None;
++    assert!(kept_continuity::keep(&tx, host, &keyless, 70).unwrap());
++    assert_eq!(column(&tx), None);
++    tx.commit().unwrap();
++}
++
++/// Kills: no cleanup on a coherent publication; cleanup that takes rows of panes it still shows or
++/// of another host; a pass that is not recorded leaving the row (a stale publication is no news).
++#[test]
++fn conflict_clears_when_target_leaves_a_coherent_publication() {
++    let mut fx = Fx::new(&["stays", "goes"]);
++    for pane in ["stays", "goes"] {
++        continuity_keys::record_conflict(
++            &fx.conn,
++            &continuity_keys::ConflictFacts {
++                host: fx.host,
++                target: pane.into(),
++                key: key(KEY),
++                kind: Kind::KeyLiveElsewhere,
++                seat: None,
++                owner: None,
++            },
++            UtcMillis(5),
++        )
++        .unwrap();
++    }
++    assert!(
++        seats::record_reconciliation_pass(
++            &fx.context,
++            &mut fx.conn,
++            &fx.published.clone(),
++            &budget()
++        )
++        .unwrap()
++    );
++    assert_eq!(fx.conflicts(), 2, "both panes are still published");
++    let published = publish(&fx.context, &mut fx.conn, 50, &["stays"]);
++    assert_eq!(fx.conflicts(), 2, "publication alone decides nothing");
++    assert!(
++        seats::record_reconciliation_pass(&fx.context, &mut fx.conn, &published, &budget())
++            .unwrap()
++    );
++    assert_eq!(
++        fx.conflict_kind("stays").as_deref(),
++        Some("key_live_elsewhere")
++    );
++    assert_eq!(fx.conflict_kind("goes"), None);
++}
++
++/// A row clears when the key it names is released. Kills: a stale hold after finalization.
++#[test]
++fn conflict_clears_when_its_key_is_released() {
++    let mut fx = Fx::new(&["elsewhere", "pane"]);
++    let live = fx.owner("elsewhere");
++    fx.reserve(KEY, Some(&live));
++    fx.claim("pane", "fresh", Some(KEY)).unwrap_err();
++    assert!(fx.resolve("pane", None).is_err());
++    continuity_keys::release_for_final(&fx.conn, &live).unwrap();
++    assert_eq!(fx.conflicts(), 0);
++    fx.resolve("pane", None).unwrap();
++}
++
++/// The cap: refused all the same, nothing recorded, so no hold (TRUST-POLICY accepted limit).
++/// Kills: a claim that succeeds past the cap; an error replacing the refusal.
++#[test]
++fn a_conflict_the_full_table_refuses_is_still_refused() {
++    let mut fx = Fx::new(&["elsewhere", "pane"]);
++    let live = fx.owner("elsewhere");
++    fx.reserve(KEY, Some(&live));
++    for n in 0..continuity_keys::MAX_CONFLICT_ROWS {
++        continuity_keys::record_conflict(
++            &fx.conn,
++            &continuity_keys::ConflictFacts {
++                host: fx.host,
++                target: format!("other-{n}"),
++                key: key("other"),
++                kind: Kind::KeyLiveElsewhere,
++                seat: None,
++                owner: None,
++            },
++            UtcMillis(5),
++        )
++        .unwrap();
++    }
++    let refusal = fx.claim("pane", "fresh", Some(KEY)).unwrap_err();
++    assert_eq!(refusal.code, ErrorCode::TargetUnresolved);
++    assert_eq!(fx.conflict_kind("pane"), None);
++    fx.resolve("pane", None).unwrap();
++}
++
++mod check_in {
++    //! The check-in entry point: it commits rather than refuses.
++    use super::*;
++    use crate::ports::{
++        CooperativePermitRequest, ReadContext, RegisterAvailableRequest, StorePort,
++    };
++    use crate::protocol::{authority::ObligationRef, commands::CheckIn};
++    use crate::store::{
++        SqliteStore,
++        cooperative_checkin_tests::{claim, fixture, lifecycle},
++    };
++
++    fn budget() -> CallBudget {
++        crate::store::cooperative_checkin_tests::budget()
++    }
++
++    fn check_in(store: &SqliteStore, command: CheckIn) -> Result<(), ApiError> {
++        let permit = store.issue_cooperative_permit(
++            CooperativePermitRequest {
++                claim: command.claim.clone(),
++                operation: command.operation.clone(),
++                obligation: ObligationRef::CheckIn(command.claim.seat.clone()),
++                payload_hash: seats::check_in_digest(&command).unwrap(),
++                check_in_mode: Some(command.mode),
++            },
++            &budget(),
++        )?;
++        store.register_available(
++            RegisterAvailableRequest {
++                command,
++                read: ReadContext {
++                    instance: INSTANCE.into(),
++                    output: Default::default(),
++                    operation_scope: None,
++                },
++                operator: None,
++            },
++            permit,
++            &budget(),
++        )?;
++        Ok(())
++    }
++
++    fn keyed(operation: &str, presented: &str) -> CheckIn {
++        let mut command = lifecycle(claim(), operation);
++        command.continuity_key = Some(key(presented));
++        command
++    }
++
++    fn make_author(conn: &mut Connection) -> ServiceAuthorId {
++        let tx = conn.transaction().unwrap();
++        let author =
++            crate::store::service_substrate::ensure_reserved_author(&tx, INSTANCE, UtcMillis(0))
++                .unwrap();
++        tx.commit().unwrap();
++        author
++    }
++
++    fn reserve(conn: &Connection, author: &ServiceAuthorId, name: &str, seat: Option<&str>) {
++        continuity_keys::reserve(
++            conn,
++            author,
++            &ReserveContinuityKey {
++                key: key(name),
++                seat: seat.map(SeatId::new),
++                operation: OperationId::new(format!("reserve-{name}")),
++            },
++            UtcMillis(10),
++        )
++        .unwrap();
++    }
++
++    fn other_seat(conn: &Connection, id: &str, state: &str, target: Option<&str>) {
++        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,?3,'native',?4,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
++            params![id, INSTANCE, state, target]).unwrap();
++    }
++
++    fn row(conn: &Connection) -> Option<(String, String, Option<String>, Option<String>)> {
++        conn.query_row(
++            "SELECT key,kind,seat_id,owner_seat_id FROM continuity_key_conflicts",
++            [],
++            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
++        )
++        .ok()
++    }
++
++    fn alerts(conn: &Connection) -> i64 {
++        conn.query_row("SELECT count(*) FROM continuity_alerts", [], |r| r.get(0))
++            .unwrap()
++    }
++
++    /// Spec row "reserved, unbound | seat T with no key". Kills: no bind on the check-in path;
++    /// `service_reservation` evidence; a replay that writes; a key `key_of_seat` cannot find, the
++    /// one input a later pane close's reversible disposition reads.
++    #[test]
++    fn first_check_in_binds_with_check_in_provenance() {
++        let (store, mut conn, _) = fixture();
++        let author = make_author(&mut conn);
++        reserve(&conn, &author, KEY, None);
++        let command = keyed("op", KEY);
++        check_in(&store, command.clone()).unwrap();
++        let row_ = continuity_keys::lookup_key(&conn, &key(KEY))
++            .unwrap()
++            .unwrap();
++        assert_eq!(row_.seat, Some(SeatId::new("s")));
++        assert_eq!(row_.bound_by, Some(ContinuityKeyBinding::CheckIn));
++        assert_eq!(
++            continuity_keys::key_of_seat(&conn, &SeatId::new("s"))
++                .unwrap()
++                .unwrap()
++                .key,
++            key(KEY)
++        );
++        check_in(&store, command).unwrap();
++        // Spec row "bound to S, S resolved at this pane": no-op, the first evidence stands.
++        let mut again = keyed("op-2", KEY);
++        again.mode = crate::protocol::commands::CheckInMode::Current;
++        check_in(&store, again).unwrap();
++        let row_ = continuity_keys::lookup_key(&conn, &key(KEY))
++            .unwrap()
++            .unwrap();
++        assert_eq!(row_.bound_by, Some(ContinuityKeyBinding::CheckIn));
++        assert_eq!(alerts(&conn), 0);
++    }
++
++    /// Spec rows "bound to S | owner T" and "reserved, unbound | seat T holding K2": the check-in
++    /// proceeds unbound and alerts. Kills: refusing the owner; binding; a row that holds.
++    #[test]
++    fn pane_owned_by_other_seat_and_seat_holds_other_key_only_alert() {
++        let (store, mut conn, _) = fixture();
++        let author = make_author(&mut conn);
++        other_seat(&conn, "bound", "unresolved", None);
++        reserve(&conn, &author, KEY, Some("bound"));
++        check_in(&store, keyed("op-1", KEY)).unwrap();
++        assert_eq!(
++            row(&conn),
++            Some((
++                KEY.into(),
++                "pane_owned_by_other_seat".into(),
++                Some("bound".into()),
++                Some("s".into())
++            ))
++        );
++        assert_eq!(alerts(&conn), 1);
++        assert_eq!(
++            continuity_keys::hold_kind(&conn, crate::test_support::test_host_id(), "p").unwrap(),
++            None
++        );
++        assert!(
++            continuity_keys::key_of_seat(&conn, &SeatId::new("s"))
++                .unwrap()
++                .is_none()
++        );
++
++        let (store, mut conn, _) = fixture();
++        let author = make_author(&mut conn);
++        reserve(&conn, &author, "held-key", Some("s"));
++        reserve(&conn, &author, KEY, None);
++        check_in(&store, keyed("op-1", KEY)).unwrap();
++        let (_, kind, seat, owner) = row(&conn).unwrap();
++        assert_eq!(
++            (kind.as_str(), seat, owner.as_deref()),
++            ("seat_holds_other_key", None, Some("s"))
++        );
++        assert_eq!(
++            continuity_keys::lookup_key(&conn, &key(KEY))
++                .unwrap()
++                .unwrap()
++                .seat,
++            None
++        );
++        assert_eq!(
++            continuity_keys::key_of_seat(&conn, &SeatId::new("s"))
++                .unwrap()
++                .unwrap()
++                .key,
++            key("held-key")
++        );
++    }
++
++    /// An alert-only row clears when its owner stops being the pane's owner, at the new owner's next
++    /// check-in, keyed or not. Kills: a row that outlives its judged owner; one the same owner
++    /// clears.
++    #[test]
++    fn alert_only_row_clears_at_a_new_owners_check_in() {
++        let (store, conn, _) = fixture();
++        let conflict = |owner: &str| continuity_keys::ConflictFacts {
++            host: crate::test_support::test_host_id(),
++            target: "p".into(),
++            key: key(KEY),
++            kind: Kind::PaneOwnedByOtherSeat,
++            seat: None,
++            owner: Some(SeatId::new(owner)),
++        };
++        continuity_keys::record_conflict(&conn, &conflict("s"), UtcMillis(5)).unwrap();
++        check_in(&store, lifecycle(claim(), "same-owner")).unwrap();
++        assert!(row(&conn).is_some(), "the judged owner still owns the pane");
++        other_seat(&conn, "former", "unresolved", None);
++        conn.execute(
++            "UPDATE continuity_key_conflicts SET owner_seat_id='former'",
++            [],
++        )
++        .unwrap();
++        check_in(&store, lifecycle(claim(), "new-owner")).unwrap();
++        assert_eq!(row(&conn), None);
++    }
++
++    /// While a pass can still change the answer a check-in proceeds and records nothing. Unreserved
++    /// is ignored, and a key changes the operation's digest domain only. Kills: a false conflict or
++    /// bind during lag; refusing a check-in on a free key; a keyless digest change.
++    #[test]
++    fn check_in_during_lag_or_with_an_unreserved_key_records_nothing() {
++        let (store, mut conn, _) = fixture();
++        let author = make_author(&mut conn);
++        other_seat(&conn, "bound", "unresolved", None);
++        reserve(&conn, &author, KEY, Some("bound"));
++        reserve(&conn, &author, "free", None);
++        conn.execute(
++            "UPDATE herdr_hosts SET recovery_boot='b',recovery_epoch=1",
++            [],
++        )
++        .unwrap();
++        check_in(&store, keyed("op-1", KEY)).unwrap();
++        check_in(&store, keyed("op-2", "free")).unwrap();
++        check_in(&store, keyed("op-3", "unreserved")).unwrap();
++        assert_eq!(row(&conn), None);
++        assert_eq!(alerts(&conn), 0);
++        assert_eq!(
++            continuity_keys::lookup_key(&conn, &key("free"))
++                .unwrap()
++                .unwrap()
++                .seat,
++            None
++        );
++        assert!(
++            continuity_keys::lookup_key(&conn, &key("unreserved"))
++                .unwrap()
++                .is_none()
++        );
++        let keyless = lifecycle(claim(), "op");
++        assert_eq!(
++            seats::check_in_digest(&keyless).unwrap(),
++            schema::canonical_digest(&seats::check_in_payload(&keyless)).unwrap()
++        );
++        assert_ne!(
++            seats::check_in_digest(&keyed("op", KEY)).unwrap(),
++            seats::check_in_digest(&keyless).unwrap()
++        );
++    }
++
++    /// Kills: a check-in judging keys on a host kind whose continuity is not a key.
++    #[test]
++    fn check_in_on_an_hc_host_ignores_the_key() {
++        let (store, mut conn, _) = fixture();
++        let author = make_author(&mut conn);
++        reserve(&conn, &author, KEY, None);
++        conn.execute("UPDATE herdr_hosts SET kind='hc'", [])
++            .unwrap();
++        check_in(&store, keyed("op-1", KEY)).unwrap();
++        assert_eq!(
++            continuity_keys::lookup_key(&conn, &key(KEY))
++                .unwrap()
++                .unwrap()
++                .seat,
++            None
++        );
++    }
++}

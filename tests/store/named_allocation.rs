@@ -54,6 +54,7 @@ fn request(name: &str, operation: &str) -> ResolveSeat {
         operation: OperationId::new(operation),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     }
 }
 

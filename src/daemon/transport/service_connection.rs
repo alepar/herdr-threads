@@ -4,8 +4,8 @@ use super::*;
 use crate::{
     ports::{ServiceAuthorityGate, ServiceConnectionAuthority},
     protocol::service::{
-        SERVICE_SESSION_CAPABILITY_V2, ServiceOperation, ServiceRegister, ServiceRegistration,
-        ServiceRequest, ServiceResult, ServiceWireRequest, ServiceWireResponse,
+        ServiceRegister, ServiceRegistration, ServiceRequest, ServiceResult, ServiceSessionLevel,
+        ServiceWireRequest, ServiceWireResponse,
     },
     service::live_gate::LiveServiceGate,
 };
@@ -188,8 +188,25 @@ pub async fn serve_registered(
         )
         .await;
     };
-    // `first.validate()` accepted only v1 or v2. The session keeps what it negotiated.
-    let session_v2 = capability == SERVICE_SESSION_CAPABILITY_V2;
+    // The session keeps the level it negotiated. `first.validate()` already refused any other name.
+    let Some(level) = ServiceSessionLevel::from_capability(capability) else {
+        return send(
+            &mut stream,
+            &response(
+                &first,
+                &instance,
+                &boot,
+                Err(service_error(
+                    ErrorCode::Unsupported,
+                    "unsupported service capability",
+                )),
+            ),
+            expires,
+            &shutdown,
+            None,
+        )
+        .await;
+    };
     // This reserved identity is stable across boots. C supplies its durable row.
     let author = crate::store::service_substrate::reserved_author_id(&instance);
     let (connection, session_cancellation) =
@@ -248,14 +265,8 @@ pub async fn serve_registered(
                 "duplicate service registration",
             ));
         };
-        if !session_v2
-            && matches!(
-                operation,
-                ServiceOperation::Send(_)
-                    | ServiceOperation::History(_)
-                    | ServiceOperation::Receipts(_)
-            )
-        {
+        let required = ServiceSessionLevel::required_by(&operation);
+        if level < required {
             send(
                 &mut stream,
                 &response(
@@ -264,7 +275,7 @@ pub async fn serve_registered(
                     &boot,
                     Err(service_error(
                         ErrorCode::Unsupported,
-                        "operation requires service_session_v2",
+                        &format!("operation requires {}", required.capability()),
                     )),
                 ),
                 expires,

@@ -1,0 +1,44 @@
+diff --git a/tests/service/delivery_pull.rs b/tests/service/delivery_pull.rs
+index eddc6a874..7550d46e9 100644
+--- a/tests/service/delivery_pull.rs
++++ b/tests/service/delivery_pull.rs
+@@ -1275,6 +1275,7 @@ fn presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap() {
+                     claim: a.clone(),
+                     operation: OperationId::new("q3-many-resume"),
+                     lineage_parent: None,
++                    continuity_key: None,
+                 }),
+                 peer(),
+                 &budget(),
+@@ -1869,6 +1870,7 @@ fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
+         claim,
+         operation: OperationId::new(operation),
+         lineage_parent: None,
++        continuity_key: None,
+     });
+     match f.service.handle(command, peer(), &budget()).unwrap() {
+         CommandResult::CheckedIn(result) => result.context,
+@@ -2215,6 +2217,7 @@ fn a_plain_call_enrolled_hook_pull_binding_is_served() {
+         claim: claim("s", "p", fourth(), "n1", 1),
+         operation: OperationId::new("plain-1"),
+         lineage_parent: None,
++        continuity_key: None,
+     });
+     let context = match f.service.handle(command, peer(), &budget()).unwrap() {
+         CommandResult::CheckedIn(result) => result.context,
+@@ -2887,6 +2890,7 @@ fn readonly_second_binding(f: &Fixture) -> CallerClaim {
+                 claim: fresh_execution(second, 9),
+                 operation: OperationId::new("ci-ro"),
+                 lineage_parent: None,
++                continuity_key: None,
+             }),
+             peer(),
+             &budget(),
+@@ -3278,6 +3282,7 @@ fn current_check_in(
+         claim,
+         operation: OperationId::new(operation),
+         lineage_parent: None,
++        continuity_key: None,
+     });
+     match f.service.handle(command, peer(), &budget()).unwrap() {
+         CommandResult::CheckedIn(result) => result,

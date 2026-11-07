@@ -2153,6 +2153,46 @@ mod publication_order {
         ) -> Result<crate::ports::ProcessContinuityListing, ApiError> {
             self.inner.process_continuity_candidates(host, page, budget)
         }
+        fn shell_fingerprint_gaps(
+            &self,
+            host: crate::ports::HostId,
+            after: Option<SeatId>,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::ports::ShellFingerprintGap>, ApiError> {
+            self.inner.shell_fingerprint_gaps(host, after, budget)
+        }
+        fn record_shell_fingerprint(
+            &self,
+            gap: &crate::ports::ShellFingerprintGap,
+            fingerprint: &crate::identity::shell_continuity::ShellFingerprint,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            self.inner
+                .record_shell_fingerprint(gap, fingerprint, budget)
+        }
+        fn shell_continuity_candidates(
+            &self,
+            host: crate::ports::HostId,
+            after: Option<SeatId>,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::ports::ShellContinuityCandidate>, ApiError> {
+            self.inner.shell_continuity_candidates(host, after, budget)
+        }
+        fn shell_rival_exists(
+            &self,
+            seat: &SeatId,
+            fingerprint: &crate::identity::shell_continuity::ShellFingerprint,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            self.inner.shell_rival_exists(seat, fingerprint, budget)
+        }
+        fn decide_shell_continuity(
+            &self,
+            request: crate::ports::ShellContinuityRequest,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.decide_shell_continuity(request, budget)
+        }
         fn kept_continuity_claims(
             &self,
             host: crate::ports::HostId,
@@ -2471,7 +2511,7 @@ mod publication_order {
             seat: SeatId,
             proof: ClosureEvidence,
             budget: &CallBudget,
-        ) -> Result<RetirementJob, ApiError> {
+        ) -> Result<crate::ports::RetirementStart, ApiError> {
             self.inner.begin_retirement(seat, proof, budget)
         }
         fn advance_retirement(

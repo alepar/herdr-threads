@@ -1,0 +1,12 @@
+diff --git a/tests/protocol/error_class.rs b/tests/protocol/error_class.rs
+index 7eb562450..aa1aacb90 100644
+--- a/tests/protocol/error_class.rs
++++ b/tests/protocol/error_class.rs
+@@ -24,6 +24,7 @@ const EXPECTED: &[(ErrorCode, Option<ErrorClass>)] = &[
+     (ErrorCode::TargetUnresolved, None),
+     (ErrorCode::TargetUnsafe, None),
+     (ErrorCode::TargetAlreadyOwned, None),
++    (ErrorCode::ContinuityKeyPending, None),
+     (ErrorCode::ThreadNotOrphaned, None),
+     (ErrorCode::Archived, None),
+     (ErrorCode::NotFound, None),

@@ -4,12 +4,13 @@ use crate::{
         BootstrapAttachmentGuard, BootstrapObserver, ContinuityRequest, ContinuityTargetGuard,
         HostCallContext, HostId, HostInvalidationReason, HostObservation, HostObservationAdmission,
         HostPort, OperatorRequest, OperatorTargetGuard, OrdinaryResolutionAttempt,
-        OrdinaryResolutionGuard, OrdinaryResolutionOutcome, ResolvedTargetCheck, StorePort,
+        OrdinaryResolutionGuard, OrdinaryResolutionOutcome, ProcessInfo, ResolvedTargetCheck,
+        ShellContinuityCandidate, ShellContinuityGuard, ShellContinuityRequest, StorePort,
     },
     protocol::{
         authority::OperatorActor,
         commands::{ContinuityCheckIn, OperatorCommand, ResolveSeat},
-        ids::{HostTargetId, SeatId},
+        ids::{HostBootId, HostTargetId, SeatId},
         results::{ApiError, CommandResult, ErrorCode},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
@@ -103,11 +104,22 @@ pub struct OrdinaryIdentity {
     process_declined: std::sync::Mutex<std::collections::HashMap<ProcessDeclineKey, u64>>,
     /// The last seat C1 process continuity walked this round; `None` starts over.
     process_cursor: std::sync::Mutex<Option<SeatId>>,
+    /// C1 shell continuity candidates the facts or a definitive refusal ruled out (ht-ma6i.1), by
+    /// seat, generation and fingerprint, with when: same cap, TTL and eviction as
+    /// `process_declined`.
+    shell_declined: std::sync::Mutex<std::collections::HashMap<ShellDeclineKey, u64>>,
+    /// The last seat the fingerprint recording walked; `None` starts over.
+    shell_record_cursor: std::sync::Mutex<Option<SeatId>>,
+    /// The last seat C1 shell continuity walked; `None` starts over.
+    shell_decide_cursor: std::sync::Mutex<Option<SeatId>>,
+    /// The kernel facts shell continuity reads.
+    processes: Arc<dyn ProcessInfo>,
     /// The lane's configured cadence in milliseconds.
     observation_cadence_millis: u64,
 }
 
 use crate::identity::process_continuity::DeclineKey as ProcessDeclineKey;
+use crate::identity::shell_continuity::DeclineKey as ShellDeclineKey;
 /// Most C1 process continuity declines remembered before the set is cleared.
 const PROCESS_DECLINED_CAP: usize = 1024;
 /// How long a C1 process continuity decline stands before the candidate is read again.
@@ -136,6 +148,10 @@ impl OrdinaryIdentity {
             observation_pacer: None,
             process_declined: std::sync::Mutex::new(std::collections::HashMap::new()),
             process_cursor: std::sync::Mutex::new(None),
+            shell_declined: std::sync::Mutex::new(std::collections::HashMap::new()),
+            shell_record_cursor: std::sync::Mutex::new(None),
+            shell_decide_cursor: std::sync::Mutex::new(None),
+            processes: Arc::new(crate::host::process_table::HostProcessTable),
             observation_cadence_millis: crate::identity::reconcile::DEFAULT_SNAPSHOT_CADENCE_MILLIS,
         }
     }
@@ -159,6 +175,12 @@ impl OrdinaryIdentity {
     /// Gate background retries on the observation lane's Pacer backoff.
     pub fn with_observation_pacer(mut self, pacer: Arc<Pacer>) -> Self {
         self.observation_pacer = Some(pacer);
+        self
+    }
+
+    /// The process table shell continuity reads (a fixture's, in a test).
+    pub fn with_process_info(mut self, processes: Arc<dyn ProcessInfo>) -> Self {
+        self.processes = processes;
         self
     }
 
@@ -448,12 +470,8 @@ impl OrdinaryIdentity {
         if let Some(result) = replay {
             return Ok(result);
         }
-        let (result, not_ready) = self.decide_continuity_now(
-            command.clone(),
-            budget,
-            false,
-            crate::ports::ContinuityEvidence::Cooperative,
-        );
+        let (result, not_ready) =
+            self.decide_continuity_now(command.clone(), budget, false, claim_evidence(&command));
         // ht-dtx0: a claim refused only because the host evidence is not ready
         // (reconciliation lag, a failed host read) is kept for the observation
         // worker to decide once the epoch has reconciled; a decided claim
@@ -510,7 +528,7 @@ impl OrdinaryIdentity {
                             command.clone(),
                             &budget,
                             true,
-                            crate::ports::ContinuityEvidence::Cooperative,
+                            claim_evidence(command),
                         )
                         .1
                 })
@@ -538,7 +556,9 @@ impl OrdinaryIdentity {
     /// refusal answers, is remembered for its seat generation and fingerprint; a gone process, an
     /// unread fact or a not-ready refusal is retried next pass.
     pub fn decide_process_continuity(&self) -> Result<(), ApiError> {
-        use crate::identity::process_continuity::{decline_key, judge_seat, page_groups};
+        use crate::identity::process_continuity::{
+            decline_key, judge_seat, page_groups, same_boot,
+        };
         let budget = self.maintenance_budget();
         let after = self
             .process_cursor
@@ -559,21 +579,18 @@ impl OrdinaryIdentity {
         let (groups, last_page) = page_groups(rows.candidates, rows.full);
         let processes = crate::host::process_table::HostProcessTable;
         let now = self.clock.monotonic_now().0;
-        let declined = |key: &ProcessDeclineKey| {
-            self.process_declined.lock().is_ok_and(|declined| {
-                declined
-                    .get(key)
-                    .is_some_and(|at| now.saturating_sub(*at) < PROCESS_DECLINE_TTL_MS)
-            })
-        };
+        let declined = |key: &ProcessDeclineKey| decline_stands(&self.process_declined, key, now);
         let mut walked_all = true;
         for group in &groups {
             if budget.is_exhausted(self.clock.as_ref()) {
                 walked_all = false;
                 break;
             }
+            // A previous boot's candidate (or one of an unknown boot) costs no host read.
             let worth_reading = group.iter().any(|candidate| {
-                !declined(&decline_key(candidate)) && candidate.liveness.is_alive(&processes)
+                !declined(&decline_key(candidate))
+                    && same_boot(&processes, candidate.liveness_boot.as_deref())
+                    && candidate.liveness.is_alive(&processes)
             });
             if worth_reading {
                 let shell = self
@@ -647,6 +664,7 @@ impl OrdinaryIdentity {
             operation,
             execution: candidate.execution.clone(),
             liveness: Some(candidate.liveness),
+            continuity_key: None,
         };
         let (result, not_ready) = self.decide_continuity_now(
             command,
@@ -663,6 +681,201 @@ impl OrdinaryIdentity {
             ));
         }
         Ok(())
+    }
+
+    /// TRUST-POLICY C1 shell continuity (ht-ma6i.1): after a completed reconciliation pass, record
+    /// the pane shell of up to [`crate::ports::SHELL_FINGERPRINT_READS_PER_PASS`] resolved seats
+    /// with no fingerprint for their current terminal. A terminal's shell does not change while
+    /// its id stands, so a current row is never read again and steady passes make no host call.
+    /// An unreadable shell records nothing and the cursor still moves past it, so it cannot starve
+    /// the seats behind it; the cursor wraps at the end of the listing. Each read is fenced to the
+    /// listing publication's boot and epoch (refused before I/O on another epoch, after it when the
+    /// epoch moved or another boot answered) and the write re-checks that publication, so a Herdr
+    /// restart before the write records nothing (an unreadable shell; the next pass lists it anew).
+    pub fn record_shell_fingerprints(&self) -> Result<(), ApiError> {
+        let budget = self.maintenance_budget();
+        let after = lock_cursor(&self.shell_record_cursor);
+        let gaps = {
+            let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
+            self.store
+                .shell_fingerprint_gaps(self.host_id, after, &budget)?
+        };
+        let mut walked_all = gaps.len() < crate::ports::SHELL_FINGERPRINT_READS_PER_PASS;
+        for gap in &gaps {
+            if budget.is_exhausted(self.clock.as_ref()) {
+                walked_all = false;
+                break;
+            }
+            let fingerprint = self
+                .host
+                .pane_shell_pid(
+                    &gap.target,
+                    &self.fenced_quiet_read_context(&budget, &gap.host_boot, gap.host_epoch),
+                )
+                .ok()
+                .flatten()
+                .and_then(|pid| crate::identity::shell_continuity::read(&*self.processes, pid));
+            if let Some(fingerprint) = fingerprint {
+                let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
+                self.store
+                    .record_shell_fingerprint(gap, &fingerprint, &budget)?;
+            }
+            set_cursor(&self.shell_record_cursor, Some(gap.seat.clone()));
+        }
+        if walked_all {
+            set_cursor(&self.shell_record_cursor, None);
+        }
+        Ok(())
+    }
+
+    /// TRUST-POLICY C1 shell continuity (ht-ma6i.1): after C1 process continuity, resolve each
+    /// unresolved seat whose recorded fingerprint is still the shell of the pane at its saved
+    /// target. A seat with a live undeclined process continuity candidate is left to that path,
+    /// which also reopens a binding. A rival fingerprint costs no host read. `NotContinuous` and a
+    /// definitive refusal are remembered for the fingerprint; `Gone`, `Unknown`, an unread pane, a
+    /// rival process and a not-ready refusal are retried next pass.
+    pub fn decide_shell_continuity(&self) -> Result<(), ApiError> {
+        use crate::identity::shell_continuity::decline_key;
+        let budget = self.maintenance_budget();
+        let after = lock_cursor(&self.shell_decide_cursor);
+        let candidates = {
+            let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
+            self.store
+                .shell_continuity_candidates(self.host_id, after, &budget)?
+        };
+        let now = self.clock.monotonic_now().0;
+        let mut walked_all = candidates.len() < crate::ports::SHELL_CONTINUITY_CANDIDATES_PER_PASS;
+        for candidate in &candidates {
+            if budget.is_exhausted(self.clock.as_ref()) {
+                walked_all = false;
+                break;
+            }
+            if !decline_stands(&self.shell_declined, &decline_key(candidate), now) {
+                self.judge_shell_candidate(candidate, now, &budget)?;
+            }
+            set_cursor(&self.shell_decide_cursor, Some(candidate.seat.clone()));
+        }
+        if walked_all {
+            set_cursor(&self.shell_decide_cursor, None);
+        }
+        Ok(())
+    }
+
+    /// One candidate not declined: what it costs a host read to judge, and the decision.
+    fn judge_shell_candidate(
+        &self,
+        candidate: &ShellContinuityCandidate,
+        now: u64,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        use crate::identity::{process_continuity, shell_continuity};
+        let (at_target, rival_fingerprint) = {
+            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+            let at_target = self.store.process_continuity_candidates(
+                self.host_id,
+                crate::ports::ProcessContinuityPage {
+                    after: None,
+                    target: Some(candidate.target.clone()),
+                },
+                budget,
+            )?;
+            let rival =
+                self.store
+                    .shell_rival_exists(&candidate.seat, &candidate.fingerprint, budget)?;
+            (at_target.candidates, rival)
+        };
+        let left_to_process_path = at_target.iter().any(|row| {
+            row.seat == candidate.seat
+                && process_continuity::same_boot(&*self.processes, row.liveness_boot.as_deref())
+                && row.liveness.is_alive(&*self.processes)
+                && !decline_stands(
+                    &self.process_declined,
+                    &process_continuity::decline_key(row),
+                    now,
+                )
+        });
+        if left_to_process_path || rival_fingerprint {
+            return Ok(());
+        }
+        let Some(shell) = self
+            .host
+            .pane_shell_pid(&candidate.target, &self.quiet_read_context(budget))
+            .ok()
+            .flatten()
+        else {
+            return Ok(());
+        };
+        match shell_continuity::judge(&*self.processes, &candidate.fingerprint, shell) {
+            process_continuity::Verdict::Continuous => {}
+            process_continuity::Verdict::NotContinuous => {
+                self.decline_shell_candidate(candidate);
+                return Ok(());
+            }
+            process_continuity::Verdict::Gone | process_continuity::Verdict::Unknown => {
+                return Ok(());
+            }
+        }
+        if process_continuity::has_rival_in_pane(
+            &at_target,
+            &candidate.seat,
+            &*self.processes,
+            shell,
+        ) {
+            return Ok(());
+        }
+        let result = self.with_read_inner(
+            &candidate.target,
+            budget,
+            |target, context| self.host.observe_current_target(target, context),
+            |observation| observation,
+            |_, observation| {
+                let guard = ShellContinuityGuard::try_new(
+                    &self.instance,
+                    self.host_id,
+                    &candidate.target,
+                    observation,
+                )
+                .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
+                let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+                self.store.decide_shell_continuity(
+                    ShellContinuityRequest {
+                        seat: candidate.seat.clone(),
+                        seat_generation: candidate.seat_generation,
+                        fingerprint: candidate.fingerprint.clone(),
+                        guard,
+                    },
+                    budget,
+                )
+            },
+            true,
+        );
+        if result.is_err() && !continuity_not_ready(&result) {
+            self.decline_shell_candidate(candidate);
+        }
+        Ok(())
+    }
+
+    fn decline_shell_candidate(&self, candidate: &ShellContinuityCandidate) {
+        remember_decline(
+            &self.shell_declined,
+            crate::identity::shell_continuity::decline_key(candidate),
+            self.clock.monotonic_now().0,
+        );
+    }
+
+    /// A quiet host read's context fenced to one host boot and epoch: the host refuses the read
+    /// once its context moved past them.
+    fn fenced_quiet_read_context(
+        &self,
+        budget: &CallBudget,
+        boot: &HostBootId,
+        epoch: u64,
+    ) -> HostCallContext {
+        HostCallContext {
+            expected_boot: Some(boot.clone()),
+            expected_epoch: Some(epoch),
+            ..self.quiet_read_context(budget)
+        }
     }
 
     /// A quiet host read's context: its own short budget within `budget`, no fences.
@@ -683,16 +896,7 @@ impl OrdinaryIdentity {
     }
 
     fn decline_process_candidate(&self, key: ProcessDeclineKey) {
-        let now = self.clock.monotonic_now().0;
-        if let Ok(mut declined) = self.process_declined.lock() {
-            if declined.len() >= PROCESS_DECLINED_CAP {
-                declined.retain(|_, at| now.saturating_sub(*at) < PROCESS_DECLINE_TTL_MS);
-                if declined.len() >= PROCESS_DECLINED_CAP {
-                    declined.clear();
-                }
-            }
-            declined.insert(key, now);
-        }
+        remember_decline(&self.process_declined, key, self.clock.monotonic_now().0);
     }
 
     /// The daemon's own short budget for kept-claim bookkeeping and decisions,
@@ -1143,8 +1347,58 @@ impl OrdinaryIdentity {
         Ok(())
     }
 }
+
+fn lock_cursor(cursor: &std::sync::Mutex<Option<SeatId>>) -> Option<SeatId> {
+    cursor.lock().ok().and_then(|cursor| cursor.clone())
+}
+
+fn set_cursor(cursor: &std::sync::Mutex<Option<SeatId>>, seat: Option<SeatId>) {
+    if let Ok(mut cursor) = cursor.lock() {
+        *cursor = seat;
+    }
+}
+
+/// Whether `key`'s decline is within its TTL.
+fn decline_stands<K: Eq + std::hash::Hash>(
+    declined: &std::sync::Mutex<std::collections::HashMap<K, u64>>,
+    key: &K,
+    now: u64,
+) -> bool {
+    declined.lock().is_ok_and(|declined| {
+        declined
+            .get(key)
+            .is_some_and(|at| now.saturating_sub(*at) < PROCESS_DECLINE_TTL_MS)
+    })
+}
+
+/// Remember a decline, in a bounded set: expired entries go first, and it is cleared when still full.
+fn remember_decline<K: Eq + std::hash::Hash>(
+    declined: &std::sync::Mutex<std::collections::HashMap<K, u64>>,
+    key: K,
+    now: u64,
+) {
+    if let Ok(mut declined) = declined.lock() {
+        if declined.len() >= PROCESS_DECLINED_CAP {
+            declined.retain(|_, at| now.saturating_sub(*at) < PROCESS_DECLINE_TTL_MS);
+            if declined.len() >= PROCESS_DECLINED_CAP {
+                declined.clear();
+            }
+        }
+        declined.insert(key, now);
+    }
+}
+
 fn error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
+}
+
+/// What a session's own claim rests on, at intake and when a kept claim is decided.
+fn claim_evidence(command: &ContinuityCheckIn) -> crate::ports::ContinuityEvidence {
+    if command.continuity_key.is_some() {
+        crate::ports::ContinuityEvidence::Key
+    } else {
+        crate::ports::ContinuityEvidence::Cooperative
+    }
 }
 
 /// ht-dtx0: whether a C1 decision's refusal only says the evidence is not

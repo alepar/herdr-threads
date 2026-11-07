@@ -1,0 +1,277 @@
+diff --git a/tests/store/schema.rs b/tests/store/schema.rs
+index 128c0a8e3..b1d469b8a 100644
+--- a/tests/store/schema.rs
++++ b/tests/store/schema.rs
+@@ -3856,6 +3856,10 @@ fn v10_allocation_decisions_accepts_b5_kinds() {
+         "operator_human_override",
+         "cooperative_continuity",
+         "structural_process_continuity",
++        "structural_shell_continuity",
++        "cooperative_continuity_key",
++        "service_unretire",
++        "service_finalize",
+     ] {
+         insert(kind, None).unwrap();
+     }
+@@ -6428,6 +6432,261 @@ fn process_continuity_upgrade_preserves_allocation_decisions() {
+     open_with(&db, schema::NODE_DELTAS).unwrap();
+ }
+ 
++/// Node schema 16 (ht-ma6i.5). Kills: losing or changing a seat, retirement, decision or kept
++/// claim row, restarting the decision sequence, dropping either decision index.
++#[test]
++fn graph_clone_identity_upgrade_keeps_seats_retirements_and_decisions() {
++    let db = Connection::open_in_memory().unwrap();
++    open_with(&db, &schema::NODE_DELTAS[..14]).unwrap();
++    assert_eq!(user_version(&db), 15);
++    crate::test_support::attach_test_host_to_connection(&db);
++    db.execute_batch(
++        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1;
++         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id)
++           VALUES ('live',(SELECT id FROM local_node),'resolved','native','pane-live',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
++         INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id)
++           VALUES ('gone',(SELECT id FROM local_node),'resolved','native',2,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
++         UPDATE seats SET state='retired',retired_at=300,retired_seq=7 WHERE id='gone';
++         INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,closure_evidence)
++           VALUES ('job-gone','gone',300,'b',1,'pane-gone',2,'restored_pane_closed');
++         INSERT INTO allocation_decisions(ordinal,host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic)
++           VALUES (3,(SELECT min(host_id) FROM herdr_hosts),'t3','live','ordinary',3,'b',1,2,'op',NULL),
++                  (9,(SELECT min(host_id) FROM herdr_hosts),'t9','gone','structural_process_continuity',9,'b',1,2,NULL,'match');
++         INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at)
++           VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane-x','claude','sess','{}',5);",
++    )
++    .unwrap();
++    let snapshot = |db: &Connection| -> [String; 4] {
++        [
++            "SELECT json_group_array(json_array(id,state,target_id,generation,retired_at,retired_seq)) FROM (SELECT * FROM seats ORDER BY id)",
++            "SELECT json_group_array(json_array(ordinal,id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,closure_evidence,origin,phase,status)) FROM (SELECT * FROM retirements ORDER BY ordinal)",
++            "SELECT json_group_array(json_array(ordinal,host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic)) FROM (SELECT * FROM allocation_decisions ORDER BY ordinal)",
++            "SELECT json_group_array(json_array(host_id,target_id,harness,native_session,command_json,received_at)) FROM kept_continuity_claims",
++        ]
++        .map(|sql| db.query_row(sql, [], |r| r.get(0)).unwrap())
++    };
++    let before = snapshot(&db);
++    open_with(&db, schema::NODE_DELTAS).unwrap();
++    assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
++    assert_eq!(snapshot(&db), before);
++    let null_columns: i64 = db
++        .query_row(
++            "SELECT (SELECT count(*) FROM retirements WHERE absence_evidence IS NULL) + (SELECT count(*) FROM kept_continuity_claims WHERE continuity_key IS NULL)",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(null_columns, 2, "the added columns start NULL on old rows");
++    db.execute(
++        "INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ((SELECT min(host_id) FROM herdr_hosts),'t','live','service_unretire',1,'b',1,2)",
++        [],
++    )
++    .unwrap();
++    assert_eq!(
++        db.last_insert_rowid(),
++        10,
++        "the sequence continues past the copied rows"
++    );
++    for index in [
++        "allocation_decisions_target",
++        "allocation_decisions_seat_history",
++    ] {
++        assert!(object_exists(&db, "index", index), "{index} missing");
++    }
++    for table in [
++        "seat_shell_fingerprints",
++        "continuity_keys",
++        "continuity_key_conflicts",
++        "continuity_alerts",
++        "reversible_retirements",
++        "restored_target_absence",
++    ] {
++        assert!(table_exists(&db, table), "{table} missing");
++    }
++}
++
++/// Node schema 16 (ht-ma6i.5). Kills: a dropped CHECK, UNIQUE or AUTOINCREMENT on the new tables.
++#[test]
++fn graph_clone_identity_tables_enforce_their_checks() {
++    let db = Connection::open_in_memory().unwrap();
++    open_with(&db, schema::NODE_DELTAS).unwrap();
++    crate::test_support::attach_test_host_to_connection(&db);
++    db.execute_batch(
++        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id)
++           VALUES ('s1',(SELECT id FROM local_node),'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),
++                  ('s2',(SELECT id FROM local_node),'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),
++                  ('s3',(SELECT id FROM local_node),'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
++         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('graph',(SELECT id FROM local_node),0);",
++    )
++    .unwrap();
++
++    let key = |key: &str, seat: Option<&str>, bound_at: Option<i64>, bound_by: Option<&str>| {
++        db.execute(
++            "INSERT INTO continuity_keys(key,owner_author_id,seat_id,reserved_at,bound_at,bound_by) VALUES (?1,'graph',?2,0,?3,?4)",
++            params![key, seat, bound_at, bound_by],
++        )
++    };
++    key("unbound", None, None, None).unwrap();
++    assert!(key("k-other", Some("s1"), Some(1), Some("other")).is_err());
++    key("k-check-in", Some("s1"), Some(1), Some("check_in")).unwrap();
++    key(
++        "k-service",
++        Some("s2"),
++        Some(1),
++        Some("service_reservation"),
++    )
++    .unwrap();
++    assert!(key("k-no-by", Some("s3"), Some(1), None).is_err());
++    assert!(key("k-no-seat", None, None, Some("check_in")).is_err());
++    assert!(key("k-no-at", Some("s3"), None, Some("check_in")).is_err());
++    assert!(
++        key("k-second", Some("s1"), Some(1), Some("check_in")).is_err(),
++        "one key per seat"
++    );
++    assert!(key("", None, None, None).is_err());
++    assert!(key(&"k".repeat(129), None, None, None).is_err());
++    key(&"k".repeat(128), None, None, None).unwrap();
++
++    let conflict = |target: &str, kind: &str| {
++        db.execute(
++            "INSERT INTO continuity_key_conflicts(host_id,target_id,key,kind,seat_id,owner_seat_id,first_seen_at,updated_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'unbound',?2,'s1','s2',1,2)",
++            params![target, kind],
++        )
++    };
++    for (index, kind) in [
++        "key_live_elsewhere",
++        "key_retired_reversibly",
++        "pane_owned_by_other_seat",
++        "session_matches_other_seat",
++        "seat_holds_other_key",
++    ]
++    .into_iter()
++    .enumerate()
++    {
++        conflict(&format!("pane-{index}"), kind).unwrap();
++    }
++    // The Rust and SQL kind lists cannot drift: every serde name is admitted by both tables.
++    for (index, kind) in [
++        crate::protocol::results::ContinuityConflictKind::KeyLiveElsewhere,
++        crate::protocol::results::ContinuityConflictKind::KeyRetiredReversibly,
++        crate::protocol::results::ContinuityConflictKind::PaneOwnedByOtherSeat,
++        crate::protocol::results::ContinuityConflictKind::SessionMatchesOtherSeat,
++        crate::protocol::results::ContinuityConflictKind::SeatHoldsOtherKey,
++    ]
++    .into_iter()
++    .enumerate()
++    {
++        let name = serde_json::to_value(kind).unwrap();
++        let name = name.as_str().unwrap();
++        conflict(&format!("serde-{index}"), name).unwrap();
++        db.execute(
++            "INSERT INTO continuity_alerts(key,host_id,target_id,kind,at) VALUES ('k',(SELECT min(host_id) FROM herdr_hosts),'pane',?1,1)",
++            [name],
++        )
++        .unwrap();
++    }
++    assert!(conflict("pane-bogus", "bogus").is_err());
++    assert!(
++        conflict("pane-0", "key_live_elsewhere").is_err(),
++        "one standing conflict per pane"
++    );
++    for column in ["owner_seat_id", "updated_at"] {
++        assert!(
++            column_exists(&db, "continuity_key_conflicts", column),
++            "{column}"
++        );
++    }
++
++    let alert = || {
++        db.execute(
++            "INSERT INTO continuity_alerts(key,seat_id,host_id,target_id,kind,at) VALUES ('gone-key',NULL,(SELECT min(host_id) FROM herdr_hosts),'pane','key_live_elsewhere',1)",
++            [],
++        )
++        .unwrap();
++        db.last_insert_rowid()
++    };
++    let first = alert();
++    db.execute("DELETE FROM continuity_alerts WHERE ordinal=?1", [first])
++        .unwrap();
++    assert!(alert() > first, "ordinals grow across eviction");
++
++    let reversible = |seat: &str,
++                      state: &str,
++                      unretired_at: Option<i64>,
++                      closure: Option<&str>,
++                      absence: Option<&str>| {
++        db.execute(
++            "INSERT INTO reversible_retirements(seat_id,state,cutover_at,reason,closure_evidence,absence_evidence,unretired_at) VALUES (?1,?2,1,'closed',?3,?4,?5)",
++            params![seat, state, closure, absence, unretired_at],
++        )
++    };
++    assert!(reversible("s1", "other", None, None, None).is_err());
++    assert!(reversible("s1", "unretired", None, None, None).is_err());
++    assert!(reversible("s1", "reversible", Some(5), None, None).is_err());
++    assert!(reversible("s1", "reversible", None, Some("bogus"), None).is_err());
++    assert!(reversible("s1", "reversible", None, None, Some("bogus")).is_err());
++    reversible(
++        "s1",
++        "reversible",
++        None,
++        Some("restored_pane_closed"),
++        Some("restored_target_absent"),
++    )
++    .unwrap();
++    reversible("s2", "unretired", Some(5), None, None).unwrap();
++
++    db.execute(
++        "INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,closure_evidence) VALUES ('job-s3','s3',300,'b',1,'pane',2,'restored_pane_closed')",
++        [],
++    )
++    .unwrap();
++    assert!(
++        db.execute("UPDATE retirements SET absence_evidence='bogus'", [])
++            .is_err()
++    );
++    db.execute(
++        "UPDATE retirements SET absence_evidence='restored_target_absent'",
++        [],
++    )
++    .unwrap();
++}
++
++#[test]
++fn seat_retirement_terminal_relaxes_only_for_a_reversible_row() {
++    let db = Connection::open_in_memory().unwrap();
++    open_with(&db, schema::NODE_DELTAS).unwrap();
++    crate::test_support::attach_test_host_to_connection(&db);
++    db.execute_batch(
++        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id)
++           VALUES ('gone',(SELECT id FROM local_node),'resolved','native',2,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
++         UPDATE seats SET state='retired',retired_at=300,retired_seq=7 WHERE id='gone';",
++    )
++    .unwrap();
++    let unretire = "UPDATE seats SET state='unresolved',unresolved_reason='other',retired_at=NULL,retired_seq=NULL WHERE id='gone'";
++    let refused = |db: &Connection| db.execute(unretire, []).unwrap_err().to_string();
++    assert!(refused(&db).contains("retired seat is terminal"), "no row");
++    db.execute(
++        "INSERT INTO reversible_retirements(seat_id,state,cutover_at,reason,unretired_at) VALUES ('gone','unretired',300,'closed',400)",
++        [],
++    )
++    .unwrap();
++    assert!(
++        refused(&db).contains("retired seat is terminal"),
++        "unretired row"
++    );
++    assert!(
++        db.execute("UPDATE seats SET retired_at=301 WHERE id='gone'", [])
++            .is_err(),
++        "the cutover stays fixed without a reversible row"
++    );
++    db.execute(
++        "UPDATE reversible_retirements SET state='reversible',unretired_at=NULL WHERE seat_id='gone'",
++        [],
++    )
++    .unwrap();
++    db.execute(unretire, []).unwrap();
++}
++
+ /// Node schema 5, the bytes-first journal (ht-76u6): the delta rebuilds
+ /// `journal` / `journal_forked` with `raw` as truth and a nullable projection.
+ mod bytes_first {

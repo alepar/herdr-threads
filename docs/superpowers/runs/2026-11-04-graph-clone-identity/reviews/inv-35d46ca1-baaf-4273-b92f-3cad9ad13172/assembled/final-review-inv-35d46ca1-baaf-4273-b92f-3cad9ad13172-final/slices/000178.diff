@@ -1,0 +1,422 @@
+diff --git a/tests/service/reversible_session.rs b/tests/service/reversible_session.rs
+new file mode 100644
+index 000000000..c2fbd3b57
+--- /dev/null
++++ b/tests/service/reversible_session.rs
+@@ -0,0 +1,416 @@
++//! `UnretireSeat` and `FinalizeRetirement` over a real `service_session_v3` connection to an
++//! in-process daemon (ht-ma6i.3): owner authorization, operation-key replay and payload-mismatch
++//! refusal through the session. The fixture host is unavailable, so no reconciliation touches the
++//! seeded seats; a seat is made reversible by writing what the fence writes.
++
++use super::continuity_key_session::{Fixture, Session, fixture};
++use herdr_threads::{
++    client::service::{PersistentServiceClient, ServiceCallError},
++    protocol::{
++        ids::{ContinuityKey, OperationId, SeatId},
++        pagination::PageRequest,
++        results::{ApiError, ErrorCode},
++        service::{
++            FinalizeRetirement, ReleaseContinuityKey, ReserveContinuityKey, SeatUnretired,
++            ServiceContinuityAlertsQuery, ServiceOperation, ServiceResult, UnretireSeat,
++        },
++    },
++};
++use rusqlite::{OptionalExtension, params};
++use std::time::{Duration, Instant};
++
++impl Fixture {
++    fn seat_state(&self, seat: &str) -> String {
++        self.db
++            .query_row("SELECT state FROM seats WHERE id=?1", [seat], |r| r.get(0))
++            .unwrap()
++    }
++
++    fn row_state(&self, seat: &str) -> Option<String> {
++        self.db
++            .query_row(
++                "SELECT state FROM reversible_retirements WHERE seat_id=?1",
++                [seat],
++                |r| r.get(0),
++            )
++            .optional()
++            .unwrap()
++    }
++
++    fn make_reversible(&self, seat: &str) {
++        self.db
++            .execute(
++                "UPDATE seats SET state='retired',retired_at=50,retired_seq=1,generation=generation+1 WHERE id=?1",
++                [seat],
++            )
++            .unwrap();
++        self.db
++            .execute(
++                "INSERT INTO reversible_retirements(seat_id,state,cutover_at,reason,closure_boot,closure_epoch,closure_target,closure_generation) VALUES (?1,'reversible',50,'closed','boot',1,'pane',1)",
++                [seat],
++            )
++            .unwrap();
++    }
++
++    /// A live seat in a seat's own thread, so a retirement job has a membership to settle.
++    fn seed_member(&self, seat: &str) {
++        self.db
++            .execute(
++                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t',?1,'topic','goal',0,0,0) ON CONFLICT DO NOTHING",
++                params![self.instance()],
++            )
++            .unwrap();
++        self.db
++            .execute(
++                "INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES ('t',?1,'joined','joined',1)",
++                [seat],
++            )
++            .unwrap();
++    }
++
++    fn instance(&self) -> String {
++        self.db
++            .query_row("SELECT id FROM local_node", [], |r| r.get(0))
++            .unwrap()
++    }
++}
++
++impl Session {
++    async fn unretire(&mut self, operation: &str, seat: &str) -> Result<SeatUnretired, ApiError> {
++        let result = self
++            .call(ServiceOperation::UnretireSeat(UnretireSeat {
++                seat: SeatId::new(seat),
++                operation: OperationId::new(operation),
++            }))
++            .await?;
++        let ServiceResult::SeatUnretired(unretired) = result else {
++            panic!("unretire answered {result:?}");
++        };
++        Ok(unretired)
++    }
++
++    async fn finalize(&mut self, operation: &str, seat: &str) -> Result<SeatId, ApiError> {
++        let result = self
++            .call(ServiceOperation::FinalizeRetirement(FinalizeRetirement {
++                seat: SeatId::new(seat),
++                operation: OperationId::new(operation),
++            }))
++            .await?;
++        let ServiceResult::RetirementFinalized(finalized) = result else {
++            panic!("finalize answered {result:?}");
++        };
++        Ok(finalized)
++    }
++}
++
++fn reserve_op(operation: &str, key: &str, seat: Option<&str>) -> ServiceOperation {
++    ServiceOperation::ReserveContinuityKey(ReserveContinuityKey {
++        key: ContinuityKey::new(key),
++        seat: seat.map(SeatId::new),
++        operation: OperationId::new(operation),
++    })
++}
++
++fn unretire_op(operation: &str, seat: &str) -> ServiceOperation {
++    ServiceOperation::UnretireSeat(UnretireSeat {
++        seat: SeatId::new(seat),
++        operation: OperationId::new(operation),
++    })
++}
++
++async fn submit(
++    client: &PersistentServiceClient,
++    fixture: &Fixture,
++    operation: ServiceOperation,
++) -> ServiceResult {
++    client.submit(operation, &fixture.budget()).await.unwrap().1
++}
++
++fn keys(names: &[&str]) -> Vec<OperationId> {
++    names.iter().copied().map(OperationId::new).collect()
++}
++
++/// Kills: a client still registering v2, which answers `Unsupported`; a missing `result_matches`
++/// arm, which surfaces as `UnknownOutcome` with the key pending.
++#[test]
++fn persistent_client_runs_the_v3_operations() {
++    let fixture = fixture();
++    fixture.seed_seat("s1", "resolved", Some("pane-1"));
++    fixture.run_client(|client, fixture| async move {
++        client.register(&fixture.budget()).await.unwrap();
++
++        let reserved = submit(&client, &fixture, reserve_op("reserve-1", "k1", Some("s1"))).await;
++        let ServiceResult::ContinuityKeyReserved(reserved) = reserved else {
++            panic!("reserve answered {reserved:?}");
++        };
++        assert_eq!(reserved.seat, Some(SeatId::new("s1")));
++
++        fixture.make_reversible("s1");
++        let unretired = submit(&client, &fixture, unretire_op("unretire", "s1")).await;
++        let ServiceResult::SeatUnretired(unretired) = unretired else {
++            panic!("unretire answered {unretired:?}");
++        };
++        assert_eq!(unretired.seat, SeatId::new("s1"));
++        assert_eq!(fixture.row_state("s1").as_deref(), Some("unretired"));
++
++        let finalized = submit(
++            &client,
++            &fixture,
++            ServiceOperation::FinalizeRetirement(FinalizeRetirement {
++                seat: SeatId::new("s1"),
++                operation: OperationId::new("finalize"),
++            }),
++        )
++        .await;
++        assert_eq!(
++            finalized,
++            ServiceResult::RetirementFinalized(SeatId::new("s1"))
++        );
++        assert_eq!(fixture.key_row("k1"), None);
++
++        submit(&client, &fixture, reserve_op("reserve-2", "k2", None)).await;
++        let released = submit(
++            &client,
++            &fixture,
++            ServiceOperation::ReleaseContinuityKey(ReleaseContinuityKey {
++                key: ContinuityKey::new("k2"),
++                operation: OperationId::new("release"),
++            }),
++        )
++        .await;
++        assert_eq!(
++            released,
++            ServiceResult::ContinuityKeyReleased(ContinuityKey::new("k2"))
++        );
++        assert_eq!(fixture.key_row("k2"), None);
++
++        let alerts = client
++            .query(
++                ServiceOperation::ContinuityAlerts(ServiceContinuityAlertsQuery {
++                    page: PageRequest::default(),
++                }),
++                &fixture.budget(),
++            )
++            .await
++            .unwrap();
++        let ServiceResult::ContinuityAlerts(page) = alerts else {
++            panic!("alerts answered {alerts:?}");
++        };
++        assert!(page.items.is_empty());
++
++        assert!(client.journal().pending().unwrap().is_empty());
++        assert_eq!(
++            client.journal().completed().unwrap(),
++            keys(&["finalize", "release", "reserve-1", "reserve-2", "unretire"])
++        );
++    });
++}
++
++/// Kills: a daemon refusal of a v3 operation read as an unknown outcome, left pending, or dropping
++/// the session. An unknown seat has no key of this service, so it reads `Unauthorized`; the seat's
++/// own key on a seat that is not retired reads `NotFound`.
++#[test]
++fn persistent_client_journals_a_v3_refusal_and_keeps_the_session() {
++    let fixture = fixture();
++    fixture.seed_seat("live", "resolved", Some("pane-live"));
++    fixture.run_client(|client, fixture| async move {
++        let registration = client.register(&fixture.budget()).await.unwrap();
++        submit(&client, &fixture, reserve_op("reserve", "k", Some("live"))).await;
++
++        for (operation, seat, code) in [
++            ("refused-unknown", "nobody", ErrorCode::Unauthorized),
++            ("refused-live", "live", ErrorCode::NotFound),
++        ] {
++            match client
++                .submit(unretire_op(operation, seat), &fixture.budget())
++                .await
++            {
++                Err(ServiceCallError::Api { error, pending }) => {
++                    assert_eq!(error.code, code, "{seat}");
++                    assert_eq!(pending, None, "{seat}");
++                }
++                other => panic!("{seat}: expected a refusal, got {other:?}"),
++            }
++            assert_eq!(fixture.journaled(operation), 0, "{seat}");
++        }
++
++        assert_eq!(client.registration().await, Some(registration));
++        assert!(client.journal().pending().unwrap().is_empty());
++        assert_eq!(
++            client.journal().completed().unwrap(),
++            keys(&["refused-live", "refused-unknown", "reserve"])
++        );
++    });
++}
++
++/// Kills: an un-retire still answering `Unsupported`; a seat of another service's key being acted
++/// on; a refusal journaled.
++#[test]
++fn unretire_authorization() {
++    let fixture = fixture();
++    fixture.seed_seat("mine", "resolved", Some("pane-mine"));
++    fixture.seed_seat("theirs", "resolved", Some("pane-theirs"));
++    fixture.seed_seat("keyless", "retired", None);
++    fixture
++        .db
++        .execute_batch(
++            "PRAGMA foreign_keys=OFF;
++             INSERT INTO service_authors(id,instance_id,created_at) VALUES ('other-author','other-instance',0);
++             INSERT INTO continuity_keys(key,owner_author_id,seat_id,reserved_at,bound_at,bound_by) VALUES ('other-key','other-author','theirs',5,5,'service_reservation');
++             PRAGMA foreign_keys=ON;",
++        )
++        .unwrap();
++    fixture.run(|mut session, fixture| async move {
++        session
++            .reserve("reserve", "mine-key", Some("mine"))
++            .await
++            .unwrap();
++        fixture.make_reversible("mine");
++        fixture.make_reversible("theirs");
++
++        for (operation, seat) in [("refused-theirs", "theirs"), ("refused-keyless", "keyless")] {
++            let refused = session.unretire(operation, seat).await.unwrap_err();
++            assert_eq!(refused.code, ErrorCode::Unauthorized, "{seat}");
++            assert_eq!(fixture.journaled(operation), 0, "{seat}");
++            let refused = session.finalize(operation, seat).await.unwrap_err();
++            assert_eq!(refused.code, ErrorCode::Unauthorized, "{seat}");
++        }
++        assert_eq!(fixture.row_state("theirs").as_deref(), Some("reversible"));
++
++        let unretired = session.unretire("unretire", "mine").await.unwrap();
++        assert_eq!(unretired.seat, SeatId::new("mine"));
++        assert_eq!(fixture.seat_state("mine"), "unresolved");
++        assert_eq!(fixture.row_state("mine").as_deref(), Some("unretired"));
++        // Not reversible any more: the owner's second attempt finds nothing to undo.
++        let again = session.unretire("unretire-2", "mine").await.unwrap_err();
++        assert_eq!(again.code, ErrorCode::NotFound);
++        assert_eq!(fixture.journaled("unretire-2"), 0);
++    });
++}
++
++/// Kills: finalization refused for either state, or leaving the row or the key; the job never
++/// picked up by the daemon's lanes after the service's commit.
++#[test]
++fn finalize_reversible_and_unretired() {
++    let fixture = fixture();
++    fixture.seed_seat("frozen", "resolved", Some("pane-frozen"));
++    fixture.seed_seat("waiting", "resolved", Some("pane-waiting"));
++    fixture.seed_member("frozen");
++    fixture.run(|mut session, fixture| async move {
++        session
++            .reserve("reserve-1", "frozen-key", Some("frozen"))
++            .await
++            .unwrap();
++        session
++            .reserve("reserve-2", "waiting-key", Some("waiting"))
++            .await
++            .unwrap();
++        fixture.make_reversible("frozen");
++        fixture.make_reversible("waiting");
++        session.unretire("unretire", "waiting").await.unwrap();
++
++        for (operation, seat, key) in [
++            ("finalize-1", "frozen", "frozen-key"),
++            ("finalize-2", "waiting", "waiting-key"),
++        ] {
++            assert_eq!(
++                session.finalize(operation, seat).await.unwrap(),
++                SeatId::new(seat)
++            );
++            assert_eq!(fixture.seat_state(seat), "retired", "{seat}");
++            assert_eq!(fixture.row_state(seat), None, "{seat}");
++            assert_eq!(fixture.key_row(key), None, "{seat}");
++            let kind: String = fixture
++                .db
++                .query_row(
++                    "SELECT kind FROM allocation_decisions WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
++                    [seat],
++                    |r| r.get(0),
++                )
++                .unwrap();
++            assert_eq!(kind, "service_finalize");
++        }
++        let cutover: i64 = fixture
++            .db
++            .query_row(
++                "SELECT cutover_at FROM retirements WHERE seat_id='frozen'",
++                [],
++                |r| r.get(0),
++            )
++            .unwrap();
++        assert_eq!(cutover, 50, "the original cutover");
++
++        // The deadline lane picks the job up with no further call.
++        let deadline = Instant::now() + Duration::from_secs(10);
++        loop {
++            let membership: String = fixture
++                .db
++                .query_row(
++                    "SELECT state FROM memberships WHERE seat_id='frozen'",
++                    [],
++                    |r| r.get(0),
++                )
++                .unwrap();
++            if membership == "retired" {
++                break;
++            }
++            assert!(Instant::now() < deadline, "the job never advanced");
++            tokio::time::sleep(Duration::from_millis(50)).await;
++        }
++    });
++}
++
++/// Kills: a replay that re-executes, which after a finalization would answer `Unauthorized` (the
++/// key row is gone) and after an un-retire `NotFound`.
++#[test]
++fn operation_key_replay_including_finalize_after_the_key_row_is_gone() {
++    let fixture = fixture();
++    fixture.seed_seat("s1", "resolved", Some("pane-1"));
++    fixture.run(|mut session, fixture| async move {
++        session
++            .reserve("reserve", "s1-key", Some("s1"))
++            .await
++            .unwrap();
++        fixture.make_reversible("s1");
++        let first = session.unretire("unretire", "s1").await.unwrap();
++        assert_eq!(session.unretire("unretire", "s1").await.unwrap(), first);
++        assert_eq!(fixture.journaled("unretire"), 1);
++
++        session.finalize("finalize", "s1").await.unwrap();
++        assert_eq!(fixture.key_row("s1-key"), None);
++        assert_eq!(
++            session.finalize("finalize", "s1").await.unwrap(),
++            SeatId::new("s1")
++        );
++        assert_eq!(fixture.journaled("finalize"), 1);
++    });
++}
++
++/// Kills: an operation key reused for another seat or another operation being executed or answered
++/// with the first result.
++#[test]
++fn payload_mismatch_is_refused() {
++    let fixture = fixture();
++    fixture.seed_seat("s1", "resolved", Some("pane-1"));
++    fixture.seed_seat("s2", "resolved", Some("pane-2"));
++    fixture.run(|mut session, fixture| async move {
++        session
++            .reserve("reserve-1", "s1-key", Some("s1"))
++            .await
++            .unwrap();
++        session
++            .reserve("reserve-2", "s2-key", Some("s2"))
++            .await
++            .unwrap();
++        fixture.make_reversible("s1");
++        fixture.make_reversible("s2");
++        session.unretire("op", "s1").await.unwrap();
++        let other_seat = session.unretire("op", "s2").await.unwrap_err();
++        assert_eq!(other_seat.code, ErrorCode::OperationPayloadMismatch);
++        let other_op = session.finalize("op", "s1").await.unwrap_err();
++        assert_eq!(other_op.code, ErrorCode::OperationPayloadMismatch);
++        assert_eq!(fixture.row_state("s2").as_deref(), Some("reversible"));
++        assert_eq!(fixture.row_state("s1").as_deref(), Some("unretired"));
++        assert_eq!(fixture.journaled("op"), 1);
++    });
++}

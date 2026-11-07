@@ -1,0 +1,20 @@
+diff --git a/tests/service/mod_ack_dispatch.rs b/tests/service/mod_ack_dispatch.rs
+index 69199d50d..485dc1859 100644
+--- a/tests/service/mod_ack_dispatch.rs
++++ b/tests/service/mod_ack_dispatch.rs
+@@ -202,6 +202,7 @@ fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
+         },
+         claim,
+         operation: OperationId::new(operation),
++        continuity_key: None,
+     });
+     match f.service.handle(command, peer(), &budget()).unwrap() {
+         CommandResult::CheckedIn(result) => result.context,
+@@ -307,6 +308,7 @@ fn a_plain_call_binding_with_a_live_channel_mod_acks_and_keeps_its_provenance()
+         mode: CheckInMode::Current,
+         claim: claim("s", "p", Harness::Claude, "n1", first.binding_generation),
+         operation: OperationId::new("plain-1"),
++        continuity_key: None,
+     });
+     let context = match f.service.handle(command, peer(), &budget()).unwrap() {
+         CommandResult::CheckedIn(result) => result.context,

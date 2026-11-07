@@ -1,0 +1,106 @@
+diff --git a/src/protocol/results.rs b/src/protocol/results.rs
+index aa7601a16..93bf0b929 100644
+--- a/src/protocol/results.rs
++++ b/src/protocol/results.rs
+@@ -423,6 +423,8 @@ pub enum ErrorCode {
+     TargetUnresolved,
+     TargetUnsafe,
+     TargetAlreadyOwned,
++    /// A claimless caller presented a key bound to an unresolved seat: no seat minted (spec 4.2).
++    ContinuityKeyPending,
+     ThreadNotOrphaned,
+     Archived,
+     NotFound,
+@@ -1319,6 +1321,55 @@ pub struct OpenBindingSummary {
+     pub harness: String,
+     pub target: HostTargetId,
+ }
++/// How a continuity key conflict's refusal detail begins, so a hook can keep it from the model.
++pub const KEY_CONFLICT_CAUSE: &str = "continuity key conflict ";
++
++/// Why a continuity key claim was refused, or only alerted. Spec 4.2.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum ContinuityConflictKind {
++    KeyLiveElsewhere,
++    KeyRetiredReversibly,
++    PaneOwnedByOtherSeat,
++    SessionMatchesOtherSeat,
++    SeatHoldsOtherKey,
++}
++
++/// The evidence that bound a key to its seat: the agent presented it, or the service asserted it.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum ContinuityKeyBinding {
++    CheckIn,
++    ServiceReservation,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ContinuityKeyConflict {
++    pub host: HostLocator,
++    pub pane: HostTargetId,
++    pub kind: ContinuityConflictKind,
++    pub first_seen_at: UtcMillis,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct SeatContinuityKey {
++    pub key: ContinuityKey,
++    pub owner: ServiceAuthorId,
++    pub bound_by: ContinuityKeyBinding,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub conflict: Option<ContinuityKeyConflict>,
++}
++
++/// Present iff the seat reads retired.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum SeatRetirementState {
++    Reversible,
++    Final,
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct SeatInspection {
+@@ -1334,6 +1385,12 @@ pub struct SeatInspection {
+     /// local one and from an older daemon.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub directory: Option<Box<SeatDirectory>>,
++    /// The key this seat holds (ht-ma6i). Boxed like `directory`; the wire shape is the struct.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub continuity_key: Option<Box<SeatContinuityKey>>,
++    /// Present iff the seat reads retired (ht-ma6i).
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub retirement_state: Option<SeatRetirementState>,
+ }
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+@@ -2331,6 +2388,7 @@ impl ErrorCode {
+         ErrorCode::TargetUnresolved,
+         ErrorCode::TargetUnsafe,
+         ErrorCode::TargetAlreadyOwned,
++        ErrorCode::ContinuityKeyPending,
+         ErrorCode::ThreadNotOrphaned,
+         ErrorCode::Archived,
+         ErrorCode::NotFound,
+@@ -2384,6 +2442,7 @@ impl ErrorCode {
+             ErrorCode::TargetUnresolved => None,
+             ErrorCode::TargetUnsafe => None,
+             ErrorCode::TargetAlreadyOwned => None,
++            ErrorCode::ContinuityKeyPending => None,
+             ErrorCode::ThreadNotOrphaned => None,
+             ErrorCode::Archived => None,
+             ErrorCode::NotFound => None,
+@@ -2475,6 +2534,7 @@ api_error_constructors! {
+     caller_unverified => CallerUnverified, permit_expired => PermitExpired,
+     stale_host_observation => StaleHostObservation, target_unresolved => TargetUnresolved,
+     target_unsafe => TargetUnsafe, target_already_owned => TargetAlreadyOwned,
++    continuity_key_pending => ContinuityKeyPending,
+     thread_not_orphaned => ThreadNotOrphaned, archived => Archived, not_found => NotFound,
+     operation_payload_mismatch => OperationPayloadMismatch, store_busy => StoreBusy,
+     store_corrupt => StoreCorrupt, store_full => StoreFull, incompatible_schema => IncompatibleSchema,

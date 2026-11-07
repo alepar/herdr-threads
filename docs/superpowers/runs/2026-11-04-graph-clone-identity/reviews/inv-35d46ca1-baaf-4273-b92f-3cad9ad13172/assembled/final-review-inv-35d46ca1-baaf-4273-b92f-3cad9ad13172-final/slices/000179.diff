@@ -1,0 +1,12 @@
+diff --git a/tests/store/catch_up.rs b/tests/store/catch_up.rs
+index e5e11bff4..439a99f95 100644
+--- a/tests/store/catch_up.rs
++++ b/tests/store/catch_up.rs
+@@ -934,6 +934,7 @@ fn check_in(store: &SqliteStore, execution: &str, expected_generation: u64) -> u
+         },
+         claim: claim(execution, expected_generation),
+         operation: OperationId::new(format!("op-{execution}")),
++        continuity_key: None,
+     };
+     let permit = store
+         .issue_cooperative_permit(

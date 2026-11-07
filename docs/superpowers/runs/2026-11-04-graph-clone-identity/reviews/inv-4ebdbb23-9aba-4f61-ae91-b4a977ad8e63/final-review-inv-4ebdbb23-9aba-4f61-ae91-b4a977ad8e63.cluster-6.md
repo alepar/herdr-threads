@@ -1,0 +1,39 @@
+# Final review, cluster 6 (scripts), epic ht-ma6i
+
+Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7. Both resolved as commits. The caller checkout sat at the head with a clean status at the start and the end of this review, so the checker ran against the reviewed tree.
+
+## Scope
+
+The cluster is one file, `scripts/wire-compat-baseline.txt`, with six added lines (slice `slices/000023.diff`, identical to `git diff base..head -- scripts/`). No script changed.
+
+## Checks run
+
+- `scripts/check-wire-compat --base cf13ed76c...`: exit 0, 0 violations, 0 stale, 456 fields, 24 variants, 274 baseline entries. The R4 delta is exactly the six added lines.
+- `scripts/check-wire-compat` (default base `main`): exit 0, same delta.
+- `--suggest` compared with the baseline: every baseline entry is in the suggested set, and the baseline is a strict subset. The extra suggested lines are existing fields that carry `#[serde(default)]`, which R2 does not require to be listed.
+
+## Analysis
+
+- The six lines match the two payload structs added in `src/sync/facts/seat.rs` at the head: `SeatRetiredReversiblePayload{seat, reason, retired_at}` and `SeatUnretiredPayload{seat, retired_at, unretired_at}`. These fields match the design's section 4.3 cross-node payloads.
+- R4 holds. Neither type had a line in the base baseline, so baselining their required fields is the documented path for a new type, and the lines land in the same branch that introduces the types.
+- Peer-wire change is limited to those two types. In `src/sync` only `facts/mod.rs` (registry) and `facts/seat.rs` changed, and `src/protocol/sync_admin.rs` did not, so no existing wire type gained a field and no gated variant was added. That agrees with the design's position that the fact registry is the gate, with no per-link capability.
+- Named risk, a new `RetireReason` value, which the checker does not gate: the enum is still `Closed` and `Operator` and the branch does not change it. A peer of any version therefore still decodes a finalizing `seat.retired`, as the design relies on.
+- Sort order and format hold: the checker exits 2 on an unsorted or malformed line, and it passed. `SeatRetiredPayload` sorts before `SeatRetiredReversiblePayload`, and `SeatUnretiredPayload` follows.
+
+## Requirement baseline trace
+
+- This file is a lint input and delivers no behaviour on its own, so no row B1 to B4 is delivered or lost here.
+- B2 ("Pane close retires immediately; graph undo reverses it") crosses nodes through the two kinds this baseline records. Their authoring, apply and production entry points leave this cluster and are the seam reviewer's to trace, together with the src-sync, src-store and tests clusters.
+- B1, B3 and B4 have no path through this file. B1 and B3 are likewise the seam reviewer's. B4: the cluster contains no Herdr change.
+
+## Verdict
+ready
+
+## Must fix before landing
+- none
+
+## Untested scope
+- Mixed-version replay of the two new kinds against a real older node was not exercised here; this review ran only the static wire checker on the baseline, and the runtime behaviour belongs to the tests-sync and tests-store clusters.
+
+## Deferred OK
+- `SeatRetiredReversible` and `SeatUnretired` are listed in `UNCHAINED_KINDS` in `tests/support/peer_wire_freeze.rs`, so they have no frozen wire envelope while their fields are baselined here; the payload round trip lives with the kinds' own tests, and the digest already records reworking the freeze chain as a follow-up for the tests cluster.

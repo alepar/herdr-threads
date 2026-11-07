@@ -1,0 +1,112 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.md
+new file mode 100644
+index 000000000..046b5528d
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.md
+@@ -0,0 +1,106 @@
++# Final seam review, epic ht-ma6i, integration branch super-auto/graph-clone-identity
++
++Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7, both verified with `git rev-parse --verify`. The source binding for invocation inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63 was accepted before this file was written. The caller checkout read clean at the head at the start and before this write; no commit or status change was observed.
++
++Inputs: the 30 cluster reviews, `clusters.json`, the range diff, the spec at the head, `bd show` for the epic and its children, and source opened to trace baseline rows. herdr-graph at 0dbe477 was read, not changed.
++
++Executed here: `scripts/check-harness-neutral` (exit 0), `scripts/check-wire-compat` (0 violations), `scripts/test-claude-mod` under its isolated config (181 pass, 1 fail, see the composition notes). No cargo build, no test suite and no probe was run by this review; test evidence named below belongs to the cluster reviewers who ran it.
++
++## Baseline trace
++
++B1, "Continuity key: approved." Partly delivered.
++
++- Hook to store is real. `main` admits the variable through `seat_filter(entry=true)`, `check_in` reaches `reattach_by_continuity`, `continuity_intent` freezes the key, the daemon's `OrdinaryIdentity::continuity` passes `claim_evidence`, and `decide_continuity` selects through `keyed_seat` and `key_decision`. `settle_key` binds on check-in (`cooperative.rs:1050`) and on resolve (`resolution.rs:495`). The capability is advertised (`capabilities.rs:228`). A cluster 25 probe drove the kept-claim path through the real binary and a real daemon with a stand-in Herdr.
++- The ordinary hold is enforced for bootstrap creation as well, because the path reaches `current_resolution_owner` from `ordinary_resolution_apply` (`resolution.rs:368`). Cluster 23 left this open; it is traced, with no test.
++- Graph can set the key today: `launch_env` passes env on pane creation, so no Herdr change is needed. It still has to rename `HERDR_GRAPH_CLONE`.
++- Not delivered in three places. `ReserveContinuityKey`, the step that makes a key mean anything, has no supported producer (below). Hermes 0.22.1 and later blocks the variable by name (cluster 3). A failed capability read falls back to a keyless enrollment and mints a second seat (cluster 8).
++
++B2, "Pane close retires immediately; graph undo reverses it." Half delivered.
++
++- The close half is real for a pane closed while its seat is resolved or watched: `ReconciliationAction::BeginRetirement` and `RetireRestoredPane` reach `begin_retirement_authored`, which writes the reversible row and authors `seat.retired_reversible`. Cluster 28's probe ran fence, held keyed claim, `reversible::unretire` and keyed reattach in another pane, and it passed.
++- The undo half stops at the wire. `UnretireSeat` and `FinalizeRetirement` are served by a v3 session, and only tests frame them.
++- A pane closed during downtime reaches `reconcile.rs:262-272` as `MarkUnresolved` and waits, because ht-ma6i.4 has not landed. The source design's §6 names "pane closed during downtime" as an acceptance case.
++
++B3, "An agent exiting while its pane stays open keeps the seat and its memberships." Delivered. `disconnect_with_hooks(ProcessExit)` writes liveness only, and no `memberships` writer runs on a disconnect. Cluster 28 probed the real exit state, keyless and keyed. Its committed regression test does not pin this.
++
++B4, "Herdr will not be changed." Delivered. The range touches no Herdr code and adds no Herdr call; `src/host/mod.rs` gains one scrub-list name.
++
++## Composition across clusters
++
++The v3 producer gap falls between clusters 9, 13 and 1, and each handed it on. The plan excluded `src/client/service.rs` ("no v3 caller yet"), and the task 6 report says a follow-up is needed if graph uses this client. It does.
++
++- `herdr-graph/src/threads/adapter.rs` is built on `PersistentServiceClient`, through the crate path dependency.
++- That client registers `service_session_v2` (`src/client/service.rs:560`), and `result_matches` (`:906`) has no v3 arm, so a v3 result would be rejected at `:609` and `:852` even after a v3 registration.
++- `LiveServiceGate::register_session` refuses a second session with `ServiceBusy` (`src/service/live_gate.rs:64`), so the raw socket that `docs/programmatic-service-client.md` prescribes cannot run beside that adapter. It would have to replace it, intent journal included.
++- No bead tracks this. Under the baseline rule a wire operation that only tests can frame is not delivery of "graph undo reverses it". The fix is small and is threads' to make.
++
++The epic's work queue was not drained. ht-ma6i.1, ht-ma6i.4 and ht-ma6i.11 are open, and `bd ready` lists the first two as ready: their blocker ht-ma6i.16 is closed. The ledger's last detector round read "0 ready ... waiting on deps 3", and final review started anyway. Blocker beads ht-j7a1 and ht-j40h are still open, although the ledger's resolve notes supersede them. Thirteen clusters report this absence from their own side; it is one item with three parts.
++
++Two cluster ratings conflict on the capability fallback: cluster 8 has it as a landing item, while clusters 10 and 19 pass it on as unverified or deferrable. It lands as a landing item. A capability read fails most plausibly while a daemon is restarting, which is exactly when a key matters, and a minted seat T then answers every later event from K with `pane_owned_by_other_seat`, leaving the clone with two identities until an operator acts.
++
++Clusters 15 and 20 both report the lag read on the pane's host and rate it below blocking. That stands: it needs two servers on one node and a cross-server relaunch inside the first server's lag window, and the next event self-heals it (cluster 20 reproduced both).
++
++The hold has a client seam worth stating once. `api_failure` silences the hold's cause by prefix, and a keyless hook on a held pane takes the same quiet path, so the unset-the-variable recovery that TRUST-POLICY promises is both false and invisible. Clusters 5 and 8 each saw one half.
++
++The `scripts/test-claude-mod` failure the ledger carries as an attribution gap predates this epic. The failing test is `the golden cases cover every DP2 case` in `frame_golden.test.ts`; its golden fixtures hold a `sender-label` case the expected list lacks. Neither that test nor the fixtures under `integrations/claude/mod/tests/fixtures` and `tests/fixtures/delivery` changed in the range.
++
++Interfaces that agree, checked by reading:
++
++- Spec §4.5 names against `ServiceOperation`, `ServiceResult`, `ContinuityConflictKind` and `SeatInspection`.
++- `ServiceSessionLevel` against all five operations.
++- `HELD_KINDS` against the two new facts.
++- The key digest domain against the retained `ContinuityCheckIn` intent.
++- A resumed session on an un-retired seat: `C1_BINDING` keeps it a candidate with no `seat_unresolved` row, and `resolve_claim` enrolls a successor rather than reopening a `seat_retired` row, which the partial unique index allows.
++
++## Verdict
++not ready (B1 and B2 not delivered: v3 has no supported producer, Hermes and a failed capability read lose the key, downtime close waits; G2, G5 and the sweep have not landed)
++
++## Must fix before landing
++- B1 and B2 (seam): `ReserveContinuityKey`, `UnretireSeat` and `FinalizeRetirement` have no supported producer, because `PersistentServiceClient` registers `service_session_v2` (`src/client/service.rs:560`) and `result_matches` (`:906`) knows no v3 result, while herdr-graph's adapter is built on that client and `LiveServiceGate` refuses a second session (`src/service/live_gate.rs:64`), so only tests frame these operations; make the client register v3 with `result_matches` arms for the five results, add a typed test over a real session, and update `docs/programmatic-service-client.md`.
++- B2 and spec §4.4 (G5, ht-ma6i.4): a key-bearing seat whose pane closed during downtime reaches `reconcile.rs:262-272` as `MarkUnresolved` and never goes reversible, and `restored_target_absence`, the target-absence `RestoredPane` variants, `NoteTargetAbsent`, `ResetTargetAbsence`, `RetireAbsentTarget` and `absence_evidence` have no production writer; dispatch ht-ma6i.4, which `bd ready` lists as ready, and clear stale blocker bead ht-j7a1.
++- Spec Goal and §4.1 (G2, ht-ma6i.1): no `identity::shell_continuity`, fingerprint writer, `decide_shell_continuity`, `structural_shell_continuity` or lane wiring exists at the head, so a live handoff leaves bare, exited-agent, `managed_launch`-only and pre-agent pane seats unresolved; dispatch ht-ma6i.1, which `bd ready` lists as ready, and clear stale blocker bead ht-j40h.
++- Spec §4.8 and root acceptance (ht-ma6i.11): the end-to-end test (reserve, keyed launch, enroll, bind, close, send refused, un-retire, keyed relaunch in a new pane, same seat id, ACK deadline resumed, memberships intact), the live-handoff extension on bare and exited-agent panes, the wiring sweep and the full-suite sweep have not happened; run it after the two leaves and repeat final review on the resulting head.
++- B1 (Hermes): on Hermes 0.22.1 and later `HERDR_THREADS_CONTINUITY_KEY` never reaches the hook because `_travels` refuses any name containing `KEY` even when listed in `terminal.client_env_passthrough`, so `integrations/hermes/__init__.py:38`, `integrations/hermes/README.md:67` and the setup notes in `src/harness/hermes.rs` and `tests/fixtures/golden/help/setup.txt` deliver nothing; carry the key under a name that passes the filter, coordinating the §4.5 name with the graph session, or obtain a human scope change row excluding the Hermes gateway and correct those documents.
++- B1 (capability read): `src/cli/site_capability.rs:50` reads a failed capability call as not advertised (`src/client/local.rs:54-60` caches `Capabilities::none()`), so a keyed hook falls through `hook.rs:2132` to a keyless `ResolveSeat`, mints seat T while the key stays bound to unresolved S, and leaves the clone with two identities until an operator acts, against spec 4.2's "never a keyless fallback enrollment"; when the environment carries a valid key, read the capability definitively and end the hook quietly with no enrollment on a failed read, with a test.
++- `src/cli/caller_location.rs:343`: `is_own_pane` compares only the pane id, so `--host-endpoint /other.sock seat resolve w1:p1` or a recipient allocation (`src/cli/mod.rs:1315`, `:3924`) presents the key on another server's pane with the same id, recording a false hold there or binding a reserved key to the wrong seat, against spec 4.2; also require the resolve's host to be the caller's own server, with a test.
++- `src/cli/mod.rs:1315` with `src/cli/caller.rs:108`: the subagent gate is dead on `seat resolve`, because the `ActiveGuard` has dropped before the branch runs and `active_is_top_level()` answers true, so a subagent can present the parent's key and bind it or write a conflict row, against TRUST-POLICY C1; compute the origin for this branch and pin it with a test through the branch.
++- `seat inspect` panics after an operator finalizes a reversible seat restored from its own log: `reversible::finalize` writes empty `target_id` and `host_boot` into `allocation_decisions` and `src/store/queries.rs` panics in `HostTargetId::new("")` (cluster 4 reproduced it); keep the history readable and make `operator_retire_finalizes_it` assert the inspect read.
++- `src/store/seats/reversible.rs:456` and `src/store/seats/publication.rs:566`: re-issued `seat.retired_reversible` and `seat.unretired` re-run a completed episode, so fork repair double-shifts a peer's deadlines (cluster 16 reproduced 120000 against 60000 for a 60000 window, against TRUST-POLICY N7 line 2008 and line 479); give the two facts a durable guard that makes a copy of an ended episode a no-op and pin it in `tests/sync/incarnations_scenarios.rs`, or record an accepted limit if the owner chooses to live with it.
++- `unretire_by_fact` to `shift_pending_deadlines`: a node that parked `seat.unretired` shifts obligations created after the un-retire when it replays at upgrade (cluster 30 probe: 1700000120000 against 1700000060000), contradicting spec 4.3 "lands correctly" and `TRUST-POLICY.md` line 2179; bound the replayed shift or add the exception to the limit, and pin the history in `a_registry_without_the_kinds_parks_them_and_converges_after_replay`.
++- `TRUST-POLICY.md:2186-2189` says an inherited key leaves the pane seatless "until the variable is unset", which is false because `current_resolution_owner` refuses every ordinary resolution while `hold_kind` finds the row whatever key is presented, and `api_failure`'s prefix match makes the keyless hook quiet; restate the limit with the real exits (operator `seat rebind` or `seat resolve --new-seat`, pane close, key release) and qualify line 264's "behave exactly as before", or change the behaviour if the unset recovery is wanted.
++- `TRUST-POLICY.md:257` names "shell continuity", which has no definition or code, and spec 4.6's C1 row, G5 rule and ht-hsyg G2 extension are absent; land them with ht-ma6i.1 and ht-ma6i.4, or remove the term if a human drops those beads.
++- `TRUST-POLICY.md:197` says "Exactly four ways" above a table of seven rows, and spec 4.6's "six" is also overtaken; correct the count or drop the number.
++- `docs/programmatic-service-client.md` refusal table omits the retryable `ServiceBusy` on `UnretireSeat` and `FinalizeRetirement` that spec's `store::seats::reversible` entry says callers must tell apart, so a service inside the restore window may treat it as definitive and abandon the undo; add it to both rows, stating it is retryable under the same operation key and that nothing was applied.
++- `tests/store/restored_pane.rs:690` `agent_exit_with_pane_open_keeps_the_seat`, the only regression test for B3, binds `count(*) FROM retirements` to a variable named `memberships`, seeds no membership or episode, and at line 682 writes an exit state production never writes; rename the count, seed a membership and a requirement episode, assert them effective after the passes and the relaunch, and drive the exit through `bindings::disconnect_with_hooks`.
++- `tests/support/peer_wire_freeze.rs:103` `UNCHAINED_KINDS` names post-3.0.0 types in a file the header (lines 9-13) requires to compile at the oldest fixture release, so `scripts/freeze-peer-wire 3.0.0 --at v3.0.0 --check` fails to compile (established by symbol search, not an overlay build); move the constant to `tests/sync/peer_wire_fixtures.rs`, its only consumer.
++
++## Untested scope
++- This review ran no cargo build or test; the full nextest suite and leak checks have no evidence at this head, and the ledger defers them to the caller.
++- No test or probe composes a real service session, a keyed hook through the real binary, a real pane close, un-retire and reattach; each layer is covered separately, and `tests/service/reversible_session.rs` seeds the reversible state by SQL.
++- No test frames a v3 operation through `PersistentServiceClient`, because it cannot; the v3 sessions in `tests/service` use their own framing, and `ServiceBusy` on un-retire and finalize is pinned only at store level.
++- Real-harness behaviour is unverified: no live Hermes, Claude, Codex or agy run presents the key, whether a Codex tool subprocess keeps it under `shell_environment_policy` was not settled (Codex hooks are clear by source read in cluster 3), and whether each harness's start hook fires before a first turn stays parked in `run.md`; spec 4.2 assigns these to the source design's §6 qualification, whose list names neither, so they have no owner.
++- Keyed client paths with no test: `enroll_pane`, `tool_boundary_check_in`, `prepare_qualified_turn`, `seat resolve`, `allocate_recipient_seat`, `me init`, keyed `ServiceBusy` on `ResolveSeat` in the hook, keyed `CooperativeCheckIn` replay, and a keyed `ContinuityCheckIn` through `OrdinaryIdentity::continuity` intake.
++- `reconcile_published_page_for` with `RetiredReversibly` has no test of `transition_count` and `retirements_started`, and the `reconcile_invalidated_page` refusal arm is unreached.
++- A standing key conflict refusing bootstrap creation is traced through `current_resolution_owner` from `ordinary_resolution_apply` and has no test.
++- Multi-host flows never present a key (`tests/daemon/multi_host.rs` passes `None`), so the lag read on the pane's host and a keyed claim whose seat sits on another lagging server have no committed test.
++- `seat.retired_reversible` and `seat.unretired` have no frozen wire envelope, so `scripts/freeze-peer-wire --check` evidence cannot see them; the old-node path is a registry simulation, not a 3.0.0 binary.
++- The soft-poke assertion at `tests/store/reversible_retirement.rs:754` cannot fail on the frozen predicate (by reading, no mutation run), a deadline already past at cutover is unpinned, and no test asserts a `Lane::Deadlines` kick after un-retire or finalization.
++- G2 and G5 code does not exist, so the kept key blocking the G5 count, the `seat_shell_fingerprints` and `restored_target_absence` CHECKs, and live handoff on bare and exited-agent panes are all untested.
++
++## Deferred OK
++- `src/store/seats/continuity.rs:588` reads lag on the pane's host, not the bound seat's, so a cross-server relaunch inside the first server's lag window records a false `key_live_elsewhere` hold and an alert instead of `ServiceBusy` (reproduced by cluster 20; it self-heals on the next event and needs two servers on one node); also reading `reconciliation_lags` on the seat's host closes it, or record an accepted limit.
++- `clear_alert_only_if_owner_changed` has one caller (`cooperative.rs:1053`), so an alert-only row outlives its owner until the pane's next check-in, a rebind or a publication without the pane; it holds nothing, but `docs/programmatic-service-client.md` and spec 4.2 promise more than this, so reword or clear eagerly.
++- `shift_pending_deadlines` moves `deadline_at` but not `available_at`, so a soft poke can fire at reattach after a long freeze; one extra reminder per seat, and shifting `available_at` by the same delta fixes it.
++- `scripts/test-claude-mod` fails `the golden cases cover every DP2 case` because the expected list lacks `sender-label`; this predates the epic (no diff to the test or its fixtures in the range), so correct the list and close the run-failure attribution gap.
++- `reserved_author_id` gives every session on an instance one author, so "another service" refusals and `Unauthorized` are unreachable over the wire and a second service would silently share keys; this fits the cooperative single-service model, and the service document should say so before a second one appears.
++- A service that closes a pane and calls `UnretireSeat` before the daemon has observed the close gets `NotFound`, and the document does not say to wait for `retirement_state`; one sentence in the required-order list covers it.
++- Service document looseness: the `ContinuityAlerts` refusals (`InvalidCursor`, `InvalidBudget`) differ from what a raw framer gets, `Page::validate` rejects a multi-page feed with no `next_argv`, `seat` and `next_argv` serialize as `null`, and three spec facts (final operator retire, 10-minute reversible retirement, launch scrub) are left to the linked spec.
++- Policy and spec wording for ht-ma6i.11's pass: N5 and lines 504 and 509 of TRUST-POLICY omit `seat.retired_reversible`, the amendment log lacks ht-ma6i.6 and ht-ma6i.7, `bound_by` `check_in` reads narrower than `settle_key`, *Reversible retirement* omits window mail and the window shift, spec 4.7's sizes are wrong, and the Post-Implementation Notes are empty.
++- `KEY_CONFLICT_CAUSE` classifies a conflict by a string prefix on `ApiError.detail`; the constant is shared so it cannot drift, and a typed code would be sturdier.
++- A stale installed Hermes bridge has the old `PANE_ENV`, so a gateway started from a keyed pane can leak its key into other panes' hook children; setup and `bridge_current` already cover the upgrade, and a filter-passing variable name changes the analysis.
++- `continuity_key_session::` and `reversible_session::` take `IN_PROCESS_DAEMON` outside the `service-daemon` nextest group, and `shift_of_1000_pending_rows_finishes_inside_the_call_budget` has a 3 s wall-clock assertion with no group; add groups if they flake, as ht-ma6i.11's file list allows.
++- `tests/cli_env_read_scan.rs` omits `HERDR_THREADS_CONTINUITY_KEY`, so the one-helper rule is not policed; adding it is one line.
++- The freeze chain cannot take a new kind while `current_encoders_reproduce_2_1_1_fixtures` compares whole-chain counts, and no bead tracks it; file one when this lands, and correct the "every builtin" wording then.
++- `RetirementStart::into_job` and `StorePort::begin_retirement` have no production caller, so the fixture `close` in `tests/store/reversible_retirement.rs:205` exercises a path the daemon does not take; a separate cleanup.
++- Test-only cleanups: `kept_keyed_claim_is_decided_after_lag_with_no_further_event` writes the key by SQL with a stale comment, `subagent_sends_nothing` can pass vacuously, `launch_resolving_another_pane_sends_no_key` does not kill its named regression, `invalid_key_sends_nothing_and_prints_nothing_new` compares lengths, and several inserted `continuity_key: None` lines sit at column zero.
++- The source design still says `HERDR_GRAPH_CLONE` in D1 and §5; that document lives in herdr-graph, and the graph side must use the spec's variable name when it implements launch.

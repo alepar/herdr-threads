@@ -1183,16 +1183,21 @@ fn run_parsed_in_pane<W: Write>(
             ));
         }
         require_operator_actor(&parsed)?;
-        seat_resolution::allocate_deferred_seats(
-            deferred,
-            &mut parsed,
-            &context,
-            &paths,
-            &connection,
-            &clock,
-            &mut io::stderr(),
-        )?;
-        resolve_recipient_seats(&mut parsed, &context, &paths, &connection, &clock)?;
+        {
+            // This branch never enters the caller guard; recipient allocation asks who is calling
+            // before it presents a key.
+            let _origin = caller::ActiveGuard::enter(caller::derive(&parsed));
+            seat_resolution::allocate_deferred_seats(
+                deferred,
+                &mut parsed,
+                &context,
+                &paths,
+                &connection,
+                &clock,
+                &mut io::stderr(),
+            )?;
+            resolve_recipient_seats(&mut parsed, &context, &paths, &connection, &clock)?;
+        }
         let CliAction::Mutation(mutation) = &parsed.action else {
             unreachable!()
         };
@@ -1303,13 +1308,19 @@ fn run_parsed_in_pane<W: Write>(
             prefix.push("pending-ops".to_owned());
             CommandResult::LocalIntents(journal.page_with_output(&page, &prefix, &parsed.output)?)
         }
-        CliAction::Mutation(MutationSpec::Resolve(target)) => {
+        CliAction::Mutation(MutationSpec::Resolve(ref target)) => {
             let (instance, _, client) = connect(&paths, &clock)?;
-            let host = recipient_host(
-                &context,
+            let site = parsed.caller_site.as_ref();
+            let host = recipient_host(&context, &herdr_output, site, target)?;
+            let env = caller_location::CallerEnv::for_site(site);
+            let continuity_key = plain_resolve_key(
+                &parsed,
+                &env,
                 &herdr_output,
-                parsed.caller_site.as_ref(),
-                &target,
+                &host,
+                target,
+                &client,
+                &budget(),
             )?;
             let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
             retry::run_new_api_to_writer_discarding_rejection(
@@ -1318,7 +1329,11 @@ fn run_parsed_in_pane<W: Write>(
                     instance: instance.to_string(),
                     target: target.clone(),
                 },
-                SemanticMutation::ResolveSeat { target, host },
+                SemanticMutation::ResolveSeat {
+                    target: target.clone(),
+                    host,
+                    continuity_key,
+                },
                 clock.utc_now().0,
                 || {
                     Err(io::Error::new(
@@ -3629,6 +3644,286 @@ fn recipient_host(
         .map_err(|detail| invalid_request(&detail.detail))
 }
 
+/// Whether `host` is the server this caller's own pane runs on. With no `--host-endpoint` the
+/// selected host is that server. With the flag, compare against what the environment alone selects;
+/// an unknown own server answers false, so no key is presented on uncertainty. `output` is the
+/// `ParsedCli::herdr_output`, whose host is the flag alone.
+fn on_own_server(
+    output: &OutputSpec,
+    site: Option<&caller_location::CallerLocator>,
+    host: &crate::protocol::ids::HostLocator,
+) -> bool {
+    own_server_under(
+        output,
+        || instance::InstanceInputs::for_site(None, None, site),
+        host,
+    )
+}
+
+/// [`on_own_server`] over the environment's inputs, read only when a flag asks for them.
+fn own_server_under(
+    output: &OutputSpec,
+    inputs: impl FnOnce() -> instance::InstanceInputs,
+    host: &crate::protocol::ids::HostLocator,
+) -> bool {
+    if output.context.host.is_none() {
+        return true;
+    }
+    let Ok(endpoint) = inputs().herdr_endpoint(None) else {
+        return false;
+    };
+    // A selected host is canonical (`RuntimeContext::explicit`); the environment's is as written.
+    let canonical = endpoint
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .zip(endpoint.file_name())
+        .map(|(parent, name)| parent.join(name));
+    endpoint.as_os_str() == host.as_str()
+        || canonical.is_some_and(|path| path.as_os_str() == host.as_str())
+}
+
+#[cfg(test)]
+mod unread_key_capability_tests {
+    use super::*;
+    use crate::protocol::{
+        ids::{HostLocator, HostTargetId},
+        results::{ApiError, ErrorCode},
+        time::{CallBudget, MonoInstant, UtcMillis},
+    };
+    use site_capability::KEY_CAPABILITY_UNREAD;
+    use std::sync::Mutex;
+
+    /// Advertises nothing and fails every fresh capability read in transport; records every command.
+    #[derive(Default)]
+    struct Unread(Mutex<Vec<Command>>);
+    impl Unread {
+        fn sent_resolve(&self) -> bool {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|command| matches!(command, Command::ResolveSeat(_)))
+        }
+    }
+    impl LocalClient for Unread {
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.0.lock().unwrap().push(command);
+            Err(ApiError::new(ErrorCode::HostUnavailable, "lost"))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call_definitive(
+            &self,
+            command: Command,
+            budget: &CallBudget,
+        ) -> Result<Result<CommandResult, ApiError>, ApiError> {
+            self.call(command, budget).map(Ok)
+        }
+    }
+
+    struct Zero;
+    impl Clock for Zero {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(0)
+        }
+    }
+
+    fn keyed() -> caller_location::CallerEnv {
+        caller_location::CallerEnv::from_lookup(|name| match name {
+            caller_location::CONTINUITY_KEY_ENV => Some("clone-1".into()),
+            crate::host::native::ENV_PANE_ID => Some("w1:p1".into()),
+            _ => None,
+        })
+    }
+
+    fn is_unread_refusal(error: &RunError) -> bool {
+        matches!(error, RunError::Api(error)
+            if error.code == ErrorCode::ServiceBusy && error.detail == KEY_CAPABILITY_UNREAD)
+    }
+
+    /// No journal can open here: an intent journaled before the refusal fails differently.
+    fn nowhere() -> NodePaths {
+        let dir = std::path::PathBuf::from("/nonexistent/unread-key-capability");
+        NodePaths {
+            state_dir: dir.clone(),
+            node_dir: dir.clone(),
+            key_path: dir.clone(),
+            node_json_path: dir.clone(),
+            database_path: dir.clone(),
+            lock_path: dir.clone(),
+            descriptor_path: dir.clone(),
+            socket_path: dir,
+        }
+    }
+
+    fn allocate(
+        env: &caller_location::CallerEnv,
+        client: &Unread,
+    ) -> Result<crate::protocol::ids::SeatId, RunError> {
+        // Unread with a host given: the context only has to exist.
+        let root = crate::test_support::scratch::temp_path("unread-key-capability");
+        std::fs::create_dir_all(&root).unwrap();
+        let context =
+            RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
+        let result = allocate_recipient_seat_as(
+            env,
+            &context,
+            &nowhere(),
+            &crate::node::NodeUuid::new_v4(),
+            client,
+            &Zero,
+            &OutputSpec::default(),
+            None,
+            HostTargetId::new("w1:p1"),
+            Some(HostLocator::parse("/h.sock").unwrap()),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        result
+    }
+
+    // Kills: a keyed recipient allocation that reads an unread capability as no key and sends a
+    // keyless `ResolveSeat`, minting the clone a second seat.
+    #[test]
+    fn recipient_allocation_refuses_before_anything_is_sent_or_journaled() {
+        let client = Unread::default();
+        let error = allocate(&keyed(), &client).unwrap_err();
+        assert!(is_unread_refusal(&error), "{error:?}");
+        assert!(!client.sent_resolve());
+        // A keyless caller asks nothing and goes on to the journal (which cannot open here).
+        let keyless = Unread::default();
+        let error =
+            allocate(&caller_location::CallerEnv::from_lookup(|_| None), &keyless).unwrap_err();
+        assert!(!is_unread_refusal(&error), "{error:?}");
+        assert!(keyless.0.lock().unwrap().is_empty());
+    }
+
+    // `seat resolve` and `me init` read their key through `plain_resolve_key` before they open
+    // the journal or send `ResolveSeat`.
+    #[test]
+    fn seat_resolve_and_me_init_refuse_on_an_unread_capability() {
+        let host = HostLocator::parse("/h.sock").unwrap();
+        let target = HostTargetId::new("w1:p1");
+        for argv in [
+            &["herdr-threads", "seat", "resolve", "--pane", "w1:p1"][..],
+            &["herdr-threads", "human", "me", "init"][..],
+        ] {
+            let parsed = commands::parse_argv(argv.iter().copied()).unwrap();
+            let client = Unread::default();
+            let budget = cooperative_budget(&Zero);
+            let error = plain_resolve_key(
+                &parsed,
+                &keyed(),
+                &OutputSpec::default(),
+                &host,
+                &target,
+                &client,
+                &budget,
+            )
+            .unwrap_err();
+            assert!(is_unread_refusal(&error), "{argv:?}: {error:?}");
+            assert!(!client.sent_resolve());
+            let keyless = Unread::default();
+            assert!(matches!(
+                plain_resolve_key(
+                    &parsed,
+                    &caller_location::CallerEnv::from_lookup(|_| None),
+                    &OutputSpec::default(),
+                    &host,
+                    &target,
+                    &keyless,
+                    &budget,
+                ),
+                Ok(None)
+            ));
+            assert!(keyless.0.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod on_own_server_tests {
+    use super::*;
+    use crate::protocol::ids::HostLocator;
+
+    fn flagged() -> OutputSpec {
+        let mut output = OutputSpec::default();
+        output.context.host = Some("/flag.sock".to_owned());
+        output
+    }
+
+    fn selecting(endpoint: &str) -> instance::InstanceInputs {
+        instance::InstanceInputs {
+            env_host: Some(endpoint.into()),
+            ..instance::InstanceInputs::default()
+        }
+    }
+
+    #[test]
+    fn no_flag_is_the_callers_server_with_no_lookup() {
+        let host = HostLocator::parse("/any.sock").unwrap();
+        assert!(own_server_under(
+            &OutputSpec::default(),
+            || panic!("no flag reads no environment"),
+            &host,
+        ));
+    }
+
+    #[test]
+    fn a_flag_counts_only_for_the_server_the_environment_selects() {
+        let other = HostLocator::parse("/other.sock").unwrap();
+        assert!(!own_server_under(
+            &flagged(),
+            || selecting("/own.sock"),
+            &other
+        ));
+        let own = HostLocator::parse("/own.sock").unwrap();
+        assert!(own_server_under(
+            &flagged(),
+            || selecting("/own.sock"),
+            &own
+        ));
+    }
+
+    #[test]
+    fn an_unknown_own_server_is_false() {
+        let host = HostLocator::parse("/flag.sock").unwrap();
+        assert!(!own_server_under(
+            &flagged(),
+            instance::InstanceInputs::default,
+            &host
+        ));
+    }
+
+    // Kills: the raw comparison, which refuses the key to the caller's routing flags when the
+    // environment spells the socket through a symlink.
+    #[test]
+    fn a_symlinked_environment_spelling_is_the_same_server() {
+        let root = crate::test_support::scratch::temp_path("own-server");
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let canonical = real.canonicalize().unwrap().join("h.sock");
+        let host = HostLocator::parse(canonical.to_string_lossy()).unwrap();
+        let spelled = link.join("h.sock");
+        assert!(own_server_under(
+            &flagged(),
+            || selecting(spelled.to_str().unwrap()),
+            &host,
+        ));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
 fn context_error(error: io::Error) -> RunError {
     RunError::Api(host_context_error(error))
 }
@@ -3889,6 +4184,28 @@ pub(crate) fn require_handoff_capabilities<C: LocalClient + ?Sized>(
     Ok(())
 }
 
+/// The key a plain resolve of `target` presents (`seat resolve`, `me init`), read before
+/// anything is journaled or sent: an unread key capability refuses, never a keyless resolve.
+pub(crate) fn plain_resolve_key<C: LocalClient + ?Sized>(
+    parsed: &commands::ParsedCli,
+    env: &caller_location::CallerEnv,
+    output: &OutputSpec,
+    host: &crate::protocol::ids::HostLocator,
+    target: &crate::protocol::ids::HostTargetId,
+    client: &C,
+    budget: &CallBudget,
+) -> Result<Option<crate::protocol::ids::ContinuityKey>, RunError> {
+    let site = parsed.caller_site.as_ref();
+    Ok(site_capability::resolve_arm_key(
+        parsed,
+        env,
+        target,
+        env.may_present_key(true) && on_own_server(output, site, host),
+        client,
+        budget,
+    )?)
+}
+
 /// Guarded recipient-seat allocation: one journaled `ResolveSeat` under the
 /// `ServiceAllocation` scope. Gates (session refusal, p0 receipts capability, invitation
 /// confirmation capability) are the caller's job and must run before this.
@@ -3905,10 +4222,48 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
     target: crate::protocol::ids::HostTargetId,
     host: Option<crate::protocol::ids::HostLocator>,
 ) -> Result<crate::protocol::ids::SeatId, RunError> {
+    allocate_recipient_seat_as(
+        &caller_location::CallerEnv::for_site(site),
+        context,
+        paths,
+        instance,
+        client,
+        clock,
+        output,
+        site,
+        target,
+        host,
+    )
+}
+
+/// [`allocate_recipient_seat`] for the caller environment `env`. The key is read before the
+/// intent is journaled: an unread key capability refuses and sends nothing.
+// Allowed: the allocation's full address plus the caller environment.
+#[allow(clippy::too_many_arguments)]
+fn allocate_recipient_seat_as<C: LocalClient + ?Sized>(
+    env: &caller_location::CallerEnv,
+    context: &RuntimeContext,
+    paths: &NodePaths,
+    instance: &crate::node::NodeUuid,
+    client: &C,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    site: Option<&caller_location::CallerLocator>,
+    target: crate::protocol::ids::HostTargetId,
+    host: Option<crate::protocol::ids::HostLocator>,
+) -> Result<crate::protocol::ids::SeatId, RunError> {
     let host = match host {
         Some(host) => host,
         None => recipient_host(context, output, site, &target)?,
     };
+    let continuity_key = site_capability::own_pane_continuity_key(
+        env,
+        &target,
+        caller::active_is_top_level(),
+        env.may_present_key(true) && on_own_server(output, site, &host),
+        client,
+        &cooperative_budget(clock),
+    )?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
         &journal,
@@ -3916,7 +4271,11 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
             instance: instance.to_string(),
             target: target.clone(),
         },
-        SemanticMutation::ResolveSeat { target, host },
+        SemanticMutation::ResolveSeat {
+            target,
+            host,
+            continuity_key,
+        },
         clock.utc_now().0,
         || {
             Err(io::Error::new(

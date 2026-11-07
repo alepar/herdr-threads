@@ -303,6 +303,8 @@ impl FactRegistry {
                 .with::<NodeRetag>()
                 .with::<seat::SeatCreated>()
                 .with::<seat::SeatRetired>()
+                .with::<seat::SeatRetiredReversible>()
+                .with::<seat::SeatUnretired>()
                 .with::<thread::ThreadCreated>()
                 .with::<thread::ThreadRegister>()
                 .with::<thread::ThreadDirect>()

@@ -1,0 +1,25 @@
+diff --git a/src/protocol/authority.rs b/src/protocol/authority.rs
+index b600b8952..dee32eb10 100644
+--- a/src/protocol/authority.rs
++++ b/src/protocol/authority.rs
+@@ -146,6 +146,9 @@ pub const CARRIED_BINDING_PROVENANCES: [&str; 4] = [
+ /// and never the provenance of a binding (the binding the reattached seat
+ /// opens stays `cooperative_top_level`).
+ pub const COOPERATIVE_CONTINUITY_PROVENANCE: &str = "cooperative_continuity";
++/// A launcher-supplied continuity key reattached the seat (TRUST-POLICY C1, ht-ma6i.2). Seat
++/// history only.
++pub const COOPERATIVE_CONTINUITY_KEY_PROVENANCE: &str = "cooperative_continuity_key";
+ /// TRUST-POLICY A3/C1 "named continuity": an ordinary resolve of a name reattached the unresolved
+ /// named seat of that name. Seat history only: it rides `allocation_decisions.operator_label` of
+ /// a `cooperative_continuity` row (the `kind` CHECK is closed); never on receipts or bindings.
+@@ -153,6 +156,10 @@ pub const COOPERATIVE_NAMED_SEAT_PROVENANCE: &str = "cooperative_named_seat";
+ /// TRUST-POLICY C1 process continuity (ht-hsyg): the daemon observed the binding's own process
+ /// in the pane's kernel session and controlling terminal. Seat history only, never on receipts.
+ pub const STRUCTURAL_PROCESS_CONTINUITY_PROVENANCE: &str = "structural_process_continuity";
++/// TRUST-POLICY C1 shell continuity (ht-ma6i.1): the shell Herdr reports for the seat's saved
++/// target is the process the seat's fingerprint recorded, on the recorded controlling terminal.
++/// Seat history only, never on receipts; no binding opens.
++pub const STRUCTURAL_SHELL_CONTINUITY_PROVENANCE: &str = "structural_shell_continuity";
+ /// TRUST-POLICY A3: Herdr's guarded `agent.start` in this pane was observed
+ /// starting the harness and the agent has not checked in. Bindings only (an
+ /// unregistered occupant binding the daemon opens after a correlated launch,

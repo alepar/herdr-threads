@@ -52,10 +52,23 @@ fn resolve_seat(
     instance: crate::node::NodeUuid,
     host: &crate::protocol::ids::HostLocator,
     pane: &HostTargetId,
+    parsed: &ParsedCli,
     clock: &dyn Clock,
 ) -> Result<SeatId, RunError> {
-    let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let output = OutputSpec::default();
+    let env = super::caller_location::CallerEnv::for_site(parsed.caller_site.as_ref());
+    // `me init` runs before the caller guard is entered; an unread key capability refuses here,
+    // before the intent is journaled.
+    let continuity_key = super::plain_resolve_key(
+        parsed,
+        &env,
+        &parsed.herdr_output(),
+        host,
+        pane,
+        client,
+        &budget(clock, 5_000),
+    )?;
+    let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
         &journal,
         journal::IntentScope::ServiceAllocation {
@@ -65,6 +78,7 @@ fn resolve_seat(
         journal::SemanticMutation::ResolveSeat {
             target: pane.clone(),
             host: host.clone(),
+            continuity_key,
         },
         clock.utc_now().0,
         || {
@@ -213,7 +227,15 @@ pub(crate) fn run_me_init<W: Write>(
     .map_err(RunError::from)?;
     let seat = match pane_seat_on(&client, &parsed.output, &pane, lookup_host, clock.as_ref())? {
         Some(seat) => seat,
-        None => resolve_seat(&client, paths, instance, &host, &pane, clock.as_ref())?,
+        None => resolve_seat(
+            &client,
+            paths,
+            instance,
+            &host,
+            &pane,
+            &parsed,
+            clock.as_ref(),
+        )?,
     };
     let selection = CooperativeSelection {
         seat: seat.clone(),

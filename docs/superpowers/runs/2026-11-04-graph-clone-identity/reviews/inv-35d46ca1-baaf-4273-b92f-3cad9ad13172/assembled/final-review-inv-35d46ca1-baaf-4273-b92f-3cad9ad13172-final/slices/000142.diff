@@ -1,0 +1,44 @@
+diff --git a/tests/daemon/multi_host.rs b/tests/daemon/multi_host.rs
+index f273f5370..16bce3c05 100644
+--- a/tests/daemon/multi_host.rs
++++ b/tests/daemon/multi_host.rs
+@@ -658,6 +658,7 @@ impl Rig {
+                 operation: self.op("resolve"),
+                 locator_hint: None,
+                 tmux_hint: None,
++                continuity_key: None,
+             }))
+             .unwrap_or_else(|error| panic!("resolve {pane} on {}: {error:?}", host.as_str()));
+         let CommandResult::SeatResolved(seat) = resolved else {
+@@ -685,6 +686,7 @@ impl Rig {
+                 claim,
+                 operation: self.op("check-in"),
+                 lineage_parent: None,
++                continuity_key: None,
+             }))
+             .unwrap_or_else(|error| panic!("check in {session}: {error:?}"));
+         let CommandResult::CheckedIn(checked) = checked else {
+@@ -1313,6 +1315,7 @@ fn c1_resume_naming_b_reattaches_seat_from_a() {
+             operation: rig.op("continuity"),
+             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000c1"),
+             liveness: Some(resumed),
++            continuity_key: None,
+         }))
+         .unwrap_or_else(|error| panic!("continuity: {error:?}"));
+     let CommandResult::ContinuityReattached(reattached) = reattached else {
+@@ -1354,6 +1357,7 @@ fn claim_naming_b_seat_with_host_a_refused() {
+             claim: wrong,
+             operation: rig.op("wrong-host"),
+             lineage_parent: None,
++            continuity_key: None,
+         }))
+         .unwrap_err();
+     assert_eq!(refused.code, ErrorCode::CallerUnverified, "{refused:?}");
+@@ -1368,6 +1372,7 @@ fn claim_naming_b_seat_with_host_a_refused() {
+         claim: on_b.claim.clone(),
+         operation: rig.op("right-host"),
+         lineage_parent: None,
++        continuity_key: None,
+     }))
+     .unwrap();
+     drop(on_a);

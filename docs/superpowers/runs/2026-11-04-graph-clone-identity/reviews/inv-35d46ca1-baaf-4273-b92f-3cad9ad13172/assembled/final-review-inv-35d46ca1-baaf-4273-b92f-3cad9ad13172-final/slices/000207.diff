@@ -1,0 +1,82 @@
+diff --git a/tests/sync/facts_seat.rs b/tests/sync/facts_seat.rs
+index 4c7119632..a4113350b 100644
+--- a/tests/sync/facts_seat.rs
++++ b/tests/sync/facts_seat.rs
+@@ -35,6 +35,7 @@ use herdr_threads::sync::facts::payload::{
+ use herdr_threads::sync::facts::receipt::{ReceiptSettled, ReceiptSettledPayload};
+ use herdr_threads::sync::facts::seat::{
+     RetireReason, SeatCreated, SeatCreatedPayload, SeatRetired, SeatRetiredPayload,
++    SeatRetiredReversiblePayload, SeatUnretiredPayload,
+ };
+ use herdr_threads::sync::facts::{ApplyContext, FactError, FactKind, FactRegistry};
+ use herdr_threads::test_support::fact_exchange;
+@@ -834,7 +835,9 @@ fn held_kinds_list_matches_the_spec() {
+             "membership.joined",
+             "membership.left",
+             "invitation.answered",
+-            "seat.retired"
++            "seat.retired",
++            "seat.retired_reversible",
++            "seat.unretired"
+         ]
+     );
+     assert_eq!(ReceiptSettled::NAME, HELD_KINDS[0]);
+@@ -1167,6 +1170,58 @@ fn seat_retired_round_trip_needs() {
+     assert!(HELD_KINDS.contains(&SeatRetired::NAME));
+ }
+ 
++/// Kills: a payload shape other than spec 4.3.
++#[test]
++fn seat_clone_identity_payloads_round_trip() {
++    let seat = SeatId::new("sAbc12345678");
++    let reversible = SeatRetiredReversiblePayload {
++        seat: seat.clone(),
++        reason: RetireReason::Closed,
++        retired_at: 42,
++    };
++    let json = serde_json::to_string(&reversible).unwrap();
++    assert_eq!(
++        json,
++        r#"{"seat":"sAbc12345678","reason":"closed","retired_at":42}"#
++    );
++    assert_eq!(
++        serde_json::from_str::<SeatRetiredReversiblePayload>(&json).unwrap(),
++        reversible
++    );
++    assert_eq!(
++        serde_json::from_str::<SeatRetiredReversiblePayload>(
++            r#"{"seat":"sAbc12345678","reason":"closed","retired_at":42,"future":1}"#
++        )
++        .unwrap(),
++        reversible,
++        "additive field ignored"
++    );
++    assert_eq!(reversible.referenced_seats(), vec![seat.clone()]);
++    let unretired = SeatUnretiredPayload {
++        seat: seat.clone(),
++        retired_at: 42,
++        unretired_at: 43,
++    };
++    let json = serde_json::to_string(&unretired).unwrap();
++    assert_eq!(
++        json,
++        r#"{"seat":"sAbc12345678","retired_at":42,"unretired_at":43}"#
++    );
++    assert_eq!(
++        serde_json::from_str::<SeatUnretiredPayload>(&json).unwrap(),
++        unretired
++    );
++    assert_eq!(
++        serde_json::from_str::<SeatUnretiredPayload>(
++            r#"{"seat":"sAbc12345678","retired_at":42,"unretired_at":43,"future":1}"#
++        )
++        .unwrap(),
++        unretired,
++        "additive field ignored"
++    );
++    assert_eq!(unretired.referenced_seats(), vec![seat]);
++}
++
+ #[test]
+ fn seat_retired_remote_row_and_replicated_job_row() {
+     let reg = registry();

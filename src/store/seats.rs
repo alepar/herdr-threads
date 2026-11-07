@@ -62,10 +62,12 @@ pub(crate) fn is_local_seat(conn: &Connection, seat: &SeatId) -> Result<bool, Ap
 
 mod continuity;
 mod cooperative;
+pub(crate) mod key_verdict;
 mod observation;
 mod operator;
 mod publication;
 mod resolution;
+pub(crate) mod reversible;
 mod threshold;
 
 pub use self::continuity::*;

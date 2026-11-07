@@ -147,6 +147,7 @@ fn mapped_generation_zero_can_issue_cooperative_permit_without_native_attestatio
         },
         claim: claim(),
         operation: OperationId::new("op"),
+        continuity_key: None,
     };
     assert!(
         store
@@ -199,6 +200,7 @@ pub(crate) fn lifecycle(context: CallerClaim, operation: &str) -> CheckIn {
         },
         claim: context,
         operation: OperationId::new(operation),
+        continuity_key: None,
     }
 }
 #[test]
@@ -215,6 +217,7 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
         mode: CheckInMode::Current,
         claim: result.context.clone(),
         operation: OperationId::new("current"),
+        continuity_key: None,
     };
     let repeated = check_in(&store, current).unwrap();
     assert_eq!(repeated.context, result.context);
@@ -246,6 +249,7 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
         mode: CheckInMode::Current,
         claim: stale_claim,
         operation: OperationId::new("stale"),
+        continuity_key: None,
     };
     assert_eq!(
         check_in(&store, stale).unwrap_err().code,
@@ -539,7 +543,8 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
                 lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: child,
-                operation: OperationId::new("child")
+                operation: OperationId::new("child"),
+                continuity_key: None,
             }
         )
         .unwrap_err()
@@ -562,7 +567,8 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
                 lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: second.context,
-                operation: OperationId::new("declared-top-level")
+                operation: OperationId::new("declared-top-level"),
+                continuity_key: None,
             }
         )
         .is_ok()
@@ -1893,6 +1899,7 @@ fn cooperative_binding_records_observation_evidence_and_refuses_without_it() {
         mode: CheckInMode::Current,
         claim: result.context.clone(),
         operation: OperationId::new("current"),
+        continuity_key: None,
     };
     check_in(&store, current).unwrap();
     assert_eq!(
@@ -1957,6 +1964,7 @@ fn current(context: &CallerClaim, operation: &str) -> CheckIn {
         mode: CheckInMode::Current,
         claim: context.clone(),
         operation: OperationId::new(operation),
+        continuity_key: None,
     }
 }
 
@@ -3234,6 +3242,7 @@ fn current_check_in_never_adopts_a_managed_launch_binding() {
         mode: CheckInMode::Current,
         claim: context,
         operation: OperationId::new(format!("current-{}", uuid::Uuid::new_v4())),
+        continuity_key: None,
     };
     // The placeholder session is never a caller (ht-54r.3).
     assert_eq!(
@@ -3306,7 +3315,8 @@ fn continuity_candidates_ignore_managed_launch_bindings() {
             &tx,
             "34750f98bd59fcfc946da45aaabe933b",
             "codex",
-            &session
+            &session,
+            None
         )
         .unwrap()
         .is_empty()
@@ -3322,7 +3332,8 @@ fn continuity_candidates_ignore_managed_launch_bindings() {
             &tx,
             "34750f98bd59fcfc946da45aaabe933b",
             "codex",
-            &session
+            &session,
+            None
         )
         .unwrap()
         .len(),
@@ -4235,6 +4246,7 @@ mod cross_server_continuity {
                 pid: 4242,
                 start: 7,
             }),
+            continuity_key: None,
         }
     }
 
@@ -4700,6 +4712,7 @@ fn independent_fork_rejects_borrowed_execution_and_generation_and_ignores_lineag
         claim,
         operation: OperationId::new(operation),
         lineage_parent: Some(NativeSessionId::new("main")),
+        continuity_key: None,
     };
     let mut borrowed = parent_claim.clone();
     borrowed.native_session = NativeSessionId::new("side");

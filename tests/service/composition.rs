@@ -717,6 +717,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
             },
             claim: next_claim,
             operation: herdr_threads::protocol::ids::OperationId::new(Uuid::new_v4().to_string()),
+            continuity_key: None,
         }),
         &CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
@@ -1580,6 +1581,7 @@ fn store_only_daemon_serves_without_host_workers() {
             operation: OperationId::new("op"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         }),
         &budget(),
     )
@@ -1960,6 +1962,14 @@ impl ActualNativeFixture {
                             }
                         }
                     }
+                    // The observation lane's shell-fingerprint read (ht-ma6i.1). PID 1 leads no
+                    // session on a terminal, so nothing is recorded and these tests stay about
+                    // resolution.
+                    "pane.process_info" => {
+                        serde_json::json!({"type":"pane_process_info","process_info":{
+                            "pane_id":request["params"]["pane_id"],"shell_pid":1,"foreground_processes":[]
+                        }})
+                    }
                     method => panic!("unexpected native operation: {method}"),
                 };
                 // The observation lane starts a capture at once, so a daemon
@@ -2127,6 +2137,7 @@ impl ActualNativeFixture {
                 operation: herdr_threads::protocol::ids::OperationId::new(operation),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             }),
             &self.budget(),
         )
@@ -2588,6 +2599,7 @@ fn request_with_previous_boot_after_restart_is_daemon_boot_changed() {
             operation: herdr_threads::protocol::ids::OperationId::new("stale-boot"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         })
     };
     let definite = stale

@@ -23,6 +23,20 @@ use tokio::{
 };
 use uuid::Uuid;
 
+/// Whether a capability read is an answer to keep for the session: a received list, or a
+/// definitive no (a daemon that rejects the request as an unknown wire version or unsupported,
+/// read as no capabilities). A transport failure or any other error is not.
+fn cacheable(result: &Result<CommandResult, ApiError>) -> bool {
+    match result {
+        Ok(CommandResult::Capabilities(_)) => true,
+        Ok(_) => false,
+        Err(error) => matches!(
+            error.code,
+            ErrorCode::UnknownWireVersion | ErrorCode::Unsupported
+        ),
+    }
+}
+
 pub struct LocalSocketClient {
     path: PathBuf,
     clock: Arc<dyn Clock>,
@@ -48,16 +62,25 @@ impl LocalSocketClient {
 
     /// The capabilities this daemon advertises, asked once per session (ht-p03.43).
     /// Any refusal or transport error (an older daemon cannot decode the request and
-    /// closes, or answers an error) reads as no capabilities, never as a failure. A caller that
+    /// closes, or answers an error) reads as no capabilities, never as a failure. Only a received
+    /// list or a definitive no is kept ([`cacheable`]); any other failure is asked again on the
+    /// next read, so a long-lived process (`watch`) is not stuck on one failed read. A caller that
     /// must tell a failed call from an answer without a capability (the `watch` probe) uses
     /// `call_definitive(Command::Capabilities)` instead.
     pub fn capabilities(&self, budget: &CallBudget) -> Capabilities {
-        self.capabilities
-            .get_or_init(|| match self.call(Command::Capabilities, budget) {
-                Ok(CommandResult::Capabilities(list)) => Capabilities::from_list(list.capabilities),
-                _ => Capabilities::none(),
-            })
-            .clone()
+        if let Some(capabilities) = self.capabilities.get() {
+            return capabilities.clone();
+        }
+        let result = self.call(Command::Capabilities, budget);
+        let keep = cacheable(&result);
+        let capabilities = match result {
+            Ok(CommandResult::Capabilities(list)) => Capabilities::from_list(list.capabilities),
+            _ => Capabilities::none(),
+        };
+        if keep {
+            let _ = self.capabilities.set(capabilities.clone());
+        }
+        capabilities
     }
 
     /// Records capabilities another connection to the same daemon already fetched, so this
@@ -333,5 +356,35 @@ impl LocalClient for LocalSocketClient {
         budget: &CallBudget,
     ) -> Result<Result<CommandResult, ApiError>, ApiError> {
         LocalSocketClient::call_definitive(self, command, budget)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::results::CapabilityList;
+
+    // Kills: a cache that keeps a failed first read, so a long-lived process never sees the
+    // daemon's capabilities, or one that drops a definitive no and asks on every call.
+    #[test]
+    fn only_a_list_or_a_definitive_no_is_cached() {
+        let list = Ok(CommandResult::Capabilities(CapabilityList {
+            capabilities: Vec::new(),
+        }));
+        assert!(cacheable(&list));
+        for code in [ErrorCode::UnknownWireVersion, ErrorCode::Unsupported] {
+            assert!(cacheable(&Err(ApiError::new(code, "old"))));
+        }
+        for code in [
+            ErrorCode::HostUnavailable,
+            ErrorCode::DeadlineExceeded,
+            ErrorCode::ServiceBusy,
+            ErrorCode::UnknownOutcome,
+        ] {
+            assert!(!cacheable(&Err(ApiError::new(code, "failed"))));
+        }
+        assert!(!cacheable(&Ok(CommandResult::SeatResolved(
+            crate::protocol::ids::SeatId::new("s")
+        ))));
     }
 }

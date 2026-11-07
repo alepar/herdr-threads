@@ -147,6 +147,8 @@ impl crate::ports::LocalService for Service {
                 open_binding: None,
                 history: empty(),
                 directory: None,
+                continuity_key: None,
+                retirement_state: None,
             })),
             Command::Directory(_) => Ok(CommandResult::Directory(empty())),
             Command::AttentionDigest(_) => {

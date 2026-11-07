@@ -1,0 +1,612 @@
+diff --git a/tests/cli/hook.rs b/tests/cli/hook.rs
+index fe585531d..42d1de132 100644
+--- a/tests/cli/hook.rs
++++ b/tests/cli/hook.rs
+@@ -2703,6 +2703,8 @@ mod pane_seat_selection {
+                         open_binding: None,
+                         history: page(vec![], None),
+                         directory: None,
++                        continuity_key: None,
++                        retirement_state: None,
+                     }))
+                 }
+                 other => panic!("unexpected {other:?}"),
+@@ -3177,6 +3179,8 @@ mod continuity_gate {
+         lookups: Mutex<VecDeque<Vec<&'static str>>>,
+         /// The last scripted reply repeats once the script runs out.
+         sticky: bool,
++        /// The daemon advertises `seat.continuity_key_v1`.
++        keyed: bool,
+     }
+     impl Daemon {
+         fn new(replies: Vec<Reply>) -> Self {
+@@ -3185,8 +3189,13 @@ mod continuity_gate {
+                 seen: Mutex::new(Vec::new()),
+                 lookups: Mutex::new(VecDeque::new()),
+                 sticky: false,
++                keyed: false,
+             }
+         }
++        fn keyed(mut self) -> Self {
++            self.keyed = true;
++            self
++        }
+         fn with_lookups(self, lookups: Vec<Vec<&'static str>>) -> Self {
+             *self.lookups.lock().unwrap() = lookups.into();
+             self
+@@ -3218,6 +3227,7 @@ mod continuity_gate {
+     impl LocalClient for Daemon {
+         fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+             name == crate::protocol::capabilities::SAME_SESSION_CONTINUITY_V1
++                || (self.keyed && name == crate::protocol::capabilities::SEAT_CONTINUITY_KEY_V1)
+         }
+         fn call_with_output(
+             &self,
+@@ -3405,6 +3415,7 @@ mod continuity_gate {
+                         event_id: "evt-recorded".into(),
+                         execution: crate::protocol::ids::ExecutionId::new(execution),
+                         liveness,
++                        continuity_key: None,
+                     },
+                     1,
+                 )
+@@ -3691,6 +3702,180 @@ mod continuity_gate {
+         event(harness, EventKind::Resume, Role::TopLevel, Some("S-1"))
+     }
+ 
++    fn key_env(key: &'static str) -> crate::cli::caller_location::CallerEnv {
++        crate::cli::caller_location::CallerEnv::from_lookup(move |name| {
++            (name == crate::cli::caller_location::CONTINUITY_KEY_ENV).then(|| key.into())
++        })
++    }
++    fn busy() -> Reply {
++        Ok(Err(rejection(ErrorCode::ServiceBusy)))
++    }
++
++    // Kills: a reuse test that ignores the key, which would replay the old key's commit.
++    #[test]
++    fn changed_key_does_not_reuse_the_intent() {
++        let pane = Pane::new();
++        let ev = event(
++            Harness::Claude,
++            EventKind::Tool,
++            Role::TopLevel,
++            Some("S-1"),
++        );
++        let daemon = Daemon::new(vec![busy(), reattached("saved", 2)])
++            .keyed()
++            .with_lookups(vec![vec!["saved"]]);
++        let mut call = pane.call_with(&daemon, ScriptedWindow::allowing(0));
++        call.caller = key_env("key-1");
++        assert!(matches!(
++            call.reattach_by_continuity(&ev, false),
++            Reattach::Pending
++        ));
++        let kept = pane.pending().expect("kept");
++        assert!(
++            matches!(&kept.semantic, SemanticMutation::ContinuityCheckIn { continuity_key, .. } if continuity_key.as_ref().is_some_and(|key| key.as_str() == "key-1"))
++        );
++        call.caller = key_env("key-2");
++        assert!(call.reattach_by_continuity(&ev, false).done().is_some());
++        let requests = daemon.continuity_requests();
++        assert_eq!(requests.len(), 2);
++        assert_ne!(
++            requests[0].operation, requests[1].operation,
++            "a fresh intent"
++        );
++        assert_eq!(
++            requests[1].continuity_key.as_ref().map(|key| key.as_str()),
++            Some("key-2")
++        );
++    }
++
++    // Kills: a key presented for a subagent event, which names the parent's seat.
++    #[test]
++    fn subagent_event_presents_no_key() {
++        let pane = Pane::new();
++        let daemon = Daemon::new(vec![]).keyed();
++        let mut call = pane.call(&daemon);
++        call.caller = key_env("clone-1");
++        let top = event(
++            Harness::Claude,
++            EventKind::Tool,
++            Role::TopLevel,
++            Some("S-1"),
++        );
++        assert_eq!(
++            call.continuity_key(&top).map(|key| key.as_str().to_owned()),
++            Some("clone-1".to_owned())
++        );
++        let child = event(
++            Harness::Claude,
++            EventKind::Tool,
++            Role::Subagent,
++            Some("S-1"),
++        );
++        assert_eq!(call.continuity_key(&child), None);
++        let named_child = LifecycleEvent {
++            agent_id: Some("a1".into()),
++            ..top
++        };
++        assert_eq!(call.continuity_key(&named_child), None);
++    }
++
++    // A keyless intent from before the upgrade never answers for a keyed claim.
++    #[test]
++    fn a_keyless_intent_is_not_reused_by_a_keyed_claim() {
++        let pane = Pane::new();
++        let (reference, _) = pane.record("S-1");
++        let ev = event(
++            Harness::Claude,
++            EventKind::Tool,
++            Role::TopLevel,
++            Some("S-1"),
++        );
++        let daemon = Daemon::new(vec![reattached("saved", 2)]).keyed();
++        let mut call = pane.call(&daemon);
++        call.caller = key_env("key-1");
++        assert!(call.reattach_by_continuity(&ev, false).done().is_some());
++        let requests = daemon.continuity_requests();
++        assert_eq!(requests.len(), 1);
++        assert_ne!(requests[0].operation, reference.operation);
++        assert_eq!(
++            requests[0].continuity_key.as_ref().map(|key| key.as_str()),
++            Some("key-1")
++        );
++    }
++
++    // Kills: a retry that strips the key, or a ServiceBusy that fails over to enrollment.
++    #[test]
++    fn busy_keeps_intent_with_no_keyless_enrollment() {
++        let pane = Pane::new();
++        let ev = event(
++            Harness::Claude,
++            EventKind::Tool,
++            Role::TopLevel,
++            Some("S-1"),
++        );
++        let daemon = Daemon::new(vec![busy(), reattached("saved", 2)])
++            .keyed()
++            .with_lookups(vec![vec!["saved"]]);
++        let mut call = pane.call_with(&daemon, ScriptedWindow::allowing(0));
++        call.caller = key_env("clone-1");
++        assert!(matches!(
++            call.reattach_by_continuity(&ev, false),
++            Reattach::Pending
++        ));
++        assert!(matches!(call.pending_failure(&ev, "x"), Failure::Quiet(_)));
++        assert!(pane.pending().is_some());
++        assert!(call.reattach_by_continuity(&ev, false).done().is_some());
++        let requests = daemon.continuity_requests();
++        assert_eq!(requests.len(), 2);
++        assert_eq!(
++            requests[0].operation, requests[1].operation,
++            "the same intent"
++        );
++        assert!(requests.iter().all(|request| {
++            request.continuity_key.as_ref().map(|key| key.as_str()) == Some("clone-1")
++        }));
++        assert!(
++            !daemon
++                .seen
++                .lock()
++                .unwrap()
++                .iter()
++                .any(|command| matches!(command, Command::ResolveSeat(_))),
++            "no fallback enrollment"
++        );
++        // A keyless claim's pending keeps its existing report.
++        let keyless = Daemon::new(vec![]);
++        let call = pane.call(&keyless);
++        assert!(matches!(
++            call.pending_failure(&ev, "x"),
++            Failure::Unavailable(_)
++        ));
++    }
++
++    // Kills: a watch claim that drops the key the mod forwarded.
++    #[test]
++    fn watch_claim_carries_the_key() {
++        let pane = Pane::new();
++        let daemon = Daemon::new(vec![reattached("saved", 2)]).keyed();
++        assert!(watch_continuity(
++            &pane.context,
++            &pane.paths,
++            &daemon,
++            pane.instance,
++            &pane.target,
++            WireHarness::Claude,
++            "S-1",
++            clock(),
++            key_env("clone-1"),
++        ));
++        let requests = daemon.continuity_requests();
++        assert_eq!(requests.len(), 1);
++        assert_eq!(
++            requests[0].continuity_key.as_ref().map(|key| key.as_str()),
++            Some("clone-1")
++        );
++    }
++
+     #[test]
+     fn same_session_continuity_recovers_lifecycle_and_turn_without_a_resume() {
+         for kind in [
+@@ -4454,6 +4639,8 @@ mod continuity_gate {
+                 | ErrorCode::SequenceExhausted
+                 // The reattachment request carries no fingerprint: an identical retry repeats it.
+                 | ErrorCode::LivenessFingerprintRequired
++                // A claimless caller has no evidence to offer: an identical retry repeats it.
++                | ErrorCode::ContinuityKeyPending
+                 // M7: the live holder keeps the name until it exits; an identical retry repeats it.
+                 | ErrorCode::SeatNameInUse
+                 // M6: the server's own name stays refused until it is restarted without it.
+@@ -7209,6 +7396,8 @@ mod enum_callback {
+                     open_binding: None,
+                     history: empty(),
+                     directory: None,
++                    continuity_key: None,
++                    retirement_state: None,
+                 })),
+                 Command::Directory(_) => Ok(CommandResult::Directory(empty())),
+                 Command::AttentionDigest(_) => {
+@@ -8051,6 +8240,12 @@ mod registered_resume {
+                 }
+                 Command::ResolveSeat(command) => {
+                     assert_eq!(command.target.as_str(), "w9:p1");
++                    if self.control("key-pending.json") {
++                        return Err(ApiError::new(
++                            ErrorCode::ContinuityKeyPending,
++                            "continuity key is bound to an unresolved seat; no seat minted",
++                        ));
++                    }
+                     if !self.resolved.load(Ordering::SeqCst)
+                         && !self.control("enrollment-unowned.json")
+                     {
+@@ -8076,12 +8271,23 @@ mod registered_resume {
+                         open_binding: None,
+                         history: empty(),
+                         directory: None,
++                        continuity_key: None,
++                        retirement_state: None,
+                     }))
+                 }
+                 Command::ContinuityCheckIn(c) => {
+                     c.validate()
+                         .map_err(|e| ApiError::new(ErrorCode::InvalidRequest, e))?;
+                     assert_eq!(c.target.as_str(), "w9:p1");
++                    if self.control("key-conflict.json") {
++                        return Err(ApiError::new(
++                            ErrorCode::TargetUnresolved,
++                            "continuity key conflict key_live_elsewhere on w9:p1; no seat moved",
++                        ));
++                    }
++                    if self.control("key-busy.json") {
++                        return Err(ApiError::new(ErrorCode::ServiceBusy, "fixture lag"));
++                    }
+                     if c.source == "same_session" && self.control("legacy-continuity.json") {
+                         return Err(ApiError::new(
+                             ErrorCode::InvalidRequest,
+@@ -8184,11 +8390,18 @@ mod registered_resume {
+                 // Scripted only for the hook inbox page tests: the v2 inbox and
+                 // hook lazy delivery are advertised and one page is served.
+                 Command::Capabilities => {
++                    if self.control("capabilities-failed.json") {
++                        return Err(ApiError::new(ErrorCode::ServiceBusy, "fixture read failed"));
++                    }
+                     let mut capabilities = Vec::new();
+                     if !self.control("legacy-continuity.json") {
+                         capabilities
+                             .push(crate::protocol::capabilities::SAME_SESSION_CONTINUITY_V1.into());
+                     }
++                    if self.control("continuity-key.json") {
++                        capabilities
++                            .push(crate::protocol::capabilities::SEAT_CONTINUITY_KEY_V1.into());
++                    }
+                     if self.control("inbox-v2.json") {
+                         capabilities.extend([
+                             crate::protocol::capabilities::INBOX_BATCH_V2.into(),
+@@ -8906,6 +9119,279 @@ mod registered_resume {
+         );
+     }
+ 
++    fn keyed_herdr(key: &'static str) -> HookEnv {
++        HookEnv {
++            caller: crate::cli::caller_location::CallerEnv::from_lookup(move |name| {
++                (name == crate::cli::caller_location::CONTINUITY_KEY_ENV).then(|| key.into())
++            }),
++            ..herdr()
++        }
++    }
++    /// The key on each keyed wire command the fixture saw, in order.
++    fn sent_keys(f: &Fixture) -> Vec<(&'static str, Option<String>)> {
++        let text = |key: &Option<crate::protocol::ids::ContinuityKey>| {
++            key.as_ref().map(|key| key.as_str().to_owned())
++        };
++        f.service
++            .seen
++            .lock()
++            .unwrap()
++            .iter()
++            .filter_map(|c| match c {
++                Command::ContinuityCheckIn(c) => Some(("claim", text(&c.continuity_key))),
++                Command::ResolveSeat(c) => Some(("resolve", text(&c.continuity_key))),
++                Command::CheckIn(c) => Some(("check_in", text(&c.continuity_key))),
++                _ => None,
++            })
++            .collect()
++    }
++    fn start_input() -> HookInput {
++        input("SyntheticStart", "top_level", Some("fourth-resume-session"))
++    }
++    fn enrolling_fixture(advertised: bool) -> Fixture {
++        let f = Fixture::new(false);
++        write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
++        write_fixture_json(&f.root.join("enrollment-no-match.json"), &true).unwrap();
++        if advertised {
++            write_fixture_json(&f.root.join("continuity-key.json"), &true).unwrap();
++        }
++        f
++    }
++
++    // Kills: a key sent to a daemon that does not know the field, or one missing from any of the
++    // three commands the top-level event sends.
++    #[test]
++    fn key_sent_only_when_advertised() {
++        let f = enrolling_fixture(true);
++        let outcome = f.run_env(registration(), &start_input(), &keyed_herdr("clone-1"));
++        assert_eq!(outcome.diagnostic, None);
++        let sent = sent_keys(&f);
++        for kind in ["claim", "resolve", "check_in"] {
++            assert!(
++                sent.iter()
++                    .any(|(k, key)| *k == kind && key.as_deref() == Some("clone-1")),
++                "{kind}: {sent:?}"
++            );
++        }
++        assert!(sent.iter().all(|(_, key)| key.is_some()), "{sent:?}");
++
++        let older = enrolling_fixture(false);
++        let outcome = older.run_env(registration(), &start_input(), &keyed_herdr("clone-1"));
++        assert_eq!(outcome.diagnostic, None);
++        let sent = sent_keys(&older);
++        assert!(!sent.is_empty());
++        assert!(sent.iter().all(|(_, key)| key.is_none()), "{sent:?}");
++    }
++
++    #[test]
++    fn invalid_key_sends_nothing_and_prints_nothing_new() {
++        let plain = enrolling_fixture(true);
++        let expected = plain.run_env(registration(), &start_input(), &herdr());
++        let f = enrolling_fixture(true);
++        let outcome = f.run_env(registration(), &start_input(), &keyed_herdr("has space"));
++        assert_eq!(outcome.diagnostic, None);
++        assert_eq!(
++            String::from_utf8(outcome.stdout).unwrap().len(),
++            String::from_utf8(expected.stdout).unwrap().len()
++        );
++        let sent = sent_keys(&f);
++        assert!(!sent.is_empty());
++        assert!(sent.iter().all(|(_, key)| key.is_none()), "{sent:?}");
++    }
++
++    // Kills: a subagent's claim, enrollment or notice carrying the parent's key.
++    #[test]
++    fn subagent_sends_nothing() {
++        let f = Fixture::new(true);
++        write_fixture_json(&f.root.join("continuity-key.json"), &true).unwrap();
++        let outcome = f.run_env(
++            registration(),
++            &input("SyntheticStart", "subagent", Some("fourth-resume-session")),
++            &keyed_herdr("clone-1"),
++        );
++        assert!(
++            sent_keys(&f).iter().all(|(_, key)| key.is_none()),
++            "{:?}",
++            sent_keys(&f)
++        );
++        assert!(
++            !String::from_utf8(outcome.stdout)
++                .unwrap()
++                .contains("clone-1"),
++            "no key text"
++        );
++    }
++
++    // Kills: a conflict that reaches the model, enrolls anyway, or is not presented again.
++    #[test]
++    fn conflict_leaves_hook_successful_and_silent() {
++        let f = Fixture::new(false);
++        write_fixture_json(&f.root.join("continuity-key.json"), &true).unwrap();
++        write_fixture_json(&f.root.join("key-conflict.json"), &true).unwrap();
++        for attempt in 1..=2 {
++            let outcome = f.run_env(registration(), &start_input(), &keyed_herdr("clone-1"));
++            assert!(
++                outcome.stdout.is_empty(),
++                "{}",
++                String::from_utf8_lossy(&outcome.stdout)
++            );
++            let sent = sent_keys(&f);
++            assert_eq!(
++                sent.len(),
++                attempt,
++                "only the claim, re-presented: {sent:?}"
++            );
++            assert!(
++                sent.iter()
++                    .all(|(kind, key)| *kind == "claim" && key.as_deref() == Some("clone-1")),
++                "{sent:?}"
++            );
++        }
++    }
++
++    // Kills: a claimless refusal that reaches the model or goes on to a check-in.
++    #[test]
++    fn key_pending_on_enrollment_is_quiet_and_successful() {
++        let f = enrolling_fixture(true);
++        write_fixture_json(&f.root.join("key-pending.json"), &true).unwrap();
++        let outcome = f.run_env(registration(), &start_input(), &keyed_herdr("clone-1"));
++        assert!(
++            outcome.stdout.is_empty(),
++            "{}",
++            String::from_utf8_lossy(&outcome.stdout)
++        );
++        let sent = sent_keys(&f);
++        assert!(sent.iter().any(|(kind, _)| *kind == "resolve"), "{sent:?}");
++        assert!(
++            !sent.iter().any(|(kind, _)| *kind == "check_in"),
++            "{sent:?}"
++        );
++    }
++
++    // Kills: lag on a keyed claim that prints the retry line or enrolls without the key.
++    #[test]
++    fn busy_keyed_claim_is_silent_and_never_enrolls() {
++        let f = Fixture::new(false);
++        write_fixture_json(&f.root.join("continuity-key.json"), &true).unwrap();
++        write_fixture_json(&f.root.join("key-busy.json"), &true).unwrap();
++        let outcome = f.run_env(registration(), &start_input(), &keyed_herdr("clone-1"));
++        assert!(
++            outcome.stdout.is_empty(),
++            "{}",
++            String::from_utf8_lossy(&outcome.stdout)
++        );
++        let sent = sent_keys(&f);
++        assert!(!sent.is_empty());
++        assert!(sent.iter().all(|(kind, _)| *kind == "claim"), "{sent:?}");
++    }
++
++    // Kills: a fresh keyed agent in a restored pane that reads resolved making no claim, so the lag
++    // leaves nothing kept and an idle agent waits for an event it may never have.
++    #[test]
++    fn keyed_start_on_a_resolved_pane_claims_and_stays_silent_during_lag() {
++        let f = Fixture::new(true);
++        write_fixture_json(&f.root.join("continuity-key.json"), &true).unwrap();
++        write_fixture_json(&f.root.join("key-busy.json"), &true).unwrap();
++        let outcome = f.run_env(registration(), &start_input(), &keyed_herdr("clone-1"));
++        assert!(
++            outcome.stdout.is_empty(),
++            "{}",
++            String::from_utf8_lossy(&outcome.stdout)
++        );
++        assert_eq!(sent_keys(&f), [("claim", Some("clone-1".to_owned()))]);
++    }
++
++    // Kills: a keyed probe that blocks the current owner's check-in, a keyless start that probes,
++    // or a steady keyed turn that probes.
++    #[test]
++    fn keyed_start_on_a_current_mapping_takes_the_ordinary_check_in() {
++        let f = Fixture::new(true);
++        write_fixture_json(&f.root.join("continuity-key.json"), &true).unwrap();
++        write_fixture_json(&f.root.join("enrollment-no-match.json"), &true).unwrap();
++        let outcome = f.run_env(registration(), &start_input(), &keyed_herdr("clone-1"));
++        assert_eq!(outcome.diagnostic, None);
++        let sent = sent_keys(&f);
++        assert_eq!(sent[0], ("claim", Some("clone-1".to_owned())), "{sent:?}");
++        assert!(sent.iter().any(|(kind, _)| *kind == "check_in"), "{sent:?}");
++        let claims = |f: &Fixture| f.service.requests().len();
++        let before = claims(&f);
++        let turn = input("SyntheticTool", "top_level", Some("fourth-resume-session"));
++        let outcome = f.run_env(registration(), &turn, &keyed_herdr("clone-1"));
++        assert_eq!(outcome.diagnostic, None);
++        assert_eq!(claims(&f), before, "a steady keyed turn probed");
++
++        let keyless = Fixture::new(true);
++        write_fixture_json(&keyless.root.join("continuity-key.json"), &true).unwrap();
++        write_fixture_json(&keyless.root.join("enrollment-no-match.json"), &true).unwrap();
++        keyless.run(registration(), &start_input());
++        assert_eq!(
++            claims(&keyless),
++            0,
++            "a keyless start probed a resolved pane"
++        );
++    }
++
++    // Kills: a failed read taken for "not advertised", which enrolls keyless and mints a second seat.
++    #[test]
++    fn failed_capability_read_ends_quiet_with_no_enrollment() {
++        let f = enrolling_fixture(true);
++        let failed = f.root.join("capabilities-failed.json");
++        write_fixture_json(&failed, &true).unwrap();
++        let outcome = f.run_env(registration(), &start_input(), &keyed_herdr("clone-1"));
++        assert!(
++            outcome.stdout.is_empty(),
++            "{}",
++            String::from_utf8_lossy(&outcome.stdout)
++        );
++        assert!(
++            outcome
++                .diagnostic
++                .as_deref()
++                .is_some_and(|detail| detail.contains("capability unread")),
++            "{:?}",
++            outcome.diagnostic
++        );
++        assert_eq!(enrollment_counts(&f), (0, 0));
++        assert_no_enrollment_intents(&f);
++
++        std::fs::remove_file(&failed).unwrap();
++        let outcome = f.run_env(registration(), &start_input(), &keyed_herdr("clone-1"));
++        assert_eq!(outcome.diagnostic, None);
++        let sent = sent_keys(&f);
++        assert!(
++            sent.iter()
++                .any(|(kind, key)| *kind == "resolve" && key.as_deref() == Some("clone-1")),
++            "{sent:?}"
++        );
++    }
++
++    // Kills: the same fallback on the enroll-only route a start callback takes.
++    #[test]
++    fn failed_capability_read_on_enroll_only_start_ends_quiet() {
++        let r = task52_registration();
++        let f = unowned_fixture();
++        write_fixture_json(&f.root.join("continuity-key.json"), &true).unwrap();
++        let failed = f.root.join("capabilities-failed.json");
++        write_fixture_json(&failed, &true).unwrap();
++        let outcome = f.run_env(r, &hermes_cli_start("cli-a", 1), &keyed_herdr("clone-1"));
++        assert!(outcome.stdout.is_empty());
++        assert!(
++            outcome
++                .diagnostic
++                .as_deref()
++                .is_some_and(|detail| detail.contains("capability unread")),
++            "{:?}",
++            outcome.diagnostic
++        );
++        assert_eq!(enrollment_counts(&f), (0, 0));
++        assert_no_enrollment_intents(&f);
++
++        std::fs::remove_file(&failed).unwrap();
++        let outcome = f.run_env(r, &hermes_cli_start("cli-a", 2), &keyed_herdr("clone-1"));
++        assert_eq!(outcome.diagnostic, None);
++        assert_eq!(sent_keys(&f), vec![("resolve", Some("clone-1".to_owned()))]);
++    }
++
+     #[test]
+     fn same_session_continuity_lifecycle_keeps_canonical_refusal_guidance() {
+         let f = Fixture::new(false);
+@@ -9348,6 +9834,7 @@ mod registered_resume {
+             operation: OperationId::new(uuid()),
+             execution: crate::protocol::ids::ExecutionId::new(uuid()),
+             liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
++            continuity_key: None,
+         };
+         assert_eq!(
+             c.validate(),
+@@ -9510,6 +9997,7 @@ mod registered_resume {
+                         target: target.clone(),
+                     },
+                     SemanticMutation::ContinuityCheckIn {
++                        continuity_key: None,
+                         host: crate::test_support::test_host_locator(),
+                         target: target.clone(),
+                         harness: OccupantHarness::Agent(d.harness),
+@@ -12076,6 +12564,8 @@ mod terminal_turn_edge {
+                     open_binding: None,
+                     history: page(vec![]),
+                     directory: None,
++                    continuity_key: None,
++                    retirement_state: None,
+                 })),
+                 Command::TurnState(report) => {
+                     self.reports.lock().unwrap().push(report);

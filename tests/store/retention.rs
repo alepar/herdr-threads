@@ -803,6 +803,7 @@ fn rerunning_receipt_timer_producer_does_not_reenqueue() {
         },
         claim: fixture_claim("s1"),
         operation: OperationId::new("check-in"),
+        continuity_key: None,
     };
     let register = |fx: &Fx| {
         let permit = StorePort::issue_cooperative_permit(

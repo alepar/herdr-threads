@@ -64,6 +64,7 @@ impl Fixture {
             operation: OperationId::new("op-named"),
             locator_hint: Some(pane.to_owned()),
             tmux_hint: None,
+            continuity_key: None,
         };
         let CommandResult::NamedSeatResolved { seat, .. } = resolve_named_seat(
             &self.context,

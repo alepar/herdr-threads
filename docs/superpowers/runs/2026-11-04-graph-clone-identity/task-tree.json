@@ -1,0 +1,541 @@
+[
+  {
+    "id": "ht-ma6i.11",
+    "title": "Integration sweep: graph clone identity end to end",
+    "description": "Spec §4.8. Verify the goal's main flows end to end, add integration tests no leaf covers, sweep for unwired fields and capabilities; fix small gaps inline, file blockers for big ones.\nblocked-by ht-ma6i.1: consumes all leaves (integration sweep)\nblocked-by ht-ma6i.2: consumes all leaves (integration sweep)\nblocked-by ht-ma6i.3: consumes all leaves (integration sweep)\nblocked-by ht-ma6i.4: consumes all leaves (integration sweep)\nblocked-by ht-ma6i.5: consumes all leaves (integration sweep)\nblocked-by ht-ma6i.6: consumes all leaves (integration sweep)\nblocked-by ht-ma6i.7: consumes all leaves (integration sweep)\nblocked-by ht-ma6i.8: consumes all leaves (integration sweep)\nblocked-by ht-ma6i.9: consumes all leaves (integration sweep)\nblocked-by ht-ma6i.10: consumes all leaves (integration sweep)\nfiles: tests/ (a new integration target on an isolated Herdr session, scripts/lib/isolated-herdr.sh), Cargo.toml, .config/nextest.toml\nAcceptance:\n- [ ] On an isolated Herdr session with hook-running stand-in harnesses, a real service session: reserve, launch with the key, enroll and bind, close the pane, send refused as retired, un-retire, relaunch with the key in a new pane, same seat id, ACK deadline resumed with its remaining time, memberships intact, no re-acceptance.\n- [ ] A second agent presenting a live key leaves its pane held with no new seat, a successful hook, one alert, and the conflict visible on SeatInspect.\n- [ ] A live handoff with mixed panes resolves each per spec §4.1: bare, exited-agent, and agent with a live binding.\n- [ ] Every new field and capability is read somewhere on a production path; TRUST-POLICY's sections match what landed.\n- [ ] The test stops its processes: check-no-leaked-processes passes.\n- [ ] FinalizeRetirement over the real session settles obligations and frees the key for a new reservation.\n- [ ] Cold restart of the isolated Herdr with a keyed fresh stand-in agent reattaches the unresolved seat onto a held pane: no new seat, hold released, including a claim made during reconciliation lag with no later event.\n- [ ] Reserve-with-seat on an already-running seat, then close, un-retire, reattach by key.\n- [ ] A keyed relaunch before un-retire is held with one key_retired_reversibly alert, then reattaches on the next event after un-retire.\n- [ ] Agent exit with the pane open keeps the seat, and a relaunch keeps it (B3).\n- [ ] Seat succession: a finally retired seat's key is re-reserved onto a resolved successor with ReserveContinuityKey{key, seat}, and the old session resumed on the successor's pane checks in on the successor, with no revival of the old seat and no new seat.",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T08:04:59Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:28:13Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.3",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:05Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.4",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:07Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.10",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.7",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:13Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.9",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.5",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:09Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.1",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:01Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.8",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:15Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.2",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:03Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T08:04:59Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.11",
+        "depends_on_id": "ht-ma6i.6",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:05:11Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 10,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i.8",
+    "title": "Continuity key ledger: reserve, release, bind and conflict records",
+    "description": "Spec §4.2. owns: store::continuity_keys, the service dispatch of ReserveContinuityKey and ReleaseContinuityKey. consumes: schema delta 16.\nblocked-by ht-ma6i.5: consumes boundary contract\nboundary contract: ht-ma6i.5\nLands the store ledger and the service operations over it: stateless functions over the caller's transaction, plus Reserve and Release wired through service_controls::operate. It judges nothing (KeyVerdict does) and touches no seat.\nfiles: src/store/continuity_keys.rs (new), src/store/mod.rs, src/store/service_controls.rs, TRUST-POLICY.md\nAcceptance:\n- [ ] Reserve is idempotent for the owner and returns the bound seat; another author is refused; release works for an unbound key and is refused for a bound one.\n- [ ] Bind enforces one key per seat and one seat per key; lookup by seat and by key.\n- [ ] Reserve with a seat binds at once, recording bound_by service_reservation (check-in binding records check_in), accepted only for a local, resolved or unresolved, unnamed Herdr seat holding no other key with the key unbound or already bound to it; replay and re-reserve to the same seat are no-ops; a key bound elsewhere or a seat holding another key is Conflict; a retired, named or hc seat is refused; nothing moves. TRUST-POLICY defines both bound_by values and the accepted limit.\n- [ ] Recording a conflict writes one conflict row and one alert in one write; a repeat writes neither; the conflict table holds its 256-row cap (a full table records nothing and reports it to the caller).\n- [ ] Release-on-final removes the key and its conflict rows; conflict rows can be cleared by key and by (host, target).\n- [ ] ReserveContinuityKey (with and without a seat) and ReleaseContinuityKey work over a real service_session_v3 connection: owner authorization, operation-key replay and payload-mismatch refusal are tested through the session, not only the store. An already-running clone's resolved seat gains a key this way.\n- [ ] The alert log evicts its oldest row at the cap with ordinals still increasing: the 257th conflict still alerts.\n- [ ] A re-judged conflict on an existing (host, target) row updates key, kind, seat and owner, keeping first_seen_at; a new alert is appended only when the row is new or its key or kind changed; an unchanged refusal writes nothing. An alert-only kind never holds, and its row clears when the owner it was judged against stops being the pane's resolved owner.\n- [ ] A row's alert is appended when the row is new or changed, as the spec's Key abstractions states.",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:58:52Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:51:00Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.8",
+        "depends_on_id": "ht-ma6i.5",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:58:54Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.8",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:58:52Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 5,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i.7",
+    "title": "Replicate reversible retirement: seat.retired_reversible and seat.unretired",
+    "description": "Spec §4.3 cross-node. owns: the SeatRetiredReversible and SeatUnretired FactKinds, their registration and HELD_KINDS entries, materialize_seat_retired's reversible case. consumes: store::seats::reversible transitions.\nblocked-by ht-ma6i.3: consumes store::seats::reversible transitions\nfiles: src/sync/facts/seat.rs, src/sync/facts/mod.rs, src/store/materialize.rs, src/store/seats/publication.rs, src/store/seats/reversible.rs, src/store/control/retirement.rs, TRUST-POLICY.md, scripts/wire-compat-baseline.txt, tests for multinode apply\nAcceptance:\n- [ ] A published seat's reversible retirement and un-retire author the facts (needs: ht-ma6i.3); an unpublished seat authors nothing; a restore-window hold refuses them as retryable.\n- [ ] On a peer: reversible reads retired with no job; unretired restores remote and shifts that node's pending deadlines; final seat.retired on a reversible row inserts the job. A non-home origin is failed.\n- [ ] Out-of-episode facts are no-ops: a fact whose retired_at differs, and seat.retired_reversible on a finally retired row.\n- [ ] A registry without the kinds parks them, applies the final seat.retired, and after replay lands in the same state as a node that knew them, for rev/unret/rev, rev/final and rev/unret/final histories. A peer deletes its row on seat.unretired.\n- [ ] Own-log replay of a local row takes the fence's transition.\n- [ ] TRUST-POLICY: cross-node paragraph, mixed-version accepted limit, N4 authority list.\n- [ ] On a peer during the window: a send, explicit ACK recipient and invite to the seat are refused as retired, no overdue warning fires for it, and frozen rows do not starve that node's due page.\n- [ ] A message from an older node, or from a newer node before the fact arrived, reaches the home node as an ordinary fact: its receipt stays frozen with the rest, resumes on un-retire and settles on finalization.\n- [ ] After own-log restore, a keyless reversible seat keeps its reversible row and reads retired; UnretireSeat and FinalizeRetirement answer Unauthorized; operator retire finalizes it; TRUST-POLICY lists the limit.\n- [ ] project_receipt and the invitee apply write pending, with no terminal row and no terminal membership, for a fact applied during the window, on the home node and on a peer; after un-retire the obligation resumes, and after finalization it settles.",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:55:09Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:37:34Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.7",
+        "depends_on_id": "ht-ma6i.3",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:55:11Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.7",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:55:09Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i.6",
+    "title": "Continuity key: hook, watch and bridge present HERDR_THREADS_CONTINUITY_KEY",
+    "description": "Spec §4.2 client side. owns: the one client helper that reads the variable, the key in the retained continuity intent. consumes: seat.continuity_key_v1 and the key fields on ContinuityCheckIn, ResolveSeat and CheckIn.\nblocked-by ht-ma6i.2: consumes the daemon's key decision and seat.continuity_key_v1\nfiles: src/cli/launch.rs, src/cli/handoff.rs, TRUST-POLICY.md, src/cli/hook.rs, src/cli/watch.rs, src/cli/seat_resolution.rs, src/cli/retry.rs, integrations/claude/mod/hooks/register.js, integrations/hermes/__init__.py\nAcceptance:\n- [ ] A top-level, non-subagent hook event sends the key on its C1 claim, enrollment and check-in only when the daemon advertises seat.continuity_key_v1 (needs: ht-ma6i.2).\n- [ ] A subagent, a daemon without the capability and an invalid value send nothing and print nothing.\n- [ ] A key conflict leaves the hook successful with no enrollment and no new model-visible text; the next event re-presents the key.\n- [ ] The Claude mod forwards the variable to its watch child and a watch claim carries it; the Hermes bridge has it in PANE_ENV.\n- [ ] A hook test uses CallerEnv::from_lookup, never the process env.\n- [ ] ServiceBusy on a key claim keeps the same retained intent as a C1 claim and retries on the next event, with no keyless fallback enrollment and no model-visible text.\n- [ ] The plain CLI's seat-resolving path presents the key through the one helper, and a key bound elsewhere mints no seat there; TRUST-POLICY lists that a hookless harness does not reattach by key.\n- [ ] threads' launch and handoff scrub the variable from what they start, with a test; TRUST-POLICY lists inheritance outside threads as an accepted limit.\n- [ ] The retained intent stores the key and a replay presents it; an intent recorded before the upgrade decodes as keyless; a changed key does not reuse the intent.\n- [ ] ResolveSeat presents the key only for the caller's own pane, never for launch resolving another pane.\n- [ ] A harness env passthrough that names HERDR_PANE_ID in setup or guidance (Hermes terminal.client_env_passthrough, src/harness/hermes.rs) also names the variable.",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:55:01Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:12:40Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.6",
+        "depends_on_id": "ht-ma6i.2",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:55:03Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.6",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:55:01Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i.5",
+    "title": "Seam contract: clone identity schema delta 16 and protocol shapes",
+    "description": "Spec §4.5, §4.2, §4.3, §4.1, §4.4. owns: schema delta 16, ContinuityKey id, ServiceSessionLevel, the service v3 types, SeatInspection optional fields, native capability constant, fact payload structs. Every other leaf consumes these. Lands only the compilable, inert boundary: tables exist, types round-trip, new service operations answer Unsupported (not advertised yet), SeatInspection fields stay None, no behaviour changes.\nfiles: migrations/node/0016_graph_clone_identity*.sql, src/store/schema.rs, src/store/seats/continuity.rs (copy helper), src/protocol/ids.rs, src/protocol/service.rs, src/protocol/results.rs, src/protocol/commands.rs, src/protocol/capabilities.rs, src/daemon/transport/service_connection.rs, src/store/service_controls.rs, src/sync/facts/seat.rs (payload types only, unregistered), scripts/wire-compat-baseline.txt\nAcceptance:\n- [ ] Migration 16 creates seat_shell_fingerprints, continuity_keys, continuity_key_conflicts, continuity_alerts, reversible_retirements (with closure_evidence and absence_evidence), restored_target_absence; adds kept_continuity_claims.continuity_key and retirements.absence_evidence; rebuilds allocation_decisions admitting structural_shell_continuity, cooperative_continuity_key, service_unretire, service_finalize (the 0012 pattern); relaxes seats_retirement_terminal only for a seat with a reversible row in state reversible.\n- [ ] A migration test from schema 15 keeps every seat, retirement and allocation decision row.\n- [ ] continuity_keys has bound_by CHECK IN ('check_in','service_reservation'); ReserveContinuityKey carries an optional seat.\n- [ ] ContinuityKey parses 1..=128 ASCII-graphic bytes and refuses anything else.\n- [ ] ServiceSessionLevel replaces the session_v2 bool and matches! list; service_session_v3 registers on this build; v1/v2 behaviour is unchanged; the five new operations round-trip and answer Unsupported.\n- [ ] ContinuityCheckIn, ResolveSeat and CheckIn carry an optional continuity_key absent from the wire when None; a keyless ContinuityCheckIn digest is byte-identical to today's.\n- [ ] Behaviour-preserving lift in src/store/seats/continuity.rs: seat selection becomes one evidence-keyed selection used by both transaction phases, and the pin-and-kept-claim guard is lifted out of the process_guard closure so the shell decision and the key path can share it. Existing continuity tests pass unchanged.\n- [ ] Clippy, check-harness-neutral, check-wire-compat and check-default-features pass.\n- [ ] continuity_key_conflicts has owner_seat_id and updated_at.",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:54:51Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:37:27Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.5",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:54:51Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 6,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i.3",
+    "title": "Reversible retirement + UnretireSeat restoring memberships (D2)",
+    "description": "Design §4 D2; spec §4.3. owns: store::seats::reversible, RetirementInputs, RetirementStart, the disposition choice in begin_retirement_authored, UnretireSeat, FinalizeRetirement, service_unretire, service_finalize. consumes: store::continuity_keys seat-key lookup and key release.\nblocked-by ht-ma6i.5: consumes boundary contract\nblocked-by ht-ma6i.8: consumes store::continuity_keys seat-key lookup and key release\nboundary contract: ht-ma6i.5\nfiles: src/store/seats/reversible.rs (new), src/store/control/retirement.rs, src/store/seats/operator.rs, src/store/seats/observation.rs, src/identity/reconcile.rs, src/store/receipts.rs, src/store/poke.rs, src/store/schema.rs, src/store/service_controls.rs, TRUST-POLICY.md\nAcceptance:\n- [ ] A Closed retirement of a key-holding seat (same-incarnation close, closure proof, restored-pane close) runs the fence and writes a reversible row, no retirements row; a keyless seat is unchanged.\n- [ ] While reversible, the seat reads retired and has no retirements row and no job.\n- [ ] No overdue warning or soft poke fires; a due page full of frozen rows does not starve another seat's due row.\n- [ ] UnretireSeat by the owner: unresolved, no target, no binding, no hold change, generation bumped; another author is Unauthorized; a non-reversible seat is refused; replay is idempotent.\n- [ ] After un-retire, pending deadlines keep their remaining time, including logical receipts and invitations ; memberships and requirement episodes are effective again with no re-acceptance.\n- [ ] An unretired seat does not block hold lift and is not acted on by the reconciliation plan; its row goes on rebind and retirement.\n- [ ] FinalizeRetirement and operator seat retire on a reversible seat insert the job with the original cutover, release the key and clear its conflicts; the job settles obligations as today.\n- [ ] Operator retire and --replace of a live key-holding seat are final and release the key, so the key can be reserved again.\n- [ ] Close, un-retire, reattach, close again works: a second episode is reversible too.\n- [ ] TRUST-POLICY: Reversible retirement section, C-row text, provenance rows, accepted limits, decision record.\n- [ ] An agent exiting with its pane open leaves the seat non-retired, with no reversible row and its memberships and episodes effective, for keyless and key-holding seats, in the same incarnation and after a restart; a relaunch in that pane, with the same key or none, keeps the seat (B3).\n- [ ] FinalizeRetirement is also accepted on an unretired seat, which then retires finally.\n- [ ] Every route that writes a retirements row for a key holder releases the key and clears its conflicts, at one choke point in the disposition, with a test per route.\n- [ ] Finalization copies closure_evidence and absence_evidence from the reversible row.\n- [ ] TRUST-POLICY names as accepted limits: a seat reversibly retired or unretired whose service never acts waits for an operator (no threads timer); a keyless seat's close stays final.\n- [ ] UnretireSeat and FinalizeRetirement (reversible and unretired) work over a real service_session_v3 connection: owner authorization, operation-key replay (including a Finalize replay after the key row is gone) and payload-mismatch refusal are tested through the session.\n- [ ] After un-retire a send to the seat succeeds with the ordinary unavailable warning; retired_at, retired_seq and the structural proof are clear and a new unavailability episode is open.\n- [ ] resolution_recovery_refusal and daemon health exclude an unretired seat and suggest no rebind for it.\n- [ ] Each write-driving path of spec §4.3 composes the frozen fragment: archival (has_live_remote_member and member_active_for_archival, reversible and unretired, home node and peer) and invitation overdue and clear warning recipients, with a store test per path (fence, apply, un-retire, read). Un-retire re-bumps directory and member revisions.\n- [ ] Finalization advances retired_seq to its own decision sequence, so a fact applied during the window settles through the job rather than staying physically pending (fence, apply, finalize, read physical state).\n- [ ] TRUST-POLICY names the ACK-warning origin limit: a frozen seat misses those warnings and sees the state in pending-receipts.",
+    "notes": "Agreed with graph: reversible state replicated as a capability-gated fact; obligations/deadlines frozen, sends refused as retired, resume on un-retire. SeatInspect to expose retirement=reversible|final.",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "feature",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:35:47Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:50:55Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.3",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:35:47Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.3",
+        "depends_on_id": "ht-ma6i.8",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:59:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.3",
+        "depends_on_id": "ht-ma6i.5",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:55:06Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 4,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i.2",
+    "title": "Launcher-supplied continuity key on pane seats (D1)",
+    "description": "Design §4 D1; spec §4.2. owns: KeyVerdict, ContinuityEvidence::Key, cooperative_continuity_key, the conflict hold in resolution, seat.continuity_key_v1. consumes: schema delta 16, store::continuity_keys.\nblocked-by ht-ma6i.5: consumes boundary contract\nblocked-by ht-ma6i.8: consumes store::continuity_keys\nboundary contract: ht-ma6i.5\nfiles: src/store/seats/key_verdict.rs (new), src/store/seats/continuity.rs, src/store/seats/resolution.rs, src/store/seats/cooperative.rs, src/store/kept_continuity.rs, src/store/seats/observation.rs (publication cleanup), src/identity/repair.rs, src/protocol/capabilities.rs, TRUST-POLICY.md\nAcceptance:\n- [ ] Every row of the spec §4.2 table, per entry point (ContinuityCheckIn, ResolveSeat, CheckIn), is a KeyVerdict unit test and a store test.\n- [ ] A key claim reattaches an unresolved seat onto a held or unowned pane with a fresh native session, releases the hold, opens the successor binding and records cooperative_continuity_key.\n- [ ] During reconciliation lag a state-dependent answer is ServiceBusy and records no conflict.\n- [ ] A conflict is recorded through the ledger after the refused transaction rolls back (it survives the refusal), holds ordinary resolution on that target definitively (not retried under is_continuity_refusal, not kept), and clears on successful claim, target gone from a coherent publication, operator repair on the target, and key release.\n- [ ] A keyless claim behaves exactly as today, digest included; a kept claim keeps its key.\n- [ ] Unreserved and hc or named-seat keys are ignored.\n- [ ] Daemon advertises seat.continuity_key_v1.\n- [ ] TRUST-POLICY: new C1 row, provenance row, Continuity key section, decision record.\n- [ ] A first check-in or enrollment with a reserved unbound key binds it to the resolved or fresh seat with bound_by check_in on the production check-in path; a later pane close of that seat is reversible (needs: ht-ma6i.8).\n- [ ] A conflict the full table refused is still refused for that claim and is logged by the daemon; TRUST-POLICY lists the limit.\n- [ ] The conflict hold binds ordinary resolution only: C1, ht-hsyg, shell continuity and operator rebind proceed, and any rebind onto the target clears the row.\n- [ ] A conflict row on a pane with a resolved owner holds nothing: that owner's resolution and CLI keep working, tested for pane_owned_by_other_seat and seat_holds_other_key. The conflict refusal states its own cause, not restore-hold text.\n- [ ] A kept keyed claim is decided by the observation worker after lag ends with no further event: seat reattached, binding open.\n- [ ] A claimless ResolveSeat with a key bound to an unresolved seat is refused definitively with ContinuityKeyPending: no seat, no rebind, no conflict row, no alert. A plain enrollment binds a reserved unbound key.\n- [ ] key_retired_reversibly is read as the bound seat's state='retired'.\n- [ ] KeyVerdict takes whether the caller has a claim and yields Pending for the claimless refusal, per spec Key abstractions.\n- [ ] TRUST-POLICY lists the first-turn hook limit.",
+    "notes": "Agreed with graph 2026-11-04 (mnSGatFDFetc): env HERDR_THREADS_CONTINUITY_KEY; ReserveContinuityKey by the registered service before launch, idempotent for the same service, refused if another service holds it; key released on final retirement; conflict = held pane + service alert, surfaced on SeatInspect of the key's seat (pull, graph polls it) plus a service notification. Exact shapes to be posted to dOqG4VQNjQ4 before release.",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "feature",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:35:44Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:51:05Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.2",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:35:44Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.2",
+        "depends_on_id": "ht-ma6i.5",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:54:58Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.2",
+        "depends_on_id": "ht-ma6i.8",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:59:10Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i.1",
+    "title": "Seat-level shell fingerprint for live-handoff continuity (G2)",
+    "description": "Design §3 G2; spec §4.1. owns: identity::shell_continuity, seat_shell_fingerprints writes, structural_shell_continuity. consumes: schema delta 16.\nblocked-by ht-ma6i.5: consumes boundary contract\nblocked-by ht-ma6i.8: consumes the conflict-row clear in store::continuity_keys\nboundary contract: ht-ma6i.5\nfiles: src/identity/shell_continuity.rs (new), src/identity/repair.rs, src/identity/mod.rs, src/store/seats/continuity.rs, src/store/mod.rs, src/ports.rs, src/service/workers.rs, TRUST-POLICY.md\nAcceptance:\n- [ ] After a completed pass, a resolved Herdr seat with no current row gets one with pid, start, session and tty; a current row makes no Herdr call; at most 16 reads per pass with a cursor so an unreadable shell cannot starve others; named and hc seats never get one.\n- [ ] After a new incarnation, an unresolved seat with no agent binding, an exited agent, or only a managed_launch binding, whose fingerprint matches the pane shell at its saved target (pid, start, session leader, tty), resolves there unattended with kind structural_shell_continuity, hold released, no binding opened, structural proof recorded: the next reconciliation pass reconfirms the seat rather than unresolving it.\n- [ ] A seat with a live undeclined ht-hsyg candidate is left to that path; a binding is still reopened there.\n- [ ] Nothing is decided on a mismatch (new shell after cold restart, other tty, not session leader), a rival fingerprint or rival process in the pane, a kept claim on the target, a resolved owner, or a person seat. Each is a test.\n- [ ] Declines remembered 10 minutes keyed by (seat, generation, pid, start).\n- [ ] An isolated-Herdr live-handoff test covers a bare pane (also the pre-agent clone's shape), an exited-agent pane and a managed_launch-only seat.\n- [ ] TRUST-POLICY: C1 row, a new provenance row, the ht-hsyg decision record extended, the idle-agent accepted limit.\n- [ ] A key conflict row on the target does not block the decision, and the decision clears the row (needs: ht-ma6i.8).\n- [ ] TRUST-POLICY lists the no-row limit: a seat with no fingerprint row at handoff waits.\n- [ ] A fingerprint row is deleted at final retirement and at un-retire; only a non-retired seat's row is a rival; a replaced seat in a surviving shell recovers on the next handoff.\n- [ ] Allocation kicks the lane: a new bare seat gets its row with no other trigger.\n- [ ] TRUST-POLICY lists the limit for a pane process that never leads a session on a tty.",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "feature",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:35:42Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:37:37Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.1",
+        "depends_on_id": "ht-ma6i.8",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:04:54Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.1",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:35:42Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.1",
+        "depends_on_id": "ht-ma6i.5",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:54:54Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i",
+    "title": "Graph clone identity: threads side (herdr-graph H2 design)",
+    "description": "Threads side of herdr-graph's clone\u003c-\u003eseat identity design (/var/home/alepar/AleCode/herdr-graph/docs/reviews/2026-10-29-seat-review-H2-identity-design.md, approved by the user in the herdr-graph seat-review session 2026-11-04, relayed by snSGS7Z5UIwq). G1 (ship ht-hsyg) is done: v2.8.2 2026-11-01, current v3.0.0. Children: G2, D1, D2, G5. Herdr unchanged; no service ever places a seat.\n\nSpec: docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md\n\n## Global Constraints\nRun rules: work only on per-task worktrees under this run; never commit to main, never git push, never git stash. Run cargo through /var/home/alepar/.cache/herdr-threads-heavy/heavy /var/home/alepar/.cache/herdr-threads-heavy/tb \u003ccmd\u003e (the host has no gcc). Never use the real Herdr server or socket, herdr plugin link/unlink, real setup or install.sh, or real user config (~/.claude, ~/.codex, ~/.aisw, ~/.gemini); tests use isolated Herdr sessions (scripts/lib/isolated-herdr.sh). No build output in /tmp. Herdr-threads writes (send, ack, accept) are forbidden to subagents. Every commit carries the Outside-adapter trailer and Co-Authored-By: Claude Opus 5.5 \u003cnoreply@anthropic.com\u003e. Per-change checks: clippy (--all-targets --all-features -D warnings), scripts/check-harness-neutral, scripts/check-wire-compat. TRUST-POLICY.md is normative and updated in the same commit as a change that adds provenance, an invariant or an accepted limit. Model-visible strings follow AGENTS.md token rules. Tests create temp paths only through test_support::scratch::temp_path and spawn children through test_support::spawn.\n\nA task worktree starts from a warm build: run `scripts/seed-worktree-target \u003cintegration worktree\u003e/target \u003ctask worktree\u003e` first (copy-on-write; never build from scratch). Run tests focused on the change (`heavy tb cargo test --locked --all-features \u003cfilter\u003e`); never the full suite (the caller runs it once). The heavy wrapper holds one of two shared slots, so never run heavy jobs in parallel from one task. Check `df -h` before a large write. Stop every process a test starts.\n\n\u003c!-- key-abstractions digest: begin --\u003e\n- `store::continuity_keys`: owns key reservation, binding, conflicts and alerts with their caps and clearing rules; new key bookkeeping goes here;\n  callers never write these tables or judge outcomes.\n- `KeyVerdict`: owns the §4.2 outcome table as one pure judge; a new outcome or conflict kind is one variant and one arm here;\n  callers gather facts and act, and never restate the table.\n- `store::seats::reversible`: owns the reversible, unretired and final transitions, the deadline shift and the frozen and waiting SQL fragments; new lifecycle rules go here;\n  callers never restate those predicates, and it never places a seat or settles obligations.\n- `RetirementInputs` and `RetirementStart`: own what a retirement takes and whether it yielded a job; new evidence goes in the inputs;\n  callers never update `retirements` after the call or assume a job exists.\n- `identity::shell_continuity`: owns the pure G2 judgment over `ProcessInfo`, built on `process_continuity::judge`; new shell facts go here;\n  callers never compare fingerprints themselves, and it never touches the store or Herdr.\n- `ServiceSessionLevel`: owns which session version each service operation requires; a new operation is one arm in its exhaustive match;\n  callers never test session version flags or list operations.\n\u003c!-- key-abstractions digest: end --\u003e",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:35:39Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:51:45Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
+    "id": "ht-ma6i.10",
+    "title": "Reversible retirement read surface and pinned retired reads",
+    "description": "Spec §4.3, §4.5, §4.7. owns: SeatInspection.retirement_state and its compact and human output, the tests pinning existing retired reads. consumes: store::seats::reversible.\nblocked-by ht-ma6i.3: consumes store::seats::reversible transitions\nblocked-by ht-ma6i.7: consumes the peer's reversible row\nfiles: src/store/queries.rs, src/protocol/output_compact.rs, src/cli/human.rs, tests for retired reads\nAcceptance:\n- [ ] retirement_state reads reversible or final, and is absent for a seat that does not read retired; compact and human output show retired (reversible).\n- [ ] While reversible, each of these is pinned by a test (needs: ht-ma6i.3): a direct send, explicit ACK recipient and invite are refused as retired; group fan-out skips it; its receipts read recipient_retired; effective membership reads retired; memberships and requirement episodes are physically unchanged.\n- [ ] After un-retire, messages from the window are unread on reattach, and a 1000-pending-row shift finishes inside the call budget (needs: ht-ma6i.3).\n- [ ] retirement_state on a peer reads reversible after seat.retired_reversible and is absent after seat.unretired; continuity_key is absent there (needs: ht-ma6i.7).\n- [ ] A seat's own outgoing ACK request keeps its deadline while the seat is frozen, and pending-receipts shows its state on reattach; its own outgoing invitation's overdue warning is visible on reattach.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:59:02Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:50:57Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.10",
+        "depends_on_id": "ht-ma6i.7",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:12:26Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.10",
+        "depends_on_id": "ht-ma6i.3",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:59:03Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.10",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:59:02Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i.9",
+    "title": "Continuity key read surface: SeatInspect field, ContinuityAlerts, CLI key line",
+    "description": "Spec §4.2 alert surface, §4.5, §4.7. owns: SeatInspection.continuity_key, ContinuityAlerts query. consumes: store::continuity_keys.\nblocked-by ht-ma6i.8: consumes store::continuity_keys lookups\nfiles: docs/programmatic-service-client.md, src/store/queries.rs, src/store/service_controls.rs, src/protocol/output_compact.rs, src/cli/human.rs\nAcceptance:\n- [ ] SeatInspect shows key, owner, bound_by and conflict, absent when empty; the conflict is the most recently updated row naming the seat's key, of any kind; a row naming an unbound key surfaces only in ContinuityAlerts.\n- [ ] ContinuityAlerts pages oldest first, returns early as a query with no operation key, and answers only service_session_v3.\n- [ ] Compact and human seat inspect print one key line when a key is held and nothing otherwise.\n- [ ] docs/programmatic-service-client.md documents service_session_v3, all five new operations, the conflict kinds, alert paging, the SeatInspection fields and HERDR_THREADS_CONTINUITY_KEY.\n- [ ] The doc states the required order: reserve before launch, UnretireSeat before relaunching a reversible seat's agent, FinalizeRetirement when the undo window ends, and that threads has no timer.\n- [ ] The doc says a launcher that needs the seat at once starts a harness whose hook waits for a first turn (Codex TUI) with a prompt.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:58:57Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:51:03Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.9",
+        "depends_on_id": "ht-ma6i.8",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:58:59Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.9",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:58:57Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  },
+  {
+    "id": "ht-ma6i.4",
+    "title": "Retire unresolved seats whose target is absent after a restart (G5)",
+    "description": "Design §3 G5; spec §4.4. owns: restored_target_absence, the target-absence RestoredPane variants and reconcile actions, absence_evidence. consumes: RetirementInputs and RetirementStart.\nblocked-by ht-ma6i.3: consumes RetirementInputs and RetirementStart\nblocked-by ht-ma6i.5: consumes boundary contract\nblocked-by ht-ma6i.2: consumes the kept claim's continuity_key\nboundary contract: ht-ma6i.5\nfiles: src/store/seats/observation.rs, src/identity/reconcile.rs, src/ports.rs, tests/store/restored_pane.rs, TRUST-POLICY.md\nAcceptance:\n- [ ] An unresolved (other) seat whose saved target a coherent publication of the current recovery does not show retires after 10 observed minutes, with the 30 s step cap, absence_evidence restored_target_absent, and holds lifting afterwards.\n- [ ] A key-holding seat retires reversibly (needs: ht-ma6i.3).\n- [ ] The target reappearing resets the count and hands over to the ht-wpq4 watch.\n- [ ] A kept C1 claim for any of its top-level sessions blocks the count; a lagging marker adds nothing.\n- [ ] Named, hc and unretired seats are never retired this way.\n- [ ] TRUST-POLICY: G5 rule beside Restored-pane retirement, accepted limit.\n- [ ] A kept claim whose continuity_key is the seat's key blocks the count (needs: ht-ma6i.2).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "feature",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-11-05T07:35:49Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-11-05T08:12:17Z",
+    "labels": [
+      "sp:ht-ma6i"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-ma6i.4",
+        "depends_on_id": "ht-ma6i.5",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:55:14Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.4",
+        "depends_on_id": "ht-ma6i",
+        "type": "parent-child",
+        "created_at": "2026-11-05T07:35:49Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.4",
+        "depends_on_id": "ht-ma6i.2",
+        "type": "blocks",
+        "created_at": "2026-11-05T08:12:28Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-ma6i.4",
+        "depends_on_id": "ht-ma6i.3",
+        "type": "blocks",
+        "created_at": "2026-11-05T07:35:53Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 3,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-ma6i"
+  }
+]

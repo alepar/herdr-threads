@@ -75,6 +75,9 @@ id!(HostCallId);
 id!(HostBootId);
 id!(NativeSessionId);
 id!(ExecutionId);
+// `HERDR_THREADS_CONTINUITY_KEY`: an opaque launcher-supplied seat key. Parsing is the only syntax
+// check, and the core gives it no meaning (spec 4.2).
+id!(ContinuityKey);
 id!(WakeAttemptId);
 id!(SummaryJobId);
 id!(SummaryBlockId);
@@ -423,6 +426,33 @@ impl<'de> Deserialize<'de> for SeatName {
 #[cfg(test)]
 mod public_id_tests {
     use super::*;
+
+    #[test]
+    fn continuity_key_parses_only_graphic_ascii_up_to_128_bytes() {
+        ContinuityKey::parse("k").unwrap();
+        ContinuityKey::parse("k".repeat(128)).unwrap();
+        ContinuityKey::parse((b'!'..=b'~').map(char::from).collect::<String>()).unwrap();
+        for refused in [
+            String::new(),
+            "k".repeat(129),
+            "a b".to_owned(),
+            "a\tb".to_owned(),
+            "a\u{7f}b".to_owned(),
+            "é".to_owned(),
+        ] {
+            assert!(
+                ContinuityKey::parse(refused.clone()).is_err(),
+                "{refused:?}"
+            );
+        }
+        assert!(serde_json::from_str::<ContinuityKey>("\"\"").is_err());
+        let long = serde_json::to_string(&"k".repeat(129)).unwrap();
+        assert!(serde_json::from_str::<ContinuityKey>(&long).is_err());
+        assert_eq!(
+            serde_json::to_string(&ContinuityKey::new("clone-1")).unwrap(),
+            "\"clone-1\""
+        );
+    }
 
     fn tag() -> NodeTag {
         "Q7a".parse().unwrap()

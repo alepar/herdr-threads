@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use herdr_threads::node::NodeUuid;
 use herdr_threads::protocol::commands::DeliveryMode;
-use herdr_threads::protocol::ids::{MessageId, SeatId, ThreadId};
+use herdr_threads::protocol::ids::{InvitationId, MessageId, SeatId, ThreadId};
 use herdr_threads::protocol::results::ApiError;
 use herdr_threads::protocol::time::CallBudget;
 use herdr_threads::store::SqliteStore;
@@ -38,10 +38,12 @@ use herdr_threads::test_support::fact_exchange;
 use herdr_threads::test_support::journal_oracle::{replicated_projection, replicated_tables};
 use herdr_threads::test_support::sync_node::{SyncNode, wait_for, wait_until};
 
+use crate::facts_invitation::{CREATED_AT, DURATION_MS};
 use crate::facts_membership::thread_of;
 use crate::facts_message::{FIVE_MIN, SENT_AT, sent, spec};
 use crate::facts_receipt::{ingest, origin_entries, rworld, settled};
 use crate::facts_seat::{Node, budget, registry};
+use crate::facts_seat_reversible::{rev, unret};
 
 const PATIENCE: Duration = Duration::from_secs(60);
 
@@ -1487,4 +1489,531 @@ async fn s8_clone_detected_held_then_moved_aside_and_cleared() {
     ra.stop().await;
     rc.stop().await;
     rd.stop().await;
+}
+
+// ---- 9. a re-issued reversible episode ----------------------------------------
+
+const S9_T1: i64 = crate::facts_seat_reversible::T1;
+const S9_WINDOW: i64 = crate::facts_seat_reversible::WINDOW;
+
+/// `(kind, apply state)` of the entries of the two reversible kinds, oldest first.
+fn episode_entries(node: &Node) -> Vec<(String, String)> {
+    node.journal()
+        .into_iter()
+        .filter(|(kind, _, _)| kind == "seat.retired_reversible" || kind == "seat.unretired")
+        .map(|(kind, state, _)| (kind, state))
+        .collect()
+}
+
+fn invitation_deadline(node: &Node, invitation: &InvitationId) -> i64 {
+    node.query(
+        &format!(
+            "SELECT deadline_at FROM invitations WHERE id='{}'",
+            invitation.as_str()
+        ),
+        |r| r.get(0),
+    )[0]
+}
+
+/// `(state, reversible rows)` of the seat.
+fn seat_state(node: &Node, seat: &SeatId) -> (String, i64) {
+    node.query(
+        &format!(
+            "SELECT state,(SELECT count(*) FROM reversible_retirements WHERE seat_id=s.id) FROM seats s WHERE id='{}'",
+            seat.as_str()
+        ),
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .remove(0)
+}
+
+/// Waits until A rotated and re-issued and C holds `threads` and A's new log.
+async fn heal_fork(
+    a: &Node,
+    c: &Node,
+    ra: &SyncNode,
+    rc: &SyncNode,
+    i1: &LogKey,
+    threads: &[ThreadId],
+) {
+    converge(
+        "A to rotate and re-issue, and C to hold it all",
+        PATIENCE,
+        || {
+            let now = active_log(a);
+            vec![
+                ("A rotated", now != *i1),
+                ("A applied all", pending(a) == 0),
+                ("C applied all", pending(c) == 0),
+                (
+                    "C has the threads",
+                    threads.iter().all(|t| has_thread(c, t)),
+                ),
+                ("A holds its new log", ra.head_of(&now).is_some()),
+                ("C's head matches", ra.head_of(&now) == rc.head_of(&now)),
+            ]
+        },
+        || format!("{}\n{}", dump("A", a, ra), dump("C", c, rc)),
+    )
+    .await;
+}
+
+/// Kills: a copy of an ended episode's `seat.retired_reversible` retiring a peer's `remote` row again
+/// and the copy of its `seat.unretired` shifting the peer's deadlines a second time (TRUST-POLICY N7).
+/// A applied the lost branch only through the re-issue, so it runs once there too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn s9_reissued_reversible_episode_is_a_noop_on_a_peer() {
+    let reg = registry();
+    let (a, c) = (Node::with(91, reg), Node::with(92, reg));
+    let (thread, from) = thread_of(&a, "s9");
+    a.joined(&thread, &from, 1).unwrap();
+    let seat = a.local_seat();
+    a.publish(&seat).unwrap();
+    let invitation = a.invite_fact(&thread, &from, &seat);
+    fact_exchange::sync(&a.store, &c.store);
+    let backup = a.snapshot("backup.db");
+    let i1 = active_log(&a);
+    let base = CREATED_AT + DURATION_MS;
+    assert_eq!(invitation_deadline(&c, &invitation), base);
+
+    rev(&a, &seat, S9_T1);
+    unret(&a, &seat, S9_T1, S9_T1 + S9_WINDOW);
+    fact_exchange::sync(&a.store, &c.store);
+    assert_eq!(seat_state(&c, &seat), ("remote".to_owned(), 0));
+    assert_eq!(invitation_deadline(&c, &invitation), base + S9_WINDOW);
+
+    let lost = a;
+    let a = Node::open_restored(91, 9100, reg, &backup, false);
+    drop(lost);
+    let threads = author_threads(&a, &from, 3);
+
+    let (ra, rc) = (start(&a, 91, 3), start(&c, 92, 4));
+    ra.link(&rc).await;
+    heal_fork(&a, &c, &ra, &rc, &i1, &threads).await;
+    converge(
+        "the copies to reach C",
+        PATIENCE,
+        || vec![("C holds four", episode_entries(&c).len() == 4)],
+        || format!("{}\n{}", dump("A", &a, &ra), dump("C", &c, &rc)),
+    )
+    .await;
+    ra.stop().await;
+    rc.stop().await;
+
+    let applied = |kind: &str| (kind.to_owned(), "applied".to_owned());
+    assert_eq!(
+        episode_entries(&c),
+        vec![
+            applied("seat.retired_reversible"),
+            applied("seat.unretired"),
+            applied("seat.retired_reversible"),
+            applied("seat.unretired"),
+        ]
+    );
+    assert_eq!(seat_state(&c, &seat), ("remote".to_owned(), 0));
+    assert_eq!(invitation_deadline(&c, &invitation), base + S9_WINDOW);
+    assert_eq!(invitation_deadline(&a, &invitation), base + S9_WINDOW);
+}
+
+/// Kills: a copy on the owner of an episode it applied taking the fence's transition on the seat the
+/// episode's end left rebound, ending its live binding; and on C, which first applies these copies
+/// here in the order the re-issue passes wrote them (the `seat.unretired` before its
+/// `seat.retired_reversible`), the early un-retire counted as applied so the retire freezes C's seat
+/// for good. The restored branch authors the episode, so the re-issue copies rows the owner already
+/// applied. Both are judged: the owner stays rebound, C reads the seat live with one shift.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn s9b_reissued_episode_is_a_noop_on_a_rebound_owner() {
+    let reg = registry();
+    let (a, c) = (Node::with(93, reg), Node::with(94, reg));
+    let (thread, from) = thread_of(&a, "s9b");
+    a.joined(&thread, &from, 1).unwrap();
+    let seat = a.local_seat();
+    a.publish(&seat).unwrap();
+    let invitation = a.invite_fact(&thread, &from, &seat);
+    fact_exchange::sync(&a.store, &c.store);
+    let backup = a.snapshot("backup.db");
+    let i1 = active_log(&a);
+    let base = CREATED_AT + DURATION_MS;
+
+    // The branch A will lose holds no episode.
+    let lost_threads = author_threads(&a, &from, 2);
+    fact_exchange::sync(&a.store, &c.store);
+    let lost = a;
+    let a = Node::open_restored(93, 9300, reg, &backup, false);
+    drop(lost);
+
+    // The branch A keeps: the episode, then what `rebind_unresolved_seat` leaves.
+    rev(&a, &seat, S9_T1);
+    unret(&a, &seat, S9_T1, S9_T1 + S9_WINDOW);
+    {
+        let db = a.raw();
+        db.execute(
+            "UPDATE seats SET state='resolved',unresolved_reason=NULL,target_id='p',generation=generation+1 WHERE id=?1",
+            [seat.as_str()],
+        )
+        .unwrap();
+        db.execute(
+            "DELETE FROM reversible_retirements WHERE seat_id=?1",
+            [seat.as_str()],
+        )
+        .unwrap();
+    }
+    a.enroll(&seat, "codex", "after-rebind").unwrap();
+    let open_bindings = |node: &Node| -> i64 {
+        node.count(&format!(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='{}' AND ended_at IS NULL",
+            seat.as_str()
+        ))
+    };
+    assert_eq!(open_bindings(&a), 1);
+
+    let (ra, rc) = (start(&a, 93, 3), start(&c, 94, 4));
+    ra.link(&rc).await;
+    heal_fork(&a, &c, &ra, &rc, &i1, &lost_threads).await;
+    converge(
+        "the copies to come back to A",
+        PATIENCE,
+        || {
+            let c_copies = episode_entries(&c);
+            vec![
+                ("A holds four", episode_entries(&a).len() == 4),
+                (
+                    "C applied both copies",
+                    c_copies.len() == 2 && c_copies.iter().all(|(_, state)| state == "applied"),
+                ),
+            ]
+        },
+        || format!("{}\n{}", dump("A", &a, &ra), dump("C", &c, &rc)),
+    )
+    .await;
+    ra.stop().await;
+    rc.stop().await;
+
+    assert!(
+        episode_entries(&a)
+            .iter()
+            .all(|(_, state)| state == "applied"),
+        "{:?}",
+        a.journal()
+    );
+    assert_eq!(seat_state(&a, &seat), ("resolved".to_owned(), 0));
+    assert_eq!(open_bindings(&a), 1, "the live binding stays open");
+    assert_eq!(invitation_deadline(&a, &invitation), base + S9_WINDOW);
+    assert_eq!(seat_state(&c, &seat), ("remote".to_owned(), 0));
+    assert_eq!(invitation_deadline(&c, &invitation), base + S9_WINDOW);
+}
+
+// ---- episode fact order (ht-ma6i.39) ---------------------------------------------
+
+const ORDER_T1: i64 = crate::facts_seat_reversible::T1;
+const ORDER_WINDOW: i64 = crate::facts_seat_reversible::WINDOW;
+
+/// The shipped kinds without `kind`: a node that parks it while later entries of the log apply, so
+/// its upgrade applies `kind` last.
+fn registry_lacking(kind: &str) -> &'static FactRegistry {
+    use herdr_threads::sync::facts::{
+        NodeGenesis, NodeRetag, invitation, membership, message, receipt, seat, thread,
+    };
+    let mut builder = FactRegistry::builder();
+    macro_rules! add {
+        ($($k:ty),* $(,)?) => {
+            $(if <$k as FactKind>::NAME != kind {
+                builder = builder.with::<$k>();
+            })*
+        };
+    }
+    add!(
+        NodeGenesis,
+        NodeRetag,
+        seat::SeatCreated,
+        seat::SeatRetired,
+        seat::SeatRetiredReversible,
+        seat::SeatUnretired,
+        thread::ThreadCreated,
+        thread::ThreadRegister,
+        thread::ThreadDirect,
+        invitation::InvitationCreated,
+        invitation::InvitationAnswered,
+        membership::MembershipJoined,
+        membership::MembershipLeft,
+        message::MessageSent,
+        receipt::ReceiptSettled,
+    );
+    let registry = builder.build();
+    assert_eq!(
+        registry.len(),
+        FactRegistry::builtins().len() - 1,
+        "{kind} is one shipped kind"
+    );
+    Box::leak(Box::new(registry))
+}
+
+fn fin(node: &Node, seat: &SeatId, retired_at: i64) {
+    use herdr_threads::sync::facts::seat::{RetireReason, SeatRetired, SeatRetiredPayload};
+    node.run(|tx, d| {
+        journal::author::<SeatRetired>(
+            tx,
+            node.ctx(),
+            d,
+            &SeatRetiredPayload {
+                seat: seat.clone(),
+                reason: RetireReason::Closed,
+                retired_at,
+            },
+        )
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum Ep {
+    Rev,
+    Unret,
+    Fin,
+}
+
+/// What the order tests compare: seat state and `retired_at`, the reversible row
+/// `(state, cutover_at, unretired_at)`, the retirement job count and the invitation deadline.
+fn order_view(node: &Node, seat: &SeatId, invitation: &InvitationId) -> String {
+    let (state, retired_at): (String, Option<i64>) = node
+        .query(
+            &format!(
+                "SELECT state,retired_at FROM seats WHERE id='{}'",
+                seat.as_str()
+            ),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .remove(0);
+    let row: Vec<(String, i64, Option<i64>)> = node.query(
+        &format!(
+            "SELECT state,cutover_at,unretired_at FROM reversible_retirements WHERE seat_id='{}'",
+            seat.as_str()
+        ),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    );
+    let jobs = node.count(&format!(
+        "SELECT count(*) FROM retirements WHERE seat_id='{}'",
+        seat.as_str()
+    ));
+    format!(
+        "state={state} retired_at={retired_at:?} row={row:?} jobs={jobs} deadline={}",
+        invitation_deadline(node, invitation)
+    )
+}
+
+/// `episode_effect` of every journal row of `kind`, oldest first.
+fn marks(node: &Node, kind: &str) -> Vec<Option<i64>> {
+    node.query(
+        &format!("SELECT episode_effect FROM journal WHERE kind='{kind}' ORDER BY ingest_seq"),
+        |r| r.get(0),
+    )
+}
+
+/// The same store reopened under the shipped registry, its parked entries replayed.
+fn upgrade(node: &Node, seed: u8, incarnation: u64) -> Node {
+    let backup = node.snapshot("upgrade.db");
+    let upgraded = Node::open_restored(seed, incarnation, FactRegistry::builtins(), &backup, false);
+    while upgraded.store.replay_startup(&budget()).unwrap().has_more {}
+    assert!(
+        upgraded
+            .journal()
+            .iter()
+            .all(|(_, state, _)| state == "applied"),
+        "{:?}",
+        upgraded.journal()
+    );
+    upgraded
+}
+
+/// A home H with a published seat owing a timed invitation, a node K that knows every kind and a
+/// peer P that lacks `lacking`; the episode authored on H and spread to K and P.
+struct OrderWorld {
+    home: Node,
+    knows: Node,
+    peer: Node,
+    seat: SeatId,
+    invitation: InvitationId,
+    base: i64,
+}
+
+fn order_world(seed: u8, lacking: &str, episode: &[Ep]) -> OrderWorld {
+    let home = Node::with(seed, FactRegistry::builtins());
+    let knows = Node::with(seed + 1, FactRegistry::builtins());
+    let peer = Node::with(seed + 2, registry_lacking(lacking));
+    let (thread, from) = thread_of(&home, "order");
+    home.joined(&thread, &from, 1).unwrap();
+    let seat = home.local_seat();
+    home.publish(&seat).unwrap();
+    let invitation = home.invite_fact(&thread, &from, &seat);
+    for other in [&knows, &peer] {
+        fact_exchange::sync(&home.store, &other.store);
+    }
+    let base = CREATED_AT + DURATION_MS;
+    assert_eq!(invitation_deadline(&peer, &invitation), base);
+    for step in episode {
+        match step {
+            Ep::Rev => rev(&home, &seat, ORDER_T1),
+            Ep::Unret => unret(&home, &seat, ORDER_T1, ORDER_T1 + ORDER_WINDOW),
+            Ep::Fin => fin(&home, &seat, ORDER_T1),
+        }
+    }
+    for other in [&knows, &peer] {
+        fact_exchange::sync(&home.store, &other.store);
+    }
+    OrderWorld {
+        home,
+        knows,
+        peer,
+        seat,
+        invitation,
+        base,
+    }
+}
+
+/// Kills: an unretire that arrived before its retire counted as applied (the retire then freezes
+/// the peer's seat for good), or a kept unretire not honoured when the retire lands.
+#[test]
+fn unretire_before_its_retire_converges_on_a_peer() {
+    let w = order_world(160, "seat.retired_reversible", &[Ep::Rev, Ep::Unret]);
+    // Before the upgrade P applied only the un-retire, which found nothing to undo.
+    assert_eq!(
+        order_view(&w.peer, &w.seat, &w.invitation),
+        format!(
+            "state=remote retired_at=None row=[] jobs=0 deadline={}",
+            w.base
+        )
+    );
+    assert_eq!(
+        marks(&w.peer, "seat.unretired"),
+        vec![None],
+        "kept, unmarked"
+    );
+    let upgraded = upgrade(&w.peer, 162, 16_200);
+    let expected = format!(
+        "state=remote retired_at=None row=[] jobs=0 deadline={}",
+        w.base + ORDER_WINDOW
+    );
+    assert_eq!(order_view(&w.knows, &w.seat, &w.invitation), expected);
+    assert_eq!(order_view(&upgraded, &w.seat, &w.invitation), expected);
+    assert_eq!(
+        invitation_deadline(&w.home, &w.invitation),
+        w.base + ORDER_WINDOW
+    );
+    assert_eq!(marks(&upgraded, "seat.retired_reversible"), vec![Some(1)]);
+    assert_eq!(marks(&upgraded, "seat.unretired"), vec![Some(1)]);
+}
+
+/// Kills: a final fact applied before its episode's reversible retire being revived into an undoable
+/// one, or a second job.
+#[test]
+fn final_before_its_retire_converges_on_a_peer() {
+    let w = order_world(163, "seat.retired_reversible", &[Ep::Rev, Ep::Fin]);
+    let expected = format!(
+        "state=retired retired_at=Some({ORDER_T1}) row=[] jobs=1 deadline={}",
+        w.base
+    );
+    assert_eq!(order_view(&w.peer, &w.seat, &w.invitation), expected);
+    let upgraded = upgrade(&w.peer, 165, 16_500);
+    assert_eq!(order_view(&w.knows, &w.seat, &w.invitation), expected);
+    assert_eq!(order_view(&upgraded, &w.seat, &w.invitation), expected);
+    assert_eq!(
+        marks(&upgraded, "seat.retired_reversible"),
+        vec![None],
+        "a no-op copy is never marked"
+    );
+}
+
+/// Kills: a parked un-retire or final fact acting differently when it applies after its retire.
+#[test]
+fn retire_then_final_and_retire_then_unretire_converge_on_a_peer() {
+    let cases: [(&str, &[Ep], String); 2] = [
+        (
+            "seat.unretired",
+            &[Ep::Rev, Ep::Unret],
+            format!(
+                "state=remote retired_at=None row=[] jobs=0 deadline={}",
+                CREATED_AT + DURATION_MS + ORDER_WINDOW
+            ),
+        ),
+        (
+            "seat.retired",
+            &[Ep::Rev, Ep::Fin],
+            format!(
+                "state=retired retired_at=Some({ORDER_T1}) row=[] jobs=1 deadline={}",
+                CREATED_AT + DURATION_MS
+            ),
+        ),
+    ];
+    for (n, (lacking, episode, expected)) in cases.iter().enumerate() {
+        let seed = 166 + 3 * n as u8;
+        let w = order_world(seed, lacking, episode);
+        // Before the upgrade P holds the retire only.
+        assert_eq!(
+            order_view(&w.peer, &w.seat, &w.invitation),
+            format!(
+                "state=retired retired_at=Some({ORDER_T1}) row=[(\"reversible\", {ORDER_T1}, None)] jobs=0 deadline={}",
+                w.base
+            ),
+            "{lacking}"
+        );
+        let upgraded = upgrade(&w.peer, seed + 2, 16_600 + n as u64);
+        assert_eq!(
+            order_view(&w.knows, &w.seat, &w.invitation),
+            *expected,
+            "{lacking}"
+        );
+        assert_eq!(
+            order_view(&upgraded, &w.seat, &w.invitation),
+            *expected,
+            "{lacking}"
+        );
+    }
+}
+
+/// Kills: a replayed local row left frozen when its un-retire arrived first, reversed to `remote`
+/// instead of the home's waiting state, or shifted twice.
+#[test]
+fn unretire_before_its_retire_converges_on_own_log_replay() {
+    let home = Node::with(172, FactRegistry::builtins());
+    let knows = Node::with(173, FactRegistry::builtins());
+    let (thread, from) = thread_of(&home, "order-own");
+    home.joined(&thread, &from, 1).unwrap();
+    let seat = home.local_seat();
+    home.enroll(&seat, "codex", "session-1").unwrap();
+    home.publish(&seat).unwrap();
+    let invitation = home.invite_fact(&thread, &from, &seat);
+    let base = CREATED_AT + DURATION_MS;
+    rev(&home, &seat, ORDER_T1);
+    unret(&home, &seat, ORDER_T1, ORDER_T1 + ORDER_WINDOW);
+    fact_exchange::sync(&home.store, &knows.store);
+
+    // H's store rebuilt from the log K holds (a wipe, key intact): `fact_exchange` has no
+    // incarnation coordinator, so a backup restore would stop at its own fork evidence.
+    let restored = Node::open(
+        172,
+        17_200,
+        registry_lacking("seat.retired_reversible"),
+        true,
+    );
+    fact_exchange::sync(&knows.store, &restored.store);
+    assert_eq!(marks(&restored, "seat.unretired"), vec![None], "kept");
+    let upgraded = upgrade(&restored, 172, 17_201);
+
+    let generation = |node: &Node| -> i64 {
+        node.count(&format!(
+            "SELECT generation FROM seats WHERE id='{}'",
+            seat.as_str()
+        ))
+    };
+    let expected = format!(
+        "state=unresolved retired_at=None row=[(\"unretired\", {ORDER_T1}, Some({}))] jobs=0 deadline={}",
+        ORDER_T1 + ORDER_WINDOW,
+        base + ORDER_WINDOW
+    );
+    assert_eq!(order_view(&home, &seat, &invitation), expected);
+    assert_eq!(order_view(&upgraded, &seat, &invitation), expected);
+    assert_eq!(generation(&upgraded), generation(&home));
+    assert_eq!(marks(&upgraded, "seat.retired_reversible"), vec![Some(1)]);
+    assert_eq!(marks(&upgraded, "seat.unretired"), vec![Some(1)]);
 }

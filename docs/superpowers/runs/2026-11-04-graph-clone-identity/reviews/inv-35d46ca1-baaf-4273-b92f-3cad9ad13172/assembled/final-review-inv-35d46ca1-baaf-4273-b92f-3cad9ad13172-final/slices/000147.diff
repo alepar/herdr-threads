@@ -1,0 +1,12 @@
+diff --git a/tests/handoff_topology_authority.rs b/tests/handoff_topology_authority.rs
+index ab773816d..dcd795cb8 100644
+--- a/tests/handoff_topology_authority.rs
++++ b/tests/handoff_topology_authority.rs
+@@ -2725,6 +2725,7 @@ fn later_terminal_caller_resolves_the_same_seat() {
+             operation: OperationId::new("terminal-site-caller"),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         }))
+         .unwrap();
+     assert_eq!(later, CommandResult::SeatResolved(seat));

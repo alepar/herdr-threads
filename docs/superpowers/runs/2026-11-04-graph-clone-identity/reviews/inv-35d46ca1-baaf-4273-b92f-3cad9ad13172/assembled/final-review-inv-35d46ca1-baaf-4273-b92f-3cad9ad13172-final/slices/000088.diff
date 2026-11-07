@@ -1,0 +1,19 @@
+diff --git a/src/service/kicks.rs b/src/service/kicks.rs
+index 411b538cf..5ffd53a12 100644
+--- a/src/service/kicks.rs
++++ b/src/service/kicks.rs
+@@ -256,6 +256,14 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
+     // Restored-pane watches (ht-wpq4) are read and written only by the
+     // observation lane's own reconciliation pass.
+     "restored_pane_watch",
++    // Graph clone identity (ht-ma6i): local evidence and ledgers. Their writers change seats or
++    // attention in the same transaction where a lane must run; these tables schedule nothing.
++    "seat_shell_fingerprints",
++    "continuity_keys",
++    "continuity_key_conflicts",
++    "continuity_alerts",
++    "reversible_retirements",
++    "restored_target_absence",
+     // Peer-requested launches (remote launch) are written and read only by the
+     // peer launcher and `peer list`.
+     "peer_requests",

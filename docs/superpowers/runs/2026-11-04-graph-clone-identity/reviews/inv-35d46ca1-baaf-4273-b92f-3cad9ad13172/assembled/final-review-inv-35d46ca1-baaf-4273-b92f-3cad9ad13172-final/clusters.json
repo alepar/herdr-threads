@@ -1,0 +1,874 @@
+{
+ "changed": [
+  ".config/nextest.toml",
+  "Cargo.toml",
+  "TRUST-POLICY.md",
+  "docs/programmatic-service-client.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-1-step-back-keys.txt",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-1-step-back.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-1.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-2.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/coverage-ledger.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/coverage-round-1-requirements.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/findings-ledger-design.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/findings-overrides-design.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/friction.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-1.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-10.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-11.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-12.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-13.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-14.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-15.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-16.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-17.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-18.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-19.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-2.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-20.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-21.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-22.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-23.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-24.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-25.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-26.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-27.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-28.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-29.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-3.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-30.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-4.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-5.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-6.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-7.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-8.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-9.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/run.md",
+  "docs/superpowers/runs/2026-11-04-graph-clone-identity/task-tree.json",
+  "docs/superpowers/specs/INDEX.md",
+  "integrations/claude/mod/hooks/register.js",
+  "integrations/claude/mod/tests/frame_golden.test.ts",
+  "integrations/claude/mod/tests/named_watch_env.test.ts",
+  "integrations/hermes/README.md",
+  "integrations/hermes/__init__.py",
+  "integrations/hermes/test_bridge.py",
+  "migrations/node/0016_graph_clone_identity.sql",
+  "migrations/node/0016_graph_clone_identity_after.sql",
+  "scripts/wire-compat-baseline.txt",
+  "src/cli/caller.rs",
+  "src/cli/caller_location.rs",
+  "src/cli/commands.rs",
+  "src/cli/hook.rs",
+  "src/cli/journal.rs",
+  "src/cli/launch.rs",
+  "src/cli/me.rs",
+  "src/cli/mod.rs",
+  "src/cli/retry.rs",
+  "src/cli/site_capability.rs",
+  "src/client/service.rs",
+  "src/daemon/transport/service_connection.rs",
+  "src/harness/bridge.rs",
+  "src/harness/context.rs",
+  "src/host/mod.rs",
+  "src/identity/mod.rs",
+  "src/identity/reconcile.rs",
+  "src/identity/repair.rs",
+  "src/identity/shell_continuity.rs",
+  "src/ports.rs",
+  "src/protocol/authority.rs",
+  "src/protocol/capabilities.rs",
+  "src/protocol/commands.rs",
+  "src/protocol/ids.rs",
+  "src/protocol/output.rs",
+  "src/protocol/output_compact.rs",
+  "src/protocol/pagination.rs",
+  "src/protocol/results.rs",
+  "src/protocol/service.rs",
+  "src/service/dispatch.rs",
+  "src/service/kicks.rs",
+  "src/service/launch_gate.rs",
+  "src/service/workers.rs",
+  "src/store/archival.rs",
+  "src/store/continuity_keys.rs",
+  "src/store/control.rs",
+  "src/store/control/invitation.rs",
+  "src/store/control/retirement.rs",
+  "src/store/invitation_due.rs",
+  "src/store/kept_continuity.rs",
+  "src/store/materialization.rs",
+  "src/store/materialize.rs",
+  "src/store/mod.rs",
+  "src/store/poke.rs",
+  "src/store/queries.rs",
+  "src/store/receipts.rs",
+  "src/store/schema.rs",
+  "src/store/seats.rs",
+  "src/store/seats/continuity.rs",
+  "src/store/seats/cooperative.rs",
+  "src/store/seats/key_verdict.rs",
+  "src/store/seats/observation.rs",
+  "src/store/seats/operator.rs",
+  "src/store/seats/publication.rs",
+  "src/store/seats/resolution.rs",
+  "src/store/seats/reversible.rs",
+  "src/store/service_controls.rs",
+  "src/store/topology_handoff/attempts.rs",
+  "src/sync/facts/mod.rs",
+  "src/sync/facts/seat.rs",
+  "src/test_support/mod.rs",
+  "tests/cli/caller_location.rs",
+  "tests/cli/cooperative.rs",
+  "tests/cli/handoff.rs",
+  "tests/cli/hook.rs",
+  "tests/cli/hook_local_evidence.rs",
+  "tests/cli/hook_neutral.rs",
+  "tests/cli/hook_pull_lazy.rs",
+  "tests/cli/human.rs",
+  "tests/cli/journal.rs",
+  "tests/cli/launch.rs",
+  "tests/cli/nudge_threshold.rs",
+  "tests/cli/read_cost_names.rs",
+  "tests/cli/summary.rs",
+  "tests/cli/topology_handoff.rs",
+  "tests/cli/topology_recover.rs",
+  "tests/cli/watch.rs",
+  "tests/clone_identity_sweep.rs",
+  "tests/combined.rs",
+  "tests/contracts.rs",
+  "tests/daemon/control.rs",
+  "tests/daemon/harness_evidence.rs",
+  "tests/daemon/inherited_name.rs",
+  "tests/daemon/lifecycle.rs",
+  "tests/daemon/multi_host.rs",
+  "tests/daemon/node_layout.rs",
+  "tests/daemon/self_retire.rs",
+  "tests/daemon/service_session_capability.rs",
+  "tests/fixtures/herdr-matrix/codex.js",
+  "tests/handoff_topology_authority.rs",
+  "tests/harness/agy_delivery.rs",
+  "tests/harness/agy_wake.rs",
+  "tests/hc_messaging.rs",
+  "tests/hook_entrypoint.rs",
+  "tests/host/bootstrap_recovery.rs",
+  "tests/identity/kept_continuity_rules.rs",
+  "tests/identity/reconcile.rs",
+  "tests/integration/herdr_release_smoke.rs",
+  "tests/integration/lazy_attention.rs",
+  "tests/integration/notice_wake.rs",
+  "tests/integration/trust_policy.rs",
+  "tests/lifecycle_ux.rs",
+  "tests/named_seats.rs",
+  "tests/protocol/capabilities.rs",
+  "tests/protocol/error_class.rs",
+  "tests/protocol/output.rs",
+  "tests/service.rs",
+  "tests/service/composition.rs",
+  "tests/service/continuity_key_session.rs",
+  "tests/service/cooperative.rs",
+  "tests/service/crash_matrix.rs",
+  "tests/service/delivery_pull.rs",
+  "tests/service/graph_d2.rs",
+  "tests/service/graph_send.rs",
+  "tests/service/lazy_hook_pull.rs",
+  "tests/service/mod_ack_dispatch.rs",
+  "tests/service/no_wake_reports.rs",
+  "tests/service/observation_lane.rs",
+  "tests/service/presentation_owner_budget_controls.rs",
+  "tests/service/resolution.rs",
+  "tests/service/reversible_session.rs",
+  "tests/store/catch_up.rs",
+  "tests/store/continuity_key_decisions.rs",
+  "tests/store/continuity_keys.rs",
+  "tests/store/control.rs",
+  "tests/store/cooperative_checkin.rs",
+  "tests/store/facade.rs",
+  "tests/store/fact_convergence.rs",
+  "tests/store/fact_convergence_seat.rs",
+  "tests/store/first_contact.rs",
+  "tests/store/kept_continuity.rs",
+  "tests/store/locator_hint.rs",
+  "tests/store/named_allocation.rs",
+  "tests/store/named_continuity.rs",
+  "tests/store/named_presence.rs",
+  "tests/store/named_restore.rs",
+  "tests/store/notice_replay.rs",
+  "tests/store/pane_form_refusal.rs",
+  "tests/store/queries.rs",
+  "tests/store/restored_pane.rs",
+  "tests/store/retention.rs",
+  "tests/store/reversible_facts.rs",
+  "tests/store/reversible_reads.rs",
+  "tests/store/reversible_retirement.rs",
+  "tests/store/schema.rs",
+  "tests/store/service_reads.rs",
+  "tests/store/service_send.rs",
+  "tests/store/shell_continuity.rs",
+  "tests/store/topology_attachment_guard.rs",
+  "tests/sync/facts_seat.rs",
+  "tests/sync/facts_seat_reversible.rs",
+  "tests/sync/incarnations_scenarios.rs",
+  "tests/sync/peer_wire_fixtures.rs"
+ ],
+ "clusters": [
+  {
+   "name": "config",
+   "files": [
+    ".config/nextest.toml"
+   ],
+   "slices": [
+    "slices/000001.diff"
+   ]
+  },
+  {
+   "name": "root",
+   "files": [
+    "Cargo.toml",
+    "TRUST-POLICY.md"
+   ],
+   "slices": [
+    "slices/000002.diff",
+    "slices/000003.diff"
+   ]
+  },
+  {
+   "name": "docs",
+   "files": [
+    "docs/programmatic-service-client.md"
+   ],
+   "slices": [
+    "slices/000004.diff"
+   ]
+  },
+  {
+   "name": "docs-sp-runs-2026-11-04-graph-clone-identity",
+   "files": [
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-1-step-back-keys.txt",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-1-step-back.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-1.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-2.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/coverage-ledger.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/coverage-round-1-requirements.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/findings-ledger-design.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/findings-overrides-design.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/friction.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/run.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/task-tree.json"
+   ],
+   "slices": [
+    "slices/000005.diff",
+    "slices/000006.diff",
+    "slices/000007.diff",
+    "slices/000008.diff",
+    "slices/000009.diff",
+    "slices/000010.diff",
+    "slices/000011.diff",
+    "slices/000012.diff",
+    "slices/000013.diff",
+    "slices/000014.diff",
+    "slices/000046.diff",
+    "slices/000047.diff"
+   ]
+  },
+  {
+   "name": "docs-sp-runs-2026-11-04-graph-clone-identity-reviews-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63",
+   "files": [
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-1.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-10.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-11.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-12.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-13.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-14.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-15.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-16.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-17.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-18.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-19.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-2.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-20.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-21.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-22.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-23.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-24.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-25.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-26.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-27.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-28.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-29.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-3.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-30.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-4.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-5.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-6.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-7.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-8.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-9.md",
+    "docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.md"
+   ],
+   "slices": [
+    "slices/000015.diff",
+    "slices/000016.diff",
+    "slices/000017.diff",
+    "slices/000018.diff",
+    "slices/000019.diff",
+    "slices/000020.diff",
+    "slices/000021.diff",
+    "slices/000022.diff",
+    "slices/000023.diff",
+    "slices/000024.diff",
+    "slices/000025.diff",
+    "slices/000026.diff",
+    "slices/000027.diff",
+    "slices/000028.diff",
+    "slices/000029.diff",
+    "slices/000030.diff",
+    "slices/000031.diff",
+    "slices/000032.diff",
+    "slices/000033.diff",
+    "slices/000034.diff",
+    "slices/000035.diff",
+    "slices/000036.diff",
+    "slices/000037.diff",
+    "slices/000038.diff",
+    "slices/000039.diff",
+    "slices/000040.diff",
+    "slices/000041.diff",
+    "slices/000042.diff",
+    "slices/000043.diff",
+    "slices/000044.diff",
+    "slices/000045.diff"
+   ]
+  },
+  {
+   "name": "docs-sp-specs",
+   "files": [
+    "docs/superpowers/specs/INDEX.md"
+   ],
+   "slices": [
+    "slices/000048.diff"
+   ]
+  },
+  {
+   "name": "integrations-claude",
+   "files": [
+    "integrations/claude/mod/hooks/register.js",
+    "integrations/claude/mod/tests/frame_golden.test.ts",
+    "integrations/claude/mod/tests/named_watch_env.test.ts"
+   ],
+   "slices": [
+    "slices/000049.diff",
+    "slices/000050.diff",
+    "slices/000051.diff"
+   ]
+  },
+  {
+   "name": "integrations-hermes",
+   "files": [
+    "integrations/hermes/README.md",
+    "integrations/hermes/__init__.py",
+    "integrations/hermes/test_bridge.py"
+   ],
+   "slices": [
+    "slices/000052.diff",
+    "slices/000053.diff",
+    "slices/000054.diff"
+   ]
+  },
+  {
+   "name": "migrations-node",
+   "files": [
+    "migrations/node/0016_graph_clone_identity.sql",
+    "migrations/node/0016_graph_clone_identity_after.sql"
+   ],
+   "slices": [
+    "slices/000055.diff",
+    "slices/000056.diff"
+   ]
+  },
+  {
+   "name": "scripts",
+   "files": [
+    "scripts/wire-compat-baseline.txt"
+   ],
+   "slices": [
+    "slices/000057.diff"
+   ]
+  },
+  {
+   "name": "src-cli",
+   "files": [
+    "src/cli/caller.rs",
+    "src/cli/caller_location.rs",
+    "src/cli/commands.rs",
+    "src/cli/hook.rs",
+    "src/cli/journal.rs",
+    "src/cli/launch.rs",
+    "src/cli/me.rs",
+    "src/cli/mod.rs",
+    "src/cli/retry.rs",
+    "src/cli/site_capability.rs"
+   ],
+   "slices": [
+    "slices/000058.diff",
+    "slices/000059.diff",
+    "slices/000060.diff",
+    "slices/000061.diff",
+    "slices/000062.diff",
+    "slices/000063.diff",
+    "slices/000064.diff",
+    "slices/000065.diff",
+    "slices/000066.diff",
+    "slices/000067.diff"
+   ]
+  },
+  {
+   "name": "src-client",
+   "files": [
+    "src/client/service.rs"
+   ],
+   "slices": [
+    "slices/000068.diff"
+   ]
+  },
+  {
+   "name": "src-daemon",
+   "files": [
+    "src/daemon/transport/service_connection.rs"
+   ],
+   "slices": [
+    "slices/000069.diff"
+   ]
+  },
+  {
+   "name": "src-harness",
+   "files": [
+    "src/harness/bridge.rs",
+    "src/harness/context.rs"
+   ],
+   "slices": [
+    "slices/000070.diff",
+    "slices/000071.diff"
+   ]
+  },
+  {
+   "name": "src-host",
+   "files": [
+    "src/host/mod.rs"
+   ],
+   "slices": [
+    "slices/000072.diff"
+   ]
+  },
+  {
+   "name": "src-identity",
+   "files": [
+    "src/identity/mod.rs",
+    "src/identity/reconcile.rs",
+    "src/identity/repair.rs",
+    "src/identity/shell_continuity.rs"
+   ],
+   "slices": [
+    "slices/000073.diff",
+    "slices/000074.diff",
+    "slices/000075.diff",
+    "slices/000076.diff"
+   ]
+  },
+  {
+   "name": "src",
+   "files": [
+    "src/ports.rs"
+   ],
+   "slices": [
+    "slices/000077.diff"
+   ]
+  },
+  {
+   "name": "src-protocol",
+   "files": [
+    "src/protocol/authority.rs",
+    "src/protocol/capabilities.rs",
+    "src/protocol/commands.rs",
+    "src/protocol/ids.rs",
+    "src/protocol/output.rs",
+    "src/protocol/output_compact.rs",
+    "src/protocol/pagination.rs",
+    "src/protocol/results.rs",
+    "src/protocol/service.rs"
+   ],
+   "slices": [
+    "slices/000078.diff",
+    "slices/000079.diff",
+    "slices/000080.diff",
+    "slices/000081.diff",
+    "slices/000082.diff",
+    "slices/000083.diff",
+    "slices/000084.diff",
+    "slices/000085.diff",
+    "slices/000086.diff"
+   ]
+  },
+  {
+   "name": "src-service",
+   "files": [
+    "src/service/dispatch.rs",
+    "src/service/kicks.rs",
+    "src/service/launch_gate.rs",
+    "src/service/workers.rs"
+   ],
+   "slices": [
+    "slices/000087.diff",
+    "slices/000088.diff",
+    "slices/000089.diff",
+    "slices/000090.diff"
+   ]
+  },
+  {
+   "name": "src-store",
+   "files": [
+    "src/store/archival.rs",
+    "src/store/continuity_keys.rs",
+    "src/store/control.rs",
+    "src/store/control/invitation.rs",
+    "src/store/control/retirement.rs",
+    "src/store/invitation_due.rs",
+    "src/store/kept_continuity.rs",
+    "src/store/materialization.rs",
+    "src/store/materialize.rs",
+    "src/store/mod.rs",
+    "src/store/poke.rs",
+    "src/store/queries.rs",
+    "src/store/receipts.rs",
+    "src/store/schema.rs",
+    "src/store/seats.rs",
+    "src/store/seats/continuity.rs",
+    "src/store/seats/cooperative.rs",
+    "src/store/seats/key_verdict.rs",
+    "src/store/seats/observation.rs",
+    "src/store/seats/operator.rs",
+    "src/store/seats/publication.rs",
+    "src/store/seats/resolution.rs",
+    "src/store/seats/reversible.rs",
+    "src/store/service_controls.rs",
+    "src/store/topology_handoff/attempts.rs"
+   ],
+   "slices": [
+    "slices/000091.diff",
+    "slices/000092.diff",
+    "slices/000093.diff",
+    "slices/000094.diff",
+    "slices/000095.diff",
+    "slices/000096.diff",
+    "slices/000097.diff",
+    "slices/000098.diff",
+    "slices/000099.diff",
+    "slices/000100.diff",
+    "slices/000101.diff",
+    "slices/000102.diff",
+    "slices/000103.diff",
+    "slices/000104.diff",
+    "slices/000105.diff",
+    "slices/000106.diff",
+    "slices/000107.diff",
+    "slices/000108.diff",
+    "slices/000109.diff",
+    "slices/000110.diff",
+    "slices/000111.diff",
+    "slices/000112.diff",
+    "slices/000113.diff",
+    "slices/000114.diff",
+    "slices/000115.diff"
+   ]
+  },
+  {
+   "name": "src-sync",
+   "files": [
+    "src/sync/facts/mod.rs",
+    "src/sync/facts/seat.rs"
+   ],
+   "slices": [
+    "slices/000116.diff",
+    "slices/000117.diff"
+   ]
+  },
+  {
+   "name": "src-test-support",
+   "files": [
+    "src/test_support/mod.rs"
+   ],
+   "slices": [
+    "slices/000118.diff"
+   ]
+  },
+  {
+   "name": "tests-cli",
+   "files": [
+    "tests/cli/caller_location.rs",
+    "tests/cli/cooperative.rs",
+    "tests/cli/handoff.rs",
+    "tests/cli/hook.rs",
+    "tests/cli/hook_local_evidence.rs",
+    "tests/cli/hook_neutral.rs",
+    "tests/cli/hook_pull_lazy.rs",
+    "tests/cli/human.rs",
+    "tests/cli/journal.rs",
+    "tests/cli/launch.rs",
+    "tests/cli/nudge_threshold.rs",
+    "tests/cli/read_cost_names.rs",
+    "tests/cli/summary.rs",
+    "tests/cli/topology_handoff.rs",
+    "tests/cli/topology_recover.rs",
+    "tests/cli/watch.rs"
+   ],
+   "slices": [
+    "slices/000119.diff",
+    "slices/000120.diff",
+    "slices/000121.diff",
+    "slices/000122.diff",
+    "slices/000123.diff",
+    "slices/000124.diff",
+    "slices/000125.diff",
+    "slices/000126.diff",
+    "slices/000127.diff",
+    "slices/000128.diff",
+    "slices/000129.diff",
+    "slices/000130.diff",
+    "slices/000131.diff",
+    "slices/000132.diff",
+    "slices/000133.diff",
+    "slices/000134.diff"
+   ]
+  },
+  {
+   "name": "tests",
+   "files": [
+    "tests/clone_identity_sweep.rs",
+    "tests/combined.rs",
+    "tests/contracts.rs",
+    "tests/handoff_topology_authority.rs",
+    "tests/hc_messaging.rs",
+    "tests/hook_entrypoint.rs",
+    "tests/lifecycle_ux.rs",
+    "tests/named_seats.rs",
+    "tests/service.rs"
+   ],
+   "slices": [
+    "slices/000135.diff",
+    "slices/000136.diff",
+    "slices/000137.diff",
+    "slices/000147.diff",
+    "slices/000150.diff",
+    "slices/000151.diff",
+    "slices/000159.diff",
+    "slices/000160.diff",
+    "slices/000164.diff"
+   ]
+  },
+  {
+   "name": "tests-daemon",
+   "files": [
+    "tests/daemon/control.rs",
+    "tests/daemon/harness_evidence.rs",
+    "tests/daemon/inherited_name.rs",
+    "tests/daemon/lifecycle.rs",
+    "tests/daemon/multi_host.rs",
+    "tests/daemon/node_layout.rs",
+    "tests/daemon/self_retire.rs",
+    "tests/daemon/service_session_capability.rs"
+   ],
+   "slices": [
+    "slices/000138.diff",
+    "slices/000139.diff",
+    "slices/000140.diff",
+    "slices/000141.diff",
+    "slices/000142.diff",
+    "slices/000143.diff",
+    "slices/000144.diff",
+    "slices/000145.diff"
+   ]
+  },
+  {
+   "name": "tests-fixtures",
+   "files": [
+    "tests/fixtures/herdr-matrix/codex.js"
+   ],
+   "slices": [
+    "slices/000146.diff"
+   ]
+  },
+  {
+   "name": "tests-harness",
+   "files": [
+    "tests/harness/agy_delivery.rs",
+    "tests/harness/agy_wake.rs"
+   ],
+   "slices": [
+    "slices/000148.diff",
+    "slices/000149.diff"
+   ]
+  },
+  {
+   "name": "tests-host",
+   "files": [
+    "tests/host/bootstrap_recovery.rs"
+   ],
+   "slices": [
+    "slices/000152.diff"
+   ]
+  },
+  {
+   "name": "tests-identity",
+   "files": [
+    "tests/identity/kept_continuity_rules.rs",
+    "tests/identity/reconcile.rs"
+   ],
+   "slices": [
+    "slices/000153.diff",
+    "slices/000154.diff"
+   ]
+  },
+  {
+   "name": "tests-integration",
+   "files": [
+    "tests/integration/herdr_release_smoke.rs",
+    "tests/integration/lazy_attention.rs",
+    "tests/integration/notice_wake.rs",
+    "tests/integration/trust_policy.rs"
+   ],
+   "slices": [
+    "slices/000155.diff",
+    "slices/000156.diff",
+    "slices/000157.diff",
+    "slices/000158.diff"
+   ]
+  },
+  {
+   "name": "tests-protocol",
+   "files": [
+    "tests/protocol/capabilities.rs",
+    "tests/protocol/error_class.rs",
+    "tests/protocol/output.rs"
+   ],
+   "slices": [
+    "slices/000161.diff",
+    "slices/000162.diff",
+    "slices/000163.diff"
+   ]
+  },
+  {
+   "name": "tests-service",
+   "files": [
+    "tests/service/composition.rs",
+    "tests/service/continuity_key_session.rs",
+    "tests/service/cooperative.rs",
+    "tests/service/crash_matrix.rs",
+    "tests/service/delivery_pull.rs",
+    "tests/service/graph_d2.rs",
+    "tests/service/graph_send.rs",
+    "tests/service/lazy_hook_pull.rs",
+    "tests/service/mod_ack_dispatch.rs",
+    "tests/service/no_wake_reports.rs",
+    "tests/service/observation_lane.rs",
+    "tests/service/presentation_owner_budget_controls.rs",
+    "tests/service/resolution.rs",
+    "tests/service/reversible_session.rs"
+   ],
+   "slices": [
+    "slices/000165.diff",
+    "slices/000166.diff",
+    "slices/000167.diff",
+    "slices/000168.diff",
+    "slices/000169.diff",
+    "slices/000170.diff",
+    "slices/000171.diff",
+    "slices/000172.diff",
+    "slices/000173.diff",
+    "slices/000174.diff",
+    "slices/000175.diff",
+    "slices/000176.diff",
+    "slices/000177.diff",
+    "slices/000178.diff"
+   ]
+  },
+  {
+   "name": "tests-store",
+   "files": [
+    "tests/store/catch_up.rs",
+    "tests/store/continuity_key_decisions.rs",
+    "tests/store/continuity_keys.rs",
+    "tests/store/control.rs",
+    "tests/store/cooperative_checkin.rs",
+    "tests/store/facade.rs",
+    "tests/store/fact_convergence.rs",
+    "tests/store/fact_convergence_seat.rs",
+    "tests/store/first_contact.rs",
+    "tests/store/kept_continuity.rs",
+    "tests/store/locator_hint.rs",
+    "tests/store/named_allocation.rs",
+    "tests/store/named_continuity.rs",
+    "tests/store/named_presence.rs",
+    "tests/store/named_restore.rs",
+    "tests/store/notice_replay.rs",
+    "tests/store/pane_form_refusal.rs",
+    "tests/store/queries.rs",
+    "tests/store/restored_pane.rs",
+    "tests/store/retention.rs",
+    "tests/store/reversible_facts.rs",
+    "tests/store/reversible_reads.rs",
+    "tests/store/reversible_retirement.rs",
+    "tests/store/schema.rs",
+    "tests/store/service_reads.rs",
+    "tests/store/service_send.rs",
+    "tests/store/shell_continuity.rs",
+    "tests/store/topology_attachment_guard.rs"
+   ],
+   "slices": [
+    "slices/000179.diff",
+    "slices/000180.diff",
+    "slices/000181.diff",
+    "slices/000182.diff",
+    "slices/000183.diff",
+    "slices/000184.diff",
+    "slices/000185.diff",
+    "slices/000186.diff",
+    "slices/000187.diff",
+    "slices/000188.diff",
+    "slices/000189.diff",
+    "slices/000190.diff",
+    "slices/000191.diff",
+    "slices/000192.diff",
+    "slices/000193.diff",
+    "slices/000194.diff",
+    "slices/000195.diff",
+    "slices/000196.diff",
+    "slices/000197.diff",
+    "slices/000198.diff",
+    "slices/000199.diff",
+    "slices/000200.diff",
+    "slices/000201.diff",
+    "slices/000202.diff",
+    "slices/000203.diff",
+    "slices/000204.diff",
+    "slices/000205.diff",
+    "slices/000206.diff"
+   ]
+  },
+  {
+   "name": "tests-sync",
+   "files": [
+    "tests/sync/facts_seat.rs",
+    "tests/sync/facts_seat_reversible.rs",
+    "tests/sync/incarnations_scenarios.rs",
+    "tests/sync/peer_wire_fixtures.rs"
+   ],
+   "slices": [
+    "slices/000207.diff",
+    "slices/000208.diff",
+    "slices/000209.diff",
+    "slices/000210.diff"
+   ]
+  }
+ ]
+}

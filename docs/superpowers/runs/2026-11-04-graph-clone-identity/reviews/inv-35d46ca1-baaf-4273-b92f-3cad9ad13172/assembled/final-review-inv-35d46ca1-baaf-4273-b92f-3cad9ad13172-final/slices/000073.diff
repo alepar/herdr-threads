@@ -1,0 +1,11 @@
+diff --git a/src/identity/mod.rs b/src/identity/mod.rs
+index 4cf50a3f2..71a9f8c22 100644
+--- a/src/identity/mod.rs
++++ b/src/identity/mod.rs
+@@ -3,5 +3,6 @@ pub mod caller;
+ pub mod process_continuity;
+ pub mod reconcile;
+ pub mod repair;
++pub mod shell_continuity;
+ 
+ pub use repair::OrdinaryIdentity;

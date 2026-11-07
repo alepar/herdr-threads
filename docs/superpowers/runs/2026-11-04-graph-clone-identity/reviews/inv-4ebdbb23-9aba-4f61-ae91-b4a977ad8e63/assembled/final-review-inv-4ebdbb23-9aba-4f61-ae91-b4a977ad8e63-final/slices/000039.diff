@@ -1,0 +1,28 @@
+diff --git a/src/identity/reconcile.rs b/src/identity/reconcile.rs
+index bf23ae738..370c24f96 100644
+--- a/src/identity/reconcile.rs
++++ b/src/identity/reconcile.rs
+@@ -566,7 +566,10 @@ pub fn reconcile_published_page_for(
+             ReconciliationOutcome::RetirementStarted(_) => {
+                 retirements += 1;
+             }
+-            ReconciliationOutcome::Applied | ReconciliationOutcome::Unchanged => {}
++            // Only `RetirementStarted` has a job; a reversible retirement waits for its service.
++            ReconciliationOutcome::Applied
++            | ReconciliationOutcome::Unchanged
++            | ReconciliationOutcome::RetiredReversibly => {}
+         }
+         transitions += 1;
+     }
+@@ -636,7 +639,10 @@ pub fn reconcile_invalidated_page(
+                 "host invalidation or saved seat changed",
+             ));
+         }
+-        if matches!(result, ReconciliationOutcome::RetirementStarted(_)) {
++        if matches!(
++            result,
++            ReconciliationOutcome::RetirementStarted(_) | ReconciliationOutcome::RetiredReversibly
++        ) {
+             return Err(stale("host invalidation cannot retire a seat"));
+         }
+         transitions += 1;

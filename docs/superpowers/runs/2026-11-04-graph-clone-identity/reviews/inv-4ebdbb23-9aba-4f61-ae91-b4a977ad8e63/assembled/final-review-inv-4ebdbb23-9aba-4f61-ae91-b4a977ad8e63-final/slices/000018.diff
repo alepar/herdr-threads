@@ -1,0 +1,14 @@
+diff --git a/integrations/hermes/README.md b/integrations/hermes/README.md
+index 534561fc8..011697b2d 100644
+--- a/integrations/hermes/README.md
++++ b/integrations/hermes/README.md
+@@ -64,6 +64,9 @@ environment passthrough, merged with any names already listed there:
+ hermes --profile NAME config set terminal.client_env_passthrough '[HERDR_PANE_ID, HERDR_ENV]'
+ ```
+ 
++A launcher that sets `HERDR_THREADS_CONTINUITY_KEY` adds it to that list too, or the key never
++reaches the hook.
++
+ The pane's `hermes` client sends them when it creates a session, and the bridge passes
+ that session's values to its hook child, so the session takes its own pane's seat. They
+ also reach the session's tool subprocesses, so the model's own `herdr-threads` calls name

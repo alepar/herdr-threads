@@ -8,6 +8,7 @@
 //! The start stamp is opaque and only compared with another stamp from this same reader on this
 //! host (see `LivenessFingerprint`). macOS: microseconds since the Unix epoch from
 //! `proc_pidinfo(PROC_PIDTBSDINFO)`. Linux: `/proc/<pid>/stat` field 22 (clock ticks since boot).
+//! A stamp of another kernel boot is never comparable: continuity compares `kernel_boot` first.
 use crate::ports::{ProcessInfo, ProcessRecord, TerminalSession};
 
 pub struct HostProcessTable;
@@ -19,6 +20,49 @@ impl ProcessInfo for HostProcessTable {
     fn terminal_session(&self, pid: u32) -> Option<TerminalSession> {
         read_terminal_session(pid)
     }
+    fn kernel_boot(&self) -> Option<String> {
+        // The boot id cannot change while this process lives.
+        static BOOT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        BOOT.get_or_init(read_kernel_boot).clone()
+    }
+}
+
+/// A boot id answer trimmed; an empty one, or one longer than the store keeps, is unknown.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn kernel_boot_text(raw: &str) -> Option<String> {
+    let boot = raw.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+    (!boot.is_empty() && boot.len() <= 64).then(|| boot.to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn read_kernel_boot() -> Option<String> {
+    kernel_boot_text(&std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?)
+}
+
+#[cfg(target_os = "macos")]
+fn read_kernel_boot() -> Option<String> {
+    let mut buf = [0u8; 128];
+    let mut len = buf.len();
+    // SAFETY: the name is NUL-terminated; `buf`/`len` describe a valid writable buffer and the
+    // kernel writes at most `len` bytes.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.bootsessionuuid".as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    kernel_boot_text(std::str::from_utf8(buf.get(..len)?).ok()?)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_kernel_boot() -> Option<String> {
+    None
 }
 
 /// Session id and controlling terminal from a `/proc/<pid>/stat` line: fields 6 (`session`) and
@@ -401,6 +445,28 @@ mod tests {
         );
         assert_eq!(parse_stat_terminal_session("garbage"), None);
         assert_eq!(parse_stat_terminal_session("1 (x) S 1"), None);
+    }
+
+    /// Kills: keeping the trailing newline (every comparison against a trimmed id would then
+    /// differ), or recording an empty or oversized answer.
+    #[test]
+    fn kernel_boot_text_is_trimmed_and_bounded() {
+        assert_eq!(kernel_boot_text("6e8f-01\n").as_deref(), Some("6e8f-01"));
+        assert_eq!(kernel_boot_text("6e8f-01\0").as_deref(), Some("6e8f-01"));
+        assert_eq!(kernel_boot_text(" \n"), None);
+        assert_eq!(kernel_boot_text(&"x".repeat(65)), None);
+    }
+
+    /// Kills: an unreadable host boot id, or one that changes between reads.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_kernel_boot_is_read_and_stable() {
+        let boot = HostProcessTable.kernel_boot().expect("boot id readable");
+        assert_eq!(HostProcessTable.kernel_boot(), Some(boot.clone()));
+        assert_eq!(
+            Some(boot),
+            kernel_boot_text(&std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap())
+        );
     }
 
     /// This test process's own session is readable and matches `getsid`.

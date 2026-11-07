@@ -1,0 +1,41 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-21.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-21.md
+new file mode 100644
+index 000000000..62bc11b93
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-21.md
+@@ -0,0 +1,35 @@
++# Final review: cluster 21 (tests-fixtures), epic ht-ma6i
++
++Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7. Both resolved as commits. The caller checkout was at the head commit with a clean status when read.
++
++Cluster input: `tests/fixtures/golden/help/setup.txt`, slice `slices/000108.diff`. The slice is identical to `git diff` of the path over the captured range: a one-sentence addition to the Hermes scope note of `setup --help`.
++
++## What the change says
++
++The golden now adds, after the 0.22.1 passthrough requirement: "a launcher that sets HERDR_THREADS_CONTINUITY_KEY lists it there too". It is the expected output of `golden_surfaces::help_texts`, which records `setup --help` byte for byte.
++
++## Checks against the producer
++
++- Producer match: the whole `setup_scope` string of `src/harness/hermes.rs` at head (1423 bytes) occurs verbatim in the golden, including the rewrapped lines.
++- Accuracy against the bridge: at head, `HERDR_THREADS_CONTINUITY_KEY` is in `PANE_ENV` of `integrations/hermes/__init__.py`. In the shared gateway the bridge drops `PANE_ENV` names from the gateway's `os.environ` and takes them only from the session's client env, which `terminal.client_env_passthrough` carries. So a key not listed never reaches the hook, as the sentence says. `integrations/hermes/test_bridge.py` pins that a gateway-level key does not leak into a bound session.
++- Accuracy against the spec: the design's client-side section has the Hermes bridge add the key to `PANE_ENV`. `integrations/hermes/README.md` carries the same instruction in the same words, so the two operator surfaces agree.
++- Layout: the new lines are 84 and 73 columns, within the block's existing width (up to 86).
++- Test evidence: the task 7 report records the `golden` filter passing on tree 788f79169d2a40271bf8a843cb46abcda330ad08. Between that tree and head, the golden, `src/harness/hermes.rs` and `tests/golden_surfaces.rs` have identical blobs, and `src/cli/mod.rs`, `src/cli/commands.rs`, `src/cli/help.rs`, `src/cli/setup.rs` and `src/harness/` have no diff. I reuse that evidence and did not rebuild for one fixture line.
++- Token rules: this is static help text shown only when `setup --help` is asked for, not per-delivery framing. Commit 7a87f5209 says "No new model-visible string" about the hook refusal texts; the help sentence is 70 bytes and is not one of those texts. The commit's `Outside-adapter` trailer lists the golden.
++
++## Requirement baseline
++
++The cluster is an expected-output fixture and delivers no baseline row by itself. For B1, the fixture documents an operator step on the key's path through Hermes; the path from launcher to bridge, hook and daemon leaves this cluster and is the seam reviewer's to trace. B2, B3 and B4 have no surface in this file.
++
++## Verdict
++ready
++
++## Must fix before landing
++- none
++
++## Untested scope
++- `golden_surfaces::help_texts` was not re-run at head in this review; it rests on the task 7 `golden` pass on tree 788f79169d2a40271bf8a843cb46abcda330ad08 plus identical blobs and no diff in the help producers listed above, and the ledger records the full-suite measurement as deferred to the caller, so no run at head was observed here.
++- This review did not exercise a real Hermes 0.22.1 gateway carrying the key through `terminal.client_env_passthrough`; the sentence was checked against the bridge source and its stand-in test only.
++
++## Deferred OK
++- none

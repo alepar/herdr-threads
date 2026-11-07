@@ -1,0 +1,14 @@
+diff --git a/tests/host/bootstrap_recovery.rs b/tests/host/bootstrap_recovery.rs
+index 641fbb971..b6dd0fb2b 100644
+--- a/tests/host/bootstrap_recovery.rs
++++ b/tests/host/bootstrap_recovery.rs
+@@ -476,7 +476,8 @@ mod bootstrap_recovery {
+                 operation: id.payload.resolve_key.clone(),
+                 locator_hint: None,
+                 tmux_hint: None,
+-            },
++continuity_key: None,
++},
+             &context.budget,
+             |guard| {
+                 fresh_reference = Some(guard.ordinary().call_id().clone());

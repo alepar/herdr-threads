@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Opt-in real-Herdr qualification of the graph clone identity work (ht-ma6i).
+
+  clone-identity-qual [--versions V...] [--cache DIR] [--report FILE] [--logs-dir DIR]
+  clone-identity-qual --list
+
+For each selected release (default: the newest in tests/herdr-releases.tsv) the official
+binary for this host is fetched into the release-smoke cache and checksum-verified (the
+download and checksum code is scripts/herdr-release-smoke's, imported), then every test of
+tests/clone_identity_sweep.rs, the ignored `qual_` cases included, runs under
+
+  cargo nextest run --locked --all-features --test clone_identity_sweep --run-ignored all
+
+with that Herdr first on PATH, a fresh HT_LEAK_RUN_ID, and
+`scripts/check-no-leaked-processes --run-id` after it. When the heavy-job wrapper
+(~/.cache/herdr-threads-heavy/heavy and tb: one shared heavy slot, inside the ht-build
+toolbox, since the host has no C toolchain) exists, cargo runs through it. Every Herdr server
+lives in a private IsolatedHerdr root (scripts/lib/isolated-herdr.sh); the shared server is
+never touched.
+
+The report (Markdown: release x case, PASS / FAIL / SKIP with the reason) goes to --report,
+by default docs/superpowers/runs/2026-11-04-graph-clone-identity/qual/report-<sha>.md. Exit 0
+only when every selected release passes: nextest green, every `qual_` case present, no case
+FAIL, and the leak check clean. A SKIP (a case that cannot run on this host or release, with
+its reason) does not fail the run but is listed. Release-gating for the clone identity work,
+not CI: it drives real Herdr servers for several minutes per release.
+"""
+from __future__ import annotations
+
+import argparse
+import http.client
+import importlib.machinery
+import importlib.util
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SUITE = ROOT / "tests" / "clone_identity_sweep.rs"
+RUN_DIR = ROOT / "docs" / "superpowers" / "runs" / "2026-11-04-graph-clone-identity" / "qual"
+HEAVY_DIR = Path.home() / ".cache" / "herdr-threads-heavy"
+BINARY = "clone_identity_sweep"
+# nextest status words that are not a test's outcome.
+NOT_OUTCOMES = {"START", "SLOW", "RUNNING", "TRY", "RETRY", "DELAY", "TERMINATING", "KILLING",
+                "SETUP", "STDOUT", "STDERR", "CANCEL", "CANCELLING", "SUMMARY"}
+STATUS = re.compile(r"^\s*(?:TRY \d+ )?([A-Z][A-Z0-9-]*)\s+\[[^\]]*\]\s+(?:\(\s*\d+/\d+\)\s+)?"
+                    + BINARY + r"\s+(\S+)\s*$")
+PANIC = re.compile(r"^thread '([^']+)' panicked at (.*)$")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def load_smoke():
+    """scripts/herdr-release-smoke as a module: its list, asset and fetch helpers."""
+    path = ROOT / "scripts" / "herdr-release-smoke"
+    loader = importlib.machinery.SourceFileLoader("herdr_release_smoke", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def qual_cases() -> list[str]:
+    """Every `qual_` test the suite defines: each must report for a release to pass."""
+    return re.findall(r"^fn (qual_\w+)\(", SUITE.read_text(), flags=re.M)
+
+
+def runner() -> list[str]:
+    heavy, tb = HEAVY_DIR / "heavy", HEAVY_DIR / "tb"
+    return [str(heavy), str(tb)] if heavy.exists() and tb.exists() else []
+
+
+def command() -> list[str]:
+    # tb forwards only HT_*, CARGO_*, RUST*, NEXTEST_* and CI, not PATH: the shell puts the
+    # release's directory (HT_CLONE_QUAL_HERDR_DIR) first on the PATH it finds, in or out of
+    # the toolbox.
+    return runner() + ["sh", "-c", 'PATH="$HT_CLONE_QUAL_HERDR_DIR:$PATH"; export PATH; exec "$@"', "sh",
+                       "cargo", "nextest", "run", "--locked", "--all-features", "--test", BINARY,
+                       "--run-ignored", "all", "--no-fail-fast", "--color", "never",
+                       "--status-level", "pass", "--failure-output", "immediate"]
+
+
+def parse(output: str) -> tuple[dict[str, str], dict[str, str]]:
+    """(final nextest outcome per test, first panic message per test)."""
+    outcomes: dict[str, str] = {}
+    panics: dict[str, str] = {}
+    lines = [ANSI.sub("", line) for line in output.splitlines()]
+    for i, line in enumerate(lines):
+        status = STATUS.match(line)
+        if status and status.group(1) not in NOT_OUTCOMES:
+            outcomes[status.group(2)] = status.group(1)
+        panic = PANIC.match(line.strip())
+        if panic:
+            # libtest names the thread after the test; the message is the next line.
+            message = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            panics.setdefault(panic.group(1).split("::")[-1], f"{message} ({panic.group(2).rstrip(':')})")
+    return outcomes, panics
+
+
+def run_release(smoke, version: str, asset: str, digest: str, cache: Path, logs: Path | None) -> dict:
+    started = time.monotonic()
+    row = {"version": version, "result": "ERROR", "cases": {}, "detail": "", "leaks": "-", "time": 0.0}
+    try:
+        binary = smoke.fetch(version, asset, digest, cache)
+    except (RuntimeError, OSError, http.client.HTTPException) as error:
+        row["detail"] = str(error)
+        return row
+    run_id = str(uuid.uuid4())
+    # In the worktree, not /tmp: the toolbox shares the home directory for certain.
+    skips = ROOT / "target" / "clone-qual-skips" / run_id
+    skips.mkdir(parents=True)
+    env = dict(os.environ, HT_LEAK_RUN_ID=run_id, HT_HERDR_SMOKE_VERSION=version,
+               HT_CLONE_QUAL_HERDR_DIR=str(binary.parent), HT_CLONE_QUAL_SKIPS=str(skips),
+               PATH=f"{binary.parent}{os.pathsep}{os.environ.get('PATH', '')}", PWD=str(ROOT),
+               CARGO_TERM_COLOR="never", NEXTEST_HIDE_PROGRESS_BAR="1")
+    print(f"=== herdr {version} ({asset}): {' '.join(command())}", flush=True)
+    collected: list[str] = []
+    with subprocess.Popen(command(), cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, errors="replace") as process:
+        for line in process.stdout:
+            sys.stdout.write(line)
+            collected.append(line)
+        code = process.wait()
+    output = "".join(collected)
+    if logs:
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / f"herdr-{version}.log").write_text(output)
+    leak = subprocess.run([str(ROOT / "scripts/check-no-leaked-processes"), "--run-id", run_id], cwd=ROOT,
+                          capture_output=True, text=True)
+    sys.stdout.write(leak.stdout + leak.stderr)
+    row["leaks"] = "clean" if leak.returncode == 0 else \
+        "LEAKS: " + "; ".join(line for line in leak.stdout.splitlines() if line.startswith("LEAK"))[:300]
+
+    outcomes, panics = parse(output)
+    cases: dict[str, tuple[str, str]] = {}
+    for name, outcome in outcomes.items():
+        skip = skips / f"{name}.skip"
+        if outcome == "PASS" and skip.exists():
+            cases[name] = ("SKIP", skip.read_text().strip())
+        elif outcome == "PASS":
+            cases[name] = ("PASS", "")
+        else:
+            reason = panics.get(name) or {"LEAK": "leaked handles", "TIMEOUT": "timed out"}.get(outcome, outcome)
+            cases[name] = ("FAIL", f"{outcome}: {reason}" if outcome != "FAIL" else reason)
+    for name in qual_cases():
+        cases.setdefault(name, ("FAIL", "no result reported"))
+    shutil.rmtree(skips, ignore_errors=True)
+    row["cases"] = cases
+    row["time"] = time.monotonic() - started
+    failed = [name for name, (result, _) in cases.items() if result == "FAIL"]
+    if not outcomes:
+        row["detail"] = f"nextest exit {code} with no test results (build or start failure)"
+    elif code != 0 and not failed:
+        row["detail"] = f"nextest exit {code}"
+    ok = code == 0 and not failed and leak.returncode == 0
+    row["result"] = "PASS" if ok else "FAIL"
+    print(f"=== herdr {version}: {row['result']} in {row['time']:.1f}s", flush=True)
+    return row
+
+
+def report(rows: list[dict], head: str, asset: str) -> str:
+    lines = [f"# Clone identity qualification at {head} on {asset}", "",
+             "`scripts/clone-identity-qual`: tests/clone_identity_sweep.rs with `--run-ignored all` per "
+             "Herdr release; the `qual_` cases are the source design's section 6 real-Herdr checks.", "",
+             "| Herdr | Result | Time | Leak check | Detail |", "| --- | --- | --- | --- | --- |"]
+    for row in rows:
+        lines.append(f"| {row['version']} | {row['result']} | {row['time']:.1f}s | {row['leaks']} | "
+                     f"{row['detail'].replace('|', '/')} |")
+    lines += ["", "| Herdr | Case | Result | Reason |", "| --- | --- | --- | --- |"]
+    for row in rows:
+        names = sorted(row["cases"], key=lambda n: (not n.startswith("qual_"), n))
+        for name in names:
+            result, reason = row["cases"][name]
+            lines.append(f"| {row['version']} | `{name}` | {result} | {reason.replace('|', '/')[:400]} |")
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    smoke = load_smoke()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--versions", nargs="+", help="listed versions to qualify (default: the newest)")
+    parser.add_argument("--cache", type=Path, default=Path(os.environ.get(
+        "HT_HERDR_RELEASE_CACHE", Path.home() / ".cache/herdr-threads/herdr-releases")))
+    parser.add_argument("--report", type=Path, help=f"Markdown report (default {RUN_DIR.relative_to(ROOT)}/report-<sha>.md)")
+    parser.add_argument("--logs-dir", type=Path, help="retain complete per-release nextest output")
+    parser.add_argument("--list", action="store_true", help="print the listed versions (the default last)")
+    args = parser.parse_args()
+
+    listed = smoke.read_list()
+    if args.list:
+        print("\n".join(listed))
+        return 0
+    versions = args.versions or [list(listed)[-1]]
+    unknown = [v for v in versions if v not in listed]
+    if unknown:
+        sys.exit(f"clone-identity-qual: not in {smoke.LIST.name}: {', '.join(unknown)}")
+    asset = smoke.host_asset()
+    missing = [v for v in versions if asset not in listed[v]]
+    if missing:
+        sys.exit(f"clone-identity-qual: no {asset} asset listed for {', '.join(missing)}")
+    head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                          capture_output=True, text=True).stdout.strip()
+    rows = [run_release(smoke, v, asset, listed[v][asset], args.cache, args.logs_dir) for v in versions]
+
+    text = report(rows, head, asset)
+    print(text)
+    path = args.report or RUN_DIR / f"report-{head or 'unknown'}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    print(f"report: {path}")
+    return 0 if all(row["result"] == "PASS" for row in rows) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,229 @@
+diff --git a/tests/sync/incarnations_scenarios.rs b/tests/sync/incarnations_scenarios.rs
+index e36a71935..240599ade 100644
+--- a/tests/sync/incarnations_scenarios.rs
++++ b/tests/sync/incarnations_scenarios.rs
+@@ -18,7 +18,7 @@ use std::time::Duration;
+ 
+ use herdr_threads::node::NodeUuid;
+ use herdr_threads::protocol::commands::DeliveryMode;
+-use herdr_threads::protocol::ids::{MessageId, SeatId, ThreadId};
++use herdr_threads::protocol::ids::{InvitationId, MessageId, SeatId, ThreadId};
+ use herdr_threads::protocol::results::ApiError;
+ use herdr_threads::protocol::time::CallBudget;
+ use herdr_threads::store::SqliteStore;
+@@ -38,10 +38,12 @@ use herdr_threads::test_support::fact_exchange;
+ use herdr_threads::test_support::journal_oracle::{replicated_projection, replicated_tables};
+ use herdr_threads::test_support::sync_node::{SyncNode, wait_for, wait_until};
+ 
++use crate::facts_invitation::{CREATED_AT, DURATION_MS};
+ use crate::facts_membership::thread_of;
+ use crate::facts_message::{FIVE_MIN, SENT_AT, sent, spec};
+ use crate::facts_receipt::{ingest, origin_entries, rworld, settled};
+ use crate::facts_seat::{Node, budget, registry};
++use crate::facts_seat_reversible::{rev, unret};
+ 
+ const PATIENCE: Duration = Duration::from_secs(60);
+ 
+@@ -1488,3 +1490,202 @@ async fn s8_clone_detected_held_then_moved_aside_and_cleared() {
+     rc.stop().await;
+     rd.stop().await;
+ }
++
++// ---- 9. a re-issued reversible episode ----------------------------------------
++
++const S9_T1: i64 = crate::facts_seat_reversible::T1;
++const S9_WINDOW: i64 = crate::facts_seat_reversible::WINDOW;
++
++/// `(kind, apply state)` of the entries of the two reversible kinds, oldest first.
++fn episode_entries(node: &Node) -> Vec<(String, String)> {
++    node.journal()
++        .into_iter()
++        .filter(|(kind, _, _)| kind == "seat.retired_reversible" || kind == "seat.unretired")
++        .map(|(kind, state, _)| (kind, state))
++        .collect()
++}
++
++fn invitation_deadline(node: &Node, invitation: &InvitationId) -> i64 {
++    node.query(
++        &format!(
++            "SELECT deadline_at FROM invitations WHERE id='{}'",
++            invitation.as_str()
++        ),
++        |r| r.get(0),
++    )[0]
++}
++
++/// `(state, reversible rows)` of the seat.
++fn seat_state(node: &Node, seat: &SeatId) -> (String, i64) {
++    node.query(
++        &format!(
++            "SELECT state,(SELECT count(*) FROM reversible_retirements WHERE seat_id=s.id) FROM seats s WHERE id='{}'",
++            seat.as_str()
++        ),
++        |r| Ok((r.get(0)?, r.get(1)?)),
++    )
++    .remove(0)
++}
++
++/// Waits until A rotated and re-issued and C holds `threads` and A's new log.
++async fn heal_fork(
++    a: &Node,
++    c: &Node,
++    ra: &SyncNode,
++    rc: &SyncNode,
++    i1: &LogKey,
++    threads: &[ThreadId],
++) {
++    converge(
++        "A to rotate and re-issue, and C to hold it all",
++        PATIENCE,
++        || {
++            let now = active_log(a);
++            vec![
++                ("A rotated", now != *i1),
++                ("A applied all", pending(a) == 0),
++                ("C applied all", pending(c) == 0),
++                (
++                    "C has the threads",
++                    threads.iter().all(|t| has_thread(c, t)),
++                ),
++                ("A holds its new log", ra.head_of(&now).is_some()),
++                ("C's head matches", ra.head_of(&now) == rc.head_of(&now)),
++            ]
++        },
++        || format!("{}\n{}", dump("A", a, ra), dump("C", c, rc)),
++    )
++    .await;
++}
++
++/// Kills: a copy of an ended episode's `seat.retired_reversible` retiring a peer's `remote` row again
++/// and the copy of its `seat.unretired` shifting the peer's deadlines a second time (TRUST-POLICY N7).
++/// A applied the lost branch only through the re-issue, so it runs once there too.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn s9_reissued_reversible_episode_is_a_noop_on_a_peer() {
++    let reg = registry();
++    let (a, c) = (Node::with(91, reg), Node::with(92, reg));
++    let (thread, from) = thread_of(&a, "s9");
++    a.joined(&thread, &from, 1).unwrap();
++    let seat = a.local_seat();
++    a.publish(&seat).unwrap();
++    let invitation = a.invite_fact(&thread, &from, &seat);
++    fact_exchange::sync(&a.store, &c.store);
++    let backup = a.snapshot("backup.db");
++    let i1 = active_log(&a);
++    let base = CREATED_AT + DURATION_MS;
++    assert_eq!(invitation_deadline(&c, &invitation), base);
++
++    rev(&a, &seat, S9_T1);
++    unret(&a, &seat, S9_T1, S9_T1 + S9_WINDOW);
++    fact_exchange::sync(&a.store, &c.store);
++    assert_eq!(seat_state(&c, &seat), ("remote".to_owned(), 0));
++    assert_eq!(invitation_deadline(&c, &invitation), base + S9_WINDOW);
++
++    let lost = a;
++    let a = Node::open_restored(91, 9100, reg, &backup, false);
++    drop(lost);
++    let threads = author_threads(&a, &from, 3);
++
++    let (ra, rc) = (start(&a, 91, 3), start(&c, 92, 4));
++    ra.link(&rc).await;
++    heal_fork(&a, &c, &ra, &rc, &i1, &threads).await;
++    converge(
++        "the copies to reach C",
++        PATIENCE,
++        || vec![("C holds four", episode_entries(&c).len() == 4)],
++        || format!("{}\n{}", dump("A", &a, &ra), dump("C", &c, &rc)),
++    )
++    .await;
++    ra.stop().await;
++    rc.stop().await;
++
++    let applied = |kind: &str| (kind.to_owned(), "applied".to_owned());
++    assert_eq!(
++        episode_entries(&c),
++        vec![
++            applied("seat.retired_reversible"),
++            applied("seat.unretired"),
++            applied("seat.retired_reversible"),
++            applied("seat.unretired"),
++        ]
++    );
++    assert_eq!(seat_state(&c, &seat), ("remote".to_owned(), 0));
++    assert_eq!(invitation_deadline(&c, &invitation), base + S9_WINDOW);
++    assert_eq!(invitation_deadline(&a, &invitation), base + S9_WINDOW);
++}
++
++/// Kills: a copy on the owner of an episode it applied taking the fence's transition on the seat the
++/// episode's end left rebound, ending its live binding. The restored branch authors the episode, so
++/// the re-issue copies rows the owner already applied. Only the owner is judged: C first applies
++/// these copies here, in the order the re-issue passes wrote them.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn s9b_reissued_episode_is_a_noop_on_a_rebound_owner() {
++    let reg = registry();
++    let (a, c) = (Node::with(93, reg), Node::with(94, reg));
++    let (thread, from) = thread_of(&a, "s9b");
++    a.joined(&thread, &from, 1).unwrap();
++    let seat = a.local_seat();
++    a.publish(&seat).unwrap();
++    let invitation = a.invite_fact(&thread, &from, &seat);
++    fact_exchange::sync(&a.store, &c.store);
++    let backup = a.snapshot("backup.db");
++    let i1 = active_log(&a);
++    let base = CREATED_AT + DURATION_MS;
++
++    // The branch A will lose holds no episode.
++    let lost_threads = author_threads(&a, &from, 2);
++    fact_exchange::sync(&a.store, &c.store);
++    let lost = a;
++    let a = Node::open_restored(93, 9300, reg, &backup, false);
++    drop(lost);
++
++    // The branch A keeps: the episode, then what `rebind_unresolved_seat` leaves.
++    rev(&a, &seat, S9_T1);
++    unret(&a, &seat, S9_T1, S9_T1 + S9_WINDOW);
++    {
++        let db = a.raw();
++        db.execute(
++            "UPDATE seats SET state='resolved',unresolved_reason=NULL,target_id='p',generation=generation+1 WHERE id=?1",
++            [seat.as_str()],
++        )
++        .unwrap();
++        db.execute(
++            "DELETE FROM reversible_retirements WHERE seat_id=?1",
++            [seat.as_str()],
++        )
++        .unwrap();
++    }
++    a.enroll(&seat, "codex", "after-rebind").unwrap();
++    let open_bindings = |node: &Node| -> i64 {
++        node.count(&format!(
++            "SELECT count(*) FROM occupant_bindings WHERE seat_id='{}' AND ended_at IS NULL",
++            seat.as_str()
++        ))
++    };
++    assert_eq!(open_bindings(&a), 1);
++
++    let (ra, rc) = (start(&a, 93, 3), start(&c, 94, 4));
++    ra.link(&rc).await;
++    heal_fork(&a, &c, &ra, &rc, &i1, &lost_threads).await;
++    converge(
++        "the copies to come back to A",
++        PATIENCE,
++        || vec![("A holds four", episode_entries(&a).len() == 4)],
++        || format!("{}\n{}", dump("A", &a, &ra), dump("C", &c, &rc)),
++    )
++    .await;
++    ra.stop().await;
++    rc.stop().await;
++
++    assert!(
++        episode_entries(&a)
++            .iter()
++            .all(|(_, state)| state == "applied"),
++        "{:?}",
++        a.journal()
++    );
++    assert_eq!(seat_state(&a, &seat), ("resolved".to_owned(), 0));
++    assert_eq!(open_bindings(&a), 1, "the live binding stays open");
++    assert_eq!(invitation_deadline(&a, &invitation), base + S9_WINDOW);
++}

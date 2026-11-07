@@ -497,6 +497,7 @@ impl Node {
             claim: self.claim_of(seat),
             operation: OperationId::new("check-in-op"),
             lineage_parent: None,
+            continuity_key: None,
         };
         self.permit_for(
             &command.claim,

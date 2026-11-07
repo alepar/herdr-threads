@@ -1,0 +1,55 @@
+diff --git a/tests/protocol/output.rs b/tests/protocol/output.rs
+index 86c3bd700..9ad2d1528 100644
+--- a/tests/protocol/output.rs
++++ b/tests/protocol/output.rs
+@@ -791,6 +791,50 @@ fn seat_inspect_text_names_a_managed_launch_binding() {
+     assert!(!render("cooperative_top_level").contains("open_binding_state"));
+ }
+ 
++/// `seat inspect` text: one `key` line while a key is held, and byte-for-byte nothing otherwise.
++/// Kills: the key dumped as a JSON field beside the line, the line printed for an empty field, or
++/// a conflict changing the text.
++#[test]
++fn seat_inspect_text_prints_one_key_line_when_a_key_is_held() {
++    let render = |key: Option<serde_json::Value>| {
++        let mut data = serde_json::json!({
++            "summary":{"seat":"s-1","continuity":"resolved","target":"w1:p1","generation":1,"created_at":1,"retired_at":null},
++            "mapping":{"state":"resolved","target":"w1:p1","detail_argv":null},
++            "hold":null,
++            "retirement":null,
++            "history":{"items":[],"next_cursor":null,"next_argv":null,"high_water_ordinal":1,"scope_revision":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live"}
++        });
++        if let Some(key) = key {
++            data["continuity_key"] = key;
++        }
++        let seat: CommandResult =
++            serde_json::from_value(serde_json::json!({"kind":"seat_inspect","data":data})).unwrap();
++        String::from_utf8(
++            encode_selected(
++                &seat,
++                &OutputSpec {
++                    format: OutputFormat::Text,
++                    context: ContinuationContext::default(),
++                },
++            )
++            .unwrap(),
++        )
++        .unwrap()
++    };
++    let without = render(None);
++    assert!(!without.contains("key"), "{without}");
++    let line = "key clone-1 graph\n";
++    let held = render(Some(serde_json::json!({
++        "key":"clone-1","owner":"graph","bound_by":"check_in"
++    })));
++    assert_eq!(held.replacen(line, "", 1), without, "{held}");
++    let conflicted = render(Some(serde_json::json!({
++        "key":"clone-1","owner":"graph","bound_by":"service_reservation",
++        "conflict":{"host":"/host.sock","pane":"w1:p2","kind":"key_live_elsewhere","first_seen_at":5}
++    })));
++    assert_eq!(conflicted, held);
++}
++
+ #[test]
+ fn maximum_cursor_and_context_bytes_are_fully_counted() {
+     let cursor = format!("c2:{}", "x".repeat(1021));

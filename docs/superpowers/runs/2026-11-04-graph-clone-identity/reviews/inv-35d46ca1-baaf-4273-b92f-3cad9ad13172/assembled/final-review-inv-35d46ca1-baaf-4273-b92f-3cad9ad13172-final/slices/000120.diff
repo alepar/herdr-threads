@@ -1,0 +1,56 @@
+diff --git a/tests/cli/cooperative.rs b/tests/cli/cooperative.rs
+index 8d1774d00..a0cae50ba 100644
+--- a/tests/cli/cooperative.rs
++++ b/tests/cli/cooperative.rs
+@@ -56,6 +56,8 @@ fn selected_service_mapping_rejects_wrong_target_and_repair_hold() {
+             consistency: Consistency::BoundedLive,
+         },
+         directory: None,
++        continuity_key: None,
++        retirement_state: None,
+     };
+     assert_eq!(
+         crate::cli::selected_generation(&selection, &inspection).unwrap(),
+@@ -164,6 +166,8 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
+                     open_binding: None,
+                     history: empty(),
+                     directory: None,
++                    continuity_key: None,
++                    retirement_state: None,
+                 })),
+                 Command::CheckIn(c) => {
+                     assert_eq!(
+@@ -359,6 +363,8 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
+                     open_binding: None,
+                     history: empty(),
+                     directory: None,
++                    continuity_key: None,
++                    retirement_state: None,
+                 })),
+                 Command::CheckIn(c) => {
+                     if let Some((key, original)) = self.saved.lock().unwrap().as_ref()
+@@ -2259,6 +2265,8 @@ mod scoped_runtime {
+                     }),
+                 history: empty(),
+                 directory: None,
++                continuity_key: None,
++                retirement_state: None,
+             }
+         }
+     }
+@@ -7570,6 +7578,7 @@ impl OrdinaryHumanRetryFixture {
+                     mode: CheckInMode::Lifecycle {
+                         expected_binding_generation: 0,
+                     },
++                    continuity_key: None,
+                 }),
+                 &budget,
+             )
+@@ -7656,6 +7665,7 @@ impl OrdinaryHumanRetryFixture {
+                     mode: CheckInMode::Lifecycle {
+                         expected_binding_generation: original.binding_generation,
+                     },
++                    continuity_key: None,
+                 }),
+                 &budget,
+             )

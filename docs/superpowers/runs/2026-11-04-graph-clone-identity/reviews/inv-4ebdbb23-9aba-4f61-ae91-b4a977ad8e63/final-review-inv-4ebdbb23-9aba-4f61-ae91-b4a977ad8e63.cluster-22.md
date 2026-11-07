@@ -1,0 +1,36 @@
+# Final review, cluster 22 (tests-harness), epic ht-ma6i
+
+Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7. Both resolved as commits. The review source bind returned the same invocation and SHAs. The caller checkout stayed at the head with a clean status at start and at the last check.
+
+## What the cluster changes
+
+Two files, four added lines, all from commit 8945c48ca (protocol shapes):
+
+- `tests/harness/agy_delivery.rs`: `continuity_key: None` on the three `Command::CheckIn(CheckIn { .. })` literals in the daemon rig (lines 1484, 1668, 1724).
+- `tests/harness/agy_wake.rs`: the same on the one literal (line 126).
+
+Both files are compiled into the lib test build through `#[path]` at `src/harness/agy/delivery.rs:1426` and `:1429`, so a missing field would fail the build. Those four are every `CheckIn` literal in the two files, and each has the field.
+
+## Correctness of the fixtures
+
+`None` is the right value. `CheckIn.continuity_key` is `#[serde(default, skip_serializing_if = "Option::is_none")]` (`src/protocol/commands.rs:840-844`), and spec 4.2 says a claim with no key behaves and hashes exactly as before. These tests pin agy delivery, `/clear` rebinding and wake injection. None of them is about keys, so the keyless check-in keeps their meaning unchanged, and no assertion, rig or fixture moved.
+
+The literals do not use a real or invalid key, spawn no new children and create no temp paths, so the test-support rules are untouched. Nothing here adds model-visible text or wire shape.
+
+## Requirement baseline against this cluster
+
+- B1 (continuity key): the cluster holds only keyless fixtures and delivers none of it. The agy production route is a seam path. I traced it only far enough to confirm these fixtures do not hide a gap: agy `SessionStart` decodes as `Lifecycle(Startup)` (`src/harness/agy/decode.rs:114-118`), and a first `PreInvocation` for an unknown conversation is raised to a lifecycle event by `LocalEvidence::refine` (`src/harness/adapter.rs:821-850`). Neither then takes the `run_hook_step` observer branch (`src/cli/hook.rs:4454`), so both reach the ordinary check-in path that presents the key (`src/cli/hook.rs:2132`, `:2427`, `:3088`). The seam reviewer owns the full row.
+- B2, B3, B4: not touched by these files. The fixtures do not retire or exit anything, and no Herdr change appears here.
+
+## Verdict
+ready
+
+## Must fix before landing
+- none
+
+## Untested scope
+- No test exercises agy with a key: every check-in in `tests/harness/agy_delivery.rs` and `tests/harness/agy_wake.rs` is keyless, and no keyed test file under `tests/` mentions agy on the hook path (the agy mentions are in `tests/cli/handoff.rs`, `tests/cli/launch.rs` and `tests/protocol/capabilities.rs`), so agy reattachment rests on the neutral hook path and the source design section 6 qualification that spec 4.2 places outside this run.
+- This review did not compile or run the cluster: correctness rests on reading the four literals and their struct definition, and the full-suite measurement at this head is deferred to the caller per the ledger (`ht-ma6i:sweep:graph-clone-identity-20261105T074145`).
+
+## Deferred OK
+- none

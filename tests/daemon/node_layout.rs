@@ -343,6 +343,7 @@ fn second_claim_host_attaches_lazily() {
             operation: OperationId::new("op"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         }),
         &budget,
     );
@@ -437,6 +438,7 @@ fn host_needing_request_on_store_only_is_host_unavailable() {
                 operation: OperationId::new("op"),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             }),
             &budget(),
         )

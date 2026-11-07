@@ -137,10 +137,16 @@ pub enum SemanticMutation {
         /// The caller's environment marks the binding read-only (D3); frozen with the claim.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         readonly: bool,
+        /// The continuity key the event presents; frozen with the claim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuity_key: Option<ContinuityKey>,
     },
     ResolveSeat {
         target: HostTargetId,
         host: crate::protocol::ids::HostLocator,
+        /// The key of the caller's own pane; an intent recorded before the key existed has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuity_key: Option<ContinuityKey>,
     },
     /// TRUST-POLICY C1: resume-only seatless reattachment request. `event_id`
     /// is the hook event that recorded it; `execution` is the successor
@@ -155,6 +161,10 @@ pub enum SemanticMutation {
         execution: ExecutionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         liveness: Option<crate::protocol::authority::LivenessFingerprint>,
+        /// The presented key, so a replay presents it; an intent recorded before the key existed
+        /// has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuity_key: Option<ContinuityKey>,
     },
     CheckIn,
     CreateThread {
@@ -435,6 +445,7 @@ impl SemanticMutation {
                 operator,
                 lineage_parent,
                 readonly,
+                continuity_key,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -457,6 +468,7 @@ impl SemanticMutation {
                     operation: OperationId::new("validation"),
                     lineage_parent: lineage_parent.clone(),
                     readonly: *readonly,
+                    continuity_key: continuity_key.clone(),
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -475,6 +487,7 @@ impl SemanticMutation {
                 event_id,
                 execution,
                 liveness,
+                continuity_key,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -491,6 +504,7 @@ impl SemanticMutation {
                     operation: OperationId::new("validation"),
                     execution: execution.clone(),
                     liveness: *liveness,
+                    continuity_key: continuity_key.clone(),
                 }
                 .validate()
                 .map_err(invalid)
@@ -652,6 +666,7 @@ impl SemanticMutation {
                 operator,
                 lineage_parent,
                 readonly,
+                continuity_key,
                 ..
             } => {
                 let check = CheckIn {
@@ -660,6 +675,7 @@ impl SemanticMutation {
                     operation,
                     lineage_parent: lineage_parent.clone(),
                     readonly: *readonly,
+                    continuity_key: continuity_key.clone(),
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -667,12 +683,17 @@ impl SemanticMutation {
                     Command::CheckIn(check)
                 }
             }
-            Self::ResolveSeat { target, host } => Command::ResolveSeat(ResolveSeat {
+            Self::ResolveSeat {
+                target,
+                host,
+                continuity_key,
+            } => Command::ResolveSeat(ResolveSeat {
                 target: target.clone(),
                 host: host.clone(),
                 operation,
                 locator_hint: crate::cli::caller_location::resolve_hint(host),
                 tmux_hint: crate::cli::caller_location::resolve_tmux_hint(host),
+                continuity_key: continuity_key.clone(),
             }),
             Self::ContinuityCheckIn {
                 target,
@@ -682,6 +703,7 @@ impl SemanticMutation {
                 source,
                 execution,
                 liveness,
+                continuity_key,
                 ..
             } => Command::ContinuityCheckIn(ContinuityCheckIn {
                 target: target.clone(),
@@ -692,6 +714,7 @@ impl SemanticMutation {
                 operation,
                 execution: execution.clone(),
                 liveness: *liveness,
+                continuity_key: continuity_key.clone(),
             }),
             Self::CheckIn => Command::CheckIn(CheckIn {
                 lineage_parent: None,
@@ -699,6 +722,7 @@ impl SemanticMutation {
                 mode: crate::protocol::commands::CheckInMode::Current,
                 operation,
                 claim: native()?,
+                continuity_key: None,
             }),
             Self::CreateThread { name, topic, goal } => Command::CreateThread(CreateThread {
                 name: name.clone(),
@@ -1491,9 +1515,20 @@ impl Journal {
         operator: bool,
         factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
     ) -> io::Result<IntentRef> {
-        self.record_check_in_lineage(scope, event_id, created_at_millis, operator, None, factory)
+        self.record_check_in_lineage(
+            scope,
+            event_id,
+            created_at_millis,
+            operator,
+            None,
+            None,
+            factory,
+        )
     }
-    /// `record_check_in_as` freezing a lineage hint (Hermes `parent_session_id`) with the claim.
+    /// `record_check_in_as` freezing a lineage hint (Hermes `parent_session_id`) and the presented
+    /// continuity key with the claim.
+    // Allowed: the check-in's identity plus what it freezes with the claim.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_check_in_lineage(
         &self,
         scope: IntentScope,
@@ -1501,6 +1536,7 @@ impl Journal {
         created_at_millis: i64,
         operator: bool,
         lineage_parent: Option<NativeSessionId>,
+        continuity_key: Option<ContinuityKey>,
         factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
     ) -> io::Result<IntentRef> {
         let (_lock, found) = self.locked_check_in(&scope, event_id)?;
@@ -1516,6 +1552,7 @@ impl Journal {
             lineage_parent,
             // The recording process is the caller's own: its environment decides (D3).
             readonly: super::caller_location::CallerEnv::from_process().readonly(),
+            continuity_key,
         };
         if !scope_matches(&scope, &semantic) {
             return Err(invalid("intent authority scope mismatch"));

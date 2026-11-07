@@ -1,0 +1,155 @@
+diff --git a/tests/cli/journal.rs b/tests/cli/journal.rs
+index e8fdcc45e..e8d45e18b 100644
+--- a/tests/cli/journal.rs
++++ b/tests/cli/journal.rs
+@@ -153,6 +153,7 @@ fn resolve_seat_uses_only_service_allocation_scope_and_stable_key() {
+     let semantic = SemanticMutation::ResolveSeat {
+         host: crate::test_support::test_host_locator(),
+         target: target.clone(),
++        continuity_key: None,
+     };
+     assert!(journal.record(scope(), semantic.clone(), 1).is_err());
+     let reference = journal.record(service.clone(), semantic, 1).unwrap();
+@@ -1004,6 +1005,7 @@ fn new_resolution_discards_only_definitively_rejected_first_submission() {
+     let resolve = || SemanticMutation::ResolveSeat {
+         host: crate::test_support::test_host_locator(),
+         target: HostTargetId::new("w4:p1"),
++        continuity_key: None,
+     };
+     let allocation = || IntentScope::ServiceAllocation {
+         instance: "instance-1".into(),
+@@ -1151,6 +1153,7 @@ fn allocator_lock_leaf_symlink_is_refused() {
+ 
+ fn continuity_semantic(target: &str, event_id: &str) -> SemanticMutation {
+     SemanticMutation::ContinuityCheckIn {
++        continuity_key: None,
+         host: crate::test_support::test_host_locator(),
+         target: HostTargetId::new(target),
+         harness: Harness::Claude,
+@@ -1241,6 +1244,7 @@ fn continuity_intent_round_trips_and_is_found_by_instance_and_target() {
+             operation: OperationId::new(reference.operation.as_str()),
+             execution: ExecutionId::new("exec-1"),
+             liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
++            continuity_key: None,
+         })
+     );
+     // Completion removes it.
+@@ -1291,6 +1295,7 @@ fn continuity_intent_refuses_foreign_scope_and_unsupported_source() {
+             .record(
+                 continuity_scope("i1", "w1:p1"),
+                 SemanticMutation::ContinuityCheckIn {
++                    continuity_key: None,
+                     target,
+                     host: crate::test_support::test_host_locator(),
+                     harness,
+@@ -2146,7 +2151,8 @@ fn original_actor_operator_and_native_lifecycle() {
+             },
+             &SemanticMutation::ResolveSeat {
+                 host: crate::test_support::test_host_locator(),
+-                target: target.clone()
++                target: target.clone(),
++                continuity_key: None,
+             }
+         )
+         .unwrap(),
+@@ -2154,6 +2160,7 @@ fn original_actor_operator_and_native_lifecycle() {
+     );
+     for harness in [Harness::Claude, Harness::Codex] {
+         let continuity = SemanticMutation::ContinuityCheckIn {
++            continuity_key: None,
+             host: crate::test_support::test_host_locator(),
+             target: target.clone(),
+             harness,
+@@ -2185,6 +2192,7 @@ fn original_actor_operator_and_native_lifecycle() {
+         };
+         let lifecycle = SemanticMutation::CooperativeCheckIn {
+             readonly: false,
++            continuity_key: None,
+             lineage_parent: None,
+             claim: human,
+             mode: CheckInMode::Lifecycle {
+@@ -2235,6 +2243,7 @@ fn original_actor_rejects_scope_claim_contradictions() {
+     };
+     assert!(classify_original_actor(&scope, &malformed).is_err());
+     let continuity = SemanticMutation::ContinuityCheckIn {
++        continuity_key: None,
+         host: crate::test_support::test_host_locator(),
+         target: HostTargetId::new("pane"),
+         harness: Harness::Human,
+@@ -3088,3 +3097,76 @@ fn open_of_initialized_journal_does_not_wait_for_the_allocator_lock() {
+     opened.expect("open must not wait for the allocator lock");
+     std::fs::remove_dir_all(dir).unwrap();
+ }
++
++// Kills: a key field a pre-upgrade intent cannot decode, which would wedge its retry.
++#[test]
++fn intent_recorded_before_the_upgrade_decodes_as_keyless() {
++    let host = crate::test_support::test_host_locator();
++    let continuity: SemanticMutation = serde_json::from_value(serde_json::json!({
++        "kind": "continuity_check_in",
++        "target": "w1:p1",
++        "host": host.as_str(),
++        "harness": "claude",
++        "native_session": "S-1",
++        "source": "resume",
++        "event_id": "evt",
++        "execution": "e",
++    }))
++    .unwrap();
++    assert!(
++        matches!(&continuity, SemanticMutation::ContinuityCheckIn { continuity_key, .. } if continuity_key.is_none())
++    );
++    let resolve: SemanticMutation = serde_json::from_value(serde_json::json!({
++        "kind": "resolve_seat",
++        "target": "w1:p1",
++        "host": host.as_str(),
++    }))
++    .unwrap();
++    assert!(
++        matches!(&resolve, SemanticMutation::ResolveSeat { continuity_key, .. } if continuity_key.is_none())
++    );
++    // A keyless intent's bytes stay as they were.
++    assert!(
++        !serde_json::to_string(&resolve)
++            .unwrap()
++            .contains("continuity_key")
++    );
++}
++
++// Kills: a conversion that drops the retained key, so a replay after ServiceBusy goes keyless.
++#[test]
++fn replay_presents_the_key() {
++    use crate::protocol::ids::{ContinuityKey, ExecutionId, NativeSessionId};
++    let key = ContinuityKey::new("clone-1");
++    let host = crate::test_support::test_host_locator();
++    let continuity = SemanticMutation::ContinuityCheckIn {
++        target: HostTargetId::new("w1:p1"),
++        host: host.clone(),
++        harness: crate::protocol::authority::Harness::Claude,
++        native_session: NativeSessionId::new("S-1"),
++        source: "resume".into(),
++        event_id: "evt".into(),
++        execution: ExecutionId::new("e"),
++        liveness: None,
++        continuity_key: Some(key.clone()),
++    };
++    let decoded: SemanticMutation =
++        serde_json::from_slice(&serde_json::to_vec(&continuity).unwrap()).unwrap();
++    assert_eq!(decoded, continuity);
++    let Command::ContinuityCheckIn(wire) =
++        decoded.to_command(OperationId::new("op-1"), None).unwrap()
++    else {
++        panic!("wrong command")
++    };
++    assert_eq!(wire.continuity_key.as_ref(), Some(&key));
++    let resolve = SemanticMutation::ResolveSeat {
++        target: HostTargetId::new("w1:p1"),
++        host,
++        continuity_key: Some(key.clone()),
++    };
++    let Command::ResolveSeat(wire) = resolve.to_command(OperationId::new("op-2"), None).unwrap()
++    else {
++        panic!("wrong command")
++    };
++    assert_eq!(wire.continuity_key.as_ref(), Some(&key));
++}

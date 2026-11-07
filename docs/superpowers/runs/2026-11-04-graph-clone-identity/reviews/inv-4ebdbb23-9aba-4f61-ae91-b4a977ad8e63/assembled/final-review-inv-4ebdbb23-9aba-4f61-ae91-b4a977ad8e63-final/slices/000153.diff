@@ -1,0 +1,12 @@
+diff --git a/tests/store/named_presence.rs b/tests/store/named_presence.rs
+index f782886ca..41e6ec11c 100644
+--- a/tests/store/named_presence.rs
++++ b/tests/store/named_presence.rs
+@@ -118,6 +118,7 @@ impl Fx {
+             operation: OperationId::new(format!("resolve-{name}")),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         };
+         let CommandResult::NamedSeatResolved { seat, .. } = resolve_named_seat(
+             &self.context,

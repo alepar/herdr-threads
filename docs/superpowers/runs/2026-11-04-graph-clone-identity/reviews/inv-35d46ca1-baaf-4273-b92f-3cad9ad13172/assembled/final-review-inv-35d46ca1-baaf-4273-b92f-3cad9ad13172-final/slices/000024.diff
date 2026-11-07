@@ -1,0 +1,56 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-18.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-18.md
+new file mode 100644
+index 000000000..dbc9c9746
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-18.md
+@@ -0,0 +1,50 @@
++# Final review, cluster 18 (tests), epic ht-ma6i
++
++Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7. Both resolved with `git rev-parse --verify`. The caller checkout stayed at the head with a clean status throughout. Files: tests/combined.rs, tests/contracts.rs, tests/handoff_topology_authority.rs, tests/hc_messaging.rs, tests/hook_entrypoint.rs, tests/lifecycle_ux.rs, tests/named_seats.rs, tests/service.rs.
++
++## What the cluster changes
++
++The eight slices are mechanical, 16 added lines in all.
++
++- tests/combined.rs:58-59 registers `sync/facts_seat_reversible.rs`.
++- tests/service.rs:91-92 and 107-108 register `service/continuity_key_session.rs` and `service/reversible_session.rs`.
++- The other six files add `continuity_key: None` to literals of `CheckIn`, `ResolveSeat`, `SemanticMutation::ResolveSeat` and `SemanticMutation::ContinuityCheckIn`.
++
++## Checks that held
++
++- `None` preserves the bytes these tests pin. All three wire commands and all journal variants carry `#[serde(default, skip_serializing_if = "Option::is_none")]` (src/protocol/commands.rs:740, 767, 843; src/cli/journal.rs:141, 148, 166), so the hook_entrypoint lost-reply and stale-intent tests, the retried journaled intents in hc_messaging and named_seats, and lifecycle_ux keep their meaning.
++- tests/contracts.rs `ordinary_seat_resolve_cannot_enter_native_permit_mutation_route` still means what it did: the new field opens no permit route.
++- Registration is complete. With `autotests = false`, every test file the range adds is reachable: the three above from their targets, tests/store/continuity_keys.rs, continuity_key_decisions.rs, reversible_facts.rs and reversible_retirement.rs through `#[path]` in src/store (lib unit tests), and tests/store/reversible_reads.rs from reversible_retirement.rs:41.
++- `facts_seat_reversible` belongs in `combined`: it has no set_var, panic hook, umask, failpoint or in-process daemon, and it holds the spec 4.8 old-node simulation (`registry_without_the_kinds`, `a_registry_without_the_kinds_parks_them_and_converges_after_replay`).
++- The two service modules run an in-process `run_elected` daemon, so the `service` target is the right home. They create scratch through `test_support::scratch::temp_path` and spawn no children.
++- The ledger records the merge check as passing for the last merge (`Merge: ht-ma6i.10 - rebase clean, seam-review none, check pass`). That check is `cargo check --all-targets --all-features`, so the edited literals compile. I reused it and did not rebuild.
++
++## Baseline rows from this cluster's side
++
++- B1 (continuity key): this cluster registers the session tests but holds no keyed flow. tests/hook_entrypoint.rs, the suite that runs the real binary (`CARGO_BIN_EXE_herdr-threads`), gained only four `continuity_key: None` lines. The production path reads statically as wired: src/main.rs:80 marks the entry, `seat_filter` passes the variable there, and src/cli/hook.rs:1941 and 2431 present it. Tracing it through the daemon is the seam reviewer's. No test runs it, as stated below.
++- B2 (close retires, undo reverses): the same. tests/service/reversible_session.rs seeds the reversible state by "writing what the fence writes" (its own header), so close-then-undo is never composed over the session. The seam reviewer owns the production trace.
++- B3 (agent exit keeps seat and memberships): pinned outside this cluster by tests/store/restored_pane.rs:671 `agent_exit_with_pane_open_keeps_the_seat` and tests/identity/reconcile.rs:4211. That pin's query counts retirements under the local name `memberships`, so the row's membership half rests on memberships never being touched without a retirement job; the end-to-end check is in the open sweep bead.
++- B4 (Herdr unchanged): nothing in this cluster touches Herdr.
++
++## State observed at the head
++
++- `bd` shows ht-ma6i.1 (G2), ht-ma6i.4 (G5) and ht-ma6i.11 (integration sweep) open, while their listed review blockers read closed. The ledger's last detector line reads `0 ready, waiting on deps 3`. I attribute no cause.
++- `git diff base..head` is empty for Cargo.toml, .config/nextest.toml, tests/integration/herdr_release_smoke.rs and tests/integration.rs.
++- `seat_shell_fingerprints`, `shell_continuity` and `restored_target_absence` appear only in the migration, src/service/kicks.rs and tests/store/schema.rs.
++
++## Verdict
++not ready (the spec 4.8 integration target does not exist, so no test composes B1 and B2 from a real process environment through close, un-retire and reattach)
++
++## Must fix before landing
++- Spec 4.8's end-to-end integration test is absent: no new target in Cargo.toml, no nextest group, tests/integration.rs untouched, and no added line under tests/ references the isolated Herdr helper; ht-ma6i.11, which owns reserve, launch with key, enroll, bind, close pane, send refused, un-retire, relaunch in a new pane, same seat id, ACK deadline resumed and memberships intact, is still open with every acceptance box unticked, so baseline rows B1 and B2 have only per-layer tests that never meet (the seam reviewer owns whether the production path itself is delivered).
++- Spec 4.8's live-handoff extension is absent and spec 4.4 has no test: tests/integration/herdr_release_smoke.rs (the ht-hsyg handoff test, line 1680) is unchanged and no test exercises G2 or G5 because ht-ma6i.1 and ht-ma6i.4 are still open with no product code at this head; these are spec goal items rather than baseline rows, and the product absence is for the src clusters and the seam reviewer to judge, but this cluster cannot be complete without those tests.
++
++## Untested scope
++- No test starts the real binary with `HERDR_THREADS_CONTINUITY_KEY` in its environment: tests/cli/hook.rs injects the key through `CallerEnv::from_lookup`, tests/cli/caller_location.rs:35-43 unit-tests `seat_filter(true, ..)`, and tests/integration/trust_policy.rs:2303 `kept_keyed_claim_is_decided_after_lag_with_no_further_event` writes the key into `kept_continuity_claims` and `continuity_keys` by SQL, so a break between `main`, the process-env allowlist and the wire field would pass the suite; the keyed hook path belongs in tests/hook_entrypoint.rs or the ht-ma6i.11 target.
++- Keyed replay through the real binary is unpinned: every journaled intent in tests/hook_entrypoint.rs is keyless (lines around 6751, 7570, 7735 and 7873), so a keyed lost-reply retry and a keyed stale intent superseded on the next event are covered only by the in-process tests in tests/cli/hook.rs.
++- This review ran no tests: the three newly registered modules were not executed here, because the full-suite measurement is recorded in the ledger as the caller's and a second run would duplicate it.
++
++## Deferred OK
++- `continuity_key_session::` and `reversible_session::` take `IN_PROCESS_DAEMON` (tests/service/continuity_key_session.rs fixture) but .config/nextest.toml:201 filters `service-daemon` on `resolution|composition|operator|graph_d2` only, so under nextest these ten tests run beside each other and beside that chain, contrary to the AGENTS.md rule that an in-binary mutex needs a test group; each test has its own root, so the only cost is starvation risk against the 3 s and 5 s bounds and the chain's latency budgets, graph_send already has the same gap, and adding both names to the filter fits ht-ma6i.11, whose file list already includes that config.
++- tests/cli_env_read_scan.rs:8 `NAMES` omits `HERDR_THREADS_CONTINUITY_KEY`, so the only-caller-location rule is not policed for it; no literal offends today (the sole definition is src/host/mod.rs:28, outside the scanned src/cli), and the ledger already records this from ht-ma6i.6.
++- The inserted `continuity_key: None` sits first in each `SemanticMutation` literal, away from its field order in the declaration; cosmetic, and rustfmt accepts it.

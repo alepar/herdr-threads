@@ -1,0 +1,8 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/friction.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/friction.md
+new file mode 100644
+index 000000000..f0e327999
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/friction.md
+@@ -0,0 +1,2 @@
++# friction log — 2026-11-04-graph-clone-identity
++- [2026-11-05T08:05:37Z] process · coverage finding c19 first rejected on an unchecked premise (no service doc); a grep in the same command showed docs/programmatic-service-client.md; reversed.

@@ -473,7 +473,8 @@ fn user_intent_service_send_stays_unclassified() {
             },
             claim,
             operation: OperationId::new("worker-check-in"),
-        }))
+continuity_key: None,
+}))
         .unwrap() else {
             panic!("missing check-in");
         };

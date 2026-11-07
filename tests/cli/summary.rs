@@ -159,6 +159,8 @@ impl crate::ports::LocalClient for Client {
                 open_binding: None,
                 history: empty(),
                 directory: None,
+                continuity_key: None,
+                retirement_state: None,
             })),
             Command::CheckIn(c) => {
                 let mut context = c.claim;

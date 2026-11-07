@@ -1,0 +1,289 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md
+new file mode 100644
+index 000000000..da86ef82c
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md
+@@ -0,0 +1,283 @@
++# Graph clone identity: threads side (ht-ma6i)
++
++## Goal
++
++A herdr-graph clone can treat its threads seat as its one durable identity: live handoff recovers every unnamed non-person pane seat unattended, an agent launched with a reserved continuity key reattaches its seat, a closed pane's key-bearing seat can be undone with its memberships and obligations intact, and a seat whose pane never came back stops waiting for an operator. Herdr is unchanged and no service ever places a seat.
++
++## Requirement baseline
++
++Source: decisions the user made on 2026-11-04 in the herdr-graph seat-review session, recorded in `herdr-graph/docs/reviews/2026-10-29-seat-review-H2-identity-design.md` §4 ("Decisions (user, 2026-11-04)") and relayed to this run by the coordinating seat (snSGTpBk7xGd, thread djL9qeFbXdW, message mnSG4LcYBBRT).
++
++### Human request
++
++> **D1. Continuity key: approved.**
++> **D2. Pane close retires immediately; graph undo reverses it.**
++> **D3. An agent exiting while its pane stays open keeps the seat and its memberships.**
++> Herdr will not be changed (user, 2026-10-31).
++> Mode, as the user stated in my session: fully autonomous, with both roasts on (the design roast and the code roast).
++
++### Requirements
++
++- B1 · "Continuity key: approved." · source: design §4 D1
++- B2 · "Pane close retires immediately; graph undo reverses it." · source: design §4 D2
++- B3 · "An agent exiting while its pane stays open keeps the seat and its memberships." · source: design §4 D3 (no threads change: memberships belong to the seat)
++- B4 · "Herdr will not be changed" · source: design §1
++
++### Human scope changes
++
++- none
++
++## 1. Problem description
++
++herdr-graph wants to delete its own clone re-matching and follow threads: each clone binds 1:1 and write-once to a pane seat. Four gaps stand in the way. Live handoff recovers only seats with a live top-level agent binding (ht-hsyg), so bare panes, exited-agent panes, `managed_launch`-only seats and pre-agent clones go unresolved (G2). A freshly launched agent in a restored pane has no evidence linking it to its old seat when it cannot resume a session (D1). Retirement is terminal, so graph undo cannot give a clone its seat back (D2). A seat whose target never reappears after a restart waits for an operator forever (G5).
++
++## 2. Main challenges
++
++Every recovery path must rest on evidence threads observes itself, under TRUST-POLICY's seat rules: never merge seats, never move a seat on heuristics, decide in the daemon against the canonical view. Retirement is read in about 80 SQL sites and replicated across nodes through a signed, hash-chained journal that cannot be filtered per link, so a reversible state that must "read retired to every peer" could touch all of them. Pending obligations must freeze rather than settle, and resume with their remaining time. A hook must never fail because of a conflict: a failed hook leaves an agent with no delivery at all. The reconcile pass must not grow by one Herdr read per seat (ht-kaw9).
++
++## 3. Key decisions made
++
++A reversible retirement is a real `state='retired'` seat with the same fence, whose retirement job is simply deferred, marked by a row in a new local table; every existing retired read and refusal keeps working, the few write-driving paths treat the seat as frozen (§4.3), nothing that un-retire would have to rebuild is released, and un-retire is one transaction. A continuity key is reserved by the registered service, bound to at most one live seat, and judged inside the C1 transaction; conflicts record a durable pane hold plus one alert and never fail a hook. The shell fingerprint lives in a local table, is recorded once per terminal rather than re-read per pass, and adds a seat-level path after the ht-hsyg binding-level path. G5 reuses the 10-minute observed grace with a target-absence ledger.
++
++## 4. Decision points, by section
++
++### 4.1 G2: seat-level shell fingerprint (ht-ma6i.1)
++
++**Recommended: a local table written from the observation lane, read once per terminal.** `seat_shell_fingerprints(seat_id PK, host_id, target_id, host_boot, incarnation, terminal_id, pid, start, session, tty, recorded_at)`, local and never replicated. After each completed reconciliation pass, the lane lists up to 16 resolved seats per pass on a closing Herdr host (never named, never `host kind` hc) that have no row for their current (boot, incarnation, terminal), makes one quiet `pane_shell_pid` read each, reads start, session and tty from the process table, and writes under a CAS on the seat's generation, target, terminal and incarnation. A terminal's shell does not change while its id stands, so a current row is never re-read and steady passes make no Herdr call. A shell that is unreadable, leads no session, or has no controlling tty records nothing and is retried next pass. *Accepted limit:* a seat whose pane process never leads a session on a tty has no fingerprint and waits, as it does today. A newly allocated seat gets its row on the first pass after allocation; the allocation path kicks the lane. *Accepted limit:* a seat with no row yet when a handoff happens (allocated just before it, or queued behind the 16-per-pass cap right after upgrade) has nothing to match and waits as it does today. A key conflict's hold binds only ordinary resolution: evidence-based paths (C1, ht-hsyg, shell continuity, operator) are not blocked by it, and any rebind onto the target clears the row. *Considered:* a Herdr read per seat per pass (rejected, ht-kaw9: a stalled host read multiplied by seat count); columns on `seats` (rejected: `seats` writes are replicated-state-guarded and CHECK-heavy, and the fingerprint is local evidence).
++
++**Decision path.** `decide_shell_continuity()` runs on the observation lane after `decide_process_continuity`. Candidates are unresolved (reason `other`) local unnamed seats with a saved target, a fingerprint whose incarnation differs from the published one, and no live undeclined ht-hsyg candidate binding (that path decides them, and it also reopens a binding, which is better). Person seats are out of scope (design §3 keeps them an operator case): a seat whose newest top-level binding has harness `human` is not a candidate. Judge: Herdr's `shell_pid` at the saved target equals the fingerprint pid, the process is alive with the same start stamp, it leads its session (`session == pid`) and its controlling tty equals the fingerprint tty. The saved target only selects the pane to ask, one read per seat; the kernel facts are the evidence. A cold restart cannot match: the old shells are gone. A row is deleted when its seat retires finally or is un-retired, and only a non-retired seat's row counts as a rival. Nothing is decided when another seat's fingerprint names the same pid and start, when `has_rival_in_pane` finds another seat's live or unreadable candidate process in that pane, when a kept C1 claim names the target, or when the pane has a resolved owner. Declines use the same 10-minute memory, keyed by (seat, generation, pid, start).
++
++**Transaction.** A new store decision pinned to (seat, generation), guarded like C1 process continuity: rebinds through `rebind_unresolved_seat`, releases the pane's hold, records the structural proof so the seat is structurally reconfirmed on later passes, records `allocation_decisions.kind = structural_shell_continuity`. It opens no binding: there is no session to attach. A live agent whose process the ht-hsyg path could not tie to the shell (setsid, tmux) reconnects on its next hook through ordinary check-in on the now resolved pane. *Accepted limit:* until then that idle agent is not woken, the same limit ht-hsyg documents.
++
++### 4.2 D1: continuity key (ht-ma6i.2 store, new leaf for the client side)
++
++**Variable and syntax.** `HERDR_THREADS_CONTINUITY_KEY`, an opaque string of 1 to 128 ASCII-graphic bytes (`ContinuityKey` in `protocol::ids`). The client parses it; an invalid value is treated as absent, with no diagnostic: the daemon never sees it, and a hook prints nothing on quiet paths. The core stays product-neutral.
++
++**Ownership.** `continuity_keys(key PK, owner_author_id REFERENCES service_authors, seat_id UNIQUE NULL REFERENCES seats, reserved_at, bound_at, bound_by CHECK IN ('check_in','service_reservation'))`, local and never replicated. Decided with the graph session: `ReserveContinuityKey` before launch, idempotent for the same service, refused for another; the key is released (row deleted) when its seat's retirement becomes final, in that transaction; a reserved key no seat ever presented can be released explicitly. A key with no row is unreserved: the daemon ignores it (ordinary behaviour, no binding, never un-retirable). The UNIQUE on `seat_id` and the primary key on `key` are the "one live seat per key" rule; a seat holds at most one key. Live harness env filtering is checked in the real-Herdr qualification the source design §6 requires, which is outside this run. *Considered:* recording unreserved keys as "non-service" (rejected: a second state with no consumer).
++
++**Binding an existing seat at reservation (graph request, mnSGjHOtxksb).** Clones that exist when this ships launched without a key, and Herdr's auto-resume does not carry one, so without another path a cold restart before their first keyed check-in gives a fresh agent a new seat. `ReserveContinuityKey` therefore takes an optional `seat`. It is accepted only when the seat is local, resolved or unresolved, on a Herdr host and unnamed, holds no other key, and the key is unbound or already bound to that seat. Unresolved is included so a clone whose seat is already waiting at upgrade can still gain a key; the binding moves nothing, and reattachment still needs an agent presenting the key. A key bound elsewhere, or a seat holding another key, is `Conflict`; any other seat state is refused. It binds at once. It moves nothing and places nothing. No `seat` means the ordinary reservation for a clone that has no seat yet. The graph asked also for "the service resolved the seat"; threads does not record who issued a `ResolveSeat`, and adding that would be a caller check the cooperative model does not want, so the guard is the seat's state alone. The difference in evidence is recorded: `continuity_keys.bound_by` is `check_in` (the agent presented the key) or `service_reservation` (the service asserted it), defined in TRUST-POLICY, and shown on `SeatInspect`. *Accepted limit:* a service that names the wrong seat makes that seat reversible and reattachable by the key; the model is cooperative and the service is the same user.
++
++**Hookless callers.** The one client helper also feeds the plain CLI's seat-resolving path, so a key bound elsewhere never mints a seat there. A plain call carries no native session or liveness and cannot make a reattachment claim. *Accepted limit:* a hookless harness (plain-CLI Codex) does not reattach by key; its pane stays unresolved until a hooked agent or the operator acts. threads' own `launch` and `handoff` scrub the variable from what they start. *Accepted limit:* inheritance outside threads (an agent starting a process in another pane with its own env) presents the key there and gets a `key_live_elsewhere` conflict.
++
++**Hooks that wait for a first turn.** A harness whose hook does not fire until its first turn (the Codex TUI, per AGENTS.md) presents no key while idle. *Accepted limit:* such an agent reattaches on its first turn, so a launcher that needs the seat at once starts it with a prompt. Other harnesses' start hooks are assumed to fire at start and checked in the source design §6 qualification.
++
++**Client reaction.** Conflict: the hook succeeds, no enrollment, no new model-visible text, re-presented on the next event. `ServiceBusy`: the same durable retained intent as a C1 claim, retried on the next event, and never a keyless fallback enrollment.
++
++**Scope.** Pane seats on a Herdr host only. A named seat's continuity is its name, and an hc terminal's is its core; a key presented from either is ignored.
++
++**Client side.** The hook, and the push-channel watch claim, read the variable from the caller env only for top-level, non-subagent events, and send it only when the daemon advertises `seat.continuity_key_v1`. It travels as `#[serde(default, skip_serializing_if = "Option::is_none")] continuity_key` on `ContinuityCheckIn`, `ResolveSeat` and `CheckIn`. The Claude mod forwards it to its watch child and the Hermes bridge adds it to `PANE_ENV`. A child harness in the same pane inherits it and is harmless (same seat, same key).
++
++**Decision rules (A2, inside the deciding transaction).** After the existing target and evidence guards. "Lag" is `reconciliation_lags(host)`: while a pass can still unresolve the key's seat, a refusal that depends on the seat's state is the retryable `ServiceBusy`, so a cold-restart check-in never records a false conflict.
++
++| The key K | At a pane with | Outcome |
++|---|---|---|
++| unreserved or invalid | anything | ignored; today's behaviour |
++| bound to S, S unresolved | no resolved owner (held or unowned) | reattach S to the pane through the C1 transaction: hold released, successor `cooperative_top_level` binding, `cooperative_continuity_key` in seat history. The native session need not match any binding: the key is the evidence. A C1 match on another seat is `session_matches_other_seat` |
++| bound to S, S resolved at this pane | the same seat | no-op |
++| bound to S, S resolved elsewhere | no resolved owner | conflict `key_live_elsewhere` (lag: `ServiceBusy`) |
++| bound to S, S reversibly retired | no resolved owner | conflict `key_retired_reversibly`; no new seat. The service un-retires first |
++| bound to S | a resolved owner T != S | conflict `pane_owned_by_other_seat`; T's check-in proceeds unbound |
++| reserved, unbound | seat T with no key | bound to T at T's check-in, or at the check-in that follows ordinary enrollment |
++| reserved, unbound | seat T holding K2 | conflict `seat_holds_other_key`; T's check-in proceeds, K stays unbound |
++| reserved, unbound | no owner, C1 no-match | ordinary enrollment under ordinary guards, then bound at check-in |
++| bound to S, S unresolved, on a claimless `ResolveSeat` (plain CLI, or a hook whose claim declined) | no resolved owner | refused definitively with `ContinuityKeyPending`, no seat minted, no rebind, no conflict row, no alert: not a conflict, the caller just has no evidence to offer. A hook stays quiet |
++
++`ResolveSeat` presents the key only for the caller's own pane (never `launch` resolving another pane), and a plain enrollment binds a reserved unbound key as a check-in does. "Reversibly retired" is read as the bound seat's `state='retired'`: a key that still has a seat row implies its retirement is not final, because finalization releases the key.
++
++**A keyed claim during lag needs no later event.** A claim answered `ServiceBusy` is a kept claim, and the observation worker decides it after the pass with its liveness and key, opening the binding. So a fresh idle agent launched during reconciliation lag reattaches with no next event, and the kept key blocks the G5 count.
++
++C1 by native session is unchanged when no key is presented. A key on a claim makes a kept claim keep the key too (`kept_continuity_claims` gets a nullable `continuity_key` column). Digests: a claim with no key hashes exactly as today; one with a key uses its own domain.
++
++**What a conflict does.** It records a durable row `continuity_key_conflicts(host_id, target_id PK, key, kind, seat_id NULL, owner_seat_id NULL, first_seen_at, updated_at)` and appends one row to `continuity_alerts` when the row is new or its key or kind changed. A re-judged refusal on an existing (host, target) row updates key, kind, seat and owner, keeping `first_seen_at`; an unchanged one writes nothing. `seat_id` is the key's seat; `owner_seat_id` is the pane's resolved owner the row was judged against. While the row stands and the pane has no resolved owner, ordinary resolution of that target (`ResolveSeat`, top-level enrollment, `me init`) is refused beside the restore-hold check with its own cause text, so no new seat appears. A pane with a resolved owner is not held: `pane_owned_by_other_seat` and `seat_holds_other_key` only alert, that seat keeps working, and these two kinds never become a hold. Their row clears when `owner_seat_id` stops being the pane's resolved owner. The hold-bearing kinds are `key_live_elsewhere`, `key_retired_reversibly` and `session_matches_other_seat`. **The hook does not fail:** the refusal is definitive (not retried inside the callback, not kept), the agent stays seatless, and a later event re-presents the key. A hold-bearing row clears when a later claim from the pane succeeds, when a coherent publication no longer shows the target, when the operator rebinds or creates a fresh seat on the target, or when the key the row names is released (a later refusal for another key has already replaced that name). `SeatInspect` shows one conflict on the seat holding the key: the most recently updated row naming that key, of any kind. A row naming an unbound key surfaces only in the alert feed, which carries every one. The conflict table is capped at 256 rows; past that, each claim is still refused but nothing is recorded, so that pane has no hold against keyless resolution (accepted limit: 256 concurrent conflicts is pathological; daemon log). No new model-visible text: the hook's existing restore-hold outcome carries it.
++
++**Alert surface.** Agreed: `SeatInspect` shows the conflict on the seat holding the key. "One service notification" is a pull feed, because the service connection is request/response and has no push channel, and adding one for a single event is not worth a streaming transport: `ServiceOperation::ContinuityAlerts`, a paged query over a durable log capped at the newest 256 rows, one row per new or changed conflict row. This also covers a conflict on a key with no seat yet. *Considered:* a message into a managed thread (rejected: no designated thread, and it costs recipients attention).
++
++**Trust.** Cooperative evidence, like a resumed session id: any same-uid process could present a key. New C1 row. `decide_continuity`'s `ContinuityEvidence` gains a `Key` variant with provenance `cooperative_continuity_key`.
++
++### 4.3 D2: reversible retirement (ht-ma6i.3 store and service, new leaf for facts)
++
++**Recommended: the seat really retires; only the job is deferred.** A `Closed` retirement of a seat that holds a service key runs the existing fence: `state='retired'`, `retired_at`, `retired_seq`, bindings ended `seat_retired`, offers and wake work cleared. It inserts a `reversible_retirements` row instead of a `retirements` row. Without a job nothing is settled: memberships and intervals stay as they are, requirement episodes stay, receipts and invitations stay `pending`. Existing read-only sites already do the rest, and each of these is a test, not new code:
++
++- `effective_receipt` reads `pending` on a retired seat as `RecipientRetired`; the effective membership query reads it `retired`;
++- `eligible_delivery_recipient`, direct send, explicit recipients and group fan-out already exclude a retired seat, so sends are refused as retired with today's error;
++- `record_overdue_if_pending` writes no warning for a retired seat under `TimeBasis::Decision`.
++
++**Write-driving sites.** An audit of the retired-keyed sites classified the read-only ones as recomputed on each read, so they flip back on un-retire. These write durable state or decide something that outlives the window, and each composes the frozen fragment, with one store test per path (fence, apply, un-retire, read):
++
++- `materialization.rs` `project_receipt`: a message fact applied during the window (a peer's in-flight or pre-3.1 send) writes the receipt `pending`, not terminal `recipient_retired`, so the obligation resumes on un-retire and settles on finalization;
++- `control/invitation.rs` invitee apply: the same for an invitation fact: `pending`, and no terminal `memberships` row;
++- `archival.rs` `has_live_remote_member` and `member_active_for_archival`: a seat with a reversible or unretired row counts as a live or active member, on a peer and on its home node, so a quiet thread does not auto-archive under it and replicate an archive it returns to;
++- `schema.rs` overdue and clear warning recipients for invitations: a frozen seat is still an origin, so its own outgoing invitation's warning has a `warning_recipients` row and is visible on reattach. *Accepted limit:* ACK-request warnings reach their origin through SQL triggers (`receipt_warning_origin_attention`, `receipt_warning_origin_clear`) that keep `state!='retired'`; rewriting them for one informational warning is not worth it, so a frozen seat misses those warnings and sees the state in `pending-receipts` on reattach.
++
++The rest of the write-looking sites are harmless here, and are stated so a later reader need not re-derive them: no wake is enqueued in the window because the seat has no binding to wake, and reattach's check-in delivers its pending attention; `hand_back_name` never runs on a key holder because key holders are unnamed; `no_wake_reports` rebuild from new reports; send preparation (`messages.rs`, `service_events.rs`) leaves the seat out of a window message's audience, which is the agreed "no obligations from the window" and which `.10` pins as unread history; a warning job running across un-retire attributes by the `retired_seq` it reads, an accepted imprecision for one warning. Un-retire re-bumps the directory and member revisions as retirement did. The retired read sites stay untouched; the "no predicate" claim holds for them, and these four paths are the exception.
++
++*Considered:* a new seat state or overlay (rejected: 80 read sites, each a place to forget); a new `seats.state` value would also need a rebuild of the most constrained table in the store; true un-retire that re-materializes intervals (rejected: larger, and restoring what was never released is free).
++
++`reversible_retirements(seat_id PK, state CHECK IN ('reversible','unretired'), cutover_at, reason, closure_boot, closure_epoch, closure_target, closure_generation, closure_evidence, absence_evidence, unretired_at)` holds the job's inputs. The terminal trigger is relaxed only for a seat with a `reversible` row. No timer finalizes a reversible seat: its reserving service owns the undo window, the operator can always finalize, and `seat inspect` shows the state. *Accepted limit:* a service that disappears leaves its seats retired-reversible, their obligations frozen, until an operator retires them.
++
++**Frozen means skipped, not spinning.** Due scans for overdue and soft pokes (`deadline_owner_sql`, `poke.rs`, the invitation due scan) exclude seats with a `reversible` row, so a frozen row never fills a due page and starves others.
++
++**`UnretireSeat{seat}`** by the service that owns the seat's key, otherwise `Unauthorized`; only for a `reversible` seat. One transaction: `state='unresolved'`, `unresolved_reason='other'`, `target_id` and the structural proof cleared, `retired_at` and `retired_seq` cleared, generation bumped, a new unavailability episode open; row state becomes `unretired`; every pending deadline of the seat moves forward by `unretired_at - retired_at` (`cutover_at` equals `retired_at`, so home and peers shift by the same amount) so the remaining time resumes (a deadline already past at cutover stays past by the same margin), across `receipts`, `receipt_state`, logical `prepared_recipients` receipts (a `receipt_state` row with the shifted deadline) and `invitations`; `allocation_decisions.kind = service_unretire`. The seat is never placed: no target, no binding, no hold changes. Reattachment is D1 or C1. Memberships and requirement episodes it held are simply still there, so the resumed agent has no re-acceptance to do; a requirement that went stale meanwhile is the graph's to release after reattach. Messages sent during the window are unread history on reattach, through the membership interval that never closed.
++
++An `unretired` row marks a seat waiting with no pane. Hold lift, `resolution_recovery_refusal`, `daemon health` and the reconciliation plan skip it: it protects no pane, so it is no blocker and gets no rebind suggestion, and `MarkUnresolved`/G5 never act on it. A send to an unretired seat succeeds with the ordinary unavailable warning. The row is deleted when the seat rebinds and when it retires. On a peer there is no waiting state: `seat.unretired` deletes the peer's row.
++
++**`FinalizeRetirement{seat}`** by the owning service, for a `reversible` or `unretired` seat. Reversible: inserts the `retirements` row from the saved inputs (same `cutover_at`), deletes the reversible row, releases the key and its conflict rows, authors `seat.retired` with the original `retired_at`; the job then settles obligations exactly as today, with one change: finalization advances `retired_seq` to its own decision sequence (on a peer, `seat.retired`'s), so the job's `send_seq < retired_seq` fence also covers facts applied during the window and they settle rather than stay `pending`. Unretired: an ordinary final retirement. `allocation_decisions.kind = service_finalize`. **Operator:** `seat retire` on a reversible seat finalizes it (today it would answer not-found); operator retire and `--replace` of a live seat are final and release the key.
++
++**Cross-node.** A published seat authors `seat.retired_reversible{seat, reason, retired_at}` at the fence and `seat.unretired{seat, retired_at, unretired_at}` at un-retire; finalization is the ordinary `seat.retired`, so a peer of any version retires it for good. Both are seat-home-authored, held kinds, one module each in `sync/facts/seat.rs`. On a peer: reversible sets the remote row retired and inserts a reversible row with no job; unretired restores `state='remote'` and shifts that node's own copy of the seat's pending deadlines; `seat.retired` on a reversible row inserts the job. Each is a no-op unless `retired_at` matches the current episode, and `seat.retired_reversible` on a finally retired row is a no-op, so an upgraded peer replaying parked facts in order lands correctly. A fact from a non-home origin is `failed`, as `seat.retired` is. Own-log replay of a local row takes the fence's transition, as `seat.retired` does.
++
++**The capability gate is the fact registry.** Coordinator and graph agreed "capability-gated". A hash-chained signed log cannot be filtered per link, so a per-link hello capability could not withhold these facts and would be dead code. A node that does not know a kind parks it (`parked_unknown`) and replays it at daemon start after an upgrade. *Accepted mixed-version limit:* a pre-3.1 node shows the seat live until final retirement, and its overdue keeps running; a message it sends meanwhile reaches the home node as an ordinary fact whose receipt stays frozen with the rest. This is the behaviour the graph session accepted ("a 3.0.x node would show such a seat as live"). *Accepted limit:* keys are local, so a store restored from its own log has reversible seats with no key: `UnretireSeat` and `FinalizeRetirement` answer `Unauthorized`, and only an operator can finalize them. A seat's own outgoing requests keep their deadlines while it is frozen; only what it owes is frozen.
++
++**Service v3.** New operations require `service_session_v3`: an old daemon rejects the registration, with no silent fallback, as v2 does. Registration is the only advertisement; every operation lands on this one branch and ships in one release, so no service ever sees a partial v3.
++
++**Key-bearing only.** A keyless seat's close stays final. The source design's D2 scopes un-retire to "seats whose recorded key was presented by that service's launches", and a seat gains a key at keyed check-in or through reserve-with-seat.
++
++### 4.4 G5: no limbo after restart (ht-ma6i.4)
++
++**Recommended: a target-absence ledger beside the ht-wpq4 watch.** `restored_target_absence(seat_id PK, host_id, host_boot, incarnation, target_id, seat_generation, absent_seen_at, absent_observed_ms)`, local. For an unresolved (reason `other`) seat with a saved target and no current watch row, on a closing Herdr host: a coherent publication of the current recovery boot and epoch that does not show the target, while the reconciliation marker names that boot and epoch, adds observed time with the same 30-second step cap. A publication that shows the target resets the row, and the ordinary watch rule takes over. At 10 observed minutes the seat retires through the same path as a close, reversible when it holds a service key, `closure_evidence` staying NULL and a new `absence_evidence='restored_target_absent'` on the retirement (or reversible row). A kept C1 claim for any of the seat's top-level sessions, or a kept claim whose key is the seat's key, on that server and of any age, blocks the count, as in ht-wpq4; that is the "must not retire a seat whose session has a kept claim" rule. Named seats, hc seats and `unretired` seats are out: the first two by host kind, the last by having no target. Holds lift as usual afterwards.
++
++*Accepted limit:* a seat whose session lives in another pane with no kept claim can lose the race, as ht-wpq4 documents. For a key-bearing seat that is reversible.
++
++### 4.5 Protocol shapes
++
++Settled for the graph session to code against. Names are exact.
++
++```rust
++// Service operations (service_session_v3). Mutations are journaled by `operation`.
++ServiceOperation::ReserveContinuityKey(ReserveContinuityKey { key: ContinuityKey, seat: Option<SeatId>, operation: OperationId })
++  -> ServiceResult::ContinuityKeyReserved(ContinuityKeyReservation {
++       key, owner: ServiceAuthorId, seat: Option<SeatId>, reserved_at: UtcMillis })
++ServiceOperation::ReleaseContinuityKey(ReleaseContinuityKey { key, operation })
++  -> ServiceResult::ContinuityKeyReleased(ContinuityKey)   // Conflict while a seat holds it
++ServiceOperation::UnretireSeat(UnretireSeat { seat: SeatId, operation })
++  -> ServiceResult::SeatUnretired(SeatUnretired { seat, generation: u64 })
++ServiceOperation::FinalizeRetirement(FinalizeRetirement { seat: SeatId, operation })
++  -> ServiceResult::RetirementFinalized(SeatId)
++ServiceOperation::ContinuityAlerts(ServiceContinuityAlertsQuery { page: PageRequest })   // query
++  -> ServiceResult::ContinuityAlerts(Page<ContinuityAlert {
++       ordinal: u64, key: ContinuityKey, seat: Option<SeatId>,
++       host: HostLocator, pane: HostTargetId, kind: ContinuityConflictKind, at: UtcMillis }>)
++
++enum ContinuityConflictKind {   // snake_case on the wire
++    KeyLiveElsewhere, KeyRetiredReversibly, PaneOwnedByOtherSeat,
++    SessionMatchesOtherSeat, SeatHoldsOtherKey,
++}
++
++// SeatInspection (the public SeatInspect read): new optional fields, absent when None.
++continuity_key: Option<SeatContinuityKey {
++    key: ContinuityKey, owner: ServiceAuthorId, bound_by: ContinuityKeyBinding,   // "check_in" | "service_reservation"
++    conflict: Option<ContinuityKeyConflict {
++        host: HostLocator, pane: HostTargetId, kind: ContinuityConflictKind, first_seen_at: UtcMillis } > }>,
++retirement_state: Option<SeatRetirementState>,   // "reversible" | "final"; present iff the seat reads retired
++```
++
++`summary.continuity` stays `retired` for a reversible seat; `retirement` (the job status) is `None` until finalized; after un-retire `summary.continuity` is `unresolved` with `target: None`. The environment variable is `HERDR_THREADS_CONTINUITY_KEY`; the native capability is `seat.continuity_key_v1`; a conflict on an unbound key surfaces only in `ContinuityAlerts`.
++
++Schema delta 16 adds the tables above and rebuilds `allocation_decisions` with `structural_shell_continuity`, `cooperative_continuity_key`, `service_unretire` and `service_finalize` (the 0012 pattern). Provenance values are defined in TRUST-POLICY in the same commit that first writes them.
++
++### 4.6 Trust policy
++
++C1's "exactly four ways" becomes six (shell continuity, continuity key). New sections: *Continuity key (ht-ma6i.2)*, *Reversible retirement (ht-ma6i.3)*, and a G5 rule beside *Restored-pane retirement*. Accepted limits are listed above. The ht-hsyg decision record gains the G2 extension; D1 and D2 get decision records. Each bead updates the policy in its own commits.
++
++### 4.7 Delivery contract and token efficiency
++
++No wake, nudge or check-in text changes. A reversibly retired seat has no bindings, so it gets no delivery or nudge. No new model-visible string; `seat inspect` machine output gains the two optional fields and its compact and human output gains `retired (reversible)` (9 bytes more than `retired`, operator-facing) and one `key` line (4 bytes plus the key and owner) when a key is held.
++
++### 4.8 Testing
++
++Unit and store tests per bead. Multi-node apply tests for the facts, including an old-node simulation (registry without the kinds: parks, then replays). An integration test on an isolated Herdr session (`scripts/lib/isolated-herdr.sh`) with stand-in harnesses goes end to end: reserve, launch with key, enroll, bind, close pane, send refused, un-retire, relaunch with the key in a new pane, same seat id, ACK deadline resumed, memberships intact. Live handoff on bare and exited-agent panes extends the existing ht-hsyg handoff test through the same isolated mechanism. Nothing touches the real Herdr server.
++
++## Key abstractions
++
++**`store::continuity_keys`** — new module, the ledger of reserved keys and their conflicts.
++- Owns: `continuity_keys`, `continuity_key_conflicts` and `continuity_alerts`, with their rules: reserve (idempotent per service), release, bind, read a seat's key, record a conflict plus one alert when the row is new or changed, every clearing rule in §4.2, and both 256-row caps.
++- Hides: the row shapes behind "one live seat per key", and the fact that a conflict and its alert are one write.
++- Must not: decide the §4.2 outcome (`KeyVerdict` does), read the environment, move a seat, or know about hooks.
++- Relationships: called by `decide_continuity`, ordinary resolution, check-in, `service_controls::operate`, the retirement finalization path and publication cleanup. It depends only on the store connection types.
++- Lifecycle: stateless functions over the caller's transaction; the state is durable, local and never replicated.
++- Errors: reserve for another service, and release while a seat holds the key, are `Conflict`-class refusals. A full table is not an error: the refusal stands and a daemon log records it.
++
++**`KeyVerdict`** — new closed enum plus one pure judge, the §4.2 table as code.
++- Owns: the mapping from (key row, seat state, pane owner, seat's other key, C1 match, whether the caller has a claim, lag) to Ignore, Reattach, NoOp, Bind, EnrollThenBind, Pending (the definitive claimless refusal), Conflict(kind) or NotReady.
++- Hides: the table's row order, and the rule that lag turns a state-dependent refusal into `ServiceBusy`.
++- Must not: touch the database or read its own facts. The deciding transaction gathers the facts and acts on the verdict.
++- Relationships: one judge shared by the `ContinuityCheckIn`, `ResolveSeat` and `CheckIn` paths, so none of them restates the table. Dependencies point from the callers to the judge.
++- Lifecycle: a value per decision, never held.
++- Errors: none; a conflict is a verdict, not an error.
++
++**`store::seats::reversible`** — new module, the lifecycle of a reversible retirement (reversible → unretired or final).
++- Owns: `reversible_retirements`; `UnretireSeat` and `FinalizeRetirement`; peer application of the two new facts; the deadline shift used by both local un-retire and `seat.unretired` (`receipts`, `receipt_state`, logical `prepared_recipients`, `invitations`, keeping `receipt_due_sparse` in step); and the SQL fragments for "frozen" and "waiting with no pane".
++- Hides: which seats are frozen. The fragment is a macro like `deadline_owner_sql!`, because the receipt scans build SQL with `concat!`. `deadline_owner_sql!`, the poke scan and the invitation due scan compose it instead of restating it, as `hold lift` and the reconciliation plan compose the "waiting" fragment.
++- Must not: place a seat, touch holds, or open a binding (§4.3). It must not settle obligations either; finalization inserts the job and `advance_retirement` settles as today. It adds no predicate to the roughly 80 retired read sites.
++- Relationships: delegates the fence to `control::retirement`. Row deletion on rebind lives in `rebind_unresolved_seat`, the one chokepoint for C1, key, shell and operator rebinds.
++- Lifecycle: stateless functions over the caller's transaction; the row lives from the fence until final retirement or rebind.
++- Errors: `Unauthorized` when the caller is not the key's owner, not-found-class when the seat is in the wrong state, and the retryable `ServiceBusy "own history catching up"` while the journal hold refuses a held kind. Callers must tell that last one apart.
++
++**`RetirementInputs` and `RetirementStart`** — new value type and closed enum for what a retirement decision takes and yields.
++- Owns: `RetirementInputs` holds boot, epoch, target, generation, `closure_evidence` and `absence_evidence`, the columns of either table. `RetirementStart` is `Job(RetirementJob)` or `Reversible`.
++- Hides: that a reversible retirement has no job. This replaces today's `UPDATE retirements SET closure_evidence` on `job.id` after the call in `RetireRestoredPane`, which has no row to update in the reversible case.
++- Must not: decide the disposition; `begin_retirement_authored` does.
++- Relationships: the same inputs fill the `retirements` row directly, or the reversible row and later the `retirements` row at finalization. `ReconciliationOutcome` gains one matching variant; `reconcile.rs` matches on it, and only `RetirementStarted(job)` advances a job.
++- Lifecycle: values only.
++
++**`identity::shell_continuity`** — new module beside `process_continuity`, the kernel-fact judgment for G2.
++- Owns: reading a pane shell's fingerprint (start, session, tty), judging a saved fingerprint against Herdr's `shell_pid`, and the candidate decline keys.
++- Hides: what "same shell" means. It delegates to `process_continuity::judge` (the case where the fingerprint is the pane process) and adds pid equality and recorded-tty equality. It reuses `has_rival_in_pane`, `Verdict` and the decline TTL.
++- Must not: touch the store or call Herdr. The lane in `identity/repair.rs` does the reads, as `decide_process_continuity` does.
++- Relationships: composition over `ProcessInfo`, with no new trait; the facts come from the existing port.
++- Lifecycle: stateless. The durable state is `seat_shell_fingerprints` in a store module; the memory is the repair object's existing decline map, plus cursors.
++- Errors: an unreadable fact decides nothing and is retried next pass.
++
++**`ServiceSessionLevel`** — new ordered enum, the session version an operation requires.
++- Owns: the mapping from capability name to level, and from `ServiceOperation` to its minimum level, in one exhaustive match.
++- Hides: the `session_v2` bool and the `matches!` list in `service_connection.rs`, which v3 would otherwise double.
++- Must not: gate peer facts (§4.3: the fact registry is the gate there).
++- Lifecycle: the connection keeps it for the session.
++- Errors: `Unsupported` naming the required capability.
++
++**`ContinuityEvidence`** — extended: a `Key` variant with provenance `cooperative_continuity_key`. Today seat selection is `continuity_candidates` plus the `process_guard` closure, each run in both the validate and apply phases. It becomes one evidence-keyed selection used by both phases, so the `match` on evidence stays in one place. The pin-and-kept-claim guard is lifted out of the closure so the shell decision can share it.
++
++**`begin_retirement_authored`** — extended: the one place that chooses the disposition. `Closed` with a held key takes the reversible path and authors `seat.retired_reversible`; anything else is final and releases the key and its conflict rows in that transaction. `begin_retirement_fence` splits into the transition and the job insert, so both paths share the transition. The early idempotent lookup in `begin_retirement` must also recognise a reversible row, so a retried closure proof does not read as stale.
++
++**`materialize_seat_retired`** — extended: a reversible row no longer means a no-op. Its `changed == 0` return is where the job insert for finalization goes.
++
++**`RestoredPane` and `restored_pane_evidence`** — extended: new target-absence variants, keeping it the single definition read by `saved_seats_page` and re-derived in the applier. The kept-claim, reconciled and observed-step logic is factored inside so the watch and the ledger cannot drift. `identity/reconcile.rs` gets the matching actions.
++
++**`FactRegistry` and `HELD_KINDS`** — extended: `SeatRetiredReversible` and `SeatUnretired`, one `FactKind` each in `sync/facts/seat.rs`, one registration each, `AuthorRule::SeatHome`.
++
++**`continuity_digest` and `kept_continuity`** — extended: the keyed digest domain and the nullable key column. A claim with no key hashes as today.
++
++**`ContinuityKey`** — extended scope in `protocol::ids`: parsing is the only syntax check. One client helper reads the variable (top-level, non-subagent, capability advertised) and all three command builders use it.
++
++Gap fills the spec does not state:
++- **Conflict writes.** `execute_idempotent_transaction` rolls back when `validate` or `apply` returns `Err`, so a conflict row written inside the refused transaction is lost. The refusing closure carries the conflict out as a value, and the store call then records it in its own short immediate transaction, on the same connection, before returning the refusal. No operation result is journaled for it. `CheckIn`, which proceeds and commits, records it inline through the same ledger function.
++- **Refusal path.** The conflict-row check sits beside the `recovery_holds` check in `current_resolution_owner`. Its error code must be definitive under `is_continuity_refusal`; otherwise `repair::continuity` keeps the claim and the hook retries. Which code `resolution_recovery_refusal` returns is for the D1 store leaf to confirm.
++- **Scans need cursors.** §4.1's "up to 16 per pass" for seats with no fingerprint row can starve: a seat whose shell stays unreadable keeps its place in the listing and is retried each pass. The recording pass needs a cursor, like `process_cursor`.
++- **`ContinuityAlerts`.** It returns early as a query, as `Membership` does, because `operate` requires an operation key for everything after that point.
++
++State: the only new mutable in-memory state is the shell cursors on the identity repair object (mutex-guarded, single-lane, same lifetime as `process_cursor`). No new global state.
++
++Variation: `ContinuityConflictKind` and the §4.2 outcomes are fixed kinds, so a closed enum with `match` in `KeyVerdict`; `RetirementStart` and the reversible states likewise. Replicated seat transitions keep arriving, so they stay `FactKind` implementations chosen in `FactRegistry::builtins`. No new trait is justified: evidence kinds are closed and every process fact goes through the existing `ProcessInfo`.
++
++Walk-through: reserve goes through `operate` to `continuity_keys`. A hook presents the key, `KeyVerdict` returns Bind, and check-in binds it. Pane close reaches `begin_retirement_authored`, which writes the reversible row and authors the fact. A send is refused by existing reads, and due scans skip the seat through the frozen fragment. `UnretireSeat` shifts deadlines and the seat waits. A relaunch's hook presents the key, `KeyVerdict` returns Reattach, and the C1 transaction rebinds, deleting the `unretired` row in `rebind_unresolved_seat`. A new conflict kind touches one `ContinuityConflictKind` variant and one arm in `KeyVerdict`, with the ledger and alert feed unchanged; a new due scan composes one macro.
++
++Per spec §4.3: a reversibly retired seat is a real `state='retired'` seat — no state abstraction or overlay over the read sites, and each existing read is pinned by a test, not new code.
++Per spec §4.1: shell continuity opens no binding — so it is its own store decision, not a `ContinuityEvidence` variant in `decide_continuity`, sharing only the guard and `rebind_unresolved_seat`.
++Per spec §4.3: the capability gate is the fact registry — no per-link capability for these facts, unlike the service session level.
++
++Digest:
++- `store::continuity_keys`: owns key reservation, binding, conflicts and alerts with their caps and clearing rules; new key bookkeeping goes here;
++  callers never write these tables or judge outcomes.
++- `KeyVerdict`: owns the §4.2 outcome table as one pure judge; a new outcome or conflict kind is one variant and one arm here;
++  callers gather facts and act, and never restate the table.
++- `store::seats::reversible`: owns the reversible, unretired and final transitions, the deadline shift and the frozen and waiting SQL fragments; new lifecycle rules go here;
++  callers never restate those predicates, and it never places a seat or settles obligations.
++- `RetirementInputs` and `RetirementStart`: own what a retirement takes and whether it yielded a job; new evidence goes in the inputs;
++  callers never update `retirements` after the call or assume a job exists.
++- `identity::shell_continuity`: owns the pure G2 judgment over `ProcessInfo`, built on `process_continuity::judge`; new shell facts go here;
++  callers never compare fingerprints themselves, and it never touches the store or Herdr.
++- `ServiceSessionLevel`: owns which session version each service operation requires; a new operation is one arm in its exhaustive match;
++  callers never test session version flags or list operations.
++
++## Post-Implementation Notes
++
++*As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*

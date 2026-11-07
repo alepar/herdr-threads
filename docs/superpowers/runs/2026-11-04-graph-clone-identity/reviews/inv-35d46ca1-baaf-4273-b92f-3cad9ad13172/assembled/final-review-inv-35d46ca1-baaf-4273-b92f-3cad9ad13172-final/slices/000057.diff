@@ -1,0 +1,17 @@
+diff --git a/scripts/wire-compat-baseline.txt b/scripts/wire-compat-baseline.txt
+index 962009c1f..eeb970c61 100644
+--- a/scripts/wire-compat-baseline.txt
++++ b/scripts/wire-compat-baseline.txt
+@@ -182,6 +182,12 @@ field SeatCreatedPayload.seat
+ field SeatRetiredPayload.reason
+ field SeatRetiredPayload.retired_at
+ field SeatRetiredPayload.seat
++field SeatRetiredReversiblePayload.reason
++field SeatRetiredReversiblePayload.retired_at
++field SeatRetiredReversiblePayload.seat
++field SeatUnretiredPayload.retired_at
++field SeatUnretiredPayload.seat
++field SeatUnretiredPayload.unretired_at
+ field SeenAge.age_ms
+ field SeenAge.node
+ field SettleBatch.id

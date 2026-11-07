@@ -1,0 +1,12 @@
+diff --git a/src/cli/retry.rs b/src/cli/retry.rs
+index 2e35031c8..30073afaf 100644
+--- a/src/cli/retry.rs
++++ b/src/cli/retry.rs
+@@ -385,6 +385,7 @@ pub(crate) fn is_continuity_refusal(code: &ErrorCode) -> bool {
+                 | ErrorCode::Unsupported
+                 | ErrorCode::SequenceExhausted
+                 | ErrorCode::LivenessFingerprintRequired
++                | ErrorCode::ContinuityKeyPending
+         )
+ }
+ 

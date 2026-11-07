@@ -54,13 +54,63 @@ impl Drop for Scratch {
     }
 }
 
-/// One empty pane. While `down` is set every host call fails.
+/// One process: (start, session, tty).
+type ProcessRow = (u64, u32, Option<u64>);
+
+/// The kernel boot id every fixture fingerprint is recorded under: the host's, so the C1 process
+/// path (which reads the host's own process table) and the fake table agree.
+fn lane_boot() -> String {
+    crate::host::process_table::HostProcessTable
+        .kernel_boot()
+        .expect("kernel boot id readable")
+}
+
+/// A process table the test writes.
+#[derive(Default)]
+struct LaneProcesses(Mutex<std::collections::HashMap<u32, ProcessRow>>);
+impl ProcessInfo for LaneProcesses {
+    fn kernel_boot(&self) -> Option<String> {
+        Some(lane_boot())
+    }
+    fn process(&self, pid: u32) -> Option<ProcessRecord> {
+        self.0.lock().unwrap().get(&pid).map(|row| ProcessRecord {
+            pid,
+            parent: None,
+            start: row.0,
+            argv: Vec::new(),
+        })
+    }
+    fn terminal_session(&self, pid: u32) -> Option<TerminalSession> {
+        self.0.lock().unwrap().get(&pid).map(|row| TerminalSession {
+            session: row.1,
+            tty: row.2,
+        })
+    }
+}
+
+/// A hook run inside a shell read, after the fence admitted it.
+type OnShellRead = Box<dyn FnMut() + Send>;
+
+/// One empty pane. While `down` is set every host call fails. `shells`: what Herdr reports as a
+/// pane's process (none by default). `boot`/`epoch`: the host's current context, which a fenced
+/// shell read must match as the native host's does: the epoch before the read (`check_context`),
+/// then the epoch and the responding boot after it (`check_epoch`, `check_boot`); the snapshot it
+/// publishes is (`host`, 1), so moving them is a restart the store has not reconciled. `shell_contexts`: each
+/// shell read's (expected boot, expected epoch). `exhaust_budget_at_read`: on that read (counted
+/// from 1; 0 never) the clock jumps past the 3 s maintenance budget.
 struct LaneHost {
     clock: Arc<LaneClock>,
     sequence: AtomicU64,
     down: AtomicBool,
     snapshots: AtomicU64,
     shell_reads: AtomicU64,
+    shell_reads_by_target: Mutex<Vec<String>>,
+    shells: Mutex<std::collections::HashMap<String, u32>>,
+    boot: Mutex<String>,
+    epoch: AtomicU64,
+    shell_contexts: Mutex<Vec<(Option<String>, Option<u64>)>>,
+    exhaust_budget_at_read: AtomicU64,
+    on_shell_read: Mutex<Option<OnShellRead>>,
 }
 impl LaneHost {
     fn observation(&self, sequence: u64) -> HostObservation {
@@ -146,11 +196,53 @@ impl HostPort for LaneHost {
     }
     fn pane_shell_pid(
         &self,
-        _: &HostTargetId,
-        _: &HostCallContext,
+        target: &HostTargetId,
+        context: &HostCallContext,
     ) -> Result<Option<u32>, ApiError> {
-        self.shell_reads.fetch_add(1, Ordering::SeqCst);
-        Ok(None)
+        self.shell_contexts.lock().unwrap().push((
+            context
+                .expected_boot
+                .as_ref()
+                .map(|b| b.as_str().to_owned()),
+            context.expected_epoch,
+        ));
+        // Native `check_context`: only the epoch is compared before I/O.
+        if context.expected_boot.is_some()
+            && context.expected_epoch != Some(self.epoch.load(Ordering::SeqCst))
+        {
+            return Err(ApiError::new(
+                ErrorCode::StaleHostObservation,
+                "host context changed",
+            ));
+        }
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let reads = self.shell_reads.fetch_add(1, Ordering::SeqCst) + 1;
+        if reads == self.exhaust_budget_at_read.load(Ordering::SeqCst) {
+            self.clock.0.fetch_add(60_000, Ordering::SeqCst);
+        }
+        self.shell_reads_by_target
+            .lock()
+            .unwrap()
+            .push(target.as_str().to_owned());
+        if let Some(hook) = self.on_shell_read.lock().unwrap().as_mut() {
+            hook();
+        }
+        // Native `check_epoch` and `check_boot` after the (witnessed) response.
+        if let Some(boot) = context.expected_boot.as_ref() {
+            if self.epoch.load(Ordering::SeqCst) != epoch {
+                return Err(ApiError::new(
+                    ErrorCode::StaleHostObservation,
+                    "host connection epoch changed",
+                ));
+            }
+            if boot.as_str() != self.boot.lock().unwrap().as_str() {
+                return Err(ApiError::new(
+                    ErrorCode::StaleHostObservation,
+                    "host server incarnation changed",
+                ));
+            }
+        }
+        Ok(self.shells.lock().unwrap().get(target.as_str()).copied())
     }
     fn pane_agent_state(
         &self,
@@ -191,6 +283,7 @@ struct Rig {
     store: Arc<SqliteStore>,
     pacer: Arc<Pacer>,
     host: Arc<LaneHost>,
+    processes: Arc<LaneProcesses>,
     status: Arc<WorkerStatus>,
     evidence: Arc<HostEvidenceStatus>,
     reachability: Arc<HostReachability>,
@@ -228,7 +321,15 @@ impl Rig {
             down: AtomicBool::new(false),
             snapshots: AtomicU64::new(0),
             shell_reads: AtomicU64::new(0),
+            shell_reads_by_target: Mutex::default(),
+            shells: Mutex::default(),
+            boot: Mutex::new("host".into()),
+            epoch: AtomicU64::new(1),
+            shell_contexts: Mutex::default(),
+            exhaust_budget_at_read: AtomicU64::new(0),
+            on_shell_read: Mutex::default(),
         });
+        let processes = Arc::new(LaneProcesses::default());
         let writer = Arc::new(FairWriter::new(32));
         let identity = Arc::new(
             OrdinaryIdentity::new(
@@ -239,7 +340,8 @@ impl Rig {
                 clock.clone(),
                 writer,
             )
-            .with_observation_pacer(pacer.clone()),
+            .with_observation_pacer(pacer.clone())
+            .with_process_info(processes.clone()),
         );
         Self {
             _dir: dir,
@@ -248,6 +350,7 @@ impl Rig {
             store,
             pacer,
             host,
+            processes,
             status: Arc::new(WorkerStatus::default()),
             evidence: Arc::new(HostEvidenceStatus::default()),
             reachability: Arc::new(HostReachability::default()),
@@ -377,6 +480,7 @@ fn explicit_target_read_during_backoff_runs_one_capture() {
                 operation: OperationId::new(op),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             },
             &CallBudget {
                 deadline: MonoInstant(START + 60_000),
@@ -496,6 +600,7 @@ fn unchanged_host_cycle_commits_touch_no_wakes_mapped_table() {
                 operation: OperationId::new("op-1"),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             },
             &CallBudget {
                 deadline: MonoInstant(START + 60_000),
@@ -746,9 +851,9 @@ fn seed_other_seat_and_claim(db: &rusqlite::Connection, instance: &str) {
     )
     .unwrap();
     db.execute(
-        "INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start) \
-         VALUES ('other',1,'pane','term-old','inc-old','boot-old',1,1,'claude','SA','execution-1','cooperative_top_level',50,60,'disconnected',60,'seat_unresolved',?1,?2)",
-        rusqlite::params![pid, start as i64],
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start,liveness_boot) \
+         VALUES ('other',1,'pane','term-old','inc-old','boot-old',1,1,'claude','SA','execution-1','cooperative_top_level',50,60,'disconnected',60,'seat_unresolved',?1,?2,?3)",
+        rusqlite::params![pid, start as i64, lane_boot()],
     )
     .unwrap();
     let claim = crate::protocol::commands::ContinuityCheckIn {
@@ -763,6 +868,7 @@ fn seed_other_seat_and_claim(db: &rusqlite::Connection, instance: &str) {
             pid: u32::MAX,
             start: 1,
         }),
+        continuity_key: None,
     };
     db.execute(
         "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) \
@@ -843,4 +949,551 @@ fn a_refusal_on_an_earlier_page_survives_a_clean_last_page() {
         pass.run_to(count);
     }
     assert!(!pass.marked());
+}
+
+// --- TRUST-POLICY C1 shell continuity (ht-ma6i.1): the lane around the store's decision.
+
+const SHELL_PID: u32 = 4242;
+const SHELL_START: u64 = 7;
+const SHELL_TTY: u64 = 34817;
+
+impl Rig {
+    /// The lane is up and has published; `pane`'s shell is a session leader on its terminal.
+    fn started_with_shell() -> Self {
+        let mut rig = Self::new();
+        rig.shell_at("pane", SHELL_PID);
+        rig.process(SHELL_PID, SHELL_START, SHELL_PID, Some(SHELL_TTY));
+        rig.start();
+        rig.wait_idle(1);
+        rig
+    }
+
+    fn shell_at(&self, target: &str, pid: u32) {
+        self.host
+            .shells
+            .lock()
+            .unwrap()
+            .insert(target.to_owned(), pid);
+    }
+
+    fn process(&self, pid: u32, start: u64, session: u32, tty: Option<u64>) {
+        self.processes
+            .0
+            .lock()
+            .unwrap()
+            .insert(pid, (start, session, tty));
+    }
+
+    fn resolve_pane(&self) -> SeatId {
+        self.identity
+            .resolve(
+                ResolveSeat {
+                    host: crate::test_support::test_host_locator(),
+                    target: HostTargetId::new("pane"),
+                    operation: OperationId::new(format!("op-{}", uuid::Uuid::new_v4())),
+                    locator_hint: None,
+                    tmux_hint: None,
+                    continuity_key: None,
+                },
+                &CallBudget {
+                    deadline: MonoInstant(START + 60_000),
+                    cancellation: Cancellation::default(),
+                },
+            )
+            .expect("seat resolved")
+    }
+
+    fn db_conn(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(&self.db).unwrap()
+    }
+
+    fn scalar(&self, sql: &str) -> i64 {
+        self.db_conn().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    fn fingerprint_rows(&self) -> i64 {
+        self.scalar("SELECT count(*) FROM seat_shell_fingerprints")
+    }
+
+    fn shell_reads(&self) -> u64 {
+        self.host.shell_reads.load(Ordering::SeqCst)
+    }
+
+    fn pass(&self) {
+        let idle = self.pacer.idle_events();
+        self.advance(5_000);
+        self.wait_idle(idle + 1);
+    }
+
+    fn shell_targets(&self) -> Vec<String> {
+        self.host.shell_reads_by_target.lock().unwrap().clone()
+    }
+
+    /// A resolved seat of a past incarnation the published one left at `pane`, with a row.
+    fn left_by_handoff(&self, seat: &str, target: &str, pid: u32, start: u64) {
+        let db = self.db_conn();
+        db.execute(
+            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) \
+             VALUES (?1,?2,'unresolved','other','native',?3,2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+            rusqlite::params![seat, self.instance, target],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO seat_shell_fingerprints(seat_id,host_id,target_id,host_boot,incarnation,terminal_id,pid,start,session,tty,kernel_boot,recorded_at) \
+             VALUES (?1,(SELECT min(host_id) FROM herdr_hosts),?2,'old-boot','old-incarnation','old-term',?3,?4,?3,?5,?6,1)",
+            rusqlite::params![seat, target, pid, start as i64, SHELL_TTY as i64, lane_boot()],
+        )
+        .unwrap();
+    }
+
+    fn seat_state(&self, seat: &str) -> String {
+        self.db_conn()
+            .query_row("SELECT state FROM seats WHERE id=?1", [seat], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn shell_decisions(&self, seat: &str) -> i64 {
+        self.db_conn()
+            .query_row(
+                "SELECT count(*) FROM allocation_decisions WHERE seat_id=?1 AND kind='structural_shell_continuity'",
+                [seat],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+}
+
+/// Allocation asks the lane for its own capture (`with_read_inner`), so no clock tick is needed.
+/// Kills: an allocation that leaves the row to the next cadence, or to no pass at all.
+#[test]
+fn new_bare_seat_gets_its_row_with_no_other_trigger() {
+    let rig = Rig::started_with_shell();
+    let before = rig.clock.monotonic_now();
+    let seat = rig.resolve_pane();
+    rig.wait("the fingerprint row", &|| rig.fingerprint_rows() == 1);
+    assert_eq!(rig.clock.monotonic_now(), before, "the clock never moved");
+    assert_eq!(
+        rig.host.shell_contexts.lock().unwrap()[0],
+        (Some("host".to_owned()), Some(1)),
+        "the read is fenced to the listing's publication"
+    );
+    let db = rig.db_conn();
+    let row: (String, u32, i64, u32, i64) = db
+        .query_row(
+            "SELECT seat_id,pid,start,session,tty FROM seat_shell_fingerprints",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            seat.as_str().to_owned(),
+            SHELL_PID,
+            SHELL_START as i64,
+            SHELL_PID,
+            SHELL_TTY as i64
+        )
+    );
+}
+
+/// Kills: re-reading a seat that has its row, the ht-kaw9 shape: a stalled host read multiplied
+/// by seat count on every pass.
+#[test]
+fn current_row_makes_no_host_call() {
+    let rig = Rig::started_with_shell();
+    rig.resolve_pane();
+    rig.wait("the fingerprint row", &|| rig.fingerprint_rows() == 1);
+    rig.wait("the lane to settle", &|| rig.pacer.idle_events() >= 2);
+    let reads = rig.shell_reads();
+    assert!(reads >= 1, "the row came from a read");
+    for _ in 0..3 {
+        rig.pass();
+    }
+    assert_eq!(rig.shell_reads(), reads, "steady passes read nothing");
+    assert_eq!(rig.fingerprint_rows(), 1);
+}
+
+/// Seed `n` resolved seats at their own panes, on the published incarnation.
+fn seed_resolved(rig: &Rig, n: usize) {
+    let db = rig.db_conn();
+    for i in 0..n {
+        db.execute(
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) \
+             VALUES (?1,?2,'resolved','native',?3,1,1,'term','incarnation','coherent_enumeration','host',1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+            rusqlite::params![format!("seat-{i:02}"), rig.instance, format!("pane-{i:02}")],
+        )
+        .unwrap();
+    }
+}
+
+/// Kills: more than 16 reads a pass; a cursor that stays on an unreadable seat, which would starve
+/// the ones behind it; a cursor that never wraps, which would never retry one.
+#[test]
+fn an_unreadable_shell_cannot_starve_the_others_and_reads_are_capped() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait_idle(1);
+    seed_resolved(&rig, 20);
+    // Every seat's shell unreadable but the last.
+    rig.shell_at("pane-19", SHELL_PID);
+    rig.process(SHELL_PID, SHELL_START, SHELL_PID, Some(SHELL_TTY));
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.shell_reads(), 16, "one page");
+    assert_eq!(rig.fingerprint_rows(), 0);
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.shell_reads(), 20, "the rest of the listing");
+    assert_eq!(rig.fingerprint_rows(), 1, "the seat behind the unreadable");
+    // The cursor wrapped: the listing starts over, without the seat that has its row.
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.shell_reads(), 36);
+    let reads = rig.host.shell_reads_by_target.lock().unwrap().clone();
+    assert_eq!(reads[20], "pane-00");
+}
+
+/// A shell that leads no session or has no terminal records nothing and is retried.
+#[test]
+fn a_shell_with_no_session_or_terminal_records_nothing() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait_idle(1);
+    seed_resolved(&rig, 1);
+    rig.shell_at("pane-00", SHELL_PID);
+    rig.process(SHELL_PID, SHELL_START, 1, Some(SHELL_TTY));
+    rig.identity.record_shell_fingerprints().unwrap();
+    rig.process(SHELL_PID, SHELL_START, SHELL_PID, None);
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.fingerprint_rows(), 0);
+    assert_eq!(rig.shell_reads(), 2, "retried on the next pass");
+    rig.process(SHELL_PID, SHELL_START, SHELL_PID, Some(SHELL_TTY));
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.fingerprint_rows(), 1);
+}
+
+/// The whole path: a seat a handoff left at `pane`, its shell alive there. Kills: the lane never
+/// deciding, or deciding outside its completed pass.
+#[test]
+fn a_surviving_shell_resolves_its_seat_on_the_lane() {
+    let rig = Rig::started_with_shell();
+    rig.left_by_handoff("bare", "pane", SHELL_PID, SHELL_START);
+    rig.pass();
+    assert_eq!(rig.seat_state("bare"), "resolved");
+    assert_eq!(rig.shell_decisions("bare"), 1);
+    assert_eq!(
+        rig.scalar("SELECT count(*) FROM occupant_bindings"),
+        0,
+        "no binding opened"
+    );
+}
+
+/// Each mismatch of the facts decides nothing. Kills: any one fact dropped from the judgment.
+#[test]
+fn a_mismatch_decides_nothing() {
+    type Scene = fn(&Rig);
+    let scenes: [(&str, Scene); 5] = [
+        ("new shell after a cold restart", |rig| {
+            rig.shell_at("pane", 9999);
+            rig.process(9999, 1, 9999, Some(SHELL_TTY));
+        }),
+        ("other tty", |rig| {
+            rig.process(SHELL_PID, SHELL_START, SHELL_PID, Some(SHELL_TTY + 1));
+        }),
+        ("not session leader", |rig| {
+            rig.process(SHELL_PID, SHELL_START, 1, Some(SHELL_TTY));
+        }),
+        ("pid reused", |rig| {
+            rig.process(SHELL_PID, SHELL_START + 1, SHELL_PID, Some(SHELL_TTY));
+        }),
+        ("unread pane", |rig| {
+            rig.host.shells.lock().unwrap().clear();
+        }),
+    ];
+    for (what, scene) in scenes {
+        let rig = Rig::started_with_shell();
+        rig.left_by_handoff("bare", "pane", SHELL_PID, SHELL_START);
+        scene(&rig);
+        rig.pass();
+        assert_eq!(rig.seat_state("bare"), "unresolved", "{what}");
+        assert_eq!(rig.shell_decisions("bare"), 0, "{what}");
+    }
+}
+
+/// Kills: a decline that is forgotten (a host read per pass), one that never expires, or a gone
+/// process remembered as ruled out.
+#[test]
+fn a_decline_is_remembered_ten_minutes_and_gone_is_retried() {
+    let mut rig = Rig::started_with_shell();
+    // The lane is stopped, so only the direct calls below read the pane.
+    rig.stop();
+    rig.left_by_handoff("bare", "pane", SHELL_PID, SHELL_START);
+    // Another shell in the pane: ruled out.
+    rig.shell_at("pane", 9999);
+    rig.process(9999, 1, 9999, Some(SHELL_TTY));
+    rig.identity.decide_shell_continuity().unwrap();
+    let reads = rig.shell_reads();
+    assert_eq!(reads, 1);
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.shell_reads(), reads, "the decline stands");
+    // Just short of the TTL.
+    rig.clock.0.fetch_add(10 * 60 * 1000 - 1, Ordering::SeqCst);
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.shell_reads(), reads, "still within ten minutes");
+    rig.clock.0.fetch_add(1, Ordering::SeqCst);
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.shell_reads(), reads + 1, "read again after ten minutes");
+
+    // The pane reports the saved pid and the process is dead: gone is no decline.
+    let mut gone = Rig::started_with_shell();
+    gone.stop();
+    gone.left_by_handoff("bare", "pane", SHELL_PID, SHELL_START);
+    gone.processes.0.lock().unwrap().clear();
+    for reads in 1..=2 {
+        gone.identity.decide_shell_continuity().unwrap();
+        assert_eq!(gone.shell_reads(), reads, "gone is retried");
+    }
+    assert_eq!(gone.seat_state("bare"), "unresolved");
+}
+
+/// A decline is keyed by the fingerprint: another generation is judged afresh.
+#[test]
+fn a_decline_does_not_outlive_the_seat_generation() {
+    let rig = Rig::started_with_shell();
+    rig.left_by_handoff("bare", "pane", SHELL_PID, SHELL_START);
+    rig.shell_at("pane", 9999);
+    rig.process(9999, 1, 9999, Some(SHELL_TTY));
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.shell_reads(), 1);
+    rig.db_conn()
+        .execute(
+            "UPDATE seats SET generation=generation+1 WHERE id='bare'",
+            [],
+        )
+        .unwrap();
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.shell_reads(), 2);
+}
+
+/// A live binding process of `seat`: a process continuity candidate at `pane`, pid `pid`.
+fn seed_live_binding(rig: &Rig, seat: &str, pid: u32, start: u64) {
+    rig.db_conn().execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start,liveness_boot) \
+         VALUES (?1,1,'pane','term-old','old-incarnation','old-boot',1,1,'claude','session-'||?1,'execution-'||?1,'cooperative_top_level',50,60,'disconnected',60,'seat_unresolved',?2,?3,?4)",
+        rusqlite::params![seat, pid, start as i64, lane_boot()],
+    )
+    .unwrap();
+}
+
+/// A live undeclined ht-hsyg candidate is left to that path, which also reopens a binding. Kills:
+/// the shell path stealing the seat and leaving the agent unbound. Once the process exited or was
+/// ruled out, the shell path decides.
+#[test]
+fn a_live_process_candidate_is_left_to_its_own_path() {
+    let rig = Rig::started_with_shell();
+    rig.left_by_handoff("agent", "pane", SHELL_PID, SHELL_START);
+    // The binding's process is in another session, and alive, so its path has not declined it yet.
+    rig.process(777, 3, SHELL_PID, Some(SHELL_TTY));
+    seed_live_binding(&rig, "agent", 777, 3);
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.seat_state("agent"), "unresolved");
+    assert_eq!(rig.shell_reads(), 0, "left to its path, at no host read");
+    rig.processes.0.lock().unwrap().remove(&777);
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.seat_state("agent"), "resolved", "an exited agent");
+    assert_eq!(rig.shell_decisions("agent"), 1);
+}
+
+/// Kills: deciding past another seat's fingerprint, or another seat's live or unreadable process.
+#[test]
+fn a_rival_decides_nothing() {
+    // Another seat's fingerprint names the same shell.
+    let rig = Rig::started_with_shell();
+    rig.left_by_handoff("bare", "pane", SHELL_PID, SHELL_START);
+    rig.left_by_handoff("rival", "other-pane", SHELL_PID, SHELL_START);
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.seat_state("bare"), "unresolved");
+    assert_eq!(rig.seat_state("rival"), "unresolved");
+    assert_eq!(rig.shell_reads(), 0, "a rival fingerprint costs no read");
+
+    // Another seat saved at the pane has its process there.
+    let rig = Rig::started_with_shell();
+    rig.left_by_handoff("bare", "pane", SHELL_PID, SHELL_START);
+    let db = rig.db_conn();
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) \
+         VALUES ('other',?1,'unresolved','other','native','pane',2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+        [&rig.instance],
+    )
+    .unwrap();
+    rig.process(777, 3, SHELL_PID, Some(SHELL_TTY));
+    seed_live_binding(&rig, "other", 777, 3);
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.seat_state("bare"), "unresolved");
+    assert_eq!(rig.shell_decisions("bare"), 0);
+}
+
+/// Kills: an unfenced shell read recording the new incarnation's shell under the old (boot,
+/// incarnation, terminal) row, which a later cold restart could match as continuous.
+#[test]
+fn a_restart_between_listing_and_read_records_nothing() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait_idle(1);
+    rig.stop();
+    seed_resolved(&rig, 1);
+    rig.shell_at("pane-00", SHELL_PID);
+    rig.process(SHELL_PID, SHELL_START, SHELL_PID, Some(SHELL_TTY));
+    // Herdr restarted; no pass has reconciled it, so the store still lists under (host, 1).
+    *rig.host.boot.lock().unwrap() = "host-2".into();
+    rig.host.epoch.store(2, Ordering::SeqCst);
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.fingerprint_rows(), 0);
+    assert_eq!(rig.shell_reads(), 0, "refused before I/O");
+    assert_eq!(
+        rig.host.shell_contexts.lock().unwrap().clone(),
+        vec![(Some("host".to_owned()), Some(1))],
+        "fenced to the listing's publication"
+    );
+    // The same seat records once the host is back on that context: the fence refused it.
+    *rig.host.boot.lock().unwrap() = "host".into();
+    rig.host.epoch.store(1, Ordering::SeqCst);
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.fingerprint_rows(), 1);
+}
+
+/// Kills: a shell read fenced only on the connection epoch recording a restarted server's shell
+/// under the old row (a Herdr restart on the same socket leaves the native epoch unchanged).
+#[test]
+fn a_restart_that_keeps_the_epoch_records_nothing() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait_idle(1);
+    rig.stop();
+    seed_resolved(&rig, 1);
+    rig.shell_at("pane-00", SHELL_PID);
+    rig.process(SHELL_PID, SHELL_START, SHELL_PID, Some(SHELL_TTY));
+    // Herdr restarted under the same connection epoch; the store still lists under (host, 1).
+    *rig.host.boot.lock().unwrap() = "host-2".into();
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.fingerprint_rows(), 0);
+    assert_eq!(
+        rig.shell_reads(),
+        1,
+        "admitted before I/O; refused on the response"
+    );
+    assert_eq!(
+        rig.host.shell_contexts.lock().unwrap().clone(),
+        vec![(Some("host".to_owned()), Some(1))]
+    );
+    *rig.host.boot.lock().unwrap() = "host".into();
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.fingerprint_rows(), 1);
+}
+
+/// Kills: a shell read with no post-read epoch check.
+#[test]
+fn an_epoch_moved_during_the_read_records_nothing() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait_idle(1);
+    rig.stop();
+    seed_resolved(&rig, 1);
+    rig.shell_at("pane-00", SHELL_PID);
+    rig.process(SHELL_PID, SHELL_START, SHELL_PID, Some(SHELL_TTY));
+    let host = Arc::downgrade(&rig.host);
+    *rig.host.on_shell_read.lock().unwrap() = Some(Box::new(move || {
+        if let Some(host) = host.upgrade() {
+            host.epoch.store(2, Ordering::SeqCst);
+        }
+    }));
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.shell_reads(), 1, "the read itself was admitted");
+    assert_eq!(rig.fingerprint_rows(), 0);
+}
+
+/// Kills: a write that trusts the seat columns alone after reconciliation published another
+/// epoch between the read and the write.
+#[test]
+fn a_publication_moved_during_the_read_records_nothing() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait_idle(1);
+    rig.stop();
+    seed_resolved(&rig, 1);
+    rig.shell_at("pane-00", SHELL_PID);
+    rig.process(SHELL_PID, SHELL_START, SHELL_PID, Some(SHELL_TTY));
+    let db = rig.db.clone();
+    let publish = move |epoch: i64| {
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute(
+                "UPDATE snapshot_generations SET epoch=?1 WHERE id=(SELECT active_snapshot_id FROM herdr_hosts)",
+                [epoch],
+            )
+            .unwrap();
+    };
+    *rig.host.on_shell_read.lock().unwrap() = Some(Box::new(move || publish(2)));
+    rig.identity.record_shell_fingerprints().unwrap();
+    assert_eq!(rig.shell_reads(), 1, "the read itself was admitted");
+    assert_eq!(rig.fingerprint_rows(), 0);
+}
+
+/// `n` unresolved seats `bare-NN` a handoff left at `pane-NN`, each with its own shell (no rival)
+/// and no pane reporting one, so each judged candidate costs exactly one read and is retried.
+fn seed_left_by_handoff(rig: &Rig, n: usize) {
+    for i in 0..n {
+        let pid = 5_000 + u32::try_from(i).unwrap();
+        rig.left_by_handoff(&format!("bare-{i:02}"), &format!("pane-{i:02}"), pid, 1);
+    }
+}
+
+fn panes(range: std::ops::Range<usize>) -> Vec<String> {
+    range.map(|i| format!("pane-{i:02}")).collect()
+}
+
+/// Kills: a cap other than 32, a cursor that does not advance, or one that never wraps.
+#[test]
+fn shell_decisions_page_at_32_and_the_cursor_wraps() {
+    let page = crate::ports::SHELL_CONTINUITY_CANDIDATES_PER_PASS;
+    assert_eq!(page, 32);
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait_idle(1);
+    rig.stop();
+    seed_left_by_handoff(&rig, page + 1);
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.shell_targets(), panes(0..page), "one page");
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(
+        rig.shell_targets()[page..],
+        panes(page..page + 1),
+        "the cursor advanced"
+    );
+    // That page was short: the cursor reset and the listing starts over.
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.shell_targets()[page + 1..], panes(0..page));
+}
+
+/// Kills: a budget stop that loses the cursor, skips a seat or keeps going.
+#[test]
+fn an_exhausted_budget_stops_the_page_and_resumes_after_the_last_judged() {
+    const K: usize = 5;
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait_idle(1);
+    rig.stop();
+    seed_left_by_handoff(&rig, 2 * K);
+    rig.host
+        .exhaust_budget_at_read
+        .store(u64::try_from(K).unwrap(), Ordering::SeqCst);
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.shell_targets(), panes(0..K), "stopped at the budget");
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(
+        rig.shell_targets()[K..],
+        panes(K..2 * K),
+        "resumed after the last judged"
+    );
+    // The page completed: the listing wraps.
+    rig.identity.decide_shell_continuity().unwrap();
+    assert_eq!(rig.shell_targets()[2 * K..], panes(0..2 * K));
 }

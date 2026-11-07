@@ -475,8 +475,13 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api
             if is_command_field(name, fields) {
                 continue;
             }
-            // Shown as its own compact line below (ht-xg88).
-            if name == "directory" && matches!(result, CommandResult::SeatInspect(_)) {
+            // Shown as their own compact lines below (ht-xg88, ht-ma6i); `--json` keeps the rest
+            // of the key's fields.
+            if matches!(
+                name.as_str(),
+                "directory" | "continuity_key" | "retirement_state"
+            ) && matches!(result, CommandResult::SeatInspect(_))
+            {
                 continue;
             }
             text.push_str(name);
@@ -498,6 +503,16 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api
             && let Some(directory) = &inspection.directory
         {
             text.push_str(&compact::inspect_directory_line(directory));
+        }
+        if let CommandResult::SeatInspect(inspection) = result
+            && let Some(key) = &inspection.continuity_key
+        {
+            text.push_str(&compact::inspect_key_line(key));
+        }
+        if let CommandResult::SeatInspect(inspection) = result
+            && let Some(state) = inspection.retirement_state
+        {
+            text.push_str(compact::inspect_retirement_line(state));
         }
     } else {
         text.push_str("value: ");

@@ -1,0 +1,12 @@
+diff --git a/tests/store/notice_replay.rs b/tests/store/notice_replay.rs
+index 94a84d925..6282af72b 100644
+--- a/tests/store/notice_replay.rs
++++ b/tests/store/notice_replay.rs
+@@ -187,6 +187,7 @@ fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
+         claim,
+         operation: OperationId::new(operation),
+         lineage_parent: None,
++        continuity_key: None,
+     });
+     match f.service.handle(command, peer(), &budget()).unwrap() {
+         CommandResult::CheckedIn(result) => result.context,

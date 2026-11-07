@@ -1,0 +1,38 @@
+diff --git a/tests/store/facade.rs b/tests/store/facade.rs
+index 5fa42a130..6df94685f 100644
+--- a/tests/store/facade.rs
++++ b/tests/store/facade.rs
+@@ -858,6 +858,8 @@ fn public_facade_retirement_fences_before_bounded_cleanup() {
+         },
+         &budget(),
+     )
++    .unwrap()
++    .into_job()
+     .unwrap();
+     let db = store.context.open_writer().unwrap();
+     assert_eq!(
+@@ -963,6 +965,8 @@ fn public_facade_mixed_retirement_keeps_cutover_across_quanta_and_reopen() {
+         },
+         &budget(),
+     )
++    .unwrap()
++    .into_job()
+     .unwrap();
+     assert_eq!(job.retired_at, UtcMillis(100));
+     let read = ReadContext {
+@@ -1413,6 +1417,7 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
+         },
+         claim: fixture_claim("s1", "p1"),
+         operation: OperationId::new("check-in"),
++        continuity_key: None,
+     };
+     let permit = StorePort::issue_cooperative_permit(
+         &store,
+@@ -1496,6 +1501,7 @@ fn lifecycle_check_in_resets_only_its_own_offer() {
+             claim,
+             operation: OperationId::new(operation),
+             lineage_parent: None,
++            continuity_key: None,
+         };
+         let permit = StorePort::issue_cooperative_permit(
+             &store,

@@ -1,0 +1,13 @@
+diff --git a/integrations/claude/mod/tests/frame_golden.test.ts b/integrations/claude/mod/tests/frame_golden.test.ts
+index dab4c354b..a8f1d7dec 100644
+--- a/integrations/claude/mod/tests/frame_golden.test.ts
++++ b/integrations/claude/mod/tests/frame_golden.test.ts
+@@ -19,7 +19,7 @@ for (const [name, golden] of Object.entries(cases)) {
+ 
+ test('the golden cases cover every DP2 case', () => {
+   expect(Object.keys(cases).sort()).toEqual(
+-    ['attention', 'controls', 'empty', 'markers', 'multiline', 'name-equals-id', 'priority', 'tagged-ids'],
++    ['attention', 'controls', 'empty', 'markers', 'multiline', 'name-equals-id', 'priority', 'sender-label', 'tagged-ids'],
+   )
+ })
+ 

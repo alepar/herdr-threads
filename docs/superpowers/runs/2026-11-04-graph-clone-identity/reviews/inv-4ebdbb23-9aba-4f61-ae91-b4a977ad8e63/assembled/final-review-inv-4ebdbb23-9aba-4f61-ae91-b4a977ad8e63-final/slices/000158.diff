@@ -1,0 +1,331 @@
+diff --git a/tests/store/restored_pane.rs b/tests/store/restored_pane.rs
+index af5ecf60f..17eeaa0d0 100644
+--- a/tests/store/restored_pane.rs
++++ b/tests/store/restored_pane.rs
+@@ -5,8 +5,9 @@ use super::*;
+ use crate::identity::reconcile::plan_page;
+ use crate::ports::{
+     EnumerationEvidence, EvidenceKind, ExecutionEvidence, GuardedSeatTransition, HostObservation,
+-    HostSnapshot, HostUiState, IncarnationEvidence, ObservationProvenance, ReconciliationAction,
+-    ReconciliationOutcome, SnapshotHeader, StructuralOccupancy,
++    HostSnapshot, HostUiState, IncarnationEvidence, ObservationProvenance,
++    OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome,
++    ReconciliationAction, ReconciliationOutcome, SnapshotHeader, StructuralOccupancy,
+ };
+ use crate::protocol::ids::HostCallId;
+ use crate::protocol::time::{Cancellation, Clock, MonoInstant};
+@@ -538,3 +539,314 @@ fn an_expired_kept_claim_blocks_and_a_lagging_marker_counts_nothing() {
+     }
+     assert!(passes >= RESTORED_PANE_GRACE_MS / STEP, "{passes}");
+ }
++
++/// Seat `s2` resolved on `w1:p2`, its structural proof in the current incarnation.
++fn seed_live_seat(fx: &Fx) {
++    fx.conn.execute(&format!("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES ('s2','{INSTANCE}','resolved','native','w1:p2',1,1,'term-b','inc-2','coherent_enumeration','b2',1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))"), []).unwrap();
++    fx.conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,liveness) VALUES ('s2',1,'w1:p2','term-b','inc-2','b2',1,1,'claude','SB','execution-2','cooperative_top_level',100,'connected')", []).unwrap();
++}
++
++/// Gives `seat` a continuity key, as a service's reserve-with-seat does.
++fn hold_key(fx: &mut Fx, seat: &str) {
++    let tx = fx.conn.transaction().unwrap();
++    let author =
++        crate::store::service_substrate::ensure_reserved_author(&tx, INSTANCE, UtcMillis(0))
++            .unwrap();
++    let key = crate::protocol::ids::ContinuityKey::new(format!("{seat}-key"));
++    crate::store::continuity_keys::reserve(
++        &tx,
++        &author,
++        &crate::protocol::service::ReserveContinuityKey {
++            key,
++            seat: Some(SeatId::new(seat)),
++            operation: crate::protocol::ids::OperationId::new("reserve"),
++        },
++        UtcMillis(1),
++    )
++    .unwrap();
++    tx.commit().unwrap();
++}
++
++fn reversible_count(fx: &Fx, seat: &str) -> i64 {
++    fx.conn
++        .query_row(
++            "SELECT count(*) FROM reversible_retirements WHERE seat_id=?1",
++            [seat],
++            |r| r.get(0),
++        )
++        .unwrap()
++}
++
++/// The two plan-driven `Closed` routes of a key holder. Kills: a reconcile path that still inserts
++/// a job (and so an outcome that advances one), or loses the closure evidence.
++#[test]
++fn closed_retirement_of_key_holder_by_the_plan_writes_a_reversible_row() {
++    // The same-incarnation close: the pane of a proved seat is gone from a coherent publication.
++    let mut fx = fixture();
++    fx.publish_and_pass(OPEN);
++    seed_live_seat(&fx);
++    hold_key(&mut fx, "s2");
++    let publication = fx.publish(&[("w1:p1", "term-a")]);
++    let (_, outcomes) = fx.pass(&publication);
++    assert!(
++        outcomes
++            .iter()
++            .any(|o| matches!(o, ReconciliationOutcome::RetiredReversibly)),
++        "{outcomes:?}"
++    );
++    assert!(
++        !outcomes
++            .iter()
++            .any(|o| matches!(o, ReconciliationOutcome::RetirementStarted(_)))
++    );
++    let state: String = fx
++        .conn
++        .query_row("SELECT state FROM seats WHERE id='s2'", [], |r| r.get(0))
++        .unwrap();
++    assert_eq!(state, "retired");
++    assert_eq!(reversible_count(&fx, "s2"), 1);
++
++    // The restored-pane close: the watch's grace elapses for a key holder.
++    let mut fx = fixture();
++    hold_key(&mut fx, "s1");
++    fx.publish_and_pass(OPEN);
++    fx.publish_and_pass(CLOSED);
++    for _ in 0..RESTORED_PANE_GRACE_MS / STEP {
++        fx.advance(STEP);
++        fx.publish_and_pass(CLOSED);
++    }
++    assert_eq!(fx.state(), "retired");
++    assert_eq!(fx.watch(), None);
++    let evidence: String = fx
++        .conn
++        .query_row(
++            "SELECT closure_evidence FROM reversible_retirements WHERE seat_id='s1'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(evidence, "restored_pane_closed");
++    let jobs: i64 = fx
++        .conn
++        .query_row(
++            "SELECT count(*) FROM retirements WHERE seat_id='s1'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(jobs, 0, "RetireRestoredPane no longer updates a job row");
++}
++
++/// A fresh current-target read of `target` in the fixture's current boot.
++fn fresh_observation(fx: &Fx, target: &str, terminal: Option<&str>) -> HostObservation {
++    HostObservation {
++        focused: false,
++        target: HostTargetId::new(target),
++        host_boot: HostBootId::new(fx.boot),
++        epoch: fx.epoch,
++        generation: 1,
++        observed_at_utc: UtcMillis(fx.now()),
++        observed_at_mono: MonoInstant(fx.now() as u64),
++        provenance: ObservationProvenance::FreshCurrentTarget,
++        occupant: None,
++        ui: HostUiState::Idle,
++        terminal: terminal.map(TerminalId::new),
++        occupancy: StructuralOccupancy::EmptyShell,
++        incarnation: IncarnationEvidence::Verified {
++            identity: fx.incarnation.into(),
++            evidence_kind: EvidenceKind::NativeCurrentTarget,
++        },
++        execution: ExecutionEvidence::Unknown,
++        call_id: HostCallId::new(format!("relaunch-{target}")),
++        connection_epoch: fx.epoch,
++        observation_sequence: fx.sequence + 1,
++        started_at_mono: MonoInstant(fx.now() as u64),
++        completed_at_mono: MonoInstant(fx.now() as u64),
++    }
++}
++
++/// B3: an agent exiting with its pane open leaves the seat alone, keyless or key-holding, in the
++/// same incarnation and after a restart. Kills: agent exit read as a close, reversible or final.
++#[test]
++fn agent_exit_with_pane_open_keeps_the_seat() {
++    for keyed in [false, true] {
++        // Same incarnation: the binding ended, the pane still shown.
++        let mut fx = fixture();
++        fx.publish_and_pass(OPEN);
++        seed_live_seat(&fx);
++        if keyed {
++            hold_key(&mut fx, "s2");
++        }
++        fx.conn
++            .execute(
++                "UPDATE occupant_bindings SET ended_at=150,liveness='disconnected',disconnected_at=150,disconnect_reason='process_exit' WHERE seat_id='s2'",
++                [],
++            )
++            .unwrap();
++        for _ in 0..3 {
++            fx.advance(STEP);
++            fx.publish_and_pass(OPEN);
++        }
++        let (state, memberships): (String, i64) = fx
++            .conn
++            .query_row(
++                "SELECT state,(SELECT count(*) FROM retirements WHERE seat_id='s2') FROM seats WHERE id='s2'",
++                [],
++                |r| Ok((r.get(0)?, r.get(1)?)),
++            )
++            .unwrap();
++        assert_eq!(
++            (state.as_str(), memberships),
++            ("resolved", 0),
++            "keyed={keyed}"
++        );
++        assert_eq!(reversible_count(&fx, "s2"), 0, "keyed={keyed}");
++        // The relaunch keeps the seat: the pane's resolved owner answers, with or without its key.
++        for continuity_key in [
++            None,
++            keyed.then(|| crate::protocol::ids::ContinuityKey::new("s2-key")),
++        ] {
++            let request = crate::protocol::commands::ResolveSeat {
++                target: HostTargetId::new("w1:p2"),
++                host: crate::test_support::test_host_locator(),
++                operation: crate::protocol::ids::OperationId::new(format!(
++                    "relaunch-{}",
++                    uuid::Uuid::new_v4()
++                )),
++                locator_hint: None,
++                tmux_hint: None,
++                continuity_key,
++            };
++            fx.sequence += 1;
++            let observation = fresh_observation(&fx, "w1:p2", Some("term-b"));
++            let budget = budget();
++            let admission = begin_host_observation(
++                &fx.context,
++                &mut fx.conn,
++                INSTANCE,
++                crate::test_support::test_host_id(),
++                &budget,
++            )
++            .unwrap();
++            assert!(
++                publish_current_target_observation(
++                    &fx.context,
++                    &mut fx.conn,
++                    &admission,
++                    &observation,
++                    &budget
++                )
++                .unwrap()
++            );
++            let guard =
++                OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
++            let outcome = resolve_seat(
++                &fx.context,
++                &mut fx.conn,
++                INSTANCE,
++                request,
++                OrdinaryResolutionAttempt::Observed(guard),
++                &budget,
++            )
++            .unwrap();
++            assert_eq!(
++                outcome,
++                OrdinaryResolutionOutcome::Resolved(SeatId::new("s2")),
++                "keyed={keyed}"
++            );
++        }
++
++        // After a restart: unresolved, watched, never closed while the pane is shown.
++        let mut fx = fixture();
++        if keyed {
++            hold_key(&mut fx, "s1");
++        }
++        for _ in 0..=(RESTORED_PANE_GRACE_MS / STEP) + 1 {
++            fx.advance(STEP);
++            fx.publish_and_pass(OPEN);
++        }
++        assert_eq!(fx.state(), "unresolved", "keyed={keyed}");
++        assert_eq!(reversible_count(&fx, "s1"), 0, "keyed={keyed}");
++        // The relaunch keeps the seat: its resumed session reattaches it to that pane.
++        let command = crate::protocol::commands::ContinuityCheckIn {
++            host: crate::test_support::test_host_locator(),
++            target: HostTargetId::new("w1:p1"),
++            harness: crate::protocol::authority::Harness::Claude,
++            native_session: crate::protocol::ids::NativeSessionId::new("SA"),
++            source: crate::protocol::commands::ContinuityCheckIn::RESUME_SOURCE.into(),
++            operation: crate::protocol::ids::OperationId::new("relaunch"),
++            execution: crate::protocol::ids::ExecutionId::new("execution-new"),
++            liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 42, start: 7 }),
++            continuity_key: keyed.then(|| crate::protocol::ids::ContinuityKey::new("s1-key")),
++        };
++        let observation = fresh_observation(&fx, "w1:p1", Some("term-a"));
++        let budget = budget();
++        let admission = begin_host_observation(
++            &fx.context,
++            &mut fx.conn,
++            INSTANCE,
++            crate::test_support::test_host_id(),
++            &budget,
++        )
++        .unwrap();
++        assert!(
++            publish_current_target_observation(
++                &fx.context,
++                &mut fx.conn,
++                &admission,
++                &observation,
++                &budget
++            )
++            .unwrap()
++        );
++        let guard = crate::ports::ContinuityTargetGuard::try_new(
++            INSTANCE,
++            crate::test_support::test_host_id(),
++            &command,
++            observation,
++        )
++        .unwrap();
++        decide_continuity(
++            &fx.context,
++            &mut fx.conn,
++            INSTANCE,
++            crate::ports::ContinuityRequest {
++                command,
++                guard,
++                diagnostic: "match",
++                evidence: crate::ports::ContinuityEvidence::Cooperative,
++            },
++        )
++        .unwrap();
++        assert_eq!(fx.state(), "resolved", "keyed={keyed}");
++        assert_eq!(reversible_count(&fx, "s1"), 0, "keyed={keyed}");
++    }
++}
++
++/// An unretired seat waits with no pane. Kills: the plan acting on it, or its row keeping the hold.
++#[test]
++fn an_unretired_seat_is_outside_the_reconciliation_plan() {
++    let mut fx = fixture();
++    fx.conn.execute_batch(
++        "UPDATE seats SET target_id=NULL WHERE id='s1';
++         INSERT INTO reversible_retirements(seat_id,state,cutover_at,reason,unretired_at) VALUES ('s1','unretired',1,'closed',2);",
++    ).unwrap();
++    let publication = fx.publish(OPEN);
++    let budget = budget();
++    let page =
++        saved_seats_page(&fx.context, &fx.conn, &publication.id, 0, None, 16, &budget).unwrap();
++    assert!(page.seats.is_empty());
++    assert!(!page.has_more);
++    assert!(plan_page(&page).unwrap().is_empty());
++    fx.pass(&publication);
++    assert_eq!(fx.state(), "unresolved");
++    let hold: i64 = fx
++        .conn
++        .query_row(
++            "SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE host_id=(SELECT min(host_id) FROM herdr_hosts)",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(hold, 0, "the waiting seat holds nothing");
++}

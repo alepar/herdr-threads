@@ -1,0 +1,12 @@
+diff --git a/src/store/topology_handoff/attempts.rs b/src/store/topology_handoff/attempts.rs
+index 2c3551575..a00c41d94 100644
+--- a/src/store/topology_handoff/attempts.rs
++++ b/src/store/topology_handoff/attempts.rs
+@@ -588,6 +588,7 @@ mod tests {
+                 operation: id.payload.resolve_key.clone(),
+                 locator_hint: None,
+                 tmux_hint: None,
++                continuity_key: None,
+             },
+             BootstrapPaneObservation::try_new(
+                 observation,

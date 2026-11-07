@@ -1,0 +1,65 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-16.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-16.md
+new file mode 100644
+index 000000000..af47d1399
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-16.md
+@@ -0,0 +1,59 @@
++# Final review, cluster 16 (src-sync), epic ht-ma6i
++
++Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7. Both verified with `git rev-parse --verify`. The caller checkout stayed at the head with a clean status before and after this review.
++
++Inputs: `slices/000079.diff` (`src/sync/facts/mod.rs`) and `slices/000080.diff` (`src/sync/facts/seat.rs`), the digest, and the spec at `docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-04-graph-clone-identity-design.md`. The materializers, `store/apply.rs`, `store/journal.rs`, `store/incarnations.rs` and TRUST-POLICY were opened only to check named risks.
++
++## What the cluster adds
++
++Two fact kinds, `seat.retired_reversible` and `seat.unretired`, one registry entry each, shaped like `seat.retired`: `creates` is None, `needs` is the seat key, and `require_author` with `AuthorRule::SeatHome` runs before the materializer. Spec 4.3 and the key-abstractions section match on names, majors, payload fields, the author rule and held status (`HELD_KINDS` holds both names).
++
++## Requirement baseline trace
++
++- B2, cross-node half: reached in production. Pane close goes through `begin_retirement_authored` to `emit_if_published::<SeatRetiredReversible>`; `UnretireSeat` goes through `reversible::unretire` to `emit_if_published::<SeatUnretired>`; finalization stays `seat.retired`. `src/app.rs:1883` opens the daemon with `daemon_registry()`, which returns `builtins()` with both kinds. The transport is kind-agnostic. The undo itself is delivered on a peer; the defect below is limited to fork repair.
++- B1, B3, B4: no path in this cluster. The path from the service and the hook into these facts is the seam reviewer's to trace.
++
++## Risks checked and cleared
++
++- Mixed versions: `valid_kind` at the base accepts both names (underscore allowed, 23 bytes against `KIND_MAX` 64), so a pre-3.1 node parks rather than refuses. `parked_unknown` does not stall the log; only opaque layouts do. Startup replay runs in `ingest_seq` order. The three parked histories in `a_registry_without_the_kinds_parks_them_and_converges_after_replay` cover replay after rev/unret/rev, rev/final and rev/unret/final.
++- Authoring echo: `journal::author` applies in the authoring transaction, so no later decision can interleave. The fence, `unretire_local` and `finalize` all change the row before the emit, so the echo is a no-op.
++- Authority: a non-home origin is recorded `failed` (`non_home_origin_is_failed`).
++- Wire: `scripts/check-wire-compat` passes at the head (0 violations). The new payloads ignore additive fields, as `seat_clone_identity_payloads_round_trip` pins. No other kind-string list in `src` needs the two names.
++- Stale `seat.retired` on a reversible row of another episode is a defined no-op, and home authoring always uses the row's cutover, so it is not reachable from a live home.
++
++## Re-issue reproduction
++
++Fork repair re-issues every fact above the frozen counter into the owner's new incarnation (`store/incarnations.rs` `reissue_pass`), and receivers apply the copies as ordinary entries. There is no engine dedupe; TRUST-POLICY N7 (line 2008) relies on "Idempotent apply makes re-issues no-ops where already applied", and membership has an ordinal guard for the same cycle (`join_leave_then_reissued_join_n1_noop`).
++
++The two new handlers are not idempotent across a completed episode. After `seat.unretired` the peer's row is gone, so nothing records that episode T1 ended. A copy of `seat.retired_reversible{T1}` finds a `remote` row and retires it again (`retire_row`, `src/store/seats/publication.rs:566`, keyed only on `state!='retired'`). The copy of `seat.unretired{T1}` then finds a matching `frozen_episode` (`src/store/seats/reversible.rs:456`) and shifts the deadlines a second time.
++
++Reproduced with a scenario added in a review-owned detached worktree, since removed, modelled on `s2_restore_then_author_three_parties` and run with the real coordinators over a duplex link. A home node A and a peer C share a timed invitation owed by A's seat. A is backed up, then authors rev(T1) and unret(T1, T1+60 s), and C pulls both. A is restored from the backup and authors new threads, which forks I1. A rotates and re-issues. Observed at the end:
++
++```
++A entries [("seat.retired_reversible", "applied"), ("seat.unretired", "applied")]
++C entries [("seat.retired_reversible", "applied"), ("seat.unretired", "applied"), ("seat.retired_reversible", "applied"), ("seat.unretired", "applied")]
++before=1700000060000 A shift=60000 C shift=120000 window=60000
++```
++
++C's deadline moved by twice the window and stays one window away from A's, permanently. Between the two copies C reads the seat retired, so its sends and invitations to the seat are refused as retired if the copies land in different apply quanta.
++
++The owner's own main-chain branch has the same exposure by code reading, not run here: `reissue_pass` also re-issues `journal` rows above the freeze, which the owner already applied. A copy of rev(T1) on a local row the service has since un-retired and the agent has rebound would take the fence's transition (`end_local_seat`) and end that live binding, and the copy of unret(T1) would leave it unresolved with no target until the next keyed hook reattaches it.
++
++Neither TRUST-POLICY's accepted fork residuals (line 2861 area) nor spec 4.3 accept this; TRUST-POLICY line 479 says "Each fact acts only on the episode its `retired_at` names". The trigger is narrow (a forked home log whose tail holds a complete undo of a published seat), and the effect is bounded (late overdue warnings, a self-healing reattach), but it is permanent store divergence against a normative invariant, in kinds not yet shipped, so the payload and handlers can still change freely.
++
++## Verdict
++not ready (re-issued seat.retired_reversible and seat.unretired are not idempotent after an undone episode, so fork repair double-shifts deadlines on a peer against TRUST-POLICY N7)
++
++## Must fix before landing
++- `src/sync/facts/seat.rs:193` and `:226` with `src/store/seats/publication.rs:566` and `src/store/seats/reversible.rs:456`: a re-issued `seat.retired_reversible` and `seat.unretired` re-run a completed episode on a node that applied the originals (reproduced with real fork repair: peer deadline shift 120000 against home 60000 for a 60000 window; TRUST-POLICY N7 line 2008, line 479), so give the two facts a durable guard that makes a copy of an ended episode a no-op, in the way membership's `n <= home_transition` does (for example a per-seat floor of the ended episode or of the fact's preserved HLC), and pin it with a scenario in `tests/sync/incarnations_scenarios.rs`, or record it as an accepted limit in TRUST-POLICY if the owner chooses to live with it.
++
++## Untested scope
++- No test re-issues either new kind: `tests/sync/facts_seat_reversible.rs` and `tests/store/reversible_facts.rs` cover peer apply, own-log replay and parking, while `tests/sync/incarnations_scenarios.rs` never authors them, which is why the double shift went unseen.
++- The owner-branch case of the same defect (a copy of rev(T1) on a rebound local row ends its live binding) was traced by reading only and has no run behind it.
++- The old-node path is a registry simulation over `fact_exchange`, not a real 3.0.0 binary or a daemon cluster over the peer wire; the transport is kind-agnostic, so the risk is low.
++- `a_registry_without_the_kinds_parks_them_and_converges_after_replay` compares only the invitation in its snapshot, not a receipt deadline; receipts after a parked replay are not compared between nodes.
++- The `unretired_at < retired_at` clamp (a home clock stepped back) has no dedicated test on the fact path.
++
++## Deferred OK
++- `src/sync/facts/mod.rs:35`: the module-layout line still reads "`seat`: `seat.created`, `seat.retired`." and omits the two new kinds; a one-line doc fix.
++- `tests/support/peer_wire_freeze.rs` `UNCHAINED_KINDS`: the two kinds have no frozen envelope because the freeze chain is pinned to the 2.1.1 golden; the implementer noted this as a follow-up, and `seat_clone_identity_payloads_round_trip` pins the payload JSON meanwhile.

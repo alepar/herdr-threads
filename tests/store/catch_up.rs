@@ -934,6 +934,7 @@ fn check_in(store: &SqliteStore, execution: &str, expected_generation: u64) -> u
         },
         claim: claim(execution, expected_generation),
         operation: OperationId::new(format!("op-{execution}")),
+        continuity_key: None,
     };
     let permit = store
         .issue_cooperative_permit(

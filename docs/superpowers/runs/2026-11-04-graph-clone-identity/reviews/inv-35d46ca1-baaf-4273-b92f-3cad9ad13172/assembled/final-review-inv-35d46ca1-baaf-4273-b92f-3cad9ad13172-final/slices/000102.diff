@@ -1,0 +1,105 @@
+diff --git a/src/store/queries.rs b/src/store/queries.rs
+index 4662e6229..4d466351e 100644
+--- a/src/store/queries.rs
++++ b/src/store/queries.rs
+@@ -104,12 +104,14 @@ fn retirement_summary_with_observers(
+ 
+ /// Unresolved seats for Health: an indexed count over
+ /// `seats_instance_state_ordinal` (proportional to unresolved seats only)
+-/// and the oldest few by ordinal, in one read snapshot.
++/// and the oldest few by ordinal, in one read snapshot. A seat waiting after un-retire is left out:
++/// it protects no pane, so it is nobody's blocker and gets no rebind suggestion.
+ pub fn unresolved_seat_summary(
+     store: &StoreContext,
+     instance: &str,
+     budget: &CallBudget,
+ ) -> Result<crate::ports::UnresolvedSeatSummary, ApiError> {
++    use super::seats::reversible::waiting_seat_sql;
+     use crate::ports::UnresolvedReason;
+     use crate::ports::{UNRESOLVED_SEAT_SAMPLE, UnresolvedSeatSample, UnresolvedSeatSummary};
+     let db = store.open_query(budget.clone())?;
+@@ -117,7 +119,7 @@ pub fn unresolved_seat_summary(
+         .map_err(|error| db.map_error(error))?;
+     let count: i64 = db
+         .query_row(
+-            "SELECT count(*) FROM seats INDEXED BY seats_instance_state_ordinal WHERE instance_id=?1 AND state='unresolved'",
++            concat!("SELECT count(*) FROM seats INDEXED BY seats_instance_state_ordinal WHERE instance_id=?1 AND state='unresolved' AND NOT ", waiting_seat_sql!("seats.id")),
+             [instance],
+             |row| row.get(0),
+         )
+@@ -127,7 +129,7 @@ pub fn unresolved_seat_summary(
+     {
+         let mut stmt = db
+             .prepare(
+-                "SELECT id,target_id,unresolved_reason FROM seats INDEXED BY seats_instance_state_ordinal WHERE instance_id=?1 AND state='unresolved' ORDER BY ordinal LIMIT ?2",
++                concat!("SELECT id,target_id,unresolved_reason FROM seats INDEXED BY seats_instance_state_ordinal WHERE instance_id=?1 AND state='unresolved' AND NOT ", waiting_seat_sql!("seats.id"), " ORDER BY ordinal LIMIT ?2"),
+             )
+             .map_err(|error| db.map_error(error))?;
+         let rows = stmt
+@@ -1182,6 +1184,17 @@ fn seat_inspect_argv(q: &SeatInspectQuery, raw: &str, binding_details: bool) ->
+     argv
+ }
+ 
++/// A decision made with no host evidence stores empty ids; history shows `-` (1 byte) for them.
++const NO_EVIDENCE: &str = "-";
++
++fn evidence_or_none(value: String) -> String {
++    if value.is_empty() {
++        NO_EVIDENCE.to_owned()
++    } else {
++        value
++    }
++}
++
+ fn seat_inspect(
+     db: &QueryConnection,
+     instance: &str,
+@@ -1196,6 +1209,8 @@ fn seat_inspect(
+     // A named seat's entry carries its name (SA14); other local seats have none.
+     let directory = super::seat_directory::directory(db, q.seat.as_str(), now)?
+         .filter(|d| row.0 == "remote" || d.name.is_some());
++    // A remote seat has no key row here: keys are local and never replicated.
++    let continuity_key = super::continuity_keys::seat_view(db, &q.seat)?.map(Box::new);
+     let summary = seat_summary(
+         q.seat.as_str(),
+         &row.0,
+@@ -1204,6 +1219,8 @@ fn seat_inspect(
+         row.3,
+         row.4,
+     )?;
++    let retirement_state =
++        super::seats::reversible::retirement_state(db, &q.seat, summary.continuity)?;
+     let mut summary = summary;
+     (summary.active, summary.bindings) =
+         presence_with_details(db, q.seat.as_str(), binding_details)?;
+@@ -1429,10 +1446,10 @@ fn seat_inspect(
+                 1,
+                 SeatHistoryItem::Repair(RepairHistory {
+                     ordinal: ordinal as u64,
+-                    target: HostTargetId::new(target),
++                    target: HostTargetId::new(evidence_or_none(target)),
+                     decision_kind,
+                     decided_at: UtcMillis(decided),
+-                    host_boot: HostBootId::new(boot),
++                    host_boot: HostBootId::new(evidence_or_none(boot)),
+                     host_epoch: epoch as u64,
+                     generation: generation as u64,
+                     operator_label,
+@@ -1473,6 +1490,8 @@ fn seat_inspect(
+                 open_binding: open_binding.clone(),
+                 history,
+                 directory: directory.clone(),
++                continuity_key: continuity_key.clone(),
++                retirement_state,
+             })
+         },
+     )?;
+@@ -1506,6 +1525,8 @@ fn seat_inspect(
+         open_binding,
+         history: page(items, next, high, stop, output),
+         directory,
++        continuity_key,
++        retirement_state,
+     });
+     ensure_fit(&result, output, q.page.max_bytes)?;
+     Ok(result)

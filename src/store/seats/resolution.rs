@@ -20,6 +20,7 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+use super::key_verdict::{self, KeyVerdict};
 use super::*;
 
 pub(super) fn target_free(
@@ -114,6 +115,10 @@ fn ordinary_resolution_digest(
             "resolution target and operation are required",
         ));
     }
+    // A keyed resolve has its own domain, so a keyless digest stays byte-identical.
+    if let Some(key) = &request.continuity_key {
+        return schema::canonical_digest(&("keyed_resolve_seat", instance, &request.target, key));
+    }
     schema::canonical_digest(&("resolve_seat", instance, &request.target))
 }
 
@@ -206,6 +211,17 @@ pub(crate) fn current_resolution_owner(
     validate_resolution_evidence(tx, instance, guard)?;
     let proof = guard.structural_proof();
     let host = guard.admission().host_id;
+    // A pane with a resolved owner is never held by a conflict, and a conflict states its own
+    // cause even on a pane a restore hold also holds. Only ordinary resolution comes through here.
+    if target_free(tx, host, proof.target().as_str())?
+        && let Some(kind) =
+            crate::store::continuity_keys::hold_kind(tx, host, proof.target().as_str())?
+    {
+        return Err(api_error(
+            ErrorCode::TargetUnresolved,
+            key_conflict_cause(kind, proof.target().as_str())?,
+        ));
+    }
     // Ownership is only a locator; independently check active explicit holds.
     let held: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND target_id=?2 AND released_at IS NULL)",
@@ -258,7 +274,7 @@ pub(crate) fn current_resolution_owner(
     Ok(Some(SeatId::new(seat)))
 }
 
-fn resolution_recovery_refusal(
+pub(super) fn resolution_recovery_refusal(
     tx: &Transaction<'_>,
     host: HostId,
     target: &str,
@@ -266,7 +282,7 @@ fn resolution_recovery_refusal(
 ) -> Result<ApiError, ApiError> {
     let pane = shlex::try_quote(target)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid target"))?;
-    let mut blockers = tx.prepare(&format!("SELECT id FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved' ORDER BY ordinal LIMIT 3")).map_err(store_error)?;
+    let mut blockers = tx.prepare(&format!("SELECT id FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved' AND NOT {} ORDER BY ordinal LIMIT 3", super::reversible::waiting_seat_sql!("seats.id"))).map_err(store_error)?;
     let seats = blockers
         .query_map([host.get()], |row| row.get::<_, String>(0))
         .map_err(store_error)?
@@ -423,6 +439,22 @@ fn resolve_observed(
     budget: &CallBudget,
 ) -> Result<OrdinaryResolutionOutcome, ApiError> {
     let digest = ordinary_resolution_digest(instance, request)?;
+    let host = guard.admission().host_id;
+    let target = request.target.as_str();
+    let conflict = KeyConflictStash::default();
+    // A claimless caller's key. A conflict that only alerts refuses nothing: the owner's resolve
+    // proceeds and records it (`settle_key`).
+    let judge_key = |tx: &Transaction<'_>| -> Result<Option<KeyDecision>, ApiError> {
+        let Some(key) = &request.continuity_key else {
+            return Ok(None);
+        };
+        let decision = key_decision(tx, host, target, key, KeyCaller::Claimless)?;
+        if !matches!(&decision.verdict, KeyVerdict::Conflict(kind) if key_verdict::only_alerts(*kind))
+        {
+            decision.refuse(host, target, &conflict)?;
+        }
+        Ok(Some(decision))
+    };
     // The shared helper performs exact-key replay before this guard validation.
     let result = schema::execute_idempotent_transaction(
         context,
@@ -440,23 +472,35 @@ fn resolve_observed(
                     "resolution guard request mismatch",
                 ));
             }
+            // After the evidence guard, so stale evidence never records a conflict.
+            if request.continuity_key.is_some() {
+                validate_resolution_evidence(tx, instance, guard)?;
+                judge_key(tx)?;
+            }
             validate_bootstrap_creation(tx, instance, guard)?;
             Ok(())
         },
         |tx, at| {
             snapshot_budget(context, budget)?;
-            ordinary_resolution_apply(
+            let decision = judge_key(tx)?;
+            let (result, _) = ordinary_resolution_apply(
                 tx,
                 at,
                 instance,
-                guard.admission().host_id,
+                host,
                 &request.target,
                 guard.structural_proof(),
-            )
-            .map(|(result, _)| result)
+            )?;
+            if let (Some(decision), CommandResult::SeatResolved(seat)) = (decision, &result) {
+                settle_key(tx, at.utc, host, target, seat, &decision)?;
+            }
+            Ok(result)
         },
-    )?;
-    match result {
+    );
+    if result.is_err() {
+        record_stashed_conflict(context, conn, conflict);
+    }
+    match result? {
         CommandResult::SeatResolved(seat) => Ok(OrdinaryResolutionOutcome::Resolved(seat)),
         _ => Err(api_error(
             ErrorCode::StoreCorrupt,
@@ -527,6 +571,7 @@ fn resolve_bootstrap_seat_impl(
         operation: request.operation.clone(),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let digest = ordinary_resolution_digest(&canonical.instance, &ordinary)?;
     let own_allocation = std::cell::Cell::new(false);

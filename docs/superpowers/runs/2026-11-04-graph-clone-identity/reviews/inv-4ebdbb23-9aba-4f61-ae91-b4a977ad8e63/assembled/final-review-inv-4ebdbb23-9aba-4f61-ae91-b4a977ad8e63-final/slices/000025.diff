@@ -1,0 +1,93 @@
+diff --git a/src/cli/caller_location.rs b/src/cli/caller_location.rs
+index 839763728..564ed80fc 100644
+--- a/src/cli/caller_location.rs
++++ b/src/cli/caller_location.rs
+@@ -38,7 +38,11 @@ use std::ffi::OsString;
+ use crate::host::named::tmux;
+ use crate::host::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV, named, native};
+ use crate::protocol::commands::HINT_PANE_HOST;
+-use crate::protocol::ids::{HostLocator, HostTargetId, NAMED_HOST_LOCATOR, SeatName};
++use crate::protocol::ids::{
++    ContinuityKey, HostLocator, HostTargetId, NAMED_HOST_LOCATOR, SeatName,
++};
++
++pub(crate) use crate::host::CONTINUITY_KEY_ENV;
+ 
+ /// The Herdr server socket of a pane caller; it names the server of the pane hint (M10).
+ const HERDR_SOCKET_ENV: &str = "HERDR_SOCKET_PATH";
+@@ -173,6 +177,7 @@ impl CallerEnv {
+             &HC_TERMINAL_ID_ENV,
+             &HC_TERMINAL_SOCKET_ENV,
+             &HERDR_SOCKET_ENV,
++            &CONTINUITY_KEY_ENV,
+         ]);
+         let vars = names
+             .filter_map(|&name| {
+@@ -202,6 +207,12 @@ impl CallerEnv {
+             .is_some_and(|value| value == "1")
+     }
+ 
++    /// The valid continuity key the environment carries; an invalid value is absent, with no
++    /// diagnostic. [`caller_continuity_key`] decides whether it is presented.
++    fn continuity_key(&self) -> Option<ContinuityKey> {
++        ContinuityKey::parse(self.text(CONTINUITY_KEY_ENV)?).ok()
++    }
++
+     /// The valid seat name the environment carries; `None` when absent or invalid
+     /// ([`CallerEnv::locate`] tells those apart).
+     pub fn named(&self) -> Option<SeatName> {
+@@ -309,6 +320,31 @@ impl CallerEnv {
+     }
+ }
+ 
++/// The caller's key for a top-level, non-subagent event, given what the daemon advertises. An
++/// invalid value is absent, with no diagnostic.
++pub(crate) fn caller_continuity_key(
++    env: &CallerEnv,
++    top_level: bool,
++    advertised: bool,
++) -> Option<ContinuityKey> {
++    (top_level && advertised)
++        .then(|| env.continuity_key())
++        .flatten()
++}
++
++impl CallerEnv {
++    /// Whether presenting a key is possible at all, so a caller with none asks the daemon nothing.
++    pub(crate) fn may_present_key(&self, top_level: bool) -> bool {
++        top_level && self.continuity_key().is_some()
++    }
++
++    /// The pane this caller runs in, when it is `target`: `ResolveSeat` presents a key only for
++    /// the caller's own pane, never for one it resolves on another's behalf.
++    pub(crate) fn is_own_pane(&self, target: &HostTargetId) -> bool {
++        self.pane(EnvMode::Cli).as_deref() == Some(target.as_str())
++    }
++}
++
+ /// The closed match of answers for one located site.
+ #[derive(Debug, Clone, Copy)]
+ pub struct CallerSite<'a>(&'a CallerLocator);
+@@ -453,14 +489,19 @@ pub fn claim_recovery_env(host: &HostLocator, target: &str) -> Vec<String> {
+ }
+ 
+ /// One process-environment read as this caller may see it. An in-process library or test caller
+-/// (`entry == false`) never inherits a seat name or the read-only mark: a harness session running
+-/// the suite must not become the caller of what it tests. The real entrypoint reads both.
++/// (`entry == false`) never inherits a seat name, the read-only mark or a continuity key: a harness
++/// session running the suite must not become the caller of what it tests. The real entrypoint
++/// reads them.
+ pub fn seat_filter(
+     entry: bool,
+     name: &str,
+     lookup: impl Fn(&str) -> Option<OsString>,
+ ) -> Option<OsString> {
+-    if !entry && (name == named::ENV_SEAT_NAME || name == named::ENV_SEAT_READONLY) {
++    if !entry
++        && (name == named::ENV_SEAT_NAME
++            || name == named::ENV_SEAT_READONLY
++            || name == CONTINUITY_KEY_ENV)
++    {
+         return None;
+     }
+     lookup(name)

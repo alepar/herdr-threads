@@ -45,6 +45,7 @@ use super::{
     effective::{self, EffectiveReceiptState},
     materialize::{FactRoute, MaterializeInput, is_own_history_hold, journaled_route},
     schema::{self, EventInput, deadline_owner_sql},
+    seats::reversible::frozen_seat_sql,
 };
 
 pub fn ack_payload(request: &Ack) -> Value {
@@ -1021,6 +1022,8 @@ pub struct DueScanResult {
 pub(crate) const PHYSICAL_DUE_SELECTION: &str = concat!(
     "SELECT ordinal,message_id,seat_id,deadline_at FROM receipts INDEXED BY receipts_required_due_ordinal WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND ordinal>?2 AND ordinal<=?3 AND ",
     deadline_owner_sql!("receipts.message_id"),
+    " AND NOT ",
+    frozen_seat_sql!("receipts.seat_id"),
     " ORDER BY ordinal LIMIT ?4"
 );
 
@@ -1150,7 +1153,7 @@ pub fn scan_due(
             let physical_cap=due_limit.div_ceil(2);
             let mut physical=physical_page(current.after_deadline,current.after_ordinal,physical_cap)?;
             let sparse_cap=due_limit-u16::try_from(physical.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"physical due batch too large"))?;
-            let mut stmt=tx.prepare("SELECT ordinal,message_id,seat_id,deadline_at FROM receipt_due_sparse WHERE ordinal>?1 AND ordinal<=?2 ORDER BY ordinal LIMIT ?3").map_err(store_error)?;
+            let mut stmt=tx.prepare(concat!("SELECT ordinal,message_id,seat_id,deadline_at FROM receipt_due_sparse WHERE ordinal>?1 AND ordinal<=?2 AND NOT ",frozen_seat_sql!("receipt_due_sparse.seat_id")," ORDER BY ordinal LIMIT ?3")).map_err(store_error)?;
             let sparse=stmt.query_map(params![current.sparse_after_ordinal,sparse_high,i64::from(sparse_cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)?;
             // A short sparse page lends its unused allowance back to physical
             // discovery. Every query uses the captured high water before LIMIT.
@@ -1358,7 +1361,7 @@ pub fn scan_extension_lapses(
             let mut inspected = 0u16;
             for (_, seat, thread) in &rows {
                 let mut stmt = tx
-                    .prepare(concat!("SELECT message_id FROM receipts WHERE seat_id=?1 AND thread_id=?2 AND state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND deadline_at<=?3 AND ",deadline_owner_sql!("receipts.message_id")," UNION SELECT s.message_id FROM receipt_state s JOIN messages m ON m.id=s.message_id WHERE s.seat_id=?1 AND m.thread_id=?2 AND s.state='pending' AND s.ack_required=1 AND s.warning_message_id IS NULL AND s.deadline_at IS NOT NULL AND s.deadline_at<=?3 AND ",deadline_owner_sql!("s.message_id")))
+                    .prepare(concat!("SELECT message_id FROM receipts WHERE seat_id=?1 AND thread_id=?2 AND state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND deadline_at<=?3 AND ",deadline_owner_sql!("receipts.message_id")," AND NOT ",frozen_seat_sql!("receipts.seat_id")," UNION SELECT s.message_id FROM receipt_state s JOIN messages m ON m.id=s.message_id WHERE s.seat_id=?1 AND m.thread_id=?2 AND s.state='pending' AND s.ack_required=1 AND s.warning_message_id IS NULL AND s.deadline_at IS NOT NULL AND s.deadline_at<=?3 AND ",deadline_owner_sql!("s.message_id")," AND NOT ",frozen_seat_sql!("s.seat_id")))
                     .map_err(store_error)?;
                 let messages: Vec<String> = stmt
                     .query_map(params![seat, thread, decision.utc.0], |r| r.get(0))

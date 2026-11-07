@@ -1,0 +1,13 @@
+diff --git a/tests/cli/hook_local_evidence.rs b/tests/cli/hook_local_evidence.rs
+index ac5646f9c..57e4bd650 100644
+--- a/tests/cli/hook_local_evidence.rs
++++ b/tests/cli/hook_local_evidence.rs
+@@ -287,6 +287,8 @@ impl crate::ports::LocalService for Service {
+                 open_binding: None,
+                 history: empty(),
+                 directory: None,
++                continuity_key: None,
++                retirement_state: None,
+             })),
+             Command::Directory(_) => Ok(CommandResult::Directory(empty())),
+             Command::AttentionDigest(_) => {

@@ -1,0 +1,457 @@
+//! The spec 4.2 outcome table of a presented continuity key (ht-ma6i.2, TRUST-POLICY C1).
+//!
+//! Responsibility (key_verdict)
+//! - Owns: the mapping from (key row, seat state, pane owner, the owner's other key, C1 match,
+//!   whether the caller has a claim, lag) to one [`KeyVerdict`].
+//! - Hides: the table's row order, and the rule that lag turns a state-dependent answer into
+//!   [`KeyVerdict::NotReady`].
+//! - Must not: touch the database or read its own facts. The deciding transaction gathers the
+//!   facts and acts on the verdict.
+
+use crate::protocol::{ids::SeatId, results::ContinuityConflictKind};
+
+/// What the deciding transaction read about one presented key at one pane.
+#[derive(Debug, Clone, Copy)]
+pub struct KeyFacts<'a> {
+    pub key: KeyState<'a>,
+    /// The pane's resolved owner.
+    pub pane_owner: Option<&'a SeatId>,
+    /// The pane's owner holds a key other than this one.
+    pub pane_owner_holds_other_key: bool,
+    /// The C1 match of the claim's native session, the bound seat when it is among several.
+    pub c1_match: Option<&'a SeatId>,
+    /// The caller offers evidence to reattach on (a native session and liveness).
+    pub has_claim: bool,
+    /// The host's first reconciliation pass of the current recovery epoch has not run.
+    pub lag: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum KeyState<'a> {
+    /// No row: the key is ignored.
+    Unreserved,
+    Unbound,
+    Bound {
+        seat: &'a SeatId,
+        state: BoundSeatState,
+    },
+}
+
+/// The bound seat's `seats.state`. `Retired` is a reversible retirement: a key that still has a
+/// seat row implies its retirement is not final, because finalization releases the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundSeatState {
+    Unresolved,
+    Resolved,
+    Retired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyVerdict {
+    /// Today's behaviour, as if no key was presented.
+    Ignore,
+    /// Reattach this unresolved seat to the pane through the C1 transaction.
+    Reattach(SeatId),
+    /// The key's seat owns the pane.
+    NoOp,
+    /// Bind the key to the pane's owner.
+    Bind,
+    /// No owner and a free key: ordinary guards decide, and the resulting seat gets the key.
+    EnrollThenBind,
+    /// The key's seat waits for a caller with evidence; a claimless caller gets no seat.
+    Pending,
+    Conflict(ContinuityConflictKind),
+    /// A reconciliation pass can still change this answer.
+    NotReady,
+}
+
+pub fn judge(facts: &KeyFacts<'_>) -> KeyVerdict {
+    use ContinuityConflictKind as Kind;
+    let (bound_seat, state) = match facts.key {
+        KeyState::Unreserved => return KeyVerdict::Ignore,
+        KeyState::Unbound => (None, None),
+        KeyState::Bound { seat, state } => (Some(seat), Some(state)),
+    };
+    if facts.lag && (facts.pane_owner.is_some() || state == Some(BoundSeatState::Resolved)) {
+        return KeyVerdict::NotReady;
+    }
+    let Some(seat) = bound_seat else {
+        return match facts.pane_owner {
+            Some(_) if facts.pane_owner_holds_other_key => {
+                KeyVerdict::Conflict(Kind::SeatHoldsOtherKey)
+            }
+            Some(_) => KeyVerdict::Bind,
+            None => KeyVerdict::EnrollThenBind,
+        };
+    };
+    if let Some(owner) = facts.pane_owner {
+        return if owner == seat {
+            KeyVerdict::NoOp
+        } else {
+            KeyVerdict::Conflict(Kind::PaneOwnedByOtherSeat)
+        };
+    }
+    match state {
+        Some(BoundSeatState::Retired) => KeyVerdict::Conflict(Kind::KeyRetiredReversibly),
+        Some(BoundSeatState::Resolved) => KeyVerdict::Conflict(Kind::KeyLiveElsewhere),
+        _ if !facts.has_claim => KeyVerdict::Pending,
+        _ => match facts.c1_match {
+            Some(matched) if matched != seat => KeyVerdict::Conflict(Kind::SessionMatchesOtherSeat),
+            _ => KeyVerdict::Reattach(seat.clone()),
+        },
+    }
+}
+
+/// A kind that only alerts: the pane has a resolved owner, who keeps working. It never holds.
+pub fn only_alerts(kind: ContinuityConflictKind) -> bool {
+    use ContinuityConflictKind as Kind;
+    match kind {
+        Kind::PaneOwnedByOtherSeat | Kind::SeatHoldsOtherKey => true,
+        Kind::KeyLiveElsewhere | Kind::KeyRetiredReversibly | Kind::SessionMatchesOtherSeat => {
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ContinuityConflictKind as Kind;
+
+    fn s() -> SeatId {
+        SeatId::new("s")
+    }
+    fn t() -> SeatId {
+        SeatId::new("t")
+    }
+
+    /// One case per spec 4.2 row, plus the lag rows. A case is (name, key, owner, owner holds
+    /// another key, C1 match, has claim, lag, verdict). Kills: any reordered or missing arm.
+    #[test]
+    fn key_verdict_table() {
+        use BoundSeatState::{Resolved, Retired, Unresolved};
+        let (seat, other) = (s(), t());
+        let bound = |state| KeyState::Bound { seat: &seat, state };
+        let unbound = KeyState::Unbound;
+        let reattach = KeyVerdict::Reattach(s());
+        type Case<'a> = (
+            &'a str,
+            KeyState<'a>,
+            Option<&'a SeatId>,
+            bool,
+            Option<&'a SeatId>,
+            bool,
+            bool,
+            KeyVerdict,
+        );
+        let cases: Vec<Case<'_>> = vec![
+            (
+                "unreserved",
+                KeyState::Unreserved,
+                None,
+                false,
+                None,
+                true,
+                false,
+                KeyVerdict::Ignore,
+            ),
+            (
+                "unreserved, owned, lag",
+                KeyState::Unreserved,
+                Some(&other),
+                true,
+                Some(&other),
+                false,
+                true,
+                KeyVerdict::Ignore,
+            ),
+            (
+                "unresolved, no owner",
+                bound(Unresolved),
+                None,
+                false,
+                None,
+                true,
+                false,
+                reattach.clone(),
+            ),
+            (
+                "unresolved, its own C1 match",
+                bound(Unresolved),
+                None,
+                false,
+                Some(&seat),
+                true,
+                false,
+                reattach.clone(),
+            ),
+            (
+                "unresolved, C1 match on another",
+                bound(Unresolved),
+                None,
+                false,
+                Some(&other),
+                true,
+                false,
+                KeyVerdict::Conflict(Kind::SessionMatchesOtherSeat),
+            ),
+            (
+                "unresolved, no owner, lag",
+                bound(Unresolved),
+                None,
+                false,
+                None,
+                true,
+                true,
+                reattach.clone(),
+            ),
+            (
+                "unresolved, claimless",
+                bound(Unresolved),
+                None,
+                false,
+                None,
+                false,
+                false,
+                KeyVerdict::Pending,
+            ),
+            (
+                "unresolved, claimless, lag",
+                bound(Unresolved),
+                None,
+                false,
+                None,
+                false,
+                true,
+                KeyVerdict::Pending,
+            ),
+            (
+                "unresolved, another owner",
+                bound(Unresolved),
+                Some(&other),
+                false,
+                None,
+                true,
+                false,
+                KeyVerdict::Conflict(Kind::PaneOwnedByOtherSeat),
+            ),
+            (
+                "resolved here",
+                bound(Resolved),
+                Some(&seat),
+                true,
+                None,
+                true,
+                false,
+                KeyVerdict::NoOp,
+            ),
+            (
+                "resolved here, lag",
+                bound(Resolved),
+                Some(&seat),
+                true,
+                None,
+                true,
+                true,
+                KeyVerdict::NotReady,
+            ),
+            (
+                "resolved elsewhere",
+                bound(Resolved),
+                None,
+                false,
+                None,
+                true,
+                false,
+                KeyVerdict::Conflict(Kind::KeyLiveElsewhere),
+            ),
+            (
+                "resolved elsewhere, claimless",
+                bound(Resolved),
+                None,
+                false,
+                None,
+                false,
+                false,
+                KeyVerdict::Conflict(Kind::KeyLiveElsewhere),
+            ),
+            (
+                "resolved elsewhere, lag",
+                bound(Resolved),
+                None,
+                false,
+                None,
+                true,
+                true,
+                KeyVerdict::NotReady,
+            ),
+            (
+                "resolved elsewhere, another owner",
+                bound(Resolved),
+                Some(&other),
+                false,
+                None,
+                true,
+                false,
+                KeyVerdict::Conflict(Kind::PaneOwnedByOtherSeat),
+            ),
+            (
+                "retired, no owner",
+                bound(Retired),
+                None,
+                false,
+                None,
+                true,
+                false,
+                KeyVerdict::Conflict(Kind::KeyRetiredReversibly),
+            ),
+            (
+                "retired, no owner, lag",
+                bound(Retired),
+                None,
+                false,
+                None,
+                true,
+                true,
+                KeyVerdict::Conflict(Kind::KeyRetiredReversibly),
+            ),
+            (
+                "retired, claimless",
+                bound(Retired),
+                None,
+                false,
+                None,
+                false,
+                false,
+                KeyVerdict::Conflict(Kind::KeyRetiredReversibly),
+            ),
+            (
+                "retired, another owner",
+                bound(Retired),
+                Some(&other),
+                false,
+                None,
+                true,
+                false,
+                KeyVerdict::Conflict(Kind::PaneOwnedByOtherSeat),
+            ),
+            (
+                "retired, another owner, lag",
+                bound(Retired),
+                Some(&other),
+                false,
+                None,
+                true,
+                true,
+                KeyVerdict::NotReady,
+            ),
+            (
+                "unbound, owner without a key",
+                unbound,
+                Some(&other),
+                false,
+                None,
+                true,
+                false,
+                KeyVerdict::Bind,
+            ),
+            (
+                "unbound, owner without a key, claimless",
+                unbound,
+                Some(&other),
+                false,
+                None,
+                false,
+                false,
+                KeyVerdict::Bind,
+            ),
+            (
+                "unbound, owner with another key",
+                unbound,
+                Some(&other),
+                true,
+                None,
+                true,
+                false,
+                KeyVerdict::Conflict(Kind::SeatHoldsOtherKey),
+            ),
+            (
+                "unbound, owner, lag",
+                unbound,
+                Some(&other),
+                false,
+                None,
+                true,
+                true,
+                KeyVerdict::NotReady,
+            ),
+            (
+                "unbound, owner with another key, lag",
+                unbound,
+                Some(&other),
+                true,
+                None,
+                true,
+                true,
+                KeyVerdict::NotReady,
+            ),
+            (
+                "unbound, no owner",
+                unbound,
+                None,
+                false,
+                None,
+                true,
+                false,
+                KeyVerdict::EnrollThenBind,
+            ),
+            (
+                "unbound, no owner, claimless",
+                unbound,
+                None,
+                false,
+                None,
+                false,
+                false,
+                KeyVerdict::EnrollThenBind,
+            ),
+            (
+                "unbound, no owner, lag",
+                unbound,
+                None,
+                false,
+                None,
+                true,
+                true,
+                KeyVerdict::EnrollThenBind,
+            ),
+        ];
+        for (name, key, pane_owner, pane_owner_holds_other_key, c1_match, has_claim, lag, want) in
+            cases
+        {
+            let facts = KeyFacts {
+                key,
+                pane_owner,
+                pane_owner_holds_other_key,
+                c1_match,
+                has_claim,
+                lag,
+            };
+            assert_eq!(judge(&facts), want, "{name}");
+        }
+    }
+
+    /// Kills: a kind that both holds and alerts; a new kind left unclassified.
+    #[test]
+    fn key_verdict_only_owned_pane_kinds_only_alert() {
+        assert!(only_alerts(Kind::PaneOwnedByOtherSeat));
+        assert!(only_alerts(Kind::SeatHoldsOtherKey));
+        assert!(!only_alerts(Kind::KeyLiveElsewhere));
+        assert!(!only_alerts(Kind::KeyRetiredReversibly));
+        assert!(!only_alerts(Kind::SessionMatchesOtherSeat));
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/store/continuity_key_decisions.rs"]
+mod continuity_key_decisions;

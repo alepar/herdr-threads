@@ -123,6 +123,7 @@ fn the_woken_turn_receives_the_bodies_by_injection() {
                 claim: claim(),
                 operation: crate::protocol::ids::OperationId::new("ci-1"),
                 lineage_parent: None,
+                continuity_key: None,
             }),
             peer(),
             &budget(),

@@ -1441,6 +1441,7 @@ fn retry_of_a_journaled_intent_needs_no_herdr() {
                 target: target.clone(),
             },
             SemanticMutation::ResolveSeat {
+                continuity_key: None,
                 host: HostLocator::parse(herdr.to_string_lossy()).unwrap(),
                 target,
             },

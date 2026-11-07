@@ -16,6 +16,8 @@ hook-budget = { max-threads = 1 }
 # budgets (100 ms). The long real-time ones (ran_in_own_process) are not in a
 # group: under `cargo test` they already ran beside the chain.
 integration-daemon = { max-threads = 1 }
+# Each test owns a private Herdr, a daemon and stand-in agents and waits on daemon passes (ht-ma6i.11).
+clone-identity-sweep = { max-threads = 2 }
 service-daemon = { max-threads = 1 }
 # The mod delivery sweep (ht-j16.10): each test runs an elected in-process
 # daemon with an injected clock and real `watch` children, and one of them
@@ -198,7 +200,7 @@ test-group = "integration-daemon"
 
 [[profile.default.overrides]]
 filter = """
-binary(service) & test(/^(resolution|composition|operator|graph_d2)::/)
+binary(service) & test(/^(resolution|composition|operator|graph_d2|continuity_key_session|reversible_session)::/)
 & !test(/::(elected_health_does_not_keep_verified_host_after_errored_capture|elected_health_keeps_unavailable_host_after_errored_capture|elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join|real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection|elected_driver_periodically_refreshes_without_target_requests|elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined)$/)
 """
 priority = 70
@@ -232,6 +234,11 @@ test-group = "named-seats"
 filter = "binary(config_smoke)"
 priority = 60
 test-group = "config-smoke"
+
+[[profile.default.overrides]]
+filter = "binary(clone_identity_sweep)"
+priority = 60
+test-group = "clone-identity-sweep"
 
 [[profile.default.overrides]]
 filter = "binary(integration_sweep)"

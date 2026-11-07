@@ -1,0 +1,20 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/coverage-round-1-requirements.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/coverage-round-1-requirements.md
+new file mode 100644
+index 000000000..ede5784d6
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/coverage-round-1-requirements.md
+@@ -0,0 +1,14 @@
++R1 Live handoff recovers a seat with no live top-level agent binding (bare pane, exited agent, managed_launch only, pre-agent clone) unattended, from a surviving shell fingerprint (Goal)
++R2 A registered service reserves a continuity key before launch: idempotent for itself, refused for another service, released when the retirement becomes final (B1)
++R3 An agent launched with HERDR_THREADS_CONTINUITY_KEY whose seat is unresolved reattaches that seat at its pane, recording the key on the seat at check-in (B1)
++R4 One live seat per key; a conflict holds the pane with no new seat, does not fail the hook, and alerts the service through SeatInspect and one notification (B1)
++R5 A pane close retires a key-bearing seat immediately, reading retired to every local and remote peer, with sends refused as retired (B2)
++R6 While reversibly retired, obligations and deadlines are frozen; they resume with their remaining time on un-retire (B2)
++R7 UnretireSeat by the owning service returns the seat unresolved with no pane, never placing it, and restores the memberships and requirement episodes it held; reattachment stays evidence-based (B2)
++R8 A reversible retirement finalizes on service request or operator retire; final is the ordinary retirement on every node (B2)
++R9 Reversible retirement replicates across nodes as a gated fact; an older node shows the seat live and is correct after upgrade (Goal)
++R10 SeatInspect exposes key, owner and retirement=reversible|final (Goal)
++R11 An unresolved seat whose target stays absent in a coherent snapshot of the new incarnation retires after 10 observed minutes, reversibly when key-bearing, never with a kept claim (Goal)
++R12 An agent exiting while its pane stays open keeps the seat and its memberships: no threads change regresses this (B3)
++R13 No Herdr change and no service placement of a seat (B4)
++R14 TRUST-POLICY is updated in the same commits: new C-row and decision records for G2, D1, D2 (Goal)

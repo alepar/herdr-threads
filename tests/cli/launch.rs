@@ -1400,7 +1400,38 @@ fn inspection_with(
             consistency: Consistency::BoundedLive,
         },
         directory: None,
+        continuity_key: None,
+        retirement_state: None,
     }
+}
+
+/// Kills: a clone identity field on the wire when unset, or a shape other than spec 4.5.
+#[test]
+fn seat_inspection_clone_identity_fields_are_absent_when_none() {
+    use crate::protocol::{
+        ids::{ContinuityKey, ServiceAuthorId},
+        results::{ContinuityKeyBinding, SeatContinuityKey, SeatInspection, SeatRetirementState},
+    };
+    let mut inspection = inspection_with(None, false);
+    let wire = serde_json::to_value(&inspection).unwrap();
+    let object = wire.as_object().unwrap();
+    assert!(!object.contains_key("continuity_key"), "{wire}");
+    assert!(!object.contains_key("retirement_state"), "{wire}");
+    inspection.continuity_key = Some(Box::new(SeatContinuityKey {
+        key: ContinuityKey::new("clone-1"),
+        owner: ServiceAuthorId::new("graph"),
+        bound_by: ContinuityKeyBinding::ServiceReservation,
+        conflict: None,
+    }));
+    inspection.retirement_state = Some(SeatRetirementState::Reversible);
+    let wire = serde_json::to_value(&inspection).unwrap();
+    assert_eq!(wire["continuity_key"]["bound_by"], "service_reservation");
+    assert_eq!(wire["continuity_key"]["key"], "clone-1");
+    assert_eq!(wire["retirement_state"], "reversible");
+    assert_eq!(
+        serde_json::from_value::<SeatInspection>(wire).unwrap(),
+        inspection
+    );
 }
 
 fn guard_budget() -> CallBudget {
@@ -3235,4 +3266,101 @@ fn agy_guarded_launch_keeps_plugin_readiness_advisory_and_native_guards() {
         );
         assert_eq!(host.submitted().len(), 1, "unsafe argv never submits");
     }
+}
+
+// The key names one agent: what threads starts never inherits it. A Herdr `agent.start` carries
+// argv only, so the environments threads composes are the detached daemon's and the shim's.
+// Kills: the variable missing from the one scrub list.
+#[test]
+fn launch_scrubs_the_continuity_key() {
+    let name = crate::cli::caller_location::CONTINUITY_KEY_ENV;
+    assert!(crate::host::child_env_scrub_list().contains(&name));
+    assert!(crate::host::gate_shim_scrub_list().contains(&name));
+}
+
+// Kills: a launch resolver that presents the caller's key for the pane it starts into.
+#[test]
+fn launch_resolving_another_pane_sends_no_key() {
+    let root = crate::test_support::scratch::temp_path("launch-no-key");
+    std::fs::create_dir_all(&root).unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let clock: std::sync::Arc<dyn Clock> = std::sync::Arc::new(crate::app::SystemClock::new());
+    let instance = crate::node::NodeUuid::new_v4();
+    let client = LocalSocketClient::new(root.join("none.sock"), clock.clone(), instance, None);
+    let target = HostTargetId::new("w1:p2");
+    let resolver = DaemonSeatResolver::new(
+        &client,
+        &journal,
+        instance,
+        crate::test_support::test_host_locator(),
+        clock.as_ref(),
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 1_000),
+        cancellation: Cancellation::default(),
+    };
+    let observation = FakeHost::new().observation();
+    resolver
+        .resolve_for_launch(&target, &observation, &budget)
+        .unwrap_err();
+    let page = journal
+        .page(&crate::protocol::pagination::PageRequest {
+            cursor: None,
+            limit: 5,
+            max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+        })
+        .unwrap();
+    assert_eq!(page.items.len(), 1, "an unanswered resolve stays journaled");
+    let recovery = page.items[0].recovery_ref.clone();
+    let reference = journal.resolve_recovery_ref(recovery.as_str()).unwrap();
+    let recorded = journal.load(&reference).unwrap();
+    assert!(
+        matches!(&recorded.semantic, SemanticMutation::ResolveSeat { continuity_key, target: t, .. } if continuity_key.is_none() && *t == target),
+        "{:?}",
+        recorded.semantic
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// Kills: a daemon answer that mints a seat despite the refusal, or a plain resolve that drops the
+// key it was given. The store's own decision is tested in tests/store/continuity_key_decisions.rs.
+#[test]
+fn key_bound_elsewhere_mints_no_seat_on_plain_cli() {
+    let root = crate::test_support::scratch::temp_path("plain-key-bound");
+    std::fs::create_dir_all(&root).unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let clock = crate::app::SystemClock::new();
+    let seen = std::cell::RefCell::new(Vec::new());
+    let error = resolve_result(
+        &journal,
+        crate::node::NodeUuid::new_v4(),
+        &crate::test_support::test_host_locator(),
+        &HostTargetId::new("w1:p1"),
+        Some(crate::protocol::ids::ContinuityKey::new("clone-1")),
+        &clock,
+        |command| {
+            seen.borrow_mut().push(command);
+            Ok(Err(ApiError::new(
+                ErrorCode::ContinuityKeyPending,
+                "continuity key is bound to an unresolved seat; no seat minted",
+            )))
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ContinuityKeyPending);
+    let seen = seen.into_inner();
+    assert_eq!(seen.len(), 1);
+    assert!(
+        matches!(&seen[0], Command::ResolveSeat(resolve) if resolve.continuity_key.as_ref().is_some_and(|key| key.as_str() == "clone-1"))
+    );
+    // The definitive refusal leaves no intent to retry: nothing can mint a seat later.
+    let page = journal
+        .page(&crate::protocol::pagination::PageRequest {
+            cursor: None,
+            limit: 5,
+            max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+        })
+        .unwrap();
+    assert!(page.items.is_empty());
+    std::fs::remove_dir_all(root).unwrap();
 }

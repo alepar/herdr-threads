@@ -1207,6 +1207,7 @@ export const register = (on) => {
     }
     const seatReadonly = await $.env.get('HERDR_THREADS_SEAT_READONLY')
     if (seatReadonly) watchEnv.HERDR_THREADS_SEAT_READONLY = seatReadonly
+    // HERDR_THREADS_CONTINUITY_KEY is not added to watchEnv: the watch child inherits the session environment, so its own-session claim presents the session's key, as the hooks do.
     core = createCore(buildIo($, ledgerFile, binName, watchEnv.HERDR_THREADS_SEAT_NAME || watchEnv.HC_TERMINAL_ID ? watchEnv : null))
     await core.onLoad()
     timer = $.clock.every(1000, () => {

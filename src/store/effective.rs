@@ -1822,6 +1822,26 @@ pub fn effective_receipt(
     Ok(effective_receipt_with_key_deadline(db, message_id, seat_id)?.map(|(receipt, _)| receipt))
 }
 
+/// The SQL spelling of [`effective_receipt_with_key_deadline`]'s `available_at` for a logical,
+/// pending receipt of an unretired seat (`first_availability` with no `retired_seq` bound), over
+/// the aliases `pr` (`prepared_recipients`) and `sm` (`send_manifests`). It and
+/// [`LOGICAL_PENDING_DEADLINE_SQL`] change together with the Rust projection; the differential
+/// test `logical_receipt_shift_matches_the_shared_projection_in_every_form` checks each form.
+pub(crate) const LOGICAL_PENDING_AVAILABLE_AT_SQL: &str = "CASE WHEN pr.eligible_at_snapshot=1 THEN sm.decision_at ELSE \
+     (SELECT sa.decision_at FROM seat_availability sa WHERE sa.seat_id=pr.seat_id AND sa.decision_seq>sm.decision_seq ORDER BY sa.decision_seq LIMIT 1) END";
+
+/// The SQL spelling of [`effective_receipt_with_key_deadline`]'s send-time projection, the pending
+/// deadline of a logical receipt of an unretired seat with no stored deadline: `original_start`
+/// plus `frozen_duration_ms`, where `original_start` is the first availability recorded by the
+/// send-time cutover for a manifest at or below it, else the send time. Over the aliases `pr`,
+/// `sm` and `cut` (`receipt_send_time_cutovers`, LEFT JOIN on `sm.instance_id`; an absent cutover
+/// reads `0`, as in the Rust code). Changes together with the Rust projection, as
+/// [`LOGICAL_PENDING_AVAILABLE_AT_SQL`] does.
+pub(crate) const LOGICAL_PENDING_DEADLINE_SQL: &str = "(COALESCE(CASE WHEN sm.decision_seq<=COALESCE(cut.historical_decision_seq,0) THEN \
+     CASE WHEN pr.eligible_at_snapshot=1 THEN sm.decision_at ELSE \
+       (SELECT sa.decision_at FROM seat_availability sa WHERE sa.seat_id=pr.seat_id AND sa.decision_seq>sm.decision_seq AND sa.decision_seq<=cut.historical_decision_seq ORDER BY sa.decision_seq LIMIT 1) END \
+     END,sm.decision_at)+pr.frozen_duration_ms)";
+
 /// `effective_receipt` plus the receipt's order-key deadline (ht-yha.71).
 ///
 /// Owns: the deadline a presentation order key uses, the receipt's stored deadline, else its

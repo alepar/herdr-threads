@@ -1,0 +1,167 @@
+diff --git a/src/store/seats/observation.rs b/src/store/seats/observation.rs
+index c051e6adb..d612367f5 100644
+--- a/src/store/seats/observation.rs
++++ b/src/store/seats/observation.rs
+@@ -1,15 +1,17 @@
+ //! Host observation, snapshot stage, reconciliation transitions, publication-absence closure and baseline holds.
+ 
++use super::reversible::waiting_seat_sql;
+ use crate::{
+     ports::{
+         BindingEvidence, DurableStructuralProof, DurableWorkAdmission, EvidenceKind,
+         ExecutionEvidence, GuardedInvalidationTransition, GuardedSeatTransition, HostId,
+         HostInvalidationFence, HostInvalidationReason, HostObservation, HostObservationAdmission,
+         HostUiState, InvalidationSeatPage, ObservationProvenance, PriorPublishedTarget,
+-        PublishedSnapshot, ReconciliationAction, ReconciliationOutcome, RestoredPane, SeatState,
+-        SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader, SnapshotSavedSeat,
+-        SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, SnapshotTargetMatch, StaleReason,
+-        StructuralOccupancy, UnresolvedReason,
++        PublishedSnapshot, ReconciliationAction, ReconciliationOutcome, RestoredPane,
++        RetirementInputs, RetirementStart, SeatState, SnapshotCleanupProgress,
++        SnapshotGenerationId, SnapshotHeader, SnapshotSavedSeat, SnapshotSeatPage, SnapshotStage,
++        SnapshotStageProgress, SnapshotTargetMatch, StaleReason, StructuralOccupancy,
++        UnresolvedReason,
+     },
+     protocol::{
+         authority::CARRIED_BINDING_PROVENANCES,
+@@ -696,7 +698,7 @@ pub fn publish_snapshot_stage(
+             let nonretired = has_nonretired_seat(tx, HostId::from_row(host_id))?;
+             let unresolved: bool = tx
+                 .query_row(
+-                    &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved' LIMIT 1)"),
++                    &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved' AND NOT {} LIMIT 1)", waiting_seat_sql!("seats.id")),
+                     [host_id],
+                     |r| r.get(0),
+                 )
+@@ -1563,7 +1565,8 @@ pub fn saved_seats_page(
+     };
+     let mut stmt = conn
+         .prepare(&format!(
+-            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND host_id=?5 AND {LOCAL_SEAT} AND state!='retired' AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4"
++            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND host_id=?5 AND {LOCAL_SEAT} AND state!='retired' AND NOT {} AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4",
++            waiting_seat_sql!("seats.id")
+         ))
+         .map_err(store_error)?;
+     let mut rows = stmt
+@@ -1614,7 +1617,7 @@ pub fn saved_seats_page(
+     }
+     let has_more: bool = conn
+         .query_row(
+-            &format!("SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND host_id=?4 AND {LOCAL_SEAT} AND state!='retired' AND ordinal>?2 AND ordinal<=?3)"),
++            &format!("SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND host_id=?4 AND {LOCAL_SEAT} AND state!='retired' AND NOT {} AND ordinal>?2 AND ordinal<=?3)", waiting_seat_sql!("seats.id")),
+             params![publication.instance,last,high_water,host.get()],
+             |r| r.get(0),
+         )
+@@ -1925,7 +1928,7 @@ pub(crate) fn lift_baseline_hold_if_clear(
+     }
+     let unresolved: bool = tx
+         .query_row(
+-            &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved')"),
++            &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved' AND NOT {})", waiting_seat_sql!("seats.id")),
+             [host.get()],
+             |r| r.get(0),
+         )
+@@ -2013,6 +2016,12 @@ pub fn record_reconciliation_pass(
+                 )
+                 .map_err(store_error)?
+                 != 0;
++            // The publication this pass completed no longer shows these panes.
++            crate::store::continuity_keys::clear_conflicts_absent_from(
++                tx,
++                host,
++                published.id.as_str(),
++            )?;
+             // A lift bumps both fences itself.
+             let lifted = lift_baseline_hold_if_clear(tx, &published.instance, host, at.utc)?;
+             schema::apply_eligibility_transition(tx, &published.instance, |_| {
+@@ -2745,20 +2754,24 @@ pub fn apply_reconciliation_transition(
+                     ReconciliationOutcome::Applied
+                 }
+                 ReconciliationAction::BeginRetirement { absent_target } => {
+-                    let job = control::begin_retirement_authored(
++                    let start = control::begin_retirement_authored(
+                         tx,
+                         context,
+                         at,
+                         RetireReason::Closed,
+                         seat.clone(),
+                         instance,
+-                        transition.publication.boot.as_str(),
+-                        checked_host_number(transition.publication.epoch)?,
+-                        absent_target.as_str(),
+-                        target_generation,
++                        RetirementInputs {
++                            boot: transition.publication.boot.as_str().to_owned(),
++                            epoch: checked_host_number(transition.publication.epoch)?,
++                            target: absent_target.as_str().to_owned(),
++                            generation: target_generation,
++                            closure_evidence: None,
++                            absence_evidence: None,
++                        },
+                     )?;
+                     lift_baseline_hold_if_clear(tx, instance, host, at.utc)?;
+-                    ReconciliationOutcome::RetirementStarted(job)
++                    retirement_outcome(start)
+                 }
+                 ReconciliationAction::WatchRestoredPane => {
+                     let facts = restored_pane_evidence(tx, seat, &transition.publication, at.utc.0)?;
+@@ -2788,26 +2801,26 @@ pub fn apply_reconciliation_transition(
+                     if facts.evidence != RestoredPane::Closed {
+                         return Ok(ReconciliationOutcome::Stale(StaleReason::new("retire_restored_evidence_missing")));
+                     }
+-                    let job = control::begin_retirement_authored(
++                    let start = control::begin_retirement_authored(
+                         tx,
+                         context,
+                         at,
+                         RetireReason::Closed,
+                         seat.clone(),
+                         instance,
+-                        transition.publication.boot.as_str(),
+-                        checked_host_number(transition.publication.epoch)?,
+-                        absent_target.as_str(),
+-                        facts.target_generation,
++                        RetirementInputs {
++                            boot: transition.publication.boot.as_str().to_owned(),
++                            epoch: checked_host_number(transition.publication.epoch)?,
++                            target: absent_target.as_str().to_owned(),
++                            generation: facts.target_generation,
++                            closure_evidence: Some("restored_pane_closed"),
++                            absence_evidence: None,
++                        },
+                     )?;
+-                    tx.execute(
+-                        "UPDATE retirements SET closure_evidence='restored_pane_closed' WHERE id=?1",
+-                        [job.id.as_str()],
+-                    ).map_err(store_error)?;
+                     tx.execute("DELETE FROM restored_pane_watch WHERE seat_id=?1", [seat.as_str()])
+                         .map_err(store_error)?;
+                     lift_baseline_hold_if_clear(tx, instance, host, at.utc)?;
+-                    ReconciliationOutcome::RetirementStarted(job)
++                    retirement_outcome(start)
+                 }
+             };
+             Ok(outcome)
+@@ -2815,6 +2828,13 @@ pub fn apply_reconciliation_transition(
+     )
+ }
+ 
++fn retirement_outcome(start: RetirementStart) -> ReconciliationOutcome {
++    match start {
++        RetirementStart::Job(job) => ReconciliationOutcome::RetirementStarted(job),
++        RetirementStart::Reversible => ReconciliationOutcome::RetiredReversibly,
++    }
++}
++
+ /// A coherent enumeration updates observation state and establishes one durable
+ /// baseline. Unresolved saved seats hold every unclaimed baseline target.
+ /// Retained solely for legacy fixture assertions; production uses hidden stages.
+@@ -2891,7 +2911,7 @@ pub fn record_snapshot(
+             if attached != 1 {
+                 return Err(api_error(ErrorCode::HostUnavailable, "no Herdr server attached"));
+             }
+-            let unresolved: bool = !host_is_named(tx, host)? && tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved')"), [host.get()], |r| r.get(0)).map_err(store_error)?;
++            let unresolved: bool = !host_is_named(tx, host)? && tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved' AND NOT {})", waiting_seat_sql!("seats.id")), [host.get()], |r| r.get(0)).map_err(store_error)?;
+             for target in &snapshot.targets {
+                 let prior:Option<(String,i64,i64,i64,i64,String)>=tx.query_row(
+                     "SELECT host_boot,epoch,generation,observation_sequence,observed_at,provenance FROM observed_targets WHERE host_id=?1 AND target_id=?2",

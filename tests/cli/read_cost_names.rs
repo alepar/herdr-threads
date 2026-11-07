@@ -173,6 +173,8 @@ impl Daemon {
                     open_binding: None,
                     history: page(Vec::new()),
                     directory: None,
+                    continuity_key: None,
+                    retirement_state: None,
                 })
             }
             _ => {

@@ -1,0 +1,114 @@
+diff --git a/src/protocol/commands.rs b/src/protocol/commands.rs
+index dac84268b..99d73ef9e 100644
+--- a/src/protocol/commands.rs
++++ b/src/protocol/commands.rs
+@@ -735,6 +735,10 @@ pub struct ResolveSeat {
+     /// compared by M9. Absent everywhere else, so those requests' bytes are unchanged.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub tmux_hint: Option<String>,
++    /// `HERDR_THREADS_CONTINUITY_KEY` of a top-level caller, sent only to a daemon that advertises
++    /// `seat.continuity_key_v1` (spec 4.2). Absent otherwise, so those requests' bytes are unchanged.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub continuity_key: Option<ContinuityKey>,
+ }
+ /// TRUST-POLICY C1. A resumed top-level session asks the daemon to reattach
+ /// the one unresolved seat whose last binding carries its session id onto the
+@@ -758,6 +762,10 @@ pub struct ContinuityCheckIn {
+     /// The native session's liveness fingerprint (decision 9); the successor binding records it.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub liveness: Option<crate::protocol::authority::LivenessFingerprint>,
++    /// `HERDR_THREADS_CONTINUITY_KEY` of a top-level caller, sent only to a daemon that advertises
++    /// `seat.continuity_key_v1` (spec 4.2). Absent otherwise, so those requests' bytes are unchanged.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub continuity_key: Option<ContinuityKey>,
+ }
+ impl ContinuityCheckIn {
+     pub const RESUME_SOURCE: &'static str = "resume";
+@@ -830,6 +838,10 @@ pub struct CheckIn {
+     /// the resolved binding as read-only, so its display never settles receipt-bearing rows.
+     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+     pub readonly: bool,
++    /// `HERDR_THREADS_CONTINUITY_KEY` of a top-level caller, sent only to a daemon that advertises
++    /// `seat.continuity_key_v1` (spec 4.2). Absent otherwise, so those requests' bytes are unchanged.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub continuity_key: Option<ContinuityKey>,
+ }
+ /// Lifecycle requests deliberately rotate using a fixed expected generation.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+@@ -1947,6 +1959,7 @@ mod host_locator_tests {
+             operation: op(),
+             lineage_parent: None,
+             readonly: false,
++            continuity_key: None,
+         });
+         assert_eq!(check_in.host_locator(), Some(&host("/claim.sock")));
+         let archive = Command::Archive(ThreadMutation {
+@@ -1963,6 +1976,7 @@ mod host_locator_tests {
+                 operation: op(),
+                 locator_hint: None,
+                 tmux_hint: None,
++                continuity_key: None,
+             }),
+             Command::ContinuityCheckIn(ContinuityCheckIn {
+                 target: target(),
+@@ -1973,6 +1987,7 @@ mod host_locator_tests {
+                 operation: op(),
+                 execution: ExecutionId::new("e"),
+                 liveness: None,
++                continuity_key: None,
+             }),
+             Command::OperatorRebind(OperatorRebind {
+                 seat: SeatId::new("s"),
+@@ -2013,6 +2028,52 @@ mod host_locator_tests {
+         assert_eq!(Command::Health.host_locator(), None);
+     }
+ 
++    /// Kills: a keyless request's bytes changing, or a key not reaching the wire.
++    #[test]
++    fn continuity_key_is_absent_from_the_wire_when_none() {
++        let commands = |key: Option<ContinuityKey>| {
++            [
++                Command::CheckIn(CheckIn {
++                    claim: claim(),
++                    mode: CheckInMode::Current,
++                    operation: OperationId::new("op"),
++                    lineage_parent: None,
++                    readonly: false,
++                    continuity_key: key.clone(),
++                }),
++                Command::ResolveSeat(ResolveSeat {
++                    target: HostTargetId::new("w1:p1"),
++                    host: host("/explicit.sock"),
++                    operation: OperationId::new("op"),
++                    locator_hint: None,
++                    tmux_hint: None,
++                    continuity_key: key.clone(),
++                }),
++                Command::ContinuityCheckIn(ContinuityCheckIn {
++                    target: HostTargetId::new("w1:p1"),
++                    host: host("/explicit.sock"),
++                    harness: Harness::Codex,
++                    native_session: NativeSessionId::new("n"),
++                    source: "resume".into(),
++                    operation: OperationId::new("op"),
++                    execution: ExecutionId::new("e"),
++                    liveness: None,
++                    continuity_key: key,
++                }),
++            ]
++        };
++        for command in commands(None) {
++            let wire = serde_json::to_value(&command).unwrap();
++            let args = wire["args"].as_object().unwrap();
++            assert!(!args.contains_key("continuity_key"), "{wire}");
++        }
++        for command in commands(Some(ContinuityKey::new("clone-1"))) {
++            let wire = serde_json::to_value(&command).unwrap();
++            assert_eq!(wire["args"]["continuity_key"], "clone-1", "{wire}");
++            assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), command);
++        }
++    }
++
+     /// Kills: a host field serialized when unset (a Pane request's bytes would change and an old
+     /// `deny_unknown_fields` daemon would reject it).
+     #[test]

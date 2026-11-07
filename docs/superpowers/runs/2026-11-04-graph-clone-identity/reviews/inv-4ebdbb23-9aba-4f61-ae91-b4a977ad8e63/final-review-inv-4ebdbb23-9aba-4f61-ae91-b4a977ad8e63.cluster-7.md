@@ -1,0 +1,54 @@
+# Final review, cluster 7 (src): src/ports.rs
+
+Epic ht-ma6i, integration branch super-auto/graph-clone-identity. Captured source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7. Both resolve as commits. Slice `slices/000041.diff` is byte-identical to `git diff base..head -- src/ports.rs`. The caller checkout read HEAD at 0755e609d with a clean tracked status at the start and again before this file was written.
+
+## What the cluster changes
+
+The diff is 42 lines in one file:
+
+- `RetirementInputs` (value type) and `RetirementStart` (`Job` or `Reversible`, with `into_job`).
+- `ReconciliationOutcome::RetiredReversibly`.
+- `ContinuityEvidence::Key`.
+- `StorePort::begin_retirement` now returns `RetirementStart`.
+- Three fixtures gain `continuity_key: None`.
+
+None of the new types derives serde, so `scripts/check-wire-compat` is not engaged and no wire or journal shape moves here. The shapes match the spec's `RetirementInputs` and `RetirementStart` entry and §4.2 Trust.
+
+## Consumers checked at head
+
+- `begin_retirement_authored` (`src/store/control/retirement.rs:145`) is the only place that chooses between the two dispositions. The `Closed` plus key-holder branch returns `Reversible` and writes no `retirements` row. `UPDATE retirements SET closure_evidence` is gone: the only remaining `UPDATE retirements` statements are the worker's progress and error writes (`retirement.rs:538`, `:549`).
+- `retirement_outcome` (`src/store/seats/observation.rs:2831`) maps both start values one to one. `reconcile.rs:566-572` matches exhaustively and counts only `RetirementStarted`, as the spec requires. `reconcile.rs:644` refuses both retiring outcomes on the invalidation path.
+- `RetirementInputs.closure_evidence` round-trips through the reversible row. `Row` parsing at `reversible.rs:209-218` accepts exactly the values the migration's CHECK allows, so `restored_pane_closed` survives finalization.
+- `ContinuityEvidence::Key` is produced only by `claim_evidence` (`src/identity/repair.rs:1148`), at intake (`:452`) and at kept-claim decision (`:509`). A kept claim keeps its key because `command_json` stores the whole `ContinuityCheckIn`. `ContinuitySelection::of` sets `keyed`, and only `SelectedSeat::Keyed` records `cooperative_continuity_key` (`continuity.rs:938-941`). Everything else records `cooperative_continuity`, as the variant's doc comment says.
+
+## Baseline rows through this cluster
+
+- B1 (continuity key): the port shape is delivered and reachable from the production `repair.rs` intake. The hook, watch and bridge path to that intake leaves this cluster and is the seam reviewer's to trace.
+- B2 (pane close retires immediately; undo reverses it): a close seen live is delivered through the port. The production path is `plan_page_for` to `ReconciliationAction::BeginRetirement` (`reconcile.rs:357`), then `observation.rs:2756`, `begin_retirement_authored` and `RetiredReversibly`. `tests/store/restored_pane.rs` pins it through a real pass. A pane that closed during downtime is not delivered (first item in the landing section). `UnretireSeat` lives outside this file and is the seam reviewer's.
+- B3 (agent exits, pane stays open, seat and memberships kept): the spec records no threads change and nothing in this file touches it.
+- B4 (Herdr unchanged): the diff does not change `HostPort`. `pane_shell_pid` predates this branch.
+
+## Spec scope missing from this file
+
+Two tasks assigned to `src/ports.rs` have not landed. Beads ht-ma6i.1, ht-ma6i.4 and ht-ma6i.11 are open, and `task-ht-ma6i.1` and `task-ht-ma6i.4` sit at 9d2394467 with no commits beyond the head. No human scope change row covers either.
+
+- G5: plan Task 9 adds `RestoredPane::{TargetShown, TargetAbsent, TargetGone}` and `ReconciliationAction::{NoteTargetAbsent, ResetTargetAbsence, RetireAbsentTarget}`. At head `RestoredPane` (`ports.rs:1213`) has only `None`, `Observe`, `Watching`, `Absent` and `Closed`. In `plan_page_for`, an unresolved seat of reason `other` with no watch evidence takes `_ => MarkUnresolved` (`reconcile.rs:262-272`), so nothing retires it.
+- G5 evidence: `RetirementInputs.absence_evidence` has no producer. Every production literal passes `None` (`observation.rs:2770`, `:2817`, `retirement.rs:120`, `:259`, `operator.rs:266`, `:620`, `reversible.rs:561`). Only a test's raw `UPDATE` sets the value (`tests/store/reversible_retirement.rs:918`).
+- G2: plan Task 5 exposes `shell_fingerprint_gaps`, `record_shell_fingerprint`, `shell_continuity_candidates`, `shell_rival_exists` and `decide_shell_continuity` through the store port. None of them exists in `ports.rs` at head.
+
+## Verdict
+not ready (the G5 and G2 port surface is absent at the head, so B2 is undelivered for a pane closed during downtime)
+
+## Must fix before landing
+- B2 and spec §4.4 (G5, ht-ma6i.4): `src/ports.rs` has no target-absence `RestoredPane` variants (`:1213`), no `NoteTargetAbsent`, `ResetTargetAbsence` or `RetireAbsentTarget` action (`:1306`), and `RetirementInputs.absence_evidence` (`:612`) has no production producer, so a key-bearing seat whose pane closed while the daemon was down reaches `reconcile.rs:262-272` as `MarkUnresolved` and never retires or becomes reversible; land ht-ma6i.4 and re-review its port additions.
+- Spec Goal and §4.1 (G2, ht-ma6i.1): the store port has none of `shell_fingerprint_gaps`, `record_shell_fingerprint`, `shell_continuity_candidates`, `shell_rival_exists` or `decide_shell_continuity`, so a live handoff cannot recover a seat on shell evidence as the Goal promises; land ht-ma6i.1 and re-review its port additions.
+
+## Untested scope
+- No test or build was run for this review; the claims above come from reading the head, and clippy, nextest and the per-task results were not re-established here.
+- `ReconciliationOutcome::RetiredReversibly` appears in only one test (`tests/store/restored_pane.rs:594`), which inspects store outcomes; no test drives `reconcile.rs:572` (not counted in `retirements_started`) or the refusal at `reconcile.rs:644` with that variant, and the stub in `tests/identity/reconcile.rs:2132` only returns `RetirementStarted`.
+- `RetirementInputs.absence_evidence` is exercised only by a value seeded with raw SQL, so no test covers it from a real decision through the reversible row to the `retirements` row.
+
+## Deferred OK
+- `RetirementStart::into_job` (`src/ports.rs:625`) has no production caller; all its callers are tests, so it could become a test helper, but it returns `Option` and cannot hide a reversible outcome.
+- `StorePort::begin_retirement` (`src/ports.rs:3921`) has no production caller at the head or at the base, because production closes go through `begin_retirement_authored`; the changed return type is correct, but the fixture `close` in `tests/store/reversible_retirement.rs:205` exercises a path the daemon does not take, and removing the port method is a separate cleanup.
+- `RetirementInputs` is `pub` in `ports.rs` but appears on no `StorePort` method and is consumed only inside the store; this matches the plan and costs nothing today.

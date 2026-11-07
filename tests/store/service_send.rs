@@ -807,6 +807,7 @@ fn reads_and_notify_create_no_acks() {
         mode: CheckInMode::Current,
         claim: claim.clone(),
         operation: OperationId::new("check-in"),
+        continuity_key: None,
     };
     let permit = f
         .store
@@ -890,6 +891,8 @@ fn retirement_settles_service_obligation_to_recipient_retired() {
         },
         &budget(),
     )
+    .unwrap()
+    .into_job()
     .unwrap();
     for _ in 0..20 {
         let progress = StorePort::advance_retirement(

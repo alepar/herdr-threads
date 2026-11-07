@@ -1,0 +1,36 @@
+diff --git a/tests/service/crash_matrix.rs b/tests/service/crash_matrix.rs
+index ac5871994..34941ed55 100644
+--- a/tests/service/crash_matrix.rs
++++ b/tests/service/crash_matrix.rs
+@@ -259,6 +259,7 @@ impl Matrix {
+             mode: CheckInMode::Current,
+             claim: claim.clone(),
+             operation: OperationId::new(format!("current-{}-{n}", claim.seat.as_str())),
++            continuity_key: None,
+         }))
+         .map(|result| match result {
+             CommandResult::CheckedIn(result) => result.context,
+@@ -286,6 +287,7 @@ impl Matrix {
+                 },
+                 claim,
+                 operation: OperationId::new(operation),
++                continuity_key: None,
+             }))
+             .unwrap()
+         {
+@@ -1893,6 +1895,7 @@ impl Matrix {
+                     operation: OperationId::new(format!("resolve-{pane}")),
+                     locator_hint: None,
+                     tmux_hint: None,
++                    continuity_key: None,
+                 }))
+                 .unwrap()
+             else {
+@@ -2511,6 +2514,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
+             operation: OperationId::new("resolve-pane-u"),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         }))
+         .unwrap()
+     else {

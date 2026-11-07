@@ -1,0 +1,55 @@
+# Final review, cluster 1 (docs), epic ht-ma6i
+
+Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7, both verified with `git rev-parse --verify`. The caller checkout read clean at the head throughout. The cluster is one file, `docs/programmatic-service-client.md` (slice 000002, +46 lines, new section "Clone identity (v3)"). This is a reading review of the document against the spec and the code at the head; no tests were run.
+
+## Claim trace against the head
+
+Each claim was checked against the code it describes.
+
+Accurate as written:
+
+- Five operations, v3 gate and refusal text: `ServiceSessionLevel::required_by` and the level check in `src/daemon/transport/service_connection.rs`; "unsupported service capability" from `ServiceWireRequest::validate`.
+- `PersistentServiceClient` registers v2 only (`src/client/service.rs:560`).
+- Key syntax and "invalid counts as absent": `ContinuityKey::parse`, `src/cli/caller_location.rs:213`.
+- Replay rules: `store::service_controls::operate` returns the stored result on a matching digest, `OperationPayloadMismatch` otherwise, and journals only after the operation succeeds, so a refusal journals nothing.
+- Reserve and release results and their `Conflict`, `NotFound` and `InvalidRequest` rows: `continuity_keys::reserve`, `require_bindable_seat`, `bind`, `release`.
+- Un-retire and finalize results and state: `reversible::unretire`, `unretire_local`, `finalize`, and `insert_retirement_job` releasing the key. Because `require_key_owner` runs first, an unknown or already final seat answers `Unauthorized`, which the document's "or the key is gone" covers.
+- Operator finalization of a reversible seat: `operator_retire` in `src/store/seats/operator.rs`.
+- Conflict kinds and which of them hold: `continuity_keys::hold_kind`; the 256-row cap: `record_conflict`.
+- Hold clearing: rebind (`rebind_unresolved_seat`), operator fresh seat, publication (`clear_conflicts_absent_from`), key release (`delete_key`).
+- Alert feed shape, ordering, frozen high water, AUTOINCREMENT ordinals, last page with no cursor: `alerts_page`, `migrations/node/0016_graph_clone_identity.sql`.
+- `SeatInspection` fields and the `key <key> <owner>` text line: `SeatContinuityKey`, `seat_view`, `reversible::retirement_state`, `inspect_key_line`.
+- The spec link resolves relative to `docs/`, and §4.2 to §4.5 exist.
+
+The inaccuracies and omissions are listed under the closing headings.
+
+## Requirement baseline trace
+
+The spec has a `## Requirement baseline` with rows B1 to B4 and no human scope change. This cluster is documentation, so it delivers none of them on its own; it describes the surface.
+
+- B1 (continuity key): the service half was traced from a production entry point: `serve_registered` to `LocalService::service_operation` to `store::service_controls::operate` to `continuity_keys::reserve`. The agent half, a hook or watch presenting the key and the deciding transaction, leaves this cluster and is the seam reviewer's to trace.
+- B2 (pane close retires immediately, undo reverses it): `UnretireSeat` was traced along the same path to `reversible::unretire`. Pane close reaching `begin_retirement_authored`, and the relaunch that reattaches, leave this cluster and are the seam reviewer's. The document's required order matches spec §4.3.
+- B3 (agent exit keeps seat and memberships): the spec records no threads change. The document says nothing that contradicts it.
+- B4 (Herdr unchanged): the cluster touches no Herdr surface, and the document's launcher guidance asks for none.
+
+No row is shown undelivered by this cluster.
+
+## Verdict
+not ready (the v3 refusal table omits the retryable ServiceBusy that spec says callers must tell apart)
+
+## Must fix before landing
+- `docs/programmatic-service-client.md` refusal table omits `ServiceBusy` for `UnretireSeat` and `FinalizeRetirement`, though the spec's `store::seats::reversible` entry says "the retryable `ServiceBusy "own history catching up"` while the journal hold refuses a held kind. Callers must tell that last one apart." Evidence: `seat.unretired` and `seat.retired` are in `HELD_KINDS` (`src/store/materialize.rs:134`), `FactRoute::Journal.emit` returns `ErrorCode::ServiceBusy` while the hold is active for a local seat, `reversible::unretire` and `finalize` reach it for a published seat through `emit_if_published` and `emit_seat_retired`, and `restore_hold_refuses_them_as_retryable` (`tests/store/reversible_facts.rs`) pins it. Failure: after a daemon restart, inside the restore window, a service undoing a clone gets a code this contract does not list and may treat it as definitive, abandoning the undo and relaunching into a `key_retired_reversibly` hold. Fix: add `ServiceBusy` to both rows, stating it is retryable under the same operation key and that nothing was applied. This is a document defect; the code behaves as specified.
+
+## Untested scope
+- The document has no executable check; every claim above was verified by reading the head, and no test or daemon was run for this review.
+- `ServiceBusy` on `UnretireSeat` and `FinalizeRetirement` is pinned only at store level: a grep of `tests/service/reversible_session.rs`, `tests/service/continuity_key_session.rs` and `tests/daemon/service_session_capability.rs` finds no case that observes it over a v3 session.
+- The `Conflict` and `Unauthorized` rows for "another service" are exercised only by store tests that pass a synthetic `other-author`, because the wire cannot produce a second author (see the Deferred OK item on `reserved_author_id`).
+
+## Deferred OK
+- Alert-only clearing is lazier than the document (and spec §4.2) states: `clear_alert_only_if_owner_changed` has one caller, the check-in path at `src/store/seats/cooperative.rs:1053`, so when owner T retires or moves while the pane stays visible, the row stands until the pane's next check-in, a rebind or a publication dropping the target; a hold is never affected, only a stale `conflict` on the key seat's `SeatInspect` until then, so a follow-up should reword to "clears at the pane's next check-in" or clear eagerly.
+- "Another service" has no production meaning today: `serve_registered` gives every session `reserved_author_id(&instance)` (`graph:<sha256>`) and `operate` refuses any other author, so all sessions on an instance share one owner, the `Conflict: another service's key` and `Unauthorized: does not own` rows cannot fire over the wire, and a second service would silently share keys; harmless with graph as the only service, but the document should say so before a second one appears.
+- The alert row's refusal list is incomplete for raw v3 framers: the per-frame `ServiceWireRequest::decode` runs `operation.validate()` and maps failure to an `io::Error`, so `limit: 0`, an out-of-range `max_bytes` or an undecodable cursor closes the connection with no response, and only a decodable cursor of the wrong scope or instance gets `InvalidCursor`; this predates the epic for `Membership`, `History` and `Receipts` and recovery is re-register, but the document tells v3 callers to frame requests themselves, and `PersistentServiceClient::exchange` is the only local guard today.
+- "Absent" is loose for two alert fields: `ContinuityAlert.seat` and `Page.next_argv` serialize as JSON `null` (the fixture in `clone_identity_results_round_trip` shows both), unlike the `SeatInspection` fields, which are truly omitted; a typed Rust caller is unaffected.
+- `Page::validate` returns "incomplete page has no reachable continuation" for any `has_more` page with no `next_argv` (`src/protocol/pagination.rs:90`), so a caller running that public helper on a multi-page alert feed gets an error although the document correctly says to follow `next_cursor`; no production path validates this page, so a one-line caution in the document is enough.
+- The section omits three service-relevant facts the spec states: an operator `seat retire` or `--replace` of a live key holder is final and releases the key, a seat whose target never returns after a restart retires reversibly after 10 observed minutes (§4.4), and threads' own `launch` and `handoff` scrub the variable (`seat_filter` in `src/cli/caller_location.rs`), so the key must be set by the service's own launcher; the linked spec covers all three.
+- `seat inspect` text also prints `state: retired (reversible)` (`inspect_retirement_line`), which the document's text-output sentence does not mention; nothing is wrong, and `--json` carries `retirement_state`.

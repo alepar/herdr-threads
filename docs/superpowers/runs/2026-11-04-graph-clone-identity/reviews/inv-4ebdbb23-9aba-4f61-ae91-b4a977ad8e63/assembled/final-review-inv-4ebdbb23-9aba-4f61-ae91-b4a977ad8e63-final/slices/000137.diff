@@ -1,0 +1,20 @@
+diff --git a/tests/service/presentation_owner_budget_controls.rs b/tests/service/presentation_owner_budget_controls.rs
+index ee978df9d..39a1b9a81 100644
+--- a/tests/service/presentation_owner_budget_controls.rs
++++ b/tests/service/presentation_owner_budget_controls.rs
+@@ -206,6 +206,7 @@ impl Fixture {
+                     claim,
+                     operation: OperationId::new("owner-ci"),
+                     lineage_parent: None,
++                    continuity_key: None,
+                 }),
+                 peer(),
+                 &budget(),
+@@ -231,6 +232,7 @@ impl Fixture {
+                     claim: sender,
+                     operation: OperationId::new("owner-sender-ci"),
+                     lineage_parent: None,
++                    continuity_key: None,
+                 }),
+                 peer(),
+                 &budget(),

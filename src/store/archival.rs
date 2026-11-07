@@ -4,7 +4,7 @@ use super::{
     bindings,
     connection::{DecisionInstant, StoreContext, api_error, store_error},
     effective, schema,
-    seats::LOCAL_SEAT,
+    seats::{LOCAL_SEAT, reversible::held_open_seat_sql},
 };
 use crate::ports::HostId;
 use crate::protocol::{
@@ -357,12 +357,21 @@ pub(crate) const MIGRATED_ARCHIVAL_GRACE_MS: i64 = 24 * 60 * 60 * 1000;
 /// `bindings::seat_active(seat)` (any connected binding; a human seat while its pane exists), or
 /// it holds an open migrated binding (migrated=1, disconnect_reason='migrated') whose
 /// disconnected_at is within 24 h of `now` (no upgrade archival wave). Unresolved and retired
-/// seats are never active.
+/// seats are never active, except one with a reversible or unretired row (spec 4.3).
 pub(crate) fn member_active_for_archival(
     db: &Connection,
     seat: &str,
     now: UtcMillis,
 ) -> Result<bool, ApiError> {
+    // Held open: a quiet thread must not archive under a seat that can still return to it.
+    let held_open: bool = db
+        .query_row(concat!("SELECT ", held_open_seat_sql!("?1")), [seat], |r| {
+            r.get(0)
+        })
+        .map_err(store_error)?;
+    if held_open {
+        return Ok(true);
+    }
     let resolved: bool = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND state='resolved')",
@@ -406,13 +415,14 @@ pub(crate) fn member_active_for_archival(
 /// not applied here yet does not block the archive, which then replicates as an
 /// LWW `thread.register`; posts still apply and an explicit `reopen` restores the
 /// thread.
-fn has_live_remote_member(tx: &Connection, thread: &str) -> Result<bool, ApiError> {
+pub(crate) fn has_live_remote_member(tx: &Connection, thread: &str) -> Result<bool, ApiError> {
     tx.query_row(
         &format!(
             "SELECT EXISTS(SELECT 1 FROM memberships mb INDEXED BY memberships_thread_state \
              JOIN seats s ON s.id=mb.seat_id \
              WHERE mb.thread_id=?1 AND mb.state IN ('joined','invited') \
-             AND NOT (s.{LOCAL_SEAT}) AND s.state!='retired')"
+             AND NOT (s.{LOCAL_SEAT}) AND (s.state!='retired' OR {}))",
+            held_open_seat_sql!("s.id")
         ),
         [thread],
         |r| r.get(0),

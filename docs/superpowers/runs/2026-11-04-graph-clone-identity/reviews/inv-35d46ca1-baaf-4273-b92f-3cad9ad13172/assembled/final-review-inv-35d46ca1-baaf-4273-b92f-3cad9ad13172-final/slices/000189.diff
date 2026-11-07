@@ -1,0 +1,12 @@
+diff --git a/tests/store/locator_hint.rs b/tests/store/locator_hint.rs
+index d3005ccaa..deff29e73 100644
+--- a/tests/store/locator_hint.rs
++++ b/tests/store/locator_hint.rs
+@@ -81,6 +81,7 @@ impl Fixture {
+             operation: OperationId::new(operation),
+             locator_hint: hint.map(str::to_owned),
+             tmux_hint: tmux_hint.map(str::to_owned),
++            continuity_key: None,
+         };
+         match resolve_named_seat(
+             &self.context,

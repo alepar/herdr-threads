@@ -459,6 +459,8 @@ impl crate::ports::LocalClient for HumanClient {
                 open_binding: None,
                 history: page(vec![]),
                 directory: None,
+                continuity_key: None,
+                retirement_state: None,
             })),
             Command::CheckIn(c) | Command::OperatorCheckIn(c) => {
                 if self.lose_check_in.load(SeqCst) {
@@ -828,6 +830,8 @@ fn named_seat_labels_render_dash_dash_and_the_name_once() {
         open_binding: None,
         history: page(vec![]),
         directory: Some(Box::new(by_name)),
+        continuity_key: None,
+        retirement_state: None,
     });
     let compact = crate::protocol::output::with_render_now(UtcMillis(1_790_773_200_000), || {
         String::from_utf8(encode_selected(&inspect, &text()).expect("encodes")).expect("utf8")
@@ -857,4 +861,134 @@ fn named_seat_labels_render_dash_dash_and_the_name_once() {
         !actual.contains("reviewer (") && !actual.contains("/reviewer ("),
         "the name once, not beside the target: {actual}"
     );
+}
+
+/// `seat inspect` has no dedicated human form: a person reads the compact text, so the `key` line
+/// and its absence are the same on both. Kills: a human form added without the line.
+#[test]
+fn seat_inspect_human_output_prints_the_key_line_once() {
+    use crate::protocol::{
+        ids::{ContinuityKey, HostTargetId, ServiceAuthorId},
+        results::{
+            ContinuityKeyBinding, ContinuityStatus, MappingStatus, SeatContinuityKey,
+            SeatInspection, SeatSummary,
+        },
+    };
+    let inspection = |continuity_key: Option<Box<SeatContinuityKey>>| {
+        CommandResult::SeatInspect(SeatInspection {
+            summary: SeatSummary {
+                seat: SeatId::new("snKey00000001"),
+                continuity: ContinuityStatus::Resolved,
+                target: Some(HostTargetId::new("w1:p1")),
+                generation: 1,
+                created_at: UtcMillis(1_790_773_200_000),
+                retired_at: None,
+                active: true,
+                bindings: Vec::new(),
+                availability: None,
+                directory: None,
+            },
+            mapping: MappingStatus {
+                state: ContinuityStatus::Resolved,
+                target: Some(HostTargetId::new("w1:p1")),
+                detail_argv: None,
+            },
+            hold: None,
+            retirement: None,
+            open_binding: None,
+            history: page(vec![]),
+            directory: None,
+            continuity_key,
+            retirement_state: None,
+        })
+    };
+    let human = |result: &CommandResult| {
+        let _human = PresentationGuard::enter(Presentation::Human, &text());
+        String::from_utf8(emitted_bytes(result, &text()).unwrap()).unwrap()
+    };
+    let compact = |result: &CommandResult| {
+        crate::protocol::output::with_render_now(UtcMillis(1_790_773_200_000), || {
+            String::from_utf8(encode_selected(result, &text()).unwrap()).unwrap()
+        })
+    };
+    let held_by = |owner: String| {
+        inspection(Some(Box::new(SeatContinuityKey {
+            key: ContinuityKey::new("clone-1"),
+            owner: ServiceAuthorId::new(owner),
+            bound_by: ContinuityKeyBinding::CheckIn,
+            conflict: None,
+        })))
+    };
+    // A service author id is `graph:<64 hex>` (70 bytes); the line shows its short label.
+    let full_id = format!("graph:{}", "ab".repeat(32));
+    for render in [&compact as &dyn Fn(&CommandResult) -> String, &human] {
+        let without = render(&inspection(None));
+        for owner in ["graph".to_owned(), full_id.clone()] {
+            let held = render(&held_by(owner.clone()));
+            assert_eq!(
+                held.replacen("key clone-1 graph\n", "", 1),
+                without,
+                "{owner}"
+            );
+            assert_ne!(held, without);
+            assert!(!held.contains(&"ab".repeat(32)), "{owner}: {held}");
+        }
+    }
+}
+
+/// Kills: a reversible seat reading plain `retired`; the machine field printed beside the line.
+#[test]
+fn compact_and_human_show_retired_reversible() {
+    use crate::protocol::{
+        ids::HostTargetId,
+        results::{
+            ContinuityStatus, MappingStatus, SeatInspection, SeatRetirementState, SeatSummary,
+        },
+    };
+    let inspection = |retirement_state: Option<SeatRetirementState>| {
+        CommandResult::SeatInspect(SeatInspection {
+            summary: SeatSummary {
+                seat: SeatId::new("snKey00000001"),
+                continuity: ContinuityStatus::Retired,
+                target: Some(HostTargetId::new("w1:p1")),
+                generation: 1,
+                created_at: UtcMillis(1_790_773_200_000),
+                retired_at: Some(UtcMillis(1_790_773_300_000)),
+                active: false,
+                bindings: Vec::new(),
+                availability: None,
+                directory: None,
+            },
+            mapping: MappingStatus {
+                state: ContinuityStatus::Retired,
+                target: None,
+                detail_argv: None,
+            },
+            hold: None,
+            retirement: None,
+            open_binding: None,
+            history: page(vec![]),
+            directory: None,
+            continuity_key: None,
+            retirement_state,
+        })
+    };
+    const LINE: &str = "state: retired (reversible)\n";
+    let compact = |result: &CommandResult| {
+        crate::protocol::output::with_render_now(UtcMillis(1_790_773_200_000), || {
+            String::from_utf8(encode_selected(result, &text()).unwrap()).unwrap()
+        })
+    };
+    let human = |result: &CommandResult| {
+        let _human = PresentationGuard::enter(Presentation::Human, &text());
+        String::from_utf8(emitted_bytes(result, &text()).unwrap()).unwrap()
+    };
+    let reversible = inspection(Some(SeatRetirementState::Reversible));
+    // A final retirement carries no `retirement_state`: its output is `before`, unchanged.
+    let before = inspection(None);
+    for render in [&compact as &dyn Fn(&CommandResult) -> String, &human] {
+        assert_eq!(render(&reversible).matches(LINE).count(), 1);
+        assert_eq!(render(&reversible).replacen(LINE, "", 1), render(&before));
+        assert!(!render(&reversible).contains("retirement_state"));
+    }
 }

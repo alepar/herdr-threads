@@ -1,0 +1,20 @@
+diff --git a/tests/daemon/inherited_name.rs b/tests/daemon/inherited_name.rs
+index dfe1827b1..35d7b2571 100644
+--- a/tests/daemon/inherited_name.rs
++++ b/tests/daemon/inherited_name.rs
+@@ -120,6 +120,7 @@ fn resolve(
+             operation: OperationId::new(operation),
+             locator_hint: hint.map(str::to_owned),
+             tmux_hint: None,
++            continuity_key: None,
+         }),
+         PeerIdentity::from_kernel(501),
+         &budget(),
+@@ -288,6 +289,7 @@ fn named_resolve_attaches_the_hinted_core_for_m6() {
+                 operation: OperationId::new("op-core"),
+                 locator_hint: Some(hint),
+                 tmux_hint: None,
++                continuity_key: None,
+             }),
+             PeerIdentity::from_kernel(501),
+             &budget(),

@@ -189,6 +189,7 @@ pub fn allocate_seat(seat: &GateSeat<'_>, created: &CreatedTarget) -> Result<Sea
             operation: seat.operation.clone(),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         },
         &budget,
     )?;

@@ -1,0 +1,36 @@
+diff --git a/tests/service/composition.rs b/tests/service/composition.rs
+index fc3d1568a..7d7629b96 100644
+--- a/tests/service/composition.rs
++++ b/tests/service/composition.rs
+@@ -717,6 +717,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
+             },
+             claim: next_claim,
+             operation: herdr_threads::protocol::ids::OperationId::new(Uuid::new_v4().to_string()),
++            continuity_key: None,
+         }),
+         &CallBudget {
+             deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
+@@ -1580,6 +1581,7 @@ fn store_only_daemon_serves_without_host_workers() {
+             operation: OperationId::new("op"),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         }),
+         &budget(),
+     )
+@@ -2127,6 +2129,7 @@ impl ActualNativeFixture {
+                 operation: herdr_threads::protocol::ids::OperationId::new(operation),
+                 locator_hint: None,
+                 tmux_hint: None,
++                continuity_key: None,
+             }),
+             &self.budget(),
+         )
+@@ -2588,6 +2591,7 @@ fn request_with_previous_boot_after_restart_is_daemon_boot_changed() {
+             operation: herdr_threads::protocol::ids::OperationId::new("stale-boot"),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         })
+     };
+     let definite = stale

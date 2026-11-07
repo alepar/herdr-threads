@@ -1,0 +1,42 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/run.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/run.md
+new file mode 100644
+index 000000000..529585b9a
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/run.md
+@@ -0,0 +1,36 @@
++# super-auto run — 2026-11-04-graph-clone-identity
++
++flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
++phase: code
++codeMechanism: Workflow
++runTag: graph-clone-identity-20261105T074145
++context: Context: claude · planner=200K/167K · implementer=200K/167K · reviewer=200K/167K · finalReview=200K/167K · assembler=200K/167K · warn: planner, finalReview on a 200K model → set ANTHROPIC_DEFAULT_OPUS_MODEL=<model>[1m] or config.models.<role> to a 1M model · warn: implementer, reviewer, assembler on a 200K model → set ANTHROPIC_DEFAULT_SONNET_MODEL=<model>[1m] or config.models.<role> to a 1M model
++
++idea: super-auto epic ht-ma6i (graph clone identity, threads side), fully autonomous — from: snSGTpBk7xGd
++branch: super-auto/graph-clone-identity
++base: main
++roast-design: 2026-11-05-graph-clone-identity-roast-design-1.md, 2026-11-05-graph-clone-identity-roast-design-2.md
++findingsLedgerDesign: findings-ledger-design.md
++roastDesignRound: 2
++spec: 2026-11-04-graph-clone-identity-design.md
++epic: ht-ma6i
++
++parked:
++- graph-pass · graph-change · "drop ht-ma6i.10 <- ht-ma6i.7 (safe no); moving its peer-read criterion to the sweep would give depth 5"
++- 2026-11-05-graph-clone-identity-roast-design-2.md · escalation · "UNVERIFIED external: whether each harness fires its start hook before a first user turn; spec states an accepted limit for first-turn harnesses and source design §6 qualification checks the rest"
++- 2026-11-05-graph-clone-identity-roast-design-1.md · escalation · "UNVERIFIED external: whether Herdr can change pane_shell_pid under a stable terminal id; a stale fingerprint only fails to match, safe, and falls back to waiting"
++- coverage-ledger.md · degraded-verdict · "real harness env filtering of HERDR_THREADS_CONTINUITY_KEY not checked in this run; source design §6 real-Herdr qualification owns it"
++
++stepBackDesign-round-1: local — keep the real-retired fence; classify write-driving sites and state the conflict-row lifecycle (clusters reversible-window-writes, conflict-row-lifecycle)
++
++stepBackDesign-round-2: local — [converged]; no step-back needed for fixes on the punch list, all applied inline in spec and bead text with no further re-roast
++
++graph-pass: depth 6→6 · width 1.8→1.8 · applied 0 · parked 1
++roastDesignExit: converged at round 2
++
++approvals:
++- root-acceptance · {"version": 1, "owner": "super-auto", "sourceTree": "cdcb37725b72795a51c209c5733929f9619fa141", "requirements": [{"id": "final-review", "kind": "review", "owner": "super-auto", "source": "skill"}, {"id": "code-roast", "kind": "review", "owner": "super-auto", "source": "user", "quote": "The code super-roast findings are resolved."}, {"id": "sweep", "kind": "measurement", "owner": "super-auto", "source": "user", "quote": "An unfiltered full nextest suite passes, followed by leak checks.", "command": "/var/home/alepar/.cache/herdr-threads-heavy/heavy /var/home/alepar/.cache/herdr-threads-heavy/tb cargo nextest run --locked --all-targets --all-features", "configuration": "quiet host, HT_LEAK_RUN_ID set", "requiredLive": true}, {"id": "finish", "kind": "human", "owner": "coordinator seat snSGTpBk7xGd, relaying the user", "source": "user", "quote": "I do an independent review and merge it myself. Don't merge."}], "evidence": [], "reviews": [], "decisions": [], "recovery": {"obligations": [], "gaps": []}, "checkEvidence": {"records": [], "requiredLiveChecks": [], "gaps": []}, "runFailures": []}
++- review-collection · {"invocationId": "inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63", "workspace": "/var/home/alepar/AleCode/herdr-threads/.worktrees/super-auto-graph-clone-identity/.superpowers/sdd/ht-ma6i-plan", "reviewPath": "/var/home/alepar/AleCode/herdr-threads/.worktrees/super-auto-graph-clone-identity/.superpowers/sdd/ht-ma6i-plan/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.md", "review": "pending", "required": [], "settled": false}
++- coverage-round-2 · requirements: 18 · mapped: 18 · unmapped: 0 · auto dispositions: coverage-ledger.md c20-c37 (17 applied, 1 parked)
++- coverage-round-1 · canonical R-list: coverage-round-1-requirements.md · specsAt bd1109c66aa2e56e310e71fbb5b3dcb3fd86bc22 · requirements: 14 · mapped: 13 · unmapped: 1 (R12) · auto dispositions: coverage-ledger.md c1-c19 (18 applied, 1 rejected)
++- top-split · auto · ht-ma6i.5 LEAF, ht-ma6i.8 LEAF, ht-ma6i.1 LEAF, ht-ma6i.2 LEAF, ht-ma6i.6 LEAF, ht-ma6i.9 LEAF, ht-ma6i.3 LEAF, ht-ma6i.7 LEAF, ht-ma6i.10 LEAF, ht-ma6i.4 LEAF

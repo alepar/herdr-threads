@@ -1,0 +1,13 @@
+diff --git a/tests/daemon/harness_evidence.rs b/tests/daemon/harness_evidence.rs
+index 403550f34..c9acad026 100644
+--- a/tests/daemon/harness_evidence.rs
++++ b/tests/daemon/harness_evidence.rs
+@@ -2471,7 +2471,7 @@ mod publication_order {
+             seat: SeatId,
+             proof: ClosureEvidence,
+             budget: &CallBudget,
+-        ) -> Result<RetirementJob, ApiError> {
++        ) -> Result<crate::ports::RetirementStart, ApiError> {
+             self.inner.begin_retirement(seat, proof, budget)
+         }
+         fn advance_retirement(

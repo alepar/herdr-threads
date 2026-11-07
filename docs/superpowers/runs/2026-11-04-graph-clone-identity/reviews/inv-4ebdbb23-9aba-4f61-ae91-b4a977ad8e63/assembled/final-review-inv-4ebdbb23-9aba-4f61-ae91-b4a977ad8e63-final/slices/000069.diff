@@ -1,0 +1,665 @@
+diff --git a/src/store/seats/continuity.rs b/src/store/seats/continuity.rs
+index 01fb31655..05b7df6c4 100644
+--- a/src/store/seats/continuity.rs
++++ b/src/store/seats/continuity.rs
+@@ -3,19 +3,21 @@
+ use crate::{
+     protocol::{
+         authority::DecisionFence,
+-        ids::{ExecutionId, HostBootId, HostTargetId, SeatId},
+-        results::{ApiError, CommandResult, ErrorCode},
++        ids::{ContinuityKey, ExecutionId, HostBootId, HostTargetId, SeatId},
++        results::{ApiError, CommandResult, ContinuityConflictKind, ErrorCode},
+         time::CallBudget,
+     },
+     store::{
+         bindings, catch_up,
+         connection::{StoreContext, api_error, store_error},
++        continuity_keys,
+         effective::{self, EffectiveObservationSource},
+         schema,
+     },
+ };
+ use rusqlite::{Connection, OptionalExtension, Transaction, params};
+ 
++use super::key_verdict::{self, BoundSeatState, KeyFacts, KeyState, KeyVerdict};
+ use super::*;
+ 
+ /// TRUST-POLICY C1 candidates: nonretired unresolved **local** unnamed seats (a named seat's
+@@ -86,8 +88,8 @@ fn session_may_become_candidate(
+     .map_err(store_error)
+ }
+ 
+-/// Schema delta 12 (ht-hsyg): copy every seat-history decision into the table that admits the
+-/// `structural_process_continuity` kind. Ordinals are kept, so the AUTOINCREMENT sequence follows.
++/// Schema deltas 12 (ht-hsyg) and 16 (ht-ma6i.5): copy every seat-history decision into the table
++/// that admits the new kinds. Ordinals are kept, so the AUTOINCREMENT sequence follows.
+ pub(crate) fn copy_allocation_decisions(conn: &Connection) -> Result<(), ApiError> {
+     conn.execute(
+         "INSERT INTO allocation_decisions_new(ordinal,host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) \
+@@ -222,6 +224,20 @@ pub fn continuity_digest(
+     command
+         .validate()
+         .map_err(|detail| api_error(ErrorCode::InvalidRequest, detail))?;
++    // A keyed claim has its own domain, so a keyless digest stays byte-identical to every committed
++    // one. The domain does not encode the claim kind, so the source is hashed with it.
++    if let Some(key) = &command.continuity_key {
++        return schema::canonical_digest(&(
++            "keyed_continuity_check_in",
++            &command.source,
++            instance,
++            &command.target,
++            &command.harness,
++            &command.native_session,
++            &command.execution,
++            key,
++        ));
++    }
+     // Keep every committed resume digest replayable across this upgrade.
+     // A new claim kind has its own domain, so changing it cannot replay an
+     // operation recorded under the other kind.
+@@ -293,6 +309,417 @@ pub fn replay_continuity(
+     Ok(Some(result))
+ }
+ 
++/// What one `decide_continuity` rests on, read once from its evidence: the provenance it records
++/// and the seat and generation it is pinned to. The one match on `ContinuityEvidence`; both
++/// transaction phases select through it.
++struct ContinuitySelection {
++    decision_kind: &'static str,
++    pinned: Option<(SeatId, i64)>,
++    keyed: bool,
++}
++
++/// What a transaction phase selected. Each phase turns a miss into its own refusal.
++enum SelectedSeat {
++    One(SeatId),
++    /// The claim's key names this seat: the key is the evidence, whatever the session.
++    Keyed(SeatId),
++    None,
++    Several(Vec<SeatId>),
++}
++
++impl ContinuitySelection {
++    fn of(evidence: &crate::ports::ContinuityEvidence) -> Result<Self, ApiError> {
++        Ok(match evidence {
++            crate::ports::ContinuityEvidence::Cooperative => Self {
++                decision_kind: crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,
++                pinned: None,
++                keyed: false,
++            },
++            crate::ports::ContinuityEvidence::Key => Self {
++                decision_kind: crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,
++                pinned: None,
++                keyed: true,
++            },
++            crate::ports::ContinuityEvidence::Process {
++                seat,
++                seat_generation,
++            } => Self {
++                decision_kind: crate::protocol::authority::STRUCTURAL_PROCESS_CONTINUITY_PROVENANCE,
++                pinned: Some((seat.clone(), checked_host_number(*seat_generation)?)),
++                keyed: false,
++            },
++        })
++    }
++
++    /// The seat a keyed claim's verdict reattaches. A refusal comes before the target's own guards,
++    /// because the verdict decides an owned pane too. `None`: decide as a keyless claim.
++    fn keyed_seat(
++        &self,
++        tx: &Transaction<'_>,
++        instance: &str,
++        host: crate::ports::HostId,
++        command: &crate::protocol::commands::ContinuityCheckIn,
++        conflict: &KeyConflictStash,
++    ) -> Result<Option<SeatId>, ApiError> {
++        let (true, Some(key)) = (self.keyed, &command.continuity_key) else {
++            return Ok(None);
++        };
++        let session = C1Session {
++            instance,
++            harness: command.harness.as_str(),
++            native_session: command.native_session.as_str(),
++        };
++        let decision = key_decision(
++            tx,
++            host,
++            command.target.as_str(),
++            key,
++            KeyCaller::Claim(Some(session)),
++        )?;
++        decision.refuse(host, command.target.as_str(), conflict)?;
++        Ok(match decision.verdict {
++            KeyVerdict::Reattach(seat) => Some(seat),
++            _ => None,
++        })
++    }
++
++    fn select(
++        &self,
++        tx: &Transaction<'_>,
++        instance: &str,
++        host: crate::ports::HostId,
++        command: &crate::protocol::commands::ContinuityCheckIn,
++        keyed: Option<SeatId>,
++    ) -> Result<SelectedSeat, ApiError> {
++        if let Some(seat) = keyed {
++            return Ok(SelectedSeat::Keyed(seat));
++        }
++        let mut candidates = continuity_candidates(
++            tx,
++            instance,
++            command.harness.as_str(),
++            command.native_session.as_str(),
++        )?;
++        match candidates.len() {
++            0 => Ok(SelectedSeat::None),
++            1 => {
++                let seat = candidates.remove(0);
++                if let Some((judged, generation)) = &self.pinned {
++                    guard_continuity_pin(
++                        tx,
++                        host,
++                        command.target.as_str(),
++                        &seat,
++                        judged,
++                        *generation,
++                    )?;
++                }
++                Ok(SelectedSeat::One(seat))
++            }
++            _ => Ok(SelectedSeat::Several(candidates)),
++        }
++    }
++}
++
++/// A conflict a refused transaction judged, recorded after that transaction rolled back.
++pub(super) type KeyConflictStash = std::cell::RefCell<Option<continuity_keys::ConflictFacts>>;
++
++/// The C1 facts of a claim's native session.
++#[derive(Clone, Copy)]
++pub(super) struct C1Session<'a> {
++    pub(super) instance: &'a str,
++    pub(super) harness: &'a str,
++    pub(super) native_session: &'a str,
++}
++
++/// Who presents a key: a caller with a claim, with its session when C1 can still decide, or one
++/// with no evidence to offer.
++#[derive(Clone, Copy)]
++pub(super) enum KeyCaller<'a> {
++    Claim(Option<C1Session<'a>>),
++    Claimless,
++}
++
++/// One judged key, with the facts a conflict row records.
++pub(super) struct KeyDecision {
++    key: ContinuityKey,
++    pub(super) verdict: KeyVerdict,
++    seat: Option<SeatId>,
++    owner: Option<SeatId>,
++}
++
++impl KeyDecision {
++    fn conflict_facts(
++        &self,
++        host: crate::ports::HostId,
++        target: &str,
++        kind: ContinuityConflictKind,
++    ) -> continuity_keys::ConflictFacts {
++        continuity_keys::ConflictFacts {
++            host,
++            target: target.to_owned(),
++            key: self.key.clone(),
++            kind,
++            seat: self.seat.clone(),
++            owner: self.owner.clone(),
++        }
++    }
++
++    /// The refusal of a verdict that refuses, a conflict stashed for after the rollback. A pane
++    /// with an owner answers `TargetAlreadyOwned` as a keyless claim does, so the owner's check-in
++    /// proceeds; a hold-bearing conflict is the definitive `TargetUnresolved`.
++    pub(super) fn refuse(
++        &self,
++        host: crate::ports::HostId,
++        target: &str,
++        conflict: &KeyConflictStash,
++    ) -> Result<(), ApiError> {
++        match &self.verdict {
++            KeyVerdict::NotReady => Err(api_error(
++                ErrorCode::ServiceBusy,
++                "recovery reconciliation of the current host epoch has not finished; retry",
++            )),
++            KeyVerdict::Pending => Err(api_error(
++                ErrorCode::ContinuityKeyPending,
++                "continuity key is bound to an unresolved seat; no seat minted",
++            )),
++            KeyVerdict::Conflict(kind) => {
++                conflict.replace(Some(self.conflict_facts(host, target, *kind)));
++                let code = if key_verdict::only_alerts(*kind) {
++                    ErrorCode::TargetAlreadyOwned
++                } else {
++                    ErrorCode::TargetUnresolved
++                };
++                Err(api_error(
++                    code,
++                    format!("{}; no seat moved", key_conflict_cause(*kind, target)?),
++                ))
++            }
++            KeyVerdict::Ignore
++            | KeyVerdict::Reattach(_)
++            | KeyVerdict::NoOp
++            | KeyVerdict::Bind
++            | KeyVerdict::EnrollThenBind => Ok(()),
++        }
++    }
++}
++
++/// The cause text of a key conflict, its own and never the restore-hold text.
++pub(super) fn key_conflict_cause(
++    kind: ContinuityConflictKind,
++    target: &str,
++) -> Result<String, ApiError> {
++    let pane = shlex::try_quote(target)
++        .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid target"))?;
++    Ok(format!(
++        "{}{} on {pane}",
++        crate::protocol::results::KEY_CONFLICT_CAUSE,
++        continuity_keys::kind_name(&kind)?
++    ))
++}
++
++/// Gather the facts of one presented key at one pane and judge them. A host that is not a Herdr
++/// host ignores every key: a named seat's continuity is its name, a herdr-core terminal's its core.
++pub(super) fn key_decision(
++    tx: &Transaction<'_>,
++    host: crate::ports::HostId,
++    target: &str,
++    key: &ContinuityKey,
++    caller: KeyCaller<'_>,
++) -> Result<KeyDecision, ApiError> {
++    let kind: Option<String> = tx
++        .query_row(
++            "SELECT kind FROM herdr_hosts WHERE host_id=?1",
++            [host.get()],
++            |r| r.get(0),
++        )
++        .optional()
++        .map_err(store_error)?;
++    let row = if kind.as_deref().map(crate::ports::HostKind::from_stored)
++        == Some(crate::ports::HostKind::Herdr)
++    {
++        continuity_keys::lookup_key(tx, key)?
++    } else {
++        None
++    };
++    let seat = row.as_ref().and_then(|row| row.seat.clone());
++    let state = seat
++        .as_ref()
++        .map(|seat| bound_seat_state(tx, seat))
++        .transpose()?;
++    let owner: Option<SeatId> = tx
++        .query_row(
++            "SELECT id FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
++            params![host.get(), target],
++            |r| r.get::<_, String>(0),
++        )
++        .optional()
++        .map_err(store_error)?
++        .map(SeatId::new);
++    let owner_holds_other_key = match &owner {
++        Some(owner) => {
++            continuity_keys::key_of_seat(tx, owner)?.is_some_and(|holder| holder.key != *key)
++        }
++        None => false,
++    };
++    let candidates = match caller {
++        KeyCaller::Claim(Some(session)) => continuity_candidates(
++            tx,
++            session.instance,
++            session.harness,
++            session.native_session,
++        )?,
++        KeyCaller::Claim(None) | KeyCaller::Claimless => Vec::new(),
++    };
++    let c1_match = candidates
++        .iter()
++        .find(|candidate| Some(*candidate) == seat.as_ref())
++        .or(candidates.first());
++    let verdict = key_verdict::judge(&KeyFacts {
++        key: match (&row, &seat, state) {
++            (None, _, _) => KeyState::Unreserved,
++            (Some(_), Some(seat), Some(state)) => KeyState::Bound { seat, state },
++            (Some(_), _, _) => KeyState::Unbound,
++        },
++        pane_owner: owner.as_ref(),
++        pane_owner_holds_other_key: owner_holds_other_key,
++        c1_match,
++        has_claim: matches!(caller, KeyCaller::Claim(_)),
++        lag: reconciliation_lags(tx, host)?,
++    });
++    Ok(KeyDecision {
++        key: key.clone(),
++        verdict,
++        seat,
++        owner,
++    })
++}
++
++fn bound_seat_state(tx: &Transaction<'_>, seat: &SeatId) -> Result<BoundSeatState, ApiError> {
++    let state: String = tx
++        .query_row(
++            "SELECT state FROM seats WHERE id=?1",
++            [seat.as_str()],
++            |r| r.get(0),
++        )
++        .map_err(store_error)?;
++    Ok(match state.as_str() {
++        "unresolved" => BoundSeatState::Unresolved,
++        "retired" => BoundSeatState::Retired,
++        // A seat that handed off to another node is live elsewhere too.
++        _ => BoundSeatState::Resolved,
++    })
++}
++
++/// Record a conflict a refused transaction judged, in its own short transaction on the same
++/// connection, so it survives the rollback. The refusal stands whatever this does: a full table or
++/// a failed write is only logged.
++pub(super) fn record_stashed_conflict(
++    context: &StoreContext,
++    conn: &mut Connection,
++    conflict: KeyConflictStash,
++) {
++    let Some(facts) = conflict.into_inner() else {
++        return;
++    };
++    let recorded = context.execute_decision(
++        conn,
++        |_| Ok(()),
++        |tx, at, ()| continuity_keys::record_conflict(tx, &facts, at.utc),
++    );
++    log_conflict_record(&facts, recorded);
++}
++
++/// What a transaction that commits owes the key it was presented: a free key binds to the seat with
++/// `check_in` evidence, and a conflict is recorded in place while the caller proceeds unbound.
++pub(super) fn settle_key(
++    tx: &Transaction<'_>,
++    at: crate::protocol::time::UtcMillis,
++    host: crate::ports::HostId,
++    target: &str,
++    seat: &SeatId,
++    decision: &KeyDecision,
++) -> Result<(), ApiError> {
++    match &decision.verdict {
++        KeyVerdict::Bind | KeyVerdict::EnrollThenBind => continuity_keys::bind(
++            tx,
++            &decision.key,
++            seat,
++            crate::protocol::results::ContinuityKeyBinding::CheckIn,
++            at,
++        ),
++        KeyVerdict::Conflict(kind) => {
++            let facts = decision.conflict_facts(host, target, *kind);
++            let recorded = continuity_keys::record_conflict(tx, &facts, at)?;
++            log_conflict_record(&facts, Ok(recorded));
++            Ok(())
++        }
++        KeyVerdict::Ignore
++        | KeyVerdict::Reattach(_)
++        | KeyVerdict::NoOp
++        | KeyVerdict::Pending
++        | KeyVerdict::NotReady => Ok(()),
++    }
++}
++
++fn log_conflict_record(
++    facts: &continuity_keys::ConflictFacts,
++    recorded: Result<continuity_keys::ConflictRecord, ApiError>,
++) {
++    let target = &facts.target;
++    match recorded {
++        Ok(continuity_keys::ConflictRecord::TableFull) => eprintln!(
++            "herdr-threads: continuity key conflict on {target} not recorded: the conflict table is full"
++        ),
++        Ok(_) => {}
++        Err(error) => eprintln!(
++            "herdr-threads: continuity key conflict on {target} not recorded: {}",
++            error.detail
++        ),
++    }
++}
++
++/// C1 pin (ht-hsyg): evidence about one seat at one generation. The selected seat must be that
++/// seat, unmoved; a kept claim on the target is a session's own word and is decided by its own path
++/// first. Shared by every decision that rests on such evidence.
++pub(super) fn guard_continuity_pin(
++    tx: &Transaction<'_>,
++    host: crate::ports::HostId,
++    target: &str,
++    selected: &SeatId,
++    judged: &SeatId,
++    generation: i64,
++) -> Result<(), ApiError> {
++    let current: Option<i64> = tx
++        .query_row(
++            "SELECT generation FROM seats WHERE id=?1 AND state='unresolved'",
++            [judged.as_str()],
++            |r| r.get(0),
++        )
++        .optional()
++        .map_err(store_error)?;
++    if selected != judged || current != Some(generation) {
++        return Err(api_error(
++            ErrorCode::Conflict,
++            "process continuity evidence no longer names the matching seat; no seat moved",
++        ));
++    }
++    let kept: bool = tx
++        .query_row(
++            "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims WHERE host_id=?1 AND target_id=?2)",
++            params![host.get(), target],
++            |r| r.get(0),
++        )
++        .map_err(store_error)?;
++    if kept {
++        return Err(api_error(
++            ErrorCode::ServiceBusy,
++            "a kept continuity claim names this target and is decided first; retry",
++        ));
++    }
++    Ok(())
++}
++
+ /// TRUST-POLICY C1: reattach the one unresolved seat one of whose bindings holds
+ /// the native session id onto the (held or unowned) target, in one deciding
+ /// transaction that is a complete lifecycle check-in. The match is cooperative
+@@ -315,19 +742,7 @@ pub fn decide_continuity(
+ ) -> Result<CommandResult, ApiError> {
+     let command = request.command.clone();
+     let diagnostic = request.diagnostic;
+-    let (decision_kind, pinned) = match &request.evidence {
+-        crate::ports::ContinuityEvidence::Cooperative => (
+-            crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,
+-            None,
+-        ),
+-        crate::ports::ContinuityEvidence::Process {
+-            seat,
+-            seat_generation,
+-        } => (
+-            crate::protocol::authority::STRUCTURAL_PROCESS_CONTINUITY_PROVENANCE,
+-            Some((seat.clone(), checked_host_number(*seat_generation)?)),
+-        ),
+-    };
++    let selection = ContinuitySelection::of(&request.evidence)?;
+     let instance = request.guard.instance().to_owned();
+     if instance != elected_instance {
+         return Err(api_error(
+@@ -349,42 +764,6 @@ pub fn decide_continuity(
+         ));
+     }
+     let target = command.target.clone();
+-    // C1 process continuity (ht-hsyg): the evidence is about one seat's process at one
+-    // generation. The session's unique match must be that seat, unmoved; a kept claim on the
+-    // target is the session's own word and is decided by its own path first.
+-    let process_guard = |tx: &Transaction<'_>, seat: &SeatId| -> Result<(), ApiError> {
+-        let Some((judged, generation)) = &pinned else {
+-            return Ok(());
+-        };
+-        let current: Option<i64> = tx
+-            .query_row(
+-                "SELECT generation FROM seats WHERE id=?1 AND state='unresolved'",
+-                [judged.as_str()],
+-                |r| r.get(0),
+-            )
+-            .optional()
+-            .map_err(store_error)?;
+-        if seat != judged || current != Some(*generation) {
+-            return Err(api_error(
+-                ErrorCode::Conflict,
+-                "process continuity evidence no longer names the matching seat; no seat moved",
+-            ));
+-        }
+-        let kept: bool = tx
+-            .query_row(
+-                "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims WHERE host_id=?1 AND target_id=?2)",
+-                params![host.get(), target.as_str()],
+-                |r| r.get(0),
+-            )
+-            .map_err(store_error)?;
+-        if kept {
+-            return Err(api_error(
+-                ErrorCode::ServiceBusy,
+-                "a kept continuity claim names this target and is decided first; retry",
+-            ));
+-        }
+-        Ok(())
+-    };
+     let expected_boot = request.guard.host_boot().clone();
+     let expected_epoch = request.guard.epoch();
+     let expected_generation = request.guard.generation();
+@@ -394,6 +773,7 @@ pub fn decide_continuity(
+     let digest = continuity_digest(elected_instance, &command)?;
+     let harness = command.harness.as_str();
+     let session = command.native_session.as_str();
++    let conflict = KeyConflictStash::default();
+     let result = schema::execute_idempotent_transaction(
+         context,
+         conn,
+@@ -423,6 +803,7 @@ pub fn decide_continuity(
+                     "continuity target observation changed",
+                 ));
+             }
++            let keyed = selection.keyed_seat(tx, &instance, host, &command, &conflict)?;
+             // Held or unowned only: a target with a resolved owner is never
+             // taken (seats are never merged, nothing moves on a heuristic).
+             // Until the first reconciliation pass of the current recovery
+@@ -457,9 +838,9 @@ pub fn decide_continuity(
+                     "continuity structural proof differs from current evidence",
+                 ));
+             }
+-            let candidates = continuity_candidates(tx, &instance, harness, session)?;
+-            let [seat] = candidates.as_slice() else {
+-                return Err(if candidates.is_empty() {
++            let seat = match selection.select(tx, &instance, host, &command, keyed)? {
++                SelectedSeat::One(seat) | SelectedSeat::Keyed(seat) => seat,
++                SelectedSeat::None => {
+                     // Until the first reconciliation pass of the current
+                     // recovery epoch has run, "no unresolved seat" only says the
+                     // daemon has not yet rebuilt the seats a Herdr restart
+@@ -467,35 +848,37 @@ pub fn decide_continuity(
+                     // seats, never adds bindings, so a session no seat's
+                     // binding names can never become a candidate: its answer
+                     // is final now, whatever the lag (ht-kaw9).
+-                    if reconciliation_lags(tx, host)?
+-                        && session_may_become_candidate(tx, &instance, harness, session)?
+-                    {
+-                        api_error(
+-                            ErrorCode::ServiceBusy,
+-                            "recovery reconciliation of the current host epoch has not finished; retry",
+-                        )
+-                    } else {
+-                        api_error(
+-                            ErrorCode::NotFound,
+-                            "no unresolved seat matches this native session",
+-                        )
+-                    }
+-                } else {
++                    return Err(
++                        if reconciliation_lags(tx, host)?
++                            && session_may_become_candidate(tx, &instance, harness, session)?
++                        {
++                            api_error(
++                                ErrorCode::ServiceBusy,
++                                "recovery reconciliation of the current host epoch has not finished; retry",
++                            )
++                        } else {
++                            api_error(
++                                ErrorCode::NotFound,
++                                "no unresolved seat matches this native session",
++                            )
++                        },
++                    );
++                }
++                SelectedSeat::Several(candidates) => {
+                     let pane = shlex::try_quote(target.as_str())
+                         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid target"))?;
+                     let choices = candidates.iter().map(|seat| {
+                         let seat = shlex::try_quote(seat.as_str()).map_err(|_| api_error(ErrorCode::StoreCorrupt,"invalid seat id"))?;
+                         Ok(format!("inspect `herdr-threads seat inspect {seat}`; if this is its pane, `herdr-threads human seat rebind {seat} --pane {pane} --operator`"))
+                     }).collect::<Result<Vec<_>,ApiError>>()?.join("; ");
+-                    api_error(
++                    return Err(api_error(
+                         ErrorCode::Conflict,
+                         format!(
+                             "native session matches several unresolved seats (up to two shown); {choices}; no seat moved"
+                         ),
+-                    )
+-                });
++                    ));
++                }
+             };
+-            process_guard(tx, seat)?;
+             let generation: i64 = tx
+                 .query_row(
+                     "SELECT generation FROM seats WHERE id=?1 AND instance_id=?2",
+@@ -548,11 +931,19 @@ pub fn decide_continuity(
+                     },
+                 )
+                 .map_err(|reason| api_error(ErrorCode::StaleHostObservation, reason))?;
+-            let candidates = continuity_candidates(tx, &instance, harness, session)?;
+-            let [seat] = candidates.as_slice() else {
+-                return Err(api_error(ErrorCode::Conflict, "continuity match changed"));
+-            };
+-            process_guard(tx, seat)?;
++            let keyed = selection.keyed_seat(tx, &instance, host, &command, &conflict)?;
++            let (seat, decision_kind) =
++                match selection.select(tx, &instance, host, &command, keyed)? {
++                    SelectedSeat::One(seat) => (seat, selection.decision_kind),
++                    SelectedSeat::Keyed(seat) => (
++                        seat,
++                        crate::protocol::authority::COOPERATIVE_CONTINUITY_KEY_PROVENANCE,
++                    ),
++                    SelectedSeat::None | SelectedSeat::Several(_) => {
++                        return Err(api_error(ErrorCode::Conflict, "continuity match changed"));
++                    }
++                };
++            let seat = &seat;
+             if !target_free(tx, host, target.as_str())? {
+                 return Err(api_error(
+                     ErrorCode::TargetAlreadyOwned,
+@@ -689,7 +1080,11 @@ pub fn decide_continuity(
+                 },
+             ))
+         },
+-    )?;
++    );
++    if result.is_err() {
++        record_stashed_conflict(context, conn, conflict);
++    }
++    let result = result?;
+     validate_continuity_result(&result)?;
+     Ok(result)
+ }

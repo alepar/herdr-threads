@@ -2295,6 +2295,77 @@ fn kept_claim_survives_a_daemon_restart() {
     assert_eq!(world.continuity_decisions(), 1);
 }
 
+/// ht-ma6i.2: a keyed claim kept during lag is decided by the observation worker with its key, with
+/// no further event: a fresh session no binding names reattaches the key's seat, binding open, with
+/// `cooperative_continuity_key` in seat history. Kills: a kept claim decided without its key (it
+/// would be refused as no match and dropped); a worker that waits for a next event.
+#[test]
+fn kept_keyed_claim_is_decided_after_lag_with_no_further_event() {
+    let mut world = World::start(
+        "htkk",
+        vec![claude("w1:p1", "term-a", "SA"), pane("w1:p2", "term-b")],
+    );
+    let a = world.resolve("w1:p1");
+    let (code, _, stderr) =
+        world.hook("claude", "w1:p1", &session_start("claude", "SA", "startup"));
+    assert_eq!(code, 0, "{stderr}");
+    world.herdr.kill();
+    world.hook_unanswered(
+        "claude",
+        "w1:p1",
+        &session_start("claude", "SFRESH", "resume"),
+    );
+    assert_eq!(world.kept_claims(), 1);
+    // What a keyed claim's hook sends is the client leaf's: here the kept row carries the key, and
+    // the service reserved it for the seat.
+    {
+        let path = world.find("herdr-threads.db").expect("daemon database");
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(Duration::from_secs(5)).unwrap();
+        db.execute(
+            "INSERT INTO service_authors(id,instance_id,created_at) \
+             SELECT 'graph',id,0 FROM local_node WHERE NOT EXISTS(SELECT 1 FROM service_authors)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO continuity_keys(key,owner_author_id,seat_id,reserved_at,bound_at,bound_by) \
+             SELECT 'clone-1',(SELECT min(id) FROM service_authors),?1,1,1,'service_reservation'",
+            [&a],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE kept_continuity_claims SET continuity_key='clone-1',command_json=json_set(command_json,'$.continuity_key','clone-1')",
+            [],
+        )
+        .unwrap();
+    }
+    world.herdr.set_panes(vec![
+        claude("w1:p1", "term-a2", "SFRESH"),
+        pane("w1:p2", "term-b2"),
+    ]);
+    world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
+    world.kick_observation();
+    world.wait_for_recovery("the kept keyed claim to reattach the seat", |world| {
+        world.seat_state(&a) == "resolved" && world.kept_claims() == 0
+    });
+    assert_eq!(
+        world.count(
+            "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity_key'"
+        ),
+        1
+    );
+    assert_eq!(world.continuity_decisions(), 0);
+    assert_eq!(
+        world.open_binding(&a),
+        vec![(
+            "claude".into(),
+            "cooperative_top_level".into(),
+            "SFRESH".into()
+        )]
+    );
+}
+
 /// ht-dtx0 acceptance 4: a different session's kept claim never takes the seat, a kept claim
 /// of the seat's own session whose process has exited is dropped undecided, and Herdr's agent
 /// field naming the seat's own session moves nothing without a live claim.

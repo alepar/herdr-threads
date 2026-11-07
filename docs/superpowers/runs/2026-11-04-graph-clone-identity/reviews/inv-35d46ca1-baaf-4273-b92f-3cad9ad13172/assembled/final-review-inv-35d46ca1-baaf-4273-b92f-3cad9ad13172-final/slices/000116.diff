@@ -1,0 +1,13 @@
+diff --git a/src/sync/facts/mod.rs b/src/sync/facts/mod.rs
+index 9b41cbe3e..6800fb062 100644
+--- a/src/sync/facts/mod.rs
++++ b/src/sync/facts/mod.rs
+@@ -303,6 +303,8 @@ impl FactRegistry {
+                 .with::<NodeRetag>()
+                 .with::<seat::SeatCreated>()
+                 .with::<seat::SeatRetired>()
++                .with::<seat::SeatRetiredReversible>()
++                .with::<seat::SeatUnretired>()
+                 .with::<thread::ThreadCreated>()
+                 .with::<thread::ThreadRegister>()
+                 .with::<thread::ThreadDirect>()

@@ -1,0 +1,68 @@
+{
+ "inspected": [
+  {
+   "path": "src/identity/repair.rs",
+   "hunks": [
+    "@@ -4,12 +4,13 @@ use crate::{",
+    "@@ -103,11 +104,22 @@ pub struct OrdinaryIdentity {",
+    "@@ -136,6 +148,10 @@ impl OrdinaryIdentity {",
+    "@@ -162,6 +178,12 @@ impl OrdinaryIdentity {",
+    "@@ -448,12 +470,8 @@ impl OrdinaryIdentity {",
+    "@@ -510,7 +528,7 @@ impl OrdinaryIdentity {",
+    "@@ -559,13 +577,7 @@ impl OrdinaryIdentity {",
+    "@@ -647,6 +659,7 @@ impl OrdinaryIdentity {",
+    "@@ -665,6 +678,203 @@ impl OrdinaryIdentity {",
+    "@@ -683,16 +893,7 @@ impl OrdinaryIdentity {",
+    "@@ -1143,10 +1344,60 @@ impl OrdinaryIdentity {"
+   ]
+  },
+  {
+   "path": "src/store/seats/cooperative.rs",
+   "hunks": [
+    "@@ -596,6 +596,17 @@ pub fn check_in_payload(command: &CheckIn) -> impl serde::Serialize + '_ {",
+    "@@ -940,12 +951,19 @@ pub fn register_available(",
+    "@@ -1023,6 +1041,21 @@ pub fn register_available("
+   ]
+  },
+  {
+   "path": "src/store/effective.rs",
+   "hunks": [
+    "@@ -1822,6 +1822,26 @@ pub fn effective_receipt("
+   ]
+  },
+  {
+   "path": "docs/operations.md",
+   "hunks": [
+    "@@ -219,6 +219,8 @@ The hook's tool-boundary check-in is non-durable: it writes nothing to the local",
+    "@@ -270,6 +272,8 @@ Restore holds follow the [trust policy](../TRUST-POLICY.md) (C1 to C3, F6 resolv",
+    "@@ -283,7 +287,7 @@ The first abandons the old seat. The second abandons the new role: it retires NE",
+    "@@ -293,6 +297,10 @@ The first abandons the old seat. The second abandons the new role: it retires NE"
+   ]
+  },
+  {
+   "path": "src/client/service.rs",
+   "hunks": [
+    "@@ -9,7 +9,7 @@ use crate::{",
+    "@@ -544,8 +544,8 @@ impl PersistentServiceClient {",
+    "@@ -557,7 +557,7 @@ impl PersistentServiceClient {",
+    "@@ -873,6 +873,14 @@ impl PersistentServiceClient {",
+    "@@ -939,6 +947,21 @@ fn result_matches(request: &ServiceWireRequest, result: &ServiceResult) -> bool",
+    "@@ -947,9 +970,13 @@ fn result_matches(request: &ServiceWireRequest, result: &ServiceResult) -> bool",
+    "@@ -1789,7 +1816,7 @@ mod tests {",
+    "@@ -1799,7 +1826,7 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/store/seats/continuity.rs",
+   "hunks": [
+    "@@ -689,11 +1080,444 @@ pub fn decide_continuity("
+   ]
+  },
+  {
+   "path": ".config/nextest.toml",
+   "hunks": [
+    "@@ -198,7 +200,7 @@ test-group = \"integration-daemon\""
+   ]
+  }
+ ]
+}

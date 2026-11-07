@@ -599,6 +599,37 @@ pub struct RetirementJob {
     pub processed_units: u64,
 }
 
+/// What a retirement decision takes: the columns of the `retirements` row, or of the reversible row
+/// that holds them until finalization. Evidence is named here, so no caller updates `retirements`
+/// after the decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetirementInputs {
+    pub boot: String,
+    pub epoch: i64,
+    pub target: String,
+    pub generation: i64,
+    pub closure_evidence: Option<&'static str>,
+    pub absence_evidence: Option<&'static str>,
+}
+
+/// What a retirement decision yielded. A reversible retirement (TRUST-POLICY *Reversible
+/// retirement*) has no job, so no caller may assume one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetirementStart {
+    Job(RetirementJob),
+    Reversible,
+}
+
+impl RetirementStart {
+    /// The job of a final retirement.
+    pub fn into_job(self) -> Option<RetirementJob> {
+        match self {
+            Self::Job(job) => Some(job),
+            Self::Reversible => None,
+        }
+    }
+}
+
 /// Result of the writer's startup binding-evidence verification: bindings
 /// whose terminal/incarnation evidence was backfilled from the seat's own
 /// matching structural proof, and latest bindings of non-retired seats that
@@ -1180,7 +1211,8 @@ pub struct SnapshotSavedSeat {
 /// applier's transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RestoredPane {
-    /// No watch applies: not such a seat, or nothing at its target to watch.
+    /// No watch applies and no target absence counts: not such a seat, nothing at
+    /// its target to watch, or the absence count is blocked.
     #[default]
     None,
     /// The publication shows a held pane at the seat's target that no seat
@@ -1194,6 +1226,16 @@ pub enum RestoredPane {
     /// The watched pane is gone, no claim names the seat and the grace is
     /// served: retire.
     Closed,
+    /// No watch applies and the publication shows the seat's saved target, which
+    /// a target-absence ledger row counted as missing (G5): reset the count; the
+    /// ordinary watch rule takes over.
+    TargetShown,
+    /// No watch applies and the publication does not show the saved target, with
+    /// the observed grace not served yet (G5): record this absence.
+    TargetAbsent,
+    /// No watch applies and the saved target has been absent for the observed
+    /// grace (G5): retire.
+    TargetGone,
 }
 /// The terminal and verified host incarnation recorded on an occupant binding
 /// by the observation that proved it.
@@ -1266,7 +1308,10 @@ impl ReconciliationAction {
             | Self::BeginRetirement { .. }
             | Self::WatchRestoredPane
             | Self::NoteRestoredPaneAbsent
-            | Self::RetireRestoredPane { .. } => true,
+            | Self::RetireRestoredPane { .. }
+            | Self::NoteTargetAbsent
+            | Self::ResetTargetAbsence
+            | Self::RetireAbsentTarget { .. } => true,
         }
     }
 }
@@ -1322,6 +1367,15 @@ pub enum ReconciliationAction {
     RetireRestoredPane {
         absent_target: HostTargetId,
     },
+    /// G5 (TRUST-POLICY C2): the saved target is still absent; count the
+    /// observed time toward the grace.
+    NoteTargetAbsent,
+    /// G5: the saved target is shown again; forget the counted absence.
+    ResetTargetAbsence,
+    /// G5: retire the seat whose saved target stayed absent for the grace.
+    RetireAbsentTarget {
+        absent_target: HostTargetId,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconciliationOutcome {
@@ -1332,6 +1386,8 @@ pub enum ReconciliationOutcome {
     /// no seat is ever decided on it).
     Stale(StaleReason),
     RetirementStarted(RetirementJob),
+    /// The seat retired reversibly: there is no job to advance.
+    RetiredReversibly,
 }
 
 /// Why the store refused a reconciliation transition: a stable snake_case
@@ -1869,6 +1925,10 @@ pub enum ContinuityEvidence {
     /// The decision is valid only for the judged seat at the judged generation: the deciding
     /// transaction refuses when the session's unique match is another seat, or the seat moved.
     Process { seat: SeatId, seat_generation: u64 },
+    /// The claim presents `continuity_key` (TRUST-POLICY C1, ht-ma6i.2). The deciding transaction
+    /// judges the key from the command; a reattachment it decides records
+    /// `cooperative_continuity_key`, anything else falls through as `Cooperative`.
+    Key,
 }
 
 /// One C1 process continuity listing. `full`: the bounded page filled up (counted before rows of
@@ -1902,6 +1962,132 @@ pub struct ProcessContinuityCandidate {
     pub native_session: crate::protocol::ids::NativeSessionId,
     pub execution: ExecutionId,
     pub liveness: crate::protocol::authority::LivenessFingerprint,
+    /// The kernel boot id the daemon recorded with `liveness` (`None`: recorded before the daemon
+    /// recorded boot ids, or unreadable then).
+    pub liveness_boot: Option<String>,
+}
+
+/// Most resolved seats one pass reads a shell fingerprint for (ht-ma6i.1).
+pub const SHELL_FINGERPRINT_READS_PER_PASS: usize = 16;
+/// Candidate seats one C1 shell continuity page lists (ht-ma6i.1); the next pass pages on.
+pub const SHELL_CONTINUITY_CANDIDATES_PER_PASS: usize = 32;
+
+/// A resolved seat with no fingerprint for its current (boot, incarnation, terminal). What the
+/// fingerprint write is compared against, so a seat that moved since the listing records nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellFingerprintGap {
+    pub seat: SeatId,
+    pub seat_generation: u64,
+    pub target: HostTargetId,
+    pub terminal: TerminalId,
+    pub incarnation: String,
+    /// The published snapshot the gap was listed under; the shell read is fenced to it.
+    pub host_boot: HostBootId,
+    pub host_epoch: u64,
+}
+
+/// An unresolved seat whose recorded fingerprint a new incarnation left to judge at its saved
+/// target (TRUST-POLICY C1 shell continuity, ht-ma6i.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellContinuityCandidate {
+    pub seat: SeatId,
+    pub seat_generation: u64,
+    pub target: HostTargetId,
+    pub fingerprint: crate::identity::shell_continuity::ShellFingerprint,
+}
+
+/// Per-request host evidence for a shell continuity decision: the target's current structural
+/// observation, with its verified proof. It grants no caller authority.
+#[derive(Debug)]
+pub struct ShellContinuityGuard {
+    instance: String,
+    host_id: HostId,
+    target: HostTargetId,
+    host_boot: HostBootId,
+    epoch: u64,
+    generation: u64,
+    observed_at: MonoInstant,
+    structural_proof: DurableStructuralProof,
+    consumed: bool,
+}
+impl ShellContinuityGuard {
+    pub(crate) fn try_new(
+        instance: &str,
+        host_id: HostId,
+        target: &HostTargetId,
+        observation: HostObservation,
+    ) -> Result<Self, &'static str> {
+        if instance.is_empty() || observation.target != *target {
+            return Err("shell continuity target does not match fresh observation");
+        }
+        if observation.provenance != ObservationProvenance::FreshCurrentTarget {
+            return Err("shell continuity target lacks a fresh current observation");
+        }
+        let structural_proof = observation
+            .verified_structural_proof()
+            .ok_or("shell continuity target lacks verified structural evidence")?;
+        Ok(Self {
+            structural_proof,
+            instance: instance.into(),
+            host_id,
+            target: observation.target,
+            host_boot: observation.host_boot,
+            epoch: observation.epoch,
+            generation: observation.generation,
+            observed_at: observation.observed_at_mono,
+            consumed: false,
+        })
+    }
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+    pub fn host_id(&self) -> HostId {
+        self.host_id
+    }
+    pub fn target(&self) -> &HostTargetId {
+        &self.target
+    }
+    pub fn host_boot(&self) -> &HostBootId {
+        &self.host_boot
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn structural_proof(&self) -> &DurableStructuralProof {
+        &self.structural_proof
+    }
+    pub fn consume(&mut self, fence: &DecisionFence) -> Result<(), &'static str> {
+        if self.consumed {
+            return Err("shell continuity guard already consumed");
+        }
+        if fence.known_invalidated
+            || fence.host_boot != self.host_boot
+            || fence.host_epoch != self.epoch
+            || fence.target_generation != self.generation
+        {
+            return Err("shell continuity target changed");
+        }
+        if fence.now.0 < self.observed_at.0
+            || fence.now.0 - self.observed_at.0 > permit_lifetime_millis()
+        {
+            return Err("shell continuity target observation expired");
+        }
+        self.consumed = true;
+        Ok(())
+    }
+}
+
+/// The decision input of [`StorePort::decide_shell_continuity`], pinned to the judged seat, its
+/// generation and fingerprint.
+#[derive(Debug)]
+pub struct ShellContinuityRequest {
+    pub seat: SeatId,
+    pub seat_generation: u64,
+    pub fingerprint: crate::identity::shell_continuity::ShellFingerprint,
+    pub guard: ShellContinuityGuard,
 }
 
 /// Herdr's per-pane agent record for exactly one pane. TRUST-POLICY C1/A4:
@@ -3591,6 +3777,46 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         page: ProcessContinuityPage,
         budget: &CallBudget,
     ) -> Result<ProcessContinuityListing, ApiError>;
+    /// TRUST-POLICY C1 shell continuity (ht-ma6i.1): resolved local unnamed seats of this Herdr
+    /// host with no fingerprint for their current (boot, incarnation, terminal), seat order,
+    /// after the cursor, at most [`SHELL_FINGERPRINT_READS_PER_PASS`].
+    fn shell_fingerprint_gaps(
+        &self,
+        host: HostId,
+        after: Option<SeatId>,
+        budget: &CallBudget,
+    ) -> Result<Vec<ShellFingerprintGap>, ApiError>;
+    /// Write a read fingerprint if the seat still stands as `gap` listed it.
+    fn record_shell_fingerprint(
+        &self,
+        gap: &ShellFingerprintGap,
+        fingerprint: &crate::identity::shell_continuity::ShellFingerprint,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError>;
+    /// TRUST-POLICY C1 shell continuity: unresolved seats a new incarnation left at a saved target
+    /// with a fingerprint, seat order, after the cursor, at most
+    /// [`SHELL_CONTINUITY_CANDIDATES_PER_PASS`].
+    fn shell_continuity_candidates(
+        &self,
+        host: HostId,
+        after: Option<SeatId>,
+        budget: &CallBudget,
+    ) -> Result<Vec<ShellContinuityCandidate>, ApiError>;
+    /// Whether another non-retired seat's fingerprint of the same kernel boot names the same
+    /// process.
+    fn shell_rival_exists(
+        &self,
+        seat: &SeatId,
+        fingerprint: &crate::identity::shell_continuity::ShellFingerprint,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError>;
+    /// TRUST-POLICY C1 shell continuity: resolve the judged seat at its saved target in one
+    /// transaction, opening no binding.
+    fn decide_shell_continuity(
+        &self,
+        request: ShellContinuityRequest,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
     /// The host's kept claims due for another decision, oldest first and
     /// bounded per pass; expired rows are dropped first.
     fn kept_continuity_claims(
@@ -3886,7 +4112,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         seat: SeatId,
         proof: ClosureEvidence,
         budget: &CallBudget,
-    ) -> Result<RetirementJob, ApiError>;
+    ) -> Result<RetirementStart, ApiError>;
     fn advance_retirement(
         &self,
         job: RetirementJobId,
@@ -4241,6 +4467,15 @@ impl HostKind {
     /// holds the stored kind and no host port; `tests/host_no_wake_tripwire.rs` holds it equal to
     /// each host's own `target_wake_capability`.
     pub fn wakes_dormant_target(self) -> bool {
+        matches!(self, HostKind::Herdr)
+    }
+
+    /// Whether a new incarnation of this host restores its panes at their saved target ids, so a
+    /// saved target is worth judging after a restart: a launcher-supplied continuity key reattaches
+    /// a seat onto it (TRUST-POLICY C1), and its lasting absence retires the seat (G5). A host whose
+    /// targets never come back under a saved id (a herdr-core terminal) or that has no targets (the
+    /// named host) is judged by its own continuity instead.
+    pub fn restores_saved_targets(self) -> bool {
         matches!(self, HostKind::Herdr)
     }
 
@@ -4708,6 +4943,12 @@ pub trait ProcessInfo: Send + Sync {
     /// when unknown (no such process, another user's, or a platform without the reader): the
     /// evidence that needs it is then missing, never assumed.
     fn terminal_session(&self, _pid: u32) -> Option<TerminalSession> {
+        None
+    }
+    /// The running kernel's boot id (Linux `/proc/sys/kernel/random/boot_id`, macOS
+    /// `kern.bootsessionuuid`). `None` when unknown: a fingerprint judged against it then decides
+    /// nothing. Pids and start stamps repeat across boots, so continuity compares this first.
+    fn kernel_boot(&self) -> Option<String> {
         None
     }
 }
@@ -5416,6 +5657,7 @@ mod allocation_tests {
             operation: OperationId::new("resolve"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         let admission = HostObservationAdmission {
             instance: "i".into(),
@@ -5722,6 +5964,7 @@ mod allocation_tests {
             operation: OperationId::new("op1"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         let observation = HostObservation {
             focused: false,
@@ -6031,6 +6274,7 @@ mod contract_adapter_tests {
             operation: OperationId::new("op1"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         };
         let observation = adapter
             .observe_current_target(&request.target, &context)

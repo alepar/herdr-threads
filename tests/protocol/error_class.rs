@@ -24,6 +24,7 @@ const EXPECTED: &[(ErrorCode, Option<ErrorClass>)] = &[
     (ErrorCode::TargetUnresolved, None),
     (ErrorCode::TargetUnsafe, None),
     (ErrorCode::TargetAlreadyOwned, None),
+    (ErrorCode::ContinuityKeyPending, None),
     (ErrorCode::ThreadNotOrphaned, None),
     (ErrorCode::Archived, None),
     (ErrorCode::NotFound, None),

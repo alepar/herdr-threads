@@ -4,9 +4,10 @@
 //! A new Herdr incarnation proves nothing about old terminal ids (C2), but it can keep the pane
 //! processes alive: a live handoff passes each pane's terminal to a new server process. The
 //! evidence is the binding's liveness fingerprint (pid and start stamp, recorded from the
-//! process's own claim) together with the pane's shell as Herdr reports it: the process is that
-//! shell or belongs to the session the shell leads, on the shell's controlling terminal. After a
-//! cold restart the old shells and terminals are gone, so it cannot match.
+//! process's own claim, under the kernel boot id the daemon read then) together with the pane's
+//! shell as Herdr reports it: the process is that shell or belongs to the session the shell leads,
+//! on the shell's controlling terminal. After a cold restart the old shells and terminals are
+//! gone, so it cannot match.
 use crate::{
     ports::{ProcessContinuityCandidate, ProcessInfo},
     protocol::{authority::LivenessFingerprint, ids::SeatId},
@@ -28,12 +29,30 @@ pub enum Verdict {
     Unknown,
 }
 
-/// Judge `fingerprint` against the pane whose process Herdr reports as `shell_pid`.
+/// Whether `recorded` names the running kernel boot. An unknown boot on either side is not the
+/// same boot.
+pub fn same_boot(processes: &dyn ProcessInfo, recorded: Option<&str>) -> bool {
+    recorded.is_some_and(|recorded| processes.kernel_boot().as_deref() == Some(recorded))
+}
+
+/// Judge `fingerprint`, recorded under the kernel boot `recorded_boot`, against the pane whose
+/// process Herdr reports as `shell_pid`. A reboot can repeat a pid, start tick and terminal, so the
+/// boot is compared first: a fingerprint of another boot is `Gone` (its process cannot exist in
+/// this one), and an unknown boot on either side is `Unknown` unless the process is not running.
 pub fn judge(
     processes: &dyn ProcessInfo,
     fingerprint: LivenessFingerprint,
+    recorded_boot: Option<&str>,
     shell_pid: u32,
 ) -> Verdict {
+    if !same_boot(processes, recorded_boot) {
+        let known = recorded_boot.is_some() && processes.kernel_boot().is_some();
+        return if known || !fingerprint.is_alive(processes) {
+            Verdict::Gone
+        } else {
+            Verdict::Unknown
+        };
+    }
     if !fingerprint.is_alive(processes) {
         return Verdict::Gone;
     }
@@ -100,7 +119,12 @@ pub fn judge_seat<'a>(
         if declined(&key) {
             continue;
         }
-        match judge(processes, candidate.liveness, shell_pid) {
+        match judge(
+            processes,
+            candidate.liveness,
+            candidate.liveness_boot.as_deref(),
+            shell_pid,
+        ) {
             Verdict::Continuous => {
                 judgment.matched = Some(candidate);
                 break;
@@ -126,7 +150,12 @@ pub fn has_rival_in_pane(
     rows.iter().any(|row| {
         &row.seat != seat
             && matches!(
-                judge(processes, row.liveness, shell_pid),
+                judge(
+                    processes,
+                    row.liveness,
+                    row.liveness_boot.as_deref(),
+                    shell_pid
+                ),
                 Verdict::Continuous | Verdict::Unknown
             )
     })
@@ -168,8 +197,12 @@ mod tests {
         rows: HashMap<u32, (u64, u32, Option<u64>)>,
         exit_after_session_read: Option<u32>,
         gone: AtomicBool,
+        boot: Option<&'static str>,
     }
     impl ProcessInfo for Table {
+        fn kernel_boot(&self) -> Option<String> {
+            self.boot.map(str::to_owned)
+        }
         fn process(&self, pid: u32) -> Option<ProcessRecord> {
             if self.gone.load(Ordering::SeqCst) && self.exit_after_session_read == Some(pid) {
                 return None;
@@ -198,8 +231,17 @@ mod tests {
     const AGENT: u32 = 200;
     const TTY: u64 = 34817;
 
+    const BOOT: &str = "boot-a";
+
+    fn booted() -> Table {
+        Table {
+            boot: Some(BOOT),
+            ..Table::default()
+        }
+    }
+
     fn table(agent: (u64, u32, Option<u64>)) -> Table {
-        let mut t = Table::default();
+        let mut t = booted();
         t.rows.insert(SHELL, (1, SHELL, Some(TTY)));
         t.rows.insert(AGENT, agent);
         t
@@ -212,7 +254,7 @@ mod tests {
     #[test]
     fn a_live_process_in_the_shells_session_on_its_terminal_is_continuous() {
         assert_eq!(
-            judge(&table((7, SHELL, Some(TTY))), agent(7), SHELL),
+            judge(&table((7, SHELL, Some(TTY))), agent(7), Some(BOOT), SHELL),
             Verdict::Continuous
         );
     }
@@ -220,9 +262,9 @@ mod tests {
     /// A harness Herdr started as the pane's own process is the shell itself.
     #[test]
     fn the_pane_process_itself_is_continuous() {
-        let mut t = Table::default();
+        let mut t = booted();
         t.rows.insert(AGENT, (7, AGENT, Some(TTY)));
-        assert_eq!(judge(&t, agent(7), AGENT), Verdict::Continuous);
+        assert_eq!(judge(&t, agent(7), Some(BOOT), AGENT), Verdict::Continuous);
     }
 
     /// Kills: skipping the start-stamp check (pid reuse) or the liveness check, or remembering
@@ -230,12 +272,12 @@ mod tests {
     #[test]
     fn a_gone_or_reused_pid_is_gone() {
         assert_eq!(
-            judge(&table((8, SHELL, Some(TTY))), agent(7), SHELL),
+            judge(&table((8, SHELL, Some(TTY))), agent(7), Some(BOOT), SHELL),
             Verdict::Gone
         );
         let mut t = table((7, SHELL, Some(TTY)));
         t.rows.remove(&AGENT);
-        assert_eq!(judge(&t, agent(7), SHELL), Verdict::Gone);
+        assert_eq!(judge(&t, agent(7), Some(BOOT), SHELL), Verdict::Gone);
     }
 
     /// Kills: dropping the liveness re-check after the session read.
@@ -243,7 +285,7 @@ mod tests {
     fn a_pid_that_exits_while_its_session_is_read_is_gone() {
         let mut t = table((7, SHELL, Some(TTY)));
         t.exit_after_session_read = Some(AGENT);
-        assert_eq!(judge(&t, agent(7), SHELL), Verdict::Gone);
+        assert_eq!(judge(&t, agent(7), Some(BOOT), SHELL), Verdict::Gone);
     }
 
     /// A survivor of a cold restart (it ignored SIGHUP): its old session lost the terminal at
@@ -251,17 +293,22 @@ mod tests {
     #[test]
     fn another_session_or_terminal_is_not_continuous() {
         assert_eq!(
-            judge(&table((7, 555, Some(TTY))), agent(7), SHELL),
+            judge(&table((7, 555, Some(TTY))), agent(7), Some(BOOT), SHELL),
             Verdict::NotContinuous,
             "another session (setsid, tmux)"
         );
         assert_eq!(
-            judge(&table((7, SHELL, Some(TTY + 1))), agent(7), SHELL),
+            judge(
+                &table((7, SHELL, Some(TTY + 1))),
+                agent(7),
+                Some(BOOT),
+                SHELL
+            ),
             Verdict::NotContinuous,
             "another terminal"
         );
         assert_eq!(
-            judge(&table((7, SHELL, None)), agent(7), SHELL),
+            judge(&table((7, SHELL, None)), agent(7), Some(BOOT), SHELL),
             Verdict::NotContinuous,
             "no controlling terminal (hung up)"
         );
@@ -272,10 +319,16 @@ mod tests {
     fn a_shell_that_leads_no_session_on_a_terminal_rules_it_out() {
         let mut t = table((7, SHELL, None));
         t.rows.insert(SHELL, (1, SHELL, None));
-        assert_eq!(judge(&t, agent(7), SHELL), Verdict::NotContinuous);
+        assert_eq!(
+            judge(&t, agent(7), Some(BOOT), SHELL),
+            Verdict::NotContinuous
+        );
         let mut t = table((7, 99, Some(TTY)));
         t.rows.insert(SHELL, (1, 99, Some(TTY)));
-        assert_eq!(judge(&t, agent(7), SHELL), Verdict::NotContinuous);
+        assert_eq!(
+            judge(&t, agent(7), Some(BOOT), SHELL),
+            Verdict::NotContinuous
+        );
     }
 
     /// The pane's own process that leads no session (it is not the shell Herdr started, or it
@@ -283,9 +336,12 @@ mod tests {
     /// that decides when the fingerprint is the reported pid itself.
     #[test]
     fn the_pane_process_that_leads_no_session_is_not_continuous() {
-        let mut t = Table::default();
+        let mut t = booted();
         t.rows.insert(AGENT, (7, 999, Some(TTY)));
-        assert_eq!(judge(&t, agent(7), AGENT), Verdict::NotContinuous);
+        assert_eq!(
+            judge(&t, agent(7), Some(BOOT), AGENT),
+            Verdict::NotContinuous
+        );
     }
 
     fn candidate(seat: &str, binding: &str, pid: u32, start: u64) -> ProcessContinuityCandidate {
@@ -304,6 +360,7 @@ mod tests {
             native_session: NativeSessionId::new(format!("session-{binding}")),
             execution: ExecutionId::new(format!("exec-{binding}")),
             liveness: LivenessFingerprint { pid, start },
+            liveness_boot: Some(BOOT.into()),
         }
     }
 
@@ -394,11 +451,55 @@ mod tests {
         assert!(!complete);
     }
 
+    /// After a reboot a process can repeat the recorded pid and start tick on the same terminal.
+    /// Kills: judging without the kernel boot id, or taking an unknown one as a decision.
+    #[test]
+    fn a_live_process_recorded_under_another_kernel_boot_is_gone() {
+        let mut t = table((7, SHELL, Some(TTY)));
+        assert_eq!(judge(&t, agent(7), Some(BOOT), SHELL), Verdict::Continuous);
+        t.boot = Some("boot-b");
+        assert_eq!(judge(&t, agent(7), Some(BOOT), SHELL), Verdict::Gone);
+        let mut stale = candidate("s1", "a", AGENT, 7);
+        let rival = candidate("s2", "b", AGENT, 7);
+        let judged = judge_seat(std::slice::from_ref(&stale), &t, Some(SHELL), &|_| false);
+        assert_eq!(
+            judged,
+            SeatJudgment {
+                matched: None,
+                declines: Vec::new()
+            }
+        );
+        assert!(!has_rival_in_pane(
+            &[stale.clone(), rival],
+            &stale.seat,
+            &t,
+            SHELL
+        ));
+        t.boot = Some(BOOT);
+        assert_eq!(judge(&t, agent(7), None, SHELL), Verdict::Unknown);
+        stale.liveness_boot = None;
+        let judged = judge_seat(std::slice::from_ref(&stale), &t, Some(SHELL), &|_| false);
+        assert_eq!(
+            judged.matched, None,
+            "an unrecorded boot id matches nothing"
+        );
+        t.boot = None;
+        assert_eq!(judge(&t, agent(7), Some(BOOT), SHELL), Verdict::Unknown);
+        let mut dead = table((7, SHELL, Some(TTY)));
+        dead.rows.remove(&AGENT);
+        dead.boot = None;
+        assert_eq!(
+            judge(&dead, agent(7), Some(BOOT), SHELL),
+            Verdict::Gone,
+            "a process that is not running is gone in any boot"
+        );
+    }
+
     /// Kills: treating an unreadable fact as a match or as a definitive refusal.
     #[test]
     fn an_unreadable_fact_is_unknown() {
         let mut t = table((7, SHELL, Some(TTY)));
         t.rows.remove(&SHELL);
-        assert_eq!(judge(&t, agent(7), SHELL), Verdict::Unknown);
+        assert_eq!(judge(&t, agent(7), Some(BOOT), SHELL), Verdict::Unknown);
     }
 }

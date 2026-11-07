@@ -1,0 +1,12 @@
+diff --git a/tests/daemon/lifecycle.rs b/tests/daemon/lifecycle.rs
+index f747fb694..e9f1cb768 100644
+--- a/tests/daemon/lifecycle.rs
++++ b/tests/daemon/lifecycle.rs
+@@ -1284,6 +1284,7 @@ const SCRUB_NAMES_PROBE: &[&str] = &[
+     "HC_SESSION",
+     "HERDR_THREADS_SEAT_NAME",
+     "HERDR_THREADS_SEAT_READONLY",
++    "HERDR_THREADS_CONTINUITY_KEY",
+ ];
+ 
+ #[test]

@@ -1,0 +1,12 @@
+diff --git a/tests/service/no_wake_reports.rs b/tests/service/no_wake_reports.rs
+index 55f7d9553..458a842e8 100644
+--- a/tests/service/no_wake_reports.rs
++++ b/tests/service/no_wake_reports.rs
+@@ -218,6 +218,7 @@ impl Rig {
+                 operation: OperationId::new(format!("resolve-{name}")),
+                 locator_hint: None,
+                 tmux_hint: None,
++                continuity_key: None,
+             }))
+         else {
+             panic!("named resolve")

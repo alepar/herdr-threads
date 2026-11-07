@@ -280,6 +280,7 @@ fn capability_constants_are_stable() {
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
     assert_eq!(SEAT_BINDING_DETAILS_V1, "seat.binding_details_v1");
     assert_eq!(SEAT_READONLY_V1, "seat.readonly_v1");
+    assert_eq!(SEAT_CONTINUITY_KEY_V1, "seat.continuity_key_v1");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
     assert_eq!(HOOK_CONTEXT_RECEIPTS_V1, "hook.context_receipts_v1");
@@ -336,6 +337,7 @@ fn capability_constants_are_stable() {
             "mod.ack_row_v1",
             "seat.wake_on_v1",
             "seat.readonly_v1",
+            "seat.continuity_key_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
             "hook.context_receipts_v1",
@@ -428,6 +430,7 @@ fn every_advertised_capability_has_a_handler() {
                         operation: crate::protocol::ids::OperationId::new("capability-probe"),
                         execution: crate::protocol::ids::ExecutionId::new("execution"),
                         liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
+                        continuity_key: None,
                     });
                 assert!(command.validate().is_ok());
                 assert_eq!(
@@ -818,6 +821,23 @@ fn every_advertised_capability_has_a_handler() {
                     ErrorCode::NotFound
                 );
             }
+            SEAT_CONTINUITY_KEY_V1 => {
+                // `CheckIn.continuity_key` decodes and round-trips; the daemon refuses the claim
+                // (no such seat), not the field.
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"check_in","args":{"mode":{"kind":"current"},"continuity_key":"clone-1","operation":"op","claim":{"host":"/host.sock","instance":"34750f98bd59fcfc946da45aaabe933b","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let Command::CheckIn(check) = &command else {
+                    panic!("expected CheckIn")
+                };
+                assert_eq!(check.continuity_key.as_ref().unwrap().as_str(), "clone-1");
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                let error = handler
+                    .handle(command, PeerIdentity::from_kernel(501), &budget())
+                    .unwrap_err();
+                assert_ne!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+            }
             SEAT_READONLY_V1 => {
                 // `CheckIn.readonly` decodes and round-trips; the daemon refuses the claim (no
                 // such seat), not the field.
@@ -1067,6 +1087,7 @@ fn probe_hook_context_receipts() {
             },
             claim,
             operation: OperationId::new(format!("check-in-{seat}")),
+            continuity_key: None,
         })) else {
             panic!("canonical binding")
         };
@@ -1339,6 +1360,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "mod.ack_row_v1",
             "seat.wake_on_v1",
             "seat.readonly_v1",
+            "seat.continuity_key_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
             "hook.context_receipts_v1",
@@ -2960,6 +2982,7 @@ fn presentation_capability_routes_use_configured_domain() {
             },
             claim,
             operation: OperationId::new(format!("check-in-{seat}")),
+            continuity_key: None,
         })) else {
             panic!("canonical binding")
         };

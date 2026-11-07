@@ -1,0 +1,69 @@
+diff --git a/src/store/seats/cooperative.rs b/src/store/seats/cooperative.rs
+index a64c1328e..d44d7df8c 100644
+--- a/src/store/seats/cooperative.rs
++++ b/src/store/seats/cooperative.rs
+@@ -596,6 +596,17 @@ pub fn check_in_payload(command: &CheckIn) -> impl serde::Serialize + '_ {
+     ("check_in", &command.mode, &command.claim)
+ }
+ 
++/// The digest of a check-in: [`check_in_payload`]'s, unchanged for a keyless one; a keyed one has
++/// its own domain.
++pub fn check_in_digest(command: &CheckIn) -> Result<[u8; 32], ApiError> {
++    match &command.continuity_key {
++        Some(key) => {
++            schema::canonical_digest(&("keyed_check_in", &command.mode, &command.claim, key))
++        }
++        None => schema::canonical_digest(&check_in_payload(command)),
++    }
++}
++
+ // Allowed: one deciding mutation: transaction, permit, claim, mode and the obligation it proves.
+ #[allow(clippy::too_many_arguments)]
+ pub(crate) fn decide_cooperative(
+@@ -940,12 +951,19 @@ pub fn register_available(
+     ) -> Result<CheckInResult, ApiError>,
+ ) -> Result<CommandResult, ApiError> {
+     let claim = &command.claim;
+-    let digest = schema::canonical_digest(&check_in_payload(command))?;
++    let digest = check_in_digest(command)?;
+     // The operator form never shares an idempotency key with the plain one.
+-    let idempotency_digest = if operator.is_some() {
+-        schema::canonical_digest(&("operator_check_in", &command.mode, &command.claim))?
+-    } else {
+-        digest
++    let idempotency_digest = match (operator, &command.continuity_key) {
++        (None, _) => digest,
++        (Some(_), None) => {
++            schema::canonical_digest(&("operator_check_in", &command.mode, &command.claim))?
++        }
++        (Some(_), Some(key)) => schema::canonical_digest(&(
++            "keyed_operator_check_in",
++            &command.mode,
++            &command.claim,
++            key,
++        ))?,
+     };
+     let scope = format!("seat:{}", claim.seat.as_str());
+     schema::execute_budgeted_idempotent_transaction(
+@@ -1023,6 +1041,21 @@ pub fn register_available(
+             // Read-only is decided from the resolved binding's role (a Hermes registered child
+             // resolves to its subagent row); the transaction rolls back on Err.
+             super::control::require_top_level_binding(resolution.binding())?;
++            // Spec 4.2: a check-in commits rather than refuses. A free key binds, a conflict only
++            // alerts, and while a pass can still change the answer nothing is recorded (the key is
++            // presented again on the next check-in).
++            let host = cooperative_claim(tx, context, &claim.instance, claim)?;
++            if let Some(key) = &command.continuity_key {
++                let decision =
++                    key_decision(tx, host, claim.target.as_str(), key, KeyCaller::Claim(None))?;
++                settle_key(tx, at.utc, host, claim.target.as_str(), seat, &decision)?;
++            }
++            crate::store::continuity_keys::clear_alert_only_if_owner_changed(
++                tx,
++                host,
++                claim.target.as_str(),
++                Some(seat),
++            )?;
+             let binding_id = resolution.binding().binding_id.clone();
+             if command.readonly {
+                 bindings::set_readonly(tx, &binding_id)?;

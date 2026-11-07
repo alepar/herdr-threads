@@ -1,0 +1,14 @@
+diff --git a/src/harness/hermes.rs b/src/harness/hermes.rs
+index 2ccf4ca0c..ad5c30681 100644
+--- a/src/harness/hermes.rs
++++ b/src/harness/hermes.rs
+@@ -32,7 +32,8 @@ static TEXT: AdapterText = AdapterText {
+           separate. A bare Hermes CLI session in a Herdr pane then joins through these
+           hooks. From Hermes 0.22.1 (one shared gateway) the profile must also list
+           HERDR_PANE_ID and HERDR_ENV in terminal.client_env_passthrough, or no
+-          session is seated. After upgrading, run setup again so the installed
++          session is seated; a launcher that sets HERDR_THREADS_CONTINUITY_KEY lists
++          it there too. After upgrading, run setup again so the installed
+           bridge is current; setup-status reports each profile's enablement and
+           whether its bridge is current. Unsetup preserves foreign/modified assets
+           and native YAML/enable selection, reporting residue and manual disable

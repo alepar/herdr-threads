@@ -1,0 +1,617 @@
+diff --git a/tests/service/continuity_key_session.rs b/tests/service/continuity_key_session.rs
+new file mode 100644
+index 000000000..20e64da66
+--- /dev/null
++++ b/tests/service/continuity_key_session.rs
+@@ -0,0 +1,611 @@
++//! `ReserveContinuityKey` and `ReleaseContinuityKey` over a real `service_session_v3` connection to
++//! an in-process daemon (ht-ma6i.8): owner authorization, operation-key replay and payload-mismatch
++//! refusal through the session, and an already-running clone's seat gaining a key. The fixture host
++//! is unavailable, so no reconciliation touches the seeded seats.
++
++use herdr_threads::{
++    app::{SystemClock, run_elected},
++    client::service::{PersistentServiceClient, ServiceIntentJournal},
++    daemon::{
++        ownership::OwnerLock,
++        paths::{NodePaths, RuntimeContext},
++        transport::{read_frame, write_frame},
++    },
++    ports::{
++        AgentComposerState, ComposerObservation, HostCallContext, HostObservation, HostPort,
++        HostSnapshot, NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest,
++        PromptOutcome, SafeWakeTarget,
++    },
++    protocol::{
++        ids::{ContinuityKey, HostTargetId, OperationId, SeatId, ServiceAuthorId},
++        pagination::PageRequest,
++        results::{ApiError, ContinuityConflictKind, ErrorCode},
++        service::{
++            ContinuityKeyReservation, ReleaseContinuityKey, ReserveContinuityKey,
++            SERVICE_SESSION_CAPABILITY_V2, SERVICE_SESSION_CAPABILITY_V3,
++            ServiceContinuityAlertsQuery, ServiceOperation, ServiceRegister, ServiceRequest,
++            ServiceResult, ServiceWireRequest, ServiceWireResponse,
++        },
++        time::{CallBudget, Cancellation, Clock, MonoInstant},
++        wire::PROTOCOL_VERSION,
++    },
++    service::config::ServiceConfig,
++    store::connection::StoreContext,
++};
++use rusqlite::{Connection, OptionalExtension, params};
++use std::{
++    fs,
++    os::unix::fs::DirBuilderExt,
++    path::{Path, PathBuf},
++    rc::Rc,
++    sync::{Arc, MutexGuard, mpsc},
++    time::Duration,
++};
++use tokio::net::UnixStream;
++use uuid::Uuid;
++
++struct UnavailableHost;
++fn unavailable() -> ApiError {
++    ApiError::host_unavailable("fixture host is unavailable")
++}
++impl HostPort for UnavailableHost {
++    fn live_topology(
++        &self,
++        _: &CallBudget,
++    ) -> Result<herdr_threads::host::observation::HostTopology, ApiError> {
++        Err(unavailable())
++    }
++    fn observe_current_target_for_archival(
++        &self,
++        _: &HostTargetId,
++        _: &HostCallContext,
++    ) -> Result<ComposerObservation, ApiError> {
++        Err(unavailable())
++    }
++    fn native_launch_capability(&self) -> NativeLaunchCapability {
++        NativeLaunchCapability::Unsupported
++    }
++    fn observe_current_target(
++        &self,
++        _: &HostTargetId,
++        _: &HostCallContext,
++    ) -> Result<HostObservation, ApiError> {
++        Err(unavailable())
++    }
++    fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
++        Err(unavailable())
++    }
++    fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
++        None
++    }
++    fn submit_prompt(
++        &self,
++        _: &SafeWakeTarget,
++        _: &str,
++        _: &HostCallContext,
++    ) -> Result<PromptOutcome, ApiError> {
++        Err(unavailable())
++    }
++    fn pane_agent_state(
++        &self,
++        _: &SafeWakeTarget,
++        _: &HostCallContext,
++    ) -> Result<AgentComposerState, ApiError> {
++        Err(unavailable())
++    }
++    fn launch_native(
++        &self,
++        _: NativeLaunchRequest,
++        _: &HostCallContext,
++    ) -> Result<NativeLaunchOutcome, ApiError> {
++        Err(unavailable())
++    }
++    fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
++        Err(unavailable())
++    }
++}
++
++struct TempRoot(PathBuf);
++impl Drop for TempRoot {
++    fn drop(&mut self) {
++        super::print_daemon_logs_if_panicking(&self.0);
++        let _ = fs::remove_dir_all(&self.0);
++    }
++}
++
++struct Daemon {
++    stop: Cancellation,
++    worker: Option<std::thread::JoinHandle<std::io::Result<bool>>>,
++}
++impl Drop for Daemon {
++    fn drop(&mut self) {
++        self.stop.cancel();
++        if let Some(worker) = self.worker.take() {
++            let _ = worker.join();
++        }
++    }
++}
++
++pub(super) struct Fixture {
++    // Declared first so the daemon stops before the root it writes under goes away.
++    daemon: Daemon,
++    _root: TempRoot,
++    _lock: MutexGuard<'static, ()>,
++    endpoint: PathBuf,
++    instance: String,
++    clock: Arc<dyn Clock>,
++    pub(super) db: Connection,
++}
++
++/// A running daemon over an unavailable host, with a plain connection to its database.
++pub(super) fn fixture() -> Fixture {
++    let lock = super::IN_PROCESS_DAEMON
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner());
++    let root = herdr_threads::test_support::scratch::temp_path(format!(
++        "herdr-key-session-{}",
++        Uuid::new_v4()
++    ));
++    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
++    let root = TempRoot(root);
++    let paths = NodePaths::resolve(
++        &RuntimeContext::explicit(root.0.join("state"), root.0.join("host.sock"), None)
++            .unwrap()
++            .state_dir,
++    )
++    .unwrap();
++    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
++    let instance = owner.node_uuid().unwrap();
++    drop(owner);
++    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
++    drop(
++        StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
++            .with_test_host()
++            .with_node_seed(herdr_threads::test_support::node_seed_for(instance))
++            .open_writer()
++            .unwrap(),
++    );
++    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
++    let stop = Cancellation::default();
++    let worker = {
++        let stop = stop.clone();
++        let paths = paths.clone();
++        let clock = Arc::clone(&clock);
++        std::thread::spawn(move || {
++            tokio::runtime::Builder::new_current_thread()
++                .enable_all()
++                .build()
++                .unwrap()
++                .block_on(run_elected(
++                    &paths,
++                    clock,
++                    stop,
++                    ServiceConfig::default(),
++                    herdr_threads::test_support::single_host_plan(Arc::new(UnavailableHost)),
++                    move |descriptor| {
++                        ready_tx
++                            .send(descriptor.clone())
++                            .map_err(std::io::Error::other)
++                    },
++                ))
++        })
++    };
++    let daemon = Daemon {
++        stop,
++        worker: Some(worker),
++    };
++    let descriptor = ready_rx
++        .recv_timeout(Duration::from_secs(5))
++        .expect("daemon endpoint did not publish");
++    Fixture {
++        daemon,
++        _root: root,
++        _lock: lock,
++        endpoint: descriptor.endpoint.clone(),
++        instance: instance.to_string(),
++        clock,
++        db: Connection::open(&paths.database_path).unwrap(),
++    }
++}
++
++impl Fixture {
++    pub(super) fn run<F: Future<Output = ()>>(self, flow: impl FnOnce(Session, Rc<Fixture>) -> F) {
++        self.run_as(SERVICE_SESSION_CAPABILITY_V3, flow);
++    }
++
++    fn run_as<F: Future<Output = ()>>(
++        self,
++        capability: &str,
++        flow: impl FnOnce(Session, Rc<Fixture>) -> F,
++    ) {
++        self.drive(|fixture| async move {
++            let session = Session::open(&fixture.endpoint, &fixture.instance, capability).await;
++            flow(session, fixture).await;
++        });
++    }
++
++    /// The flow gets a `PersistentServiceClient` instead of a raw session (the live gate allows one
++    /// session). The client is the flow's, so it is gone before the daemon stops.
++    pub(super) fn run_client<F: Future<Output = ()>>(
++        self,
++        flow: impl FnOnce(PersistentServiceClient, Rc<Fixture>) -> F,
++    ) {
++        let client = PersistentServiceClient::new(
++            self.endpoint.clone(),
++            Arc::clone(&self.clock),
++            self.instance.parse().unwrap(),
++            None,
++            ServiceIntentJournal::open(self._root.0.join("intents")).unwrap(),
++        );
++        self.drive(|fixture| flow(client, fixture));
++    }
++
++    pub(super) fn budget(&self) -> CallBudget {
++        CallBudget {
++            deadline: MonoInstant(self.clock.monotonic_now().0 + 5_000),
++            cancellation: Cancellation::default(),
++        }
++    }
++
++    fn drive<F: Future<Output = ()>>(self, flow: impl FnOnce(Rc<Fixture>) -> F) {
++        let fixture = Rc::new(self);
++        tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap()
++            .block_on(flow(Rc::clone(&fixture)));
++        let mut fixture = Rc::into_inner(fixture).expect("the flow released the fixture");
++        fixture.daemon.stop.cancel();
++        let worker = fixture.daemon.worker.take().unwrap();
++        assert!(worker.join().unwrap().unwrap());
++    }
++
++    pub(super) fn seed_seat(&self, seat: &str, state: &str, target: Option<&str>) {
++        let retired_at = (state == "retired").then_some(1_i64);
++        self.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id,retired_at) VALUES (?1,?2,?3,'native',?4,3,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts),?5)",
++            params![seat, self.instance, state, target, retired_at]).unwrap();
++    }
++
++    /// (state, target, generation, target_generation) of a seat.
++    fn seat_row(&self, seat: &str) -> (String, Option<String>, i64, i64) {
++        self.db
++            .query_row(
++                "SELECT state,target_id,generation,target_generation FROM seats WHERE id=?1",
++                [seat],
++                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
++            )
++            .unwrap()
++    }
++
++    pub(super) fn key_row(&self, key: &str) -> Option<KeyColumns> {
++        self.db
++            .query_row(
++                "SELECT owner_author_id,seat_id,bound_at,bound_by FROM continuity_keys WHERE key=?1",
++                [key],
++                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
++            )
++            .optional()
++            .unwrap()
++    }
++
++    pub(super) fn journaled(&self, operation: &str) -> i64 {
++        self.db
++            .query_row(
++                "SELECT count(*) FROM operations WHERE operation_key=?1",
++                [operation],
++                |r| r.get(0),
++            )
++            .unwrap()
++    }
++}
++
++/// owner, seat, bound_at, bound_by.
++pub(super) type KeyColumns = (String, Option<String>, Option<i64>, Option<String>);
++
++pub(super) struct Session {
++    stream: UnixStream,
++    instance: String,
++    pub(super) author: ServiceAuthorId,
++    next: u32,
++}
++
++impl Session {
++    async fn open(endpoint: &Path, instance: &str, capability: &str) -> Self {
++        let mut stream = UnixStream::connect(endpoint).await.unwrap();
++        let request = ServiceWireRequest {
++            version: PROTOCOL_VERSION,
++            request_id: "register".into(),
++            expected_instance: instance.to_owned(),
++            service: ServiceRequest::Register(ServiceRegister {
++                capability: capability.into(),
++            }),
++        };
++        let registered = exchange(&mut stream, &request).await;
++        let Ok(ServiceResult::Registered(registration)) = registered.result else {
++            panic!("registration: {registered:?}");
++        };
++        Self {
++            stream,
++            instance: instance.to_owned(),
++            author: registration.author,
++            next: 0,
++        }
++    }
++
++    pub(super) async fn call(
++        &mut self,
++        operation: ServiceOperation,
++    ) -> Result<ServiceResult, ApiError> {
++        self.next += 1;
++        let request = ServiceWireRequest {
++            version: PROTOCOL_VERSION,
++            request_id: format!("call-{}", self.next),
++            expected_instance: self.instance.clone(),
++            service: ServiceRequest::Operation(operation),
++        };
++        exchange(&mut self.stream, &request).await.result
++    }
++
++    pub(super) async fn reserve(
++        &mut self,
++        operation: &str,
++        key: &str,
++        seat: Option<&str>,
++    ) -> Result<ContinuityKeyReservation, ApiError> {
++        let result = self
++            .call(ServiceOperation::ReserveContinuityKey(
++                ReserveContinuityKey {
++                    key: ContinuityKey::new(key),
++                    seat: seat.map(SeatId::new),
++                    operation: OperationId::new(operation),
++                },
++            ))
++            .await?;
++        let ServiceResult::ContinuityKeyReserved(reservation) = result else {
++            panic!("reserve answered {result:?}");
++        };
++        Ok(reservation)
++    }
++
++    async fn release(&mut self, operation: &str, key: &str) -> Result<ContinuityKey, ApiError> {
++        let result = self
++            .call(ServiceOperation::ReleaseContinuityKey(
++                ReleaseContinuityKey {
++                    key: ContinuityKey::new(key),
++                    operation: OperationId::new(operation),
++                },
++            ))
++            .await?;
++        let ServiceResult::ContinuityKeyReleased(released) = result else {
++            panic!("release answered {result:?}");
++        };
++        Ok(released)
++    }
++}
++
++async fn exchange(stream: &mut UnixStream, request: &ServiceWireRequest) -> ServiceWireResponse {
++    write_frame(stream, &serde_json::to_vec(request).unwrap())
++        .await
++        .unwrap();
++    let bytes = tokio::time::timeout(Duration::from_secs(5), read_frame(stream))
++        .await
++        .unwrap()
++        .unwrap();
++    let response: ServiceWireResponse = serde_json::from_slice(&bytes).unwrap();
++    assert!(response.correlates_to(request));
++    response
++}
++
++/// Kills: either operation still answering `Unsupported`, a wrong owner in the reply, a release
++/// that leaves the row.
++#[test]
++fn reserve_and_release_over_v3() {
++    fixture().run(|mut session, fixture| async move {
++        let reserved = session.reserve("reserve-1", "clone-1", None).await.unwrap();
++        assert_eq!(reserved.key, ContinuityKey::new("clone-1"));
++        assert_eq!(reserved.owner, session.author);
++        assert_eq!(reserved.seat, None);
++        assert!(reserved.reserved_at.0 > 0);
++        assert_eq!(
++            fixture.key_row("clone-1"),
++            Some((session.author.as_str().to_owned(), None, None, None))
++        );
++
++        // Idempotent under a new operation key: the stored reservation comes back.
++        let again = session.reserve("reserve-2", "clone-1", None).await.unwrap();
++        assert_eq!(again, reserved);
++
++        let released = session.release("release-1", "clone-1").await.unwrap();
++        assert_eq!(released, ContinuityKey::new("clone-1"));
++        assert_eq!(fixture.key_row("clone-1"), None);
++        let unknown = session.release("release-2", "clone-1").await.unwrap_err();
++        assert_eq!(unknown.code, ErrorCode::NotFound);
++        assert_eq!(fixture.journaled("release-2"), 0);
++    });
++}
++
++/// Kills: a resolved or unresolved seat refused, a seat row written by the binding, the wrong
++/// `bound_by`, a bound key released, a retired seat accepted or its refusal journaled.
++#[test]
++fn reserve_with_seat_gains_a_key_for_a_running_seat() {
++    let fixture = fixture();
++    fixture.seed_seat("running", "resolved", Some("pane-running"));
++    fixture.seed_seat("waiting", "unresolved", None);
++    fixture.seed_seat("gone", "retired", None);
++    fixture.run(|mut session, fixture| async move {
++        for (operation, key, seat) in [
++            ("bind-running", "clone-running", "running"),
++            ("bind-waiting", "clone-waiting", "waiting"),
++        ] {
++            let before = fixture.seat_row(seat);
++            let reserved = session.reserve(operation, key, Some(seat)).await.unwrap();
++            assert_eq!(reserved.seat, Some(SeatId::new(seat)));
++            let (owner, bound_seat, bound_at, bound_by) = fixture.key_row(key).unwrap();
++            assert_eq!(owner, session.author.as_str());
++            assert_eq!(bound_seat.as_deref(), Some(seat));
++            assert_eq!(bound_at, Some(reserved.reserved_at.0));
++            assert_eq!(bound_by.as_deref(), Some("service_reservation"));
++            assert_eq!(fixture.seat_row(seat), before, "the binding moves nothing");
++        }
++
++        // Re-reserve to the same seat under a new operation key: a no-op.
++        let row = fixture.key_row("clone-running");
++        let again = session
++            .reserve("bind-running-2", "clone-running", Some("running"))
++            .await
++            .unwrap();
++        assert_eq!(again.seat, Some(SeatId::new("running")));
++        assert_eq!(fixture.key_row("clone-running"), row);
++
++        // The key is bound, so it cannot be released; another seat cannot take it.
++        let bound = session
++            .release("release-bound", "clone-running")
++            .await
++            .unwrap_err();
++        assert_eq!(bound.code, ErrorCode::Conflict);
++        let elsewhere = session
++            .reserve("bind-elsewhere", "clone-running", Some("waiting"))
++            .await
++            .unwrap_err();
++        assert_eq!(elsewhere.code, ErrorCode::Conflict);
++
++        let retired = session
++            .reserve("bind-gone", "clone-gone", Some("gone"))
++            .await
++            .unwrap_err();
++        assert_eq!(retired.code, ErrorCode::InvalidRequest);
++        assert_eq!(fixture.key_row("clone-gone"), None);
++        for refused in ["release-bound", "bind-elsewhere", "bind-gone"] {
++            assert_eq!(fixture.journaled(refused), 0, "{refused}");
++        }
++    });
++}
++
++/// Kills: a session acting on another service's key.
++#[test]
++fn another_author_is_refused() {
++    let fixture = fixture();
++    // The node's one registered author is not this row's: service_authors holds one per node, so
++    // the second references no node row.
++    fixture
++        .db
++        .execute_batch(
++            "PRAGMA foreign_keys=OFF;
++             INSERT INTO service_authors(id,instance_id,created_at) VALUES ('other-author','other-instance',0);
++             INSERT INTO continuity_keys(key,owner_author_id,reserved_at) VALUES ('clone-1','other-author',5);
++             PRAGMA foreign_keys=ON;",
++        )
++        .unwrap();
++    fixture.seed_seat("running", "resolved", Some("pane-running"));
++    fixture.run(|mut session, fixture| async move {
++        let row = fixture.key_row("clone-1");
++        assert_ne!(session.author.as_str(), "other-author");
++        for (operation, seat) in [("reserve-1", None), ("reserve-2", Some("running"))] {
++            let refused = session
++                .reserve(operation, "clone-1", seat)
++                .await
++                .unwrap_err();
++            assert_eq!(refused.code, ErrorCode::Conflict, "{operation}");
++            assert_eq!(fixture.journaled(operation), 0);
++        }
++        let refused = session.release("release-1", "clone-1").await.unwrap_err();
++        assert_eq!(refused.code, ErrorCode::Conflict);
++        assert_eq!(fixture.journaled("release-1"), 0);
++        assert_eq!(fixture.key_row("clone-1"), row);
++    });
++}
++
++/// Kills: a replay that re-executes (the released key coming back, or a release answering
++/// `NotFound`) instead of returning the journaled first result.
++#[test]
++fn operation_key_replay_returns_the_first_result() {
++    fixture().run(|mut session, fixture| async move {
++        let first = session.reserve("reserve-1", "clone-1", None).await.unwrap();
++        assert_eq!(fixture.journaled("reserve-1"), 1);
++        assert_eq!(
++            session.release("release-1", "clone-1").await.unwrap(),
++            ContinuityKey::new("clone-1")
++        );
++
++        // The reservation replays from the journal: the key stays released.
++        let replayed = session.reserve("reserve-1", "clone-1", None).await.unwrap();
++        assert_eq!(replayed, first);
++        assert_eq!(fixture.key_row("clone-1"), None);
++        assert_eq!(fixture.journaled("reserve-1"), 1);
++
++        // So does the release, which executed would be NotFound.
++        assert_eq!(
++            session.release("release-1", "clone-1").await.unwrap(),
++            ContinuityKey::new("clone-1")
++        );
++        assert_eq!(fixture.journaled("release-1"), 1);
++    });
++}
++
++/// Kills: an operation key reused for another key or another seat being executed or answered with
++/// the first result.
++#[test]
++fn payload_mismatch_is_refused() {
++    let fixture = fixture();
++    fixture.seed_seat("running", "resolved", Some("pane-running"));
++    fixture.run(|mut session, fixture| async move {
++        session.reserve("reserve-1", "clone-1", None).await.unwrap();
++        for (key, seat) in [("clone-2", None), ("clone-1", Some("running"))] {
++            let refused = session.reserve("reserve-1", key, seat).await.unwrap_err();
++            assert_eq!(refused.code, ErrorCode::OperationPayloadMismatch, "{key}");
++        }
++        let refused = session.release("reserve-1", "clone-1").await.unwrap_err();
++        assert_eq!(refused.code, ErrorCode::OperationPayloadMismatch);
++        assert_eq!(fixture.key_row("clone-2"), None);
++        let (_, seat, _, _) = fixture.key_row("clone-1").unwrap();
++        assert_eq!(seat, None);
++        assert_eq!(fixture.journaled("reserve-1"), 1);
++    });
++}
++
++impl Fixture {
++    fn seed_alert(&self, key: &str) {
++        self.db
++            .execute(
++                "INSERT INTO continuity_alerts(key,host_id,target_id,kind,at) VALUES (?1,(SELECT min(host_id) FROM herdr_hosts),'pane-1','key_live_elsewhere',7)",
++                [key],
++            )
++            .unwrap();
++    }
++}
++
++fn alerts_query() -> ServiceOperation {
++    ServiceOperation::ContinuityAlerts(ServiceContinuityAlertsQuery {
++        page: PageRequest::default(),
++    })
++}
++
++/// Kills: alerts served to a v2 session, a v2 refusal that does not name what to register, or the
++/// query not reaching the feed over a v3 session.
++#[test]
++fn alerts_answer_only_v3() {
++    let fixture_v3 = fixture();
++    fixture_v3.seed_alert("clone-1");
++    fixture_v3.run(|mut session, _| async move {
++        let result = session.call(alerts_query()).await.unwrap();
++        let ServiceResult::ContinuityAlerts(page) = result else {
++            panic!("alerts answered {result:?}");
++        };
++        assert_eq!(page.items.len(), 1);
++        assert_eq!(page.items[0].key, ContinuityKey::new("clone-1"));
++        assert_eq!(page.items[0].kind, ContinuityConflictKind::KeyLiveElsewhere);
++        assert_eq!(page.items[0].pane, HostTargetId::new("pane-1"));
++    });
++
++    let fixture_v2 = fixture();
++    fixture_v2.seed_alert("clone-1");
++    fixture_v2.run_as(SERVICE_SESSION_CAPABILITY_V2, |mut session, _| async move {
++        let refused = session.call(alerts_query()).await.unwrap_err();
++        assert_eq!(refused.code, ErrorCode::Unsupported);
++        assert!(
++            refused.detail.contains(SERVICE_SESSION_CAPABILITY_V3),
++            "{}",
++            refused.detail
++        );
++    });
++}

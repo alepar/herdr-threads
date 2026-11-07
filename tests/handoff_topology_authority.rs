@@ -2725,6 +2725,7 @@ fn later_terminal_caller_resolves_the_same_seat() {
             operation: OperationId::new("terminal-site-caller"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         }))
         .unwrap();
     assert_eq!(later, CommandResult::SeatResolved(seat));

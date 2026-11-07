@@ -1,0 +1,52 @@
+diff --git a/tests/store/topology_attachment_guard.rs b/tests/store/topology_attachment_guard.rs
+index 9023a6a5d..d6974c2a6 100644
+--- a/tests/store/topology_attachment_guard.rs
++++ b/tests/store/topology_attachment_guard.rs
+@@ -112,6 +112,7 @@ fn attachment_fixture_clocked(
+         operation: id.payload.resolve_key.clone(),
+         locator_hint: None,
+         tmux_hint: None,
++        continuity_key: None,
+     };
+     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
+     let guard = OrdinaryResolutionGuard::try_new(&request, current, &admission).unwrap();
+@@ -207,6 +208,7 @@ fn attachment_guard(
+             operation: operation.clone(),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         },
+         pane,
+         &admission,
+@@ -246,6 +248,7 @@ fn explicit_attachment_directories(directories: bool) {
+             operation: a.resolve_operation.clone(),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         },
+         pane,
+         &admission,
+@@ -387,6 +390,7 @@ fn topology_attachment_refuses_stale_or_held_evidence_and_missing_or_changed_res
+                         operation: a.resolve_operation.clone(),
+                         locator_hint: None,
+                         tmux_hint: None,
++                        continuity_key: None,
+                     },
+                     pane,
+                     &admission,
+@@ -2136,6 +2140,7 @@ fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current
+                     operation: id.plan.payload.keys.resolve.clone(),
+                     locator_hint: None,
+                     tmux_hint: None,
++                    continuity_key: None,
+                 },
+                 OrdinaryResolutionAttempt::ReplayOnly,
+                 &budget
+@@ -2767,6 +2772,7 @@ fn v3_guard(fx: &V3Fixture, operation: &OperationId, sequence: u64) -> Bootstrap
+             operation: operation.clone(),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         },
+         pane,
+         &admission,

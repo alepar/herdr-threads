@@ -80,6 +80,7 @@ fn canonical_fixture(
             operation: id.payload.resolve_key.clone(),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         },
         BootstrapPaneObservation::try_new(
             observation,
@@ -737,6 +738,7 @@ fn wrong_original_kind_harness_or_exact_scope_never_becomes_recovery() {
                 target: HostTargetId::new("w1:p2"),
             },
             SemanticMutation::ResolveSeat {
+                continuity_key: None,
                 host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p2"),
             },

@@ -1,0 +1,153 @@
+diff --git a/src/cli/site_capability.rs b/src/cli/site_capability.rs
+index 6b47ef5ef..29238b649 100644
+--- a/src/cli/site_capability.rs
++++ b/src/cli/site_capability.rs
+@@ -5,12 +5,12 @@
+ //! `seat.terminal_sites_v1` (M13), so a new CLI never sends a Terminal site to a daemon that only
+ //! knows Named ones. A Pane site never goes through this gate.
+ 
+-use super::caller_location::CallerSite;
++use super::caller_location::{CallerEnv, CallerSite, caller_continuity_key};
+ use crate::ports::LocalClient;
+ use crate::protocol::{
+-    capabilities::SEAT_READONLY_V1,
++    capabilities::{SEAT_CONTINUITY_KEY_V1, SEAT_READONLY_V1},
+     commands::{Command, ResolveThreadQuery},
+-    ids::{HostLocator, HostTargetId, SeatId},
++    ids::{ContinuityKey, HostLocator, HostTargetId, SeatId},
+     results::{ApiError, ErrorCode},
+     time::CallBudget,
+ };
+@@ -38,6 +38,32 @@ pub fn require_readonly<C: LocalClient + ?Sized>(
+     }
+ }
+ 
++/// The key a caller presents to this daemon ([`caller_continuity_key`]). A caller with no valid key
++/// and a subagent ask the daemon nothing, so their requests and round trips are unchanged.
++pub(crate) fn presented_continuity_key<C: LocalClient + ?Sized>(
++    env: &CallerEnv,
++    top_level: bool,
++    client: &C,
++    budget: &CallBudget,
++) -> Option<ContinuityKey> {
++    let advertised = env.may_present_key(top_level)
++        && client.supports_capability(SEAT_CONTINUITY_KEY_V1, budget);
++    caller_continuity_key(env, top_level, advertised)
++}
++
++/// The key a plain CLI resolve of `target` presents: the caller's own pane only, never a pane it
++/// resolves for someone else. Unknown or subagent callers present nothing. A plain call offers no
++/// evidence to reattach on, so a key bound elsewhere refuses and mints no seat (spec 4.2).
++pub(crate) fn own_pane_continuity_key<C: LocalClient + ?Sized>(
++    env: &CallerEnv,
++    target: &HostTargetId,
++    top_level: bool,
++    client: &C,
++    budget: &CallBudget,
++) -> Option<ContinuityKey> {
++    presented_continuity_key(env, top_level && env.is_own_pane(target), client, budget)
++}
++
+ /// Passes when the daemon advertises `capability`; otherwise refuses with `refusal_line` as an
+ /// `Unsupported` error, before anything is sent.
+ pub fn require_site_capability(
+@@ -174,6 +200,7 @@ mod tests {
+             operation: OperationId::new("op"),
+             lineage_parent: None,
+             readonly,
++            continuity_key: None,
+         }
+     }
+ 
+@@ -224,6 +251,91 @@ mod tests {
+         assert_eq!(READONLY_REFUSAL.len(), 58);
+     }
+ 
++    fn keyed_env(key: &str) -> CallerEnv {
++        let key = key.to_owned();
++        CallerEnv::from_lookup(move |name| match name {
++            super::super::caller_location::CONTINUITY_KEY_ENV => Some(key.clone().into()),
++            crate::host::native::ENV_PANE_ID => Some("w1:p1".into()),
++            _ => None,
++        })
++    }
++
++    #[test]
++    fn a_valid_key_is_presented_by_a_top_level_caller_of_an_advertising_daemon() {
++        let key = presented_continuity_key(
++            &keyed_env("clone-1"),
++            true,
++            &Fake(&[SEAT_CONTINUITY_KEY_V1]),
++            &budget(),
++        );
++        assert_eq!(key, Some(ContinuityKey::new("clone-1")));
++    }
++
++    // An invalid value is absent, with no diagnostic and no round trip: `Panics` fails any question.
++    #[test]
++    fn an_invalid_value_is_absent_and_asks_nothing() {
++        for value in ["", "has space", &"k".repeat(129)] {
++            let env = keyed_env(value);
++            assert_eq!(
++                presented_continuity_key(&env, true, &Panics, &budget()),
++                None,
++                "{value:?}"
++            );
++        }
++        // No variable at all: a keyless caller's round trips are unchanged.
++        let keyless = CallerEnv::from_lookup(|_| None);
++        assert_eq!(
++            presented_continuity_key(&keyless, true, &Panics, &budget()),
++            None
++        );
++    }
++
++    #[test]
++    fn a_subagent_presents_nothing_and_asks_nothing() {
++        assert_eq!(
++            presented_continuity_key(&keyed_env("clone-1"), false, &Panics, &budget()),
++            None
++        );
++    }
++
++    #[test]
++    fn a_daemon_without_the_capability_gets_no_key() {
++        assert_eq!(
++            presented_continuity_key(&keyed_env("clone-1"), true, &Fake(&[]), &budget()),
++            None
++        );
++    }
++
++    #[test]
++    fn the_helper_itself_gates_on_top_level_and_advertised() {
++        let env = keyed_env("clone-1");
++        assert_eq!(
++            caller_continuity_key(&env, true, true),
++            Some(ContinuityKey::new("clone-1"))
++        );
++        assert_eq!(caller_continuity_key(&env, false, true), None);
++        assert_eq!(caller_continuity_key(&env, true, false), None);
++    }
++
++    // `launch` and recipient allocation resolve other panes: only the caller's own pane is keyed.
++    #[test]
++    fn a_plain_resolve_presents_the_key_only_for_the_callers_own_pane() {
++        let env = keyed_env("clone-1");
++        let client = Fake(&[SEAT_CONTINUITY_KEY_V1]);
++        assert_eq!(
++            own_pane_continuity_key(&env, &HostTargetId::new("w1:p1"), true, &client, &budget()),
++            Some(ContinuityKey::new("clone-1"))
++        );
++        assert_eq!(
++            own_pane_continuity_key(&env, &HostTargetId::new("w1:p2"), true, &client, &budget()),
++            None
++        );
++        assert_eq!(
++            own_pane_continuity_key(&env, &HostTargetId::new("w1:p1"), false, &client, &budget()),
++            None
++        );
++    }
++
+     #[test]
+     fn refuses_with_configured_line_without_capability() {
+         let error =

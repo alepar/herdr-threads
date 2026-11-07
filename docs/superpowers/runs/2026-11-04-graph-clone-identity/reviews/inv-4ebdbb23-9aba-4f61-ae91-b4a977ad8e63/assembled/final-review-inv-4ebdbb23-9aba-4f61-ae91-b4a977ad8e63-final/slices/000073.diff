@@ -1,0 +1,117 @@
+diff --git a/src/store/seats/operator.rs b/src/store/seats/operator.rs
+index 42227754c..92f2bcbe3 100644
+--- a/src/store/seats/operator.rs
++++ b/src/store/seats/operator.rs
+@@ -1,7 +1,7 @@
+ //! Operator repair: `mutate_operator`, rebinding an unresolved seat and operator retirement.
+ 
+ use crate::{
+-    ports::{HostId, HostKind, OperatorRequest},
++    ports::{HostId, HostKind, OperatorRequest, RetirementInputs},
+     protocol::{
+         authority::{DecisionFence, OperatorActor},
+         ids::{HostBootId, SeatId, prefix},
+@@ -257,10 +257,14 @@ pub fn mutate_operator(
+                     RetireReason::Operator,
+                     replace.clone(),
+                     &instance,
+-                    &boot,
+-                    epoch,
+-                    target.as_str(),
+-                    expected_generation_sql,
++                    RetirementInputs {
++                        boot: boot.clone(),
++                        epoch,
++                        target: target.as_str().to_owned(),
++                        generation: expected_generation_sql,
++                        closure_evidence: None,
++                        absence_evidence: None,
++                    },
+                 )?;
+                 tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
+                     params![host.get(),target.as_str(),replace.as_str(),at.utc.0,boot,epoch,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
+@@ -290,6 +294,7 @@ pub fn mutate_operator(
+                 )?);
+                 tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,?2,'resolved','operator_fresh',?3,1,?4,?5,1,?2,1,?6)",
+                     params![seat.as_str(),instance,target.as_str(),expected_generation_sql,at.utc.0,host.get()]).map_err(store_error)?;
++                crate::store::continuity_keys::clear_conflict_on_target(tx, host, target.as_str())?;
+                 CommandResult::OperatorFreshSeat(seat)
+             };
+             let result_seat = match &result {
+@@ -376,6 +381,8 @@ pub(super) fn rebind_unresolved_seat(
+     if changed != 1 {
+         return Err(api_error(ErrorCode::TargetUnresolved, "source changed"));
+     }
++    crate::store::continuity_keys::clear_conflict_on_target(tx, host, target)?;
++    reversible::delete_row(tx, seat)?;
+     tx.execute(
+         "UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",
+         params![at.0, seat.as_str()],
+@@ -516,8 +523,10 @@ fn operator_retire(
+                 )
+                 .optional()
+                 .map_err(store_error)?;
++            // A reversibly retired seat reads retired and is still the operator's to finalize.
++            let held_open = reversible::row_state(tx, &seat)?.is_some();
+             match state {
+-                Some((state, generation)) if state != "retired" => {
++                Some((state, generation)) if state != "retired" || held_open => {
+                     if generation == i64::MAX {
+                         return Err(api_error(
+                             ErrorCode::SequenceExhausted,
+@@ -533,15 +542,27 @@ fn operator_retire(
+             }
+         },
+         |tx, at| {
+-            retire_seat(
+-                tx,
+-                context,
+-                at,
+-                instance,
+-                &seat,
+-                RetireReason::Operator,
+-                &actor.audit_label(),
+-            )?;
++            let label = actor.audit_label();
++            if reversible::row_state(tx, &seat)?.is_some() {
++                reversible::finalize(
++                    tx,
++                    context,
++                    instance,
++                    reversible::FinalizeBy::Operator(&label),
++                    &seat,
++                    at,
++                )?;
++            } else {
++                retire_seat(
++                    tx,
++                    context,
++                    at,
++                    instance,
++                    &seat,
++                    RetireReason::Operator,
++                    &label,
++                )?;
++            }
+             Ok(CommandResult::OperatorRetired(seat.clone()))
+         },
+     )?;
+@@ -590,10 +611,14 @@ pub(crate) fn retire_seat(
+         wire,
+         seat.clone(),
+         instance,
+-        &boot,
+-        epoch,
+-        &target,
+-        generation,
++        RetirementInputs {
++            boot: boot.clone(),
++            epoch,
++            target: target.clone(),
++            generation,
++            closure_evidence: None,
++            absence_evidence: None,
++        },
+     )?;
+     tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
+             params![host.get(),target,seat.as_str(),at.utc.0,boot,epoch,generation,label]).map_err(store_error)?;

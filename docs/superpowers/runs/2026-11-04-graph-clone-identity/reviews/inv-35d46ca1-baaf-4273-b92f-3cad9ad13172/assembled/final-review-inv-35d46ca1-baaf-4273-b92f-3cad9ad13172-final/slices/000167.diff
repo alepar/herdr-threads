@@ -1,0 +1,72 @@
+diff --git a/tests/service/cooperative.rs b/tests/service/cooperative.rs
+index 00bb6d7dd..866fef5df 100644
+--- a/tests/service/cooperative.rs
++++ b/tests/service/cooperative.rs
+@@ -122,6 +122,7 @@ fn lifecycle(claim: CallerClaim, operation: &str) -> Command {
+         },
+         claim,
+         operation: OperationId::new(operation),
++        continuity_key: None,
+     })
+ }
+ fn checked(service: &DomainService, command: Command) -> crate::protocol::results::CheckInResult {
+@@ -149,7 +150,8 @@ fn elected_owner_checks_in_and_uses_returned_context_without_native_evidence() {
+                 lineage_parent: None,
+                 mode: CheckInMode::Current,
+                 claim: result.context.clone(),
+-                operation: OperationId::new("current")
++                operation: OperationId::new("current"),
++                continuity_key: None,
+             })
+         )
+         .context,
+@@ -384,7 +386,8 @@ fn changed_context_is_fenced_and_historical_replay_cannot_restore_predecessor()
+                         lineage_parent: None,
+                         mode: CheckInMode::Current,
+                         claim: wrong,
+-                        operation: OperationId::new(format!("wrong-{index}"))
++                        operation: OperationId::new(format!("wrong-{index}")),
++                        continuity_key: None,
+                     }),
+                     PeerIdentity::from_kernel(501),
+                     &budget()
+@@ -1153,6 +1156,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
+                 mode: CheckInMode::Current,
+                 claim: claim.clone(),
+                 operation: OperationId::new(operation),
++                continuity_key: None,
+             }),
+         )
+         .context
+@@ -2195,6 +2199,7 @@ fn a_current_check_in_refreshing_the_placement_between_stage_and_decide_is_fence
+                 mode: CheckInMode::Current,
+                 claim: s.main.clone(),
+                 operation: OperationId::new("main-current"),
++                continuity_key: None,
+             }),
+         );
+         assert!(
+@@ -2691,6 +2696,7 @@ fn operator_check_in_requires_human_lifecycle() {
+         mode: CheckInMode::Current,
+         claim: human(claim()),
+         operation: OperationId::new("current"),
++        continuity_key: None,
+     });
+     assert_eq!(
+         call(current, 501).unwrap_err().code,
+@@ -3482,6 +3488,7 @@ fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
+                 mode: CheckInMode::Current,
+                 claim: parent.clone(),
+                 operation: OperationId::new("parent-current"),
++                continuity_key: None,
+             }),
+         );
+     }
+@@ -3673,6 +3680,7 @@ fn codex_side_conversations_leave_one_process_composer_for_seat_attention() {
+                     ..main.clone()
+                 },
+                 operation: OperationId::new(session),
++                continuity_key: None,
+             }),
+         );
+     }

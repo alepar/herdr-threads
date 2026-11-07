@@ -1,0 +1,127 @@
+diff --git a/src/sync/facts/seat.rs b/src/sync/facts/seat.rs
+index 2f958fb3f..abe12c107 100644
+--- a/src/sync/facts/seat.rs
++++ b/src/sync/facts/seat.rs
+@@ -1,4 +1,5 @@
+-//! Fact kinds of the seat entity: `seat.created` and `seat.retired`.
++//! Fact kinds of the seat entity: `seat.created`, `seat.retired`, `seat.retired_reversible` and
++//! `seat.unretired`.
+ //!
+ //! `seat.created` publishes a local seat so other nodes list it (fact-kinds
+ //! design section 4). The handler checks the origin owns the seat ID's tag,
+@@ -6,6 +7,9 @@
+ //! published seat on every node; its handler checks the origin is the seat's
+ //! home, then calls `seats::materialize_seat_retired`. On the authoring node's own replay a local row
+ //! takes the retirement fence's whole transition (open bindings end `seat_retired`), not a bare state change.
++//! `seat.retired_reversible` and `seat.unretired` carry a reversible retirement to other nodes (spec 4.3): home-authored
++//! like `seat.retired`, no-ops outside the episode their `retired_at` names, and parked by a node that does not know them,
++//! so finalization stays the ordinary `seat.retired` every version applies.
+ 
+ use rusqlite::Transaction;
+ use serde::{Deserialize, Serialize};
+@@ -94,6 +98,35 @@ impl ReferencedSeats for SeatRetiredPayload {
+     }
+ }
+ 
++/// The `seat.retired_reversible` v1 payload (spec 4.3). `retired_at` is the cutover in Unix ms and
++/// names the episode.
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct SeatRetiredReversiblePayload {
++    pub seat: SeatId,
++    pub reason: RetireReason,
++    pub retired_at: i64,
++}
++
++impl ReferencedSeats for SeatRetiredReversiblePayload {
++    fn referenced_seats(&self) -> Vec<SeatId> {
++        vec![self.seat.clone()]
++    }
++}
++
++/// The `seat.unretired` v1 payload (spec 4.3). `retired_at` names the episode it undoes.
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct SeatUnretiredPayload {
++    pub seat: SeatId,
++    pub retired_at: i64,
++    pub unretired_at: i64,
++}
++
++impl ReferencedSeats for SeatUnretiredPayload {
++    fn referenced_seats(&self) -> Vec<SeatId> {
++        vec![self.seat.clone()]
++    }
++}
++
+ /// The `seat.retired` v1 kind. It is a held kind (`materialize::HELD_KINDS`):
+ /// `FactRoute::Journal` refuses it for a local seat during the restore-window
+ /// authoring hold.
+@@ -128,3 +161,69 @@ impl FactKind for SeatRetired {
+         })
+     }
+ }
++
++/// The `seat.retired_reversible` v1 kind: the seat reads retired with no job. A held kind.
++pub struct SeatRetiredReversible;
++
++impl FactKind for SeatRetiredReversible {
++    const NAME: &'static str = "seat.retired_reversible";
++    const MAJOR: u32 = 1;
++    type Payload = SeatRetiredReversiblePayload;
++
++    fn creates(_: &SeatRetiredReversiblePayload) -> Option<EntityKey> {
++        None
++    }
++
++    fn needs(payload: &SeatRetiredReversiblePayload) -> Vec<EntityKey> {
++        seat_key(&payload.seat).into_iter().collect()
++    }
++
++    fn apply(
++        tx: &Transaction<'_>,
++        cx: &mut ApplyContext<'_>,
++        payload: SeatRetiredReversiblePayload,
++    ) -> Result<(), FactError> {
++        with_input(cx, |m| {
++            require_author(
++                tx,
++                m,
++                Self::NAME,
++                &AuthorRule::SeatHome(payload.seat.clone()),
++            )?;
++            seats::materialize_seat_retired_reversible(tx, m, &payload)
++        })
++    }
++}
++
++/// The `seat.unretired` v1 kind: undoes the episode `retired_at` names. A held kind.
++pub struct SeatUnretired;
++
++impl FactKind for SeatUnretired {
++    const NAME: &'static str = "seat.unretired";
++    const MAJOR: u32 = 1;
++    type Payload = SeatUnretiredPayload;
++
++    fn creates(_: &SeatUnretiredPayload) -> Option<EntityKey> {
++        None
++    }
++
++    fn needs(payload: &SeatUnretiredPayload) -> Vec<EntityKey> {
++        seat_key(&payload.seat).into_iter().collect()
++    }
++
++    fn apply(
++        tx: &Transaction<'_>,
++        cx: &mut ApplyContext<'_>,
++        payload: SeatUnretiredPayload,
++    ) -> Result<(), FactError> {
++        with_input(cx, |m| {
++            require_author(
++                tx,
++                m,
++                Self::NAME,
++                &AuthorRule::SeatHome(payload.seat.clone()),
++            )?;
++            seats::materialize_seat_unretired(tx, m, &payload)
++        })
++    }
++}

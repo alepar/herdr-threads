@@ -1,0 +1,28 @@
+diff --git a/tests/service/observation_lane.rs b/tests/service/observation_lane.rs
+index 78461ecf6..a95d3fde7 100644
+--- a/tests/service/observation_lane.rs
++++ b/tests/service/observation_lane.rs
+@@ -377,6 +377,7 @@ fn explicit_target_read_during_backoff_runs_one_capture() {
+                 operation: OperationId::new(op),
+                 locator_hint: None,
+                 tmux_hint: None,
++                continuity_key: None,
+             },
+             &CallBudget {
+                 deadline: MonoInstant(START + 60_000),
+@@ -496,6 +497,7 @@ fn unchanged_host_cycle_commits_touch_no_wakes_mapped_table() {
+                 operation: OperationId::new("op-1"),
+                 locator_hint: None,
+                 tmux_hint: None,
++                continuity_key: None,
+             },
+             &CallBudget {
+                 deadline: MonoInstant(START + 60_000),
+@@ -763,6 +765,7 @@ fn seed_other_seat_and_claim(db: &rusqlite::Connection, instance: &str) {
+             pid: u32::MAX,
+             start: 1,
+         }),
++        continuity_key: None,
+     };
+     db.execute(
+         "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) \

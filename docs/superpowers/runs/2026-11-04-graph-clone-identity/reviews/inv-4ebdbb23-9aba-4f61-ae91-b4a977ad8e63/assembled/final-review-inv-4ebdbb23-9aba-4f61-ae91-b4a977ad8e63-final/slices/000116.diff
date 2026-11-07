@@ -1,0 +1,20 @@
+diff --git a/tests/identity/reconcile.rs b/tests/identity/reconcile.rs
+index e376257a5..6dfefd390 100644
+--- a/tests/identity/reconcile.rs
++++ b/tests/identity/reconcile.rs
+@@ -1420,6 +1420,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
+         operation: OperationId::new("allocate-shell"),
+         locator_hint: None,
+         tmux_hint: None,
++        continuity_key: None,
+     };
+     let guard = || OrdinaryResolutionGuard::try_new(&request, fresh.clone(), &admission).unwrap();
+     let OrdinaryResolutionOutcome::Resolved(seat) = seats::resolve_seat(
+@@ -4430,6 +4431,7 @@ fn s1_named_allocation_race_and_carry_forward() {
+         operation: OperationId::new("s1-op"),
+         locator_hint: None,
+         tmux_hint: None,
++        continuity_key: None,
+     };
+     let seat = match seats::resolve_named_seat(
+         &context,

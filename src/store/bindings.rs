@@ -328,8 +328,8 @@ pub(crate) fn enroll_with_hooks(
     // availability pair (on any path, a plain call's enrollment included).
     super::schema::fence_seat_availability(tx, key.seat.as_str(), || {
         tx.execute(
-        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,role,parent_binding,agent_id,lineage_from,liveness_pid,liveness_start,concurrent_session) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,role,parent_binding,agent_id,lineage_from,liveness_pid,liveness_start,concurrent_session,liveness_boot) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,CASE WHEN ?19 IS NULL THEN NULL ELSE (SELECT boot FROM node_kernel_boot WHERE id=1) END)",
         params![
             key.seat.as_str(),
             to_i64(place.generation, "generation")?,
@@ -442,9 +442,10 @@ pub fn touch(
     if let (true, Some(f)) = (found, fingerprint) {
         tx.execute(
             // Only a changed fingerprint writes: every agent call touches its binding, and an
-            // unchanged row must not wake the lanes that watch `occupant_bindings`.
-            "UPDATE occupant_bindings SET liveness_pid=?2, liveness_start=?3 WHERE binding_id=?1 \
-             AND (liveness_pid IS NOT ?2 OR liveness_start IS NOT ?3)",
+            // unchanged row must not wake the lanes that watch `occupant_bindings`. The kernel
+            // boot counts: after a reboot the same pid and start stamp can come back.
+            "UPDATE occupant_bindings SET liveness_pid=?2, liveness_start=?3, liveness_boot=(SELECT boot FROM node_kernel_boot WHERE id=1) WHERE binding_id=?1 \
+             AND (liveness_pid IS NOT ?2 OR liveness_start IS NOT ?3 OR liveness_boot IS NOT (SELECT boot FROM node_kernel_boot WHERE id=1))",
             params![
                 binding.as_str(),
                 i64::from(f.pid),
@@ -572,7 +573,8 @@ pub fn connect(
     let connected = super::schema::fence_seat_availability(tx, &seat, || {
         let rows = tx
             .execute(
-                "UPDATE occupant_bindings SET liveness='connected', disconnected_at=NULL, disconnect_reason=NULL, liveness_pid=?2, liveness_start=?3 \
+                "UPDATE occupant_bindings SET liveness='connected', disconnected_at=NULL, disconnect_reason=NULL, liveness_pid=?2, liveness_start=?3, \
+                 liveness_boot=CASE WHEN ?2 IS NULL THEN NULL ELSE (SELECT boot FROM node_kernel_boot WHERE id=1) END \
                  WHERE binding_id=?1 AND ended_at IS NULL AND liveness='disconnected'",
                 params![binding.as_str(), pid, start],
             )

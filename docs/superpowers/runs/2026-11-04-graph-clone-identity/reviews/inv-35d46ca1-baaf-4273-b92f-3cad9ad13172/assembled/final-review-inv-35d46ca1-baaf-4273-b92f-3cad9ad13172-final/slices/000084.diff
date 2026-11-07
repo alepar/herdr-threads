@@ -1,0 +1,29 @@
+diff --git a/src/protocol/pagination.rs b/src/protocol/pagination.rs
+index 965ba309a..27f27869e 100644
+--- a/src/protocol/pagination.rs
++++ b/src/protocol/pagination.rs
+@@ -788,6 +788,7 @@ pub enum CursorScope {
+     WakeRecovery,
+     WorkJobs,
+     SearchCandidates,
++    ContinuityAlerts,
+ }
+ 
+ impl Cursor {
+@@ -1334,7 +1335,7 @@ fn key_check(scope_key: &str) -> [u8; KEY_CHECK_BYTES] {
+ 
+ /// Wire codes of `CursorScope` in a `c3:` cursor. Append only: a code is
+ /// never reused or reordered.
+-const SCOPE_CODES: [CursorScope; 23] = [
++const SCOPE_CODES: [CursorScope; 24] = [
+     CursorScope::Directory,
+     CursorScope::Seats,
+     CursorScope::SeatInspect,
+@@ -1358,6 +1359,7 @@ const SCOPE_CODES: [CursorScope; 23] = [
+     CursorScope::InboxBatch,
+     CursorScope::ActiveWarnings,
+     CursorScope::PickerDirectory,
++    CursorScope::ContinuityAlerts,
+ ];
+ const F_DESCENDING: u8 = 0x01;
+ const F_KEY: u8 = 0x02;

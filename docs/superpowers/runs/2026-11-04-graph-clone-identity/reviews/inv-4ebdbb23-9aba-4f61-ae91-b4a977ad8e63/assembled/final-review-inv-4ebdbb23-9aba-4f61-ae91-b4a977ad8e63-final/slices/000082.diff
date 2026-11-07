@@ -1,0 +1,25 @@
+diff --git a/tests/cli/caller_location.rs b/tests/cli/caller_location.rs
+index 0d37b5c08..d507d55a5 100644
+--- a/tests/cli/caller_location.rs
++++ b/tests/cli/caller_location.rs
+@@ -23,6 +23,7 @@ fn ambient(name: &str) -> Option<OsString> {
+     [
+         "HERDR_THREADS_SEAT_NAME",
+         "HERDR_THREADS_SEAT_READONLY",
++        "HERDR_THREADS_CONTINUITY_KEY",
+         "HERDR_PANE_ID",
+     ]
+     .contains(&name)
+@@ -32,7 +33,11 @@ fn ambient(name: &str) -> Option<OsString> {
+ #[test]
+ fn seat_variables_are_hidden_from_a_library_caller() {
+     use herdr_threads::cli::caller_location::seat_filter;
+-    for name in ["HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY"] {
++    for name in [
++        "HERDR_THREADS_SEAT_NAME",
++        "HERDR_THREADS_SEAT_READONLY",
++        "HERDR_THREADS_CONTINUITY_KEY",
++    ] {
+         assert_eq!(seat_filter(false, name, ambient), None, "{name} hidden");
+         assert_eq!(
+             seat_filter(true, name, ambient),

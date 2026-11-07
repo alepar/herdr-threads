@@ -1,0 +1,672 @@
+//! Continuity key ledger (ht-ma6i, spec 4.2, TRUST-POLICY C1).
+//!
+//! Responsibility (continuity_keys)
+//! - Owns: `continuity_keys`, `continuity_key_conflicts` and `continuity_alerts`, with their rules:
+//!   [`reserve`] (idempotent per service), [`release`], [`bind`], reading a seat's key, recording a
+//!   conflict plus one alert when the row is new or its key or kind changed, every clearing rule,
+//!   both 256-row caps, and the two reads over them ([`seat_view`], [`alerts_page`]).
+//! - Hides: the row shapes behind "one live seat per key", and the fact that a conflict and its
+//!   alert are one write.
+//! - Must not: decide the spec 4.2 outcome (`KeyVerdict` does), read the environment, move a seat,
+//!   or know about hooks.
+//! - Role: stateless functions over the caller's transaction, called by the service operations,
+//!   and by the continuity, resolution, check-in, finalization and publication paths. The state is
+//!   durable, local and never replicated. Reserving for another service and releasing a bound key
+//!   are `Conflict`; a full conflict table is not an error ([`ConflictRecord::TableFull`]).
+
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Serialize, de::DeserializeOwned};
+
+use super::connection::{api_error, store_error};
+use crate::ports::HostId;
+use crate::protocol::{
+    ids::{ContinuityKey, HostLocator, HostTargetId, SeatId, ServiceAuthorId},
+    pagination::{
+        Consistency, Cursor, CursorDirection, CursorScope, Page, PageRequest, StopReason,
+    },
+    results::{
+        ApiError, ContinuityConflictKind, ContinuityKeyBinding, ContinuityKeyConflict, ErrorCode,
+        SeatContinuityKey,
+    },
+    service::{ContinuityAlert, ContinuityKeyReservation, ReserveContinuityKey, ServiceResult},
+    time::UtcMillis,
+};
+
+/// At most this many standing conflicts; past it a refusal stands and nothing is recorded.
+pub const MAX_CONFLICT_ROWS: i64 = 256;
+/// The alert feed keeps this many newest rows; ordinals keep increasing across eviction.
+pub const MAX_ALERT_ROWS: i64 = 256;
+
+const KEY_COLUMNS: &str = "key,owner_author_id,seat_id,reserved_at,bound_by";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRow {
+    pub key: ContinuityKey,
+    pub owner: ServiceAuthorId,
+    pub seat: Option<SeatId>,
+    pub reserved_at: UtcMillis,
+    pub bound_by: Option<ContinuityKeyBinding>,
+}
+
+/// One judged refusal: `seat` is the key's seat, `owner` the pane's resolved owner it was judged
+/// against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictFacts {
+    pub host: HostId,
+    pub target: String,
+    pub key: ContinuityKey,
+    pub kind: ContinuityConflictKind,
+    pub seat: Option<SeatId>,
+    pub owner: Option<SeatId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictRecord {
+    /// The row was inserted or updated, with one alert when it is new or its key or kind changed.
+    Written,
+    /// The same refusal already stands; nothing was written.
+    Unchanged,
+    /// The table is at [`MAX_CONFLICT_ROWS`] and has no row for this target; nothing was written.
+    TableFull,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictRow {
+    pub host: HostId,
+    pub target: String,
+    pub kind: ContinuityConflictKind,
+    pub first_seen_at: UtcMillis,
+}
+
+pub fn lookup_key(conn: &Connection, key: &ContinuityKey) -> Result<Option<KeyRow>, ApiError> {
+    key_row(conn, "key", key.as_str())
+}
+
+/// The key `seat` holds, if any.
+pub fn key_of_seat(conn: &Connection, seat: &SeatId) -> Result<Option<KeyRow>, ApiError> {
+    key_row(conn, "seat_id", seat.as_str())
+}
+
+/// key, owner, seat, reserved_at, bound_by.
+type RawKeyRow = (String, String, Option<String>, i64, Option<String>);
+
+fn key_row(conn: &Connection, column: &str, value: &str) -> Result<Option<KeyRow>, ApiError> {
+    let raw: Option<RawKeyRow> = conn
+        .query_row(
+            &format!("SELECT {KEY_COLUMNS} FROM continuity_keys WHERE {column}=?1"),
+            [value],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((key, owner, seat, reserved_at, bound_by)) = raw else {
+        return Ok(None);
+    };
+    Ok(Some(KeyRow {
+        key: ContinuityKey::parse(key).map_err(corrupt)?,
+        owner: ServiceAuthorId::parse(owner).map_err(corrupt)?,
+        seat: seat.map(SeatId::parse).transpose().map_err(corrupt)?,
+        reserved_at: UtcMillis(reserved_at),
+        bound_by: bound_by.map(kind_from_row).transpose()?,
+    }))
+}
+
+/// Reserve `request.key` for `author`, binding it to `request.seat` when one is named. Idempotent
+/// for the owner; a no-seat reservation of a bound key returns its seat, and a re-reserve to the
+/// same seat writes nothing, so the first evidence stands. Touches no seat row.
+pub fn reserve(
+    conn: &Connection,
+    author: &ServiceAuthorId,
+    request: &ReserveContinuityKey,
+    at: UtcMillis,
+) -> Result<ContinuityKeyReservation, ApiError> {
+    let existing = lookup_key(conn, &request.key)?;
+    if existing.as_ref().is_some_and(|row| row.owner != *author) {
+        return Err(api_error(
+            ErrorCode::Conflict,
+            "continuity key belongs to another service",
+        ));
+    }
+    let Some(seat) = &request.seat else {
+        return match existing {
+            Some(row) => Ok(reservation(row)),
+            None => insert_key(conn, author, &request.key, at),
+        };
+    };
+    require_bindable_seat(conn, seat)?;
+    if existing.is_none() {
+        if key_of_seat(conn, seat)?.is_some() {
+            return Err(seat_holds_other_key());
+        }
+        insert_key(conn, author, &request.key, at)?;
+    }
+    bind(
+        conn,
+        &request.key,
+        seat,
+        ContinuityKeyBinding::ServiceReservation,
+        at,
+    )?;
+    lookup_key(conn, &request.key)?
+        .map(reservation)
+        .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "reserved key row vanished"))
+}
+
+fn insert_key(
+    conn: &Connection,
+    author: &ServiceAuthorId,
+    key: &ContinuityKey,
+    at: UtcMillis,
+) -> Result<ContinuityKeyReservation, ApiError> {
+    conn.execute(
+        "INSERT INTO continuity_keys(key,owner_author_id,reserved_at) VALUES (?1,?2,?3)",
+        params![key.as_str(), author.as_str(), at.0],
+    )
+    .map_err(store_error)?;
+    Ok(ContinuityKeyReservation {
+        key: key.clone(),
+        owner: author.clone(),
+        seat: None,
+        reserved_at: at,
+    })
+}
+
+fn reservation(row: KeyRow) -> ContinuityKeyReservation {
+    ContinuityKeyReservation {
+        key: row.key,
+        owner: row.owner,
+        seat: row.seat,
+        reserved_at: row.reserved_at,
+    }
+}
+
+/// A service binds only a local, resolved or unresolved, unnamed seat on a Herdr host.
+fn require_bindable_seat(conn: &Connection, seat: &SeatId) -> Result<(), ApiError> {
+    let row: Option<(String, Option<String>, bool, Option<String>)> = conn
+        .query_row(
+            "SELECT s.state,s.name,s.is_local,h.kind FROM seats s LEFT JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
+            [seat.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((state, name, is_local, kind)) = row else {
+        return Err(api_error(ErrorCode::NotFound, "unknown seat"));
+    };
+    let bindable = matches!(state.as_str(), "resolved" | "unresolved")
+        && name.is_none()
+        && is_local
+        && kind.as_deref() == Some("herdr");
+    if !bindable {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "seat cannot hold a continuity key",
+        ));
+    }
+    Ok(())
+}
+
+fn seat_holds_other_key() -> ApiError {
+    api_error(ErrorCode::Conflict, "seat holds another continuity key")
+}
+
+/// Delete an unbound key of `author` and its conflict rows. Returns the key.
+pub fn release(
+    conn: &Connection,
+    author: &ServiceAuthorId,
+    key: &ContinuityKey,
+) -> Result<ContinuityKey, ApiError> {
+    let row = lookup_key(conn, key)?
+        .ok_or_else(|| api_error(ErrorCode::NotFound, "continuity key is not reserved"))?;
+    if row.owner != *author {
+        return Err(api_error(
+            ErrorCode::Conflict,
+            "continuity key belongs to another service",
+        ));
+    }
+    if row.seat.is_some() {
+        return Err(api_error(
+            ErrorCode::Conflict,
+            "continuity key is bound to a seat",
+        ));
+    }
+    delete_key(conn, key)?;
+    Ok(row.key)
+}
+
+/// Bind a reserved key to `seat`, one seat per key and one key per seat. Already bound to it is
+/// `Ok` and keeps the recorded evidence. Touches no seat row.
+pub fn bind(
+    conn: &Connection,
+    key: &ContinuityKey,
+    seat: &SeatId,
+    by: ContinuityKeyBinding,
+    at: UtcMillis,
+) -> Result<(), ApiError> {
+    let row = lookup_key(conn, key)?
+        .ok_or_else(|| api_error(ErrorCode::NotFound, "continuity key is not reserved"))?;
+    match &row.seat {
+        Some(bound) if bound == seat => return Ok(()),
+        Some(_) => {
+            return Err(api_error(
+                ErrorCode::Conflict,
+                "continuity key is bound to another seat",
+            ));
+        }
+        None => {}
+    }
+    if key_of_seat(conn, seat)?.is_some() {
+        return Err(seat_holds_other_key());
+    }
+    conn.execute(
+        "UPDATE continuity_keys SET seat_id=?2,bound_at=?3,bound_by=?4 WHERE key=?1",
+        params![key.as_str(), seat.as_str(), at.0, kind_name(&by)?],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// A seat's retirement became final: its key and that key's conflict rows go. No key: `Ok`.
+pub fn release_for_final(conn: &Connection, seat: &SeatId) -> Result<(), ApiError> {
+    match key_of_seat(conn, seat)? {
+        Some(row) => delete_key(conn, &row.key),
+        None => Ok(()),
+    }
+}
+
+fn delete_key(conn: &Connection, key: &ContinuityKey) -> Result<(), ApiError> {
+    conn.execute("DELETE FROM continuity_keys WHERE key=?1", [key.as_str()])
+        .map_err(store_error)?;
+    clear_conflicts_of_key(conn, key)
+}
+
+/// Record a judged refusal on (host, target), one row per pane. A new row, or one whose key or kind
+/// changed, also appends one alert; a changed seat or owner alone only updates the row. An
+/// identical refusal writes nothing.
+pub fn record_conflict(
+    conn: &Connection,
+    facts: &ConflictFacts,
+    at: UtcMillis,
+) -> Result<ConflictRecord, ApiError> {
+    let kind = kind_name(&facts.kind)?;
+    let seat = facts.seat.as_ref().map(SeatId::as_str);
+    let owner = facts.owner.as_ref().map(SeatId::as_str);
+    let standing: Option<(String, String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT key,kind,seat_id,owner_seat_id FROM continuity_key_conflicts WHERE host_id=?1 AND target_id=?2",
+            params![facts.host.get(), facts.target],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let alert = match standing {
+        Some((old_key, old_kind, old_seat, old_owner)) => {
+            let alert = old_key != facts.key.as_str() || old_kind != kind;
+            if !alert && old_seat.as_deref() == seat && old_owner.as_deref() == owner {
+                return Ok(ConflictRecord::Unchanged);
+            }
+            conn.execute(
+                "UPDATE continuity_key_conflicts SET key=?3,kind=?4,seat_id=?5,owner_seat_id=?6,updated_at=?7 WHERE host_id=?1 AND target_id=?2",
+                params![facts.host.get(), facts.target, facts.key.as_str(), kind, seat, owner, at.0],
+            )
+            .map_err(store_error)?;
+            alert
+        }
+        None => {
+            let rows: i64 = conn
+                .query_row("SELECT count(*) FROM continuity_key_conflicts", [], |r| {
+                    r.get(0)
+                })
+                .map_err(store_error)?;
+            if rows >= MAX_CONFLICT_ROWS {
+                return Ok(ConflictRecord::TableFull);
+            }
+            conn.execute(
+                "INSERT INTO continuity_key_conflicts(host_id,target_id,key,kind,seat_id,owner_seat_id,first_seen_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
+                params![facts.host.get(), facts.target, facts.key.as_str(), kind, seat, owner, at.0],
+            )
+            .map_err(store_error)?;
+            true
+        }
+    };
+    if alert {
+        conn.execute(
+            "INSERT INTO continuity_alerts(key,seat_id,host_id,target_id,kind,at) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![facts.key.as_str(), seat, facts.host.get(), facts.target, kind, at.0],
+        )
+        .map_err(store_error)?;
+        conn.execute(
+            "DELETE FROM continuity_alerts WHERE ordinal NOT IN (SELECT ordinal FROM continuity_alerts ORDER BY ordinal DESC LIMIT ?1)",
+            [MAX_ALERT_ROWS],
+        )
+        .map_err(store_error)?;
+    }
+    Ok(ConflictRecord::Written)
+}
+
+pub fn clear_conflicts_of_key(conn: &Connection, key: &ContinuityKey) -> Result<(), ApiError> {
+    conn.execute(
+        "DELETE FROM continuity_key_conflicts WHERE key=?1",
+        [key.as_str()],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+pub fn clear_conflict_on_target(
+    conn: &Connection,
+    host: HostId,
+    target: &str,
+) -> Result<(), ApiError> {
+    conn.execute(
+        "DELETE FROM continuity_key_conflicts WHERE host_id=?1 AND target_id=?2",
+        params![host.get(), target],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// An alert-only row stands while the owner it was judged against is the pane's resolved owner.
+pub fn clear_alert_only_if_owner_changed(
+    conn: &Connection,
+    host: HostId,
+    target: &str,
+    owner: Option<&SeatId>,
+) -> Result<(), ApiError> {
+    conn.execute(
+        "DELETE FROM continuity_key_conflicts WHERE host_id=?1 AND target_id=?2 AND kind IN ('pane_owned_by_other_seat','seat_holds_other_key') AND owner_seat_id IS NOT ?3",
+        params![host.get(), target, owner.map(SeatId::as_str)],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// The seat stopped owning panes it was judged against: its alert-only rows on any (host, target)
+/// it no longer resolves to go. A hold-bearing row is untouched, and so is a row on the pane the
+/// seat still owns. Runs after the seat row's transition, in the same transaction.
+pub fn clear_alert_only_of_departed_owner(
+    conn: &Connection,
+    owner: &SeatId,
+) -> Result<(), ApiError> {
+    conn.execute(
+        "DELETE FROM continuity_key_conflicts WHERE owner_seat_id=?1 \
+         AND kind IN ('pane_owned_by_other_seat','seat_holds_other_key') \
+         AND NOT EXISTS(SELECT 1 FROM seats s WHERE s.id=?1 AND s.state='resolved' \
+           AND s.host_id=continuity_key_conflicts.host_id AND s.target_id=continuity_key_conflicts.target_id)",
+        [owner.as_str()],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// The kind of a hold-bearing row on (host, target). An alert-only kind never holds.
+pub fn hold_kind(
+    conn: &Connection,
+    host: HostId,
+    target: &str,
+) -> Result<Option<ContinuityConflictKind>, ApiError> {
+    conn.query_row(
+        "SELECT kind FROM continuity_key_conflicts WHERE host_id=?1 AND target_id=?2 AND kind IN ('key_live_elsewhere','key_retired_reversibly','session_matches_other_seat')",
+        params![host.get(), target],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(store_error)?
+    .map(kind_from_row)
+    .transpose()
+}
+
+/// A coherent publication no longer shows these targets: their rows go.
+pub fn clear_conflicts_absent_from(
+    conn: &Connection,
+    host: HostId,
+    generation_id: &str,
+) -> Result<(), ApiError> {
+    conn.execute(
+        "DELETE FROM continuity_key_conflicts WHERE host_id=?1 AND target_id NOT IN (SELECT target_id FROM snapshot_targets WHERE generation_id=?2)",
+        params![host.get(), generation_id],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// The most recently updated row naming `key`, of any kind.
+pub fn conflict_of_key(
+    conn: &Connection,
+    key: &ContinuityKey,
+) -> Result<Option<ConflictRow>, ApiError> {
+    let raw: Option<(i64, String, String, i64)> = conn
+        .query_row(
+            "SELECT host_id,target_id,kind,first_seen_at FROM continuity_key_conflicts WHERE key=?1 ORDER BY updated_at DESC,host_id,target_id LIMIT 1",
+            [key.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    raw.map(|(host, target, kind, first_seen_at)| {
+        Ok(ConflictRow {
+            host: HostId::from_row(host),
+            target,
+            kind: kind_from_row(kind)?,
+            first_seen_at: UtcMillis(first_seen_at),
+        })
+    })
+    .transpose()
+}
+
+/// What `SeatInspect` shows for `seat`: the key it holds, with the newest conflict naming that key.
+/// A row naming an unbound key has no seat, so it reaches only [`alerts_page`].
+pub fn seat_view(conn: &Connection, seat: &SeatId) -> Result<Option<SeatContinuityKey>, ApiError> {
+    let Some(row) = key_of_seat(conn, seat)? else {
+        return Ok(None);
+    };
+    let bound_by = row
+        .bound_by
+        .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "bound key row has no bound_by"))?;
+    let conflict = conflict_of_key(conn, &row.key)?
+        .map(|conflict| {
+            let host = super::hosts::host_row(conn, conflict.host)?.ok_or_else(|| {
+                api_error(
+                    ErrorCode::StoreCorrupt,
+                    "conflict row names no located host",
+                )
+            })?;
+            Ok::<_, ApiError>(ContinuityKeyConflict {
+                host: host.locator,
+                pane: HostTargetId::parse(conflict.target).map_err(corrupt)?,
+                kind: conflict.kind,
+                first_seen_at: conflict.first_seen_at,
+            })
+        })
+        .transpose()?;
+    Ok(Some(SeatContinuityKey {
+        key: row.key,
+        owner: row.owner,
+        bound_by,
+        conflict,
+    }))
+}
+
+const ALERTS_SCOPE_KEY: &str = "continuity_alerts";
+const ALERTS_FILTER: &str = "all";
+
+/// ordinal, key, seat, host endpoint, pane, kind, at.
+type RawAlertRow = (i64, String, Option<String>, String, String, String, i64);
+
+/// One page of the alert feed, oldest first. A cursor's high water freezes the walk, so an alert
+/// written meanwhile waits for the next read from the start. An eviction ahead of a cursor shows
+/// as a gap in the ordinals.
+pub fn alerts_page(
+    conn: &Connection,
+    instance: &str,
+    request: &PageRequest,
+) -> Result<Page<ContinuityAlert>, ApiError> {
+    request
+        .validate()
+        .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    let cursor = request
+        .cursor
+        .as_deref()
+        .map(|raw| {
+            Cursor::decode_for(
+                raw,
+                instance,
+                CursorScope::ContinuityAlerts,
+                ALERTS_SCOPE_KEY,
+                ALERTS_FILTER,
+                CursorDirection::Ascending,
+                1,
+            )
+        })
+        .transpose()
+        .map_err(|why| api_error(ErrorCode::InvalidCursor, why))?;
+    let start = cursor.as_ref().map_or(0, |c| c.after_ordinal);
+    let high = match &cursor {
+        Some(cursor) => cursor.high_water_ordinal,
+        None => conn
+            .query_row(
+                "SELECT coalesce(max(ordinal),0) FROM continuity_alerts",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|ordinal| ordinal as u64)
+            .map_err(store_error)?,
+    };
+    let limit = usize::from(request.limit);
+    let mut statement = conn
+        .prepare(
+            "SELECT a.ordinal,a.key,a.seat_id,h.endpoint,a.target_id,a.kind,a.at FROM continuity_alerts a JOIN herdr_hosts h ON h.host_id=a.host_id WHERE a.ordinal>?1 AND a.ordinal<=?2 ORDER BY a.ordinal LIMIT ?3",
+        )
+        .map_err(store_error)?;
+    let raw: Vec<RawAlertRow> = statement
+        .query_map(params![start as i64, high as i64, limit as i64 + 1], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        })
+        .map_err(store_error)?
+        .collect::<Result<_, _>>()
+        .map_err(store_error)?;
+    let mut more = raw.len() > limit;
+    let mut items = raw
+        .into_iter()
+        .take(limit)
+        .map(alert_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut stop = if more {
+        StopReason::Rows
+    } else {
+        StopReason::Complete
+    };
+    loop {
+        if items.is_empty() && more {
+            return Err(api_error(
+                ErrorCode::InvalidBudget,
+                "continuity alert exceeds page byte budget",
+            ));
+        }
+        let next_cursor = if more {
+            let after = items.last().map_or(start, |alert| alert.ordinal);
+            Some(alerts_cursor(instance, after, high)?)
+        } else {
+            None
+        };
+        let page = Page {
+            items,
+            next_cursor,
+            next_argv: None,
+            high_water_ordinal: high,
+            scope_revision: None,
+            has_more: more,
+            stop_reason: stop,
+            consistency: Consistency::BoundedLive,
+        };
+        let encoded = serde_json::to_vec(&ServiceResult::ContinuityAlerts(page.clone()))
+            .map_err(|e| api_error(ErrorCode::StoreCorrupt, e.to_string()))?;
+        if encoded.len() <= request.max_bytes as usize {
+            return Ok(page);
+        }
+        items = page.items;
+        if items.pop().is_none() {
+            return Err(api_error(
+                ErrorCode::InvalidBudget,
+                "continuity alert page exceeds byte budget",
+            ));
+        }
+        more = true;
+        stop = StopReason::Bytes;
+    }
+}
+
+fn alert_from_row(raw: RawAlertRow) -> Result<ContinuityAlert, ApiError> {
+    let (ordinal, key, seat, endpoint, target, kind, at) = raw;
+    Ok(ContinuityAlert {
+        ordinal: ordinal as u64,
+        key: ContinuityKey::parse(key).map_err(corrupt)?,
+        seat: seat.map(SeatId::parse).transpose().map_err(corrupt)?,
+        host: HostLocator::parse(endpoint).map_err(|error| {
+            api_error(
+                ErrorCode::StoreCorrupt,
+                format!("continuity alert host: {}", error.detail),
+            )
+        })?,
+        pane: HostTargetId::parse(target).map_err(corrupt)?,
+        kind: kind_from_row(kind)?,
+        at: UtcMillis(at),
+    })
+}
+
+fn alerts_cursor(instance: &str, after: u64, high: u64) -> Result<String, ApiError> {
+    Cursor {
+        instance: instance.into(),
+        scope: CursorScope::ContinuityAlerts,
+        scope_key: ALERTS_SCOPE_KEY.into(),
+        filter_digest: ALERTS_FILTER.into(),
+        direction: CursorDirection::Ascending,
+        order_version: 1,
+        last_examined_key: None,
+        after_ordinal: after,
+        high_water_ordinal: high,
+        scope_revision: None,
+        filter_revision: None,
+        search: None,
+        inbox: None,
+        attention: None,
+        binding: None,
+    }
+    .encode()
+    .map_err(|why| api_error(ErrorCode::InvalidCursor, why))
+}
+
+/// The stored name of a kind or binding: its wire name.
+pub(crate) fn kind_name<T: Serialize>(value: &T) -> Result<String, ApiError> {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(name)) => Ok(name),
+        other => Err(api_error(
+            ErrorCode::StoreCorrupt,
+            format!("continuity name encode: {other:?}"),
+        )),
+    }
+}
+
+fn kind_from_row<T: DeserializeOwned>(name: String) -> Result<T, ApiError> {
+    serde_json::from_value(serde_json::Value::String(name))
+        .map_err(|e| api_error(ErrorCode::StoreCorrupt, format!("continuity name: {e}")))
+}
+
+fn corrupt(reason: &'static str) -> ApiError {
+    api_error(
+        ErrorCode::StoreCorrupt,
+        format!("continuity key row: {reason}"),
+    )
+}
+
+#[cfg(test)]
+#[path = "../../tests/store/continuity_keys.rs"]
+mod tests;

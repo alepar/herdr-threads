@@ -1,0 +1,50 @@
+diff --git a/tests/store/named_continuity.rs b/tests/store/named_continuity.rs
+index 881667588..58bc7ac8e 100644
+--- a/tests/store/named_continuity.rs
++++ b/tests/store/named_continuity.rs
+@@ -68,6 +68,7 @@ fn resolve(
+         operation: OperationId::new(operation),
+         locator_hint: None,
+         tmux_hint: None,
++        continuity_key: None,
+     };
+     match resolve_named_seat(context, conn, INSTANCE, host, &request, &budget()).unwrap() {
+         CommandResult::NamedSeatResolved { seat, created, .. } => (seat, created),
+@@ -292,10 +293,14 @@ fn closed_retire_refused_for_named_seat() {
+             RetireReason::Closed,
+             seat.clone(),
+             INSTANCE,
+-            "named-host:node=x",
+-            1,
+-            "w",
+-            1,
++            crate::ports::RetirementInputs {
++                boot: "named-host:node=x".into(),
++                epoch: 1,
++                target: "w".into(),
++                generation: 1,
++                closure_evidence: None,
++                absence_evidence: None,
++            },
+         );
+         drop(tx);
+         result
+@@ -325,10 +330,14 @@ fn closed_retire_refused_for_named_seat() {
+         RetireReason::Closed,
+         pane_seat,
+         INSTANCE,
+-        "boot",
+-        1,
+-        "pane-x",
+-        1,
++        crate::ports::RetirementInputs {
++            boot: "boot".into(),
++            epoch: 1,
++            target: "pane-x".into(),
++            generation: 1,
++            closure_evidence: None,
++            absence_evidence: None,
++        },
+     );
+     if let Err(error) = other {
+         assert!(

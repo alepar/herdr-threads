@@ -1,0 +1,16 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index d437b4f2f..dad5860bb 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -24,6 +24,11 @@ name = "fake-hc"
+ path = "src/bin/fake-hc.rs"
+ required-features = ["test-support"]
+ 
++[[test]]
++name = "clone_identity_sweep"
++path = "tests/clone_identity_sweep.rs"
++required-features = ["test-support"]
++
+ [[test]]
+ name = "combined"
+ path = "tests/combined.rs"

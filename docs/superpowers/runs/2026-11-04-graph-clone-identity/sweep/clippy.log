@@ -1,0 +1,4 @@
+heavy: slot 1 acquired 23:08:31
+    Checking herdr-threads v3.0.0 (/var/home/alepar/AleCode/herdr-threads/.worktrees/super-auto-graph-clone-identity)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 44.23s
+clippy-exit=0

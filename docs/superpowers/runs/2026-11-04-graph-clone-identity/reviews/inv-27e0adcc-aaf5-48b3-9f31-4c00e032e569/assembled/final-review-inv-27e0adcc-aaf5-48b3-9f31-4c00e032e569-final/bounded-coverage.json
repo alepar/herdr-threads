@@ -1,0 +1,166 @@
+{
+ "inspected": [
+  {
+   "path": "src/cli/site_capability.rs",
+   "hunks": [
+    "@@ -5,13 +5,14 @@",
+    "@@ -38,6 +39,144 @@ pub fn require_readonly<C: LocalClient + ?Sized>(",
+    "@@ -116,7 +255,7 @@ mod tests {",
+    "@@ -130,8 +269,14 @@ mod tests {",
+    "@@ -174,6 +319,7 @@ mod tests {",
+    "@@ -224,6 +370,307 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/host/process_table.rs",
+   "hunks": [
+    "@@ -8,6 +8,7 @@",
+    "@@ -19,6 +20,49 @@ impl ProcessInfo for HostProcessTable {",
+    "@@ -403,6 +447,28 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/identity/process_continuity.rs",
+   "hunks": [
+    "@@ -4,9 +4,10 @@",
+    "@@ -28,12 +29,30 @@ pub enum Verdict {",
+    "@@ -100,7 +119,12 @@ pub fn judge_seat<'a>(",
+    "@@ -126,7 +150,12 @@ pub fn has_rival_in_pane(",
+    "@@ -168,8 +197,12 @@ mod tests {",
+    "@@ -198,8 +231,17 @@ mod tests {",
+    "@@ -212,7 +254,7 @@ mod tests {",
+    "@@ -220,9 +262,9 @@ mod tests {",
+    "@@ -230,12 +272,12 @@ mod tests {",
+    "@@ -243,7 +285,7 @@ mod tests {",
+    "@@ -251,17 +293,22 @@ mod tests {",
+    "@@ -272,10 +319,16 @@ mod tests {",
+    "@@ -283,9 +336,12 @@ mod tests {",
+    "@@ -304,6 +360,7 @@ mod tests {",
+    "@@ -394,11 +451,55 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/identity/shell_continuity.rs",
+   "hunks": [
+    "@@ -0,0 +1,279 @@"
+   ]
+  },
+  {
+   "path": "src/client/local.rs",
+   "hunks": [
+    "@@ -23,6 +23,20 @@ use tokio::{",
+    "@@ -48,16 +62,25 @@ impl LocalSocketClient {",
+    "@@ -335,3 +358,33 @@ impl LocalClient for LocalSocketClient {"
+   ]
+  },
+  {
+   "path": "src/cli/watch.rs",
+   "hunks": [
+    "@@ -1259,7 +1259,10 @@ fn own_session_claim("
+   ]
+  },
+  {
+   "path": "migrations/node/0016_graph_clone_identity.sql",
+   "hunks": [
+    "@@ -0,0 +1,130 @@"
+   ]
+  },
+  {
+   "path": "migrations/node/0016_graph_clone_identity_after.sql",
+   "hunks": [
+    "@@ -0,0 +1,7 @@"
+   ]
+  },
+  {
+   "path": "src/service/kicks.rs",
+   "hunks": [
+    "@@ -256,6 +256,16 @@ pub const KNOWN_UNMAPPED: &[&str] = &["
+   ]
+  },
+  {
+   "path": "src/protocol/output.rs",
+   "hunks": [
+    "@@ -475,8 +475,13 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api",
+    "@@ -499,6 +504,16 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api"
+   ]
+  },
+  {
+   "path": "src/protocol/output_compact.rs",
+   "hunks": [
+    "@@ -23,7 +23,8 @@ use crate::protocol::{",
+    "@@ -923,6 +924,26 @@ fn seat_row(seat: &SeatSummary, now: i64, out: &mut String) {"
+   ]
+  },
+  {
+   "path": "src/protocol/results.rs",
+   "hunks": [
+    "@@ -1319,6 +1321,54 @@ pub struct OpenBindingSummary {",
+    "@@ -1334,6 +1384,13 @@ pub struct SeatInspection {"
+   ]
+  },
+  {
+   "path": "src/cli/me.rs",
+   "hunks": [
+    "@@ -52,10 +52,23 @@ fn resolve_seat(",
+    "@@ -65,6 +78,7 @@ fn resolve_seat(",
+    "@@ -213,7 +227,15 @@ pub(crate) fn run_me_init<W: Write>("
+   ]
+  },
+  {
+   "path": "integrations/claude/mod/hooks/register.js",
+   "hunks": [
+    "@@ -1207,6 +1207,7 @@ export const register = (on) => {"
+   ]
+  },
+  {
+   "path": "src/store/bindings.rs",
+   "hunks": [
+    "@@ -328,8 +328,8 @@ pub(crate) fn enroll_with_hooks(",
+    "@@ -442,9 +442,10 @@ pub fn touch(",
+    "@@ -572,7 +573,8 @@ pub fn connect("
+   ]
+  },
+  {
+   "path": "src/store/mod.rs",
+   "hunks": [
+    "@@ -333,6 +334,17 @@ impl SqliteStore {"
+   ]
+  },
+  {
+   "path": "src/store/seats/continuity.rs",
+   "hunks": [
+    "@@ -32,23 +34,31 @@ use super::*;",
+    "@@ -125,7 +135,7 @@ pub fn process_continuity_candidates(",
+    "@@ -157,6 +167,7 @@ pub fn process_continuity_candidates(",
+    "@@ -184,12 +195,13 @@ type ProcessContinuityRow = (",
+    "@@ -212,6 +224,7 @@ fn process_continuity_candidate(",
+    "@@ -548,11 +948,29 @@ pub fn decide_continuity(",
+    "@@ -677,6 +1095,12 @@ pub fn decide_continuity("
+   ]
+  },
+  {
+   "path": "src/cli/hook.rs",
+   "hunks": [
+    "@@ -2028,17 +2057,19 @@ fn check_in(",
+    "@@ -2061,15 +2092,18 @@ fn check_in(",
+    "@@ -2094,8 +2128,9 @@ fn check_in(",
+    "@@ -2106,6 +2141,7 @@ fn check_in(",
+    "@@ -2193,6 +2238,8 @@ struct PaneCall<'a> {",
+    "@@ -2222,6 +2269,14 @@ enum Reattach {",
+    "@@ -2260,6 +2315,7 @@ pub(super) fn watch_continuity(",
+    "@@ -2289,7 +2345,11 @@ impl Reattach {",
+    "@@ -2396,16 +2456,69 @@ impl PaneCall<'_> {"
+   ]
+  },
+  {
+   "path": "src/cli/mod.rs",
+   "hunks": [
+    "@@ -1303,13 +1308,19 @@ fn run_parsed_in_pane<W: Write>(",
+    "@@ -1318,7 +1329,11 @@ fn run_parsed_in_pane<W: Write>(",
+    "@@ -3889,6 +4184,28 @@ pub(crate) fn require_handoff_capabilities<C: LocalClient + ?Sized>(",
+    "@@ -3904,11 +4221,49 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(",
+    "@@ -3916,7 +4271,11 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>("
+   ]
+  }
+ ]
+}

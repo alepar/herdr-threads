@@ -1,0 +1,14 @@
+diff --git a/tests/service/graph_send.rs b/tests/service/graph_send.rs
+index 9dfca354a..19ecb7b6d 100644
+--- a/tests/service/graph_send.rs
++++ b/tests/service/graph_send.rs
+@@ -473,7 +473,8 @@ fn user_intent_service_send_stays_unclassified() {
+             },
+             claim,
+             operation: OperationId::new("worker-check-in"),
+-        }))
++continuity_key: None,
++}))
+         .unwrap() else {
+             panic!("missing check-in");
+         };

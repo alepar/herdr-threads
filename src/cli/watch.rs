@@ -1259,7 +1259,10 @@ fn own_session_claim(
 
 /// The watch's own-session C1 claim (ht-dtx0): only for a push-channel harness
 /// session (the env claim `watch_origin` builds, never a saved context) on the
-/// caller's pane. True when the daemon reattached a seat.
+/// caller's pane. True when the daemon reattached a seat. The claim presents
+/// `HERDR_THREADS_CONTINUITY_KEY` from this process's environment, which the
+/// watch child inherits from the harness session (the mod adds nothing about
+/// the key); a keyless session presents none.
 fn claim_own_seat<C, F>(
     parsed: &super::commands::ParsedCli,
     session: &str,

@@ -81,6 +81,7 @@ impl Fixture {
             operation: OperationId::new(operation),
             locator_hint: hint.map(str::to_owned),
             tmux_hint: tmux_hint.map(str::to_owned),
+            continuity_key: None,
         };
         match resolve_named_seat(
             &self.context,

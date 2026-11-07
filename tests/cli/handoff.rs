@@ -6015,3 +6015,25 @@ fn peer_request_author_makes_one_stage_call() {
     assert!(staged.invitation.is_none() && !staged.invitation_attempted);
     assert_eq!(saves, 1);
 }
+
+// A created target runs the launch-gate shim, and a peer's launch child gets an allowlisted env:
+// neither passes the key on. Kills: the variable missing from the shim's list, or the allowlist
+// growing it.
+#[test]
+fn handoff_scrubs_the_continuity_key() {
+    let name = crate::cli::caller_location::CONTINUITY_KEY_ENV;
+    assert!(
+        crate::cli::launch_gate::scrub_names(std::iter::empty())
+            .contains(std::ffi::OsStr::new(name))
+    );
+    let command = crate::cli::launch_gate::prepare(&["harness".to_owned()], &[], []).unwrap();
+    assert!(
+        command
+            .get_envs()
+            .any(|(key, value)| key == name && value.is_none()),
+        "the shim removes it from the exec'd env"
+    );
+    let kept =
+        crate::service::peer_launcher::child_env([(name.into(), "clone-1".into())].into_iter());
+    assert!(kept.is_empty(), "{kept:?}");
+}

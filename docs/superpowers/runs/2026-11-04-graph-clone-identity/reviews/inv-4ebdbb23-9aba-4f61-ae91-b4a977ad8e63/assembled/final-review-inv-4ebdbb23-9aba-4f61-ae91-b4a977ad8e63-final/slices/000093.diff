@@ -1,0 +1,13 @@
+diff --git a/tests/cli/read_cost_names.rs b/tests/cli/read_cost_names.rs
+index c90bc2681..266ebb9b1 100644
+--- a/tests/cli/read_cost_names.rs
++++ b/tests/cli/read_cost_names.rs
+@@ -173,6 +173,8 @@ impl Daemon {
+                     open_binding: None,
+                     history: page(Vec::new()),
+                     directory: None,
++                    continuity_key: None,
++                    retirement_state: None,
+                 })
+             }
+             _ => {

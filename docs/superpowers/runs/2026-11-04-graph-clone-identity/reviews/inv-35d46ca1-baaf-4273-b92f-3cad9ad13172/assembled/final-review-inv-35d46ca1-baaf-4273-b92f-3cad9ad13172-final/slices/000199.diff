@@ -1,0 +1,498 @@
+diff --git a/tests/store/reversible_facts.rs b/tests/store/reversible_facts.rs
+new file mode 100644
+index 000000000..c737bcdaf
+--- /dev/null
++++ b/tests/store/reversible_facts.rs
+@@ -0,0 +1,492 @@
++//! Authoring `seat.retired_reversible` and `seat.unretired` from the real transitions, and a store
++//! restored from its own log (ht-ma6i.7, spec 4.3). Mounted from `src/store/seats/publication.rs`.
++//! What a fact does when it is applied is in `tests/sync/facts_seat_reversible.rs`.
++use super::*;
++use crate::{
++    node::{NodeIdentity, NodeUuid, tag_for},
++    ports::{RetirementInputs, RetirementStart},
++    protocol::{
++        commands::OperatorRetire,
++        ids::{OperationId, ServiceAuthorId, generate_public_id, prefix},
++        service::UnretireSeat,
++        time::{Clock, MonoInstant, UtcMillis},
++    },
++    store::{
++        SqliteStore, StoreSettings, connection::HoldSource, control,
++        materialize::is_own_history_hold, service_substrate,
++    },
++    sync::facts::{
++        FactRegistry,
++        seat::{RetireReason, SeatRetired},
++    },
++    test_support::{fact_exchange, isolation::TestIsolation, operator_actor},
++};
++use reversible::{FinalizeBy, RowState};
++use std::sync::{
++    Arc,
++    atomic::{AtomicI64, Ordering},
++};
++
++struct TestClock(AtomicI64);
++impl Clock for TestClock {
++    fn utc_now(&self) -> UtcMillis {
++        UtcMillis(self.0.load(Ordering::SeqCst))
++    }
++    fn monotonic_now(&self) -> MonoInstant {
++        MonoInstant(1)
++    }
++}
++
++/// One journal-open store of node `seed`, with the fixture host and the reserved service author.
++struct N {
++    store: SqliteStore,
++    id: NodeUuid,
++    clock: Arc<TestClock>,
++    instance: String,
++    author: ServiceAuthorId,
++    _isolation: TestIsolation,
++}
++
++/// `incarnation` fixes the log draw, so two stores of one seed are a wipe and a restore.
++fn node(seed: u8, incarnation: u64) -> N {
++    let isolation = TestIsolation::new("reversible-facts");
++    let clock = Arc::new(TestClock(AtomicI64::new(1_000)));
++    let context = StoreContext::new(isolation.path("store.db"), clock.clone())
++        .with_journal_seed([seed; 32])
++        .with_test_host();
++    context.seed_incarnations(incarnation);
++    let identity = Arc::new(NodeIdentity::from_seed([seed; 32]));
++    let id = identity.uuid();
++    let mut writer = context.open_writer().unwrap();
++    journal::open(
++        &context,
++        &mut writer,
++        identity,
++        "reversible-facts",
++        FactRegistry::builtins(),
++    )
++    .unwrap();
++    drop(writer);
++    context
++        .attach_host(crate::test_support::TEST_HOST_ENDPOINT)
++        .unwrap();
++    let store = SqliteStore::new(context, id.to_string(), StoreSettings::default()).unwrap();
++    let mut db = store.context().open_writer().unwrap();
++    let instance: String = db
++        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
++        .unwrap();
++    let tx = db.transaction().unwrap();
++    let author = service_substrate::ensure_reserved_author(&tx, &instance, UtcMillis(0)).unwrap();
++    tx.commit().unwrap();
++    N {
++        store,
++        id,
++        clock,
++        instance,
++        author,
++        _isolation: isolation,
++    }
++}
++
++fn inputs() -> RetirementInputs {
++    RetirementInputs {
++        boot: "boot".into(),
++        epoch: 1,
++        target: "target".into(),
++        generation: 1,
++        closure_evidence: None,
++        absence_evidence: None,
++    }
++}
++
++impl N {
++    fn ctx(&self) -> &StoreContext {
++        self.store.context()
++    }
++    fn at(&self, now: i64) {
++        self.clock.0.store(now, Ordering::SeqCst);
++    }
++    fn run<R>(
++        &self,
++        f: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<R, ApiError>,
++    ) -> Result<R, ApiError> {
++        let mut conn = self.ctx().open_writer().unwrap();
++        self.ctx()
++            .execute_decision(&mut conn, |_| Ok(()), |tx, d, ()| f(tx, d))
++    }
++    fn int(&self, sql: &str) -> i64 {
++        self.ctx()
++            .open_writer()
++            .unwrap()
++            .query_row(sql, [], |r| r.get(0))
++            .unwrap()
++    }
++    fn state(&self, seat: &SeatId) -> String {
++        self.ctx()
++            .open_writer()
++            .unwrap()
++            .query_row(
++                "SELECT state FROM seats WHERE id=?1",
++                [seat.as_str()],
++                |r| r.get(0),
++            )
++            .unwrap()
++    }
++    fn row(&self, seat: &SeatId) -> Option<RowState> {
++        reversible::row_state(&self.ctx().open_writer().unwrap(), seat).unwrap()
++    }
++    /// A resolved local seat holding a key; published when asked.
++    fn key_holder(&self, publish: bool) -> SeatId {
++        let seat = SeatId::new(generate_public_id(prefix::SEAT, &tag_for(self.id, 0)));
++        let db = self.ctx().open_writer().unwrap();
++        db.execute(
++            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) \
++             VALUES (?1,?2,'resolved','native','p-'||?1,1,1,0,?2,1,(SELECT min(host_id) FROM herdr_hosts))",
++            params![seat.as_str(), self.instance],
++        )
++        .unwrap();
++        db.execute(
++            "INSERT INTO continuity_keys(key,owner_author_id,seat_id,reserved_at,bound_at,bound_by) VALUES ('k-'||?2,?1,?2,1,1,'service_reservation')",
++            params![self.author.as_str(), seat.as_str()],
++        )
++        .unwrap();
++        if publish {
++            self.run(|tx, d| ensure_published(tx, self.ctx(), d, &seat))
++                .unwrap();
++        }
++        seat
++    }
++    fn close(&self, seat: &SeatId) -> Result<RetirementStart, ApiError> {
++        self.run(|tx, d| {
++            control::begin_retirement_authored(
++                tx,
++                self.ctx(),
++                d,
++                RetireReason::Closed,
++                seat.clone(),
++                &self.instance,
++                inputs(),
++            )
++        })
++    }
++    fn unretire(&self, seat: &SeatId) -> Result<(), ApiError> {
++        self.run(|tx, d| {
++            reversible::unretire(
++                tx,
++                self.ctx(),
++                &self.instance,
++                &self.author,
++                &UnretireSeat {
++                    seat: seat.clone(),
++                    operation: OperationId::new("unretire"),
++                },
++                d,
++            )
++        })
++        .map(|_| ())
++    }
++    fn finalize(&self, seat: &SeatId) -> Result<(), ApiError> {
++        self.run(|tx, d| {
++            reversible::finalize(
++                tx,
++                self.ctx(),
++                &self.instance,
++                FinalizeBy::Service(&self.author),
++                seat,
++                d,
++            )
++        })
++    }
++    fn hold(&self, on: bool) {
++        self.ctx().sync().unwrap().own_history_hold().set(
++            HoldSource::Links,
++            on,
++            self.clock.monotonic_now(),
++        );
++    }
++    /// The payloads of `kind`, oldest first, as JSON.
++    fn facts(&self, kind: &str) -> Vec<serde_json::Value> {
++        let db = self.ctx().open_writer().unwrap();
++        let mut stmt = db
++            .prepare("SELECT payload FROM journal WHERE kind=?1 ORDER BY ingest_seq")
++            .unwrap();
++        stmt.query_map([kind], |r| r.get::<_, Vec<u8>>(0))
++            .unwrap()
++            .map(|payload| serde_json::from_slice(&payload.unwrap()).unwrap())
++            .collect()
++    }
++}
++
++/// Kills: a reversible close or an un-retire authoring nothing or the wrong episode, a peer not
++/// following them, a finalization stamping its own time.
++#[test]
++fn published_seat_authors_both_facts() {
++    let (home, peer) = (node(101, 1), node(102, 2));
++    let seat = home.key_holder(true);
++    fact_exchange::sync(&home.store, &peer.store);
++    home.at(2_000);
++    assert_eq!(home.close(&seat).unwrap(), RetirementStart::Reversible);
++    assert_eq!(
++        home.facts("seat.retired_reversible"),
++        vec![serde_json::json!({"seat": seat.as_str(), "reason": "closed", "retired_at": 2_000})]
++    );
++    fact_exchange::sync(&home.store, &peer.store);
++    assert_eq!(peer.state(&seat), "retired");
++    assert_eq!(peer.row(&seat), Some(RowState::Reversible));
++
++    home.at(2_500);
++    home.unretire(&seat).unwrap();
++    assert_eq!(
++        home.facts("seat.unretired"),
++        vec![
++            serde_json::json!({"seat": seat.as_str(), "retired_at": 2_000, "unretired_at": 2_500})
++        ]
++    );
++    assert_eq!(home.state(&seat), "unresolved", "the echo changes nothing");
++    assert_eq!(home.row(&seat), Some(RowState::Unretired));
++    fact_exchange::sync(&home.store, &peer.store);
++    assert_eq!(peer.state(&seat), "remote");
++    assert_eq!(peer.row(&seat), None, "a peer has no waiting state");
++
++    // A second episode finalizes with its own cutover.
++    home.at(3_000);
++    home.close(&seat).unwrap();
++    home.at(3_500);
++    home.finalize(&seat).unwrap();
++    assert_eq!(home.facts("seat.retired_reversible").len(), 2);
++    assert_eq!(home.facts("seat.retired")[0]["retired_at"], 3_000);
++    assert_eq!(home.int("SELECT count(*) FROM retirements"), 1, "one job");
++    fact_exchange::sync(&home.store, &peer.store);
++    assert_eq!(peer.state(&seat), "retired");
++    assert_eq!(peer.row(&seat), None);
++    assert_eq!(
++        peer.int("SELECT count(*) FROM retirements WHERE origin='replicated' AND cutover_at=3000"),
++        1
++    );
++}
++
++/// Kills: authoring for a seat no other node knows.
++#[test]
++fn unpublished_seat_authors_nothing() {
++    let home = node(103, 1);
++    let seat = home.key_holder(false);
++    assert_eq!(home.close(&seat).unwrap(), RetirementStart::Reversible);
++    home.unretire(&seat).unwrap();
++    assert_eq!(home.row(&seat), Some(RowState::Unretired));
++    assert_eq!(
++        home.int("SELECT count(*) FROM journal WHERE kind IN ('seat.retired_reversible','seat.unretired')"),
++        0
++    );
++}
++
++/// Kills: the kinds missing from `HELD_KINDS`, or a refusal that leaves the fence half applied.
++#[test]
++fn restore_hold_refuses_them_as_retryable() {
++    let home = node(104, 1);
++    let seat = home.key_holder(true);
++    home.hold(true);
++    let error = home.close(&seat).unwrap_err();
++    assert!(is_own_history_hold(&error), "{error:?}");
++    assert_eq!(home.state(&seat), "resolved", "the fence rolled back");
++    assert_eq!(home.row(&seat), None);
++
++    home.hold(false);
++    home.close(&seat).unwrap();
++    home.hold(true);
++    let error = home.unretire(&seat).unwrap_err();
++    assert!(is_own_history_hold(&error), "{error:?}");
++    assert_eq!(home.state(&seat), "retired", "the un-retire rolled back");
++    assert_eq!(home.row(&seat), Some(RowState::Reversible));
++
++    home.hold(false);
++    home.unretire(&seat).unwrap();
++    assert_eq!(home.state(&seat), "unresolved");
++}
++
++/// Kills: a final fact dropping the closure inputs of a row that has them (a store restored from a
++/// backup, whose old log holds the finalization).
++#[test]
++fn final_fact_on_a_row_with_inputs_keeps_them() {
++    let home = node(105, 1);
++    let seat = home.key_holder(true);
++    home.at(2_000);
++    home.close(&seat).unwrap();
++    home.run(|tx, d| {
++        journal::author::<SeatRetired>(
++            tx,
++            home.ctx(),
++            d,
++            &SeatRetiredPayload {
++                seat: seat.clone(),
++                reason: RetireReason::Closed,
++                retired_at: 2_000,
++            },
++        )
++        .map(|_| ())
++    })
++    .unwrap();
++    assert_eq!(home.row(&seat), None);
++    assert_eq!(
++        home.int(
++            "SELECT count(*) FROM retirements WHERE origin='local' AND closure_boot='boot' AND cutover_at=2000"
++        ),
++        1
++    );
++    assert_eq!(home.int("SELECT count(*) FROM continuity_keys"), 0);
++}
++
++/// The old store's published reversible seat, restored into a fresh store of the same node from a
++/// peer that holds its log.
++fn restored() -> (N, N, SeatId) {
++    let (old, peer) = (node(106, 1), node(107, 2));
++    let seat = old.key_holder(true);
++    old.at(2_000);
++    old.close(&seat).unwrap();
++    fact_exchange::sync(&old.store, &peer.store);
++    let fresh = node(106, 3);
++    fact_exchange::sync(&fresh.store, &peer.store);
++    (fresh, peer, seat)
++}
++
++/// Kills: a replayed reversible fact writing a job, leaving the row out, or restoring a key.
++#[test]
++fn keyless_reversible_seat_stays_reversible_and_reads_retired() {
++    let (fresh, _peer, seat) = restored();
++    assert_eq!(fresh.state(&seat), "retired");
++    assert_eq!(fresh.row(&seat), Some(RowState::Reversible));
++    assert_eq!(
++        fresh.int("SELECT count(*) FROM reversible_retirements WHERE closure_boot IS NULL AND cutover_at=2000"),
++        1,
++        "no closure inputs"
++    );
++    assert_eq!(fresh.int("SELECT count(*) FROM retirements"), 0);
++    assert_eq!(fresh.int("SELECT count(*) FROM continuity_keys"), 0);
++}
++
++/// Kills: a service acting on a seat whose key the store no longer has.
++#[test]
++fn unretire_and_finalize_answer_unauthorized_after_restore() {
++    let (fresh, _peer, seat) = restored();
++    assert_eq!(
++        fresh.unretire(&seat).unwrap_err().code,
++        ErrorCode::Unauthorized
++    );
++    assert_eq!(
++        fresh.finalize(&seat).unwrap_err().code,
++        ErrorCode::Unauthorized
++    );
++    assert_eq!(fresh.row(&seat), Some(RowState::Reversible));
++}
++
++/// Kills: an operator retire of a restored seat answering not found or failing on empty inputs, and
++/// seat inspect panicking on the empty ids its history row then holds.
++#[test]
++fn operator_retire_finalizes_it() {
++    let (fresh, peer, seat) = restored();
++    let mut db = fresh.ctx().open_writer().unwrap();
++    crate::store::seats::mutate_operator(
++        fresh.ctx(),
++        &mut db,
++        &fresh.instance,
++        crate::ports::OperatorRequest::Retire(OperatorRetire {
++            seat: seat.clone(),
++            operation: OperationId::new("finalize"),
++        }),
++        operator_actor(),
++        None,
++    )
++    .unwrap();
++    assert_eq!(fresh.row(&seat), None);
++    assert_eq!(
++        fresh.int("SELECT count(*) FROM retirements WHERE cutover_at=2000"),
++        1
++    );
++    assert_operator_retire_has_no_evidence(&fresh, &seat);
++    fact_exchange::sync(&fresh.store, &peer.store);
++    assert_eq!(peer.row(&seat), None);
++    assert_eq!(
++        peer.int("SELECT count(*) FROM retirements WHERE cutover_at=2000"),
++        1
++    );
++}
++
++/// The public `SeatInspect` read of `seat`.
++fn inspect(node: &N, seat: &SeatId) -> crate::protocol::results::SeatInspection {
++    use crate::protocol::{
++        commands::{Command, SeatInspectQuery},
++        pagination::PageRequest,
++        results::CommandResult,
++        time::{CallBudget, Cancellation},
++    };
++    let result = crate::store::queries::query(
++        node.ctx(),
++        &node.instance,
++        &Command::SeatInspect(SeatInspectQuery {
++            seat: seat.clone(),
++            page: PageRequest::default(),
++        }),
++        &CallBudget {
++            deadline: MonoInstant(u64::MAX),
++            cancellation: Cancellation::default(),
++        },
++    )
++    .unwrap();
++    let CommandResult::SeatInspect(inspection) = result else {
++        panic!("seat inspect answered {result:?}");
++    };
++    inspection
++}
++
++/// The `operator_retire` decision in `seat`'s history, which must read `-` for both empty ids.
++fn assert_operator_retire_has_no_evidence(node: &N, seat: &SeatId) {
++    use crate::protocol::results::{SeatHistoryItem, SeatRetirementState};
++    let inspection = inspect(node, seat);
++    assert_eq!(
++        inspection.retirement_state,
++        Some(SeatRetirementState::Final)
++    );
++    let decision = inspection
++        .history
++        .items
++        .iter()
++        .find_map(|item| match item {
++            SeatHistoryItem::Repair(repair) if repair.decision_kind == "operator_retire" => {
++                Some(repair)
++            }
++            _ => None,
++        })
++        .expect("the operator_retire decision");
++    assert_eq!(decision.target.as_str(), "-");
++    assert_eq!(decision.host_boot.as_str(), "-");
++}
++
++/// Kills: the history read panicking on the empty ids `operator::retire_seat` writes for a seat with
++/// no target and no binding.
++#[test]
++fn operator_retire_of_a_seat_with_no_target_reads_back() {
++    let home = node(108, 1);
++    let seat = SeatId::new(generate_public_id(prefix::SEAT, &tag_for(home.id, 0)));
++    home.ctx()
++        .open_writer()
++        .unwrap()
++        .execute(
++            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,target_generation,created_at,home_node,is_local,host_id) \
++             VALUES (?1,?2,'unresolved','other','native',1,1,0,?2,1,(SELECT min(host_id) FROM herdr_hosts))",
++            params![seat.as_str(), home.instance],
++        )
++        .unwrap();
++    let mut db = home.ctx().open_writer().unwrap();
++    crate::store::seats::mutate_operator(
++        home.ctx(),
++        &mut db,
++        &home.instance,
++        crate::ports::OperatorRequest::Retire(OperatorRetire {
++            seat: seat.clone(),
++            operation: OperationId::new("retire"),
++        }),
++        operator_actor(),
++        None,
++    )
++    .unwrap();
++    assert_operator_retire_has_no_evidence(&home, &seat);
++}

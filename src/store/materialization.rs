@@ -727,19 +727,45 @@ fn project_receipt(
         )
         .optional()
         .map_err(store_error)?;
+    // A recipient frozen in a reversible retirement owes this like the rest of what it owes: the
+    // row stays `pending`, resumes on un-retire and settles through the job on finalization.
+    let frozen = effective.state == EffectiveReceiptState::RecipientRetired
+        && super::seats::reversible::is_frozen(tx, &crate::protocol::ids::SeatId::new(seat))?;
     let physical_state = match effective.state {
         EffectiveReceiptState::Pending => "pending",
         EffectiveReceiptState::Acknowledged => "acked",
+        EffectiveReceiptState::RecipientRetired if frozen => "pending",
         EffectiveReceiptState::RecipientRetired => "recipient_retired",
         EffectiveReceiptState::NotRequired => "pending",
     };
     let ack_required = i64::from(effective.state != EffectiveReceiptState::NotRequired);
     // An ack recipient already retired when the message applies (its retirement
     // fact came first) is projected `recipient_retired` at the seat's `retired_at`.
-    let retired_at = (effective.state == EffectiveReceiptState::RecipientRetired)
+    let retired_at = (effective.state == EffectiveReceiptState::RecipientRetired && !frozen)
         .then_some(effective.retired_at)
         .flatten();
-    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required,retired_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),ack_required=MIN(receipt_state.ack_required,excluded.ack_required) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,effective.deadline_at,ack_required,retired_at]).map_err(store_error)?;
+    // A pending deadline first written after an un-retire it predates (a window message from a
+    // node that had not seen the retirement) moves by the time it spent frozen, as the copies
+    // present at the un-retire did. A stored deadline wins below, so nothing moves twice.
+    let deadline_at = match effective.deadline_at {
+        Some(deadline) if physical_state == "pending" => {
+            let created: i64 = tx
+                .query_row(
+                    "SELECT decision_at FROM messages WHERE id=?1",
+                    [message],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let seat = crate::protocol::ids::SeatId::new(seat);
+            Some(
+                deadline.saturating_add(super::seats::reversible::window_shift_ms(
+                    tx, &seat, created,
+                )?),
+            )
+        }
+        deadline => deadline,
+    };
+    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required,retired_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),ack_required=MIN(receipt_state.ack_required,excluded.ack_required) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,deadline_at,ack_required,retired_at]).map_err(store_error)?;
     if attend && effective.state == EffectiveReceiptState::Pending && prior.is_none() {
         DeliveryTail::attention(tx, seat, 0)?;
     }

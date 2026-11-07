@@ -14,6 +14,7 @@ fn claim(target: &str, session: &str) -> ContinuityCheckIn {
         operation: OperationId::new(format!("op-{target}-{session}")),
         execution: ExecutionId::new("e"),
         liveness: None,
+        continuity_key: None,
     }
 }
 

@@ -840,9 +840,10 @@ pub(crate) enum Placement {
 /// Materializes `invitation.created` (fact-kinds design section 6): a no-op if
 /// the invitation exists. Otherwise inserts the row with a local episode and
 /// `origin_node = m.origin_node`, in the state the invitee's seat and ordinals
-/// give it (`recipient_retired` for a retired seat, `already_joined` when
-/// `last_joined_n > invitee_n`, else `pending`). Only a `pending` row touches
-/// anything else: the invitee becomes `invited`, the derived invite event is
+/// give it (`recipient_retired` for a retired seat, except one frozen in a
+/// reversible retirement, whose obligation resumes or settles with the rest;
+/// `already_joined` when `last_joined_n > invitee_n`; else `pending`). Only a
+/// `pending` row touches anything else: the invitee becomes `invited`, the derived invite event is
 /// appended, the revisions and filters bump, and a local, non-suppressed
 /// invitee gets its delivery attention.
 pub fn materialize_invitation(
@@ -897,7 +898,9 @@ pub(crate) fn insert_invitation(
         .map_err(store_error)?;
     let invitee_n = i64::try_from(p.invitee_n)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitee ordinal out of range"))?;
-    let state = if seat_state == "retired" {
+    let state = if seat_state == "retired"
+        && !crate::store::seats::reversible::is_frozen(tx, &p.invitee)?
+    {
         "recipient_retired"
     } else if prior
         .as_ref()
@@ -907,7 +910,18 @@ pub(crate) fn insert_invitation(
     } else {
         "pending"
     };
-    let deadline = p.deadline_at;
+    // A pending invitation first written after an un-retire it predates moves by the time it
+    // spent frozen, as the copies present at the un-retire did.
+    let deadline = if state == "pending" {
+        p.deadline_at
+            .saturating_add(crate::store::seats::reversible::window_shift_ms(
+                tx,
+                &p.invitee,
+                p.created_at,
+            )?)
+    } else {
+        p.deadline_at
+    };
     // Main's stored shape per issuer: a seat inviter's invitation records
     // `require_ack`; operator and service invitations record none.
     let confirmation = (p.inviter_kind == InviterKind::Seat).then_some("require_ack");

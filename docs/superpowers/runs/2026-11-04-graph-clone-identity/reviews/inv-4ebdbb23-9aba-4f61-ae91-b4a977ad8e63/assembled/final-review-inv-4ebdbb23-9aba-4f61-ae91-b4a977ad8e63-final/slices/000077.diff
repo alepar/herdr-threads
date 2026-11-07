@@ -1,0 +1,70 @@
+diff --git a/src/store/service_controls.rs b/src/store/service_controls.rs
+index 16189a776..704ff786f 100644
+--- a/src/store/service_controls.rs
++++ b/src/store/service_controls.rs
+@@ -22,7 +22,9 @@ use crate::{
+ 
+ use super::{
+     connection::{StoreContext, api_error, store_error},
++    continuity_keys,
+     schema::{self, EventInput},
++    seats::reversible,
+     service_substrate,
+ };
+ use crate::sync::facts::invitation::InvitationCreatedPayload;
+@@ -71,6 +73,15 @@ pub fn operate(
+         decision.rollback().map_err(store_error)?;
+         return Ok(result);
+     }
++    if let ServiceOperation::ContinuityAlerts(query) = &operation {
++        let result = ServiceResult::ContinuityAlerts(continuity_keys::alerts_page(
++            tx,
++            instance,
++            &query.page,
++        )?);
++        decision.rollback().map_err(store_error)?;
++        return Ok(result);
++    }
+     let key = operation
+         .operation_key()
+         .ok_or_else(|| api_error(ErrorCode::InvalidRequest, "operation key required"))?;
+@@ -186,7 +197,38 @@ pub fn operate(
+                 "service send and reads route outside service controls",
+             ));
+         }
+-        ServiceOperation::Membership(_) => unreachable!(),
++        ServiceOperation::ReserveContinuityKey(v) => {
++            ServiceResult::ContinuityKeyReserved(continuity_keys::reserve(tx, &author, v, at)?)
++        }
++        ServiceOperation::ReleaseContinuityKey(v) => {
++            ServiceResult::ContinuityKeyReleased(continuity_keys::release(tx, &author, &v.key)?)
++        }
++        ServiceOperation::UnretireSeat(v) => reversible::unretire(
++            tx,
++            context,
++            instance,
++            &author,
++            v,
++            super::connection::DecisionInstant {
++                utc: at,
++                monotonic: context.clock().monotonic_now(),
++            },
++        )?,
++        ServiceOperation::FinalizeRetirement(v) => {
++            reversible::finalize(
++                tx,
++                context,
++                instance,
++                reversible::FinalizeBy::Service(&author),
++                &v.seat,
++                super::connection::DecisionInstant {
++                    utc: at,
++                    monotonic: context.clock().monotonic_now(),
++                },
++            )?;
++            ServiceResult::RetirementFinalized(v.seat.clone())
++        }
++        ServiceOperation::Membership(_) | ServiceOperation::ContinuityAlerts(_) => unreachable!(),
+     };
+     let json = serde_json::to_string(&result).map_err(|e| {
+         api_error(

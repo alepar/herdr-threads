@@ -1,0 +1,96 @@
+diff --git a/src/store/mod.rs b/src/store/mod.rs
+index eb212e262..6d6a528c2 100644
+--- a/src/store/mod.rs
++++ b/src/store/mod.rs
+@@ -6,6 +6,7 @@ pub(crate) mod attribution;
+ pub mod bindings;
+ pub mod catch_up;
+ pub mod connection;
++pub mod continuity_keys;
+ pub mod control;
+ pub(crate) mod delivery_tail;
+ pub mod effective;
+@@ -71,7 +72,7 @@ use crate::{
+         HostObservation, HostObservationAdmission, InvalidationSeatPage, OperationReadScope,
+         OperatorRequest, PokeDue, PokeReceipt, PokeReservation, PriorLadder, PruneProgress,
+         PublishedSnapshot, ReadContext, ReceiptSparseCursor, ReconciliationOutcome,
+-        RegisterAvailableRequest, RetirementJob, RetirementProgress, RetirementSummary,
++        RegisterAvailableRequest, RetirementProgress, RetirementStart, RetirementSummary,
+         SendPreparationProgress, SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader,
+         SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate,
+         WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
+@@ -2340,6 +2341,56 @@ impl StorePort for SqliteStore {
+     ) -> Result<crate::ports::ProcessContinuityListing, ApiError> {
+         seats::process_continuity_candidates(&self.context, &self.instance, host, &page, budget)
+     }
++    fn shell_fingerprint_gaps(
++        &self,
++        host: crate::ports::HostId,
++        after: Option<SeatId>,
++        budget: &CallBudget,
++    ) -> Result<Vec<crate::ports::ShellFingerprintGap>, ApiError> {
++        seats::shell_fingerprint_gaps(&self.context, &self.instance, host, after.as_ref(), budget)
++    }
++    fn record_shell_fingerprint(
++        &self,
++        gap: &crate::ports::ShellFingerprintGap,
++        fingerprint: &crate::identity::shell_continuity::ShellFingerprint,
++        budget: &CallBudget,
++    ) -> Result<bool, ApiError> {
++        let now = self.context.clock().utc_now();
++        let writer = self.writer(budget)?;
++        seats::record_shell_fingerprint(&writer, gap, fingerprint, now)
++    }
++    fn shell_continuity_candidates(
++        &self,
++        host: crate::ports::HostId,
++        after: Option<SeatId>,
++        budget: &CallBudget,
++    ) -> Result<Vec<crate::ports::ShellContinuityCandidate>, ApiError> {
++        seats::shell_continuity_candidates(
++            &self.context,
++            &self.instance,
++            host,
++            after.as_ref(),
++            budget,
++        )
++    }
++    fn shell_rival_exists(
++        &self,
++        seat: &SeatId,
++        pid: u32,
++        start: u64,
++        budget: &CallBudget,
++    ) -> Result<bool, ApiError> {
++        let db = self.context.open_query(budget.clone())?;
++        seats::shell_rival_exists(&db, seat, pid, start)
++    }
++    fn decide_shell_continuity(
++        &self,
++        request: crate::ports::ShellContinuityRequest,
++        budget: &CallBudget,
++    ) -> Result<CommandResult, ApiError> {
++        let mut writer = self.writer(budget)?;
++        seats::decide_shell_continuity(&self.context, &mut writer, &self.instance, request)
++    }
+     fn kept_continuity_claims(
+         &self,
+         host: crate::ports::HostId,
+@@ -3143,7 +3194,7 @@ impl StorePort for SqliteStore {
+         seat: SeatId,
+         proof: ClosureEvidence,
+         budget: &CallBudget,
+-    ) -> Result<RetirementJob, ApiError> {
++    ) -> Result<RetirementStart, ApiError> {
+         let mut writer = self.writer(budget)?;
+         control::begin_retirement(&self.context, &mut writer, seat, proof)
+     }
+@@ -3775,7 +3826,7 @@ pub fn cooperative_permit_request(
+             v.claim.clone(),
+             v.operation.clone(),
+             ObligationRef::CheckIn(v.claim.seat.clone()),
+-            schema::canonical_digest(&seats::check_in_payload(v))?,
++            seats::check_in_digest(v)?,
+             Some(v.mode),
+         ),
+         PermitMutation::BeginHandoff(v) => (

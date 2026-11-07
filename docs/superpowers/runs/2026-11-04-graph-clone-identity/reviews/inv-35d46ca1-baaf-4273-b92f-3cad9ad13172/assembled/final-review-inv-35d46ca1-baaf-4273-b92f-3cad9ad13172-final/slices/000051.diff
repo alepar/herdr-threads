@@ -1,0 +1,26 @@
+diff --git a/integrations/claude/mod/tests/named_watch_env.test.ts b/integrations/claude/mod/tests/named_watch_env.test.ts
+index 386e57058..ea6d6078b 100644
+--- a/integrations/claude/mod/tests/named_watch_env.test.ts
++++ b/integrations/claude/mod/tests/named_watch_env.test.ts
+@@ -108,6 +108,21 @@ test('a pane seat still stops permanently on no_pane', async () => {
+   h.core.dispose()
+ })
+ 
++test('a pane seat: the continuity key is forwarded, and the seat is still a pane seat', async ($, on) => {
++  const spawned = await startMod($, on, { HERDR_THREADS_CONTINUITY_KEY: 'clone-1' }, [connected])
++  expect(spawned[0].argv).toEqual(['ht-named', 'watch', '--harness', 'claude', '--session', 'named-1'])
++  expect(spawned[0].env).toEqual({ HERDR_THREADS_CONTINUITY_KEY: 'clone-1' })
++})
++
++test('a pane seat with a key still stops permanently on no_pane', async () => {
++  const h = await coreWith({ HERDR_THREADS_CONTINUITY_KEY: 'clone-1' })
++  h.spawns[0].cb.line(status('refused', 'no_pane', 3))
++  h.spawns[0].cb.exit(3)
++  await h.advance(60_000)
++  expect(h.core.snapshot().stopped).toBe(true)
++  h.core.dispose()
++})
++
+ test('a Herdr pane session spawns the child with the unchanged argv-only event', async ($, on) => {
+   const spawned = await startMod($, on, {}, [connected])
+   expect(spawned[0].argv).toEqual(['ht-named', 'watch', '--harness', 'claude', '--session', 'named-1'])

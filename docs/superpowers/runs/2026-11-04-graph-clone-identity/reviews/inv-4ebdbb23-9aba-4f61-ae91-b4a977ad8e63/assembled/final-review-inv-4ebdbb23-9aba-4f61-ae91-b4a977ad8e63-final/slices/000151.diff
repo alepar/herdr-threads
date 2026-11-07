@@ -1,0 +1,12 @@
+diff --git a/tests/store/named_allocation.rs b/tests/store/named_allocation.rs
+index 0f3cd038a..cd2902535 100644
+--- a/tests/store/named_allocation.rs
++++ b/tests/store/named_allocation.rs
+@@ -54,6 +54,7 @@ fn request(name: &str, operation: &str) -> ResolveSeat {
+         operation: OperationId::new(operation),
+         locator_hint: None,
+         tmux_hint: None,
++        continuity_key: None,
+     }
+ }
+ 

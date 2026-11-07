@@ -1,0 +1,12 @@
+r1 [Should-fix] src/store/seats/reversible.rs:370
+r1 [Nit] src/store/seats/reversible.rs:412
+r1 [Nit] src/store/seats/cooperative.rs:1053
+r1 [Nit] src/identity/repair.rs:687
+r1 [Nit] tests/service/observation_lane.rs:1159
+r1 [Nit] tests/clone_identity_sweep.rs:945
+r1 [Nit] tests/service/continuity_key_session.rs:142
+r1 [Nit] docs/operations.md:286; docs/operations.md:290; docs/operations.md:249
+r1 [Nit] src/identity/repair.rs:727
+r2 [Should-fix] src/host/native.rs:1405; src/identity/repair.rs:706; src/identity/repair.rs:703; src/identity/repair.rs:704
+r2 [Should-fix] tests/service/observation_lane.rs:197
+r2 [Must-fix] B2 not delivered on a peer under fork-repair ordering: an out-of-order `seat.unretired` is applied as a no-op yet journalled `applied`, so `episode_fact_applied` refuses every later copy and the peer seat stays retired and frozen (src/store/seats/publication.rs materialize_seat_unretired, src/store/seats/reversible.rs episode_fact_applied and unretire_by_fact; ledger line 152); no bead tracks it.

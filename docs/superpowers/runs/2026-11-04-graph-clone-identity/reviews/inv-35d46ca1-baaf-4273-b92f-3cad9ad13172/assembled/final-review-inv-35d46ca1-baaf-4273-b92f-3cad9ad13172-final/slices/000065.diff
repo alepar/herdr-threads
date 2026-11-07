@@ -1,0 +1,224 @@
+diff --git a/src/cli/mod.rs b/src/cli/mod.rs
+index 621c12719..3c2c2c70e 100644
+--- a/src/cli/mod.rs
++++ b/src/cli/mod.rs
+@@ -1183,16 +1183,21 @@ fn run_parsed_in_pane<W: Write>(
+             ));
+         }
+         require_operator_actor(&parsed)?;
+-        seat_resolution::allocate_deferred_seats(
+-            deferred,
+-            &mut parsed,
+-            &context,
+-            &paths,
+-            &connection,
+-            &clock,
+-            &mut io::stderr(),
+-        )?;
+-        resolve_recipient_seats(&mut parsed, &context, &paths, &connection, &clock)?;
++        {
++            // This branch never enters the caller guard; recipient allocation asks who is calling
++            // before it presents a key.
++            let _origin = caller::ActiveGuard::enter(caller::derive(&parsed));
++            seat_resolution::allocate_deferred_seats(
++                deferred,
++                &mut parsed,
++                &context,
++                &paths,
++                &connection,
++                &clock,
++                &mut io::stderr(),
++            )?;
++            resolve_recipient_seats(&mut parsed, &context, &paths, &connection, &clock)?;
++        }
+         let CliAction::Mutation(mutation) = &parsed.action else {
+             unreachable!()
+         };
+@@ -1303,22 +1308,31 @@ fn run_parsed_in_pane<W: Write>(
+             prefix.push("pending-ops".to_owned());
+             CommandResult::LocalIntents(journal.page_with_output(&page, &prefix, &parsed.output)?)
+         }
+-        CliAction::Mutation(MutationSpec::Resolve(target)) => {
++        CliAction::Mutation(MutationSpec::Resolve(ref target)) => {
+             let (instance, _, client) = connect(&paths, &clock)?;
+-            let host = recipient_host(
+-                &context,
+-                &herdr_output,
+-                parsed.caller_site.as_ref(),
+-                &target,
+-            )?;
++            let site = parsed.caller_site.as_ref();
++            let host = recipient_host(&context, &herdr_output, site, target)?;
+             let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
++            let env = caller_location::CallerEnv::for_site(site);
++            let continuity_key = site_capability::resolve_arm_key(
++                &parsed,
++                &env,
++                target,
++                env.may_present_key(true) && on_own_server(&herdr_output, site, &host),
++                &client,
++                &budget(),
++            );
+             retry::run_new_api_to_writer_discarding_rejection(
+                 &journal,
+                 IntentScope::ServiceAllocation {
+                     instance: instance.to_string(),
+                     target: target.clone(),
+                 },
+-                SemanticMutation::ResolveSeat { target, host },
++                SemanticMutation::ResolveSeat {
++                    target: target.clone(),
++                    host,
++                    continuity_key,
++                },
+                 clock.utc_now().0,
+                 || {
+                     Err(io::Error::new(
+@@ -3629,6 +3643,119 @@ fn recipient_host(
+         .map_err(|detail| invalid_request(&detail.detail))
+ }
+ 
++/// Whether `host` is the server this caller's own pane runs on. With no `--host-endpoint` the
++/// selected host is that server. With the flag, compare against what the environment alone selects;
++/// an unknown own server answers false, so no key is presented on uncertainty. `output` is the
++/// `ParsedCli::herdr_output`, whose host is the flag alone.
++fn on_own_server(
++    output: &OutputSpec,
++    site: Option<&caller_location::CallerLocator>,
++    host: &crate::protocol::ids::HostLocator,
++) -> bool {
++    own_server_under(
++        output,
++        || instance::InstanceInputs::for_site(None, None, site),
++        host,
++    )
++}
++
++/// [`on_own_server`] over the environment's inputs, read only when a flag asks for them.
++fn own_server_under(
++    output: &OutputSpec,
++    inputs: impl FnOnce() -> instance::InstanceInputs,
++    host: &crate::protocol::ids::HostLocator,
++) -> bool {
++    if output.context.host.is_none() {
++        return true;
++    }
++    let Ok(endpoint) = inputs().herdr_endpoint(None) else {
++        return false;
++    };
++    // A selected host is canonical (`RuntimeContext::explicit`); the environment's is as written.
++    let canonical = endpoint
++        .parent()
++        .and_then(|parent| parent.canonicalize().ok())
++        .zip(endpoint.file_name())
++        .map(|(parent, name)| parent.join(name));
++    endpoint.as_os_str() == host.as_str()
++        || canonical.is_some_and(|path| path.as_os_str() == host.as_str())
++}
++
++#[cfg(test)]
++mod on_own_server_tests {
++    use super::*;
++    use crate::protocol::ids::HostLocator;
++
++    fn flagged() -> OutputSpec {
++        let mut output = OutputSpec::default();
++        output.context.host = Some("/flag.sock".to_owned());
++        output
++    }
++
++    fn selecting(endpoint: &str) -> instance::InstanceInputs {
++        instance::InstanceInputs {
++            env_host: Some(endpoint.into()),
++            ..instance::InstanceInputs::default()
++        }
++    }
++
++    #[test]
++    fn no_flag_is_the_callers_server_with_no_lookup() {
++        let host = HostLocator::parse("/any.sock").unwrap();
++        assert!(own_server_under(
++            &OutputSpec::default(),
++            || panic!("no flag reads no environment"),
++            &host,
++        ));
++    }
++
++    #[test]
++    fn a_flag_counts_only_for_the_server_the_environment_selects() {
++        let other = HostLocator::parse("/other.sock").unwrap();
++        assert!(!own_server_under(
++            &flagged(),
++            || selecting("/own.sock"),
++            &other
++        ));
++        let own = HostLocator::parse("/own.sock").unwrap();
++        assert!(own_server_under(
++            &flagged(),
++            || selecting("/own.sock"),
++            &own
++        ));
++    }
++
++    #[test]
++    fn an_unknown_own_server_is_false() {
++        let host = HostLocator::parse("/flag.sock").unwrap();
++        assert!(!own_server_under(
++            &flagged(),
++            instance::InstanceInputs::default,
++            &host
++        ));
++    }
++
++    // Kills: the raw comparison, which refuses the key to the caller's routing flags when the
++    // environment spells the socket through a symlink.
++    #[test]
++    fn a_symlinked_environment_spelling_is_the_same_server() {
++        let root = crate::test_support::scratch::temp_path("own-server");
++        let real = root.join("real");
++        std::fs::create_dir_all(&real).unwrap();
++        let link = root.join("link");
++        std::os::unix::fs::symlink(&real, &link).unwrap();
++        let canonical = real.canonicalize().unwrap().join("h.sock");
++        let host = HostLocator::parse(canonical.to_string_lossy()).unwrap();
++        let spelled = link.join("h.sock");
++        assert!(own_server_under(
++            &flagged(),
++            || selecting(spelled.to_str().unwrap()),
++            &host,
++        ));
++        std::fs::remove_dir_all(&root).unwrap();
++    }
++}
++
+ fn context_error(error: io::Error) -> RunError {
+     RunError::Api(host_context_error(error))
+ }
+@@ -3910,13 +4037,26 @@ pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
+         None => recipient_host(context, output, site, &target)?,
+     };
+     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
++    let env = caller_location::CallerEnv::for_site(site);
++    let continuity_key = site_capability::own_pane_continuity_key(
++        &env,
++        &target,
++        caller::active_is_top_level(),
++        env.may_present_key(true) && on_own_server(output, site, &host),
++        client,
++        &cooperative_budget(clock),
++    );
+     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
+         &journal,
+         IntentScope::ServiceAllocation {
+             instance: instance.to_string(),
+             target: target.clone(),
+         },
+-        SemanticMutation::ResolveSeat { target, host },
++        SemanticMutation::ResolveSeat {
++            target,
++            host,
++            continuity_key,
++        },
+         clock.utc_now().0,
+         || {
+             Err(io::Error::new(

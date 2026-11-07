@@ -1,0 +1,59 @@
+diff --git a/tests/sync/peer_wire_fixtures.rs b/tests/sync/peer_wire_fixtures.rs
+index b1bb12bc3..8091acb56 100644
+--- a/tests/sync/peer_wire_fixtures.rs
++++ b/tests/sync/peer_wire_fixtures.rs
+@@ -16,8 +16,8 @@ use sha2::{Digest, Sha256};
+ 
+ use herdr_threads::sync::envelope::{Envelope, WireEnvelope};
+ use herdr_threads::sync::facts::{
+-    FactRegistry, GenesisPayload, RetagPayload, invitation, membership, message, receipt, seat,
+-    thread,
++    FactKind, FactRegistry, GenesisPayload, RetagPayload, invitation, membership, message, receipt,
++    seat, thread,
+ };
+ use herdr_threads::sync::frame::PeerFrame;
+ 
+@@ -27,6 +27,20 @@ use super::peer_wire_freeze;
+ /// register. None today; list one here with the reason if it ever happens.
+ const PARKED: &[(&str, u32)] = &[];
+ 
++/// Registered kinds with no envelope in the chain, which has to stay the chain frozen in the 2.1.1
++/// fixtures (`current_encoders_reproduce_2_1_1_fixtures`). Listing a kind here is a decision: its
++/// payload round trip lives with the kind's own tests, not in the frozen wire.
++const UNCHAINED_KINDS: &[(&str, u32)] = &[
++    (
++        <seat::SeatRetiredReversible as FactKind>::NAME,
++        <seat::SeatRetiredReversible as FactKind>::MAJOR,
++    ),
++    (
++        <seat::SeatUnretired as FactKind>::NAME,
++        <seat::SeatUnretired as FactKind>::MAJOR,
++    ),
++];
++
+ fn fixtures_root() -> PathBuf {
+     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer_wire")
+ }
+@@ -122,6 +136,8 @@ fn decode_payload(kind: &str, payload: &[u8]) -> Result<(), String> {
+         "node.retag" => parse::<RetagPayload>(payload),
+         "seat.created" => parse::<seat::SeatCreatedPayload>(payload),
+         "seat.retired" => parse::<seat::SeatRetiredPayload>(payload),
++        "seat.retired_reversible" => parse::<seat::SeatRetiredReversiblePayload>(payload),
++        "seat.unretired" => parse::<seat::SeatUnretiredPayload>(payload),
+         "thread.created" => parse::<thread::ThreadCreatedPayload>(payload),
+         "thread.register" => parse::<thread::ThreadRegisterPayload>(payload),
+         "thread.direct" => parse::<thread::ThreadDirectPayload>(payload),
+@@ -337,11 +353,11 @@ fn fixture_files_match_manifest_hashes() {
+ #[test]
+ fn generator_kind_table_covers_builtins() {
+     assert_eq!(
+-        peer_wire_freeze::KINDS.len(),
++        peer_wire_freeze::KINDS.len() + UNCHAINED_KINDS.len(),
+         FactRegistry::builtins().len(),
+         "a builtin kind is missing from the freeze generator's KINDS"
+     );
+-    for (name, major) in peer_wire_freeze::KINDS {
++    for (name, major) in peer_wire_freeze::KINDS.iter().chain(UNCHAINED_KINDS) {
+         assert!(
+             FactRegistry::builtins().lookup(name, *major).is_some(),
+             "generator kind ({name}, {major}) is not registered"

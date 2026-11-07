@@ -256,6 +256,19 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // Restored-pane watches (ht-wpq4) are read and written only by the
     // observation lane's own reconciliation pass.
     "restored_pane_watch",
+    // Graph clone identity (ht-ma6i): local evidence and ledgers. Their writers change seats or
+    // attention in the same transaction where a lane must run; these tables schedule nothing.
+    "seat_shell_fingerprints",
+    "continuity_keys",
+    "continuity_key_conflicts",
+    "continuity_alerts",
+    "reversible_retirements",
+    "restored_target_absence",
+    // Un-retired windows (ht-ma6i.48) are written with the deadline shift they record, whose
+    // receipt and invitation writes kick the deadline lane.
+    "reversible_windows",
+    // The kernel boot id (ht-ma6i.44) is written once at store start and read in binding writes.
+    "node_kernel_boot",
     // Peer-requested launches (remote launch) are written and read only by the
     // peer launcher and `peer list`.
     "peer_requests",

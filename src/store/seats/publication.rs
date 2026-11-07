@@ -1,4 +1,5 @@
-//! Seat publication: the per-transaction queue and the `seat.created` / `seat.retired` materialization.
+//! Seat publication: the per-transaction queue and the materialization of the seat kinds
+//! (`seat.created`, `seat.retired`, `seat.retired_reversible`, `seat.unretired`).
 
 use crate::store::seats::LOCAL_SEAT;
 use crate::{
@@ -11,10 +12,15 @@ use crate::{
         journal,
         materialize::MaterializeInput,
         schema,
+        seats::reversible,
     },
     sync::facts::{
+        FactKind,
         payload::SeatKind,
-        seat::{SeatCreated, SeatCreatedPayload, SeatRetiredPayload},
+        seat::{
+            SeatCreated, SeatCreatedPayload, SeatRetiredPayload, SeatRetiredReversible,
+            SeatRetiredReversiblePayload, SeatUnretired, SeatUnretiredPayload,
+        },
     },
 };
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -439,42 +445,195 @@ pub(crate) fn hand_back_name(
 ///   the retirement job (`advance_retirement`) settle the seat's pending
 ///   invitations and receipts as `recipient_retired` and close its memberships.
 /// - Remote seat already retired: a no-op (no second row).
+/// - Seat already retired with a `reversible` row of this `retired_at`: the deferred job
+///   ([`reversible::finalize_by_fact`]). Another episode's row: a no-op.
+/// - Local seat with an `unretired` row (own-log replay): the row goes with the transition.
 /// - Unknown seat: `InvalidRequest` (`needs` makes this the overflow case).
+///
+/// Per episode the outcome does not depend on order: before its `seat.retired_reversible` it
+/// retires finally and that retire is then a no-op, after it the deferred job runs, and a re-issued
+/// copy changes nothing; the seat ends finally retired with one job.
 pub fn materialize_seat_retired(
     tx: &Transaction<'_>,
     m: &MaterializeInput<'_>,
     payload: &SeatRetiredPayload,
 ) -> Result<(), ApiError> {
-    let id = payload.seat.as_str();
+    let Some(local_row) = retirement_fact_row(tx, m, &payload.seat)? else {
+        return Ok(());
+    };
+    let instance = local_instance(tx)?;
+    let retired_seq = decision_seq(m)?;
+    if !retire_row(
+        tx,
+        &instance,
+        &payload.seat,
+        local_row,
+        payload.retired_at,
+        retired_seq,
+    )? {
+        reversible::finalize_by_fact(
+            tx,
+            &instance,
+            &payload.seat,
+            payload.retired_at,
+            retired_seq,
+        )?;
+        return Ok(());
+    }
+    crate::store::control::insert_replicated_retirement_job(
+        tx,
+        &payload.seat,
+        crate::protocol::time::UtcMillis(payload.retired_at),
+    )?;
+    if local_row {
+        hand_back_name(tx, &instance, &payload.seat)?;
+    }
+    Ok(())
+}
+
+/// Materializes `seat.retired_reversible` (spec 4.3), shared by the handler for both the authoring
+/// node and every other node. The seat reads retired and gets a `reversible` row with no closure
+/// inputs and no job. A row already retired changes nothing: finally retired, the live echo of the
+/// fence, or another episode. A local row replayed from the own log takes the fence's transition; a
+/// key is never restored (TRUST-POLICY, a store restored from its own log).
+///
+/// Per episode (TRUST-POLICY N7): a copy whose retire took effect here, the transition or the seat
+/// found frozen in its episode (the fence's own echo), is marked on its journal row, and a later copy
+/// of an episode with a marked copy is a no-op ([`reversible::episode_effect_recorded`]), so an ended
+/// episode never runs again; a copy that changed nothing stays unmarked. When the episode's
+/// `seat.unretired` arrived first and was kept ([`reversible::kept_unretire`]), the retire is reversed
+/// in the same transaction, with the one deadline shift, and the kept copies are marked.
+pub fn materialize_seat_retired_reversible(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &SeatRetiredReversiblePayload,
+) -> Result<(), ApiError> {
+    let Some(local_row) = retirement_fact_row(tx, m, &payload.seat)? else {
+        return Ok(());
+    };
+    // The guard first, so a re-issued copy of an ended episode never reverses anything.
+    if reversible::episode_effect_recorded(
+        tx,
+        SeatRetiredReversible::NAME,
+        &payload.seat,
+        payload.retired_at,
+        m.ingest_seq,
+    )? {
+        return Ok(());
+    }
+    let instance = local_instance(tx)?;
+    if retire_row(
+        tx,
+        &instance,
+        &payload.seat,
+        local_row,
+        payload.retired_at,
+        decision_seq(m)?,
+    )? {
+        reversible::insert_fact_row(tx, &payload.seat, payload.retired_at, payload.reason)?;
+        if let Some(unretire) =
+            reversible::kept_unretire(tx, &payload.seat, payload.retired_at, m.ingest_seq)?
+        {
+            reversible::unretire_by_fact(tx, &instance, local_row, &unretire)?;
+            reversible::mark_kept_unretires(tx, &payload.seat, payload.retired_at)?;
+        }
+    } else if !reversible::frozen_in(tx, &payload.seat, payload.retired_at)? {
+        // Finally retired, or another episode: a no-op, never a guard.
+        return Ok(());
+    }
+    reversible::mark_episode_effect(tx, m.ingest_seq)
+}
+
+/// Materializes `seat.unretired` (spec 4.3), shared by the handler for both the authoring node and
+/// every other node: [`reversible::unretire_by_fact`], a no-op outside the current episode and for a
+/// copy of an episode whose un-retire already took effect here
+/// ([`reversible::episode_effect_recorded`]). A copy that took effect is marked on its journal row,
+/// and so is the home's echo of its own un-retire (the local row already waits after it). A copy that
+/// found nothing to act on stays unmarked and is kept: its episode's `seat.retired_reversible`, when
+/// it lands, reverses itself ([`materialize_seat_retired_reversible`]).
+pub fn materialize_seat_unretired(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &SeatUnretiredPayload,
+) -> Result<(), ApiError> {
+    let Some(local_row) = retirement_fact_row(tx, m, &payload.seat)? else {
+        return Ok(());
+    };
+    if reversible::episode_effect_recorded(
+        tx,
+        SeatUnretired::NAME,
+        &payload.seat,
+        payload.retired_at,
+        m.ingest_seq,
+    )? {
+        return Ok(());
+    }
+    let took = reversible::unretire_by_fact(tx, &local_instance(tx)?, local_row, payload)?
+        || (local_row
+            && reversible::waiting_in(
+                tx,
+                &payload.seat,
+                payload.retired_at,
+                payload.unretired_at,
+            )?);
+    if took {
+        reversible::mark_episode_effect(tx, m.ingest_seq)?;
+    }
+    Ok(())
+}
+
+/// Whether the row a retirement fact acts on is local, `None` for a fact with nothing to do.
+fn retirement_fact_row(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    seat: &SeatId,
+) -> Result<Option<bool>, ApiError> {
     let row: Option<bool> = tx
-        .query_row("SELECT is_local FROM seats WHERE id=?1", [id], |r| r.get(0))
+        .query_row(
+            "SELECT is_local FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(store_error)?;
-    let local_row = match row {
+    match row {
         // An own fact for a seat that never had a row here: nothing to retire.
-        None if m.local_origin => return Ok(()),
-        None => {
-            return Err(api_error(ErrorCode::InvalidRequest, "unknown seat"));
-        }
+        None if m.local_origin => Ok(None),
+        None => Err(api_error(ErrorCode::InvalidRequest, "unknown seat")),
         // `require_author` already refused a non-home origin; a remote fact
         // never retires a local seat, which its own fence retires.
-        Some(true) if !m.local_origin => return Ok(()),
-        Some(local) => local,
-    };
-    let instance: String = tx
-        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
-        .map_err(store_error)?;
-    let retired_seq = i64::try_from(m.decision_seq)
-        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "decision_seq out of range"))?;
-    let changed = schema::apply_eligibility_transition(tx, &instance, |tx| {
+        Some(true) if !m.local_origin => Ok(None),
+        Some(local) => Ok(Some(local)),
+    }
+}
+
+fn local_instance(tx: &Transaction<'_>) -> Result<String, ApiError> {
+    tx.query_row("SELECT id FROM local_node", [], |r| r.get(0))
+        .map_err(store_error)
+}
+
+fn decision_seq(m: &MaterializeInput<'_>) -> Result<i64, ApiError> {
+    i64::try_from(m.decision_seq)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "decision_seq out of range"))
+}
+
+/// A retirement fact's constant-size transition of a row not yet retired, with no job; returns
+/// whether it changed the row.
+fn retire_row(
+    tx: &Transaction<'_>,
+    instance: &str,
+    seat: &SeatId,
+    local_row: bool,
+    retired_at: i64,
+    retired_seq: i64,
+) -> Result<bool, ApiError> {
+    let id = seat.as_str();
+    let cutover = crate::protocol::time::UtcMillis(retired_at);
+    let changed = schema::apply_eligibility_transition(tx, instance, |tx| {
         // A local row takes the fence's transition in the fence's order; a remote row keeps the
         // bare statements (it holds no bindings, offers or wake work here).
         if local_row {
-            schema::clear_open_unavailability_for_seat(
-                tx,
-                id,
-                crate::protocol::time::UtcMillis(payload.retired_at),
-            )?;
+            schema::clear_open_unavailability_for_seat(tx, id, cutover)?;
         }
         let generation_bump = if local_row {
             ",generation=generation+1"
@@ -484,48 +643,32 @@ pub fn materialize_seat_retired(
         let changed = tx
             .execute(
                 &format!("UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL{generation_bump},retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'"),
-                params![payload.retired_at, retired_seq, id],
+                params![retired_at, retired_seq, id],
             )
             .map_err(store_error)?;
         if local_row && changed == 1 {
-            crate::store::control::end_local_seat(
-                tx,
-                &payload.seat,
-                crate::protocol::time::UtcMillis(payload.retired_at),
-            )?;
+            reversible::delete_unretired_row(tx, seat)?;
+            crate::store::control::end_local_seat(tx, seat, cutover)?;
         }
         Ok(changed == 1)
     })?;
     if !changed {
-        return Ok(());
+        return Ok(false);
     }
     if local_row {
-        crate::store::control::settle_local_seat(tx, &payload.seat)?;
+        crate::store::control::settle_local_seat(tx, seat)?;
     } else {
-        crate::store::no_wake_reports::delete_for_retired(tx, &payload.seat)?;
+        crate::store::no_wake_reports::delete_for_retired(tx, seat)?;
     }
-    schema::bump_filter_revision(tx, &instance, "directory", "all")?;
-    crate::store::control::bump_member_directory(tx, &instance, &payload.seat)?;
-    let job = crate::protocol::ids::RetirementJobId::new(crate::store::public_ids::fresh(
-        tx,
-        crate::protocol::ids::prefix::RETIREMENT,
-        &[(
-            "retirements",
-            "id",
-            crate::protocol::ids::prefix::RETIREMENT,
-        )],
-    )?);
-    tx.execute(
-        "INSERT INTO retirements(id,seat_id,cutover_at,origin) VALUES (?1,?2,?3,'replicated')",
-        params![job.as_str(), id, payload.retired_at],
-    )
-    .map_err(store_error)?;
-    if local_row {
-        hand_back_name(tx, &instance, &payload.seat)?;
-    }
-    Ok(())
+    schema::bump_filter_revision(tx, instance, "directory", "all")?;
+    crate::store::control::bump_member_directory(tx, instance, seat)?;
+    Ok(true)
 }
 
 #[cfg(test)]
 #[path = "../../../tests/store/named_restore.rs"]
 mod named_restore_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../../tests/store/reversible_facts.rs"]
+mod reversible_facts_tests;

@@ -2549,6 +2549,10 @@ where
                                 // ht-hsyg: then the seats whose own processes the
                                 // current incarnation's panes still host.
                                 let _ = identity.decide_process_continuity();
+                                // ht-ma6i.1: then record the fingerprints the seats
+                                // lack, and the seats whose own shells survived.
+                                let _ = identity.record_shell_fingerprints();
+                                let _ = identity.decide_shell_continuity();
                             }
                         }
                     }

@@ -1,0 +1,28 @@
+diff --git a/tests/daemon/self_retire.rs b/tests/daemon/self_retire.rs
+index abcbfbb9b..d8463f5f0 100644
+--- a/tests/daemon/self_retire.rs
++++ b/tests/daemon/self_retire.rs
+@@ -155,6 +155,7 @@ fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
+         },
+         claim,
+         operation: OperationId::new(operation),
++        continuity_key: None,
+     });
+     match f.service.handle(command, peer(), &budget()).unwrap() {
+         CommandResult::CheckedIn(result) => result.context,
+@@ -298,6 +299,7 @@ fn self_retire_retires_and_lists_abandoned() {
+             operation: OperationId::new("resolve-again"),
+             locator_hint: None,
+             tmux_hint: None,
++            continuity_key: None,
+         },
+         &budget(),
+     )
+@@ -474,6 +476,7 @@ fn operator_retire_of_named_seat_then_new_seat() {
+                 operation: OperationId::new("resolve-again"),
+                 locator_hint: None,
+                 tmux_hint: None,
++                continuity_key: None,
+             },
+             &budget(),
+         )

@@ -239,6 +239,7 @@ fn check_in_flagged(
         claim,
         operation: OperationId::new(format!("ci-{seat}-{session}")),
         lineage_parent: None,
+        continuity_key: None,
     });
     match f.service.handle(command, peer(), &budget()).unwrap() {
         CommandResult::CheckedIn(result) => result.context,

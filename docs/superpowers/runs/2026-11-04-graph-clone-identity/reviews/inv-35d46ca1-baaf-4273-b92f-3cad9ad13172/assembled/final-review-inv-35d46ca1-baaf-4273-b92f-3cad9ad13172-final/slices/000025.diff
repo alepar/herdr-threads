@@ -1,0 +1,77 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-19.md b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-19.md
+new file mode 100644
+index 000000000..498a4026a
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/reviews/inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63/final-review-inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63.cluster-19.md
+@@ -0,0 +1,71 @@
++# Final review: cluster 19 (tests-cli), epic ht-ma6i
++
++Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7, both verified with `git rev-parse --verify`. The caller checkout stayed at the head with a clean status throughout. Inputs: slices 000082 to 000097, the digest, the root spec and bead ht-ma6i.6's criteria. Production sources were opened only to trace named risks.
++
++## Method
++
++This was a static review. I did not build or run the tests: the suite belongs to the sweep owner, and no question here needed a run. Each new test was read against the production path it claims to pin. Statements that a mutant would survive come from that reading, not from a mutation run.
++
++## What the cluster contains
++
++Most of the diff is mechanical: `continuity_key: None` and `retirement_state: None` added to existing fixtures and command literals. The substantive additions are:
++
++- tests/cli/hook.rs: `continuity_gate` covers the changed key, the keyless intent, the subagent gate, the ServiceBusy intent and the watch claim. `registered_resume` covers the advertised gate, the invalid value, a conflict, key pending and a busy claim.
++- tests/cli/journal.rs: pre-upgrade decoding and replay of the key.
++- tests/cli/launch.rs: the wire shape of the two inspection fields, the scrub lists, the launch resolver and the refusal on a claimless resolve.
++- tests/cli/handoff.rs: the launch-gate shim and the peer launcher's allowlist.
++- tests/cli/human.rs: the `key` line and `state: retired (reversible)` in compact and human output.
++- tests/cli/caller_location.rs: the variable is hidden from a library caller.
++
++The repository test rules hold in the new tests. Temp paths come from `test_support::scratch::temp_path`, hook tests take `CallerEnv::from_lookup`, and nothing new spawns a child.
++
++## Requirement baseline trace
++
++- B1: the client half reaches a real entry point. `main` calls `mark_process_entry` (src/main.rs:80), so `CallerEnv::from_process` sees the variable; `HookEnv` takes that env (src/cli/hook.rs:290). The hook sends the key on claim, resolve and check-in, and the watch and plain CLI call sites pass it too. The daemon half and the mod and bridge forwarding sit in other clusters, so the seam reviewer traces them.
++- B2: this cluster pins only the display of a reversible seat and the inspection wire shape. The retire and undo transitions are other clusters' and the seam reviewer's to trace.
++- B3: no threads change is required, and nothing in this cluster weakens it.
++- B4: nothing here touches Herdr. These tests use fakes and fixtures.
++
++## Spec conformance of the tests
++
++The tests agree with spec 4.2 on these points:
++
++- A conflict is silent, enrolls nothing and is presented again on the next event.
++- A keyed ServiceBusy claim keeps the same intent and never enrolls.
++- An invalid value and a subagent send no key.
++- A daemon that does not advertise the capability gets no key.
++- A changed key and a pre-upgrade keyless intent both get a fresh operation.
++
++The fixture's conflict reply matches the production shape: `TargetUnresolved` with a detail built on `KEY_CONFLICT_CAUSE` and ending `; no seat moved` (src/store/seats/continuity.rs:490-516). The `ContinuityKeyPending` reply matches production as well. The scrub tests reach the real consumers: `spawn_detached` (src/daemon/lifecycle.rs:458), the shim (src/cli/launch_gate.rs:150) and the peer launcher's allowlist.
++
++A pending keyed `ResolveSeat` cannot be replayed under a stale key. Each resolve records a fresh intent, and in `ServiceAllocation` scope any correlated rejection other than `UnknownOutcome` discards it (src/cli/retry.rs). The test's empty-journal assertion therefore describes production.
++
++No defect in this cluster breaks a spec requirement or a baseline row. The remaining items are coverage gaps; the production code at each gap read as correct, except the capability probe listed below.
++
++## Verdict
++
++ready
++
++## Must fix before landing
++
++- none
++
++## Untested scope
++
++- Keyed ServiceBusy on `ResolveSeat` in the hook's `check_in` path (src/cli/hook.rs:2145-2150): the fixture's `key-busy` control fires only on `ContinuityCheckIn`, so removing the quiet branch would survive and the model would see `seat enrollment: ServiceBusy`.
++- Key presentation in `enroll_pane` (src/cli/hook.rs:1941, Hermes's witnessed start): `synthetic_fourth` takes the claim path, so passing `None` there would survive this cluster's Rust tests; I did not find another Rust test that covers it.
++- Plain CLI call sites (src/cli/mod.rs:1316, src/cli/mod.rs:3925, src/cli/me.rs `resolve_seat`): `key_bound_elsewhere_mints_no_seat_on_plain_cli` drives `resolve_result`, the launch and hook helper, not these paths, and `seat_filter` hides the variable in-process, so only a spawned binary could pin the wiring; the wiring reads correct.
++- `launch_resolving_another_pane_sends_no_key` (tests/cli/launch.rs) does not kill the regression it names: the variable is unset and hidden by `seat_filter`, and the dead socket yields no capabilities, so a resolver reading the caller's key would still send none; only a hard-coded key dies, and the production literal `None` reads correct.
++- `subagent_sends_nothing` (tests/cli/hook.rs) asserts `all` over the sent commands with no non-empty check, unlike its siblings, so it passes vacuously if the hook sends nothing; `subagent_event_presents_no_key` does pin the gate itself.
++- Alert-only conflict at hook level (src/cli/hook.rs:2066): no fixture answers `TargetAlreadyOwned` with a key conflict detail on a resolved pane, so "T's check-in proceeds" is pinned only in the store tests.
++- A conflict hold refusing `ResolveSeat` (src/store/seats/resolution.rs:218-222): no hook fixture sends this cause text without the `; no seat moved` suffix, including to a keyless caller, so its quiet outcome in `api_failure` is unpinned here.
++- Retained `CooperativeCheckIn` intents: `intent_recorded_before_the_upgrade_decodes_as_keyless` and `replay_presents_the_key` cover `ContinuityCheckIn` and `ResolveSeat` only, leaving that variant's key decode and replay unpinned in those tests.
++- `seat inspect` with `conflict: Some`: the human, launch and compact tests in this cluster all use `conflict: None`, so the conflict's wire shape and its absence from the text line are not pinned here.
++- `invalid_key_sends_nothing_and_prints_nothing_new` compares stdout lengths, not bytes, so a same-length text change would pass.
++- End to end with the real binary: `ht-ma6i.11` is open and no test at this head spawns a process with `HERDR_THREADS_CONTINUITY_KEY`, so spec 4.8's flow is absent; this leaves the cluster and is for the seam reviewer and the sweep.
++
++## Deferred OK
++
++- A failed capability probe reads as not advertised: `LocalSocketClient::capabilities` caches `Capabilities::none()` on any failed call (src/client/local.rs:54-61), so a hook whose probe fails but whose later `ResolveSeat` succeeds would supersede a kept keyed intent and could enroll keyless, against spec 4.2's "never a keyless fallback"; it needs one failed call between successful ones in one process, has no test, and leaves this cluster for the seam reviewer, with distinguishing unknown from not advertised as the follow-up.
++- The fixture hard-codes the conflict text instead of using `KEY_CONFLICT_CAUSE`: a changed constant would fail the hook test loudly, not hide a regression.
++- Spec 4.7 gives the `key` line as 4 bytes plus the key and owner, while `inspect_key_line` documents 6, which is what it emits: a cosmetic mismatch that the Post-Implementation Notes could record.

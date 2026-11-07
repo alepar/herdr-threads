@@ -94,6 +94,9 @@ pub const SEAT_WAKE_ON_V1: &str = "seat.wake_on_v1";
 /// `CheckIn.readonly` (D3): the daemon records the binding read-only. A CLI sends the field only
 /// to a daemon that advertises this; `CheckIn` is `deny_unknown_fields`.
 pub const SEAT_READONLY_V1: &str = "seat.readonly_v1";
+/// `continuity_key` on `ContinuityCheckIn`, `ResolveSeat` and `CheckIn` (spec 4.2). A CLI sends it
+/// only to a daemon that advertises this.
+pub const SEAT_CONTINUITY_KEY_V1: &str = "seat.continuity_key_v1";
 pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
 /// Lazy rows in the attention digest (`AttentionDigestQuery.lazy`) and
 /// `CompleteInboxDelivery.via = hook_context` (standard hook inbox pages).
@@ -222,6 +225,7 @@ pub const ADVERTISED: &[&str] = &[
     MOD_ACK_ROW_V1,
     SEAT_WAKE_ON_V1,
     SEAT_READONLY_V1,
+    SEAT_CONTINUITY_KEY_V1,
     DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,
     HOOK_CONTEXT_RECEIPTS_V1,

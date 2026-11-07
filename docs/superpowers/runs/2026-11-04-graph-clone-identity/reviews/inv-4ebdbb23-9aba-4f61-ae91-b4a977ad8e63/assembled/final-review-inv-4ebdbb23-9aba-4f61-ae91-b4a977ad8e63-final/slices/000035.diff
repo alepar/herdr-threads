@@ -1,0 +1,35 @@
+diff --git a/src/harness/bridge.rs b/src/harness/bridge.rs
+index 40553385b..0872676c4 100644
+--- a/src/harness/bridge.rs
++++ b/src/harness/bridge.rs
+@@ -402,11 +402,13 @@ pub fn prepare_event_as(
+             host: contexts.claim_host()?.clone(),
+             seat: SeatId::parse(seed.seat.clone()).map_err(|_| ContextError::Invalid)?,
+         };
+-        let reference = journal.record_check_in_as(
++        let reference = journal.record_check_in_lineage(
+             scope,
+             &event.event_id,
+             created_at_millis,
+             operator,
++            None,
++            contexts.continuity_key().cloned(),
+             || {
+                 let next = if contexts.is_agent_caller() {
+                     seed.for_agent_event(event.native_session.clone())
+@@ -490,6 +492,7 @@ pub fn prepare_qualified_turn(
+                 now,
+                 false,
+                 lineage,
++                contexts.continuity_key().cloned(),
+                 || {
+                     let next = if contexts.is_agent_caller() {
+                         seed.for_agent_event(Some(turn.session.clone()))
+@@ -1368,6 +1371,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
+         mode: WireMode::Current,
+         claim,
+         operation: OperationId::new(Uuid::new_v4().to_string()),
++        continuity_key: contexts.continuity_key().cloned(),
+     });
+     crate::cli::site_capability::require_readonly(&command, client, budget)
+         .map_err(BridgeError::Api)?;

@@ -1,0 +1,328 @@
+diff --git a/src/store/control/retirement.rs b/src/store/control/retirement.rs
+index 4cfd06826..de0aa06be 100644
+--- a/src/store/control/retirement.rs
++++ b/src/store/control/retirement.rs
+@@ -2,18 +2,25 @@
+ 
+ use super::bump_member_directory;
+ use crate::ports::{
+-    ClosureEvidence, RETIREMENT_MAX_UNITS, RETIREMENT_WORK_MILLIS, RetirementJob, RetirementPhase,
+-    RetirementProgress, TimeBasis, WorkAdmission,
++    ClosureEvidence, RETIREMENT_MAX_UNITS, RETIREMENT_WORK_MILLIS, RetirementInputs, RetirementJob,
++    RetirementPhase, RetirementProgress, RetirementStart, TimeBasis, WorkAdmission,
+ };
+ use crate::protocol::authority::ObligationRef;
+ use crate::protocol::ids::{InvitationId, MessageId, RetirementJobId, SeatId, ThreadId, prefix};
+ use crate::protocol::results::{ApiError, BoundedError, ErrorCode, MAX_LAST_ERROR_BYTES};
+ use crate::protocol::time::{CallBudget, UtcMillis};
+ use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
++use crate::store::continuity_keys;
+ use crate::store::effective::{self, EffectiveObservationSource};
+ use crate::store::materialize::FactRoute;
+ use crate::store::schema::{self, EventInput};
+-use crate::sync::facts::seat::{RetireReason, SeatRetired, SeatRetiredPayload};
++use crate::store::seats::reversible;
++use crate::sync::facts::FactKind;
++use crate::sync::facts::payload::ReferencedSeats;
++use crate::sync::facts::seat::{
++    RetireReason, SeatRetired, SeatRetiredPayload, SeatRetiredReversible,
++    SeatRetiredReversiblePayload,
++};
+ use rusqlite::{Connection, OptionalExtension, Transaction, params};
+ 
+ pub fn begin_retirement(
+@@ -21,7 +28,7 @@ pub fn begin_retirement(
+     conn: &mut Connection,
+     seat: SeatId,
+     proof: ClosureEvidence,
+-) -> Result<RetirementJob, ApiError> {
++) -> Result<RetirementStart, ApiError> {
+     let proof_epoch = i64::try_from(proof.epoch).map_err(|_| {
+         api_error(
+             ErrorCode::InvalidRequest,
+@@ -43,9 +50,14 @@ pub fn begin_retirement(
+         [seat.as_str()], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?)),
+     ).optional().map_err(store_error)? {
+         tx.rollback().map_err(store_error)?;
+-        return Ok(RetirementJob { id: RetirementJobId::new(id), seat, retired_at: UtcMillis(cutover),
++        return Ok(RetirementStart::Job(RetirementJob { id: RetirementJobId::new(id), seat, retired_at: UtcMillis(cutover),
+             phase: if status == "complete" { RetirementPhase::Complete } else { RetirementPhase::Warnings },
+-            after_ordinal: None, high_water_ordinal: high_water as u64, processed_units: processed as u64 });
++            after_ordinal: None, high_water_ordinal: high_water as u64, processed_units: processed as u64 }));
++    }
++    // A retried closure proof of a seat that already went reversible is the same decision.
++    if reversible::row_state(&tx, &seat)? == Some(reversible::RowState::Reversible) {
++        tx.rollback().map_err(store_error)?;
++        return Ok(RetirementStart::Reversible);
+     }
+     type SeatRow = Option<(String, String, i64, i64, Option<String>, i64, i64)>;
+     let current: SeatRow = tx.query_row(
+@@ -99,32 +111,37 @@ pub fn begin_retirement(
+         RetireReason::Closed,
+         seat,
+         &instance,
+-        proof.host_boot.as_str(),
+-        proof_epoch,
+-        proof.target.as_str(),
+-        proof_generation,
++        RetirementInputs {
++            boot: proof.host_boot.as_str().to_owned(),
++            epoch: proof_epoch,
++            target: proof.target.as_str().to_owned(),
++            generation: proof_generation,
++            closure_evidence: None,
++            absence_evidence: None,
++        },
+     )?;
+     tx.commit().map_err(store_error)?;
+     Ok(result)
+ }
+ 
+-/// [`begin_retirement_fence`], then `seat.retired` for a published seat.
++/// The disposition of a retirement decision, then the fact of a published seat: `seat.retired` for
++/// a final retirement, `seat.retired_reversible` for a reversible one.
+ ///
+ /// Responsibility
+-/// - Owns: the one place a retirement reaches other nodes: after the fence's
+-///   local writes it authors `seat.retired` through `FactRoute::Journal` when
+-///   the seat is local and published. An unpublished seat authors nothing (no
+-///   other node knows it).
++/// - Owns: the one choice between final and reversible: a `Closed` retirement of a seat that holds
++///   a continuity key runs the transition and writes a reversible row (no job, nothing settled, the
++///   key kept); anything else is final and goes through [`insert_retirement_job`]. Also the one
++///   place a retirement reaches other nodes: [`emit_if_published`] through `FactRoute::Journal`
++///   when the seat is local and published. An unpublished seat authors nothing (no other node
++///   knows it).
+ /// - Must not: author for an unpublished seat, or record a failure when the
+ ///   restore-window hold refuses the fact. The refusal is the retryable
+ ///   `ServiceBusy "own history catching up"`: it aborts the caller's
+ ///   transaction, so the fence is not half applied, and the caller retries
+ ///   after the hold (the operator retire command returns it unchanged).
+ /// - Role: every production retirement decision (closure proof, snapshot
+-///   reconciliation, operator retire and `--replace`) calls this, never the
+-///   bare fence.
+-// Allowed: fence inputs mirror the retirement row's columns.
+-#[allow(clippy::too_many_arguments)]
++///   reconciliation, operator retire and `--replace`, finalization of an unretired seat) calls
++///   this, never the bare steps.
+ pub(crate) fn begin_retirement_authored(
+     tx: &Transaction<'_>,
+     context: &StoreContext,
+@@ -132,11 +149,8 @@ pub(crate) fn begin_retirement_authored(
+     reason: RetireReason,
+     seat: SeatId,
+     instance: &str,
+-    boot: &str,
+-    epoch: i64,
+-    target: &str,
+-    generation: i64,
+-) -> Result<RetirementJob, ApiError> {
++    inputs: RetirementInputs,
++) -> Result<RetirementStart, ApiError> {
+     // TRUST-POLICY N (SA3): the named host never closes by absence, so a `Closed` retirement of
+     // a seat on it is refused whatever path asks. Only an operator or the seat itself retires it.
+     if reason == RetireReason::Closed {
+@@ -153,17 +167,53 @@ pub(crate) fn begin_retirement_authored(
+                 "a named seat is never retired as closed",
+             ));
+         }
++        if continuity_keys::key_of_seat(tx, &seat)?.is_some() {
++            retirement_transition(tx, at.utc, &seat, instance)?;
++            reversible::insert_row(tx, &seat, at.utc, reason, &inputs)?;
++            let payload = SeatRetiredReversiblePayload {
++                seat: seat.clone(),
++                reason,
++                retired_at: at.utc.0,
++            };
++            emit_if_published::<SeatRetiredReversible>(tx, context, at, &seat, &payload)?;
++            return Ok(RetirementStart::Reversible);
++        }
+     }
+-    let job = begin_retirement_fence(
+-        tx,
+-        at.utc,
+-        seat.clone(),
+-        instance,
+-        boot,
+-        epoch,
+-        target,
+-        generation,
+-    )?;
++    retirement_transition(tx, at.utc, &seat, instance)?;
++    let job = insert_retirement_job(tx, &seat, at.utc, &inputs)?;
++    emit_seat_retired(tx, context, at, seat, reason, at.utc)?;
++    Ok(RetirementStart::Job(job))
++}
++
++/// `seat.retired` for a local, published seat; nothing for any other seat.
++pub(crate) fn emit_seat_retired(
++    tx: &Transaction<'_>,
++    context: &StoreContext,
++    at: DecisionInstant,
++    seat: SeatId,
++    reason: RetireReason,
++    retired_at: UtcMillis,
++) -> Result<(), ApiError> {
++    let payload = SeatRetiredPayload {
++        seat: seat.clone(),
++        reason,
++        retired_at: retired_at.0,
++    };
++    emit_if_published::<SeatRetired>(tx, context, at, &seat, &payload)
++}
++
++/// A retirement fact `K` of `seat`, when it is local and published; nothing for any other seat. The
++/// restore-window hold's refusal aborts the caller's transaction.
++pub(crate) fn emit_if_published<K: FactKind>(
++    tx: &Transaction<'_>,
++    context: &StoreContext,
++    at: DecisionInstant,
++    seat: &SeatId,
++    payload: &K::Payload,
++) -> Result<(), ApiError>
++where
++    K::Payload: ReferencedSeats,
++{
+     let published: bool = tx
+         .query_row(
+             &format!(
+@@ -175,26 +225,14 @@ pub(crate) fn begin_retirement_authored(
+         )
+         .map_err(store_error)?;
+     if published {
+-        FactRoute::Journal.emit::<SeatRetired>(
+-            tx,
+-            context,
+-            at,
+-            &SeatRetiredPayload {
+-                seat,
+-                reason,
+-                retired_at: at.utc.0,
+-            },
+-            None,
+-            |_, _, _| Ok(()),
+-        )?;
++        FactRoute::Journal.emit::<K>(tx, context, at, payload, None, |_, _, _| Ok(()))?;
+     }
+-    Ok(job)
++    Ok(())
+ }
+ 
+-/// Complete the already validated constant-size terminal fence in the caller's
+-/// writer transaction. Snapshot reconciliation uses this without a gap between
+-/// its active-generation CAS and the retirement decision. Production callers
+-/// go through [`begin_retirement_authored`]; this is its local half.
++/// The bare local fence, for fixtures that retire a seat without a disposition: the transition and
++/// the job. Production callers go through [`begin_retirement_authored`].
++#[cfg(test)]
+ // Allowed: fence inputs mirror the retirement row's columns.
+ #[allow(clippy::too_many_arguments)]
+ pub(crate) fn begin_retirement_fence(
+@@ -207,7 +245,34 @@ pub(crate) fn begin_retirement_fence(
+     target: &str,
+     generation: i64,
+ ) -> Result<RetirementJob, ApiError> {
++    retirement_transition(tx, cutover, &seat, instance)?;
++    insert_retirement_job(
++        tx,
++        &seat,
++        cutover,
++        &RetirementInputs {
++            boot: boot.to_owned(),
++            epoch,
++            target: target.to_owned(),
++            generation,
++            closure_evidence: None,
++            absence_evidence: None,
++        },
++    )
++}
++
++/// The constant-size terminal transition in the caller's writer transaction, shared by the final
++/// and reversible paths: the seat reads retired, its bindings end, its wake work resets and an
++/// `unretired` row goes (a seat retiring is no longer waiting). Writes no job. Snapshot
++/// reconciliation runs it with no gap after its active-generation CAS.
++pub(crate) fn retirement_transition(
++    tx: &Transaction<'_>,
++    cutover: UtcMillis,
++    seat: &SeatId,
++    instance: &str,
++) -> Result<(), ApiError> {
+     let cutover_seq = schema::next_decision_seq(tx, instance)?;
++    reversible::delete_unretired_row(tx, seat)?;
+     schema::apply_eligibility_transition(tx, instance, |tx| {
+         schema::clear_open_unavailability_for_seat(tx, seat.as_str(), cutover)?;
+         // The fence is the retirement decision itself: this UPDATE is the
+@@ -217,22 +282,30 @@ pub(crate) fn begin_retirement_fence(
+         let _scope = crate::test_support::write_guard::enter_replicated_write_scope();
+         let changed = tx.execute("UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,generation=generation+1,retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
+             params![cutover.0,cutover_seq as i64,seat.as_str()]).map_err(store_error)?;
+-        end_local_seat(tx, &seat, cutover)?;
++        end_local_seat(tx, seat, cutover)?;
+         Ok(changed == 1)
+     })?;
+-    settle_local_seat(tx, &seat)?;
+-    let job = RetirementJobId::new(crate::store::public_ids::fresh(
+-        tx,
+-        prefix::RETIREMENT,
+-        &[("retirements", "id", prefix::RETIREMENT)],
+-    )?);
+-    tx.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+-        params![job.as_str(),seat.as_str(),cutover.0,boot,epoch,target,generation]).map_err(store_error)?;
++    settle_local_seat(tx, seat)?;
+     schema::bump_filter_revision(tx, instance, "directory", "all")?;
+-    bump_member_directory(tx, instance, &seat)?;
++    bump_member_directory(tx, instance, seat)?;
++    Ok(())
++}
++
++/// The one writer of a local `retirements` row, and so the choke point of "a final retirement
++/// releases the key": the seat's continuity key and that key's conflict rows go in the same write.
++pub(crate) fn insert_retirement_job(
++    tx: &Transaction<'_>,
++    seat: &SeatId,
++    cutover: UtcMillis,
++    inputs: &RetirementInputs,
++) -> Result<RetirementJob, ApiError> {
++    let job = fresh_retirement_id(tx)?;
++    tx.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,closure_evidence,absence_evidence) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
++        params![job.as_str(),seat.as_str(),cutover.0,inputs.boot,inputs.epoch,inputs.target,inputs.generation,inputs.closure_evidence,inputs.absence_evidence]).map_err(store_error)?;
++    continuity_keys::release_for_final(tx, seat)?;
+     Ok(RetirementJob {
+         id: job,
+-        seat,
++        seat: seat.clone(),
+         retired_at: cutover,
+         phase: RetirementPhase::Warnings,
+         after_ordinal: None,
+@@ -241,6 +314,30 @@ pub(crate) fn begin_retirement_fence(
+     })
+ }
+ 
++/// The `seat.retired` applier's job row: no closure inputs, origin `replicated`. Releases a key the
++/// seat still holds, as [`insert_retirement_job`] does (a local row only: a remote seat never has one).
++pub(crate) fn insert_replicated_retirement_job(
++    tx: &Transaction<'_>,
++    seat: &SeatId,
++    cutover: UtcMillis,
++) -> Result<(), ApiError> {
++    let job = fresh_retirement_id(tx)?;
++    tx.execute(
++        "INSERT INTO retirements(id,seat_id,cutover_at,origin) VALUES (?1,?2,?3,'replicated')",
++        params![job.as_str(), seat.as_str(), cutover.0],
++    )
++    .map_err(store_error)?;
++    continuity_keys::release_for_final(tx, seat)
++}
++
++fn fresh_retirement_id(tx: &Transaction<'_>) -> Result<RetirementJobId, ApiError> {
++    Ok(RetirementJobId::new(crate::store::public_ids::fresh(
++        tx,
++        prefix::RETIREMENT,
++        &[("retirements", "id", prefix::RETIREMENT)],
++    )?))
++}
++
+ /// What retiring a local seat ends, inside its eligibility transition: open bindings (the sole
+ /// ending transition; `seat_retired`, side-effect hooks run, an already disconnected binding keeps
+ /// its own reason), catch-ups of ended bindings, the seat's offers and its no-wake reports. The

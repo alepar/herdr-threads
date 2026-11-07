@@ -46,7 +46,7 @@ use crate::{
         ids::{HostTargetId, OperationId, SeatId},
         output::{ContinuationContext, OutputFormat, OutputSpec},
         pagination::{MAX_PAGE_BYTES, PageRequest},
-        results::{ApiError, CommandResult, ErrorCode},
+        results::{ApiError, CommandResult, ErrorCode, KEY_CONFLICT_CAUSE},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
 };
@@ -381,6 +381,12 @@ enum Failure {
 }
 
 fn api_failure(stage: &str, error: &ApiError) -> Failure {
+    // A continuity key refusal is the service's alert, not the model's: the hook succeeds with no
+    // enrollment and presents the key again on the next event (TRUST-POLICY C1).
+    if error.code == ErrorCode::ContinuityKeyPending || error.detail.starts_with(KEY_CONFLICT_CAUSE)
+    {
+        return Failure::Quiet(format!("{stage}: {}", error.detail));
+    }
     let mut reason = format!("{stage}: {:?}", error.code);
     // Restore refusals carry the daemon's canonical cause and repair argv.
     // Lifecycle context must keep that guidance, as stderr alone is invisible
@@ -1929,6 +1935,13 @@ fn enroll_pane(
     )? {
         return Err(Failure::Unavailable(detail));
     }
+    // `decoded.enrollment` admitted this start for a top-level event only.
+    let key = enrollment_key(super::site_capability::continuity_key_presentation(
+        &env.caller,
+        true,
+        &client,
+        &budget(deadline, clock.as_ref()),
+    ))?;
     let journal = super::journal::Journal::open(paths.node_dir.join("intents"))
         .map_err(|_| Failure::Unavailable("seat enrollment journal unavailable".into()))?;
     let resolved = super::launch::resolve_seat(
@@ -1937,6 +1950,7 @@ fn enroll_pane(
         instance,
         &host,
         &target,
+        key,
         clock.as_ref(),
         &budget(deadline, clock.as_ref()),
     )
@@ -1953,6 +1967,21 @@ fn enroll_pane(
         PaneSeat::Resolved(current, _) if current == resolved => Ok(current),
         _ => Err(Failure::Unavailable(
             "enrolled seat mapping changed; retry".into(),
+        )),
+    }
+}
+
+/// The key an enrollment carries. An unread capability ends the hook quietly with nothing journaled,
+/// never a keyless fallback enrollment (spec 4.2); the next event reads again.
+fn enrollment_key(
+    presented: super::site_capability::PresentedKey,
+) -> Result<Option<crate::protocol::ids::ContinuityKey>, Failure> {
+    use super::site_capability::PresentedKey;
+    match presented {
+        PresentedKey::Absent => Ok(None),
+        PresentedKey::Present(key) => Ok(Some(key)),
+        PresentedKey::Unknown => Err(Failure::Quiet(
+            super::site_capability::KEY_CAPABILITY_UNREAD.into(),
         )),
     }
 }
@@ -2028,17 +2057,19 @@ fn check_in(
         retry: Arc::new(HookDeadline(deadline)),
         turn_end,
         caller: env.caller.clone(),
+        key_capability: std::cell::OnceCell::new(),
     };
     // Daemon check order for a lifecycle check-in (TRUST-POLICY A4, C1):
     // (1) A4 agent-to-human refusal, (2) C1 reattachment on a held or
     // unowned target, (3) canonical guarded startup enrollment / ordinary path. A
     // person's lifecycle check-in is never sent here; (2) is attempted only
-    // for a top-level same-session event (only resume probes a resolved pane).
+    // for a top-level same-session event (only resume and a keyed lifecycle event probe a
+    // resolved pane).
     // The reattachment is one complete check-in (the
     // daemon rebinds the seat and opens its successor binding), so nothing
     // follows it.
     let existing = match located {
-        // A resume in a pane that still looks resolved may be running in a
+        // A resume (or a keyed lifecycle event) in a pane that still looks resolved may be running in a
         // restored Herdr (the same pane id, a new incarnation) the daemon has
         // not reconciled yet (ht-p63). The continuity request makes the daemon
         // read the target fresh: a new incarnation is retryable until the
@@ -2061,15 +2092,18 @@ fn check_in(
             }
             Reattach::Refused(error) => return Err(api_failure("continuity", &error)),
             Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
+            Reattach::KeyUnread => return Err(key_unread()),
             Reattach::Pending => {
-                return Err(Failure::Unavailable(
-                    "resumed session's pane mapping is not yet confirmed; retry".into(),
+                return Err(call.pending_failure(
+                    event,
+                    "resumed session's pane mapping is not yet confirmed; retry",
                 ));
             }
         },
         absent => match call.reattach_by_continuity(event, false) {
             Reattach::Done(done) => return Ok(stamp(*done)),
             Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
+            Reattach::KeyUnread => return Err(key_unread()),
             Reattach::Declined
                 if enroll != Enroll::No
                     && event.kind != EventKind::Resume
@@ -2094,8 +2128,9 @@ fn check_in(
             Reattach::Refused(error) => return Err(api_failure("continuity", &error)),
             Reattach::Declined => return Err(absent.refusal(pane)),
             Reattach::Pending => {
-                return Err(Failure::Unavailable(
-                    "native-session continuity pending; retry; no new seat allocated".into(),
+                return Err(call.pending_failure(
+                    event,
+                    "native-session continuity pending; retry; no new seat allocated",
                 ));
             }
         },
@@ -2106,6 +2141,7 @@ fn check_in(
     let (seat, generation) = if enroll == Enroll::Lifecycle
         || (enroll == Enroll::IfUnowned && existing.is_none())
     {
+        let key = call.key(event)?;
         let journal = call
             .journal()
             .ok_or_else(|| Failure::Unavailable("seat enrollment journal unavailable".into()))?;
@@ -2113,16 +2149,25 @@ fn check_in(
             .context
             .claim_host()
             .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
+        let keyed = key.is_some();
         let resolved = super::launch::resolve_seat(
             &client,
             &journal,
             instance,
             &host,
             &target,
+            key,
             clock.as_ref(),
             &budget(deadline, clock.as_ref()),
         )
-        .map_err(|e| api_failure("seat enrollment", &e))?;
+        .map_err(|e| {
+            // Reconciliation lag on a keyed enrollment waits for the next event, unseen.
+            if keyed && e.code == ErrorCode::ServiceBusy {
+                Failure::Quiet(format!("seat enrollment: {}", e.detail))
+            } else {
+                api_failure("seat enrollment", &e)
+            }
+        })?;
         // Operation replay is historical, never current mapping authority.
         match find_seat_for(
             event.harness,
@@ -2193,6 +2238,8 @@ struct PaneCall<'a> {
     /// The caller environment the entry point read (swapped for a verified terminal); the
     /// selectors the hook tells the agent to run are detected from it.
     caller: super::caller_location::CallerEnv,
+    /// The daemon's key capability, read at most once per hook and only for a keyed caller.
+    key_capability: std::cell::OnceCell<super::site_capability::KeyCapability>,
 }
 
 /// How a continuity intent's submission ended.
@@ -2222,6 +2269,14 @@ enum Reattach {
     /// pane context locally (the intent stays; the next eligible event installs it).
     /// Carries the failure detail.
     InstallFailed(String),
+    /// A keyed claim whose key capability could not be read: nothing was sent and the journal
+    /// was not touched, so a kept keyed intent stays for the next event.
+    KeyUnread,
+}
+
+/// A keyed hook whose key capability could not be read ends quietly, never keyless.
+fn key_unread() -> Failure {
+    Failure::Quiet(super::site_capability::KEY_CAPABILITY_UNREAD.into())
 }
 /// ht-dtx0 (TRUST-POLICY C1): the claim a push-channel `watch` makes for its own
 /// session when its pane has no seat it can register on. The watch runs inside
@@ -2260,6 +2315,7 @@ pub(super) fn watch_continuity(
         retry: Arc::new(HookDeadline(deadline)),
         turn_end: false,
         caller,
+        key_capability: std::cell::OnceCell::new(),
     };
     let event = LifecycleEvent {
         harness: harness.into(),
@@ -2289,7 +2345,11 @@ impl Reattach {
     fn done(self) -> Option<CheckedIn> {
         match self {
             Self::Done(done) => Some(*done),
-            Self::Declined | Self::Refused(_) | Self::Pending | Self::InstallFailed(_) => None,
+            Self::Declined
+            | Self::Refused(_)
+            | Self::Pending
+            | Self::InstallFailed(_)
+            | Self::KeyUnread => None,
         }
     }
 }
@@ -2396,16 +2456,69 @@ impl PaneCall<'_> {
         }
     }
 
+    /// What `event` presents: a top-level, non-subagent event's key, when the daemon advertises
+    /// `seat.continuity_key_v1`. A keyless caller or a subagent event asks the daemon nothing; a
+    /// keyed one reads the capability once per hook.
+    fn presentation(&self, event: &LifecycleEvent) -> super::site_capability::PresentedKey {
+        let top_level = event.role == Role::TopLevel && event.agent_id.is_none();
+        if !self.caller.may_present_key(top_level) {
+            return super::site_capability::PresentedKey::Absent;
+        }
+        self.key_capability
+            .get_or_init(|| {
+                super::site_capability::key_capability(
+                    self.client,
+                    &budget(self.deadline, self.clock.as_ref()),
+                )
+            })
+            .present(&self.caller, top_level)
+    }
+
+    /// The key `event` presents; an unread capability ends the hook quietly ([`enrollment_key`]).
+    fn key(
+        &self,
+        event: &LifecycleEvent,
+    ) -> Result<Option<crate::protocol::ids::ContinuityKey>, Failure> {
+        enrollment_key(self.presentation(event))
+    }
+
+    /// A pane reading resolved may be a restored one (the same pane id, a new incarnation) the
+    /// daemon has not reconciled yet. Resume probes it, and so does a lifecycle event presenting a
+    /// key: a fresh agent has no later event to wait for, so its claim must reach the daemon, which
+    /// keeps it through the lag. A current mapping refuses the claim and takes the ordinary check-in.
+    /// An unread key capability is `Err`: whether to probe is unknown.
+    fn probes_resolved_pane(&self, event: &LifecycleEvent) -> Result<bool, Failure> {
+        if event.kind == EventKind::Resume {
+            return Ok(true);
+        }
+        if event.kind.mode() != crate::harness::context::CheckInMode::Lifecycle {
+            return Ok(false);
+        }
+        Ok(self.key(event)?.is_some())
+    }
+
+    /// A claim left pending: the kept intent retries on the next event. A keyed one is unseen by
+    /// the model and never falls back to a keyless enrollment.
+    fn pending_failure(&self, event: &LifecycleEvent, detail: &str) -> Failure {
+        match self.key(event) {
+            Ok(None) => Failure::Unavailable(detail.into()),
+            Ok(Some(_)) | Err(_) => Failure::Quiet(detail.into()),
+        }
+    }
+
     /// The pane's continuity intent for this session: a pending one for the
     /// same harness and session is reused (its operation key and execution, so
-    /// the daemon replays an earlier commit), one for another session or with
-    /// an unusable execution is completed as superseded, and a fresh one is
+    /// the daemon replays an earlier commit), one for another session, another
+    /// key or with an unusable execution is completed as superseded, and a fresh one is
     /// recorded when none is left. With `reuse` false every pending one is
     /// superseded: the pane still has a resolved seat, so an earlier
     /// reattachment's replay is never the recovery there (the ordinary
     /// check-in is), and a stale one must not be installed. The flag says
     /// whether the intent is a reused one: its replay must then be confirmed
-    /// current before it is installed (`replay_is_current`).
+    /// current before it is installed (`replay_is_current`). `key` is the one
+    /// the event presents, read before the journal is touched.
+    // Allowed: the intent's identity (journal, event, harness, session, fingerprint, key) and the flag.
+    #[allow(clippy::too_many_arguments)]
     fn continuity_intent(
         &self,
         journal: &super::journal::Journal,
@@ -2413,6 +2526,7 @@ impl PaneCall<'_> {
         harness: crate::protocol::authority::Harness,
         session: &crate::protocol::ids::NativeSessionId,
         liveness: crate::protocol::authority::LivenessFingerprint,
+        key: Option<crate::protocol::ids::ContinuityKey>,
         reuse: bool,
     ) -> Option<(super::journal::IntentRef, uuid::Uuid, bool)> {
         let instance = self.instance.to_string();
@@ -2423,10 +2537,12 @@ impl PaneCall<'_> {
                     harness: recorded_harness,
                     native_session,
                     execution,
+                    continuity_key,
                     ..
                 } = &pending.semantic
                 && *recorded_harness == harness
                 && native_session == session
+                && *continuity_key == key
                 && let Ok(execution) = uuid::Uuid::parse_str(execution.as_str())
             {
                 return Some((reference, execution, true));
@@ -2464,6 +2580,7 @@ impl PaneCall<'_> {
                     event_id: event.event_id.clone(),
                     execution: crate::protocol::ids::ExecutionId::new(execution.to_string()),
                     liveness: Some(liveness),
+                    continuity_key: key,
                 },
                 self.clock.utc_now().0,
             )
@@ -2562,11 +2679,15 @@ impl PaneCall<'_> {
         event: &LifecycleEvent,
         pane_resolved: bool,
     ) -> Result<Installed, Reattach> {
-        if event.role != Role::TopLevel
-            || event.agent_id.is_some()
-            || (pane_resolved && event.kind != EventKind::Resume)
-        {
+        if event.role != Role::TopLevel || event.agent_id.is_some() {
             return Err(Reattach::Declined);
+        }
+        if pane_resolved {
+            match self.probes_resolved_pane(event) {
+                Ok(true) => {}
+                Ok(false) => return Err(Reattach::Declined),
+                Err(_) => return Err(Reattach::KeyUnread),
+            }
         }
         let Some(harness) = wire_harness(event.harness) else {
             return Err(Reattach::Declined);
@@ -2596,12 +2717,23 @@ impl PaneCall<'_> {
         let Ok(liveness) = hook_fingerprint(event.harness) else {
             return Err(Reattach::Declined);
         };
+        // Read before the journal: an unread capability must never supersede a kept keyed intent
+        // with a keyless one.
+        let Ok(key) = self.key(event) else {
+            return Err(Reattach::KeyUnread);
+        };
         let Some(journal) = self.journal() else {
             return Err(Reattach::Pending);
         };
-        let Some((mut reference, _, reused)) =
-            self.continuity_intent(&journal, event, harness, &session, liveness, !pane_resolved)
-        else {
+        let Some((mut reference, _, reused)) = self.continuity_intent(
+            &journal,
+            event,
+            harness,
+            &session,
+            liveness,
+            key.clone(),
+            !pane_resolved,
+        ) else {
             return Err(Reattach::Pending);
         };
         let retry_transient = event.kind == EventKind::Resume;
@@ -2619,9 +2751,9 @@ impl PaneCall<'_> {
                     // A stale replay: drop it and ask once more under a fresh
                     // key, which the daemon cannot answer from a replay.
                     let _ = journal.complete(&reference);
-                    let Some((fresh, _, _)) =
-                        self.continuity_intent(&journal, event, harness, &session, liveness, false)
-                    else {
+                    let Some((fresh, _, _)) = self.continuity_intent(
+                        &journal, event, harness, &session, liveness, key, false,
+                    ) else {
                         return Err(Reattach::Pending);
                     };
                     reference = fresh;
@@ -3031,6 +3163,7 @@ impl PaneCall<'_> {
             role: Role::TopLevel,
         };
         contexts
+            .with_continuity_key(self.key(event)?)
             .with_agent_caller(current, liveness)
             .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))
     }
@@ -4819,9 +4952,25 @@ fn with_subagent_rewrite(args: &HookArgs, stdin: &[u8], mut outcome: HookOutcome
 
 /// Process boundary. Always returns exit status 0: plugin or daemon failure
 /// must never block the native tool (exit 2 blocks a Claude PreToolUse).
-/// A watchdog enforces the end-to-end budget even if a call ignores its deadline.
+/// A watchdog enforces the end-to-end budget even if a call ignores its deadline;
+/// it is this entry's alone (the in-process entries never arm it).
 pub fn run_process(parsed: Result<HookArgs, String>) -> i32 {
-    run_process_in(parsed, &HookEnv::from_process())
+    run_hook_process(
+        parsed,
+        &HookEnv::from_process(),
+        io::stdin(),
+        Watchdog::Armed,
+    )
+}
+
+/// Whether this hook run arms the end-to-end watchdog, which ends the process with status 0
+/// when the budget expires. Only the binary's entry ([`run_process`]) arms it: an in-process
+/// run (tests, fixtures) must never exit its host process, or every assertion after the
+/// expiry is skipped and the run reads as passed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Watchdog {
+    Armed,
+    Off,
 }
 
 /// What an unparsable hook argv (for example a stale installed argv after a CLI change)
@@ -4839,6 +4988,7 @@ pub fn parse_failure_outcome(detail: String, env: &HookEnv) -> HookOutcome {
 }
 
 /// [`run_process`] with the Herdr environment supplied (tests pass it explicitly).
+/// In-process: no watchdog (only [`run_process`] arms it).
 pub fn run_process_in(parsed: Result<HookArgs, String>, env: &HookEnv) -> i32 {
     run_process_with(parsed, env, io::stdin())
 }
@@ -4847,15 +4997,26 @@ pub fn run_process_in(parsed: Result<HookArgs, String>, env: &HookEnv) -> i32 {
 /// stdin in production). Tests pass their own: an in-process test must not
 /// read, or hold the lock of, the test runner's stdin (ht-zo4: a drain left
 /// blocked on an open terminal stdin deadlocked every later stdin user).
+/// In-process: no watchdog (only [`run_process`] arms it).
 pub fn run_process_with(
     parsed: Result<HookArgs, String>,
     env: &HookEnv,
+    input: impl Read + Send + 'static,
+) -> i32 {
+    run_hook_process(parsed, env, input, Watchdog::Off)
+}
+
+fn run_hook_process(
+    parsed: Result<HookArgs, String>,
+    env: &HookEnv,
     mut input: impl Read + Send + 'static,
+    watchdog: Watchdog,
 ) -> i32 {
     let started = Instant::now();
-    // The watchdog is armed before any file-system call (a parse-failure
-    // drain, `same_endpoint`'s canonicalize, a foreign session's evidence
-    // work), so no path on this process can outlive the tool budget. It starts
+    // At the process boundary only, the watchdog is armed before any
+    // file-system call (a parse-failure drain, `same_endpoint`'s canonicalize,
+    // a foreign session's evidence work), so no path on this process can
+    // outlive the tool budget; an in-process run never arms it. It starts
     // at the tool budget, so a stalled stdin cannot hold a tool hook past it;
     // a parsed lifecycle event raises it to its own budget, still measured
     // from process start. A test child of a loaded parallel suite stretches
@@ -4866,7 +5027,9 @@ pub fn run_process_with(
     // A foreign session must stay silent: when set, the watchdog exits 0
     // without its "budget expired" line.
     let quiet = Arc::new(AtomicBool::new(false));
-    spawn_watchdog(started, Arc::clone(&deadline_ms), Arc::clone(&quiet));
+    if watchdog == Watchdog::Armed {
+        spawn_watchdog(started, Arc::clone(&deadline_ms), Arc::clone(&quiet));
+    }
     // Not a pane of the installed Herdr instance: silent, before any probe.
     if let Err(detail) = &parsed
         && parse_failure_outcome(detail.clone(), env)

@@ -1,0 +1,12 @@
+diff --git a/tests/store/retention.rs b/tests/store/retention.rs
+index 620a336c6..e59198480 100644
+--- a/tests/store/retention.rs
++++ b/tests/store/retention.rs
+@@ -803,6 +803,7 @@ fn rerunning_receipt_timer_producer_does_not_reenqueue() {
+         },
+         claim: fixture_claim("s1"),
+         operation: OperationId::new("check-in"),
++        continuity_key: None,
+     };
+     let register = |fx: &Fx| {
+         let permit = StorePort::issue_cooperative_permit(

@@ -55,6 +55,8 @@ mod facts_message;
 mod facts_receipt;
 #[path = "sync/facts_seat.rs"]
 mod facts_seat;
+#[path = "sync/facts_seat_reversible.rs"]
+mod facts_seat_reversible;
 #[path = "sync/facts_thread.rs"]
 mod facts_thread;
 #[path = "sync/forward_compat.rs"]

@@ -2,11 +2,14 @@
 //! operations with `Unsupported` and stays connected.
 use super::*;
 use crate::protocol::{
-    ids::{MessageId, OperationId, SeatId, ServiceAuthorId, ThreadId},
+    ids::{ContinuityKey, MessageId, OperationId, SeatId, ServiceAuthorId, ThreadId},
     pagination::PageRequest,
     service::{
-        EnsureManagedThread, ManagedThread, NotificationSeverity, SERVICE_SESSION_CAPABILITY,
-        ServiceHistoryQuery, ServiceNotify, ServiceReceiptsQuery, ServiceSend,
+        EnsureManagedThread, FinalizeRetirement, ManagedThread, NotificationSeverity,
+        ReleaseContinuityKey, ReserveContinuityKey, SERVICE_SESSION_CAPABILITY,
+        SERVICE_SESSION_CAPABILITY_V2, SERVICE_SESSION_CAPABILITY_V3, ServiceContinuityAlertsQuery,
+        ServiceHistoryQuery, ServiceNotify, ServiceOperation, ServiceReceiptsQuery, ServiceSend,
+        UnretireSeat,
     },
 };
 use crate::{app::SystemClock, protocol::results::CommandResult, test_support::unserved};
@@ -109,6 +112,31 @@ fn op_notify() -> ServiceOperation {
     })
 }
 
+fn ops_v3() -> Vec<ServiceOperation> {
+    vec![
+        ServiceOperation::ReserveContinuityKey(ReserveContinuityKey {
+            key: ContinuityKey::new("clone-1"),
+            seat: None,
+            operation: OperationId::new("reserve-1"),
+        }),
+        ServiceOperation::ReleaseContinuityKey(ReleaseContinuityKey {
+            key: ContinuityKey::new("clone-1"),
+            operation: OperationId::new("release-1"),
+        }),
+        ServiceOperation::UnretireSeat(UnretireSeat {
+            seat: SeatId::new("s1"),
+            operation: OperationId::new("unretire-1"),
+        }),
+        ServiceOperation::FinalizeRetirement(FinalizeRetirement {
+            seat: SeatId::new("s1"),
+            operation: OperationId::new("finalize-1"),
+        }),
+        ServiceOperation::ContinuityAlerts(ServiceContinuityAlertsQuery {
+            page: PageRequest::default(),
+        }),
+    ]
+}
+
 struct Session {
     client: UnixStream,
     handler: Arc<Recorder>,
@@ -197,6 +225,10 @@ async fn v1_session_refuses_v2_operations_and_keeps_serving() {
         let (request, response) = session.call(operation).await;
         assert!(response.correlates_to(&request));
         assert_eq!(code(&response), ErrorCode::Unsupported);
+        assert_eq!(
+            response.result.as_ref().unwrap_err().detail,
+            "operation requires service_session_v2"
+        );
         assert!(session.connected(), "refusal must not drop the session");
     }
     assert_eq!(session.handler.seen(), Vec::<&str>::new());
@@ -223,6 +255,48 @@ async fn v2_session_dispatches_send_and_reads() {
         session.handler.seen(),
         vec!["send", "history", "receipts", "ensure_thread"]
     );
+    session.finish().await;
+}
+
+#[tokio::test]
+async fn v1_and_v2_sessions_refuse_v3_operations_and_keep_serving() {
+    for capability in [SERVICE_SESSION_CAPABILITY, SERVICE_SESSION_CAPABILITY_V2] {
+        let mut session = Session::open(capability).await;
+        for operation in ops_v3() {
+            let (request, response) = session.call(operation).await;
+            assert!(response.correlates_to(&request));
+            let error = response.result.as_ref().unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported);
+            assert!(
+                error.detail.contains("service_session_v3"),
+                "{}",
+                error.detail
+            );
+            assert!(session.connected(), "refusal must not drop the session");
+        }
+        assert_eq!(session.handler.seen(), Vec::<&str>::new());
+        session.finish().await;
+    }
+}
+
+#[tokio::test]
+async fn v3_session_dispatches_every_generation() {
+    let mut session = Session::open(SERVICE_SESSION_CAPABILITY_V3).await;
+    let mut operations = vec![
+        op_ensure(),
+        op_notify(),
+        op_send(),
+        op_history(),
+        op_receipts(),
+    ];
+    let count = operations.len() + 5;
+    operations.extend(ops_v3());
+    for operation in operations {
+        let (request, response) = session.call(operation).await;
+        assert!(response.correlates_to(&request));
+        assert!(response.result.is_ok(), "{:?}", response.result);
+    }
+    assert_eq!(session.handler.seen().len(), count);
     session.finish().await;
 }
 

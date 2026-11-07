@@ -1,0 +1,12 @@
+diff --git a/tests/integration/notice_wake.rs b/tests/integration/notice_wake.rs
+index 579f37b1a..a3518f59e 100644
+--- a/tests/integration/notice_wake.rs
++++ b/tests/integration/notice_wake.rs
+@@ -167,6 +167,7 @@ impl Fixture {
+             mode: CheckInMode::Current,
+             claim: self.claim(seat),
+             operation: OperationId::new(op),
++            continuity_key: None,
+         };
+         let permit = self
+             .store

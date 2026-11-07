@@ -1,0 +1,23 @@
+diff --git a/src/host/mod.rs b/src/host/mod.rs
+index 726d62e2b..865538084 100644
+--- a/src/host/mod.rs
++++ b/src/host/mod.rs
+@@ -23,6 +23,10 @@ pub const PANE_SCOPED_ENV_VARS: &[&str] = &[
+ 
+ pub(crate) use hc::{HC_TERMINAL_ID_ENV, HC_TERMINAL_SOCKET_ENV};
+ 
++/// The launcher-supplied continuity key of one agent (TRUST-POLICY C1 *Continuity key*). It names
++/// that agent alone, so nothing threads starts inherits it.
++pub const CONTINUITY_KEY_ENV: &str = "HERDR_THREADS_CONTINUITY_KEY";
++
+ /// The single env scrub list for every child the daemon side spawns (K5): the
+ /// union of each host family's names. `spawn_detached` and handoff spawns
+ /// remove all of it; the H3 gate shim removes it minus `host::hc::ENV_VARS`
+@@ -33,6 +37,7 @@ pub fn child_env_scrub_list() -> Vec<&'static str> {
+         .iter()
+         .chain(named::ENV_VARS)
+         .chain(hc::ENV_VARS)
++        .chain([&CONTINUITY_KEY_ENV])
+     {
+         if !names.contains(name) {
+             names.push(name);

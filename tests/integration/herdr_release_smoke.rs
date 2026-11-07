@@ -36,8 +36,9 @@
 //!   renames, and resolving a just-moved pane never allocates a second seat.
 //! - `herdr_release_live_handoff`: `herdr server live-handoff` (new server, new terminal ids,
 //!   the same pane processes): the agent's seat reattaches by C1 process continuity with no turn
-//!   of its own and an idle p0 wakes it; a person seat stays unresolved; after a cold restart a
-//!   seat stays unresolved.
+//!   of its own and an idle p0 wakes it; a bare pane, an exited agent's pane and a seat with only
+//!   a managed_launch binding reattach by their shell's fingerprint with no binding opened; a
+//!   person seat stays unresolved; after a cold restart a seat stays unresolved, bare or not.
 use herdr_threads::test_support::isolated_herdr::IsolatedHerdr;
 use serde_json::Value;
 use std::{
@@ -175,7 +176,7 @@ impl Matrix {
     }
 
     /// A Herdr input command (send-text, send-keys): success, no output to parse.
-    fn herdr_input(&self, args: &[&str]) {
+    pub(super) fn herdr_input(&self, args: &[&str]) {
         let out = self.host.command("herdr").args(args).output().unwrap();
         assert!(
             out.status.success(),
@@ -217,7 +218,7 @@ impl Matrix {
     }
 
     /// A plain (operator) call.
-    fn ht(&self, args: &[&str]) -> Value {
+    pub(super) fn ht(&self, args: &[&str]) -> Value {
         let mut cmd = self.cli();
         self.globals(&mut cmd);
         cmd.args(args);
@@ -225,14 +226,14 @@ impl Matrix {
     }
 
     /// The same call, returning the raw output (for refusals).
-    fn ht_out(&self, args: &[&str]) -> Output {
+    pub(super) fn ht_out(&self, args: &[&str]) -> Output {
         let mut cmd = self.cli();
         self.globals(&mut cmd);
         cmd.args(args).output().unwrap()
     }
 
     /// A person's call from their own shell pane (`human` first).
-    fn person(&self, pane: &str, args: &[&str]) -> Value {
+    pub(super) fn person(&self, pane: &str, args: &[&str]) -> Value {
         let mut cmd = self.cli();
         cmd.env("HERDR_PANE_ID", pane)
             .env("HERDR_ENV", "1")
@@ -275,7 +276,7 @@ impl Matrix {
             .to_owned()
     }
 
-    fn tab(&self, workspace_of: &str, label: &str) -> String {
+    pub(super) fn tab(&self, workspace_of: &str, label: &str) -> String {
         let home = self.home();
         let workspace = workspace_of.split(':').next().unwrap();
         let created = self.herdr(&[
@@ -296,7 +297,7 @@ impl Matrix {
     }
 
     /// A person seat in a fresh shell pane (`human me init`).
-    fn person_seat(&self, label: &str) -> (String, String) {
+    pub(super) fn person_seat(&self, label: &str) -> (String, String) {
         let pane = self.workspace(label);
         let me = self.person(&pane, &["me", "init"]);
         assert_eq!(me["result"]["kind"], "checked_in", "{me}");
@@ -398,7 +399,7 @@ impl Matrix {
 
     /// Submit one line to the stand-in in `pane` (a turn) and wait until the
     /// turn ended; returns the turn's events.
-    fn turn(&self, pane: &str, line: &str) -> Vec<Value> {
+    pub(super) fn turn(&self, pane: &str, line: &str) -> Vec<Value> {
         let before = self.log_of(pane).len();
         self.submit(pane, line);
         wait_for(
@@ -420,7 +421,7 @@ impl Matrix {
     }
 
     /// Submit one line without waiting for the turn.
-    fn start_turn(&self, pane: &str, line: &str) {
+    pub(super) fn start_turn(&self, pane: &str, line: &str) {
         self.submit(pane, line);
     }
 
@@ -428,7 +429,7 @@ impl Matrix {
     /// into the idle composer at the same moment lands before or after this line,
     /// never inside it (separate send-text and send-keys writes let a wake marker
     /// slip between the text and its Enter on CI).
-    fn submit(&self, pane: &str, line: &str) {
+    pub(super) fn submit(&self, pane: &str, line: &str) {
         self.herdr_input(&["pane", "send-text", pane, &format!("{line}\r")]);
     }
 
@@ -440,7 +441,7 @@ impl Matrix {
     }
 
     /// The stand-in in `pane` runs CMD as a tool call; returns the tool event.
-    fn agent_run(&self, pane: &str, command: &str) -> Value {
+    pub(super) fn agent_run(&self, pane: &str, command: &str) -> Value {
         let events = self.turn(pane, &format!("run: {command}"));
         events
             .iter()
@@ -451,7 +452,7 @@ impl Matrix {
     }
 
     /// The stand-in in `pane` runs `herdr-threads ARGS` as a tool call.
-    fn agent_ht(&self, pane: &str, args: &str) -> Value {
+    pub(super) fn agent_ht(&self, pane: &str, args: &str) -> Value {
         let tool = self.agent_run(pane, &format!("herdr-threads --json {args}"));
         assert_eq!(tool["rc"], 0, "agent `{args}`: {tool}");
         if !tool["result_json"].is_null() {
@@ -1681,8 +1682,11 @@ fn herdr_release_move() {
 /// terminal to a new server process (a new incarnation, new terminal ids) while the agent and
 /// shell processes keep running: the daemon reattaches the agent's seat from its own process in
 /// the pane's session (`structural_process_continuity`) with no turn from the agent, so an idle
-/// agent is woken by a p0; a person seat (no harness process) stays unresolved (C2). A cold
-/// restart kills the panes' processes, so nothing matches and the seat stays unresolved.
+/// agent is woken by a p0; a person seat (no harness process) stays unresolved (C2). A bare pane (also
+/// the pre-agent clone's shape), an exited agent's pane and a launch that never checked in have no
+/// process for that path, and reattach by their shell's fingerprint (`structural_shell_continuity`,
+/// ht-ma6i.1), opening no binding. A cold restart kills the panes' processes, so nothing matches and
+/// the seat stays unresolved.
 #[test]
 #[ignore = "run per release by scripts/herdr-release-smoke (official binary on PATH)"]
 fn herdr_release_live_handoff() {
@@ -1729,6 +1733,88 @@ fn herdr_release_live_handoff() {
             .count()
     };
     assert_eq!(row(&agent)["continuity"], "resolved");
+    let db = || {
+        rusqlite::Connection::open_with_flags(
+            m.host
+                .root()
+                .join("st/herdr/plugins/herdr-threads/node/herdr-threads.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap()
+    };
+    let wait_for_fingerprint = |seat: &str| {
+        wait_for(
+            "the seat's shell fingerprint is recorded",
+            Duration::from_secs(30),
+            || {
+                let rows: i64 = db()
+                    .query_row(
+                        "SELECT count(*) FROM seat_shell_fingerprints WHERE seat_id=?1",
+                        [seat],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if rows == 1 {
+                    Ok(())
+                } else {
+                    Err(format!("{seat}: {rows} rows"))
+                }
+            },
+        );
+    };
+    let open_bindings = |seat: &str| -> i64 {
+        db().query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+            [seat],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    // A bare pane: a seat no agent ever sat in.
+    let bare_pane = m.workspace("handoff-bare");
+    let bare = id(&m.ht(&["seat", "resolve", "--pane", &bare_pane]));
+    // An agent that exited, its pane back at the shell.
+    let exited_pane = m.workspace("handoff-exited");
+    let exited = m.launch_codex(&exited_pane);
+    m.submit(&exited_pane, "exit");
+    wait_for("the stand-in exited", Duration::from_secs(20), || {
+        let log = m.log_of(&exited_pane);
+        if log.iter().any(|e| e["kind"] == "exit") {
+            Ok(())
+        } else {
+            Err(format!("{log:?}"))
+        }
+    });
+    // A launch that never checked in: the stand-in Claude has no hooks here.
+    let launched_pane = m.workspace("handoff-launched");
+    let launched = m.launch("claude", &launched_pane);
+    assert_eq!(launched["outcome"], "started", "{launched}");
+    let launched = launched["seat"].as_str().unwrap().to_owned();
+    let managed_only: (i64, i64) = wait_for(
+        "the launch's managed_launch binding",
+        Duration::from_secs(20),
+        || {
+            let counts = db()
+                .query_row(
+                    "SELECT count(*),COALESCE(SUM(observation_provenance='managed_launch'),0) FROM occupant_bindings WHERE seat_id=?1",
+                    [&launched],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            if counts.1 >= 1 {
+                Ok(counts)
+            } else {
+                Err(format!("{counts:?}"))
+            }
+        },
+    );
+    assert_eq!(
+        managed_only.0, managed_only.1,
+        "only managed_launch bindings"
+    );
+    for seat in [&bare, &exited, &launched] {
+        wait_for_fingerprint(seat);
+    }
     let before = terminal(&agent_pane);
 
     // The live handoff: same panes and processes, a new server and new terminal ids.
@@ -1783,6 +1869,30 @@ fn herdr_release_live_handoff() {
         turns_before,
         "the reattachment needed a hook of the agent's own"
     );
+    // The seats with no process for that path come back by their shells, with no binding opened.
+    for (what, seat, pane) in [
+        ("bare", &bare, &bare_pane),
+        ("exited agent", &exited, &exited_pane),
+        ("managed_launch only", &launched, &launched_pane),
+    ] {
+        wait_for(
+            "the seat reattached by shell continuity",
+            Duration::from_secs(60),
+            || {
+                let row = row(seat);
+                let decided = decisions(seat);
+                if row["continuity"] == "resolved"
+                    && row["target"] == pane.as_str()
+                    && decided.last().map(String::as_str) == Some("structural_shell_continuity")
+                {
+                    Ok(())
+                } else {
+                    Err(format!("{what}: {row} decisions: {decided:?}"))
+                }
+            },
+        );
+        assert_eq!(open_bindings(seat), 0, "{what}: a binding opened");
+    }
     // A person seat has no harness process: it stays under the restore holds (C2).
     assert_eq!(row(&person)["continuity"], "unresolved", "{}", row(&person));
     let _ = person_pane;
@@ -1853,6 +1963,11 @@ fn herdr_release_live_handoff() {
     let cold_pane = m.workspace("handoff-cold");
     let cold = m.launch_codex(&cold_pane);
     let recorded = decisions(&cold).len();
+    // A new shell after a cold restart is not the fingerprinted one.
+    let cold_bare_pane = m.workspace("handoff-cold-bare");
+    let cold_bare = id(&m.ht(&["seat", "resolve", "--pane", &cold_bare_pane]));
+    wait_for_fingerprint(&cold_bare);
+    let cold_bare_recorded = decisions(&cold_bare).len();
     m.host.restart();
     wait_for(
         "the cold-restarted seat is unresolved",
@@ -1870,5 +1985,17 @@ fn herdr_release_live_handoff() {
     thread::sleep(Duration::from_secs(15));
     assert_eq!(row(&cold)["continuity"], "unresolved", "{}", row(&cold));
     assert_eq!(decisions(&cold).len(), recorded, "{:?}", decisions(&cold));
+    assert_eq!(
+        row(&cold_bare)["continuity"],
+        "unresolved",
+        "{}",
+        row(&cold_bare)
+    );
+    assert_eq!(
+        decisions(&cold_bare).len(),
+        cold_bare_recorded,
+        "{:?}",
+        decisions(&cold_bare)
+    );
     println!("herdr {}: live handoff matrix passed", m.version);
 }

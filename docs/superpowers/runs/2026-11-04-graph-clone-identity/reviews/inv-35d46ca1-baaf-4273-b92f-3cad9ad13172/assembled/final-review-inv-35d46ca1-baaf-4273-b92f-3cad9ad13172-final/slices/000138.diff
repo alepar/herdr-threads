@@ -1,0 +1,13 @@
+diff --git a/tests/daemon/control.rs b/tests/daemon/control.rs
+index 623e7e1d2..78fa7067d 100644
+--- a/tests/daemon/control.rs
++++ b/tests/daemon/control.rs
+@@ -111,6 +111,8 @@ fn retirement_fixture() -> (std::path::PathBuf, String, crate::ports::Retirement
+             cancellation: Cancellation::default(),
+         },
+     )
++    .unwrap()
++    .into_job()
+     .unwrap();
+     drop(store);
+     (path, instance, job)

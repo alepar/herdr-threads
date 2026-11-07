@@ -1,0 +1,14 @@
+diff --git a/tests/fixtures/golden/help/setup.txt b/tests/fixtures/golden/help/setup.txt
+index 5d6fbe27c..8d46cbcd6 100644
+--- a/tests/fixtures/golden/help/setup.txt
++++ b/tests/fixtures/golden/help/setup.txt
+@@ -101,7 +101,8 @@ Scope (user level, like Herdr's own agent hooks):
+           separate. A bare Hermes CLI session in a Herdr pane then joins through these
+           hooks. From Hermes 0.22.1 (one shared gateway) the profile must also list
+           HERDR_PANE_ID and HERDR_ENV in terminal.client_env_passthrough, or no
+-          session is seated. After upgrading, run setup again so the installed
++          session is seated; a launcher that sets HERDR_THREADS_CONTINUITY_KEY lists
++          it there too. After upgrading, run setup again so the installed
+           bridge is current; setup-status reports each profile's enablement and
+           whether its bridge is current. Unsetup preserves foreign/modified assets
+           and native YAML/enable selection, reporting residue and manual disable

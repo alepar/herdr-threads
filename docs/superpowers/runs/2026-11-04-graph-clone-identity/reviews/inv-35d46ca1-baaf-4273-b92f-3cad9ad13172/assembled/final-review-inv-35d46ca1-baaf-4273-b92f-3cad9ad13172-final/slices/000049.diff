@@ -1,0 +1,16 @@
+diff --git a/integrations/claude/mod/hooks/register.js b/integrations/claude/mod/hooks/register.js
+index 0238b188a..c29c0b67c 100644
+--- a/integrations/claude/mod/hooks/register.js
++++ b/integrations/claude/mod/hooks/register.js
+@@ -1207,7 +1207,10 @@ export const register = (on) => {
+     }
+     const seatReadonly = await $.env.get('HERDR_THREADS_SEAT_READONLY')
+     if (seatReadonly) watchEnv.HERDR_THREADS_SEAT_READONLY = seatReadonly
+-    core = createCore(buildIo($, ledgerFile, binName, watchEnv.HERDR_THREADS_SEAT_NAME || watchEnv.HC_TERMINAL_ID ? watchEnv : null))
++    // A launcher's continuity key is forwarded the same way, for a pane seat too: the watch claim presents it.
++    const continuityKey = await $.env.get('HERDR_THREADS_CONTINUITY_KEY')
++    if (continuityKey) watchEnv.HERDR_THREADS_CONTINUITY_KEY = continuityKey
++    core = createCore(buildIo($, ledgerFile, binName, watchEnv.HERDR_THREADS_SEAT_NAME || watchEnv.HC_TERMINAL_ID || continuityKey ? watchEnv : null))
+     await core.onLoad()
+     timer = $.clock.every(1000, () => {
+       if (core) void core.onTick()

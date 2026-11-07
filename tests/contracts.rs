@@ -381,6 +381,7 @@ fn registration_request_binds_operation_and_selected_offer_context() {
                 liveness: None,
             },
             operation: OperationId::new("op"),
+            continuity_key: None,
         },
         read: ReadContext {
             instance: "i".into(),
@@ -1964,6 +1965,7 @@ fn ordinary_seat_resolve_cannot_enter_native_permit_mutation_route() {
         operation: herdr_threads::protocol::ids::OperationId::new("o1"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     });
     assert!(PermitMutation::try_from(ordinary).is_err());
 }

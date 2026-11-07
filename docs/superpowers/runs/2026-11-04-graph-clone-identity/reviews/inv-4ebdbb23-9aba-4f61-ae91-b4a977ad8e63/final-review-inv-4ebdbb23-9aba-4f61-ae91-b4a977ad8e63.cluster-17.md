@@ -1,0 +1,38 @@
+# Final review: cluster 17 (src-test-support), epic ht-ma6i
+
+Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7, both verified with `git rev-parse --verify`. Invocation inv-4ebdbb23-9aba-4f61-ae91-b4a977ad8e63, source binding accepted.
+
+## Scope and method
+
+The cluster is one file, `src/test_support/mod.rs`, slice `slices/000081.diff`: six added lines, introduced by 06329d8a3. The slice matches `git diff` of the captured range for that path.
+
+This was a source-read review. No build or test ran here: the helper's body and its call sites decide every question below, and the suite belongs to the integration owners. The caller checkout stayed at the captured head with a clean status throughout.
+
+## The change
+
+`pub fn operator_actor() -> OperatorActor` builds `OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501)`. Both constructors are `pub(crate)`, so `tests/combined.rs`, which links the crate from outside, needs this wrapper to name an operator.
+
+## Checks against named risks
+
+- Authority forgery in production. `from_peer` being `pub(crate)` is what confines operator authority to the kernel-verified peer in `src/service/dispatch.rs`, so a public constructor would matter if it shipped. It does not: `src/lib.rs:33-34` compiles `test_support` only under `cfg(any(test, feature = "test-support"))`, and the module header states the same. The function is not referenced by any non-test source and has no wire or CLI path, so the trust model in TRUST-POLICY.md is unaffected. `tests/contracts.rs` still pins that a forged `operator_actor` field on the wire is refused, independently of this helper.
+- Feature gating of the callers. All three callers (`tests/store/fact_convergence_seat.rs:382`, `tests/store/reversible_facts.rs:394`, `tests/sync/facts_seat_reversible.rs:614`) are modules of the `combined` target, which declares `required-features = ["test-support"]` (`Cargo.toml:28-30`). That satisfies the AGENTS.md rule for targets using `test_support`, and the default-feature check does not see the helper.
+- Visibility. `protocol::authority` is `pub mod` and `OperatorActor` is `pub`, so the return type is nameable outside the crate.
+- The fixed uid. 501 matches the crate's existing test convention (`src/ports.rs:5160`, `tests/store/cooperative_checkin.rs:4422`, `src/service/dispatch.rs` tests). The owner and peer arguments are equal, so the `expect` cannot fire. The callers pass the actor to `seats::mutate_operator` directly, which takes an already-authorized actor; none depends on the value being the real process uid. The label "local operator" is accurate for the fixture's purpose.
+- Use in the epic. The callers drive `OperatorRequest::Retire` to finalize a reversible retirement (`operation: "finalize"`) and assert fact convergence, which is scope the epic needs covered from outside the crate.
+- Duplication. `tests/store/cooperative_checkin.rs:4422` has an older private copy of the same three lines, reached through `crate::`. It predates this file's change and is harmless.
+
+## Requirement baseline trace
+
+The root spec has a `## Requirement baseline` section with rows B1 to B4. This cluster holds only a test fixture and delivers none of them directly, and no row promises anything of it. B1 (continuity key) and B2 (retire on close, graph undo) run through `src/store/seats/`, `src/protocol/service.rs` and the CLI and bridge entry points, which leave this cluster, so their production trace is the seam reviewer's. B3 is recorded in the spec as needing no threads change, and B4 (Herdr unchanged) is untouched by this file. The helper does not weaken any row: it adds no production path and no way around an operator check in an ordinary build.
+
+## Verdict
+ready
+
+## Must fix before landing
+- none
+
+## Untested scope
+- none
+
+## Deferred OK
+- none

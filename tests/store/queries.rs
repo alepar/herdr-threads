@@ -2837,6 +2837,8 @@ fn retired_seat_has_no_actionable_pending_invitation_before_cleanup() {
             generation: 1,
         },
     )
+    .unwrap()
+    .into_job()
     .unwrap();
     assert_eq!(job.seat.as_str(), "s");
     let physical_invitation: String = db

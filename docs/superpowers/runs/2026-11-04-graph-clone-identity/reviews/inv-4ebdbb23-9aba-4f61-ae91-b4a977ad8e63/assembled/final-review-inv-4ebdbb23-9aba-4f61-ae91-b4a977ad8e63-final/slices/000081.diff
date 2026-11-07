@@ -1,0 +1,17 @@
+diff --git a/src/test_support/mod.rs b/src/test_support/mod.rs
+index 3fadd75a2..77bba90c9 100644
+--- a/src/test_support/mod.rs
++++ b/src/test_support/mod.rs
+@@ -118,6 +118,12 @@ fn upsert_test_host(conn: &Connection) -> i64 {
+         .expect("attach the test host row")
+ }
+ 
++/// The local operator, for a suite outside the crate that drives an operator command.
++pub fn operator_actor() -> crate::protocol::authority::OperatorActor {
++    use crate::protocol::authority::{OperatorActor, PeerIdentity};
++    OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).expect("the owner's peer")
++}
++
+ /// The id of the fixture host row: the first `herdr_hosts` row a fresh store
+ /// gets, which every fixture that attaches [`TEST_HOST_ENDPOINT`] first uses.
+ /// Observation entry points take it as their explicit host.

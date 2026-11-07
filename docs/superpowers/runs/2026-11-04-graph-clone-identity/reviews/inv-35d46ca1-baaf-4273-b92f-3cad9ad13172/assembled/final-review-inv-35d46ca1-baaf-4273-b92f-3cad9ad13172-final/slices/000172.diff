@@ -1,0 +1,12 @@
+diff --git a/tests/service/lazy_hook_pull.rs b/tests/service/lazy_hook_pull.rs
+index b1b71740e..00b234df2 100644
+--- a/tests/service/lazy_hook_pull.rs
++++ b/tests/service/lazy_hook_pull.rs
+@@ -239,6 +239,7 @@ fn check_in_flagged(
+         claim,
+         operation: OperationId::new(format!("ci-{seat}-{session}")),
+         lineage_parent: None,
++        continuity_key: None,
+     });
+     match f.service.handle(command, peer(), &budget()).unwrap() {
+         CommandResult::CheckedIn(result) => result.context,

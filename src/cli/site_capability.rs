@@ -5,13 +5,14 @@
 //! `seat.terminal_sites_v1` (M13), so a new CLI never sends a Terminal site to a daemon that only
 //! knows Named ones. A Pane site never goes through this gate.
 
-use super::caller_location::CallerSite;
+use super::caller_location::{CallerEnv, CallerSite, caller_continuity_key};
+use super::{caller, commands::ParsedCli};
 use crate::ports::LocalClient;
 use crate::protocol::{
-    capabilities::SEAT_READONLY_V1,
+    capabilities::{SEAT_CONTINUITY_KEY_V1, SEAT_READONLY_V1},
     commands::{Command, ResolveThreadQuery},
-    ids::{HostLocator, HostTargetId, SeatId},
-    results::{ApiError, ErrorCode},
+    ids::{ContinuityKey, HostLocator, HostTargetId, SeatId},
+    results::{ApiError, CommandResult, ErrorCode},
     time::CallBudget,
 };
 
@@ -36,6 +37,144 @@ pub fn require_readonly<C: LocalClient + ?Sized>(
         }
         _ => Ok(()),
     }
+}
+
+/// A refused keyed resolve (80 bytes): the key capability could not be read, so nothing was
+/// journaled or sent; the next call reads again.
+pub(crate) const KEY_CAPABILITY_UNREAD: &str =
+    "continuity key capability (seat.continuity_key_v1) unread; retry; no seat minted";
+
+/// What a caller may present to this daemon. `Unknown` is a key whose capability could not be read:
+/// a keyed caller then refuses or waits for the next event rather than go keyless (spec 4.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PresentedKey {
+    Absent,
+    Present(ContinuityKey),
+    Unknown,
+}
+
+impl PresentedKey {
+    /// The key a resolve sends: `Unknown` refuses with the retryable `ServiceBusy` before anything
+    /// is journaled or sent, never a keyless resolve.
+    pub(crate) fn for_resolve(self) -> Result<Option<ContinuityKey>, ApiError> {
+        match self {
+            Self::Absent => Ok(None),
+            Self::Present(key) => Ok(Some(key)),
+            Self::Unknown => Err(ApiError::new(ErrorCode::ServiceBusy, KEY_CAPABILITY_UNREAD)),
+        }
+    }
+}
+
+/// What this daemon says about `seat.continuity_key_v1`: one reading serves every key a caller
+/// presents to it, so a hook asks once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyCapability {
+    Advertised,
+    Lacking,
+    Unread,
+}
+
+/// The daemon's key capability. The client caches a failed read as no capabilities, so a daemon
+/// not known to advertise is asked afresh: only a definitive answer is a no. A fresh list naming the
+/// capability is `Unread` too: this process's cached reading stands for every other key it sends,
+/// and the next call reads again.
+pub(crate) fn key_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    budget: &CallBudget,
+) -> KeyCapability {
+    if client.supports_capability(SEAT_CONTINUITY_KEY_V1, budget) {
+        return KeyCapability::Advertised;
+    }
+    match client.call_definitive(Command::Capabilities, budget) {
+        Ok(Ok(CommandResult::Capabilities(list)))
+            if !list
+                .capabilities
+                .iter()
+                .any(|c| c == SEAT_CONTINUITY_KEY_V1) =>
+        {
+            KeyCapability::Lacking
+        }
+        Ok(Err(error))
+            if matches!(
+                error.code,
+                ErrorCode::UnknownWireVersion | ErrorCode::Unsupported
+            ) =>
+        {
+            KeyCapability::Lacking
+        }
+        _ => KeyCapability::Unread,
+    }
+}
+
+impl KeyCapability {
+    /// The presentation of `env`'s key ([`caller_continuity_key`]) under this reading.
+    pub(crate) fn present(self, env: &CallerEnv, top_level: bool) -> PresentedKey {
+        match self {
+            Self::Advertised => caller_continuity_key(env, top_level, true)
+                .map_or(PresentedKey::Absent, PresentedKey::Present),
+            Self::Unread if env.may_present_key(top_level) => PresentedKey::Unknown,
+            Self::Lacking | Self::Unread => PresentedKey::Absent,
+        }
+    }
+}
+
+/// The presentation of a caller's key ([`caller_continuity_key`]). A caller with no valid key and a
+/// subagent ask the daemon nothing, so their requests and round trips are unchanged.
+pub(crate) fn continuity_key_presentation<C: LocalClient + ?Sized>(
+    env: &CallerEnv,
+    top_level: bool,
+    client: &C,
+    budget: &CallBudget,
+) -> PresentedKey {
+    if !env.may_present_key(top_level) {
+        return PresentedKey::Absent;
+    }
+    key_capability(client, budget).present(env, top_level)
+}
+
+/// The key a plain CLI resolve of `target` presents: the caller's own pane on its own server only,
+/// never a pane it resolves for someone else. Unknown or subagent callers present nothing. A plain
+/// call offers no evidence to reattach on, so a key bound elsewhere refuses and mints no seat
+/// (spec 4.2). An unread capability refuses ([`PresentedKey::for_resolve`]).
+pub(crate) fn own_pane_continuity_key<C: LocalClient + ?Sized>(
+    env: &CallerEnv,
+    target: &HostTargetId,
+    top_level: bool,
+    on_own_server: bool,
+    client: &C,
+    budget: &CallBudget,
+) -> Result<Option<ContinuityKey>, ApiError> {
+    continuity_key_presentation(
+        env,
+        top_level && env.is_own_pane(target, on_own_server),
+        client,
+        budget,
+    )
+    .for_resolve()
+}
+
+/// The key of a resolve that runs outside the caller guard, so `caller::active` no longer answers:
+/// its top-level test derives the origin from `parsed`.
+pub(crate) fn resolve_arm_key<C: LocalClient + ?Sized>(
+    parsed: &ParsedCli,
+    env: &CallerEnv,
+    target: &HostTargetId,
+    on_own_server: bool,
+    client: &C,
+    budget: &CallBudget,
+) -> Result<Option<ContinuityKey>, ApiError> {
+    if !env.may_present_key(true) {
+        return Ok(None);
+    }
+    let origin = caller::derive(parsed);
+    own_pane_continuity_key(
+        env,
+        target,
+        caller::is_top_level(origin.as_ref()),
+        on_own_server,
+        client,
+        budget,
+    )
 }
 
 /// Passes when the daemon advertises `capability`; otherwise refuses with `refusal_line` as an
@@ -116,7 +255,7 @@ mod tests {
     use super::*;
     use crate::protocol::{
         commands::Command,
-        results::CommandResult,
+        results::{CapabilityList, CommandResult},
         time::{Cancellation, MonoInstant},
     };
 
@@ -130,8 +269,14 @@ mod tests {
         fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
             self.0.contains(&name)
         }
-        fn call(&self, _: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
-            unreachable!("the gate never sends a command")
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            assert!(
+                matches!(command, Command::Capabilities),
+                "the gate sends no other command"
+            );
+            Ok(CommandResult::Capabilities(CapabilityList {
+                capabilities: self.0.iter().map(|name| (*name).to_owned()).collect(),
+            }))
         }
         fn call_with_output(
             &self,
@@ -174,6 +319,7 @@ mod tests {
             operation: OperationId::new("op"),
             lineage_parent: None,
             readonly,
+            continuity_key: None,
         }
     }
 
@@ -222,6 +368,307 @@ mod tests {
         )
         .unwrap();
         assert_eq!(READONLY_REFUSAL.len(), 58);
+    }
+
+    fn keyed_env(key: &str) -> CallerEnv {
+        let key = key.to_owned();
+        CallerEnv::from_lookup(move |name| match name {
+            super::super::caller_location::CONTINUITY_KEY_ENV => Some(key.clone().into()),
+            crate::host::native::ENV_PANE_ID => Some("w1:p1".into()),
+            _ => None,
+        })
+    }
+
+    fn presented(env: &CallerEnv, top_level: bool, client: &impl LocalClient) -> PresentedKey {
+        continuity_key_presentation(env, top_level, client, &budget())
+    }
+
+    #[test]
+    fn a_valid_key_is_presented_by_a_top_level_caller_of_an_advertising_daemon() {
+        let key = presented(
+            &keyed_env("clone-1"),
+            true,
+            &Fake(&[SEAT_CONTINUITY_KEY_V1]),
+        );
+        assert_eq!(key, PresentedKey::Present(ContinuityKey::new("clone-1")));
+    }
+
+    // An invalid value is absent, with no diagnostic and no round trip: `Panics` fails any question.
+    #[test]
+    fn an_invalid_value_is_absent_and_asks_nothing() {
+        for value in ["", "has space", &"k".repeat(129)] {
+            let env = keyed_env(value);
+            assert_eq!(
+                presented(&env, true, &Panics),
+                PresentedKey::Absent,
+                "{value:?}"
+            );
+        }
+        // No variable at all: a keyless caller's round trips are unchanged.
+        let keyless = CallerEnv::from_lookup(|_| None);
+        assert_eq!(presented(&keyless, true, &Panics), PresentedKey::Absent);
+    }
+
+    #[test]
+    fn a_subagent_presents_nothing_and_asks_nothing() {
+        assert_eq!(
+            presented(&keyed_env("clone-1"), false, &Panics),
+            PresentedKey::Absent
+        );
+    }
+
+    #[test]
+    fn a_daemon_without_the_capability_gets_no_key() {
+        assert_eq!(
+            presented(&keyed_env("clone-1"), true, &Fake(&[])),
+            PresentedKey::Absent
+        );
+    }
+
+    #[test]
+    fn the_helper_itself_gates_on_top_level_and_advertised() {
+        let env = keyed_env("clone-1");
+        assert_eq!(
+            caller_continuity_key(&env, true, true),
+            Some(ContinuityKey::new("clone-1"))
+        );
+        assert_eq!(caller_continuity_key(&env, false, true), None);
+        assert_eq!(caller_continuity_key(&env, true, false), None);
+    }
+
+    // `launch` and recipient allocation resolve other panes: only the caller's own pane is keyed.
+    #[test]
+    fn a_plain_resolve_presents_the_key_only_for_the_callers_own_pane() {
+        let env = keyed_env("clone-1");
+        let client = Fake(&[SEAT_CONTINUITY_KEY_V1]);
+        assert_eq!(
+            own_pane_continuity_key(
+                &env,
+                &HostTargetId::new("w1:p1"),
+                true,
+                true,
+                &client,
+                &budget()
+            ),
+            Ok(Some(ContinuityKey::new("clone-1")))
+        );
+        assert_eq!(
+            own_pane_continuity_key(
+                &env,
+                &HostTargetId::new("w1:p2"),
+                true,
+                true,
+                &client,
+                &budget()
+            ),
+            Ok(None)
+        );
+        assert_eq!(
+            own_pane_continuity_key(
+                &env,
+                &HostTargetId::new("w1:p1"),
+                false,
+                true,
+                &client,
+                &budget()
+            ),
+            Ok(None)
+        );
+        // The same pane id on another server is not the caller's: `Panics` fails any question.
+        assert_eq!(
+            own_pane_continuity_key(
+                &env,
+                &HostTargetId::new("w1:p1"),
+                true,
+                false,
+                &Panics,
+                &budget()
+            ),
+            Ok(None)
+        );
+    }
+
+    /// Advertises nothing (its read failed or the answer had no capability) and answers a fresh
+    /// capability call with the scripted outcome.
+    struct Fresh(fn() -> Result<Result<CommandResult, ApiError>, ApiError>);
+    impl LocalClient for Fresh {
+        fn supports_capability(&self, _: &str, _: &CallBudget) -> bool {
+            false
+        }
+        fn call(&self, _: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            unreachable!("a fresh read goes through call_definitive")
+        }
+        fn call_with_output(
+            &self,
+            _: Command,
+            _: &crate::protocol::output::OutputSpec,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            unreachable!("a fresh read goes through call_definitive")
+        }
+        fn call_definitive(
+            &self,
+            command: Command,
+            _: &CallBudget,
+        ) -> Result<Result<CommandResult, ApiError>, ApiError> {
+            assert!(matches!(command, Command::Capabilities));
+            (self.0)()
+        }
+    }
+
+    fn presentation(client: &impl LocalClient) -> PresentedKey {
+        continuity_key_presentation(&keyed_env("clone-1"), true, client, &budget())
+    }
+
+    #[test]
+    fn a_failed_capability_read_is_unknown() {
+        let transport = Fresh(|| Err(ApiError::new(ErrorCode::DeadlineExceeded, "lost")));
+        assert_eq!(presentation(&transport), PresentedKey::Unknown);
+        let busy = Fresh(|| Ok(Err(ApiError::new(ErrorCode::ServiceBusy, "booting"))));
+        assert_eq!(presentation(&busy), PresentedKey::Unknown);
+        // Not a list: the daemon answered nothing about the capability.
+        let other = Fresh(|| Ok(Ok(CommandResult::SeatResolved(SeatId::new("s")))));
+        assert_eq!(presentation(&other), PresentedKey::Unknown);
+        // The cached reading was no: this process waits for the next event's read.
+        let naming = Fresh(|| {
+            Ok(Ok(CommandResult::Capabilities(CapabilityList {
+                capabilities: vec![SEAT_CONTINUITY_KEY_V1.to_owned()],
+            })))
+        });
+        assert_eq!(presentation(&naming), PresentedKey::Unknown);
+    }
+
+    #[test]
+    fn a_definitive_no_is_absent() {
+        assert_eq!(presentation(&Fake(&[])), PresentedKey::Absent);
+        let older = Fresh(|| Ok(Err(ApiError::new(ErrorCode::UnknownWireVersion, "old"))));
+        assert_eq!(presentation(&older), PresentedKey::Absent);
+        let refused = Fresh(|| Ok(Err(ApiError::new(ErrorCode::Unsupported, "old"))));
+        assert_eq!(presentation(&refused), PresentedKey::Absent);
+        assert_eq!(
+            presentation(&Fake(&[SEAT_CONTINUITY_KEY_V1])),
+            PresentedKey::Present(ContinuityKey::new("clone-1"))
+        );
+    }
+
+    #[test]
+    fn a_keyless_caller_or_subagent_is_absent_and_asks_nothing() {
+        let keyless = CallerEnv::from_lookup(|_| None);
+        assert_eq!(
+            continuity_key_presentation(&keyless, true, &Panics, &budget()),
+            PresentedKey::Absent
+        );
+        assert_eq!(
+            continuity_key_presentation(&keyed_env("clone-1"), false, &Panics, &budget()),
+            PresentedKey::Absent
+        );
+    }
+
+    // The resolve arm runs after `ActiveGuard` dropped, so `active_is_top_level` answers true here.
+    #[test]
+    fn a_subagents_seat_resolve_presents_no_key() {
+        use crate::cli::caller::{CallerOrigin, fix_origin};
+        use crate::harness::caller_env::EnvClaim;
+        use crate::protocol::{
+            authority::{CallerRole, Harness, LivenessFingerprint},
+            ids::{AgentId, NativeSessionId},
+        };
+        let claim = |role, agent_id| {
+            CallerOrigin::Agent(EnvClaim {
+                harness: Harness::Claude,
+                native_session: NativeSessionId::new("sess-1"),
+                agent_id,
+                role,
+                fingerprint: LivenessFingerprint::TEST,
+                provenance: "test",
+            })
+        };
+        let parsed = crate::cli::commands::parse_argv([
+            "herdr-threads",
+            "seat",
+            "resolve",
+            "--pane",
+            "w1:p1",
+        ])
+        .unwrap();
+        let key = |client: &dyn LocalClient| {
+            resolve_arm_key(
+                &parsed,
+                &keyed_env("clone-1"),
+                &HostTargetId::new("w1:p1"),
+                true,
+                client,
+                &budget(),
+            )
+        };
+        let client = Fake(&[SEAT_CONTINUITY_KEY_V1]);
+        {
+            let _origin = fix_origin(claim(CallerRole::Subagent, Some(AgentId::new("agent-1"))));
+            assert!(crate::cli::caller::active_is_top_level(), "no guard here");
+            assert_eq!(key(&Panics), Ok(None));
+        }
+        let _origin = fix_origin(claim(CallerRole::TopLevel, None));
+        assert_eq!(key(&client), Ok(Some(ContinuityKey::new("clone-1"))));
+    }
+
+    // Kills: an unread capability read as no key, which sends a keyless `ResolveSeat` and mints a
+    // hookless keyed clone a second seat.
+    #[test]
+    fn own_pane_and_resolve_arm_refuse_on_an_unread_capability() {
+        let transport = Fresh(|| Err(ApiError::new(ErrorCode::DeadlineExceeded, "lost")));
+        let own = HostTargetId::new("w1:p1");
+        let refused = |result: Result<Option<ContinuityKey>, ApiError>| {
+            let error = result.expect_err("refused, never Ok(None)");
+            assert_eq!(error.code, ErrorCode::ServiceBusy);
+            assert_eq!(error.detail, KEY_CAPABILITY_UNREAD);
+        };
+        refused(own_pane_continuity_key(
+            &keyed_env("clone-1"),
+            &own,
+            true,
+            true,
+            &transport,
+            &budget(),
+        ));
+        let parsed = crate::cli::commands::parse_argv([
+            "herdr-threads",
+            "seat",
+            "resolve",
+            "--pane",
+            "w1:p1",
+        ])
+        .unwrap();
+        refused(resolve_arm_key(
+            &parsed,
+            &keyed_env("clone-1"),
+            &own,
+            true,
+            &transport,
+            &budget(),
+        ));
+        // A keyless caller asks nothing and sends no key.
+        let keyless = CallerEnv::from_lookup(|_| None);
+        assert_eq!(
+            own_pane_continuity_key(&keyless, &own, true, true, &Panics, &budget()),
+            Ok(None)
+        );
+        assert_eq!(
+            resolve_arm_key(&parsed, &keyless, &own, true, &Panics, &budget()),
+            Ok(None)
+        );
+        // Another pane is never keyed, so an unread capability does not refuse it.
+        assert_eq!(
+            own_pane_continuity_key(
+                &keyed_env("clone-1"),
+                &HostTargetId::new("w1:p2"),
+                true,
+                true,
+                &Panics,
+                &budget()
+            ),
+            Ok(None)
+        );
+        assert_eq!(KEY_CAPABILITY_UNREAD.len(), 80);
     }
 
     #[test]

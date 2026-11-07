@@ -497,6 +497,41 @@ fn service_history_after_is_byte_identical_to_native_history() {
     assert_eq!(bytes(&service_second), bytes(&native_second));
 }
 
+/// Kills: `ContinuityAlerts` still refused, asking for an operation key, journaling its answer or
+/// leaving a write behind.
+#[test]
+fn alerts_journal_nothing() {
+    let fx = fixture();
+    fx.conn
+        .execute(
+            "INSERT INTO continuity_alerts(key,host_id,target_id,kind,at) VALUES ('clone-1',(SELECT min(host_id) FROM herdr_hosts),'pane','key_live_elsewhere',7)",
+            [],
+        )
+        .unwrap();
+    let journaled = |fx: &Fixture| -> i64 {
+        fx.conn
+            .query_row("SELECT count(*) FROM operations", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = journaled(&fx);
+    let query = ServiceOperation::ContinuityAlerts(ServiceContinuityAlertsQuery {
+        page: PageRequest::default(),
+    });
+    assert_eq!(query.operation_key(), None);
+    for _ in 0..2 {
+        let result = fx
+            .store
+            .service_operation(query.clone(), &fx.connection, &fx.gate, &budget(), None)
+            .unwrap();
+        let ServiceResult::ContinuityAlerts(page) = result else {
+            panic!("alerts answered {result:?}");
+        };
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].key, ContinuityKey::new("clone-1"));
+        assert_eq!(journaled(&fx), before);
+    }
+}
+
 #[test]
 fn service_history_unknown_thread_and_bad_cursor() {
     let mut fx = fixture();
@@ -626,6 +661,8 @@ fn service_receipts_equals_native_delivery_inspect_and_shows_states() {
         },
         &budget(),
     )
+    .unwrap()
+    .into_job()
     .unwrap();
     for _ in 0..20 {
         if StorePort::advance_retirement(

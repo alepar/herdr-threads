@@ -108,6 +108,12 @@ test('a pane seat still stops permanently on no_pane', async () => {
   h.core.dispose()
 })
 
+test('a pane seat: the continuity key is not forwarded; the watch child keeps the argv-only spawn', async ($, on) => {
+  const spawned = await startMod($, on, { HERDR_THREADS_CONTINUITY_KEY: 'clone-1' }, [connected])
+  expect(spawned[0].argv).toEqual(['ht-named', 'watch', '--harness', 'claude', '--session', 'named-1'])
+  expect(spawned[0].env).toBeUndefined()
+})
+
 test('a Herdr pane session spawns the child with the unchanged argv-only event', async ($, on) => {
   const spawned = await startMod($, on, {}, [connected])
   expect(spawned[0].argv).toEqual(['ht-named', 'watch', '--harness', 'claude', '--session', 'named-1'])

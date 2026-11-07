@@ -1,0 +1,71 @@
+# Final review, cluster 14: src-service (epic ht-ma6i)
+
+Source: base cf13ed76c1c2871b321ad290d03229cb785c400e, head 0755e609de0328e6d73584dd65eb2854e1fd7bf7, both verified with `git rev-parse --verify`. The caller checkout was at the reviewed head and clean at the last check. No caller file was edited and no build or test was run: this is a static reading of the three slices and the sources they name.
+
+## What the cluster changes
+
+The cluster is three files and 91 diff lines.
+
+- `src/service/dispatch.rs`: `continuity_key: None` on four production `ResolveSeat` builders (lines 673, 764, 1241, 1317) and on three test command literals in `operator_tests`.
+- `src/service/kicks.rs`: six new `KNOWN_UNMAPPED` entries.
+- `src/service/launch_gate.rs`: `continuity_key: None` in `allocate_seat`.
+
+## Checks against the spec
+
+**Keyless builders (spec 4.2, "`ResolveSeat` presents the key only for the caller's own pane, never `launch` resolving another pane").** All four dispatch sites resolve a pane a bootstrap or automatic-bootstrap flow created, and only to hand a guard to `with_bootstrap_observation`. `allocate_seat` resolves a pane the gate-only launch created. None is the caller's own pane, so `None` is correct. A keyless `ordinary_resolution_digest` keeps its old domain (`src/store/seats/resolution.rs:119`), so replay of these operations is unchanged. The scrub half holds as well: `child_env_scrub_list` and `gate_shim_scrub_list` both carry `HERDR_THREADS_CONTINUITY_KEY` (`src/host/mod.rs:34-40`).
+
+**Dispatch arms that carry a real key (B1).** I traced three arms, and each passes the whole command on without rebuilding it, so the field survives.
+
+- `Command::ResolveSeat` (line 2204) goes to `identity.resolve`, then `resolve_seat`, then `judge_key`.
+- `Command::CheckIn` (line 2161) goes to `PermitMutation::CheckIn`, then `register_available`, then `key_decision` and `settle_key`, with its own digest domain (`src/store/seats/cooperative.rs:602`).
+- `Command::ContinuityCheckIn` (line 2255) goes to `identity.continuity`, whose evidence comes from `claim_evidence` (`src/identity/repair.rs:1149`).
+
+The named-host branch of the `ResolveSeat` arm goes to `resolve_named_seat`, which never reads the key. A non-Herdr host answers `Unreserved` in `key_decision` (`src/store/seats/continuity.rs:523`), which matches "a key presented from either is ignored". `tests/store/continuity_key_decisions.rs:929` and `:1490` pin this.
+
+**Table classification.** Migration 0016 creates exactly six new tables, apart from the `allocation_decisions` rebuild, and all six are listed. `every_table_is_classified` (`tests/store/commit_kicks.rs:262`) would fail on a missing or stale name. I compared the lists by reading; I did not run that test.
+
+**The comment's claim that no new table needs its own lane mapping.** I tested it against the frozen fragment, because a lifted freeze with no kick would leave a due row waiting for the deadline lane's safety tick.
+
+- Un-retire: `shift_pending_deadlines` writes `receipts`, `receipt_state` and `invitations`, all in `DEADLINE_TABLES`. A seat with no pending deadline writes nothing there and has nothing to scan.
+- Finalization: inserts `retirements`, also in `DEADLINE_TABLES`, on the home node and on a peer. The Apply origin keeps the Deadlines kick (`kicks_for_commit`).
+- Fence and un-retire: both write `seats`, which reaches the wake lane and the mod worker. The reversible fence writes no `retirements` row, and no job exists to advance, so losing that kick is correct.
+- Conflict and key tables: read only at resolution and inspect.
+
+The mapping is sound for the four tables that have writers at this head.
+
+**`classify_wake_rows` and the mod channel view.** No change was needed. A reversibly retired seat reads `state='retired'`, and the channel path refuses it through `view.retired` at line 1903. An un-retired seat reads unresolved and is refused through `!view.continuity_resolved`. It has no binding, so it has no harness and classifies as `WakeEpisode::Other`, never `no_wake`.
+
+## Requirement baseline rows
+
+- B1 and B2: the cluster's share is the dispatch arms above and the reconcile outcome match, and it holds. The service-operation route (`service_connection.rs`, `service_controls.rs`) and the close path (`identity/reconcile.rs`, `store/control/retirement.rs`) leave this cluster, so they are the seam reviewer's to trace.
+- B3: no threads change is required, and none is here.
+- B4: no Herdr change is in this cluster.
+
+## Gap outside the changed lines
+
+G2 and G5 are not in the baseline rows, but they are in the spec Goal and in sections 4.1 and 4.4, and the review standard is the epic's spec. Neither is implemented at the reviewed head.
+
+- `src/identity/shell_continuity.rs` does not exist, and neither `decide_shell_continuity` nor any shell fingerprint recording pass exists.
+- `src/service/workers.rs`, which the G2 bead lists as a touched file, has an empty diff. Only three files changed under `src/service/`.
+- In `src/`, `seat_shell_fingerprints` and `restored_target_absence` appear only in the `kicks.rs` lines this cluster added. No production code reads or writes either table.
+- `structural_shell_continuity` appears only in the migration's CHECK.
+- `restored_target_absent` appears in the migration and in one parser arm (`src/store/seats/reversible.rs:216`), with no producer.
+- Spec 4.1 says "the allocation path kicks the lane", and the G2 bead accepts on "Allocation kicks the lane". Neither `launch_gate::allocate_seat` nor the `Command::ResolveSeat` arm has a kick. `note_named_seat` is the only allocation kick, and it serves named seats only.
+- Beads ht-ma6i.1, ht-ma6i.4 and ht-ma6i.11 are open. `task-ht-ma6i.1` and `task-ht-ma6i.4` have no commits ahead of the head. The ledger's last lines on them read "waiting on ht-ma6i.16". All of ht-ma6i.1's and ht-ma6i.4's listed blockers read closed when I queried them, so I observed the state but cannot attribute why the run reached final review without them.
+
+The three changed files have no defect of their own. The verdict rests on this gap alone.
+
+## Verdict
+not ready (spec G2 and G5 have no implementation or lane wiring at the reviewed head; beads ht-ma6i.1, ht-ma6i.4 and ht-ma6i.11 are open)
+
+## Must fix before landing
+- Spec 4.1 (G2) and 4.4 (G5) are undelivered at 0755e609d: no `identity::shell_continuity`, no fingerprint recording or absence pass, no `src/service/workers.rs` change, no allocation kick in `launch_gate::allocate_seat` or the `Command::ResolveSeat` arm, and `seat_shell_fingerprints` and `restored_target_absence` have no production reader or writer, so "live handoff recovers every unnamed non-person pane seat" and "a seat whose pane never came back stops waiting for an operator" do not hold; land ht-ma6i.1 and ht-ma6i.4 and run the ht-ma6i.11 sweep, then re-review the resulting range, or have the human record the scope change in the spec.
+
+## Untested scope
+- No test sends a keyed `Command::ResolveSeat`, `CheckIn` or `ContinuityCheckIn` through the `DomainService` dispatch arms: a search for keyed literals under `tests/` finds only `tests/cli/journal.rs`, `tests/store/continuity_key_decisions.rs` and `tests/store/restored_pane.rs`, `tests/service/continuity_key_session.rs` covers reservation and release, and the end-to-end coverage belongs to the open ht-ma6i.11 sweep.
+- No test pins that un-retire or finalization of a seat with a pending deadline kicks `Lane::Deadlines`: `tests/service/reversible_session.rs` and the `tests/store/reversible_*` suites have no kick or pacer assertion, so promptness rests on the table map as read here.
+- `launch_scrubs_the_continuity_key` (`tests/cli/launch.rs:3275`) asserts the scrub lists and not a started gate shim's environment, as the ht-ma6i.6 task ledger already records.
+- This review ran no tests, including `every_table_is_classified`; the full-suite measurement is recorded as deferred to the caller.
+
+## Deferred OK
+- The `KNOWN_UNMAPPED` comment says the writers of these tables change seats or attention in the same transaction, which does not describe `continuity_keys` reservation or alert rows or the two tables with no writer yet; these tables do not need a lane either way, so the wording is imprecise and harmless.

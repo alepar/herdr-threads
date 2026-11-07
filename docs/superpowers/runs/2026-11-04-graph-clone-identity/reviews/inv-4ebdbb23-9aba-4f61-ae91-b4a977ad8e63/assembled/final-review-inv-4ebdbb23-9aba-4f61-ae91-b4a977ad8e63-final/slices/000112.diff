@@ -1,0 +1,12 @@
+diff --git a/tests/hc_messaging.rs b/tests/hc_messaging.rs
+index 334723f06..a019099dd 100644
+--- a/tests/hc_messaging.rs
++++ b/tests/hc_messaging.rs
+@@ -1441,6 +1441,7 @@ fn retry_of_a_journaled_intent_needs_no_herdr() {
+                 target: target.clone(),
+             },
+             SemanticMutation::ResolveSeat {
++                continuity_key: None,
+                 host: HostLocator::parse(herdr.to_string_lossy()).unwrap(),
+                 target,
+             },

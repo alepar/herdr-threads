@@ -1,0 +1,21 @@
+diff --git a/tests/service.rs b/tests/service.rs
+index 21a54eb3c..76da542a1 100644
+--- a/tests/service.rs
++++ b/tests/service.rs
+@@ -88,6 +88,8 @@ pub(crate) fn agent_caller(
+ const HOST_IO_WRITER_PROBE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+ #[path = "service/composition.rs"]
+ mod composition;
++#[path = "service/continuity_key_session.rs"]
++mod continuity_key_session;
+ #[path = "service/graph_d2.rs"]
+ mod graph_d2;
+ #[path = "service/graph_send.rs"]
+@@ -102,5 +104,7 @@ mod presentation_owner_budget_controls;
+ mod resolution;
+ #[path = "service/retirement_health.rs"]
+ mod retirement_health;
++#[path = "service/reversible_session.rs"]
++mod reversible_session;
+ #[path = "service/turn_state.rs"]
+ mod turn_state;

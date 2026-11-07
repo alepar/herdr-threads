@@ -2,8 +2,13 @@
 //! the remote row, discovery without prior interaction, and own-seat restore
 //! after a wipe.
 
-use herdr_threads::ports::{ClosureEvidence, RetirementJob, WorkAdmission};
-use herdr_threads::protocol::ids::{HostBootId, HostTargetId, RetirementJobId, SeatId, ThreadId};
+use herdr_threads::ports::{
+    ClosureEvidence, OperatorRequest, RetirementJob, RetirementStart, WorkAdmission,
+};
+use herdr_threads::protocol::commands::OperatorRetire;
+use herdr_threads::protocol::ids::{
+    HostBootId, HostTargetId, OperationId, RetirementJobId, SeatId, ThreadId,
+};
 use herdr_threads::protocol::results::{ApiError, ErrorCode};
 use herdr_threads::store::control;
 use herdr_threads::sync::facts::seat::SeatRetiredPayload;
@@ -278,7 +283,11 @@ pub fn begin_retirement(node: &Node, seat: &SeatId) -> Result<RetirementJob, Api
     let proof = closure_proof(node, seat);
     let mut conn = node.raw();
     let _guard = write_guard::arm(&conn);
-    control::begin_retirement(node.ctx(), &mut conn, seat.clone(), proof)
+    control::begin_retirement(node.ctx(), &mut conn, seat.clone(), proof).map(|start| {
+        start
+            .into_job()
+            .expect("a keyless seat's retirement has a job")
+    })
 }
 
 fn retired_payloads(node: &Node) -> Vec<SeatRetiredPayload> {
@@ -314,6 +323,70 @@ fn add_obligations(a: &Node, seat: &SeatId) {
                VALUES('mRetire00001','tRetire0001','{s}','pending',90,0,90);"
         ))
         .unwrap();
+}
+
+/// A published key holder's reversible close authors no `seat.retired`; its finalization does, with
+/// the original `retired_at`, and a peer then retires it. The whole flow runs under the armed write
+/// guard. Kills: a fact authored at the fence, a finalization stamping its own time, an unscoped
+/// replicated write. `seat.retired_reversible` belongs to ht-ma6i.7.
+#[test]
+fn a_published_key_holder_authors_seat_retired_only_at_finalization() {
+    let reg = registry();
+    let (a, b) = (Node::with(47, reg), Node::with(48, reg));
+    let seat = b.mint_seat(0);
+    b.add_local_seat(&seat);
+    b.enroll(&seat, "codex", "session-1").unwrap();
+    fact_exchange::sync(&a.store, &b.store);
+    let proof = closure_proof(&b, &seat);
+    let mut conn = b.raw();
+    let instance: String = conn
+        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    {
+        let tx = conn.transaction().unwrap();
+        let author = herdr_threads::store::service_substrate::ensure_reserved_author(
+            &tx,
+            &instance,
+            herdr_threads::protocol::time::UtcMillis(0),
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO continuity_keys(key,owner_author_id,seat_id,reserved_at,bound_at,bound_by) VALUES ('k',?1,?2,1,1,'service_reservation')",
+            [author.as_str(), seat.as_str()],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let _guard = write_guard::arm(&conn);
+    assert_eq!(
+        control::begin_retirement(b.ctx(), &mut conn, seat.clone(), proof).unwrap(),
+        RetirementStart::Reversible
+    );
+    assert_eq!(b.seat(&seat).unwrap().0, "retired");
+    assert_eq!(b.count_kind("seat.retired"), 0);
+    let retired_at: i64 = conn
+        .query_row(
+            "SELECT retired_at FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    herdr_threads::store::seats::mutate_operator(
+        b.ctx(),
+        &mut conn,
+        &instance,
+        OperatorRequest::Retire(OperatorRetire {
+            seat: seat.clone(),
+            operation: OperationId::new("finalize"),
+        }),
+        herdr_threads::test_support::operator_actor(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(b.count_kind("seat.retired"), 1);
+    assert_eq!(retired_payloads(&b)[0].retired_at, retired_at);
+    fact_exchange::sync(&a.store, &b.store);
+    assert_eq!(a.seat(&seat).unwrap().0, "retired");
 }
 
 #[test]

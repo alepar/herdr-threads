@@ -36,6 +36,9 @@ fn transient_refusals_keep_the_claim_and_definitive_ones_do_not() {
         ErrorCode::TargetAlreadyOwned,
         ErrorCode::InvalidRequest,
         ErrorCode::LivenessFingerprintRequired,
+        // A key conflict's refusal and a claimless key are definitive: never kept (ht-ma6i.2).
+        ErrorCode::TargetUnresolved,
+        ErrorCode::ContinuityKeyPending,
     ] {
         assert!(
             !continuity_not_ready(&Err(refused(code.clone()))),
@@ -64,4 +67,29 @@ fn a_replay_settles_only_a_recorded_decision_or_a_definitive_refusal() {
             "{code:?}"
         );
     }
+}
+
+/// Kills: a kept keyed claim decided without its key, at intake or by the observation worker.
+#[test]
+fn a_claim_rests_on_its_key_when_it_presents_one() {
+    let mut command = ContinuityCheckIn {
+        host: crate::test_support::test_host_locator(),
+        target: crate::protocol::ids::HostTargetId::new("p"),
+        harness: crate::protocol::authority::Harness::Claude,
+        native_session: crate::protocol::ids::NativeSessionId::new("n"),
+        source: ContinuityCheckIn::RESUME_SOURCE.into(),
+        operation: crate::protocol::ids::OperationId::new("op"),
+        execution: crate::protocol::ids::ExecutionId::new("e"),
+        liveness: None,
+        continuity_key: None,
+    };
+    assert_eq!(
+        claim_evidence(&command),
+        crate::ports::ContinuityEvidence::Cooperative
+    );
+    command.continuity_key = Some(crate::protocol::ids::ContinuityKey::new("k"));
+    assert_eq!(
+        claim_evidence(&command),
+        crate::ports::ContinuityEvidence::Key
+    );
 }

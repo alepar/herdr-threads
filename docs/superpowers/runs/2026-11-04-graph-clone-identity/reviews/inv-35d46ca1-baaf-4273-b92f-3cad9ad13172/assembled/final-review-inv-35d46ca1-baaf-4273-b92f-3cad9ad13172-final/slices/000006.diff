@@ -1,0 +1,11 @@
+diff --git a/docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-1-step-back-keys.txt b/docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-1-step-back-keys.txt
+new file mode 100644
+index 000000000..05b6236a4
+--- /dev/null
++++ b/docs/superpowers/runs/2026-11-04-graph-clone-identity/2026-11-05-graph-clone-identity-roast-design-1-step-back-keys.txt
+@@ -0,0 +1,5 @@
++r1 [Should-fix] §4.3 'a message it sends meanwhile reaches the home node as an ordinary fact whose receipt stays frozen with the rest'; 'Existing reads already do the rest, and each is a test, not new code'
++r1 [Should-fix] §4.3 'Existing reads already do the rest, and each is a test, not new code'; §3 'nothing that un-retire would have to rebuild is ever released'; 'It adds no predicate to the roughly 80 retired read sites'
++r1 [Should-fix] §4.2 'What a conflict does' `continuity_key_conflicts(host_id, target_id PK, key, kind, seat_id NULL, first_seen_at)`; 'appends one row to `continuity_alerts` when the row is new'
++r1 [Should-fix] §4.2 'What a conflict does' ('While the row stands and the pane has no resolved owner, ordinary resolution ... is refused'; 'pane_owned_by_other_seat and seat_holds_other_key only alert')
++r1 [Nit] Goal 'live handoff recovers every unnamed non-person pane seat unattended' vs §4.1 'A shell that is unreadable, leads no session, or has no controlling tty records nothing and is retried next pass'

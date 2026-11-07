@@ -1,0 +1,39 @@
+diff --git a/src/store/mod.rs b/src/store/mod.rs
+index eb212e262..f3c0c09a4 100644
+--- a/src/store/mod.rs
++++ b/src/store/mod.rs
+@@ -6,6 +6,7 @@ pub(crate) mod attribution;
+ pub mod bindings;
+ pub mod catch_up;
+ pub mod connection;
++pub mod continuity_keys;
+ pub mod control;
+ pub(crate) mod delivery_tail;
+ pub mod effective;
+@@ -71,7 +72,7 @@ use crate::{
+         HostObservation, HostObservationAdmission, InvalidationSeatPage, OperationReadScope,
+         OperatorRequest, PokeDue, PokeReceipt, PokeReservation, PriorLadder, PruneProgress,
+         PublishedSnapshot, ReadContext, ReceiptSparseCursor, ReconciliationOutcome,
+-        RegisterAvailableRequest, RetirementJob, RetirementProgress, RetirementSummary,
++        RegisterAvailableRequest, RetirementProgress, RetirementStart, RetirementSummary,
+         SendPreparationProgress, SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader,
+         SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate,
+         WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
+@@ -3143,7 +3144,7 @@ impl StorePort for SqliteStore {
+         seat: SeatId,
+         proof: ClosureEvidence,
+         budget: &CallBudget,
+-    ) -> Result<RetirementJob, ApiError> {
++    ) -> Result<RetirementStart, ApiError> {
+         let mut writer = self.writer(budget)?;
+         control::begin_retirement(&self.context, &mut writer, seat, proof)
+     }
+@@ -3775,7 +3776,7 @@ pub fn cooperative_permit_request(
+             v.claim.clone(),
+             v.operation.clone(),
+             ObligationRef::CheckIn(v.claim.seat.clone()),
+-            schema::canonical_digest(&seats::check_in_payload(v))?,
++            seats::check_in_digest(v)?,
+             Some(v.mode),
+         ),
+         PermitMutation::BeginHandoff(v) => (

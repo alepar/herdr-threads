@@ -544,6 +544,7 @@ impl Fixture {
                 operation: OperationId::new(operation),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             }),
             &self.budget(),
         )
@@ -662,6 +663,7 @@ fn first_contact_read_waits_for_the_lane_capture_it_needs() {
                     operation: OperationId::new("first-contact"),
                     locator_hint: None,
                     tmux_hint: None,
+                    continuity_key: None,
                 }),
                 &budget,
             )
@@ -1036,6 +1038,7 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
                 operation: OperationId::new("late-read"),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             }),
             &budget,
         )
@@ -1211,6 +1214,7 @@ fn real_ipc_reused_resolution_key_for_different_target_rejects_before_host_read(
             operation: OperationId::new("same-key"),
             locator_hint: None,
             tmux_hint: None,
+            continuity_key: None,
         }),
         &fixture.budget(),
     );
@@ -1671,6 +1675,7 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     let fixture = Fixture::new(false);
     let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     let semantic = SemanticMutation::ResolveSeat {
+        continuity_key: None,
         host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("w1:p1"),
     };
@@ -1767,6 +1772,7 @@ fn disconnected_short_budget_cannot_commit_queued_resolution_after_writer_unlock
         operation: OperationId::new("expired-queued-resolution"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     });
     #[cfg(feature = "test-support")]
     let completion = ServerCompletion::resolution("expired-queued-resolution");
@@ -1933,6 +1939,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         },
         claim: claim.clone(),
         operation: OperationId::new("writer-during-held-search"),
+        continuity_key: None,
     });
     assert!(matches!(
         LocalClient::call(&fixture.client(), check_in, &fixture.budget()).unwrap(),
@@ -2106,6 +2113,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
         operation: OperationId::new("historical-resolve"),
         locator_hint: None,
         tmux_hint: None,
+        continuity_key: None,
     };
     let CommandResult::SeatResolved(seat) = fixture.resolve(request.operation.as_str()).unwrap()
     else {
@@ -2356,6 +2364,7 @@ fn elected_snapshot_and_target_captures_share_one_lane_and_dirty_refresh() {
                     operation: OperationId::new("ordered"),
                     locator_hint: None,
                     tmux_hint: None,
+                    continuity_key: None,
                 }),
                 &budget,
             )
@@ -2547,6 +2556,7 @@ fn queued_incoherent_compensation<'w>(
                 operation,
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             },
             &budget,
         ));
@@ -2701,6 +2711,7 @@ fn elected_shutdown_is_not_held_by_invalidation_compensation() {
                 operation: OperationId::new("elected-shutdown-read"),
                 locator_hint: None,
                 tmux_hint: None,
+                continuity_key: None,
             }),
             &budget,
         ));
