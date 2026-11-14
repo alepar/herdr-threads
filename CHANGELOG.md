@@ -4,9 +4,14 @@
 
 Minor release: a new harness.
 
+### Changed
+
+- **`follow` and human `read` name an agent `workspace/tab/pane`.** An agent author reads `project/tryout/alice`: the workspace and tab labels (else their IDs) and the pane label, left out for an unnamed pane (`project/tryout`). The seat ID is no longer part of the name. When the pane is named and its labels are shown unaltered (not clipped or escaped), the name also works as a `--seat SPACE/TAB/PANE` selector. Person seats and the bare seat ID shown without host labels are unchanged (ht-io66).
+
 ### Added
 
 - **opencode.** An opencode session is a seat like Claude Code's: `herdr-threads setup opencode` installs an owned plugin and the skill under opencode's config directory, the plugin enrolls each top-level session at its first prompt, puts message bodies into the session as hidden messages and wakes an idle session itself, and `launch` / `handoff --kind opencode` start it. `doctor` reports a plugin that never loaded. Limits are in the [opencode guide](integrations/opencode/README.md#limits) (ht-vxdp).
+- **`follow --show-ids`** (also `read --follow --show-ids`) shows each author's pane ID and seat ID on a second line under its name; a seat on another machine shows its seat ID only (ht-io66).
 
 ## v3.1.2
 

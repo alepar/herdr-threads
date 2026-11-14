@@ -1552,7 +1552,22 @@ fn read_follow_parses_its_options_and_refuses_page_selectors() {
             recent: FOLLOW_DEFAULT_RECENT,
             after: None,
             no_system: false,
+            show_ids: false,
         })
+    );
+    for argv in [
+        vec!["herdr-threads", "follow", "thread-1", "--show-ids"],
+        vec!["herdr-threads", "read", "thread-1", "--follow", "--show-ids"],
+    ] {
+        let parsed = parse_argv(argv.clone()).unwrap();
+        let CliAction::Follow(request) = parsed.action else {
+            panic!("expected follow: {argv:?}")
+        };
+        assert!(request.show_ids, "{argv:?}");
+    }
+    assert!(
+        parse_argv(["herdr-threads", "read", "thread-1", "--show-ids"]).is_err(),
+        "--show-ids needs --follow"
     );
     let parsed = parse_argv([
         "herdr-threads",
