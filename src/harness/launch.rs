@@ -995,7 +995,9 @@ pub fn submit_prepared(
                     | ErrorCode::UnknownOutcome
             ) =>
         {
-            Ok(NativeLaunchOutcome::OutcomeUnknown)
+            Ok(NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false,
+            })
         }
         result => result.map_err(|failure| failure.error),
     }
@@ -1027,12 +1029,17 @@ pub fn submit_prepared_with_evidence(
                         | ErrorCode::UnknownOutcome
                 ) =>
         {
-            return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            return Ok(NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false,
+            });
         }
         Err(err) => return Err(err),
     };
+    let process_hint_skipped = outcome.process_hint_skipped();
     if budget.is_exhausted(clock) {
-        return Ok(NativeLaunchOutcome::OutcomeUnknown);
+        return Ok(NativeLaunchOutcome::OutcomeUnknown {
+            process_hint_skipped,
+        });
     }
     match outcome {
         NativeLaunchOutcome::ObservedStartup {
@@ -1051,9 +1058,10 @@ pub fn submit_prepared_with_evidence(
                 diagnostic,
             })
         }
-        NativeLaunchOutcome::ObservedStartup { .. } | NativeLaunchOutcome::OutcomeUnknown => {
-            Ok(NativeLaunchOutcome::OutcomeUnknown)
-        }
+        NativeLaunchOutcome::ObservedStartup { .. }
+        | NativeLaunchOutcome::OutcomeUnknown { .. } => Ok(NativeLaunchOutcome::OutcomeUnknown {
+            process_hint_skipped,
+        }),
     }
 }
 

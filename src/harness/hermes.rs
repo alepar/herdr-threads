@@ -32,7 +32,8 @@ static TEXT: AdapterText = AdapterText {
           separate. A bare Hermes CLI session in a Herdr pane then joins through these
           hooks. From Hermes 0.22.1 (one shared gateway) the profile must also list
           HERDR_PANE_ID and HERDR_ENV in terminal.client_env_passthrough, or no
-          session is seated. After upgrading, run setup again so the installed
+          session is seated: setup adds them through `hermes config set` (merge
+          only; new sessions only). After upgrading, run setup again so the installed
           bridge is current; setup-status reports each profile's enablement and
           whether its bridge is current. Unsetup preserves foreign/modified assets
           and native YAML/enable selection, reporting residue and manual disable
@@ -40,15 +41,14 @@ static TEXT: AdapterText = AdapterText {
     launch_notes: "Hermes is experimental, natively
 measured on 0.21.5 with a private Herdr build; a bare Hermes CLI session also
 joins through its hooks; this launch adds the guarded process hint that lets Herdr
-recognize it. Its separate startup/profile/API prelaunch observation
+recognize it, when Herdr advertises it. Its separate startup/profile/API prelaunch observation
 must match the selected executable, owned generation and configured enabled profile.
 Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
 --cli and one policy-owned chat token compose the captured interactive grammar.
 Known-arity model/provider options and chat -q/--query are supported in their native
 positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
 approval bypass forms refuse. Launch never enables a plugin or grants native consent.
-The private host must support guarded process hints; a hint or observed launch is
-neither callback activation nor model consumption. No composer stash/restore.",
+A hint or observed launch is neither callback activation nor model consumption. No composer stash/restore.",
     ..AdapterText::NONE
 };
 static METADATA: AdapterMetadata = AdapterMetadata {
@@ -843,6 +843,7 @@ impl HarnessAdapter for HermesAdapter {
             process_match: Some(is_hermes_launcher),
             pid_var: None,
             paneless: None,
+            session_marker_vars: &[],
         })
     }
     /// The parent registers a Hermes child session as a subagent binding keyed by the child.
@@ -1249,11 +1250,47 @@ impl HarnessAdapter for HermesAdapter {
             .ok_or_else(|| SetupFailure::Invalid("host unavailable".into()))?;
         check_setup_budget(&request.environment, budget)?;
         assets::setup(&o, state, &request.executable, host).map_err(asset_error)?;
-        let status = assets::status(&o, state).map_err(asset_error)?;
+        let mut status = assets::status(&o, state).map_err(asset_error)?;
+        // The shared gateway learns a session's pane only from these client env
+        // names. Added through Hermes's own CLI, merge only; a failure never fails
+        // setup, it names what to merge.
+        let mut passthrough = None;
+        if o.passthrough_missing.as_ref().is_none_or(|m| !m.is_empty()) {
+            let native = request
+                .native_binary
+                .clone()
+                .or_else(|| launcher(&request.environment));
+            let change = native
+                .ok_or(runtime::ProbeFailure::Malformed)
+                .and_then(|native| {
+                    runtime::ensure_passthrough(&native, &o.profile, &request.environment, budget)
+                });
+            passthrough = match change {
+                Ok(runtime::PassthroughChange::Complete) => None,
+                Ok(runtime::PassthroughChange::Added(names)) => {
+                    Some(format!("added {} (new sessions only)", names.join(", ")))
+                }
+                Err(_) => Some(format!(
+                    "not added (new sessions only): merge {} into {}",
+                    runtime::PASSTHROUGH_NAMES.join(", "),
+                    runtime::PASSTHROUGH_KEY
+                )),
+            };
+            if passthrough
+                .as_ref()
+                .is_none_or(|line| line.starts_with("added"))
+            {
+                status.passthrough_missing = Some(vec![]);
+            }
+        }
+        let mut projection = asset_projection(&status);
+        if let Some(line) = passthrough {
+            projection["client_env_passthrough"] = line.into();
+        }
         Ok(SetupOutcome {
             actions: vec![SetupAction::InstalledOwned],
             diagnostic: "owned assets staged; native enable remains manual".into(),
-            projection: asset_projection(&status),
+            projection,
             diagnostics: vec![],
         })
     }
@@ -1281,7 +1318,7 @@ impl HarnessAdapter for HermesAdapter {
                 observed: None,
                 configured_hook: s.launch_hook.clone(),
                 fingerprint: s.launch_hook.as_ref().map(|h| h.fingerprint.clone()),
-                diagnostics: vec![],
+                diagnostics: status_diagnostics(&s),
                 repairs: vec![],
                 projection: asset_projection(&s),
             })),
@@ -1334,8 +1371,54 @@ impl HarnessAdapter for HermesAdapter {
         Ok(removal_outcome(removed))
     }
 }
+/// Model-visible (setup-status, doctor): the plugin API shape the bridge uses was not
+/// recognized by callability. Launch proceeds with the API reported `unverified`.
+const API_UNRECOGNIZED: &str = "Hermes plugin API shape not recognized; launch proceeds unverified";
+fn status_diagnostics(s: &assets::AssetStatus) -> Vec<SetupDiagnostic> {
+    let mut rows = vec![];
+    if !s.api_recognized {
+        rows.push(SetupDiagnostic::new(
+            "hermes_plugin_api_unrecognized",
+            DiagnosticSeverity::Warning,
+            API_UNRECOGNIZED,
+        ));
+    }
+    if let Some(line) = passthrough_line(s) {
+        // No manual argv: a ready-to-run `config set` would replace the listed
+        // names; `setup hermes` merges.
+        rows.push(SetupDiagnostic::new(
+            "hermes_client_env_passthrough",
+            DiagnosticSeverity::Warning,
+            &line,
+        ));
+    }
+    rows
+}
+/// Model-visible (setup-status, doctor; nothing when complete): which required
+/// passthrough names a shared-gateway session lacks, and how to add them.
+fn passthrough_line(s: &assets::AssetStatus) -> Option<String> {
+    match &s.passthrough_missing {
+        Some(missing) if missing.is_empty() => None,
+        Some(missing) => Some(format!(
+            "missing {} (new sessions only): run `herdr-threads setup hermes --profile {}`",
+            missing.join(", "),
+            s.profile
+        )),
+        None => Some(format!(
+            "unknown: profile config unreadable; new sessions need {} in {}",
+            runtime::PASSTHROUGH_NAMES.join(" and "),
+            runtime::PASSTHROUGH_KEY
+        )),
+    }
+}
 fn asset_projection(s: &assets::AssetStatus) -> serde_json::Value {
     let mut projection = serde_json::json!({"installed":s.installed,"configured_enabled":s.configured_enabled,"repairable":s.repairable,"manual_argv":s.manual_argv,"native_acceptance":"unmet","bridge_current":s.bridge_current});
+    if !s.api_recognized {
+        projection["plugin_api"] = API_UNRECOGNIZED.into();
+    }
+    if let Some(line) = passthrough_line(s) {
+        projection["client_env_passthrough"] = line.into();
+    }
     if s.bridge_current == Some(false) || !s.bridge_missing_events.is_empty() {
         let fix = format!("herdr-threads setup hermes --profile {}", s.profile);
         projection["stale_install"] = serde_json::json!({
@@ -1413,18 +1496,28 @@ fn inspect_profile(
     runtime::discover_selected_profile(&native, &helper, profile, env, budget)
         .map_err(|_| SetupFailure::Invalid("Hermes profile inspection unavailable".into()))
 }
+/// The owned inspection helper's file name under `<state>/setup`, named by its content:
+/// an upgraded helper never meets an older build's file (an owned file is never
+/// overwritten), and that older file stays behind unused.
+pub fn runtime_helper_file_name() -> String {
+    let digest = super::setup::fingerprint(RUNTIME_HELPER);
+    let hex = digest.trim_start_matches("sha256:");
+    format!("hermes-runtime-helper-{}.py", &hex[..16])
+}
+const RUNTIME_HELPER: &[u8] = include_bytes!("../../integrations/hermes/runtime_helper.py");
 fn inspection_helper(env: &SetupEnvironment) -> Result<PathBuf, SetupFailure> {
     let helper = env
         .state_dir
         .as_ref()
         .ok_or_else(|| SetupFailure::Invalid("state unavailable".into()))?
-        .join("setup/hermes-runtime-helper.py");
+        .join("setup")
+        .join(runtime_helper_file_name());
     crate::daemon::paths::ensure_private_dir(helper.parent().unwrap()).map_err(SetupFailure::Io)?;
     use std::{
         io::Write,
         os::unix::fs::{MetadataExt, OpenOptionsExt},
     };
-    let expected = include_bytes!("../../integrations/hermes/runtime_helper.py");
+    let expected = RUNTIME_HELPER;
     let mut options = std::fs::OpenOptions::new();
     options
         .write(true)
@@ -2380,11 +2473,48 @@ mod adapter_tests {
         );
     }
     #[test]
+    fn passthrough_status_is_silent_when_complete_and_unknown_is_not_missing() {
+        let status = |missing: Option<Vec<String>>| assets::AssetStatus {
+            profile: "work".into(),
+            installed: true,
+            bridge_current: Some(true),
+            bridge_missing_events: vec![],
+            repairable: false,
+            configured_enabled: Some(true),
+            manual_argv: vec![],
+            launch_hook: None,
+            launch_settings: None,
+            api_recognized: true,
+            passthrough_missing: missing,
+        };
+        let complete = status(Some(vec![]));
+        assert!(
+            asset_projection(&complete)
+                .get("client_env_passthrough")
+                .is_none()
+        );
+        assert!(status_diagnostics(&complete).is_empty());
+        let unknown = status(None);
+        let line = "unknown: profile config unreadable; new sessions need HERDR_PANE_ID and HERDR_ENV in terminal.client_env_passthrough";
+        assert_eq!(asset_projection(&unknown)["client_env_passthrough"], line);
+        let rows = status_diagnostics(&unknown);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text, line);
+        assert!(rows[0].manual_argv().is_none());
+        let one = status(Some(vec!["HERDR_ENV".into()]));
+        assert!(
+            asset_projection(&one)["client_env_passthrough"]
+                .as_str()
+                .unwrap()
+                .starts_with("missing HERDR_ENV (new sessions only): ")
+        );
+    }
+    #[test]
     fn foreign_helper_content_is_preserved_before_any_launcher_execution() {
         let iso = crate::test_support::isolation::TestIsolation::new("hermes-helper-ownership");
         let setup = iso.path("setup");
         crate::daemon::paths::ensure_private_dir(&setup).unwrap();
-        let helper = setup.join("hermes-runtime-helper.py");
+        let helper = setup.join(runtime_helper_file_name());
         std::fs::write(&helper, b"foreign helper bytes").unwrap();
         let environment = SetupEnvironment {
             state_dir: Some(iso.state_root().into()),
@@ -2450,13 +2580,20 @@ mod adapter_tests {
                 package.join("plugins_dispatch.py"),
                 "class PluginDispatchMixin:\n def invoke_hook(self): pass\n",
             ),
+            // The 0.23.1 layout (Hermes 26f1f47fca): PluginContext lives in
+            // plugins_context.py and plugins.py re-exports it.
+            (
+                package.join("plugins_context.py"),
+                "class PluginContext:\n def register_hook(self): pass\n def on_unload(self): pass\n",
+            ),
             (
                 package.join("plugins.py"),
-                "from hermes_cli.plugins_dispatch import PluginDispatchMixin\nclass PluginContext:\n def register_hook(self): pass\n def on_unload(self): pass\nclass PluginManager(PluginDispatchMixin): pass\nVALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n",
+                "from hermes_cli.plugins_dispatch import PluginDispatchMixin\nfrom hermes_cli.plugins_context import PluginContext\nclass PluginManager(PluginDispatchMixin): pass\nVALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n",
             ),
             (
                 package.join("config.py"),
-                "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':['herdr-threads'],'disabled':[]},'other':{'keep':True}}\n",
+                // The passthrough list is the one the synthetic `config set` writes.
+                "import json,os\nclass FailedConfigRead(dict): pass\ndef load_config_readonly():\n p=os.environ['FIXTURE_PASSTHROUGH']\n t={'client_env_passthrough':json.load(open(p))} if os.path.exists(p) else {}\n return {'plugins':{'enabled':['herdr-threads'],'disabled':[]},'other':{'keep':True},'terminal':t}\n",
             ),
         ] {
             std::fs::write(path, bytes).unwrap();
@@ -2466,8 +2603,10 @@ mod adapter_tests {
             serde_json::to_string(root.to_str().unwrap()).unwrap()
         );
         let launcher = iso.path("synthetic-hermes");
+        // `config get/set` stand in for Hermes's own CLI over FIXTURE_PASSTHROUGH;
+        // a `.fail` sibling makes both fail, and every call is logged.
         let script = format!(
-            "#!{}\nimport json,sys\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n",
+            "#!{}\nimport json,os,sys\nif 'config' in sys.argv:\n verb=sys.argv[sys.argv.index('config')+1];p=os.environ['FIXTURE_PASSTHROUGH']\n open(p+'.calls','a').write(verb+' '+sys.argv[2]+'\\n')\n if os.path.exists(p+'.fail'): sys.exit(3)\n if verb=='get':\n  if not os.path.exists(p): sys.stderr.write('Config key not set: terminal.client_env_passthrough\\n');sys.exit(1)\n  print(open(p).read());sys.exit(0)\n open(p,'w').write(sys.argv[-1]);sys.exit(0)\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n",
             interpreter.display(),
             serde_json::to_string(interpreter.to_str().unwrap()).unwrap(),
             serde_json::to_string(&bootstrap).unwrap()
@@ -2484,6 +2623,10 @@ mod adapter_tests {
                 ("HERMES_HOME".into(), home.clone().into_os_string()),
                 ("FIXTURE_HOME".into(), home.clone().into_os_string()),
                 ("FIXTURE_DEP".into(), dependencies.into_os_string()),
+                (
+                    "FIXTURE_PASSTHROUGH".into(),
+                    iso.path("passthrough.json").into_os_string(),
+                ),
             ]
             .into(),
             ..Default::default()
@@ -2572,8 +2715,66 @@ mod adapter_tests {
             name: "work".into(),
             home: observed.home.clone(),
         };
+        // Missing names are merged after the listed ones through Hermes's CLI.
+        let passthrough = iso.path("passthrough.json");
+        let calls =
+            || std::fs::read_to_string(iso.path("passthrough.json.calls")).unwrap_or_default();
+        std::fs::write(&passthrough, r#"["PATH"]"#).unwrap();
         let installed = HermesAdapter.setup(&request, &budget()).unwrap();
         assert_eq!(installed.projection["native_acceptance"], "unmet");
+        assert_eq!(
+            installed.projection["client_env_passthrough"],
+            "added HERDR_PANE_ID, HERDR_ENV (new sessions only)"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(&passthrough).unwrap()
+            )
+            .unwrap(),
+            serde_json::json!(["PATH", "HERDR_PANE_ID", "HERDR_ENV"])
+        );
+        // The second `get` confirms the write (a managed install's `set` exits 0 unwritten).
+        assert_eq!(calls(), "get work\nset work\nget work\n");
+        // Complete: no call at all, nothing extra reported.
+        let again = HermesAdapter.setup(&request, &budget()).unwrap();
+        assert!(again.projection.get("client_env_passthrough").is_none());
+        assert_eq!(calls(), "get work\nset work\nget work\n");
+        // A failing Hermes CLI never fails setup; it names what to merge, never a
+        // ready-to-run `config set` (that would replace the listed names).
+        std::fs::write(&passthrough, r#"["PATH"]"#).unwrap();
+        std::fs::write(iso.path("passthrough.json.fail"), "").unwrap();
+        let failed = HermesAdapter.setup(&request, &budget()).unwrap();
+        assert_eq!(
+            failed.projection["client_env_passthrough"],
+            "not added (new sessions only): merge HERDR_PANE_ID, HERDR_ENV into terminal.client_env_passthrough"
+        );
+        let SetupStatus::Detailed(missing) = HermesAdapter.status(
+            &StatusRequest {
+                scope: request.scope.clone(),
+                environment: environment.clone(),
+                native_binary: request.native_binary.clone(),
+            },
+            &budget(),
+        ) else {
+            panic!("status refused missing passthrough names")
+        };
+        let line = "missing HERDR_PANE_ID, HERDR_ENV (new sessions only): run `herdr-threads setup hermes --profile work`";
+        assert_eq!(missing.projection["client_env_passthrough"], line);
+        assert_eq!(missing.diagnostics.len(), 1);
+        assert_eq!(missing.diagnostics[0].text, line);
+        assert!(
+            missing.diagnostics[0].manual_argv().is_none(),
+            "no `config set` argv: it would replace the listed names"
+        );
+        std::fs::remove_file(iso.path("passthrough.json.fail")).unwrap();
+        HermesAdapter.setup(&request, &budget()).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(&passthrough).unwrap()
+            )
+            .unwrap(),
+            serde_json::json!(["PATH", "HERDR_PANE_ID", "HERDR_ENV"])
+        );
         assert!(
             observed
                 .home
@@ -2617,9 +2818,59 @@ mod adapter_tests {
         assert_eq!(prepared.report["hermes"]["api"], "presence_only");
         assert_eq!(prepared.report["hermes"]["native_acceptance"], "unmet");
         assert_eq!(prepared.report["hermes"]["callback_qualified"], false);
-        policy
+        assert!(status.diagnostics.is_empty());
+        assert!(status.projection.get("plugin_api").is_none());
+        let stamp = policy
             .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget())
             .unwrap();
+        assert_eq!(
+            stamp,
+            policy
+                .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget())
+                .unwrap()
+        );
+        // An unrecognizable plugin API degrades launch to `unverified`; the profile
+        // observation, the owned hook and a deterministic recheck remain.
+        let plugins = std::fs::read(package.join("plugins.py")).unwrap();
+        std::fs::write(package.join("plugins.py"), "PluginContext = None\n").unwrap();
+        let unverified = policy
+            .observe_prelaunch(&launch_request, &scope, &budget())
+            .expect("an unrecognized plugin API must not refuse launch");
+        let degraded = policy
+            .prepare_prelaunch(
+                &launch_request,
+                &scope,
+                unverified.as_ref(),
+                &status,
+                &NoShell,
+                &budget(),
+            )
+            .unwrap();
+        assert_eq!(degraded.report["hermes"]["api"], "unverified");
+        assert_eq!(degraded.hook, prepared.hook);
+        let unverified_stamp = policy
+            .recheck_prelaunch(&launch_request, &scope, unverified.as_ref(), &budget())
+            .unwrap();
+        assert_eq!(
+            unverified_stamp,
+            policy
+                .recheck_prelaunch(&launch_request, &scope, unverified.as_ref(), &budget())
+                .unwrap()
+        );
+        let SetupStatus::Detailed(degraded_status) = HermesAdapter.status(
+            &StatusRequest {
+                scope: request.scope.clone(),
+                environment: environment.clone(),
+                native_binary: request.native_binary.clone(),
+            },
+            &budget(),
+        ) else {
+            panic!("status refused an unrecognized plugin API")
+        };
+        assert_eq!(degraded_status.diagnostics.len(), 1);
+        assert_eq!(degraded_status.diagnostics[0].text, API_UNRECOGNIZED);
+        assert_eq!(degraded_status.projection["plugin_api"], API_UNRECOGNIZED);
+        std::fs::write(package.join("plugins.py"), plugins).unwrap();
         std::fs::write(package.join("config.py"), "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':[],'disabled':['herdr-threads']}}\n").unwrap();
         assert_eq!(
             policy

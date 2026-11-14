@@ -13,6 +13,7 @@ from collections import OrderedDict
 import contextvars
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -34,9 +35,25 @@ HOOKS = ("pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset
 CHILD_EVENTS = ("subagent_start", "subagent_stop")
 IDS = ("platform", "session_id", "parent_session_id", "task_id", "turn_id", "tool_call_id", "api_request_id")
 SLOT = "_herdr_threads_hermes_reader_schema1"
+LOG = logging.getLogger(__name__)
 # Hermes 0.22.1+ filters HERDR_THREADS_CONTINUITY_KEY on both sides, so it stays empty for a gateway session.
 PANE_ENV = ("HERDR_PANE_ID", "HERDR_ENV", "HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY",
             "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "HERDR_THREADS_CONTINUITY_KEY")
+# The once-per-session notice of a gateway session whose client sent no pane (no hook runs for it).
+# Setup helps only a client that runs in a Herdr pane, so the remedy is conditional (114 bytes).
+NO_PANE_NOTICE = 'herdr-threads: no pane; in a Herdr pane, ask your user to run "herdr-threads setup hermes" and start a new session'
+PROFILE_NAME = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+def no_pane_notice(profile):
+    """NO_PANE_NOTICE for the gateway's profile: the default profile needs no flag, a named one
+    names itself (" --profile NAME", 10 bytes plus the name), an unknown one the placeholder
+    (" [--profile NAME]", 17 bytes)."""
+    if profile == "default":
+        return NO_PANE_NOTICE
+    flag = (f" --profile {profile}" if isinstance(profile, str) and 0 < len(profile) <= 64
+            and set(profile) <= PROFILE_NAME and not profile.startswith("-") else " [--profile NAME]")
+    return NO_PANE_NOTICE.replace("setup hermes", "setup hermes" + flag, 1)
 CHILD_RESTRICTION = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent."
 # First 16 SHA-256 hex chars of sorted compact JSON of the normalized schema
 # declaration in testdata/callbacks.json. This identifies transport, not the
@@ -318,7 +335,8 @@ def read_settings(asset):
     if len(raw) > 65536:
         raise ValueError("config_too_large")
     settings = strict_json(raw)
-    if (not isinstance(settings, dict) or set(settings) != {
+    # foreign_session_env (the other harnesses' session variables) is absent in an older install.
+    if (not isinstance(settings, dict) or set(settings) - {"foreign_session_env"} != {
             "schema_version", "rust_executable", "state_root", "host_endpoint",
             "bridge_schema_version", "installation_token"}
             or type(settings["schema_version"]) is not int or settings["schema_version"] != 1
@@ -328,7 +346,26 @@ def read_settings(asset):
     for key in ("rust_executable", "state_root", "host_endpoint"):
         if not opaque(settings[key], limit=4096) or not os.path.isabs(settings[key]):
             raise ValueError("config_unavailable")
+    foreign = settings.setdefault("foreign_session_env", [])
+    if (not isinstance(foreign, list) or len(foreign) > 64
+            or any(not opaque(name, limit=128) or name in PANE_ENV or name.upper().startswith("HERMES_")
+                   for name in foreign)):
+        raise ValueError("config_unavailable")
     return settings
+
+
+def session_pane():
+    """The bound session client's pane values (name -> str, None for a name it did not send), False
+    when that client sent no pane, None when no client env is bound (classic CLI, or unbound)."""
+    scope = sys.modules.get("agent.session_client_env")
+    bound = getattr(scope, "bound_client_env", None)
+    client = bound() if callable(bound) else None
+    if not isinstance(client, dict):
+        return None
+    if not (opaque(client.get("HERDR_PANE_ID")) or opaque(client.get("HERDR_THREADS_SEAT_NAME"))
+            or (opaque(client.get("HC_TERMINAL_ID")) and opaque(client.get("HC_TERMINAL_SOCKET")))):
+        return False
+    return {key: client[key] if isinstance(client.get(key), str) else None for key in PANE_ENV}
 
 
 def pane_env():
@@ -343,15 +380,12 @@ def pane_env():
     (agent.session_client_env, carried by terminal.client_env_passthrough). A gateway turn without
     one refuses rather than claim the gateway's pane. The native module is observed, never imported.
     """
-    scope = sys.modules.get("agent.session_client_env")
-    bound = getattr(scope, "bound_client_env", None)
-    client = bound() if callable(bound) else None
-    if isinstance(client, dict):
-        if not (opaque(client.get("HERDR_PANE_ID")) or opaque(client.get("HERDR_THREADS_SEAT_NAME"))
-                or (opaque(client.get("HC_TERMINAL_ID")) and opaque(client.get("HC_TERMINAL_SOCKET")))):
-            return False
+    pane = session_pane()
+    if pane is False:
+        return False
+    if pane is not None:
         env = {key: value for key, value in os.environ.items() if key not in PANE_ENV}
-        env.update({key: client[key] for key in PANE_ENV if isinstance(client.get(key), str)})
+        env.update({key: value for key, value in pane.items() if value is not None})
         return env
     if os.environ.get("_HERMES_GATEWAY") == "1":
         return False
@@ -371,11 +405,122 @@ def shape(kwargs):
                   "type": kind(kwargs[key]) if key in kwargs else "absent"} for key in IDS}
 
 
+class Sessions:
+    """Per-session pane values for the session's tool subprocesses (``ctx.register_session_env``).
+
+    In the gateway every session's tools inherit the gateway's pane, so the resolver gives a session
+    the pane its client sent. Hermes calls the resolver inside the executing turn's client env scope
+    (the tool spawn's own context), so the bound client env decides first: its pane, or every pane
+    name unset when it names none; the resolver records that pane under the id it was asked for, so
+    a mid-turn compression's rotated session id resolves later too. Only with no client env bound
+    (a background job outside the turn) does the table recorded by the session's hooks answer: a
+    delegated child, or a compression or branch successor, resolves to its parent, and a session
+    with no recorded pane gets every pane name unset. A classic CLI process is its pane's own:
+    nothing is recorded and no pane name is touched. The other harnesses' session variables are
+    never a Hermes session's own, so they are always unset.
+    """
+    LIMIT = 256
+
+    def __init__(self, foreign):
+        self.lock = threading.Lock()
+        self.panes = OrderedDict()  # top-level session -> pane values
+        self.parents = OrderedDict()  # delegated child session -> parent session
+        self.noticed = OrderedDict()  # sessions already shown NO_PANE_NOTICE
+        self.foreign = tuple(foreign)
+        self.names = PANE_ENV + self.foreign
+
+    def put(self, table, key, value):
+        with self.lock:
+            table[key] = value
+            table.move_to_end(key)
+            while len(table) > self.LIMIT:
+                table.popitem(last=False)
+
+    def observe(self, name, kwargs):
+        """Record what a callback says about its session; never raises, never blocks for long."""
+        try:
+            if name in CHILD_EVENTS:
+                child = kwargs.get("child_session_id", kwargs.get("session_id"))
+                parent = kwargs.get("parent_session_id")
+                if opaque(child) and opaque(parent) and child != parent:
+                    if name == "subagent_start":
+                        self.put(self.parents, child, parent)
+                    else:
+                        with self.lock:
+                            self.parents.pop(child, None)
+                return
+            session, platform = kwargs.get("session_id"), kwargs.get("platform")
+            if not opaque(session):
+                return
+            if platform == "subagent":
+                parent = kwargs.get("parent_session_id")
+                if name == "pre_llm_call" and opaque(parent) and parent != session:
+                    self.put(self.parents, session, parent)
+            elif platform in (None, "", "cli"):
+                if name == "on_session_finalize":
+                    with self.lock:
+                        self.panes.pop(session, None)
+                        self.parents.pop(session, None)
+                        self.noticed.pop(session, None)
+                    return
+                parent = kwargs.get("parent_session_id")
+                if name == "pre_llm_call" and opaque(parent) and parent != session:
+                    # A compression or branch successor continues its predecessor's session.
+                    self.put(self.parents, session, parent)
+                pane = session_pane()
+                if isinstance(pane, dict):
+                    self.put(self.panes, session, pane)
+                elif pane is False:
+                    # The session's client now sends no pane: never serve the stale one.
+                    with self.lock:
+                        self.panes.pop(session, None)
+        except Exception:
+            pass
+
+    def notice(self, session):
+        """True only the first time it is asked for a session."""
+        with self.lock:
+            if session in self.noticed:
+                return False
+        self.put(self.noticed, session, True)
+        return True
+
+    def resolve(self, session_id):
+        try:
+            values = dict.fromkeys(self.foreign)
+            bound = session_pane()
+            if bound is False:
+                # The executing turn's client sent no pane: never the gateway's or a stale one.
+                if opaque(session_id):
+                    with self.lock:
+                        self.panes.pop(session_id, None)
+                values.update(dict.fromkeys(PANE_ENV))
+                return values
+            if isinstance(bound, dict):
+                if opaque(session_id):
+                    self.put(self.panes, session_id, bound)
+                values.update(bound)
+                return values
+            with self.lock:
+                session, hops = session_id, 0
+                while session not in self.panes and session in self.parents and hops < 8:
+                    session, hops = self.parents[session], hops + 1
+                pane = self.panes.get(session)
+            if pane is not None:
+                values.update(pane)
+            elif os.environ.get("_HERMES_GATEWAY") == "1":
+                values.update(dict.fromkeys(PANE_ENV))
+            return values
+        except Exception:
+            return None
+
+
 class Bridge:
     """Metadata/role projection only; Rust owns durable lifecycle and all authority."""
     def __init__(self, settings, reader):
         self.settings = settings
         self.reader = reader
+        self.sessions = Sessions(settings.get("foreign_session_env", ()))
         self.role_lock = threading.Lock()
         self.roles = OrderedDict()
         self.entry_lock = threading.Lock()
@@ -478,6 +623,7 @@ class Bridge:
         return self.callback("subagent_stop", kwargs)
 
     def callback(self, name, kwargs):
+        self.sessions.observe(name, kwargs)
         try:
             return self._callback(name, kwargs)
         except Exception:
@@ -552,6 +698,11 @@ class Bridge:
             return {"context": CHILD_RESTRICTION}
         env = pane_env()
         if env is False:
+            # Delegated children returned above: a top-level turn of an unseated gateway session.
+            if name == "pre_llm_call" and self.sessions.notice(session):
+                startup = observation.get("startup_capture")
+                profile = startup.get("profile") if isinstance(startup, dict) else None
+                return {"context": no_pane_notice(profile)}
             return None
         # Exact native session/turn key is stable across callback retries and
         # process restarts. Observers/missing turns have invocation-only IDs.
@@ -777,7 +928,7 @@ def pre_tool_call(tool_name=None, args=None, **_):
     if gated is None:
         return None
     return {"action": "approve", "rule_key": f"herdr-threads:{gated}",
-            "message": f"`herdr-threads {gated}` acts for the person or changes agent permissions"}
+            "message": f"`herdr-threads {gated}` is the user's to run; the agent should ask rather than run it"}
 
 
 def register(ctx):
@@ -801,6 +952,15 @@ def register(ctx):
         ctx.on_unload(bridge.close)
         for name in HOOKS:
             ctx.register_hook(name, getattr(bridge, name))
+        # Hermes with per-session tool env (feature-detected, never version-gated); without it a
+        # session's tools keep the gateway's environment.
+        register_env = getattr(ctx, "register_session_env", None)
+        if callable(register_env):
+            try:
+                register_env(list(bridge.sessions.names), bridge.sessions.resolve)
+            except Exception as error:
+                # Refused (e.g. another plugin holds a name): tools keep the gateway's pane.
+                LOG.warning("herdr-threads: session tool env not registered: %s", error)
     except Exception:
         if bridge is not None:
             bridge.close()

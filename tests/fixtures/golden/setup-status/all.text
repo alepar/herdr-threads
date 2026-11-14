@@ -4,7 +4,7 @@ claude: foreground user settings: required; execution unknown
 codex: installed; codex contract declared (codex-hooks-v1); <root>/codex home/hooks.json
 codex: pane environment: not installed
 codex: foreground user settings: required; execution unknown
-hermes: skipped: requires explicit harness selection for a profile scope
+hermes: skipped: not checked; run: herdr-threads setup-status hermes [--profile NAME]
 agy: not installed; no executable `agy` on PATH; <root>/home/.gemini/config/plugins/herdr-threads/hooks.json
 agy: plugin <root>/home/.gemini/config/plugins/herdr-threads
 agy: allow entry command(herdr-threads): not-granted

@@ -413,9 +413,12 @@ fn validate_report(
         )
         .into_iter()
         .any(|text| {
-            template
-                .apply(&p.launch.argv, &text)
-                .is_ok_and(|(v, _)| argv == Some(&serde_json::json!(v)))
+            // The launch reports the adapter's composition of the applied caller argv (identity
+            // for an adapter that launches the caller arguments unchanged).
+            template.apply(&p.launch.argv, &text).is_ok_and(|(v, _)| {
+                crate::harness::launch::compose_bootstrap_v2_argv(p.launch.harness, v)
+                    .is_ok_and(|v| argv == Some(&serde_json::json!(v)))
+            })
         })
     } else {
         crate::cli::handoff::bootstrap_v1::retained_argv_matches(

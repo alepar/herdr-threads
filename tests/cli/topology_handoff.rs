@@ -50,6 +50,24 @@ impl LocalClient for ReadOnly {
         }
     }
 }
+/// [`ReadOnly`] against a daemon that completes automatic plans against the adapter's composition.
+struct ComposedArgvReadOnly;
+impl LocalClient for ComposedArgvReadOnly {
+    fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+        name == crate::protocol::capabilities::AUTOMATIC_HANDOFF_COMPOSED_ARGV_V1
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        output: &crate::protocol::output::OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        ReadOnly.call_with_output(command, output, budget)
+    }
+    fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+        ReadOnly.call(command, budget)
+    }
+}
 fn request() -> Request {
     Request {
         new_terminal: false,
@@ -1783,8 +1801,24 @@ mod live {
         not_submitted: bool,
         change_binding_before_gate: Option<std::path::PathBuf>,
         remove_directory_on_preflight: Option<std::path::PathBuf>,
+        /// Report the applied caller argv instead of the adapter's composition of it.
+        report_uncomposed_argv: bool,
     }
     impl super::super::super::handoff::HandoffLauncher for DownstreamLauncher {
+        /// The adapter's composition, as the production launcher prepares it.
+        fn native_input(
+            &mut self,
+            request: &super::super::super::launch::LaunchRequest,
+        ) -> Result<Vec<String>, RunError> {
+            let argv = crate::harness::launch::compose_native_argv(
+                request.harness.into(),
+                request.argv.clone(),
+                vec![],
+            )?;
+            crate::ports::validate_native_argv(&argv)
+                .map_err(super::super::super::invalid_request)?;
+            Ok(argv)
+        }
         fn preflight_saved(
             &mut self,
             _: &super::super::super::launch::LaunchRequest,
@@ -1844,6 +1878,9 @@ mod live {
             let mut report = serde_json::json!({"outcome":if self.unknown {"outcome_unknown"} else {"started"},"pane":request.target,"seat":seat,"harness":request.harness.as_str(),"argv":argv});
             if self.invalid_report {
                 report["seat"] = serde_json::json!("different-seat");
+            }
+            if self.report_uncomposed_argv {
+                report["argv"] = serde_json::json!(request.argv);
             }
             if self.max_report {
                 report["padding"] = serde_json::json!("");
@@ -7146,7 +7183,7 @@ mod live {
                         topology: &topology(),
                         invocation_cwd: base._temp.path(),
                         options: None,
-                        client: &ReadOnly,
+                        client: &ComposedArgvReadOnly,
                         clock: &base.clock,
                     },
                 )
@@ -10380,9 +10417,11 @@ mod live {
                 .count()
         }
 
-        /// The automatic route refuses an adapter whose composition rewrites the applied caller
-        /// argv before the host preflight, journal publication, tab creation, launch or any
-        /// store write: such a launch could never complete against the automatic plan.
+        /// Against a daemon that does not advertise the composed-argv completion (the fixture's
+        /// client advertises nothing), the automatic route still refuses an adapter whose
+        /// composition rewrites the applied caller argv before the host preflight, journal
+        /// publication, tab creation, launch or any store write: such a daemon compares the
+        /// report with the applied argv, so the launch could never complete.
         #[test]
         fn parsed_new_tab_automatic_route_refuses_a_rewriting_kind_before_any_effect() {
             let peer = AutoPeer::new();
@@ -10438,6 +10477,93 @@ mod live {
             assert_eq!(intent_count(&peer.base.journal), intents_before);
             assert_eq!(ordinary_and_invitation_counts(&peer), before);
             assert!(output.is_empty());
+        }
+
+        fn resume_hermes(
+            peer: &AutoPeer,
+            launcher: &mut DownstreamLauncher,
+        ) -> Result<AutomaticBootstrapResult, RunError> {
+            resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                peer,
+                peer,
+                launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &crate::ports::HostWitness::HerdrSocket(peer.base.witness.clone()),
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec {
+                    format: crate::protocol::output::OutputFormat::Json,
+                    ..Default::default()
+                },
+                &mut Vec::new(),
+            )
+        }
+
+        /// An adapter whose composition rewrites the caller argv (Hermes) plans an automatic new
+        /// tab, launches the composition with `--query` placing the frozen prompt and completes:
+        /// completion matches the report against the composition of the applied caller argv.
+        #[test]
+        fn automatic_new_tab_hermes_completes_end_to_end_with_query() {
+            let peer = AutoPeer::with_kind("hermes");
+            assert_eq!(peer.identity.plan.payload.launch.harness.as_str(), "hermes");
+            assert!(peer.identity.plan.placement.is_none());
+            let before = ordinary_and_invitation_counts(&peer);
+            let mut launcher = DownstreamLauncher::default();
+            let result = resume_hermes(&peer, &mut launcher).unwrap_or_else(|error| {
+                panic!("hermes automatic bootstrap must complete: {error:?}")
+            });
+            assert_eq!(result.state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(
+                ordinary_and_invitation_counts(&peer),
+                (before.0 + 1, before.1)
+            );
+            let report = &result.completed.as_ref().expect("completed").report;
+            assert_eq!(report["harness"], "hermes");
+            let argv = report["argv"].as_array().unwrap();
+            assert_eq!(argv[0], "--profile", "{argv:?}");
+            assert_eq!(&argv[2..4], ["--cli", "chat"], "{argv:?}");
+            let query = argv
+                .iter()
+                .position(|arg| arg == "--query")
+                .unwrap_or_else(|| panic!("no --query in {argv:?}"));
+            assert_eq!(
+                query + 2,
+                argv.len(),
+                "the prompt is the flag's value, last"
+            );
+            assert!(
+                argv[query + 1]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Expected handoff command routing")
+            );
+            // The launcher got the applied caller argv; the report carries its composition.
+            assert_ne!(serde_json::json!(launcher.requests[0].argv), report["argv"]);
+        }
+
+        /// A report whose argv is not the adapter's composition of the applied caller argv (here
+        /// the uncomposed caller argv itself) never completes a composing adapter's plan.
+        #[test]
+        fn automatic_new_tab_hermes_refuses_a_report_that_is_not_the_composition() {
+            let peer = AutoPeer::with_kind("hermes");
+            let mut launcher = DownstreamLauncher {
+                report_uncomposed_argv: true,
+                ..Default::default()
+            };
+            let result = resume_hermes(&peer, &mut launcher);
+            assert!(
+                !matches!(&result, Ok(r) if r.state == BootstrapState::Completed),
+                "{result:?}"
+            );
+            assert_eq!(launcher.starts, 1);
+            assert_ne!(peer.status().state, BootstrapState::Completed);
+            assert!(peer.status().completed.is_none());
         }
 
         /// The automatic counterpart of the explicit-channel agy test: agy's composition leaves
@@ -11984,9 +12110,10 @@ fn automatic_bootstrap_preparation_freezes_v2_without_invite_or_create_child() {
     assert!(!temp.path().join("intents").exists());
 }
 
-/// Completion compares the retained native argv with the applied caller argv, so the
-/// automatic plan admits only an adapter whose composition leaves those arguments unchanged;
-/// the others are refused before any effect and pointed at the explicit-channel route.
+/// A daemon without the composed-argv completion compares the retained native argv with the
+/// applied caller argv, so against it the automatic plan admits only an adapter whose
+/// composition leaves those arguments unchanged; the others are refused before any effect and
+/// pointed at the explicit-channel route. A daemon advertising it admits them all.
 #[test]
 fn automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the_caller_argv() {
     let temp = Temp::new();
@@ -11995,7 +12122,7 @@ fn automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the
         state_dir: temp.path().join("state dir"),
         host_endpoint: "/host.sock".into(),
     };
-    let prepare = |kind: &str, argv: &[&str]| {
+    let prepare_with = |client: &dyn LocalClient, kind: &str, argv: &[&str]| {
         let mut request = kind_request(kind, argv);
         request.automatic = true;
         request.thread = None;
@@ -12007,11 +12134,12 @@ fn automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the
                 topology: &topology(),
                 invocation_cwd: temp.path(),
                 options: None,
-                client: &ReadOnly,
+                client,
                 clock: &crate::app::SystemClock::new(),
             },
         )
     };
+    let prepare = |kind: &str, argv: &[&str]| prepare_with(&ReadOnly, kind, argv);
     for (kind, argv) in [
         ("hermes", &[][..]),
         ("hermes", &["--model", "m"][..]),
@@ -12041,6 +12169,18 @@ fn automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the
         ("agy", &[][..]),
     ] {
         prepare(kind, argv).unwrap_or_else(|e| panic!("{kind} stays accepted: {e:?}"));
+    }
+    for (kind, argv) in [
+        ("hermes", &[][..]),
+        ("hermes", &["--model", "m"][..]),
+        ("synthetic_fourth", &[][..]),
+        ("claude", &[][..]),
+        ("codex", &["--model", "saved value"][..]),
+        ("agy", &[][..]),
+    ] {
+        let identity = prepare_with(&ComposedArgvReadOnly, kind, argv)
+            .unwrap_or_else(|e| panic!("{kind} accepted by a composed-argv daemon: {e:?}"));
+        assert!(identity.plan.payload.startup_input.is_some(), "{kind}");
     }
     assert!(!temp.path().join("intents").exists());
 }

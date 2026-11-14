@@ -37,6 +37,11 @@ pub struct AssetStatus {
     pub manual_argv: Vec<String>,
     pub launch_hook: Option<crate::ports::ConfiguredHook>,
     pub launch_settings: Option<LaunchAssetSettings>,
+    /// The profile observation recognized the plugin API shape (diagnostic only).
+    pub api_recognized: bool,
+    /// Required `terminal.client_env_passthrough` names the profile lacks (diagnostic
+    /// only); None when the profile config could not be read.
+    pub passthrough_missing: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +52,9 @@ pub struct LaunchAssetSettings {
     pub host_endpoint: PathBuf,
     pub bridge_schema_version: u32,
     pub installation_token: String,
+    /// Absent in a config written before the bridge unset foreign session variables.
+    #[serde(default)]
+    pub foreign_session_env: Vec<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Removal {
@@ -797,7 +805,9 @@ fn setup_with_bridge(
         return Err(SetupError::Conflict);
     }
     let token = uuid::Uuid::new_v4().to_string();
-    let config=serde_json::to_vec(&serde_json::json!({"schema_version":1,"rust_executable":rust,"state_root":state,"host_endpoint":host,"bridge_schema_version":1,"installation_token":token})).map_err(|_|SetupError::Invalid)?;
+    // The other harnesses' session variables: the bridge unsets them in a session's tools.
+    let foreign = crate::harness::registry::builtins().foreign_session_vars(super::METADATA.id);
+    let config=serde_json::to_vec(&serde_json::json!({"schema_version":1,"rust_executable":rust,"state_root":state,"host_endpoint":host,"bridge_schema_version":1,"installation_token":token,"foreign_session_env":foreign})).map_err(|_|SetupError::Invalid)?;
     let contents = [
         bridge.to_vec(),
         config,
@@ -891,6 +901,8 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
         manual_argv: guidance(&o.profile, "enable"),
         launch_hook: None,
         launch_settings: None,
+        api_recognized: o.api_recognized,
+        passthrough_missing: o.passthrough_missing.clone(),
     };
     if matches!(fs::symlink_metadata(o.physical_home.join("plugins")),Err(e) if e.kind()==std::io::ErrorKind::NotFound)
     {
@@ -1120,6 +1132,8 @@ mod tests {
                 config_quality: ConfigQuality::Successful,
                 enabled: Some(vec!["herdr-threads".into()]),
                 disabled: Some(vec!["herdr-threads".into()]),
+                api_recognized: true,
+                passthrough_missing: Some(vec![]),
             }
         }
         fn install(&self) -> Result<(), SetupError> {
@@ -1146,7 +1160,7 @@ mod tests {
         }
     }
     #[test]
-    fn stages_completed_bridge_and_six_settings_in_observed_home() {
+    fn stages_completed_bridge_and_settings_in_observed_home() {
         // Missing producer-consumer placement, stale skeleton bytes, or wrong
         // config names must break the actual asset consumer.
         let f = Fixture::new();
@@ -1161,7 +1175,24 @@ mod tests {
         assert!(plugin.contains("provides_hooks") && plugin.contains("on_session_start"));
         let config: serde_json::Value =
             serde_json::from_slice(&fs::read(dir.join("bridge_config.json")).unwrap()).unwrap();
-        assert_eq!(config.as_object().unwrap().len(), 6);
+        assert_eq!(config.as_object().unwrap().len(), 7);
+        // Derived from the registry: every other harness's session variables, never Hermes's own.
+        let foreign: Vec<&str> = config["foreign_session_env"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for var in [
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_PID",
+            "CODEX_SESSION_ID",
+            "CODEX_THREAD_ID",
+            "ANTIGRAVITY_CONVERSATION_ID",
+        ] {
+            assert!(foreign.contains(&var), "{var} missing from {foreign:?}");
+        }
+        assert!(!foreign.contains(&"HERMES_SESSION_ID"));
         assert_eq!(
             config["rust_executable"],
             f.root.join("rust executable").to_str().unwrap()

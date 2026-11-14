@@ -202,7 +202,7 @@ def owned_generation(data):
             if set(a) != {'digest', 'prior', 'bytes'} or a['bytes'] != list(raw) or 'sha256:' + hashlib.sha256(raw).hexdigest() != a['digest']:
                 raise ValueError('generation')
         settings = document(assets / 'bridge_config.json', private=True)
-        if (set(settings) != {'schema_version', 'bridge_schema_version', 'installation_token', 'rust_executable', 'state_root', 'host_endpoint'}
+        if (set(settings) - {'foreign_session_env'} != {'schema_version', 'bridge_schema_version', 'installation_token', 'rust_executable', 'state_root', 'host_endpoint'}
                 or settings['schema_version'] != 1 or settings['bridge_schema_version'] != 1
                 or settings['installation_token'] != data['installation_token']
                 or settings['rust_executable'] != data['binary'] or settings['state_root'] != data['state_root']

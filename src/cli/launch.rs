@@ -1186,7 +1186,7 @@ fn execute_guarded_inner(
             Some(correlation.agent_name.clone()),
             0,
         ),
-        NativeLaunchOutcome::OutcomeUnknown => {
+        NativeLaunchOutcome::OutcomeUnknown { .. } => {
             ("outcome_unknown", None, None, EXIT_START_UNCONFIRMED)
         }
     };
@@ -1196,11 +1196,11 @@ fn execute_guarded_inner(
         NativeLaunchOutcome::ObservedStartup { correlation, .. } => {
             Some(binding_report(&seats, correlation, parts.clock))
         }
-        NativeLaunchOutcome::OutcomeUnknown => None,
+        NativeLaunchOutcome::OutcomeUnknown { .. } => None,
     };
     // Unconfirmed: either name may now be live in the pane.
     let agent_name_candidates = match (&outcome, &seat) {
-        (NativeLaunchOutcome::OutcomeUnknown, Some(seat)) => {
+        (NativeLaunchOutcome::OutcomeUnknown { .. }, Some(seat)) => {
             Some(crate::ports::launch_agent_names(seat, name_hint.as_deref()).to_vec())
         }
         _ => None,
@@ -1250,6 +1250,12 @@ fn execute_guarded_inner(
         "binding": binding,
     });
     append_adapter_projection(&mut record, &preparation.report);
+    // The policy asked for a process hint the host does not advertise: the start frame went
+    // out without it, whether or not the start was then confirmed.
+    let hint_unsupported = outcome.process_hint_skipped();
+    if hint_unsupported {
+        record["process_hint"] = json!("host_unsupported");
+    }
     if let Some(dir) = parts.record_dir
         && let Err(error) = append_record(dir, &record)
     {
@@ -1283,6 +1289,9 @@ fn execute_guarded_inner(
         "warnings": warnings,
     });
     append_adapter_projection(&mut report, &preparation.report);
+    if hint_unsupported {
+        report["process_hint"] = json!("host_unsupported");
+    }
     if let Some(candidates) = agent_name_candidates {
         report["agent_name_candidates"] = json!(candidates);
     }
@@ -1333,6 +1342,8 @@ mod task23_tests {
         submitted: Mutex<Vec<NativeLaunchRequest>>,
         unknown: bool,
         confirmed_refusal: bool,
+        /// The host advertises no `agent_start_process_hint_v1`: the start goes without it.
+        hint_unsupported: bool,
     }
     impl FakeHost {
         fn new() -> Self {
@@ -1342,6 +1353,7 @@ mod task23_tests {
                 submitted: Mutex::new(Vec::new()),
                 unknown: false,
                 confirmed_refusal: false,
+                hint_unsupported: false,
             }
         }
         fn observation(&self) -> HostObservation {
@@ -1447,13 +1459,16 @@ mod task23_tests {
         ) -> Result<NativeLaunchOutcome, ApiError> {
             self.submitted.lock().unwrap().push(request.clone());
             if self.unknown {
-                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                return Ok(NativeLaunchOutcome::OutcomeUnknown {
+                    process_hint_skipped: request.process_hint && self.hint_unsupported,
+                });
             }
             let mut diagnostic = self.observation();
             diagnostic.occupancy = StructuralOccupancy::Occupied;
             Ok(NativeLaunchOutcome::ObservedStartup {
                 correlation: CorrelatedStartup {
                     process_hint: request.process_hint,
+                    process_hint_sent: request.process_hint && !self.hint_unsupported,
                     seat: request.seat.clone(),
                     agent_name: request.agent_name(),
                     harness: request.harness,
@@ -1766,9 +1781,68 @@ mod task23_tests {
                 "first turn's text"
             ]
         );
+        assert!(
+            report.report.get("process_hint").is_none(),
+            "the hint was sent"
+        );
         assert_eq!(seats.recorded.lock().unwrap().len(), 1);
         assert_eq!(report.report["hermes"]["callback_qualified"], false);
         assert_eq!(report.report["hermes"]["native_acceptance"], "unmet");
+    }
+
+    #[test]
+    fn hermes_launch_on_a_host_without_the_hint_starts_and_reports_it_unsent() {
+        let s = hermes_fixture();
+        let mut host = FakeHost::new();
+        host.hint_unsupported = true;
+        let seats = seats();
+        let handoff = handoff();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        let report = s
+            .launch(&host, &seats, &handoff, request(harness, &["-q", "first"]))
+            .expect("a host without the hint capability still starts the agent");
+        assert_eq!(report.exit, 0);
+        assert_eq!(report.report["outcome"], "started");
+        assert_eq!(report.report["process_hint"], "host_unsupported");
+        assert_eq!(host.submitted().len(), 1);
+        assert_eq!(
+            seats.recorded.lock().unwrap().len(),
+            1,
+            "the binding is still recorded"
+        );
+    }
+
+    #[test]
+    fn hermes_launch_unconfirmed_on_a_host_without_the_hint_reports_it_unsent() {
+        let s = hermes_fixture();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        for hint_unsupported in [true, false] {
+            let mut host = FakeHost::new();
+            host.unknown = true;
+            host.hint_unsupported = hint_unsupported;
+            let report = s
+                .launch(
+                    &host,
+                    &seats(),
+                    &handoff(),
+                    request(harness, &["-q", "first"]),
+                )
+                .expect("an unconfirmed start is a report, not an error");
+            assert_eq!(report.exit, EXIT_START_UNCONFIRMED);
+            assert_eq!(report.report["outcome"], "outcome_unknown");
+            let record = s.records().pop().expect("the launch record is written");
+            assert_eq!(record["outcome"], "outcome_unknown");
+            if hint_unsupported {
+                assert_eq!(report.report["process_hint"], "host_unsupported");
+                assert_eq!(record["process_hint"], "host_unsupported");
+            } else {
+                assert!(
+                    report.report.get("process_hint").is_none(),
+                    "the hint was sent"
+                );
+                assert!(record.get("process_hint").is_none(), "the hint was sent");
+            }
+        }
     }
 
     #[test]
@@ -1835,7 +1909,7 @@ mod task23_tests {
         assert_eq!(seats.recorded.lock().unwrap().len(), 1);
     }
     #[test]
-    fn hermes_readiness_is_diagnostic_but_missing_native_api_refuses() {
+    fn hermes_readiness_and_unrecognized_native_api_are_diagnostic() {
         for kind in ["foreign", "partial", "api", "settings"] {
             let mut s = hermes_fixture();
             let home = Path::new(s.env.declared_environment["FIXTURE_HOME"].to_str().unwrap());
@@ -1864,10 +1938,12 @@ mod task23_tests {
             let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
             let result = s.launch(&host, &seats, &handoff, request(harness, &[]));
             if kind == "api" {
-                assert!(result.is_err(), "missing selected native API refuses");
-                assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
-                assert!(host.submitted().is_empty());
-                assert!(s.records().is_empty());
+                // An unrecognizable plugin API (here plugins.py fails to import)
+                // degrades launch to an unverified API; it never refuses it.
+                let report = result.expect("an unrecognized native API must not refuse launch");
+                assert_eq!(report.report["hermes"]["api"], "unverified");
+                assert_eq!(host.submitted().len(), 1);
+                assert!(host.submitted()[0].configured_hook.is_some());
             } else {
                 assert!(result.is_ok(), "diagnostic {kind}: {result:?}");
                 assert_eq!(host.submitted().len(), 1);

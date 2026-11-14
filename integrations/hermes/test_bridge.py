@@ -275,7 +275,7 @@ class BridgeTests(unittest.TestCase):
         self.version_reads += 1
         return self.version
 
-    def load(self, wait=True):
+    def load(self, wait=True, session_env=None):
         module = types.ModuleType("synthetic_owned_plugin")
         module.__file__ = str(self.asset / "__init__.py")
         if SOURCE.exists():
@@ -313,6 +313,8 @@ class BridgeTests(unittest.TestCase):
         module.Reader.__init__ = tracked_initialize
         self.assertTrue(callable(getattr(module, "register", None)), "actual bridge registration is missing")
         ctx = self.context_type()
+        if session_env is not None:
+            ctx.register_session_env = session_env
         self.contexts.append(ctx)
         token = PROFILE.set(str(self.home))
         try:
@@ -533,7 +535,8 @@ class BridgeTests(unittest.TestCase):
             self.load()
             token = bound.set({"HC_TERMINAL_ID": "t7", "PATH": "/bin"})
             try:
-                self.assertIsNone(self.request())
+                # No hook child; the session gets only the local no-pane notice.
+                self.assertEqual(self.request(), {"context": self.module.NO_PANE_NOTICE})
             finally:
                 bound.reset(token)
         self.assertEqual(self.requests(), [])
@@ -544,15 +547,198 @@ class BridgeTests(unittest.TestCase):
             self.load()
             # A shell client's session that sent no pane (passthrough not configured), then an
             # unbound gateway turn (Desktop, messaging): neither may claim the gateway's pane.
-            for client in ({"PATH": "/bin"}, {"HERDR_PANE_ID": ""}, None):
+            # The session's first turn alone gets the local no-pane notice.
+            for index, client in enumerate(({"PATH": "/bin"}, {"HERDR_PANE_ID": ""}, None)):
                 token = bound.set(client)
                 try:
-                    self.assertIsNone(self.request())
+                    self.assertEqual(self.request(),
+                                     {"context": self.module.NO_PANE_NOTICE} if index == 0 else None)
                     self.assertIsNone(self.request("on_session_start", {**self.callbacks["qualified"], "turn_id": None}))
                 finally:
                     bound.reset(token)
         self.assertEqual(self.requests(), [])
         self.assertEqual(self.children, [])
+
+    FOREIGN = ["CLAUDE_CODE_SESSION_ID", "CLAUDE_PID", "CODEX_SESSION_ID", "CODEX_THREAD_ID",
+               "ANTIGRAVITY_CONVERSATION_ID"]
+
+    def load_session_env(self, foreign=True):
+        """Load with a fake ``ctx.register_session_env``; returns the recorded registrations."""
+        if foreign:
+            self.settings["foreign_session_env"] = self.FOREIGN
+            (self.asset / "bridge_config.json").write_text(json.dumps(self.settings))
+        registered = []
+        self.load(session_env=lambda names, resolver: registered.append((list(names), resolver)))
+        return registered
+
+    def pane_names(self):
+        return list(self.module.PANE_ENV)
+
+    def test_session_env_registers_pane_and_foreign_names_when_available(self):
+        registered = self.load_session_env()
+        self.assertEqual(len(registered), 1)
+        self.assertEqual(registered[0][0], self.pane_names() + self.FOREIGN)
+        self.assertNotIn("HERMES_SESSION_ID", registered[0][0])
+        self.assertIn("pre_llm_call", self.ctx.hooks)
+
+    def test_session_env_absent_or_raising_keeps_the_hooks(self):
+        self.load()
+        self.assertFalse(hasattr(self.ctx, "register_session_env"))
+        self.assertIn("pre_llm_call", self.ctx.hooks)
+        self.stop_readers()
+        self.contexts, self.readers = [], []
+        sys.modules.pop(SLOT, None)
+        def refuse(names, resolver):
+            raise ValueError("session env 'HERDR_PANE_ID' is already registered by 'other'")
+        with self.assertLogs(level="WARNING") as logs:
+            self.load(session_env=refuse)
+        self.assertEqual(len(logs.records), 1, "one warning when Hermes refuses the registration")
+        self.assertIn("session tool env not registered", logs.output[0])
+        self.assertEqual(set(self.ctx.hooks), set(self.module.HOOKS) | {"pre_tool_call"})
+        self.assertIsNotNone(self.request())
+
+    def test_session_env_resolves_the_recorded_session_pane_in_the_gateway(self):
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1", "_HERMES_GATEWAY": "1"}):
+            [(_, resolve)] = self.load_session_env()
+            token = bound.set({"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1", "PATH": "/bin"})
+            try:
+                self.request()
+            finally:
+                bound.reset(token)
+            expected = dict.fromkeys(self.pane_names() + self.FOREIGN)
+            expected.update({"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1"})
+            self.assertEqual(resolve("session-Ω"), expected)
+            # No known pane: every pane name unset, never the gateway's own pane.
+            self.assertEqual(resolve("other-session"), dict.fromkeys(self.pane_names() + self.FOREIGN))
+            # A delegated child resolves to its parent, by subagent_start or its own turn.
+            self.request("subagent_start", {"parent_session_id": "session-Ω", "child_session_id": "child-a"})
+            self.request("pre_llm_call", self.callbacks["child"])
+            self.assertEqual(resolve("child-a"), expected)
+            self.assertEqual(resolve("child"), expected)
+            self.request("subagent_stop", {"parent_session_id": "session-Ω", "child_session_id": "child-a"})
+            self.assertEqual(resolve("child-a"), dict.fromkeys(self.pane_names() + self.FOREIGN))
+            # Session teardown drops it.
+            self.request("on_session_finalize", {"session_id": "session-Ω", "platform": "cli"})
+            self.assertEqual(resolve("session-Ω"), dict.fromkeys(self.pane_names() + self.FOREIGN))
+            self.assertIsNone(resolve(["unhashable"]), "the resolver never raises")
+
+    def test_session_env_drops_a_pane_the_client_no_longer_sends(self):
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1", "_HERMES_GATEWAY": "1"}):
+            [(_, resolve)] = self.load_session_env()
+            token = bound.set({"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1"})
+            try:
+                self.request()
+            finally:
+                bound.reset(token)
+            self.assertEqual(resolve("session-Ω")["HERDR_PANE_ID"], "w1:p2")
+            # A later callback of the same session whose bound client env names no pane.
+            token = bound.set({"PATH": "/bin"})
+            try:
+                self.assertEqual(self.request(), {"context": self.module.NO_PANE_NOTICE})
+            finally:
+                bound.reset(token)
+            self.assertEqual(resolve("session-Ω"), dict.fromkeys(self.pane_names() + self.FOREIGN),
+                             "the stale pane is never served")
+
+    def test_session_env_bound_client_env_decides_a_rotated_session_id(self):
+        # Mid-turn compression rotates the session id before any hook of the new id has run; the
+        # tool spawn resolves inside the turn's client env scope, so the bound env answers.
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1", "_HERMES_GATEWAY": "1"}):
+            [(_, resolve)] = self.load_session_env()
+            token = bound.set({"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1"})
+            try:
+                self.request()
+                own = resolve("rotated-id")
+            finally:
+                bound.reset(token)
+            expected = dict.fromkeys(self.pane_names() + self.FOREIGN)
+            expected.update({"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1"})
+            self.assertEqual(own, expected, "the bound pane, not an unset one")
+            self.assertEqual(resolve("rotated-id"), expected,
+                             "recorded under the resolved id: a later unbound lookup finds it")
+            # A bound client env that names no pane is authoritative, even over a recorded pane.
+            token = bound.set({"PATH": "/bin"})
+            try:
+                self.assertEqual(resolve("session-Ω"), dict.fromkeys(self.pane_names() + self.FOREIGN))
+                self.assertEqual(resolve("never-seen"), dict.fromkeys(self.pane_names() + self.FOREIGN))
+            finally:
+                bound.reset(token)
+            self.assertEqual(resolve("session-Ω"), dict.fromkeys(self.pane_names() + self.FOREIGN),
+                             "the stale pane is dropped")
+
+    def test_session_env_unbound_rotated_id_falls_back_to_its_predecessor(self):
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1", "_HERMES_GATEWAY": "1"}):
+            [(_, resolve)] = self.load_session_env()
+            token = bound.set({"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1"})
+            try:
+                self.request()
+            finally:
+                bound.reset(token)
+            unset = dict.fromkeys(self.pane_names() + self.FOREIGN)
+            expected = {**unset, "HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1"}
+            # Unbound and never linked: every pane name unset.
+            self.assertEqual(resolve("successor"), unset)
+            # The successor's own parented turn links it to its predecessor (seen with no bound
+            # client env, so nothing is recorded for it directly).
+            self.request(payload={**self.callbacks["qualified"], "session_id": "successor",
+                                  "parent_session_id": "session-Ω", "turn_id": "turn-s"})
+            self.assertEqual(resolve("successor"), expected)
+
+    def test_session_env_unsets_no_pane_outside_the_gateway(self):
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1"}):
+            [(_, resolve)] = self.load_session_env()
+            self.assertIsNotNone(self.request())
+            self.assertEqual(resolve("session-Ω"), dict.fromkeys(self.FOREIGN))
+            self.assertEqual(resolve("other"), dict.fromkeys(self.FOREIGN))
+
+    def test_session_env_without_a_foreign_list_skips_it(self):
+        with patch.dict(os.environ, {"_HERMES_GATEWAY": "1"}):
+            [(names, resolve)] = self.load_session_env(foreign=False)
+            self.assertEqual(names, self.pane_names())
+            self.assertEqual(resolve("other"), dict.fromkeys(self.pane_names()))
+
+    def test_no_pane_notice_names_a_non_default_profile(self):
+        self.modules["hermes_cli.profiles"].current_profile_name = lambda default=None: "work"
+        bound = self.client_env()
+        with patch.dict(os.environ, {"_HERMES_GATEWAY": "1"}):
+            self.load()
+            self.assertEqual(self.module.no_pane_notice("default"), self.module.NO_PANE_NOTICE)
+            self.assertIn('"herdr-threads setup hermes --profile work"', self.module.no_pane_notice("work"))
+            for odd in (None, "", "two words", "-x", "a" * 65, 'q"uote'):
+                self.assertIn('"herdr-threads setup hermes [--profile NAME]"',
+                              self.module.no_pane_notice(odd))
+            token = bound.set({"PATH": "/bin"})
+            try:
+                notice = self.request()
+            finally:
+                bound.reset(token)
+        self.assertEqual(notice, {"context": self.module.no_pane_notice("work")})
+        self.assertEqual(len(notice["context"].encode()), 114 + 15)
+
+    def test_no_pane_notice_once_per_top_level_session_never_for_children(self):
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1", "_HERMES_GATEWAY": "1"}):
+            self.load()
+            token = bound.set({"PATH": "/bin"})
+            try:
+                notice = self.request()
+                self.assertEqual(notice, {"context": self.module.NO_PANE_NOTICE})
+                self.assertLessEqual(len(notice["context"].encode()), 120)
+                self.assertIn("herdr-threads setup hermes", notice["context"])
+                self.assertIsNone(self.request(payload={**self.callbacks["qualified"], "turn_id": "turn-2"}))
+                other = {**self.callbacks["qualified"], "session_id": "other-session"}
+                self.assertEqual(self.request(payload=other), notice)
+                self.assertEqual(self.request(payload=self.callbacks["child"]),
+                                 {"context": self.module.CHILD_RESTRICTION})
+                self.assertIsNone(self.request("on_session_start", {**self.callbacks["qualified"],
+                                                                    "session_id": "third", "turn_id": None}))
+            finally:
+                bound.reset(token)
+        self.assertEqual(self.requests(), [])
 
     def test_envelopes_match_rust_fixture(self):
         # The Rust strict parser is pinned to the same file
@@ -1434,6 +1620,11 @@ class PersonGateTests(unittest.TestCase):
             ("! env X=1 ht doctor fix", "doctor fix"),
         ):
             self.assertEqual(self.decide(command), ("approve", f"herdr-threads:{gated}"), command)
+
+    def test_gate_message_tells_the_agent_to_ask_its_user(self):
+        result = self.module.pre_tool_call(tool_name="terminal", args={"command": "herdr-threads setup"})
+        self.assertEqual(result["message"],
+                         "`herdr-threads setup` is the user's to run; the agent should ask rather than run it")
 
     def test_ordinary_and_unrelated_commands_pass(self):
         for command in ("herdr-threads inbox", "ht send t --body 'human setup'", "herdr-threads doctor",

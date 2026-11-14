@@ -1258,7 +1258,13 @@ model open work, and summary closure never changes receipt state or installs glo
   running its own client: the Hermes 0.22.1+ gateway) is never a pane's foreground process, so its match is
   pane-scoped: when no target matches by exact pid, it matches when Herdr reports any non-shell foreground
   process in the pane (an exact-pid match always takes precedence, so a stale gateway binding never hides
-  the pane's live foreground binding of another harness). The pane is
+  the pane's live foreground binding of another harness). When Herdr reports no non-shell foreground process
+  because the pane's root process (`shell_pid`) is alone in its foreground, that root process is classified by
+  the adapters' declared process shapes (`CallerEnvShape` process names and match, through the registry): when it
+  is a harness that spans seats and the targets of that harness are one composer (exactly one target, or several
+  that are bindings of one process: the same fingerprint pid), they match (a client `exec`ed as the pane's
+  program, ht-fr7c.7); a root that is a shell, an unrecognized program or a harness that does not span seats,
+  or targets of the harness in different processes, is no match. The pane is
   still the binding's own (targets are the bindings placed on the observed terminal, by their cooperative
   A1 pane claim); the native recheck still requires Herdr's agent kind there to be the bound harness, and
   the adapter's composer read still requires an empty, idle composer. Several matches follow the rules
@@ -2647,7 +2653,7 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   A qualified top-level turn with the same native session can recover an unresolved seat through C1;
   a confirmed no-match on an unowned pane may use the guarded Unowned-turn enrollment fallback. Wake: a
   bare macOS Hermes is not process-detected by Herdr (`launch --kind hermes` adds the process hint that
-  makes it recognized); on Linux Herdr recognizes a bare Hermes. Its idle seat is woken natively through
+  makes it recognized, when Herdr advertises it: see "Process hints are cooperative recognition input"); on Linux Herdr recognizes a bare Hermes. Its idle seat is woken natively through
   the pane's own composer although its bindings live in the gateway process (the A4 second exception,
   ht-f0xn); an unrecognized pane is not woken. CLI side agents (`/background`: platform `cli`, own
   session, no parent, no native side-agent flag) are indistinguishable from the foreground session: they
@@ -2663,9 +2669,17 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   `terminal.client_env_passthrough`. It is the same cooperative A1 pane claim with a new carrier, so it adds
   no provenance value. A gateway process (`_HERMES_GATEWAY=1`) whose turn has no bound pane runs no hook:
   refused, never attributed to the gateway's own pane. A process without the marker (classic Hermes) keeps
-  its inherited environment. Accepted limit: without the passthrough the session's tool subprocesses
-  inherit the gateway's pane, so a model-issued `herdr-threads` call names that pane with its own
-  `HERMES_SESSION_ID`; setup documents the setting but does not write native YAML.
+  its inherited environment. On a Hermes with `ctx.register_session_env` (feature-detected) the
+  bridge gives each session's tool subprocesses the pane its client sent (a delegated child: its
+  parent's, as recorded by the bridge's own hooks, which run before the session's first tool) and
+  unsets the pane variables for a gateway session with none, so a model-issued call there answers
+  "no pane"; it also unsets other harnesses' session variables (from the registry, via
+  `bridge_config.json`). Accepted limit: on a Hermes without that API, or one that refuses the
+  registration (another plugin holds one of the names; the bridge logs one warning, nothing
+  model-visible), a session without the passthrough has tool subprocesses that inherit the gateway's
+  pane, so a model-issued `herdr-threads` call names that pane with its own `HERMES_SESSION_ID`.
+  `setup hermes` adds the two names through Hermes's own `config set`, merge only (it writes only
+  after a list it read, or Hermes's exact absent-key exit); no other native config is written.
   The gateway's sessions share its process fingerprint, so Hermes declares `process_spans_seats`
   (ht-gagu): the same-process rule (supersede, plain-reconnect hold, the liveness worker) holds only
   within one seat, and a session in another pane no longer disconnects the first pane's session. A new
@@ -2813,8 +2827,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   not an effective child environment or proof of native execution. Same-user processes can inherit or
   imitate recognition hints; platform support, environment readability and descendant coverage can
   prevent recognition. Hints add no registration, receipt, continuity or caller authority and no new
-  provenance (A1–A3, C1); arbitrary environment overrides remain refused. A possibly submitted start
-  with an uncertain response remains unknown, without a safe fallback or inferred binding.
+  provenance (A1–A3, C1); arbitrary environment overrides remain refused. A host whose pong at the
+  fenced start does not advertise `agent_start_process_hint_v1` gets the same fenced start without the
+  field (only recognition by hint degrades, decided per start from that pong, never from a version); the
+  correlation records `process_hint_sent: false`, and the launch report and record carry
+  `process_hint: host_unsupported`, whether or not the start is then confirmed.
+  The readiness wait still requires Herdr to report the agent's own kind, so a host that cannot
+  recognize the agent without the hint ends `outcome_unknown`, never an inferred start. A possibly
+  submitted start with an uncertain response remains unknown, without a safe fallback or inferred binding.
 - **A launch binding can outlive its agent.** Like any binding (Unseen exits), a `managed_launch` binding
   whose agent exits before checking in stays until a check-in of its harness replaces it or the seat is unresolved or
   retired (the liveness sweep disconnects it once its fingerprinted process is gone, without ending it); a later

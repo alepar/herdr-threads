@@ -476,7 +476,10 @@ fn synthetic_hermes(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
         (package.join("__init__.py"), String::new()),
         (package.join("profiles.py"), format!("from pathlib import Path\ndef normalize_profile_name(p): return p.strip().lower()\ndef validate_profile_name(p):\n if p not in ('default','work'): raise ValueError('private')\ndef resolve_profile_env(p):\n p=normalize_profile_name(p);validate_profile_name(p)\n root=Path({});home=root if p=='default' else root/'profiles'/p\n if not home.is_dir(): raise FileNotFoundError('private')\n return str(home)\n", py(&native_home))),
         (package.join("version_info.py"), "from types import SimpleNamespace\ndef get_version_info(): return SimpleNamespace(source='git',base_version='0.21.5',derived_version='0.21.5+1.g1234567',commit='1234567890abcdef1234567890abcdef12345678',dirty=False,distance=1)\n".into()),
-        (package.join("config.py"), "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':['herdr-threads'],'disabled':[]}}\n".into()),
+        // The 0.23.1 plugin API layout: PluginContext in plugins_context.py, re-exported.
+        (package.join("plugins_context.py"), "class PluginContext:\n def register_hook(self): pass\n def on_unload(self): pass\n".into()),
+        (package.join("plugins.py"), "from hermes_cli.plugins_context import PluginContext\nclass PluginManager:\n def invoke_hook(self): pass\nVALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n".into()),
+        (package.join("config.py"), "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':['herdr-threads'],'disabled':[]},'terminal':{'client_env_passthrough':['HERDR_PANE_ID','HERDR_ENV']}}\n".into()),
     ] {
         fs::write(path, bytes).unwrap();
     }
@@ -708,7 +711,8 @@ fn in_session(mut step: Value, client_env: Value) -> Value {
 /// Hermes >= 0.22.1 runs every pane's session in one gateway whose own `HERDR_PANE_ID` is the
 /// pane that started it. Each session binds the pane its client sent (`terminal.
 /// client_env_passthrough`); a session whose client sent none, and an unbound gateway turn,
-/// are refused before any hook runs, never seated on the gateway's pane.
+/// are refused before any hook runs, never seated on the gateway's pane (their first turn gets
+/// the bridge's one-line notice).
 #[test]
 fn hermes_gateway_sessions_bind_their_client_pane() {
     let Some(mut smoke) = Smoke::new("hermes_gateway_sessions_bind_their_client_pane", true) else {
@@ -733,8 +737,18 @@ fn hermes_gateway_sessions_bind_their_client_pane() {
     );
     assert_seated_turn(&driven, 1, "startup");
     assert_seated_turn(&driven, 3, "startup");
+    assert!(driven.result(4).is_null(), "{}", driven.steps[4]);
     for step in 4..7 {
-        assert!(driven.result(step).is_null(), "{}", driven.steps[step]);
+        // An unseated session's first turn gets only the bridge's local no-pane notice, naming
+        // the gateway's profile.
+        if step > 4 {
+            assert_eq!(
+                *driven.result(step),
+                json!({"context": "herdr-threads: no pane; in a Herdr pane, ask your user to run \"herdr-threads setup hermes --profile work\" and start a new session"}),
+                "{}",
+                driven.steps[step]
+            );
+        }
         assert_eq!(
             driven.steps[step]["child"],
             json!([]),
