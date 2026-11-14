@@ -1947,3 +1947,62 @@ fn daemon_guard_stops_the_daemon_on_panic_unwind() {
         daemon_pids(&state)
     );
 }
+
+/// A paused and resumed workspace (or a macOS reboot) renumbers the state
+/// volume's device: endpoint.json names a dead boot's socket that keeps its
+/// inode under another device (ht-x772). The CLI reports the daemon as not
+/// running (exit 3, the ensure hint), never "socket pathname was
+/// substituted", whether or not the owner lock is held, and removes nothing;
+/// `daemon ensure` then reclaims it. Kills: a client read reporting the
+/// renumbered endpoint as substituted, or depending on the owner lock.
+#[test]
+fn renumbered_dead_endpoint_reads_as_not_running_until_ensure() {
+    use herdr_threads::daemon::ownership::{EndpointDescriptor, OwnerLock};
+    let scratch = Scratch::new();
+    let state = scratch.0.join("state");
+    let host = scratch.0.join("host.sock");
+    let _guard = DaemonGuard {
+        state: state.clone(),
+        host: host.clone(),
+    };
+    let paths = prepared_instance(&state, &host);
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let bound = owner.bind_socket().unwrap();
+    let published = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
+    drop(bound);
+    let renumbered = EndpointDescriptor {
+        socket_device: published.socket_device ^ 1,
+        ..published
+    };
+    fs::write(
+        &paths.descriptor_path,
+        serde_json::to_vec(&renumbered).unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&paths.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let check = |label: &str| {
+        let health = run(&state, &host, &["daemon", "health"], None);
+        assert_daemon_unavailable(label, &health);
+        assert!(!text(&health.stderr).contains("substituted"), "{label}");
+        let doctor = run(&state, &host, &["doctor"], None);
+        assert_eq!(
+            doctor.status.code(),
+            Some(3),
+            "{label}: {}",
+            text(&doctor.stderr)
+        );
+        assert!(
+            text(&doctor.stdout).contains("daemon: not_running"),
+            "{label}"
+        );
+        assert!(paths.descriptor_path.exists(), "{label}");
+        assert!(fs::symlink_metadata(&paths.socket_path).is_ok(), "{label}");
+    };
+    check("lock held");
+    drop(owner);
+    check("lock free");
+    let ensure = run(&state, &host, &["daemon", "ensure"], None);
+    assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
+    let health = run(&state, &host, &["daemon", "health"], None);
+    assert_eq!(health.status.code(), Some(0), "{}", text(&health.stderr));
+}

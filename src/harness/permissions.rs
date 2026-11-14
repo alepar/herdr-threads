@@ -208,6 +208,16 @@ impl VerifiedConfigIdentity {
     /// Whether `bytes` is this root's marker recorded while its volume had another device
     /// number: backend, inode and root path all match. A pause/resume or reboot can renumber the
     /// device of a volume that keeps its inodes (ht-1nva).
+    /// Whether `bytes` is this root's marker followed by the last bytes of a longer marker of
+    /// this root: a renewal that wrote the shorter marker and stopped before truncating. A device
+    /// number has at most 20 decimal digits, so the tail is at most 19 bytes.
+    fn interrupted_renewal(&self, bytes: &[u8]) -> bool {
+        let marker = self.marker();
+        bytes.len() > marker.len()
+            && bytes.len() - marker.len() < 20
+            && bytes.starts_with(&marker)
+            && marker.ends_with(&bytes[marker.len()..])
+    }
     fn renumbered_marker(&self, bytes: &[u8]) -> bool {
         let Some(device) = std::str::from_utf8(bytes)
             .ok()
@@ -336,11 +346,25 @@ impl OwnedConfigWriteGuard {
     }
 }
 /// Under the held lock, rewrite in place (same inode) a marker that differs from this root's only
-/// in the device number. Any other content is left for `revalidate` to refuse.
+/// in the device number, or that a renewal interrupted before its truncation left as this root's
+/// marker plus a tail of the longer one it replaced. The bytes are read through the locked
+/// descriptor itself. Any other content is left for `revalidate` to refuse.
 fn renew_renumbered_marker(file: &File, identity: &VerifiedConfigIdentity) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
-    let current = read_bounded(&identity.lock_path(), MAX_PATH_BYTES as u64 + 128)?;
-    if identity.renumbered_marker(&current) {
+    let limit = MAX_PATH_BYTES + 128;
+    let mut current = vec![0; limit + 1];
+    let mut len = 0;
+    while len < current.len() {
+        match file.read_at(&mut current[len..], len as u64)? {
+            0 => break,
+            n => len += n,
+        }
+    }
+    if len > limit {
+        return Ok(());
+    }
+    current.truncate(len);
+    if identity.renumbered_marker(&current) || identity.interrupted_renewal(&current) {
         let marker = identity.marker();
         file.write_all_at(&marker, 0)?;
         file.set_len(marker.len() as u64)?;
@@ -537,17 +561,37 @@ mod tests {
             fs::write(&path, marker).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         };
-        let renumbered = VerifiedConfigIdentity {
-            device: id.device ^ 1,
+        let at = |device: u64| VerifiedConfigIdentity {
+            device,
             ..id.clone()
         };
-        write(&renumbered.marker());
-        let inode = fs::metadata(&path).unwrap().ino();
-        let guard = OwnedConfigWriteGuard::acquire(&id, Duration::ZERO).unwrap();
-        guard.revalidate().unwrap();
-        assert_eq!(fs::read(&path).unwrap(), id.marker());
-        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
-        drop(guard);
+        let longer = at(id.device * 10 + 7).marker();
+        // The same digit count, one more digit (the file shrinks), one fewer (it grows),
+        // and a shrinking renewal interrupted before its truncation (a stale tail).
+        let mut stale = vec![at(id.device ^ 1).marker(), longer.clone()];
+        if id.device >= 10 {
+            stale.push(at(id.device / 10).marker());
+        }
+        let mut torn = id.marker();
+        torn.extend_from_slice(&longer[id.marker().len()..]);
+        stale.push(torn);
+        for bytes in stale {
+            write(&bytes);
+            let inode = fs::metadata(&path).unwrap().ino();
+            let guard = OwnedConfigWriteGuard::acquire(&id, Duration::ZERO).unwrap();
+            guard.revalidate().unwrap();
+            assert_eq!(fs::read(&path).unwrap(), id.marker());
+            assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+            drop(guard);
+            fs::remove_file(&path).unwrap();
+        }
+        // Renewal happens only under the lock: a holder keeps the stale marker as is.
+        write(&longer);
+        let holder = File::open(&path).unwrap();
+        holder.try_lock().unwrap();
+        assert!(OwnedConfigWriteGuard::acquire(&id, Duration::ZERO).is_err());
+        assert_eq!(fs::read(&path).unwrap(), longer);
+        drop(holder);
         fs::remove_file(&path).unwrap();
         let other_root = VerifiedConfigIdentity {
             root: f.0.join("elsewhere"),
@@ -570,6 +614,46 @@ mod tests {
             assert_eq!(fs::read(&path).unwrap(), foreign.marker());
             fs::remove_file(&path).unwrap();
         }
+    }
+    /// The renewal decides from the locked descriptor's own bytes and writes only through it, so a
+    /// name swapped while the lock was awaited is never rewritten, and the guard's revalidation
+    /// refuses the swap. Kills: deciding from the bytes at the path (a by-path read).
+    #[test]
+    fn marker_renewal_reads_and_writes_only_the_locked_inode() {
+        let f = Fixture::new();
+        let id = f.identity();
+        let path = id.lock_path();
+        let aside = f.0.join("aside");
+        let renumbered = VerifiedConfigIdentity {
+            device: id.device ^ 1,
+            ..id.clone()
+        }
+        .marker();
+        let write = |at: &Path, marker: &[u8]| {
+            fs::write(at, marker).unwrap();
+            fs::set_permissions(at, fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        let open = |at: &Path| OpenOptions::new().read(true).write(true).open(at).unwrap();
+        // The locked inode is current; a renumbered marker replaces it at the name.
+        write(&path, &id.marker());
+        let locked = open(&path);
+        fs::rename(&path, &aside).unwrap();
+        write(&path, &renumbered);
+        renew_renumbered_marker(&locked, &id).unwrap();
+        assert_eq!(fs::read(&aside).unwrap(), id.marker());
+        assert_eq!(fs::read(&path).unwrap(), renumbered);
+        assert!(check_lock_metadata(&locked, &path).is_err());
+        drop(locked);
+        fs::remove_file(&aside).unwrap();
+        // The locked inode is renumbered and was moved aside: only it is renewed.
+        write(&path, &renumbered);
+        let locked = open(&path);
+        fs::rename(&path, &aside).unwrap();
+        write(&path, b"foreign");
+        renew_renumbered_marker(&locked, &id).unwrap();
+        assert_eq!(fs::read(&aside).unwrap(), id.marker());
+        assert_eq!(fs::read(&path).unwrap(), b"foreign");
+        assert!(check_lock_metadata(&locked, &path).is_err());
     }
     // Child test re-entry uses per-command environment only, never parent-global state.
     #[cfg(feature = "test-support")]

@@ -184,7 +184,12 @@ pub(crate) fn probe_daemon(
     };
     let descriptor = match read_descriptor(paths, instance) {
         Ok(descriptor) => descriptor,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Daemon::NotRunning),
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                || crate::daemon::ownership::is_renumbered_socket(&error) =>
+        {
+            return Ok(Daemon::NotRunning);
+        }
         Err(error) => return Err(format!("endpoint descriptor: {error}")),
     };
     if descriptor.protocol_version != PROTOCOL_VERSION {

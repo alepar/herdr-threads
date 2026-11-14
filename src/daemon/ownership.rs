@@ -364,37 +364,10 @@ impl OwnerLock {
     }
 }
 
-/// The published endpoint, validated against its socket. A socket whose
-/// inode matches but whose device alone differs, while no process holds the
-/// owner lock, is a dead boot's endpoint on a renumbered volume (a macOS
-/// reboot, a Linux workspace pause/resume): it reads as stale (`NotFound`,
-/// daemon unavailable), never as substituted, and is left for the next
-/// elected owner to reclaim (ht-x772). Under a live lock holder, or with a
-/// differing inode, the mismatch stays substituted.
 pub fn read_descriptor(paths: &NodePaths, node_uuid: NodeUuid) -> io::Result<EndpointDescriptor> {
     let descriptor = parse_descriptor(paths, Some(node_uuid))?;
-    match validate_descriptor_socket(&descriptor, &paths.descriptor_path) {
-        Err(error)
-            if is_socket_substituted(&error) && renumbered_without_owner(paths, &descriptor) =>
-        {
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "stale endpoint descriptor: no daemon holds the owner lock",
-            ))
-        }
-        Err(error) => Err(error),
-        Ok(()) => Ok(descriptor),
-    }
-}
-
-/// The published socket keeps the descriptor's inode on another device and
-/// the owner lock is free. Any failure to establish either is `false`.
-fn renumbered_without_owner(paths: &NodePaths, descriptor: &EndpointDescriptor) -> bool {
-    validate_socket(&descriptor.endpoint).is_ok_and(|meta| {
-        meta.ino() == descriptor.socket_inode && meta.dev() != descriptor.socket_device
-    }) && owner_lock_identity(paths)
-        .and_then(|identity| previous_owner_released(paths, identity))
-        .unwrap_or(false)
+    validate_descriptor_socket(&descriptor, &paths.descriptor_path)?;
+    Ok(descriptor)
 }
 
 /// The published socket's device or inode differs from its descriptor. The
@@ -405,6 +378,8 @@ struct SocketSubstituted {
     descriptor: std::path::PathBuf,
     pid: u32,
     recovery: Recovery,
+    /// The socket keeps the descriptor's inode and only its device differs.
+    renumbered: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -443,6 +418,7 @@ fn socket_substituted(
     descriptor: &EndpointDescriptor,
     descriptor_path: &Path,
     recovery: Recovery,
+    renumbered: bool,
 ) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -450,6 +426,7 @@ fn socket_substituted(
             descriptor: descriptor_path.to_path_buf(),
             pid: descriptor.pid,
             recovery,
+            renumbered,
         },
     )
 }
@@ -459,6 +436,19 @@ pub fn is_socket_substituted(error: &io::Error) -> bool {
     error
         .get_ref()
         .is_some_and(|inner| inner.is::<SocketSubstituted>())
+}
+
+/// Whether `error` is a published socket that keeps its descriptor's inode on
+/// another device: a dead boot's endpoint after its volume was renumbered (a
+/// macOS reboot, a Linux workspace pause/resume), unless a live process still
+/// holds the owner lock. A client reports it as daemon unavailable, as for any
+/// stale endpoint, and removes nothing; only the elected owner reclaims it
+/// (ht-x772). Decided from the stat alone: a client never takes the owner lock.
+pub fn is_renumbered_socket(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<SocketSubstituted>())
+        .is_some_and(|inner| inner.renumbered)
 }
 
 /// The same mismatch, restated for a live process holding the owner lock:
@@ -474,6 +464,7 @@ pub fn substituted_under_live_owner(error: io::Error) -> io::Error {
                 descriptor: inner.descriptor.clone(),
                 pid: inner.pid,
                 recovery: Recovery::StopOwner,
+                renumbered: inner.renumbered,
             },
         ),
         None => error,
@@ -603,6 +594,7 @@ fn validate_descriptor_socket(
             descriptor,
             descriptor_path,
             Recovery::Ensure,
+            meta.ino() == descriptor.socket_inode,
         ));
     }
     Ok(())
@@ -632,7 +624,7 @@ fn remove_dead_boot_socket_as(
     descriptor_path: &Path,
     uid: u32,
 ) -> io::Result<()> {
-    let substituted = || socket_substituted(descriptor, descriptor_path, Recovery::Remove);
+    let substituted = || socket_substituted(descriptor, descriptor_path, Recovery::Remove, false);
     let meta = match validate_socket_as(&descriptor.endpoint, uid) {
         Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),

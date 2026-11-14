@@ -150,7 +150,13 @@ fn published_endpoint(
     let instance = read_node_uuid_hint(paths)?.ok_or_else(daemon_unavailable)?;
     match read_descriptor(paths, instance) {
         Ok(descriptor) => Ok((instance, descriptor)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(daemon_unavailable()),
+        // A renumbered volume's dead endpoint is stale like a missing one (ht-x772).
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                || crate::daemon::ownership::is_renumbered_socket(&error) =>
+        {
+            Err(daemon_unavailable())
+        }
         Err(error) => Err(error.into()),
     }
 }
