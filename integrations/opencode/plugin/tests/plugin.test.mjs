@@ -823,6 +823,153 @@ test('a hung status read leaves the local status alone', async () => {
   assert.ok(h.core.snapshot().wakePending)
 })
 
+// ---- ACK error branches ----------------------------------------------------------------------
+
+const ackWith = (result) => (argv) => ({
+  code: 0,
+  stdout: argv.slice(argv.indexOf('--via') + 2).map((id) => JSON.stringify({ id, result })).join('\n'),
+})
+const ackArgs = (h) => h.acks().map((r) => r.argv.slice(3))
+
+test('a retryable ack keeps the item unacked and is retried every 30 s', async () => {
+  for (const reply of [() => ({ code: 1, stdout: '' }), ackWith('retryable'), () => ({ code: 0, stdout: '' })]) {
+    const h = await harness().boot(A)
+    const settle = h.ackReply
+    h.ackReply = reply
+    await h.line(msg('m1', { ack_required: true }))
+    assert.equal(h.acks().length, 1)
+    assert.deepEqual(h.core.snapshot().unacked, ['m1'])
+    h.t += 1000
+    await h.core.onTick()
+    assert.equal(h.acks().length, 1)
+    h.ackReply = settle
+    h.t += 30_000
+    await h.core.onTick()
+    await flush()
+    assert.equal(h.acks().length, 2)
+    // the retry carries the stored row again
+    const [first, second] = ackArgs(h)
+    assert.deepEqual(second, first)
+    assert.ok(second.includes('--row'))
+    assert.deepEqual(h.core.snapshot().unacked, [])
+    assert.ok(h.ledger.some((e) => e.kind === 'acked' && e.ids[0] === 'm1'))
+  }
+})
+
+test('an ack refused for its arguments (exit 2, an older CLI) is sent again without --row', async () => {
+  const h = await harness().boot(A)
+  const settle = h.ackReply
+  h.ackReply = (argv) => (argv.includes('--row') ? { code: 2, stdout: '' } : settle(argv))
+  await h.line(msg('m1', { ack_required: true }))
+  await flush()
+  const args = ackArgs(h)
+  assert.equal(args.length, 2)
+  assert.ok(args[0].includes('--row'))
+  assert.deepEqual(args[1], ['--session', A, '--via', 'append', 'm1'])
+  assert.deepEqual(h.core.snapshot().unacked, [])
+  assert.ok(h.ledger.some((e) => e.reason === 'ack:row_refused'))
+  // exit 2 without a row is an ordinary retryable failure, not another fallback
+  const h2 = await harness().boot(A)
+  h2.ackReply = () => ({ code: 2, stdout: '' })
+  await h2.line(msg('m2', { kind: 'lazy' }))
+  await flush()
+  assert.equal(h2.acks().length, 1)
+  assert.deepEqual(h2.core.snapshot().unacked, ['m2'])
+})
+
+test('refused_terminal drops the ack; stale_generation also forgets the delivery so it is appended again', async () => {
+  const h = await harness().boot(A)
+  h.ackReply = ackWith('refused_terminal')
+  await h.line(msg('m1', { ack_required: true }))
+  assert.deepEqual(h.core.snapshot().unacked, [])
+  assert.deepEqual(h.core.snapshot().delivered, ['m1'])
+  assert.ok(h.ledger.some((e) => e.reason === 'ack:refused_terminal'))
+  await h.line(msg('m1', { ack_required: true }))
+  assert.equal(h.appends().length, 1)
+  h.t += 30_000
+  await h.core.onTick()
+  assert.equal(h.acks().length, 1)
+
+  const g = await harness().boot(A)
+  g.ackReply = ackWith('stale_generation')
+  await g.line(msg('m1'))
+  assert.deepEqual(g.core.snapshot().unacked, [])
+  assert.deepEqual(g.core.snapshot().delivered, [])
+  assert.ok(g.ledger.some((e) => e.reason === 'ack:stale_generation'))
+  g.ackReply = ackWith('settled')
+  await g.line(msg('m1'))
+  assert.equal(g.appends().length, 2)
+  assert.deepEqual(g.core.snapshot().unacked, [])
+})
+
+// ---- attention lines -------------------------------------------------------------------------
+
+const attention = (epoch, extra = {}) => ({ schema: 1, id: `attention:${epoch}`, kind: 'attention', presentation_epoch: String(epoch), attention_version: 3, text: 'herdr-threads: attention pending; run herdr-threads inbox', ...extra })
+const cleared = (epoch) => ({ schema: 1, id: `attention_cleared:${epoch}`, kind: 'attention_cleared', presentation_epoch: String(epoch), attention_version: 3 })
+
+test('an attention line is appended unacked, wakes an idle session, and is deduped within a run', async () => {
+  const h = await harness().boot(A)
+  await h.line(attention(7))
+  assert.deepEqual(h.calls.map((c) => c.kind), ['append', 'wake'])
+  assert.equal(h.appends()[0].text, '[herdr-threads] new messages:\n\n[herdr-threads] attention attention:7:\n  herdr-threads: attention pending; run herdr-threads inbox')
+  assert.equal(h.acks().length, 0)
+  // the same attention again in this run: nothing new
+  await h.line(attention(7))
+  assert.equal(h.appends().length, 1)
+  // a restarted watch is a new run: it is presented again
+  h.watch().cb.exit(0)
+  h.t += 1000
+  await h.core.onTick()
+  await h.line(connected)
+  await h.idle(A)
+  await h.line(attention(7))
+  assert.equal(h.appends().length, 2)
+})
+
+test('an attention line with a non-canonical presentation_epoch is ignored', async () => {
+  for (const epoch of ['07', 'x', '', '18446744073709551616', 7]) {
+    const h = await harness().boot(A)
+    await h.line(attention(7, { presentation_epoch: epoch }))
+    await h.line({ ...cleared(7), presentation_epoch: epoch })
+    assert.equal(h.calls.length, 0, String(epoch))
+  }
+})
+
+test('attention_cleared retracts a queued attention of its epoch only, and resets the dedup', async () => {
+  const h = await harness().boot(A)
+  // hold the queue: the first append fails and backs off
+  h.appendResult = () => ({ error: { name: 'BadRequest' } })
+  await h.line(msg('m0'))
+  h.appendResult = null
+  await h.line(attention(7))
+  await h.line(attention(8))
+  assert.deepEqual(h.core.snapshot().queue, ['m0', 'attention:7', 'attention:8'])
+  await h.line(cleared(7))
+  assert.deepEqual(h.core.snapshot().queue, ['m0', 'attention:8'])
+  assert.ok(h.ledger.some((e) => e.reason === 'attention_cleared' && e.ids.join() === 'attention:7'))
+  h.t += 30_000
+  await h.core.onTick()
+  await flush()
+  assert.equal(h.appends().length, 2)
+  assert.doesNotMatch(h.appends()[1].text, /attention:7/)
+  assert.match(h.appends()[1].text, /attention attention:8:/)
+  // delivered, then cleared: the same epoch may be presented again in this run
+  await h.line(attention(8))
+  assert.equal(h.appends().length, 2)
+  await h.line(cleared(8))
+  await h.idle(A)
+  await h.line(attention(8))
+  assert.equal(h.appends().length, 3)
+  // a clear without an epoch retracts every queued attention
+  h.appendResult = () => ({ error: { name: 'BadRequest' } })
+  await h.line(msg('m9'))
+  h.appendResult = null
+  await h.line(attention(9))
+  const { presentation_epoch: _, ...bare } = cleared(9)
+  await h.line(bare)
+  assert.deepEqual(h.core.snapshot().queue, ['m9'])
+})
+
 test('after /new the previous session stays bound and is still the wake target', async () => {
   const h = await harness().boot(A)
   // /new returns to the home screen; no event, no prompt yet
