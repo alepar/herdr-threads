@@ -1428,44 +1428,20 @@ impl HostPort for NativeCli {
         target: &HostTargetId,
         context: &HostCallContext,
     ) -> Result<Vec<u32>, ApiError> {
-        self.check_context(context)?;
-        let raw = self.run_unfenced(
-            &["pane", "process-info", target.as_str()],
-            &context.budget,
-            Duration::from_millis(750),
-        )?;
-        Ok(serde_json::from_str(&raw)
-            .ok()
-            .map(|response: serde_json::Value| foreground_process_pids(&response))
-            .unwrap_or_default())
+        Ok(self.read_pane_foreground(target, context, false)?.pids)
     }
 
-    /// The registered harness the pane's root process (`shell_pid`) is, when it is the pane's only
-    /// foreground process (a harness `exec`ed as the pane's program). Advisory and unfenced, like
-    /// [`Self::foreground_pids`]; the process is classified from the host process table by the
-    /// adapters' declared shapes (a shell or unknown program classifies as nothing).
-    fn pane_root_harness(
+    /// [`Self::foreground_pids`] and, from the same `pane.process_info` read, the registered
+    /// harness the pane's root process (`shell_pid`) is when it is the pane's only foreground
+    /// process (a harness `exec`ed as the pane's program). The process is classified from the
+    /// host process table by the adapters' declared shapes (a shell or unknown program
+    /// classifies as nothing).
+    fn pane_foreground(
         &self,
         target: &HostTargetId,
         context: &HostCallContext,
-    ) -> Result<Option<String>, ApiError> {
-        use crate::ports::ProcessInfo as _;
-        self.check_context(context)?;
-        let raw = self.run_unfenced(
-            &["pane", "process-info", target.as_str()],
-            &context.budget,
-            Duration::from_millis(750),
-        )?;
-        let Some(pid) = serde_json::from_str(&raw)
-            .ok()
-            .and_then(|response: serde_json::Value| root_only_foreground_pid(&response))
-        else {
-            return Ok(None);
-        };
-        Ok(crate::host::process_table::HostProcessTable
-            .process(pid)
-            .and_then(|record| crate::harness::caller_env::classify(&record, None))
-            .map(str::to_owned))
+    ) -> Result<crate::ports::PaneForeground, ApiError> {
+        self.read_pane_foreground(target, context, true)
     }
 
     /// The pane's own process (`shell_pid`). Without an expected boot the read is advisory and
@@ -2070,6 +2046,35 @@ pub(crate) fn focused_empty_ready(
 }
 
 impl NativeCli {
+    /// One advisory, unfenced `pane.process_info` read: the pane's non-shell foreground pids
+    /// and, when `classify_root` is set and the root process is the only foreground process,
+    /// the registered harness it is.
+    fn read_pane_foreground(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+        classify_root: bool,
+    ) -> Result<crate::ports::PaneForeground, ApiError> {
+        use crate::ports::ProcessInfo as _;
+        self.check_context(context)?;
+        let raw = self.run_unfenced(
+            &["pane", "process-info", target.as_str()],
+            &context.budget,
+            Duration::from_millis(750),
+        )?;
+        let Ok(response) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return Ok(crate::ports::PaneForeground::default());
+        };
+        let pids = foreground_process_pids(&response);
+        let root_harness = classify_root
+            .then(|| root_only_foreground_pid(&response))
+            .flatten()
+            .and_then(|pid| crate::host::process_table::HostProcessTable.process(pid))
+            .and_then(|record| crate::harness::caller_env::classify(&record, None))
+            .map(str::to_owned);
+        Ok(crate::ports::PaneForeground { pids, root_harness })
+    }
+
     fn focused_empty_ready(
         &self,
         target: &SafeWakeTarget,

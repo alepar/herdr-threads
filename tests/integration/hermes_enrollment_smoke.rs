@@ -739,11 +739,12 @@ fn hermes_gateway_sessions_bind_their_client_pane() {
     assert_seated_turn(&driven, 3, "startup");
     assert!(driven.result(4).is_null(), "{}", driven.steps[4]);
     for step in 4..7 {
-        // An unseated session's first turn gets only the bridge's local no-pane notice.
+        // An unseated session's first turn gets only the bridge's local no-pane notice, naming
+        // the gateway's profile.
         if step > 4 {
             assert_eq!(
                 *driven.result(step),
-                json!({"context": "herdr-threads: no pane; in a Herdr pane, ask your user to run \"herdr-threads setup hermes\" and start a new session"}),
+                json!({"context": "herdr-threads: no pane; in a Herdr pane, ask your user to run \"herdr-threads setup hermes --profile work\" and start a new session"}),
                 "{}",
                 driven.steps[step]
             );

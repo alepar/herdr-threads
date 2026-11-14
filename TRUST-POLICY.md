@@ -1261,9 +1261,10 @@ model open work, and summary closure never changes receipt state or installs glo
   the pane's live foreground binding of another harness). When Herdr reports no non-shell foreground process
   because the pane's root process (`shell_pid`) is alone in its foreground, that root process is classified by
   the adapters' declared process shapes (`CallerEnvShape` process names and match, through the registry): when it
-  is a harness that spans seats and exactly one target is of that harness, that target matches (a client
-  `exec`ed as the pane's program, ht-fr7c.7); a root that is a shell, an unrecognized program or a harness that
-  does not span seats, or two targets of the harness, is no match. The pane is
+  is a harness that spans seats and the targets of that harness are one composer (exactly one target, or several
+  that are bindings of one process: the same fingerprint pid), they match (a client `exec`ed as the pane's
+  program, ht-fr7c.7); a root that is a shell, an unrecognized program or a harness that does not span seats,
+  or targets of the harness in different processes, is no match. The pane is
   still the binding's own (targets are the bindings placed on the observed terminal, by their cooperative
   A1 pane claim); the native recheck still requires Herdr's agent kind there to be the bound harness, and
   the adapter's composer read still requires an empty, idle composer. Several matches follow the rules

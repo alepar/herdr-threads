@@ -251,14 +251,56 @@ fn native_config(
 
 /// Ensure the profile's `terminal.client_env_passthrough` lists [`PASSTHROUGH_NAMES`]
 /// through Hermes's own `config get` / `config set`: merge only (listed names kept in
-/// order, missing ones appended), no write when complete. Any failure leaves the
-/// config as it was and is reported by the caller.
+/// order, missing ones appended), no write when complete. A `set` that exits 0 counts only
+/// when a second `get` lists every required name (a managed install reports its refusal
+/// and exits 0 without writing). Any failure leaves the config as it was and is reported
+/// by the caller.
 pub fn ensure_passthrough(
     launcher: &Path,
     profile: &str,
     env: &crate::harness::adapter::SetupEnvironment,
     budget: &crate::protocol::time::CallBudget,
 ) -> Result<PassthroughChange, ProbeFailure> {
+    let listed = read_passthrough(launcher, profile, env, budget)?;
+    let missing = missing_passthrough(&listed);
+    if missing.is_empty() {
+        return Ok(PassthroughChange::Complete);
+    }
+    let merged: Vec<&String> = listed.iter().chain(&missing).collect();
+    let value = serde_json::to_string(&merged).map_err(|_| ProbeFailure::Malformed)?;
+    match native_config(
+        launcher,
+        profile,
+        &["set", PASSTHROUGH_KEY, &value],
+        env,
+        budget,
+    )? {
+        (Some(0), _, _) => {}
+        _ => return Err(ProbeFailure::ChildFailed),
+    }
+    if missing_passthrough(&read_passthrough(launcher, profile, env, budget)?).is_empty() {
+        Ok(PassthroughChange::Added(missing))
+    } else {
+        Err(ProbeFailure::ChildFailed)
+    }
+}
+
+/// The required names [`PASSTHROUGH_NAMES`] that `listed` lacks.
+fn missing_passthrough(listed: &[String]) -> Vec<String> {
+    PASSTHROUGH_NAMES
+        .iter()
+        .filter(|required| !listed.iter().any(|name| name.trim() == **required))
+        .map(|name| (*name).to_owned())
+        .collect()
+}
+
+/// The profile's listed `terminal.client_env_passthrough` names (`config get --json`).
+fn read_passthrough(
+    launcher: &Path,
+    profile: &str,
+    env: &crate::harness::adapter::SetupEnvironment,
+    budget: &crate::protocol::time::CallBudget,
+) -> Result<Vec<String>, ProbeFailure> {
     let listed: Vec<String> = match native_config(
         launcher,
         profile,
@@ -288,26 +330,7 @@ pub fn ensure_passthrough(
     if listed.len() > 256 {
         return Err(ProbeFailure::Malformed);
     }
-    let missing: Vec<String> = PASSTHROUGH_NAMES
-        .iter()
-        .filter(|required| !listed.iter().any(|name| name.trim() == **required))
-        .map(|name| (*name).to_owned())
-        .collect();
-    if missing.is_empty() {
-        return Ok(PassthroughChange::Complete);
-    }
-    let merged: Vec<&String> = listed.iter().chain(&missing).collect();
-    let value = serde_json::to_string(&merged).map_err(|_| ProbeFailure::Malformed)?;
-    match native_config(
-        launcher,
-        profile,
-        &["set", PASSTHROUGH_KEY, &value],
-        env,
-        budget,
-    )? {
-        (Some(0), _, _) => Ok(PassthroughChange::Added(missing)),
-        _ => Err(ProbeFailure::ChildFailed),
-    }
+    Ok(listed)
 }
 
 /// Hermes's absent-key report for [`PASSTHROUGH_KEY`] (`hermes_cli/config.py`
@@ -758,12 +781,15 @@ mod tests {
     #[cfg(feature = "test-support")]
     fn passthrough_is_merged_through_hermes_config_get_and_set_only() {
         // $1..$4 = --profile P config get|set; every call is logged, `set`
-        // records its value; GET_OUT/GET_RC/SET_RC script each case.
+        // records its value (`value`) and, unless SET_RC is MANAGED (a managed install:
+        // exit 0, nothing written), stores it (`stored`), which a later `get` lists;
+        // GET_OUT/GET_RC/SET_RC script each case.
         // GET_ERR is the `get` stderr; Hermes's own absent-key form is ABSENT.
         const ABSENT: &str = "Config key not set: terminal.client_env_passthrough";
+        const MANAGED: u8 = 100;
         let body = |get: &str, get_rc: u8, set_rc: u8, get_err: &str| {
             format!(
-                "printf '%s\\n' \"$*\" >> calls\n[ \"$1 $2 $3\" = '--profile work config' ] || exit 70\ncase \"$4\" in\n get) [ \"$5 $6\" = 'terminal.client_env_passthrough --json' ] || exit 71; printf '%s' '{get}'; printf '%s\\n' '{get_err}' >&2; exit {get_rc} ;;\n set) [ \"$5\" = terminal.client_env_passthrough ] || exit 72; printf '%s' \"$6\" > value; exit {set_rc} ;;\nesac\nexit 73"
+                "printf '%s\\n' \"$*\" >> calls\n[ \"$1 $2 $3\" = '--profile work config' ] || exit 70\ncase \"$4\" in\n get) [ \"$5 $6\" = 'terminal.client_env_passthrough --json' ] || exit 71; [ -f stored ] && {{ cat stored; exit 0; }}; printf '%s' '{get}'; printf '%s\\n' '{get_err}' >&2; exit {get_rc} ;;\n set) [ \"$5\" = terminal.client_env_passthrough ] || exit 72; printf '%s' \"$6\" > value; [ {set_rc} = {MANAGED} ] && {{ echo 'managed install' >&2; exit 0; }}; cp value stored; exit {set_rc} ;;\nesac\nexit 73"
             )
         };
         let run_err = |get: &str, get_rc: u8, set_rc: u8, get_err: &str| {
@@ -786,7 +812,8 @@ mod tests {
         );
         assert_eq!(
             (calls, value.as_deref()),
-            (2, Some(r#"[" PATH ","HERDR_ENV","HERDR_PANE_ID"]"#))
+            (3, Some(r#"[" PATH ","HERDR_ENV","HERDR_PANE_ID"]"#)),
+            "get, set, and a get that confirms the write"
         );
         let (result, calls, value) = run(r#"["HERDR_PANE_ID","X","HERDR_ENV"]"#, 0, 0);
         assert_eq!(result.unwrap(), PassthroughChange::Complete);
@@ -829,6 +856,11 @@ mod tests {
         let (result, calls, _) = run("[]", 0, 1);
         assert_eq!(result.unwrap_err(), ProbeFailure::ChildFailed);
         assert_eq!(calls, 2);
+        // A managed install: `set` exits 0 but writes nothing, so the confirming `get`
+        // still lacks the names and nothing is reported added.
+        let (result, calls, _) = run(r#"["PATH"]"#, 0, MANAGED);
+        assert_eq!(result.unwrap_err(), ProbeFailure::ChildFailed);
+        assert_eq!(calls, 3);
     }
 
     #[test]

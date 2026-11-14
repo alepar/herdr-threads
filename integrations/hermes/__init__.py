@@ -42,6 +42,18 @@ PANE_ENV = ("HERDR_PANE_ID", "HERDR_ENV", "HERDR_THREADS_SEAT_NAME", "HERDR_THRE
 # The once-per-session notice of a gateway session whose client sent no pane (no hook runs for it).
 # Setup helps only a client that runs in a Herdr pane, so the remedy is conditional (114 bytes).
 NO_PANE_NOTICE = 'herdr-threads: no pane; in a Herdr pane, ask your user to run "herdr-threads setup hermes" and start a new session'
+PROFILE_NAME = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+def no_pane_notice(profile):
+    """NO_PANE_NOTICE for the gateway's profile: the default profile needs no flag, a named one
+    names itself (" --profile NAME", 10 bytes plus the name), an unknown one the placeholder
+    (" [--profile NAME]", 17 bytes)."""
+    if profile == "default":
+        return NO_PANE_NOTICE
+    flag = (f" --profile {profile}" if isinstance(profile, str) and 0 < len(profile) <= 64
+            and set(profile) <= PROFILE_NAME and not profile.startswith("-") else " [--profile NAME]")
+    return NO_PANE_NOTICE.replace("setup hermes", "setup hermes" + flag, 1)
 CHILD_RESTRICTION = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent."
 # First 16 SHA-256 hex chars of sorted compact JSON of the normalized schema
 # declaration in testdata/callbacks.json. This identifies transport, not the
@@ -397,10 +409,15 @@ class Sessions:
     """Per-session pane values for the session's tool subprocesses (``ctx.register_session_env``).
 
     In the gateway every session's tools inherit the gateway's pane, so the resolver gives a session
-    the pane its client sent (recorded by its hooks, which run before its first tool) and unsets the
-    pane names for a session with none; a delegated child resolves to its parent. A classic CLI
-    process is its pane's own: nothing is recorded and no pane name is touched. The other harnesses'
-    session variables are never a Hermes session's own, so they are always unset.
+    the pane its client sent. Hermes calls the resolver inside the executing turn's client env scope
+    (the tool spawn's own context), so the bound client env decides first: its pane, or every pane
+    name unset when it names none; the resolver records that pane under the id it was asked for, so
+    a mid-turn compression's rotated session id resolves later too. Only with no client env bound
+    (a background job outside the turn) does the table recorded by the session's hooks answer: a
+    delegated child, or a compression or branch successor, resolves to its parent, and a session
+    with no recorded pane gets every pane name unset. A classic CLI process is its pane's own:
+    nothing is recorded and no pane name is touched. The other harnesses' session variables are
+    never a Hermes session's own, so they are always unset.
     """
     LIMIT = 256
 
@@ -443,8 +460,13 @@ class Sessions:
                 if name == "on_session_finalize":
                     with self.lock:
                         self.panes.pop(session, None)
+                        self.parents.pop(session, None)
                         self.noticed.pop(session, None)
                     return
+                parent = kwargs.get("parent_session_id")
+                if name == "pre_llm_call" and opaque(parent) and parent != session:
+                    # A compression or branch successor continues its predecessor's session.
+                    self.put(self.parents, session, parent)
                 pane = session_pane()
                 if isinstance(pane, dict):
                     self.put(self.panes, session, pane)
@@ -465,12 +487,25 @@ class Sessions:
 
     def resolve(self, session_id):
         try:
+            values = dict.fromkeys(self.foreign)
+            bound = session_pane()
+            if bound is False:
+                # The executing turn's client sent no pane: never the gateway's or a stale one.
+                if opaque(session_id):
+                    with self.lock:
+                        self.panes.pop(session_id, None)
+                values.update(dict.fromkeys(PANE_ENV))
+                return values
+            if isinstance(bound, dict):
+                if opaque(session_id):
+                    self.put(self.panes, session_id, bound)
+                values.update(bound)
+                return values
             with self.lock:
                 session, hops = session_id, 0
                 while session not in self.panes and session in self.parents and hops < 8:
                     session, hops = self.parents[session], hops + 1
                 pane = self.panes.get(session)
-            values = dict.fromkeys(self.foreign)
             if pane is not None:
                 values.update(pane)
             elif os.environ.get("_HERMES_GATEWAY") == "1":
@@ -665,7 +700,9 @@ class Bridge:
         if env is False:
             # Delegated children returned above: a top-level turn of an unseated gateway session.
             if name == "pre_llm_call" and self.sessions.notice(session):
-                return {"context": NO_PANE_NOTICE}
+                startup = observation.get("startup_capture")
+                profile = startup.get("profile") if isinstance(startup, dict) else None
+                return {"context": no_pane_notice(profile)}
             return None
         # Exact native session/turn key is stable across callback retries and
         # process restarts. Observers/missing turns have invocation-only IDs.
@@ -891,7 +928,7 @@ def pre_tool_call(tool_name=None, args=None, **_):
     if gated is None:
         return None
     return {"action": "approve", "rule_key": f"herdr-threads:{gated}",
-            "message": f"`herdr-threads {gated}` is your user's to run: ask them instead of waiting here"}
+            "message": f"`herdr-threads {gated}` is the user's to run; the agent should ask rather than run it"}
 
 
 def register(ctx):

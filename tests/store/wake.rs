@@ -2952,8 +2952,8 @@ fn composer_choice_is_pane_scoped_for_a_process_spanning_seats() {
 
 /// ht-fr7c.7. A seat-spanning harness `exec`ed as the pane's program leaves no non-shell
 /// foreground process; the host classifies the pane's root process instead. Kills: matching it
-/// for a harness that does not span seats, for a root of another harness, or with two targets
-/// of that harness.
+/// for a harness that does not span seats, for a root of another harness, or with targets of
+/// that harness in two processes; refusing two targets of one process.
 #[test]
 fn root_composer_choice_matches_one_seat_spanning_target_of_the_root_harness() {
     let target = |binding: &str, harness: &str, pid: u32| crate::ports::WakeTarget {
@@ -2985,11 +2985,30 @@ fn root_composer_choice_matches_one_seat_spanning_target_of_the_root_harness() {
         crate::ports::ComposerChoice::NoMatch,
         "the exact-pid rule still holds for every other harness"
     );
+    match authority(vec![target("g1", "hermes", 7), target("g2", "hermes", 7)])
+        .root_composer_choice("hermes")
+    {
+        crate::ports::ComposerChoice::Process(group) => assert_eq!(
+            group.iter().map(|t| t.binding.as_str()).collect::<Vec<_>>(),
+            ["g1", "g2"],
+            "two bindings of one process (a parentless /background session) are one composer"
+        ),
+        other => panic!("two same-process targets are that process, got {other:?}"),
+    }
     assert_eq!(
-        authority(vec![target("g1", "hermes", 7), target("g2", "hermes", 7)])
+        authority(vec![target("g1", "hermes", 7), target("g2", "hermes", 8)])
             .root_composer_choice("hermes"),
         crate::ports::ComposerChoice::NoMatch,
-        "two bindings of the harness: no unique composer"
+        "targets of the harness in two processes: no unique composer"
+    );
+    let unknown = |binding: &str| crate::ports::WakeTarget {
+        fingerprint_pid: None,
+        ..target(binding, "hermes", 0)
+    };
+    assert_eq!(
+        authority(vec![unknown("g1"), unknown("g2")]).root_composer_choice("hermes"),
+        crate::ports::ComposerChoice::NoMatch,
+        "targets with no fingerprint pid are not known to share a process"
     );
     match authority(vec![target("g", "hermes", 7), target("c", "claude", 10)])
         .root_composer_choice("hermes")

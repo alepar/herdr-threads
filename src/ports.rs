@@ -2567,6 +2567,18 @@ pub struct WakeTarget {
     pub dormant: bool,
 }
 
+/// One read of a pane's foreground for the composer wake ([`HostPort::pane_foreground`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaneForeground {
+    /// The pane's non-shell foreground pids ([`HostPort::foreground_pids`]).
+    pub pids: Vec<u32>,
+    /// The registered harness the pane's own root process is, when that process is the pane's
+    /// only foreground process (a harness `exec`ed as the pane's program, so `pids` is empty):
+    /// classified by the adapters' declared process shapes through the registry. `None` for a
+    /// shell, an unrecognized process, any other foreground process, or a host that cannot ask.
+    pub root_harness: Option<String>,
+}
+
 /// Who the pane-level composer wake (typing) may reach, from a reservation's targets and
 /// Herdr's pane foreground pids (TRUST-POLICY A4 wake rows).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2670,10 +2682,12 @@ impl ReservedWakeAuthority {
     }
 
     /// The composer-wake target when Herdr reports no non-shell foreground process and the
-    /// pane's root process is a registered harness ([`HostPort::pane_root_harness`]): a harness
+    /// pane's root process is a registered harness ([`PaneForeground::root_harness`]): a harness
     /// `exec`ed as the pane's program. Only a harness whose process spans seats is matched this
     /// way (its binding's fingerprint is its shared server, never the pane's process), and only
-    /// when exactly one target is of that harness; every other case is no match.
+    /// when the targets of that harness are one composer: exactly one target, or several that are
+    /// bindings of one process (the same fingerprint pid, [`ComposerChoice::Process`], as in
+    /// [`Self::composer_choice`]); targets of different processes are no match.
     pub fn root_composer_choice(&self, root_harness: &str) -> ComposerChoice<'_> {
         if self.targets().is_empty() {
             return ComposerChoice::Unspecified;
@@ -2681,9 +2695,22 @@ impl ReservedWakeAuthority {
         if !crate::store::bindings::process_spans_seats(root_harness) {
             return ComposerChoice::NoMatch;
         }
-        let mut matching = self.targets().iter().filter(|t| t.harness == root_harness);
-        match (matching.next(), matching.next()) {
-            (Some(found), None) => ComposerChoice::Binding(found),
+        let matching: Vec<&WakeTarget> = self
+            .targets()
+            .iter()
+            .filter(|t| t.harness == root_harness)
+            .collect();
+        match matching.as_slice() {
+            [] => ComposerChoice::NoMatch,
+            [found] => ComposerChoice::Binding(found),
+            [first, rest @ ..]
+                if first.fingerprint_pid.is_some()
+                    && rest
+                        .iter()
+                        .all(|t| t.fingerprint_pid == first.fingerprint_pid) =>
+            {
+                ComposerChoice::Process(matching)
+            }
             _ => ComposerChoice::NoMatch,
         }
     }
@@ -4736,17 +4763,19 @@ pub trait HostPort: Send + Sync {
     ) -> Result<Vec<u32>, ApiError> {
         Ok(Vec::new())
     }
-    /// The registered harness the pane's own root process is, when that process is the pane's
-    /// only foreground process (a harness `exec`ed as the pane's program, so
-    /// [`Self::foreground_pids`] reports nothing): classified by the adapters' declared process
-    /// shapes through the registry. `None` for a shell, an unrecognized process, any other
-    /// foreground process, or an adapter that cannot ask.
-    fn pane_root_harness(
+    /// The pane's foreground for the composer wake, from one host read: its
+    /// [`Self::foreground_pids`] and, when that process is the pane's only foreground process,
+    /// the registered harness its root process is ([`PaneForeground::root_harness`]). The
+    /// default reports the foreground pids and no root harness.
+    fn pane_foreground(
         &self,
-        _target: &HostTargetId,
-        _context: &HostCallContext,
-    ) -> Result<Option<String>, ApiError> {
-        Ok(None)
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<PaneForeground, ApiError> {
+        Ok(PaneForeground {
+            pids: self.foreground_pids(target, context)?,
+            root_harness: None,
+        })
     }
     /// The pid of the process Herdr started in the pane (its shell or launched program), for
     /// C1 process continuity. `None` when Herdr reports none or the adapter cannot ask: the

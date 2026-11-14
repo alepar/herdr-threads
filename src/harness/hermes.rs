@@ -2733,11 +2733,12 @@ mod adapter_tests {
             .unwrap(),
             serde_json::json!(["PATH", "HERDR_PANE_ID", "HERDR_ENV"])
         );
-        assert_eq!(calls(), "get work\nset work\n");
+        // The second `get` confirms the write (a managed install's `set` exits 0 unwritten).
+        assert_eq!(calls(), "get work\nset work\nget work\n");
         // Complete: no call at all, nothing extra reported.
         let again = HermesAdapter.setup(&request, &budget()).unwrap();
         assert!(again.projection.get("client_env_passthrough").is_none());
-        assert_eq!(calls(), "get work\nset work\n");
+        assert_eq!(calls(), "get work\nset work\nget work\n");
         // A failing Hermes CLI never fails setup; it names what to merge, never a
         // ready-to-run `config set` (that would replace the listed names).
         std::fs::write(&passthrough, r#"["PATH"]"#).unwrap();
