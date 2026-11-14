@@ -1,0 +1,2 @@
+{"event":"native-rpc","success":true,"isStreaming":false,"sessionIdPresent":true,"envKeys":["HOME","PI_CODING_AGENT_DIR","PATH","TERM"],"argv":["node","cli.js","--mode","rpc","--no-session","resource-isolation-flags"]}
+{"event":"native-exit","code":143,"signal":null,"stderrPresent":false}

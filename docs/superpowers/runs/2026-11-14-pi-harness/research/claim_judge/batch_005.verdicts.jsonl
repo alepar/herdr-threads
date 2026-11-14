@@ -1,0 +1,6 @@
+{"claim_id": "9ff9624a4d92c22d", "digest": "add63ba9f05d28af", "verdict": "supported", "reason": "The branches and active-run getter directly establish the described behavior.", "model": "gpt-6.1-terra"}
+{"claim_id": "653665ff2b3d0245", "digest": "e4bd028625e022d4", "verdict": "supported", "reason": "The excerpt explicitly assigns that result to the variable.", "model": "gpt-6.1-terra"}
+{"claim_id": "a83c46645030114e", "digest": "e10b10ae2f1e3d51", "verdict": "supported", "reason": "The excerpts show the argument array and recommend the custom flag.", "model": "gpt-6.1-terra"}
+{"claim_id": "4cf44d3e83484434", "digest": "305099d2f3fe93dc", "verdict": "supported", "reason": "The branches and active-run getter directly establish the described behavior.", "model": "gpt-6.1-terra"}
+{"claim_id": "7ed45546dcd7309a", "digest": "d4ad6b2619a1578b", "verdict": "supported", "reason": "The excerpt explicitly assigns that result to the variable.", "model": "gpt-6.1-terra"}
+{"claim_id": "18d8d07fe9c0862d", "digest": "60c3f37ea1370bf8", "verdict": "supported", "reason": "The excerpts show the argument array and recommend the custom flag.", "model": "gpt-6.1-terra"}

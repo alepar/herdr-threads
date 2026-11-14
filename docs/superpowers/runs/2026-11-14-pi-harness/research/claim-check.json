@@ -1,0 +1,27 @@
+{
+  "status": "pass",
+  "verified": 38,
+  "support_status_counts": {
+    "supported": 38
+  },
+  "support_verification_counts": {
+    "model": 38
+  },
+  "factual_unsupported": 0,
+  "factual_contradicted": 0,
+  "total_factual": 38,
+  "unsupported_rate": 0.0,
+  "claim_support": {
+    "method": "model",
+    "judge_models": [
+      "gpt-6.1-terra"
+    ],
+    "claims_judged_by_model": 38,
+    "claims_unverified_by_model": 0,
+    "judge_unavailable_reason": null,
+    "contradicted": 0,
+    "verified_at": "2026-11-14T22:56:08.718205+00:00"
+  },
+  "failures": [],
+  "verdict_file_errors": []
+}

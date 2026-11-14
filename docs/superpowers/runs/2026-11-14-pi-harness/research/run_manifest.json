@@ -1,0 +1,181 @@
+{
+  "question": "How should herdr-threads support the pi terminal coding agent behind HarnessAdapter while preserving trust, delivery, isolation and versionless compatibility?",
+  "mode": "deep",
+  "started_at": "2026-11-14T22:30:58.307990+00:00",
+  "search_preflight": {
+    "status": "ok",
+    "reason": "CLI capabilities inspected; first deep scoped query succeeded with all providers; Q1 later failed all providers with network errors, switched to host web tool",
+    "selected_tool": "search"
+  },
+  "provider_config": {
+    "primary": "search; web fallback; recovered approved search extraction"
+  },
+  "retrieval_stop": {
+    "reason": "budget-exhausted",
+    "at": "2026-11-14T22:52:35.715736+00:00",
+    "round": 2,
+    "unresolved_high_priority_facet_ids": [],
+    "remaining_gaps": [
+      "Real TUI modal/draft behavior",
+      "Full retry/compaction/lifecycle race qualification",
+      "Process matcher distribution coverage",
+      "Unknown third-party interactive child role",
+      "Credentialed OpenRouter/DeepSeek wake e2e"
+    ],
+    "basis": "Review-driven delta reopened retrieval; boundary API and nine-case probe support revision. No saturation claim; remaining qualification requires implementation/live tests."
+  },
+  "version": "3.0.0",
+  "query": "How should herdr-threads support the pi terminal coding agent behind HarnessAdapter while preserving trust, delivery, isolation and versionless compatibility?",
+  "finished_at": "2026-11-14T22:52:35.715736+00:00",
+  "assumptions": [
+    "Official upstream pi terminal coding agent; third-party forks excluded.",
+    "Provider credentials require separate coordinator permission; research probes use no real credentials."
+  ],
+  "artifact_paths": {
+    "queries": "queries.jsonl",
+    "sources": "sources.jsonl",
+    "evidence": "evidence.jsonl",
+    "claims": "claims.jsonl",
+    "retrievals": "retrievals.jsonl",
+    "coverage": "coverage.json",
+    "report": "report.md"
+  },
+  "report_dir": ".",
+  "reporting": {
+    "output_mode": "markdown",
+    "final_report_path": "report.md",
+    "dossiers": [
+      {
+        "id": "extensions",
+        "path": "extensions.md",
+        "facet_ids": [
+          "F1",
+          "F3",
+          "F5"
+        ],
+        "source_ids": [
+          "458882967aaf8636",
+          "c155a99b7cd580d6",
+          "acc3443733afabb8",
+          "c8186231332ca614",
+          "81c8aeb92fa5effb"
+        ],
+        "evidence_ids": [
+          "75f1329a58b7abc7",
+          "a2e50e9bae70efff",
+          "42bb598f3c044834",
+          "86ad88fb37b6d3d4",
+          "316b625ab33adf12",
+          "2227af8cd1e2361b",
+          "1ac99f294e6317a4",
+          "823d604fbe3e18ed",
+          "0a7d35769748f403",
+          "e855ebcc5f1bfba1",
+          "ff9eee237a7fa5a2",
+          "a5b045a2cd64e867"
+        ],
+        "claim_ids": [
+          "4fa5988ac40166ea",
+          "5c6aa01d5870ed7c",
+          "07f8977db1b6819b",
+          "9ff9624a4d92c22d",
+          "95f2623ef2624057",
+          "64aa49262ee29d4c",
+          "97765e86902d54fd",
+          "f77822bbad775d44",
+          "f0eb1c5f9fd0a72a",
+          "4a26ad9d199c339d",
+          "fe7ba0854c428efe"
+        ],
+        "status": "complete"
+      },
+      {
+        "id": "identity",
+        "path": "identity.md",
+        "facet_ids": [
+          "F2",
+          "F4"
+        ],
+        "source_ids": [
+          "c155a99b7cd580d6",
+          "820a295bc7723a91",
+          "bdb4424801a5f0d7",
+          "81c8aeb92fa5effb",
+          "9c7c725a75af593f",
+          "3c51d17fd4c5012a",
+          "6c98051b4bb1b75a",
+          "c77c685c1ef77189",
+          "80a0e277e5fa77b9",
+          "216620f68d93ea0f",
+          "b2bb11719683b105",
+          "02931a1a3c55a4f0",
+          "6278041c35c0c602"
+        ],
+        "evidence_ids": [
+          "483f4ee86d6a818f",
+          "378b072aab745c82",
+          "a4902f203ac73292",
+          "90aa1cb2c97301d1",
+          "324bf29fbf63c3df",
+          "382566ea17eb67c1",
+          "8f722fc334e9862b",
+          "701c608ac6ab8cff",
+          "ff8639cc850d58b0",
+          "5aeaace5d53f855f",
+          "a6780503d9de1b76",
+          "37ddb01af918f554",
+          "fee0bb0b9a737ce6",
+          "d081c4191a4f608a",
+          "b5efaf4107f9ea3e",
+          "255f84f09a6d7dc7",
+          "6e4e7fe832380134",
+          "9ab0bd3b2d6efaac"
+        ],
+        "claim_ids": [
+          "f4b2f9c2ebb7f90a",
+          "653665ff2b3d0245",
+          "abd4072683faeee7",
+          "5a51b347fc40d758",
+          "a83c46645030114e",
+          "ac572232b65a514c",
+          "973a2c54df134857",
+          "6352b5d6580437c7",
+          "1b15c3e8b882fc9f"
+        ],
+        "status": "complete"
+      }
+    ]
+  },
+  "direct_navigation_source_ids": [
+    "acc3443733afabb8",
+    "8e6017200c0cfec1",
+    "52d06f110a07e6a0",
+    "9bf79ab63610dfaf",
+    "81c8aeb92fa5effb",
+    "c8186231332ca614",
+    "bdb4424801a5f0d7",
+    "02931a1a3c55a4f0",
+    "c2282dd53bd98c6e",
+    "6278041c35c0c602",
+    "216620f68d93ea0f",
+    "820a295bc7723a91",
+    "3c51d17fd4c5012a",
+    "9c7c725a75af593f",
+    "6c98051b4bb1b75a",
+    "b2bb11719683b105",
+    "80a0e277e5fa77b9",
+    "c77c685c1ef77189",
+    "ce0d3aa10e01b683"
+  ],
+  "claim_support": {
+    "method": "model",
+    "judge_models": [
+      "gpt-6.1-terra"
+    ],
+    "claims_judged_by_model": 38,
+    "claims_unverified_by_model": 0,
+    "judge_unavailable_reason": null,
+    "contradicted": 0,
+    "verified_at": "2026-11-14T23:03:44.422708+00:00"
+  }
+}

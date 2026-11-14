@@ -1,0 +1,2 @@
+{"claim_id": "fe7ba0854c428efe", "digest": "1f59d4502f20f7e9", "verdict": "supported", "reason": "The passage explicitly states that continue: true ensures one next provider request for the boundary invocation.", "model": "gpt-6.1-terra"}
+{"claim_id": "9f2a5e77002fb1fc", "digest": "850339160c11035b", "verdict": "supported", "reason": "The passage explicitly states that continue: true ensures one next provider request for the boundary invocation.", "model": "gpt-6.1-terra"}

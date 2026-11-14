@@ -1,0 +1,12 @@
+{"claim_id": "5a51b347fc40d758", "digest": "9553ccd01827c6f2", "verdict": "supported", "reason": "The bin mapping and setup assignments state both parts.", "model": "gpt-6.1-terra"}
+{"claim_id": "1a7b67294e9f8611", "digest": "ca3fc118ad6ab579", "verdict": "supported", "reason": "The example passes JSON print and no-session flags; the maintainer recommends a custom flag passed to subagents.", "model": "gpt-6.1-terra"}
+{"claim_id": "ac572232b65a514c", "digest": "7d2aa498e21ba451", "verdict": "supported", "reason": "The configuration description and auth path establish both claims.", "model": "gpt-6.1-terra"}
+{"claim_id": "973a2c54df134857", "digest": "e8c47b9c750ef0fe", "verdict": "supported", "reason": "Both provider environment variables are explicitly identified.", "model": "gpt-6.1-terra"}
+{"claim_id": "6352b5d6580437c7", "digest": "d4d41a61a941db11", "verdict": "supported", "reason": "The option descriptions state the accepted syntax and provider restriction.", "model": "gpt-6.1-terra"}
+{"claim_id": "1b15c3e8b882fc9f", "digest": "b28ec004f86b179b", "verdict": "supported", "reason": "The lifecycle passage explicitly requires rebinding subscriptions.", "model": "gpt-6.1-terra"}
+{"claim_id": "7926e6b1bc897929", "digest": "7713659ffa65abbe", "verdict": "supported", "reason": "The discovery table and trust condition establish the stated locations.", "model": "gpt-6.1-terra"}
+{"claim_id": "015f91ae16a225d8", "digest": "7021f99f15366b5a", "verdict": "supported", "reason": "The lifecycle passage and event type establish replacement and all five reasons.", "model": "gpt-6.1-terra"}
+{"claim_id": "e4f138f4584f0a9e", "digest": "dc8643456874215a", "verdict": "supported", "reason": "The API signature gives the void result and all three delivery options.", "model": "gpt-6.1-terra"}
+{"claim_id": "9594e2a4500ec782", "digest": "8eb5c905ab24db4d", "verdict": "partial", "reason": "Streaming messages steer only when delivery is neither nextTurn nor followUp; those options take precedence.", "model": "gpt-6.1-terra"}
+{"claim_id": "3ce0caf0acca4e0a", "digest": "0bcfd5e8ea6d9f91", "verdict": "supported", "reason": "The passage explicitly identifies agent_settled as the final-idle signal.", "model": "gpt-6.1-terra"}
+{"claim_id": "b4ed0f948f865efb", "digest": "e2e308df86a07a22", "verdict": "supported", "reason": "The getters distinguish active run from idle and exclude compaction from idle.", "model": "gpt-6.1-terra"}

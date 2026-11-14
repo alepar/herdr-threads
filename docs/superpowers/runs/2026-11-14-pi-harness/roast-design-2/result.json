@@ -1,0 +1,105 @@
+{
+  "verdict": "Blocking (1 confirmed) [low coverage] [review readiness incomplete]",
+  "reportMarkdown": "super-roast verdict: Blocking (1 confirmed) [low coverage] [review readiness incomplete]\nmode: design        iteration: 2 of 3\nprofile (assumed): Internal same-user cooperative agent messaging. Identity, receipt provenance and priority-correct wake are core contracts. No production implementation exists; source and fake-provider SDK probes are available, with TUI/live qualification explicitly deferred.\ninputs: pi-harness/design.md revised 2026-11-14\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 8 resolved \u00b7 1 regressed (1 Blocking) \u00b7 0 punch-listed (open)\ncoverage: scouts 9/9 (premortem, completeness, yagni, failure-mode, feasibility, regression, domain:distributed-systems, domain:agent-runtime-integration, domain:process-identity-and-lifecycle) \u00b7 raw 2 \u2192 deduped 1 \u2192 panel 1 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0 \u00b7 review readiness: coverage bounded, provenance available \u2014 basis: \"Primary-source extracts, supported research claims and real SDK nine-case boundary probe; TUI/live-provider qualification not yet performed.\"\nindependence: same-family (OpenAI GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 1 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=1) \u00b7 reproduce 1/0/0 \u00b7 refute 1/0/0 \u00b7 ground 1/0/0\nlane-yield (found/confirmed/unique/refuted): premortem 0/0/0/0 \u00b7 completeness 0/0/0/0 \u00b7 yagni 0/0/0/0 \u00b7 failure-mode 0/0/0/0 \u00b7 feasibility 1/1/0/0 \u00b7 regression 1/1/0/0 \u00b7 domain:distributed-systems 0/0/0/0 \u00b7 domain:agent-runtime-integration 0/0/0/0 \u00b7 domain:process-identity-and-lifecycle 0/0/0/0\n\nPrior dispositions below compare docs/superpowers/runs/2026-11-14-pi-harness/roast-design-1/design-input.md against docs/superpowers/runs/2026-11-14-pi-harness/roast-design-2/design-input.md. They establish repaired design text, not implementation or runtime qualification. Missing findings are not resolved from absence; TUI/live-provider readiness remains incomplete.\nPrior role admission: resolved in revised D2 by an explicit extension-produced top-level assertion, inherited-owner and child refusal, and the documented marker-stripping limit.\nPrior native queue survival: resolved in revised D3/D5 by removing bodies from native nextTurn/steer/follow-up queues and reconciling unacknowledged current-branch frames on reload.\nPrior aggregate capacity: regressed; revised D4 adds bounds and urgent displacement but incompletely defines post-capacity replay, as confirmed below.\nPrior failed wake observation: resolved in revised D5 by a 30-second unreceived transition, suppression for unchanged attention and explicit requalification triggers; bounded degraded progress is expressly accepted.\nPrior first idle wake: resolved in revised D3/D5 by successful startup/reload admission plus fresh isIdle, without requiring an earlier agent_settled event.\nPrior lifecycle guidance/provenance: resolved in revised D3 by ObserverOnly guidance output, watch-only mail and explicit boundary insertion with no guidance receipt.\nPrior shutdown ownership: resolved in revised D3 by owner-scoped environment withdrawal, watch/timer cleanup and best-effort session-end liveness disconnection.\nPrior same-session tree navigation: resolved in revised D3 by branch revision, evidence invalidation, current-branch reconciliation and guidance restoration without reversing valid receipts.\nPrior cross-batch ordering: resolved in revised D4/D5 by sorting the retained pending union at each admission boundary and eliminating the native passive-body FIFO.\n\n## Confirmed findings\n\n- [Blocking] docs/superpowers/runs/2026-11-14-pi-harness/roast-design-2/design-input.md, D4 paragraphs 1\u20132 \u2014 Replay refill is conditional on resident displacement, so excess incoming bodies discarded without displacement have no recovery transition when capacity is released. [fix-regression] [lanes: feasibility, regression] (regressed: iteration 1 aggregate-capacity finding fixed incompletely)\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats distinguish \u201cdiscard excess bodies without settlement\u201d from the narrower \u201cif displacement occurred\u201d refill condition in D4. A full passive cache can discard later worse-ranked frames without replacing any resident, then admit and ACK retained pages after an ordinary user turn without triggering replacement.\n  evidence: Reproduce and refute cite src/delivery/ledger.rs:21-24: three ordinary offers at 60-second spacing can all expire while capacity remains occupied. ACKs remove retained IDs only. All seats cite src/service/mod_channels.rs:743-838: replay captures one finite pass per lease, including a terminal empty capture, rather than refilling indefinitely after ACKs.\n  evidence: D3 makes watch the sole automatic mail path. D4 requires eventual replay after space is released; the healthy-channel saturation case is outside the accepted failed-replay and runtime-wake degradation limits. Canonical retention avoids data loss but does not restore automatic in-context delivery.\n  severity: Raised from the seats' Should-fix to Blocking under the core-purpose floor: normal supported saturation can indefinitely prevent the adapter's stated bounded in-context delivery after capacity is available. This is a missing healthy-path transition, not a demand for stronger recovery from an accepted channel failure.\n  fix-shape hint: Track every discarded unacknowledged body as replay debt, including incoming excess, and consume that debt through the existing progress-triggered watch replacement.\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- D5 active-run interval; Open decisions before implementation; D5 positive active-run interval; Open decisions before implementation \u2014 Busy delivery relies on an unverified active-run interval across retry, tool, abort and compaction transitions, risking passive mail starting a new run.\n  reason: All seats reject. D5 expressly holds retry gaps, compaction and uncertainty, requires positive active-run evidence and fresh synchronous checks, and promises busy delivery where possible. D8 and Open decisions already require phase qualification before support is complete; no unsafe permitted transition is established.\n- D4 first, third and fourth paragraphs; D4: sendMessage is fire-and-forget; deduplicate in-flight records; clear local state only on admitted completion or explicit generation teardown \u2014 The in-flight submission state lacks a recovery rule distinguishing a lost fire-and-forget injection from a still-queued frame, risking permanently suppressed replay or duplicate reinjection.\n  reason: All seats reject. D4 deduplicates records, not every retry submission. D5 preserves unconsumed wake intent and permits local retries without upgrading passive priority. Pending receipts without evidence are accepted, and fire-and-forget alone does not establish silent loss before queuing. This does not refute the separately confirmed concrete reload-queue or capacity cases.\n- D1 final paragraph; D3 final paragraph \u2014 Recovery from failed check-in or a dead watch depends on a future Pi callback, leaving an otherwise idle session without a specified autonomous path back to receiving wakeable mail.\n  reason: All seats reject. D1 explicitly accepts no idle wake without a live channel; D3 retries at the next eligible callback, and D7 requires documenting no-channel behavior. Autonomous idle reconnection would strengthen the chosen contract.\n- D5 final paragraph; D1 channel-only wake \u2014 Channel-only idle wake remains contingent on unqualified behavior of TUI selectors and extension dialogs.\n  reason: All seats reject. D5 requires real-binary modal/draft qualification and keeps an interfering path disabled until a supported guard exists. D8 and Open decisions retain that gate. Rejection does not establish modal safety or completed qualification.\n- D4 admission predicate \u2014 The design leaves bounded current-branch receipt lookup unspecified despite requiring it on the model-context path.\n  reason: All seats reject. D4\u2013D5 bound delivery batches and pending content, not native history length or lookup CPU time. Current-branch matching already forbids stale cache evidence. No workload failure or violated lookup budget is demonstrated.\n- D4. Delivery, evidence and receipt timing, admission predicate and accepted-limit paragraphs \u2014 D4 makes current-branch storage matching an additional mandatory receipt dependency without stating what it proves beyond the already required exact-frame observation in the current session context.\n  reason: All seats reject. D4 expressly selects context-plus-current-branch admission and pending receipts when either observation is missing; D7 repeats this policy. A context-only alternative may simplify it but no stated receipt-availability promise is violated.\n\n## Unverified nits (spot-checked)\n\n- [FYI] D6. Setup and launch, interactive option grammar paragraph \u2014 D6 leaves the launch parser scope open-ended by requiring documented interactive options generally after declaring a restricted initial option set.\n  refute spot vote: REJECT; unverified at panel strength. D6 already limits launch to a tested initial subset and refuses unknown options. Tightening adjacent general wording is editorial, not a requirement for full CLI parity.\n\n## Escalations (need human)\n\n- none",
+  "confirmedCount": 1,
+  "escalations": [],
+  "reporterFailed": false,
+  "enforcement": [
+    "header: lane-yield inserted"
+  ],
+  "fixRegressions": [
+    {
+      "location": "D4, paragraph 2: \"discard excess bodies without settlement\" and \"if displacement occurred, replace the watch once\"; D4, first and second paragraphs: \"a better item displaces a worse unsubmitted item\", \"discard excess bodies\", and \"if displacement occurred, replace the watch once\"",
+      "claim": "D4 conditions replay refill on resident displacement, leaving incoming excess bodies discarded without displacement without a specified recovery transition after capacity is released.",
+      "defaultRoute": "confirmed"
+    }
+  ],
+  "coverage": {
+    "triageDead": false,
+    "scoutsDispatched": 9,
+    "scoutsDead": 0,
+    "unknownLanes": [],
+    "domainsDropped": [],
+    "rawFindings": 2,
+    "dedupedFindings": 1,
+    "dedupeOrphans": 0,
+    "beyondCap": 0,
+    "beyondPanelCap": 0,
+    "dedupeDead": false,
+    "panelCount": 1,
+    "spotCount": 0,
+    "promotedCount": 0,
+    "judgeLost": 0,
+    "spotLost": 0,
+    "laneYield": {
+      "premortem": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "completeness": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "yagni": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "failure-mode": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "feasibility": {
+        "found": 1,
+        "confirmed": 1,
+        "unique": 0,
+        "refuted": 0
+      },
+      "regression": {
+        "found": 1,
+        "confirmed": 1,
+        "unique": 0,
+        "refuted": 0
+      },
+      "domain:distributed-systems": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "domain:agent-runtime-integration": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "domain:process-identity-and-lifecycle": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      }
+    },
+    "judgeCompletionPct": 100,
+    "lowCoverage": false,
+    "panelCappedTag": "",
+    "emptyLateRound": false,
+    "reviewReadiness": {
+      "coverage": "bounded",
+      "provenance": "available",
+      "basis": "Primary-source extracts, supported research claims and real SDK nine-case boundary probe; TUI/live-provider qualification not yet performed."
+    },
+    "convergenceEligible": false
+  },
+  "routeCounts": {
+    "confirmed": 1
+  },
+  "seatAgreement": "seat-agreement: panels 1 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=1) \u00b7 reproduce 1/0/0 \u00b7 refute 1/0/0 \u00b7 ground 1/0/0"
+}

@@ -1,0 +1,339 @@
+{
+  "question": "How should herdr-threads support the pi terminal coding agent behind HarnessAdapter while preserving trust, delivery, isolation and versionless compatibility?",
+  "initial_facets": [
+    {
+      "id": "F1",
+      "question": "Extension API, lifecycle and setup",
+      "priority": "high",
+      "active": true,
+      "status": "unsearched",
+      "counterevidence": "unchecked",
+      "query_ids": [],
+      "evidence_ids": [],
+      "gap_note": "Primary docs and source needed"
+    },
+    {
+      "id": "F2",
+      "question": "Session identity, process, resume, branching and children",
+      "priority": "high",
+      "active": true,
+      "status": "unsearched",
+      "counterevidence": "unchecked",
+      "query_ids": [],
+      "evidence_ids": [],
+      "gap_note": "Primary docs and source needed"
+    },
+    {
+      "id": "F3",
+      "question": "TUI state, delivery and channel wake",
+      "priority": "high",
+      "active": true,
+      "status": "unsearched",
+      "counterevidence": "unchecked",
+      "query_ids": [],
+      "evidence_ids": [],
+      "gap_note": "Primary docs and source needed"
+    },
+    {
+      "id": "F4",
+      "question": "RPC, headless, SDK, providers and live qualification",
+      "priority": "high",
+      "active": true,
+      "status": "unsearched",
+      "counterevidence": "unchecked",
+      "query_ids": [],
+      "evidence_ids": [],
+      "gap_note": "Primary docs and source needed"
+    }
+  ],
+  "facets": [
+    {
+      "id": "F1",
+      "question": "Extension API, lifecycle and setup",
+      "priority": "high",
+      "active": true,
+      "status": "supported",
+      "counterevidence": "found",
+      "query_ids": [
+        "Q0"
+      ],
+      "evidence_ids": [
+        "2227af8cd1e2361b",
+        "0eabea4dc0fb3d77",
+        "75f1329a58b7abc7",
+        "a2e50e9bae70efff",
+        "884fd18cfb908a09",
+        "483f4ee86d6a818f"
+      ],
+      "gap_note": "Source behavior established; runtime and third-party extension qualification limits retained in report.",
+      "source_types": [
+        "official documentation",
+        "upstream source",
+        "upstream regression tests"
+      ],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "F2",
+      "question": "Session identity, process, resume, branching and children",
+      "priority": "high",
+      "active": true,
+      "status": "supported",
+      "counterevidence": "found",
+      "query_ids": [
+        "IMQ1",
+        "IMQ2",
+        "IMQ3",
+        "IMQ4"
+      ],
+      "evidence_ids": [
+        "a4902f203ac73292",
+        "9ab0bd3b2d6efaac",
+        "0e7702cb2c9a31c9",
+        "378b072aab745c82",
+        "701c608ac6ab8cff",
+        "8f722fc334e9862b",
+        "5aeaace5d53f855f",
+        "24e2a0f2629f5715",
+        "a6780503d9de1b76",
+        "7f10d57e90f9816d",
+        "90aa1cb2c97301d1",
+        "324bf29fbf63c3df",
+        "382566ea17eb67c1",
+        "42bb598f3c044834",
+        "ff8639cc850d58b0",
+        "c92ad282e9a91394",
+        "d541b2d5e5eb858d",
+        "f1d192f3653119e0"
+      ],
+      "gap_note": "Source behavior established; runtime and third-party extension qualification limits retained in report.",
+      "source_types": [
+        "official documentation",
+        "upstream source",
+        "upstream regression tests"
+      ],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "F3",
+      "question": "TUI state, delivery and channel wake",
+      "priority": "high",
+      "active": true,
+      "status": "supported",
+      "counterevidence": "found",
+      "query_ids": [
+        "Q0",
+        "Q1",
+        "Q2"
+      ],
+      "evidence_ids": [
+        "2227af8cd1e2361b",
+        "ba5c5a0ad1b76e0f",
+        "0eabea4dc0fb3d77",
+        "76ec1cc5c1ae97c5",
+        "cabdc95cd60a5b61",
+        "08b87f4617cc8fd7",
+        "f828bf30961cb279",
+        "acbf6bb20ce71da8",
+        "316b625ab33adf12",
+        "823d604fbe3e18ed",
+        "86ad88fb37b6d3d4",
+        "1ac99f294e6317a4",
+        "e352bb84918f5353",
+        "e855ebcc5f1bfba1",
+        "bb7efa668a2ab093",
+        "0a7d35769748f403",
+        "884fd18cfb908a09",
+        "483f4ee86d6a818f"
+      ],
+      "gap_note": "Source behavior established; runtime and third-party extension qualification limits retained in report.",
+      "source_types": [
+        "official documentation",
+        "upstream source",
+        "upstream regression tests"
+      ],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "F4",
+      "question": "RPC, headless, SDK, providers and live qualification",
+      "priority": "high",
+      "active": true,
+      "status": "supported",
+      "counterevidence": "found",
+      "query_ids": [
+        "IMQ1",
+        "IMQ2"
+      ],
+      "evidence_ids": [
+        "255f84f09a6d7dc7",
+        "7dfdad9392e57668",
+        "d081c4191a4f608a",
+        "429906d777d91fd9",
+        "a3194bc39fe6d0c5",
+        "37ddb01af918f554",
+        "49bad6c787d3adda",
+        "fee0bb0b9a737ce6",
+        "b5efaf4107f9ea3e",
+        "6e4e7fe832380134"
+      ],
+      "gap_note": "Source behavior established; runtime and third-party extension qualification limits retained in report.",
+      "source_types": [
+        "official documentation",
+        "upstream source",
+        "upstream regression tests"
+      ],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "F5",
+      "question": "Can boundary draft APIs replace queued delivery while preserving run and receipt semantics?",
+      "priority": "high",
+      "active": true,
+      "status": "supported",
+      "counterevidence": "found",
+      "query_ids": [
+        "Q3"
+      ],
+      "evidence_ids": [
+        "ff9eee237a7fa5a2",
+        "a5b045a2cd64e867"
+      ],
+      "source_types": [
+        "official documentation",
+        "upstream source",
+        "local runtime experiment"
+      ],
+      "contested_positions": [],
+      "scope_change": null,
+      "gap_note": "Docs describe hard exits; local probe finds synthetic error/abort pre-settle continuation. Design guards completed outcome and retains real TUI/provider qualification."
+    }
+  ],
+  "completed_rounds": [
+    {
+      "round": 1,
+      "query_ids": [
+        "Q0",
+        "Q1",
+        "Q2",
+        "IMQ1",
+        "IMQ2",
+        "IMQ3",
+        "IMQ4"
+      ],
+      "families": [
+        "literal",
+        "counterevidence",
+        "source-specific"
+      ],
+      "target_high_priority_facet_ids": [
+        "F1",
+        "F2",
+        "F3",
+        "F4"
+      ],
+      "new_relevant_source_ids": [
+        "458882967aaf8636",
+        "c155a99b7cd580d6"
+      ],
+      "material_changes": [
+        {
+          "facet_id": "F1",
+          "kind": "status",
+          "before": "unsearched",
+          "after": "supported"
+        },
+        {
+          "facet_id": "F1",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        },
+        {
+          "facet_id": "F2",
+          "kind": "status",
+          "before": "unsearched",
+          "after": "supported"
+        },
+        {
+          "facet_id": "F2",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        },
+        {
+          "facet_id": "F3",
+          "kind": "status",
+          "before": "unsearched",
+          "after": "supported"
+        },
+        {
+          "facet_id": "F3",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        },
+        {
+          "facet_id": "F4",
+          "kind": "status",
+          "before": "unsearched",
+          "after": "supported"
+        },
+        {
+          "facet_id": "F4",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        }
+      ],
+      "coverage_ready_after": true
+    },
+    {
+      "round": 2,
+      "query_ids": [
+        "Q3"
+      ],
+      "families": [
+        "delta"
+      ],
+      "target_high_priority_facet_ids": [
+        "F5"
+      ],
+      "new_relevant_source_ids": [],
+      "material_changes": [
+        {
+          "facet_id": "F5",
+          "kind": "facet_added",
+          "before": null,
+          "after": "supported"
+        },
+        {
+          "facet_id": "F5",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        }
+      ],
+      "coverage_ready_after": true
+    }
+  ],
+  "stop": {
+    "reason": "budget-exhausted",
+    "at": "2026-11-14T22:52:35.715736+00:00",
+    "round": 2,
+    "unresolved_high_priority_facet_ids": [],
+    "remaining_gaps": [
+      "Real TUI modal/draft behavior",
+      "Full retry/compaction/lifecycle race qualification",
+      "Process matcher distribution coverage",
+      "Unknown third-party interactive child role",
+      "Credentialed OpenRouter/DeepSeek wake e2e"
+    ],
+    "basis": "Review-driven delta reopened retrieval; boundary API and nine-case probe support revision. No saturation claim; remaining qualification requires implementation/live tests."
+  },
+  "schema_version": 1
+}

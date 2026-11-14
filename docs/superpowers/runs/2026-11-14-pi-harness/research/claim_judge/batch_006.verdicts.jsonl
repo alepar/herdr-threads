@@ -1,0 +1,10 @@
+{"claim_id": "4fa5988ac40166ea", "digest": "397844817447c8c4", "verdict": "supported", "reason": "The passage specifies global discovery and project-local discovery after project trust.", "model": "gpt-6.1-terra"}
+{"claim_id": "5c6aa01d5870ed7c", "digest": "2a85dd0cef1e6c39", "verdict": "supported", "reason": "The passage describes shutdown, reload and rebind on replacement; the event type lists all five reasons.", "model": "gpt-6.1-terra"}
+{"claim_id": "64aa49262ee29d4c", "digest": "ad6a23cf14656f54", "verdict": "supported", "reason": "The passage explicitly recommends agent_settled as the final-idle signal.", "model": "gpt-6.1-terra"}
+{"claim_id": "7926e6b1bc897929", "digest": "f639ecc449c10a92", "verdict": "supported", "reason": "The passage specifies global discovery and project-local discovery after project trust.", "model": "gpt-6.1-terra"}
+{"claim_id": "015f91ae16a225d8", "digest": "530f52ea40205fdc", "verdict": "supported", "reason": "The passage describes shutdown, reload and rebind on replacement; the event type lists all five reasons.", "model": "gpt-6.1-terra"}
+{"claim_id": "3ce0caf0acca4e0a", "digest": "f8650c49be47798a", "verdict": "supported", "reason": "The passage explicitly recommends agent_settled as the final-idle signal.", "model": "gpt-6.1-terra"}
+{"claim_id": "4a26ad9d199c339d", "digest": "9db496ce4c9bde21", "verdict": "supported", "reason": "The passage explicitly places turn_end after persistence of both message types.", "model": "gpt-6.1-terra"}
+{"claim_id": "3af85b504852d4e7", "digest": "5cd5dd95818c2437", "verdict": "supported", "reason": "The passage explicitly places turn_end after persistence of both message types.", "model": "gpt-6.1-terra"}
+{"claim_id": "8a3bdf38e50e2988", "digest": "64260d0752607e39", "verdict": "partial", "reason": "The passage guarantees one next request, but does not establish whether a separate outer run is needed.", "model": "gpt-6.1-terra"}
+{"claim_id": "9a2b84a0f196f43e", "digest": "618d549a8bd8b1ff", "verdict": "partial", "reason": "The passage guarantees one next request, but does not establish whether a separate outer run is needed.", "model": "gpt-6.1-terra"}

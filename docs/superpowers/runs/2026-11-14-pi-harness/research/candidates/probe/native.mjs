@@ -1,0 +1,10 @@
+import {spawn} from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+const root=path.resolve(import.meta.dirname,'scratch-native');const cwd=path.join(root,'project');fs.mkdirSync(cwd,{recursive:true});
+const env={HOME:path.join(root,'home'),PI_CODING_AGENT_DIR:path.join(root,'agent'),PATH:process.env.PATH,TERM:'dumb'};
+const cli=path.resolve(import.meta.dirname,'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
+const child=spawn(process.execPath,[cli,'--mode','rpc','--no-session','--no-extensions','--no-skills','--no-prompt-templates','--no-themes','--no-tools'],{cwd,env,stdio:['pipe','pipe','pipe']});
+let output='',err='';child.stdout.on('data',b=>{output+=b;for(const line of output.split('\n')){try{const r=JSON.parse(line);if(r.id==='state'){console.log(JSON.stringify({event:'native-rpc',success:r.success,isStreaming:r.data?.isStreaming,sessionIdPresent:typeof r.data?.sessionId==='string',envKeys:Object.keys(env),argv:['node','cli.js','--mode','rpc','--no-session','resource-isolation-flags']}));child.kill('SIGTERM');}}catch{}}});child.stderr.on('data',b=>err+=b);
+child.stdin.write(JSON.stringify({id:'state',type:'get_state'})+'\n');
+const timeout=setTimeout(()=>child.kill('SIGKILL'),5000);await new Promise(resolve=>child.on('close',(code,signal)=>{clearTimeout(timeout);console.log(JSON.stringify({event:'native-exit',code,signal,stderrPresent:!!err}));resolve();}));

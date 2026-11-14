@@ -1,0 +1,857 @@
+{
+  "engine": "super-roast canonical engine, assembled from skill 6.4.2-alepar6.8",
+  "execution": "manual fan-out via file-backed native agent adapter",
+  "model_family": "OpenAI GPT; inherited model for every role",
+  "input_sha256": "ba463c14bdd320c68fc31cba5e458b658c88e4f829ea17a004aba612e241e79c",
+  "responses": [
+    {
+      "id": "001",
+      "result": {
+        "lanes": [],
+        "domains": [
+          "agent-runtime-integration",
+          "distributed-systems",
+          "identity-and-session-lifecycle"
+        ]
+      }
+    },
+    {
+      "id": "002",
+      "result": {
+        "findings": [
+          {
+            "claim": "The design does not define the positive top-level role witness that prevents a freshly initialized interactive child from enrolling as a top-level pi session.",
+            "location": "D2, lines 21\u201327; D7, line 79",
+            "category": "premortem",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D2 exports the current session and own PID, validates the innermost matching pi process, and refreshes these markers at startup. An interactive child running this same extension can satisfy all of those checks with fresh values rather than inherited ones. The specification also says pi supplies no universal child-role marker, requires that missing evidence not be inferred as top-level, and says every payload freezes a role, but never defines where a positive top-level role comes from or how unknown interactive children are refused. Merely stating third-party children are unsupported does not define the admission behavior needed to enforce that stated limit. The failure case is an interactive child replacing stale inherited markers with its own valid identity and being admitted under an invented top-level role."
+          },
+          {
+            "claim": "Execution fencing does not specify what happens to bodies already handed to pi\u2019s nextTurn queue when the extension is reloaded or the native session is replaced.",
+            "location": "D3, lines 31\u201335; D4, line 45; D5, lines 53\u201354",
+            "category": "premortem",
+            "external": false,
+            "kind": "UNVERIFIED-ASSUMPTION",
+            "evidence": "D5 stages complete bodies using nextTurn before context admission; D3 then promises shutdown/replacement invalidates old delivery/wake candidates and D4 permits local-state teardown. Those actions fence the extension\u2019s callbacks and watch child, but the design identifies no cancellation, filtering, or proven queue-clearing behavior for work already submitted to pi. Its safety therefore assumes the host discards the queued content on every relevant replacement, including reload of the same native session, or that a new owner can recognize and reconcile it. Without either contract a successor can ingest a stale body or replay a duplicate even though its ACK path correctly refuses stale evidence. Context/branch matching protects the receipt, not the model input.",
+            "spike": "Question: Does every supported replacement clear queued custom messages, and can an old body appear after a new owner starts? Cheapest test: stage a passive nextTurn frame, perform reload/new/resume/fork before any model request, then prompt and inspect context plus replay/ACK behavior. Kill criteria: an old-generation frame enters a successor context without explicit reconciliation, or a replay produces duplicate bodies with no supported way to suppress them."
+          },
+          {
+            "claim": "Per-watch-page ordering does not define priority ordering of the combined context when an idle session has already staged passive bodies before a waking batch arrives.",
+            "location": "D4, line 45; D5, lines 53\u201354",
+            "category": "premortem",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D4 delegates ordering to the existing watch protocol, while D5 immediately stages passive items in nextTurn and later stages waking items through the same path. Consider an idle T=0 session receiving a p3 batch and then a p0 batch before any natural turn: each daemon batch can be correctly ordered in isolation while the assembled next context has already-staged p3 content ahead of p0. The specification provides no merge/reorder step across outstanding staged batches and no guarantee that the staging API preserves the project\u2019s priority/deadline/age order over their union. This is an ordering gap at the host queue boundary, after the daemon\u2019s ordering guarantee."
+          },
+          {
+            "claim": "The bounded pending-batch design leaves saturation behavior undefined, including how urgent mail progresses when passive staged items occupy the entire retained capacity.",
+            "location": "D4, lines 39 and 45; D5, lines 53\u201356",
+            "category": "premortem",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D4 requires a bounded batch retaining full bodies and says local state is cleared only on admitted completion or generation teardown. D5 stages idle passive mail without waking and holds uncertain-state mail. Such records can remain indefinitely without context evidence. No numeric aggregate bound, watch backpressure rule, overflow policy, or reserved path for a later waking item is defined. Continuing to consume batches can grow the extension/host queues beyond the advertised bound; stopping consumption when full can strand a later p0 item behind passive records that intentionally cannot trigger a run. Bounded daemon pages do not by themselves bound the accumulated unresolved batches or specify how wake-control progress survives that bound."
+          }
+        ]
+      }
+    },
+    {
+      "id": "003",
+      "result": {
+        "findings": [
+          {
+            "claim": "The design does not define the positive role evidence that distinguishes a supported top-level TUI from an unsupported interactive child.",
+            "location": "D2, lines 23\u201327",
+            "category": "completeness",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D2 says every event freezes a role and that third-party interactive children require an explicit cooperative role contract, with missing evidence never inferred as top-level. Its only concrete exported claims are session, PID and mode; those identify a TUI execution but do not specify its role. An interactive child can have its own correct PID and session and the same tui mode. The design needs either an explicit supported top-level role witness or a stated accepted limit for indistinguishable interactive children; excluding their launchers by documentation alone does not supply the promised admission decision."
+          },
+          {
+            "claim": "The design has no cross-batch ordering rule for passive bodies already staged in Pi when a later higher-priority body triggers the next run.",
+            "location": "D4 line 45; D5 idle rows, lines 53\u201354",
+            "category": "completeness",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D4 delegates ordering to the daemon, while D5 immediately stages each idle passive body with nextTurn and separately stages a later waking body before triggering a run. Consider p3 staged while idle followed by p0: ordering within each daemon page does not specify how the already staged p3 and later p0 are ordered together in the eventual model context. No bridge-side reordering, queue replacement or context assembly rule covers this case, and the qualification list does not explicitly require cross-batch mixed-priority staging."
+          },
+          {
+            "claim": "The bounded-delivery promise lacks an aggregate capacity and saturation policy for unsettled local records and native nextTurn staging.",
+            "location": "D4 lines 39\u201345; D5 lines 53\u201356",
+            "category": "completeness",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "The spec requires a bounded batch and bounded pending items, but also says to keep receipts pending when evidence is unavailable and to clear local state only on admitted completion or generation teardown. Bounded watch pages do not alone bound the sum of pages accumulated during a long idle session or persistent evidence failure. The spec does not say what happens at capacity: whether to stop reading/staging, retain only a bounded offered set, release offers for replay, or reserve room for newly urgent items. That omission leaves both memory bounds and urgent-mail progress undefined."
+          },
+          {
+            "claim": "A failed fire-and-forget idle wake has no defined retry or failure-observation path.",
+            "location": "D4 line 39; D5 lines 54 and 60",
+            "category": "completeness",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D4 explicitly says sendMessage is fire-and-forget and its successful invocation is not receipt evidence. D5 stages the body and submits one wake, retaining unconsumed wake intent until settled. It never defines how the bridge detects that the wake failed to start a run, when it retries if no settled callback follows, or how it avoids duplicate starts while an earlier submission is still unresolved. Watch ACK retry cannot establish whether this separate Pi wake submission started a run. A body staged successfully followed by a failed wake therefore has no specified liveness transition."
+          },
+          {
+            "claim": "The design does not define how startup and compact fixed guidance enters Pi context or which delivery provenance applies to that path.",
+            "location": "D3 line 33; D4 lines 39\u201343",
+            "category": "completeness",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D3 routes lifecycle registration through existing hook plumbing and says compaction restates fixed guidance, but never specifies how returned hook context is inserted into Pi or when it is considered delivered. D4 specifies a context-plus-current-branch predicate for custom watch frames only. The integration therefore lacks a defined path for the lifecycle guidance itself and a rule for any pending delivery returned alongside lifecycle hook output, including whether that output may be completed before Pi context observation. Reusing hook plumbing alone does not specify this extension-to-model boundary."
+          },
+          {
+            "claim": "The initial idle state before the first agent run has no specified wake-eligibility transition.",
+            "location": "D3 lines 31\u201335; D5 lines 53\u201358",
+            "category": "completeness",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D3 defines startup admission but no run-state initialization. D5 admits idle wakes only in positively settled idle and says to use agent_settled plus a fresh isIdle check. It does not say whether successful startup with isIdle true establishes idle eligibility without a preceding agent_settled, or how reload/resume while idle initializes the same state. A newly launched empty TUI must be able to receive its first p0 wake before any user/model run; the specified state transitions do not cover that case."
+          }
+        ]
+      }
+    },
+    {
+      "id": "004",
+      "result": {
+        "findings": [
+          {
+            "claim": "D4 makes current-branch storage matching an additional mandatory receipt dependency without stating what it proves beyond the already required exact-frame observation in the current session context.",
+            "location": "D4. Delivery, evidence and receipt timing, admission predicate and accepted-limit paragraphs",
+            "category": "yagni",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "The predicate requires both \"observation of the exact full custom frame in the current session's model-bound context\" and \"its matching current-branch custom-message entry.\" The batch already carries exact IDs, full bodies, session/execution and a private nonce. The stated claim is only \"entry into the extension-observed session context, not provider receipt, model consumption or disk flush,\" and downstream transformations remain an accepted limit. The spec does not identify any additional guarantee supplied by the branch-entry conjunct, but expressly requires withholding receipts when that entry is unavailable even if exact current-session context observation succeeded. This adds a storage-observation dependency and a withholding condition to a context-only claim; identify a concrete false-receipt case it prevents or use the context predicate alone."
+          },
+          {
+            "claim": "D6 leaves the launch parser scope open-ended by requiring documented interactive options generally after declaring a restricted initial option set.",
+            "location": "D6. Setup and launch, interactive option grammar paragraph",
+            "category": "yagni",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "One sentence limits initial options to \"model/provider, thinking, continue/resume/fork and resource paths only where their current documented grammar is captured in tests\" and refuses unknown options. The next requires \"Accept the documented interactive options\" without tying that requirement back to a concrete allowlist. The goal is enrollment, delivery, wake, setup and launch/handoff, not mirroring the upstream interactive CLI. These two scopes give an implementer no fixed boundary for how much upstream grammar and testing must be recreated before launch is complete. State the finite initial options and defer additional interactive flags explicitly instead of leaving a general documented-options requirement."
+          }
+        ]
+      }
+    },
+    {
+      "id": "005",
+      "result": {
+        "findings": [
+          {
+            "claim": "Recovery from failed check-in or a dead watch depends on a future Pi callback, leaving an otherwise idle session without a specified autonomous path back to receiving wakeable mail.",
+            "location": "D1 final paragraph; D3 final paragraph",
+            "category": "failure-mode",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D1 says \"Supported turn callbacks may recover delivery and reconnect the channel\" and \"Without a live extension/channel there is no idle wake.\" D3 says \"the next eligible callback retries failure.\" If startup check-in fails or the watch dies after the user leaves the session idle, no new model turn is guaranteed to produce that callback, and incoming p0 mail cannot cause one through the absent channel. The design specifies neither an owned reconnect timer/backoff nor another callback source guaranteed while idle. Channel-loss/reconnect appears in the qualification list, but the recovery mechanism for this idle failure case is absent."
+          },
+          {
+            "claim": "Execution fencing covers bridge callbacks but does not specify how already staged native nextTurn bodies are removed or isolated when an extension execution is replaced.",
+            "location": "D3 first and final paragraphs; D5 state table",
+            "category": "failure-mode",
+            "external": false,
+            "kind": "UNVERIFIED-ASSUMPTION",
+            "evidence": "D5 stages passive bodies in Pi with \"deliverAs: nextTurn, triggerTurn: false\" before receipt evidence. D3 promises shutdown/replacement \"invalidates old delivery/wake candidates\" and checks frozen executions around awaits. Those checks can prevent later bridge calls and ACKs but cannot themselves revoke content already handed to Pi. The spec does not establish whether reload/new/resume/fork clear the native deferred queue, nor prescribe removal or filtering if they do not. Its successor-ACK fence therefore does not establish that old bodies cannot enter a successor context or be duplicated by the replacement watch. This requires native queue ownership/reset semantics, beyond the demonstrated callback fencing.",
+            "spike": "Question: Does each supported replacement clear native nextTurn and steering queues before the successor context? Cheapest test: stage unique passive frames, perform reload/new/resume/fork before a model turn, then inspect the first successor context and replay behavior. Kill criteria: any old-generation frame reaches an unauthorized successor or appears twice after re-offer without an available queue removal/filtering mechanism."
+          },
+          {
+            "claim": "The bounded in-flight delivery map has no defined saturation or failed-injection recovery rule, so an unobserved frame can either pin capacity indefinitely or be injected repeatedly on replay.",
+            "location": "D4 first, third and fourth paragraphs",
+            "category": "failure-mode",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D4 states that sendMessage is fire-and-forget, tracks a \"bounded batch\", keeps receipts pending when the observation path is unavailable, deduplicates by delivery identity/context version, and clears state \"only on admitted completion or explicit generation teardown.\" It never distinguishes a body still queued natively from a void invocation that failed before queuing, and never defines how a replay changes either state or how full capacity admits newer urgent mail. Retaining the record forever suppresses reinjection after a failed submission; reinjecting on each re-offer can duplicate a body already queued; holding all unresolved records can exhaust the stated bound. Reusing daemon page bounds and ACK retry does not decide this local send/evidence state machine."
+          }
+        ]
+      }
+    },
+    {
+      "id": "006",
+      "result": {
+        "findings": [
+          {
+            "claim": "The design has no positive top-level role witness that distinguishes a supported interactive launch from an unsupported interactive child.",
+            "location": "D2, final paragraph; D1 terminal-mode admission",
+            "category": "feasibility",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D2 says \"Pi does not supply a universal child-role marker\" and \"missing evidence is not inferred as top-level,\" but the proposed contract contains only session, PID and mode variables. An interactive child can have its own valid session, its own matching pi PID and tui mode, satisfying all stated identity checks. Requiring third-party launchers to have a role contract does not specify how an uncooperative or merely unaware launcher is detected and refused. The spec needs the positive admission rule and the source of the frozen role value."
+          },
+          {
+            "claim": "Fencing extension callbacks does not establish that already staged native nextTurn or steering messages cannot survive into a successor session.",
+            "location": "D3 shutdown/replacement fencing; D5 nextTurn staging",
+            "category": "feasibility",
+            "external": false,
+            "kind": "UNVERIFIED-ASSUMPTION",
+            "evidence": "D3 promises replacement \"invalidates old delivery/wake candidates\" and that a successor never ACKs an old frame. D5 transfers bodies into pi with nextTurn or steering before receipt evidence exists. The design names no cancellation operation or verified native queue ownership rule for those already transferred bodies. Local nonce/generation checks can prevent a late ACK but cannot by themselves remove a body already held by pi. Correct lifecycle isolation therefore depends on native queue disposal across new/resume/fork/reload, which is not established in the spec.",
+            "spike": "Question: Are every pending custom-message and steering queue discarded or session-scoped across all replacement paths? Cheapest test: queue a unique passive frame, replace/reload/fork before any context, then start the successor and inspect its context and branch. Kill criteria: an old-generation frame reaches successor context without a supported way to cancel or fence it before injection."
+          },
+          {
+            "claim": "Busy delivery depends on an active-run interval whose safety across retry and compaction phases remains unproved.",
+            "location": "D5 active-run interval; Open decisions before implementation",
+            "category": "feasibility",
+            "external": false,
+            "kind": "UNVERIFIED-ASSUMPTION",
+            "evidence": "D5 explicitly says !isIdle is insufficient and requires a \"positive active-run interval from start/context events\" closed \"at end and before compaction.\" It does not enumerate the actual event transitions for retry, auto-compaction or continuation after agent_end. The Open decisions section delegates demonstration to the implementer. This is load-bearing: the design itself says a misclassified non-running phase can turn passive delivery into a new run, while conservative uncertainty withholds the promised in-turn delivery.",
+            "spike": "Question: Can public callbacks identify every interval in which steering true cannot start a new run? Cheapest test: fake-provider traces with final-tool arrival, abort, retry delay and both compaction forms, injecting at each transition. Kill criteria: any interval classified active starts an independent run, or the only safe classification prevents required busy delivery."
+          },
+          {
+            "claim": "Channel-only idle wake remains contingent on unqualified behavior of TUI selectors and extension dialogs.",
+            "location": "D5 final paragraph; D1 channel-only wake",
+            "category": "feasibility",
+            "external": false,
+            "kind": "UNVERIFIED-ASSUMPTION",
+            "evidence": "D1 selects IdleWake::Channel with no composer fallback. D5 acknowledges \"no universal public blocked-screen getter\" and says interference found by future real-binary tests leaves the affected path disabled. Thus support for idle wake depends on those unperformed tests showing that in-process start preserves modal and draft interaction, or on finding a guard the design does not yet have. The spec already acknowledges this risk, but it is a feasibility gate for the selected architecture, not just test coverage.",
+            "spike": "Question: Can an in-process wake start safely while each supported picker/dialog/editor state is active? Cheapest test: real TUI with fake provider, draft plus model selector plus extension dialog, send one eligible wake and verify input, selection, focus and run state. Kill criteria: interference in a supported state with no reliable public guard."
+          },
+          {
+            "claim": "The design does not define backpressure when its bounded local batch is occupied by passive messages awaiting a future context.",
+            "location": "D4 bounded batch and retained local state; D5 idle passive staging",
+            "category": "feasibility",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D4 requires a \"bounded batch\" and says local state clears only on admitted completion or generation teardown; D5 stages passive mail until the next real context. It gives no local item/byte limits or behavior when another page arrives while that batch remains unconsumed. Keeping all staged bodies defeats the bound; stopping intake needs a policy that still exposes a later daemon-admitted waking item. Daemon page bounds alone do not specify extension occupancy or native-queue occupancy across multiple frames and reconnects."
+          },
+          {
+            "claim": "The idle state machine lacks an explicit initialization path for a fresh session that has never emitted agent_settled.",
+            "location": "D3 startup/reload; D5 positively settled idle rule",
+            "category": "feasibility",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D5 authorizes wake only at \"positively settled idle\" and says \"Use agent_settled and a fresh ctx.isIdle() for idle eligibility.\" D3 starts and reconstructs ownership at startup/reload but does not establish initial idle eligibility there. If settled is a required prior event, a newly enrolled terminal cannot wake for its first pending item before the user supplies a turn. If lifecycle plus isIdle is sufficient, that distinct transition and its evidence must be specified."
+          },
+          {
+            "claim": "The design leaves bounded current-branch receipt lookup unspecified despite requiring it on the model-context path.",
+            "location": "D4 admission predicate",
+            "category": "feasibility",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "The receipt predicate requires both exact content observation and a \"matching current-branch custom-message entry.\" Bounding the offered batch does not bound branch length or full context size. No entry index, lookup budget, branch-membership witness or behavior on budget exhaustion is specified. A literal search of the current branch for each offered message can scale with session history on every context callback; a cached match must also account for branch changes. The spec needs a bounded lookup mechanism or an explicit performance limit."
+          }
+        ]
+      }
+    },
+    {
+      "id": "007",
+      "result": {
+        "findings": [
+          {
+            "claim": "Reload fencing does not dispose of passive frames already staged in Pi\u2019s nextTurn queue, so a fresh extension can replay a second copy while the old execution\u2019s copy remains deliverable.",
+            "location": "D3: shutdown/replacement fences the old execution; D4: clear local state on generation teardown; D5: idle passive nextTurn staging",
+            "external": true,
+            "kind": "GAP",
+            "evidence": "D3 promises to invalidate old delivery candidates, D4 discards execution-local records on teardown, and D5 immediately stages passive bodies with nextTurn. Upstream AgentSession.sendCustomMessage pushes these bodies into an AgentSession-owned array; reload replaces the extension runner without clearing that array, and _prepareRun later consumes it. Source: https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts (sendCustomMessage, reload, _prepareRun). Thus callback fencing alone cannot revoke already-queued frames. The design specifies neither removal/filtering of old-generation frames nor reconciliation of the surviving queue with fresh watch replay. A passive delivery followed by /reload before any prompt exposes this gap.",
+            "category": "domain:agent-runtime-integration"
+          },
+          {
+            "claim": "Staging passive bodies immediately in nextTurn can place an older lower-priority item ahead of the later waking item in the same model context.",
+            "location": "D4: daemon ordering; D5: idle passive and daemon-admitted waking rows",
+            "external": true,
+            "kind": "GAP",
+            "evidence": "D4 delegates ordering to the daemon, but D5 stages passive items before a future wake. A p3 frame staged at T=0 followed later by p0 is already queued before p0. Upstream nextTurn uses push and _prepareRun preserves array order (https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts). Sorting individual daemon pages does not reorder this accumulated queue. The design has no final admission-time merge for priority/deadline/age order across staged batches.",
+            "category": "domain:agent-runtime-integration"
+          },
+          {
+            "claim": "The design does not define a resubmission transition for a frame whose fire-and-forget submission fails or is discarded before any matching context appears.",
+            "location": "D4: sendMessage is fire-and-forget; deduplicate in-flight records; clear local state only on admitted completion or explicit generation teardown",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D4 acknowledges that sendMessage return establishes no acceptance, retains records until admitted completion or teardown, and deduplicates in-flight replay. D5 retains unconsumed items and their wake intent but never defines when an unobserved submission stops counting as in flight or how to distinguish pending-in-Pi from lost-before-context. Consequently the specified retry behavior cannot establish eventual recovery: ignoring replay can leave a failed submission pending forever, while blindly resubmitting can duplicate a still-queued frame. A bounded retry/reconciliation rule and its duplicate semantics are required independently of ACK retry.",
+            "category": "domain:agent-runtime-integration"
+          },
+          {
+            "claim": "Priority-safe busy delivery depends on an active-run interval that the design explicitly leaves unverified across tool, retry and compaction phases.",
+            "location": "D5 positive active-run interval; Open decisions before implementation",
+            "external": false,
+            "kind": "UNVERIFIED-ASSUMPTION",
+            "evidence": "D5 requires steering with triggerTurn true only inside a positively active run and says the implementation must demonstrate that the interval never includes a non-running phase. The final section states the model-free probe confirms the stale-busy hazard but leaves tool, retry and compaction phases for implementer demonstration. The design therefore has not yet established that its selected callback interval prevents passive mail from starting a run in these transitions.",
+            "spike": "Question: Can public callbacks establish an interval that matches the actual steering path throughout tool completion, retry, abort and compaction? Cheapest test: use the real SDK fake-provider probe to inject passive items at each boundary and record run starts versus steering consumption. Kill criteria: any passive item starts a new run or no public predicate distinguishes a dangerous phase; then hold those phases or change the delivery path before enabling busy delivery.",
+            "category": "domain:agent-runtime-integration"
+          }
+        ]
+      }
+    },
+    {
+      "id": "008",
+      "result": {
+        "findings": [
+          {
+            "claim": "The bounded in-flight batch has no capacity-release or admission policy for permanently unacknowledged passive or truncated items, leaving later waking items without a specified progress path.",
+            "location": "D4, bounded batch and 'Clear local state only on admitted completion or explicit generation teardown'; D5 passive-idle staging",
+            "category": "domain:distributed-systems",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D4 requires a bounded batch, states 'Truncated items remain unsettled', and permits clearing local state only on admitted completion or generation teardown. D5 stages passive idle items until a real context occurs. A session can therefore fill its bound with items that cannot complete while idle, or truncated items that cannot auto-complete even after context observation. The spec never defines what happens when a new daemon-admitted waking item arrives at that bound: which records may be evicted, whether staged content remains tracked, or how urgent traffic bypasses the occupied capacity. Reusing bounded daemon pages does not define this extension-owned retention policy."
+          },
+          {
+            "claim": "Reload fencing does not account for bodies already transferred into Pi's nextTurn queue, so a fresh extension can replay an outstanding item while its old queued copy still exists.",
+            "location": "D3 reload reconstruction and invalidation; D4 local deduplication; D5 nextTurn staging",
+            "category": "domain:distributed-systems",
+            "external": true,
+            "kind": "GAP",
+            "evidence": "D3 says reload reconstructs state from fresh admission and invalidates old candidates; D4 deduplicates in-flight records and allows clearing at generation teardown; D5 transfers passive bodies to nextTurn. Upstream AgentSession keeps that queue outside the extension runtime: sendCustomMessage pushes into _pendingNextTurnMessages, _prepareRun consumes it, and reload replaces the extension runtime without clearing that queue (https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/agent-session.ts). Thus local callback fencing cannot retract already queued content. The design needs reconciliation or filtering across reload: otherwise an unacknowledged item reoffered to the fresh watch can be queued again with a new private nonce, alongside the surviving old copy. No such reconciliation is specified."
+          },
+          {
+            "claim": "The two-step body-stage/wake-submit operation has no defined recovery transition when the fire-and-forget wake fails before producing a context callback.",
+            "location": "D4 sendMessage fire-and-forget; D5 daemon-admitted idle wake and retained wake intent",
+            "category": "domain:distributed-systems",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D4 explicitly rejects sendMessage invocation as proof and identifies it as fire-and-forget. D5 first stages a nextTurn body and then submits a content-free marker, while retaining daemon-derived wake intent for unconsumed items. It never specifies how the extension detects a failed marker submission, schedules another attempt when no agent event follows, or distinguishes an outstanding attempt from one eligible for retry. Daemon ACK retry is not this operation: there is no context receipt yet. Keeping the body pending can strand the waking item indefinitely; unconditional retries can repeatedly start runs when context evidence is unavailable. A bounded wake-attempt state and its recovery trigger are missing."
+          }
+        ]
+      }
+    },
+    {
+      "id": "009",
+      "result": {
+        "findings": [
+          {
+            "claim": "The design does not define the positive top-level role witness needed to admit an ordinary TUI while refusing an unmarked interactive child.",
+            "location": "D1 terminal-mode admission; D2 final paragraph and proposed environment contract",
+            "category": "domain:identity-and-session-lifecycle",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D1 admits an explicit ctx.mode === \"tui\" witness. D2 says Pi has no universal child-role marker, requires an explicit cooperative role contract for third-party interactive children, and says \"missing evidence is not inferred as top-level.\" Yet the proposed contract contains only session, PID and mode, and says every payload freezes a role without defining where that role comes from. An interactive child running its own extension can provide its own correct session, own PID, and tui mode; rejecting an inherited outer PID does not distinguish this case. The design must specify the cooperative top-level assertion or the concrete refusal rule before the extension and Rust sides can independently implement a consistent admission contract."
+          },
+          {
+            "claim": "Shutdown cleanup specifies local fencing and watch termination but leaves daemon binding disconnection and removal of the exported ownership claims undefined.",
+            "location": "D2 environment markers; D3 first and second paragraphs",
+            "category": "domain:identity-and-session-lifecycle",
+            "external": false,
+            "kind": "GAP",
+            "evidence": "D3 requires shutdown/replacement to fence the execution, stop/reap its watch and invalidate candidates, but its daemon lifecycle mapping names only startup/resume/clear. D2 specifies clearing inherited markers for nonterminal startup and refreshing markers on startup/switch, not clearing owned markers on shutdown. Thus a reload that removes or fails to reinitialize the extension has no specified transition that withdraws its old environment claim or reports that the session integration ended while the same Pi PID survives. A successor check-in cannot provide cleanup when there is no successful successor. Specify the end-event/disconnect behavior and owner-scoped marker clearing, including failed reload."
+          },
+          {
+            "claim": "Same-session tree navigation has no defined guidance-restoration or local delivery-state transition.",
+            "location": "D3 lifecycle handling; D4 current-branch predicate and context-version deduplication; D8 qualification list",
+            "category": "domain:identity-and-session-lifecycle",
+            "external": true,
+            "kind": "GAP",
+            "evidence": "D3 covers startup/reload/new/resume/fork and compact re-entry, and D4 requires a matching current-branch custom-message entry, but the design never handles switching the active branch within the same native session. Upstream defines session_before_tree and session_tree with oldLeafId/newLeafId separately from shutdown/start (https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/extensions/types.ts, SessionBeforeTreeEvent and SessionTreeEvent). A branch change can remove the branch entries the local state refers to without changing the session or execution fences named in D2/D3. The spec must decide how this changes its context-version deduplication, pending observation state and fixed guidance, and qualify the case; this does not imply previously valid receipts must be undone."
+          }
+        ]
+      }
+    },
+    {
+      "id": "010",
+      "result": {
+        "groups": [
+          {
+            "ids": [
+              0,
+              4,
+              15,
+              29
+            ],
+            "suggestedSeverity": "Blocking",
+            "rank": 1,
+            "mergedClaim": "The admission contract lacks a positive top-level role witness that distinguishes a supported interactive TUI from an interactive child with its own valid session, PID and mode."
+          },
+          {
+            "ids": [
+              1,
+              13,
+              16,
+              22,
+              27
+            ],
+            "suggestedSeverity": "Blocking",
+            "rank": 2,
+            "mergedClaim": "Execution fencing does not define disposal or reconciliation of native queued bodies across replacement or reload, allowing stale or duplicate frames into successor contexts."
+          },
+          {
+            "ids": [
+              17,
+              25
+            ],
+            "suggestedSeverity": "Blocking",
+            "rank": 3,
+            "mergedClaim": "Busy delivery relies on an unverified active-run interval across retry, tool, abort and compaction transitions, risking passive mail starting a new run."
+          },
+          {
+            "ids": [
+              3,
+              6,
+              19,
+              26
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 4,
+            "mergedClaim": "The bounded pending-delivery design lacks an aggregate capacity and saturation policy that preserves progress for urgent mail while passive or unsettled records occupy capacity."
+          },
+          {
+            "ids": [
+              7,
+              28
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 5,
+            "mergedClaim": "The body-stage/wake-submit sequence lacks failure observation and a bounded retry transition when an idle wake produces no subsequent context or settled callback."
+          },
+          {
+            "ids": [
+              14,
+              24
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 6,
+            "mergedClaim": "The in-flight submission state lacks a recovery rule distinguishing a lost fire-and-forget injection from a still-queued frame, risking permanently suppressed replay or duplicate reinjection."
+          },
+          {
+            "ids": [
+              12
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 7
+          },
+          {
+            "ids": [
+              9,
+              20
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 8,
+            "mergedClaim": "The idle state machine does not specify how a fresh or reloaded session becomes eligible for its first wake without a preceding agent_settled event."
+          },
+          {
+            "ids": [
+              18
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 9
+          },
+          {
+            "ids": [
+              8
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 10
+          },
+          {
+            "ids": [
+              30
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 11
+          },
+          {
+            "ids": [
+              31
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 12
+          },
+          {
+            "ids": [
+              2,
+              5,
+              23
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 13,
+            "mergedClaim": "Per-page daemon ordering does not preserve priority, deadline and age order across passive bodies already staged in the native queue and later waking batches."
+          },
+          {
+            "ids": [
+              21
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 14
+          },
+          {
+            "ids": [
+              10
+            ],
+            "suggestedSeverity": "Should-fix",
+            "rank": 15
+          },
+          {
+            "ids": [
+              11
+            ],
+            "suggestedSeverity": "Nit",
+            "rank": 16
+          }
+        ]
+      }
+    },
+    {
+      "id": "011",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "The structural gap is in D2's admission contract, not an unproven upstream API claim. D1 supplies an explicit tui mode witness; D2 supplies the current session and own PID, validates the innermost matching pi process, and refreshes these at startup. D2 also requires every event to freeze a role, but its proposed environment contract names only session, PID and mode, and no other section specifies a source or positive admission predicate for that role. Consider the interactive-child case explicitly contemplated by D2: it supplies its own current session/PID and tui witness, rather than stale outer markers. Every specified identity check succeeds, but none establishes whether this execution is a top-level session or that child. If the implementation admits it from those checks, it infers top-level from missing role evidence, directly contradicting D2's 'missing evidence is not inferred as top-level' and D7's excluded unknown-child modes. If it instead refuses absent role evidence, the design provides no way for the ordinary supported interactive TUI to obtain the required witness, undermining the goal of automatic enrollment. The stated requirement for third-party launchers to have a cooperative role contract excludes them from support but does not define the positive role claim needed to distinguish admission cases. D8's future frozen event contract and child-exclusion qualification acknowledge work to do; tests alone cannot choose this missing admission semantics. Specify the cooperative role witness and its producer, or explicitly accept an indistinguishability limit. No adversarial verification or universal upstream child detector is required."
+      }
+    },
+    {
+      "id": "012",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Internal contract gap, verified against the entire design. (a) Present elsewhere: D1 supplies a terminal-mode witness, D2 supplies session/PID/process witnesses and says every payload freezes role, and D7 names cooperative provenance, but none specifies the source or acceptance rule for the role value. A valid own-process interactive child is not the stale inherited-parent case that D2 explicitly rejects. D8 requires a frozen extension/Rust event contract but does not supply the missing role decision. (b) Accepted tradeoff: D2 says attribution is cooperative rather than authentication, which permits trusting an explicit cooperative assertion; it does not define such an assertion. Its stronger statement that missing evidence is not inferred as top-level rules out silently treating every valid TUI execution as top-level. (c) Scope: third-party interactive child support is expressly excluded pending a cooperative role contract, but the finding does not require supporting those children. It identifies the absent positive rule needed to enroll supported top-level sessions while enforcing D2 and D7 unknown-child exclusion. (d) Materiality: treating mode/PID/session as sufficient can grant a child top-level admission, while requiring an unspecified role witness can prevent normal automatic enrollment. Define the cooperative top-level/child assertion and its source/refusal semantics before freezing the cross-language contract. D8 mode-and-child qualification is useful verification but cannot itself choose that normative rule. No outside-world premise is needed for this finding."
+      }
+    },
+    {
+      "id": "013",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Internal contract gap, verified by reading the whole spec and searching role/top-level/child/admission/cooperative/witness/contract/mode mechanisms. D2 requires every event to freeze a role and says missing evidence is not inferred as top-level, but specifies only session, own PID, execution generation and terminal-mode identity mechanisms; it never defines the positive source or rule for the role value. D1 establishes TUI mode, not top-level role. D7 explicitly requires exclusion of unknown-child modes. D8 defers a frozen extension/Rust contract and requires child-exclusion tests, but neither supplies the missing admission rule. This does not demand adversarial child detection or support for third-party launchers: it requires defining how ordinary supported TUI startup obtains affirmative top-level attribution while unknown role fails closed. Otherwise implementers must either invent that assertion or refuse normal automatic enrollment. The finding is material before the parallel identity and extension work, though a small cooperative contract clarification can resolve it. No external API premise is needed for this verdict; the contradiction is between the spec's required role evidence and its specified claims."
+      }
+    },
+    {
+      "id": "014",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Concrete reload case: D5 stages an idle passive body with nextTurn before context admission; D4 therefore leaves its receipt pending. D3 reload tears down the owner and reconstructs it from fresh admission, and D4 permits clearing local records on generation teardown. However, upstream AgentSession owns the queued body independently of that owner. Fetched https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts: sendCustomMessage lines 2335\u20132336 executes \"this._pendingNextTurnMessages.push(appMessage)\"; _prepareRun lines 1923\u20131925 executes \"messages.push(...this._pendingNextTurnMessages)\" before clearing it. The complete reload method (3592\u20133637) shuts down and invalidates the old runner, rebuilds the runtime and emits session_start, without clearing this queue. Thus a pre-reload passive body survives into the successor execution even when all specified callback checks succeed. Fresh watch replay can stage the still-unacknowledged delivery again because the old execution-local deduplication record was cleared; the next prompt consumes both bodies. This defeats D3\u2019s promised invalidation of old delivery candidates and leaves the goal\u2019s bounded in-context delivery without a bound across repeated reload/replay cycles. The receipt fence may still prevent a false ACK; that does not remove the stale model input. This is not a demand for exactly-once transport or provider-consumption proof: it is a missing ownership/reconciliation rule for bodies already transferred into the native queue. D8 lists reload and replay qualification, but neither D8 nor the open decisions defines disposal, filtering, or reconciliation for this established queue-survival behavior. Add that rule and qualify it with passive stage \u2192 reload \u2192 watch replay \u2192 prompt. New/resume/fork behavior is not needed to establish the reload counterexample."
+      }
+    },
+    {
+      "id": "015",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "(a) Whole-spec search finds callback/execution fencing, watch teardown, and local in-flight deduplication, but no native-queue disposal, context filtering, or cross-reload reconciliation. D4 permits local-state clearing at explicit generation teardown. These mechanisms cannot revoke content already transferred under D5. (b) D4 explicitly accepts downstream transformations and provider/transport failure; it does not accept duplicate replay from surviving queues. (c) Reload is expressly supported in D3, so passive staging followed by reload is in scope. (d) Replayed bodies entering context twice materially undermine bounded delivery and generation isolation, even if stale ACKs are correctly refused. Upstream source fetched: https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts . sendCustomMessage executes `this._pendingNextTurnMessages.push(appMessage);` for nextTurn (2335\u20132336); run preparation executes `messages.push(...this._pendingNextTurnMessages);` (1924). The complete reload method (3592\u20133637) invalidates/rebuilds the extension runner and emits session_start, without clearing that AgentSession-owned queue. Thus a queued passive frame survives extension reload while the proposed owner loses its in-flight record; fresh unacknowledged replay can stage another copy. D8 requires reload and replay qualification, but supplies no queue-ownership rule to implement or test; this is a demonstrated missing reconciliation mechanism, not merely a request to execute those tests. Scope of confirmation is the concrete reload duplication path, not an assertion that every new/resume/fork path leaks."
+      }
+    },
+    {
+      "id": "016",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Read the complete design and searched queue/pending/reload/teardown/reconciliation/filter/cancel/generation/replay mechanisms. D3 invalidates old delivery candidates and reconstructs reload ownership; D4 only deduplicates execution-local records and permits generation teardown; D5 hands passive bodies to native nextTurn immediately. No native queue reconciliation or pre-context filtering is specified. Upstream source fetched at https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts supports the concrete reload premise: sendCustomMessage lines 2335\u20132336 executes \"this._pendingNextTurnMessages.push(appMessage);\"; run preparation lines 1923\u20131925 executes \"messages.push(...this._pendingNextTurnMessages);\" then clears the queue. reload lines 3592\u20133637 invalidates/rebuilds the extension runtime without clearing that AgentSession-owned queue. Consequently a staged, unacknowledged body survives extension reload while its deduplication record may not; fresh watch replay can stage another copy before the next prompt. Receipt fencing does not remove either body. This is material to bounded delivery and lifecycle candidate invalidation, not an accepted provider/transport limitation. D8 names reload and replay qualification generally, but supplies no queue-ownership contract or resolution for this demonstrated surviving-queue case. Specify reconciliation/filtering and test passive staging followed by reload and replay. Evidence establishes reload specifically, not that every new/resume/fork path leaks queues."
+      }
+    },
+    {
+      "id": "017",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The proposed failure requires treating a retry, compaction, abort or post-end phase as an authorized active interval, but D5 expressly forbids that authorization: its table retains items during \"Manual compaction, retry gap, shutdown, uncertain state\" and permits steering only in a \"Positively active model/tool run\". It requires closing the interval \"at end and before compaction\", synchronous fresh revalidation before sendMessage, and demonstration that the exact interval never includes a non-running phase. D8 requires busy-delivery/stale-busy tests and real-binary fake-model probes; Open decisions expressly requires demonstrating tool, retry and compaction transitions before support is declared complete. Thus the strongest failure story stops at the premise that an unqualified transition is nevertheless enabled. Nor does conservative holding itself contradict the stated delivery contract: D5 explicitly allows holding uncertain phases and promises busy delivery \"where possible\". The exact event-level state machine remains implementation and qualification work already specified, not an omitted safety requirement. This verdict assesses the internal design claim; it does not assert that upstream callbacks have already passed those required tests."
+      }
+    },
+    {
+      "id": "018",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "(a) The mechanism is present in D5: a synchronous fresh state check immediately before sendMessage, a positive active-run interval from start/context events closed at end and before compaction, and explicit retention during manual compaction, retry gaps, shutdown or uncertainty. agent_end is explicitly not settled idle; agent_settled plus fresh isIdle is required. (b) The stated contract permits conservative holding: D5 says a busy waking item is served in-turn \"where possible\", preserves unconsumed wake intent until settled, and forbids passive retries from acquiring wake eligibility. Thus withholding delivery in an uncertain transition is specified behavior, not a demonstrated violation. (c) Busy delivery safety is in scope, but the finding demands completed implementation qualification from a proposed design whose D8 explicitly requires busy-delivery/stale-busy, lifecycle/compaction and real-binary fake-model probes. The final section expressly makes demonstration through tool, retry and compaction phases a prerequisite to declaring support complete. (d) An unsafe implementation would materially violate D5, but the finding provides no contradictory transition or evidence that the specified conservative interval cannot work. Its proposed spike substantially repeats the required qualification. Missing completed test evidence at this stage is not an additional design blocker. This verdict concerns the internal specification and its qualification obligations, and makes no independent claim about external API feasibility."
+      }
+    },
+    {
+      "id": "019",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The internal premise that transition qualification remains unfinished is accurate, but it does not establish a material design gap. D5 explicitly assigns manual compaction, retry gaps, shutdown and uncertain states to retaining bounded pending items with no wake (line 56), closes the positive interval at end and before compaction, and requires synchronous fresh revalidation (lines 49, 58). The finding\u2019s premise that conservative uncertainty violates a promised delivery guarantee overstates the contract: D5 says busy delivery is served in-turn \"where possible\" (line 60). D8 requires busy-delivery/stale-busy and lifecycle probes, and the final section expressly requires demonstration through tool, retry and compaction before support is declared complete (lines 87, 93). Read the whole spec and searched active/retry/compaction/uncertain/settled/end/qualification equivalents. The proposed spike is already a specified qualification obligation, not evidence that the guarded design is infeasible or authorizes passive new runs. No external API feasibility claim is needed for this rejection."
+      }
+    },
+    {
+      "id": "020",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "The stated goal promises both bounded in-context delivery and priority-correct idle wake. D4 requires retaining exact IDs and full framed bodies in a bounded batch and permits clearing local state only on admitted completion or generation teardown. Its completion predicate requires model-bound context plus the matching current-branch entry. D5 explicitly stages passive idle items for the next real context without waking. Concrete saturation case: a settled idle execution receives enough distinct passive items to fill whatever finite local bound is chosen; there is no real context, so none may complete or be cleared. A later daemon-admitted waking item then arrives. D5 requires staging its body and submitting the wake marker, but no capacity rule explains how this happens while the existing retained records occupy the bound. Accepting successive additional frames violates bounded retention; stopping intake can prevent observing the waking item; evicting staged records conflicts with the stated clearing rule. D4 supplies bounded daemon pages, ordering and priority admission, but does not bound the aggregate retained pages or specify a control path that can observe and act on new wake admission while payload intake is blocked. D8 lists truncation/replay and threshold-driven wake qualification, but neither specifies a saturation policy nor identifies a capacity/progress qualification resolving this interaction. The gap is internal to the promised bound and wake behavior, not a demand for unlimited throughput or stronger receipt evidence. A bounded outstanding-offer policy with an explicit urgent-control/progress mechanism, or another defined saturation strategy, would resolve it; numerical tuning alone would not."
+      }
+    },
+    {
+      "id": "021",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "(a) Whole-spec search finds bounded pages, daemon ordering/priority admission, deduplication and ACK retry in D4, plus bounded pending items in D5. These bound individual transfers and duplicate records, but do not specify aggregate retained records or admission at capacity. Distinct passive deliveries need not deduplicate. D3 generation teardown supplies eventual cleanup only when the execution changes. (b) D4 explicitly accepts provider/disk/context-transformation limits and retaining receipts when evidence is unavailable; it does not accept unbounded memory or urgent-mail starvation. Retaining daemon receipts need not require retaining every body locally, but the design explicitly allows local clearing only on admitted completion or generation teardown and specifies no release/replay exception. (c) Bounded in-context delivery and priority-correct idle wake are explicit goals. A finite backlog occupying a finite bound, followed by one admitted waking item, requires no out-of-scope scale or guarantee. (d) D5 deliberately stages passive idle bodies without starting a run and retains uncertain-state items. At capacity, continued intake violates the aggregate bounded-pending requirement, while stopping intake without a separate wake/control or replacement mechanism can prevent a later waking item from being handled. The spec does not determine which behavior is permitted. D8 qualification covers passive silence, threshold wake and truncation/replay, but does not supply a saturation policy or explicitly require their composition at capacity. This is an internal structural omission, not an external API claim; no external premise is needed. Specify a bounded outstanding-set/byte policy and how later urgent admission progresses while unresolved passive or truncated records occupy it. Implementation can resolve this, so Should-fix rather than a claim that the integration is impossible."
+      }
+    },
+    {
+      "id": "022",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Read the entire spec and searched for bound/capacity/saturation/overflow/backpressure/pending/queue/reservation/retention/page/limit/wake mechanisms. D4 requires a bounded batch of full framed bodies (line 39), keeps receipts pending when evidence is unavailable (43), and permits clearing local state only on admitted completion or generation teardown (45). D5 explicitly stages passive idle items until a real context (53) and retains bounded pending items in uncertain states (56). Thus a continuing idle generation can retain an uncompleted batch while additional mail arrives. The only specified capacity mechanism is bounded daemon pages (45); the spec supplies no aggregate retention/admission policy or path for a newly waking item when the retained batch is full. Daemon priority ordering does not itself specify how already staged passive content is bounded or displaced. This is material to the stated bounded-delivery and priority-correct-wake goals (7), rather than a demand for arbitrary scale: even one full retained batch requires a next-arrival decision. D8 qualification includes threshold wake, truncation/replay and reconnect but does not specify saturation behavior, and the explicitly accepted limits in D4 concern downstream observation, not capacity or wake starvation. A precise numeric constant is an implementation choice; the significant missing design decision is how bounded unresolved retention and urgent-mail progress coexist. This establishes a design gap, not proof that the eventual implementation must fail."
+      }
+    },
+    {
+      "id": "023",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The proposed reproduction does not reach a contradiction of a stated requirement. D4 says sendMessage invocation is not receipt evidence and is fire-and-forget; that establishes an evidence limitation, not that an admitted wake can silently fail to start without any subsequent event. D4 explicitly accepts provider/transport failure and requires pending receipts when context evidence is unavailable. D5 requires one in-process wake for a daemon-admitted item, retains unconsumed wake intent, and permits pending items to wait for qualified callbacks in uncertain states; it does not promise bounded autonomous recovery from a wake that produces no callback. The finding supplies no specified failure transition establishing that ordinary threshold-correct wake cannot work, and instead requests a stronger bounded retry guarantee. D8 already requires threshold-driven wake, channel loss/reconnect, and real-binary qualification; their implementation evidence remains outstanding, as the design acknowledges. Absence of a separate timeout/retry algorithm alone is therefore not a demonstrated material design blocker."
+      }
+    },
+    {
+      "id": "024",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Internal state-machine gap. (a) D4 supplies watch ACK retry and retains in-flight records, and D5 retains daemon-derived wake intent until settled, but neither defines an outstanding wake attempt, a failure/no-progress observation, or a recovery transition when no later agent callback occurs. D3 retries check-in on the next eligible callback; this does not resolve a wake with no subsequent callback. (b) D4 explicitly accepts downstream context transformation and provider/transport loss as receipt limits; those limits do not accept failure to initiate the idle run needed to reach context observation. Pending receipts alone are intentionally valid, but indefinite loss of priority-correct idle wake is not stated as a tradeoff. (c) Recovery of an admitted in-process idle wake is within the stated priority-correct idle-wake goal, not a demand for a new host fallback or provider-delivery guarantee. (d) D5 stages the body without starting a run and then submits a separate marker, while D4 disclaims successful sendMessage invocation as receipt evidence. If that attempt yields neither context evidence nor a settled callback, the specified transitions provide no way to classify or recover the outstanding intent without risking duplicate starts. D8 qualification includes threshold-driven wake, channel reconnect and replay, but does not specify a no-progress wake-attempt transition or test requirement that resolves this case. This is significant recovery ambiguity rather than proof that ordinary wake always fails; Should-fix."
+      }
+    },
+    {
+      "id": "025",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Read the entire design and searched failure, retry, callback, pending, reconnect, attempt and wake mechanisms. D4 explicitly makes invocation insufficient evidence (line 39); D5 specifies staging followed by one wake (54), retention until a qualified callback for uncertain states (56), and retained wake intent for unconsumed items (60). None defines what ends an outstanding wake attempt when no start/context/settled callback arrives, or a bounded recovery/refusal transition. D3 retries check-in on the next callback (35); D4 delegates ACK retry and presentation handling to watch (45), but does not connect these to retry eligibility for an unresolved Pi wake. D1 recovery through turn callbacks (17) likewise requires a future turn. D8 qualification covers threshold wake, channel reconnect and active-run phases, but does not specify this missing transition or explicitly accept indefinite pending wake attempts. This is a material state-machine omission against priority-correct idle wake (7), not a demand for provider receipt or guaranteed model consumption: D4 explicitly accepts those later failures (43). This verdict concerns the internally unspecified recovery policy, not a claim that a particular upstream Pi version demonstrably loses submissions."
+      }
+    },
+    {
+      "id": "026",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The reproduction does not reach a contradiction with a stated requirement. D4 requires deduplication of in-flight records, not indefinite suppression of every replay submission; retaining a record is not specified to mean that it cannot be retried or reconciled. D5 expressly requires an aborted or otherwise unconsumed item to retain its daemon-derived wake intent until settled, and permits uncertain phases to retain bounded pending items until a qualified callback. Thus the finding's decisive step\u2014retention necessarily preventing recovery\u2014is not specified behavior. Conversely, the design explicitly accepts pending receipts when the context path or matching entry is unavailable (D4), rather than promising eventual receipts despite unavailable evidence. No concrete lost-before-queue behavior is established by the spec: fire-and-forget and lack of receipt evidence do not by themselves establish that a successful invocation silently loses a frame. D8 requires truncation/replay/late-callback and channel-loss/reconnect evidence; implementation must qualify those cases against D4/D5. A more detailed retry/backpressure state machine would help implementers, but the finding demonstrates neither that the existing contract requires duplicate reinjection nor that it permits abandoning the D5 retained wake intent. It therefore identifies implementation/qualification work, not a demonstrated material contract gap."
+      }
+    },
+    {
+      "id": "027",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "(a) D4 separates submission from evidence, preserves exact bodies and execution identity, reuses watch ACK retry/replacement handling, and deduplicates records rather than expressly forbidding another submission of a retained record. D5 supplies the recovery obligation: an aborted or otherwise unconsumed item retains daemon-derived wake intent until settled, pending items wait for a qualified callback, and passive items cannot acquire wake eligibility through retries. D3 supplies reconnect/re-admission and generation fencing. These are not a detailed queue reconciliation algorithm, but the finding incorrectly treats record retention as necessarily permanent suppression of submission. (b) D4 explicitly accepts pending receipts when the context path or matching session entry is unavailable and explicitly excludes provider receipt, model consumption and disk flush. That accepted pending state is not itself a delivery-contract violation. (c) The design does not promise exactly-once native queue insertion or recovery from every hypothetical failure before queue admission. The finding assumes such a failure and an inability to observe/retry it, without establishing either from this spec; a fire-and-forget return alone does not establish them. (d) An implementation that drops aborted items permanently or duplicates receipts would violate the existing D4/D5 requirements, and D8 explicitly requires truncation/replay/late-callback and channel-loss/reconnect qualification. The implementer must demonstrate that behavior, but an unspecified internal retry algorithm or hypothetical capacity exhaustion is not independently demonstrated here as a material missing contract. The concrete distinction is required implementation/qualification work, not evidence that the stated design necessarily suppresses recovery or reinjects duplicate frames."
+      }
+    },
+    {
+      "id": "028",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Read the full spec and searched retry/replay/reconnect/abort/unconsumed/pending/bounds/dedup/teardown/queue/observation equivalents. The load-bearing inference that retaining an in-flight record suppresses every later submission is not in D4: it requires deduplication of records, not a permanent prohibition on retrying their delivery. Likewise it prohibits duplicate receipts, not all possible repeated presentation. D5 explicitly retains unconsumed items and their daemon-derived wake intent, permits local retries without upgrading passive priority, and retains uncertain-state items until qualified callbacks. D4 explicitly accepts keeping receipts pending when observation is unavailable. D8 requires replay, late-callback and reconnect qualification, and the open decisions require demonstration through retry phases. The spec leaves the implementation retry mechanics to that work; the finding has not established that its constraints force permanent loss or a forbidden duplicate. A lost-before-queuing failure of a successful invocation is also not established merely by the spec saying fire-and-forget. No external API assertion is needed for this rejection: the alleged implication does not follow from the stated contract."
+      }
+    },
+    {
+      "id": "029",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The failure story reaches an idle session with no channel, but cannot complete the required contradiction against a stated requirement. D1 explicitly bounds wake support: \"Without a live extension/channel there is no idle wake\" and says supported turn callbacks \"may recover delivery and reconnect the channel\"; D3 explicitly chooses \"the next eligible callback retries failure.\" Thus the spec does not promise autonomous idle recovery after channel loss or failed admission. D7 further requires the normative policy to state \"channel-only wake and no-channel behavior, including absence of native fallback.\" The broad priority-correct-idle-wake goal is qualified by these explicit limits. D8 requires channel loss/reconnect qualification, but does not require timer-driven recovery while idle. That evidence can test retry on the next eligible callback and the documented no-channel behavior; its existence does not establish an unstated autonomous recovery guarantee. An owned reconnect timer could improve availability, but demanding it here would strengthen the expressly bounded contract."
+      }
+    },
+    {
+      "id": "030",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "(a) D1 specifies callback-driven recovery and D3 specifies retry on the next eligible callback; no autonomous idle reconnect timer is specified. (b) That absence is within the stated contract: D1 expressly says \"Without a live extension/channel there is no idle wake\" and only says supported callbacks \"may recover delivery and reconnect the channel\". D7 requires the normative policy to state \"channel-only wake and no-channel behavior, including absence of native fallback\". Thus an idle session remaining unwakeable while its channel is absent is explicitly accepted, not a violation of an unconditional availability guarantee. (c) The finding adds an autonomous recovery guarantee which the design never promises; its priority-correct idle wake requirement is qualified by the live-channel condition. (d) Channel loss is operationally consequential, but the stated contract already permits that consequence. D8 requires channel-loss/reconnect qualification; that test obligation does not independently promise recovery without a callback. An owned reconnect timer could improve availability, but its absence is not a material contract gap in this spec."
+      }
+    },
+    {
+      "id": "031",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The quoted premises are accurate: D1 explicitly says \"Without a live extension/channel there is no idle wake\" and permits recovery through supported turn callbacks; D3 specifies retry at the next eligible callback. Reading the whole spec and searching recovery/reconnect/retry/callback/channel/timer/backoff confirms that autonomous idle reconnection is not promised. However, that is the explicitly stated no-channel behavior, reinforced by D7 requiring the trust policy to state channel-only wake and no-channel behavior. The finding would impose continuous autonomous recovery beyond this bounded contract. D8 requires channel-loss/reconnect qualification; it must demonstrate the specified callback-driven recovery and honest no-wake degradation, but does not establish an autonomous reconnect requirement."
+      }
+    },
+    {
+      "id": "032",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "The missing transition is an internal contract gap. The Goal promises automatic enrollment and priority-correct idle wake; D3 explicitly admits startup and reload and reconstructs ownership on reload. D5 permits a waking item only in \"Positively settled idle\", says \"Use agent_settled and a fresh ctx.isIdle() for idle eligibility\", and assigns uncertain state no wake. Neither D3 nor D5 establishes an initial settled state or specifies a startup/reload callback plus isIdle as equivalent evidence. Thus an implementation following the specified transitions can enroll, open its channel, receive a daemon-admitted waking item before observing any agent_settled, and retain it indefinitely in uncertain state despite the terminal being idle. The design provides no transition out of that condition until a run supplies the missing event, undermining the first idle wake promised by the Goal. This does not assert an external fact about whether pi happens to emit agent_settled during initialization: the contract must either require and substantiate that initialization event or define the startup/reload idle admission transition. D8 requires threshold-wake and lifecycle qualification, but those tests do not specify which initial-state evidence authorizes that transition; this is a small state-contract clarification before implementation, not a demand for another broad test matrix."
+      }
+    },
+    {
+      "id": "033",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "(a) No equivalent initialization appears elsewhere: D3 specifies startup admission, reload reconstruction, and execution fencing, but no initial idle witness or transition. D5 exclusively describes positively settled idle and instructs use of agent_settled plus fresh ctx.isIdle(); it supplies positive active-run start/end transitions but no startup/reload idle transition. (b) The accepted uncertain-state retention and no-channel limits do not explicitly accept permanent first-wake ineligibility for an admitted live idle extension. (c) First idle wake is within the stated priority-correct idle-wake goal and supported startup/reload lifecycle, not additional scope. (d) Under the literal settled-event gate an otherwise ready initial session has no specified way to authorize a wake before its first run; alternatively permitting admission plus isIdle requires a distinct transition absent from the contract. D8 threshold-wake and lifecycle qualification can expose this ambiguity, but does not resolve which evidence authorizes that transition. This is a state-contract gap, not a demand to add more qualification cases. This finding does not rely on an external claim that upstream omits a particular callback: the missing definition is what the bridge must do before any observed agent_settled event."
+      }
+    },
+    {
+      "id": "034",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "The internal contract leaves initial idle eligibility undefined. D5 permits waking only from positively settled idle (line 54), retains uncertain state without waking (line 56), and explicitly requires agent_settled plus a fresh ctx.isIdle() for idle eligibility (line 58). Reading the whole spec and searching startup/reload/resume/initial/eligible/state/settled equivalents found lifecycle admission and reconstruction in D3 (lines 31\u201335), but no rule establishing idle eligibility for an execution that has not observed agent_settled. This is material to the stated priority-correct idle-wake goal: implementers cannot tell whether fresh successful admission plus isIdle authorizes the first wake, or whether they must wait for a settled event. D8 requires lifecycle and threshold-wake qualification, and the open decisions require active-run interval evidence, but neither specifies this initial transition. Specify the startup/reload idle witness or explicitly require and qualify a lifecycle-generated settled event. This confirms a missing contract transition, not an external claim that pi never emits such an event at startup."
+      }
+    },
+    {
+      "id": "035",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The demonstration stops at an explicitly required qualification gate, rather than a contradiction of a promised behavior. D1 selects channel-only wake but explicitly provides no composer fallback. D5 requires real-binary draft/modal tests and specifies the failure outcome: \"the affected wake path stays disabled until an evidence-backed guard exists\". D8 includes draft/modal behavior in required evidence, and Open decisions requires qualification \"before support is declared complete\". Thus if a selector or dialog interferes, the design already prohibits declaring the affected path supported; it does not authorize shipping unsafe wake based on an assumed result. This is a recognized feasibility question to resolve during required qualification, not a missing contract or an unacknowledged assumption. No external API behavior is asserted or relied on for this structural judgment."
+      }
+    },
+    {
+      "id": "036",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "(a) The mechanism is present as a qualification gate: D5 requires real-binary draft/modal tests and explicitly keeps an interfering wake path disabled until an evidence-backed guard exists; D8 lists draft/modal behavior among required evidence. (b) The contract expressly accepts disabled wake where qualification fails and no composer fallback; the Open decisions section requires qualification before support is declared complete. Thus the finding identifies a documented prerequisite, not an unaddressed architectural guarantee. (c) Requiring all extension dialogs to support unconditional wake would exceed the explicitly qualified initial support scope. (d) Modal interference would materially matter if shipped, but the spec already prohibits shipping the affected wake path without qualification or a guard. No evidence in this internal finding establishes that qualification must fail or that the fallback violates the stated contract. Unperformed required tests in a proposed design do not themselves establish a material design gap."
+      }
+    },
+    {
+      "id": "037",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The internal premises are accurately quoted, but the conclusion identifies an explicit qualification requirement rather than an unaddressed design gap. D5 requires real-binary draft/modal tests and explicitly disables an affected wake path until an evidence-backed guard exists; D8 includes draft/modal behavior in required evidence and requires real-binary fake-model probes. The final Open decisions section further requires qualification before support is declared complete. D1 explicitly accepts channel-only wake and no composer fallback. Thus the spec neither assumes unconditional modal safety nor declares this untested support complete. No demonstrated incompatibility or missing release criterion is supplied; the proposed spike substantially repeats the required qualification work. This judgment concerns the internal contract and does not assert that upstream modal behavior is safe."
+      }
+    },
+    {
+      "id": "038",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The reproduction breaks at the proposed loss or premature-completion step. D3 explicitly requires lifecycle registration through the registered adapter contract and that compaction restates fixed guidance on compact re-entry. Omitting that guidance would violate an existing requirement, not exploit an unspecified allowed behavior. D4 separately requires observation of the exact full frame in model-bound context plus its current-branch entry before watch ACK, and says unavailable context evidence keeps receipts pending; D7 makes that predicate the Pi cooperative_mod_delivery policy. The spec does not authorize lifecycle output as an alternative receipt predicate. To produce the claimed premature ACK, one must assume an additional hook-output delivery/settlement implementation that the spec never selects. Fixed guidance itself is not specified as receipt-bearing. The precise callback/serialization bridge can be clarified in D8\u2019s explicitly required frozen extension/Rust event contract, and D8 requires resume/fork/reload/compaction and exact-receipt qualification. An implementation must prove these obligations, but the finding does not demonstrate an end-to-end contract gap against the stated requirements."
+      }
+    },
+    {
+      "id": "039",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "(a) The whole spec supplies lifecycle registration through existing hook plumbing and says compact re-entry restates fixed guidance (D3), but never maps that returned context into the extension/model path. D4 defines observation of an exact full custom frame plus its current-branch custom-message entry and then watch ack --via context; D5 defines staging and steering for channel bodies. Neither states whether lifecycle hook output is converted into those frames, suppressed in favor of channel delivery, or inserted through another route. (b) D4 explicitly accepts downstream transformation/provider/disk limitations only after context observation; it does not accept lifecycle output being lost or settled merely on hook return. (c) Automatic enrollment and bounded in-context delivery are goals, and compact guidance is expressly required in D3, so this is within scope. D8 defers a frozen event contract until implementation dispatch, but does not resolve this missing lifecycle-output decision. (d) The missing transport/evidence rule can leave required startup/compact guidance outside model context or allow pending lifecycle deliveries to follow a different completion boundary. This is a contract gap, not a demand for additional Pi API guarantees or qualification tests: specify how lifecycle context is injected, and whether lifecycle mail is routed through the D4 predicate or exclusively through the watch channel. No external API premise is required for this structural finding."
+      }
+    },
+    {
+      "id": "040",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Read the complete spec and searched lifecycle, hook, guidance, context, compact, frame, receipt and provenance equivalents. D3 requires startup/resume/clear reporting through existing hook plumbing and fixed guidance on compact re-entry, but does not specify how its returned guidance becomes Pi model context. D4 defines an exact custom-frame plus current-branch-entry predicate followed by watch ack; D7 names cooperative_mod_delivery for that predicate. Neither connects lifecycle output to that route nor specifies that lifecycle calls are registration-only with all pending delivery exclusively through watch. Thus the provenance is defined for watch frames, but its applicability to lifecycle-returned pending content is unresolved. This matters to the stated bounded in-context delivery and honest attribution requirements: implementers need an explicit routing/completion contract at that boundary. D8 requires a frozen extension/Rust contract and lifecycle qualification, but testing alone cannot choose that missing contract. This finding does not establish that existing hooks actually acknowledge early, and fixed guidance itself need not carry a receipt; the material gap is its context insertion route and the treatment of any receipt-bearing lifecycle output."
+      }
+    },
+    {
+      "id": "041",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The omission is observable, but the required end-to-end contradiction is not established. D3 explicitly fences shutdown/replacement, stops and reaps the watch, invalidates old delivery/wake candidates, makes disposal idempotent, and checks the frozen execution around every await. D1 explicitly supports the no-live-extension/channel state with no idle wake, and D8 requires channel-loss/reconnect and reload qualification. Thus an unsuccessful reload has a specified local no-channel outcome; no successor is needed for that cleanup. D2 exports the native session and process identity, not an expressly ephemeral proof that the extension is currently installed, so the same surviving Pi PID and unchanged native session do not by themselves make those identity claims false. A successor session must refresh markers before model tools execute (D2), while reload requires fresh daemon admission rather than replaying an old binding claim (D3). The finding correctly notes that explicit shutdown disconnection and owner-scoped environment removal are not written, but it cannot show that retaining a binding for a still-live same-session process violates a stated requirement. It would need an additional demonstrated stale-session attribution or wake path that bypasses these rules; treating extension disposal alone as necessarily ending the native session assumes the very lifecycle contract the finding seeks to add."
+      }
+    },
+    {
+      "id": "042",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "(a) The whole spec supplies local teardown (D3 fences callbacks, reaps watch, invalidates candidates), fresh reload admission, and D4 explicit generation teardown, but none withdraws the exported identity claim or specifies a daemon end/disconnect transition. D3 lists startup/resume/clear events only. (b) D1 explicitly accepts no idle wake without a live channel; that does not accept stale identity ownership. D2 instead forbids stale extension state and D3 forbids replaying an old process-global binding claim. (c) Shutdown/replacement and reload are explicitly in D3 scope; this asks for termination of that same supported lifecycle, not support for a new host or child mode. (d) In the design\u2019s same-process replacement case, local fencing alone leaves the prior session/PID/mode markers available to model tools even if replacement admission fails or no replacement owner starts. The specified PID/process checks cannot distinguish those markers from current ownership. A successor refresh is therefore insufficient, and channel closure only establishes loss of wake capability, not the required identity termination semantics. Define owner-scoped marker withdrawal and the daemon lifecycle result on teardown, including unsuccessful replacement. D8 reload/channel-loss qualification can test the resulting contract but currently does not define it. This is an internal lifecycle-contract gap; no external API assumption is needed."
+      }
+    },
+    {
+      "id": "043",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "The full spec and a search for shutdown, disconnect, disposal, marker, clear, reload, ownership, binding and teardown confirm the missing transition. D2 explicitly clears inherited markers for nonterminal instances and refreshes markers on startup/switch, but gives no owner-scoped withdrawal on disposal. D3 defines shutdown/replacement only as local fencing, watch reaping and candidate invalidation; its daemon event mapping lists startup/resume/clear without specifying an end/disconnect transition. Idempotent disposal and fresh admission on reload do not define what happens when no successor is admitted. D1 explicitly permits no-live-extension operation, so the contract needs to state whether and how its exported cooperative identity claim and daemon binding cease to represent the disposed integration while the process remains. This is a lifecycle/attribution contract gap, not merely a missing reload test: D8 requires reload qualification but provides no expected withdrawal behavior to assert. This finding does not establish that any particular upstream reload implementation triggers the scenario; it establishes that the designed shutdown/replacement contract leaves that state undefined."
+      }
+    },
+    {
+      "id": "044",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Read the entire spec. The external premise is real: fetched https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/extensions/types.ts, whose SessionTreeEvent is documented as \"Fired after navigating in the session tree\" and has newLeafId and oldLeafId; tree navigation is separate from session replacement. However, the reproduction does not reach a stated-contract violation. D4 already requires observation of the exact full frame in model-bound context together with a matching current-branch entry, and explicitly requires keeping receipts pending when that entry is unavailable. Therefore navigation removing an entry cannot itself authorize an incorrect receipt under this design. D4 also deduplicates by context version, rather than only by session/execution; the finding assumes an unchanged version across navigation without the spec requiring that implementation. For already observed frames, D5 explicitly forbids later wake, so branch navigation need not undo valid observations. D3 requires fixed-guidance restoration on compact re-entry, but neither states guidance is stored only in branch-local messages nor promises restoration on every tree navigation. A missing named callback and a useful additional qualification case are not an end-to-end demonstration of the claimed contract gap. The failure story would need an additional specified implementation choice, such as using old branch membership as current evidence or treating every same-session context as the same version; both are unsupported here."
+      }
+    },
+    {
+      "id": "045",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Verified against the whole docs/superpowers/runs/2026-11-14-pi-harness/design.md. (a) The nearest equivalent mechanisms are D2 startup/switch marker refresh, D3 shutdown/replacement fencing and compact re-entry, and D4 current-branch evidence plus context-version deduplication. D4 already prevents an ACK based solely on an absent branch entry, so branch navigation does not inherently create false receipts. However none specifies restoration of fixed guidance or reconciliation of retained in-flight observations when navigation changes the branch without replacement. (b) D4 explicitly accepts later transformations and transport/provider failure, not loss of required guidance on native navigation; its instruction to retain state until completion or generation teardown leaves this same-generation transition undecided. (c) D1 supports the terminal CLI and excludes other modes, not its native tree navigation. (d) Navigating away from the branch containing lifecycle guidance leaves a supported session without that guidance; pending records also need a defined relationship to the new context version rather than only an old execution fence. This is a lifecycle-contract gap, not merely a missing D8 test case, and does not require undoing valid receipts or replaying every acknowledged message. External premise verified by fetching https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/extensions/types.ts: SessionTreeEvent is documented as 'Fired after navigating in the session tree' and carries newLeafId/oldLeafId, separately from SessionShutdownEvent whose reasons enumerate quit/reload/new/resume/fork. Specify the same-session branch transition and guidance restoration, then qualify that behavior."
+      }
+    },
+    {
+      "id": "046",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Read the entire docs/superpowers/runs/2026-11-14-pi-harness/design.md and searched tree/branch/switch/navigation/guidance/context version/generation/pending. D3 defines replacement/reload/compaction handling, but no same-session tree-navigation transition; D2 startup/switch marker refresh does not define branch-context reconciliation. D4 requires current-branch evidence and context-version deduplication, yet restricts clearing local state to completion or generation teardown without specifying whether navigation changes that generation/version or re-stages unobserved frames. Upstream confirms this is a separate lifecycle path: https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/extensions/types.ts documents session_tree as \u201cFired after navigating in the session tree\u201d and carries oldLeafId/newLeafId, separately from shutdown. https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts changes the leaf, refreshes canonical context, then emits session_tree: \u201cThe selected context is installed; session_tree handlers may now prompt or navigate again.\u201d Thus a supported TUI navigation can remove guidance and pending frame entries from active context without the defined replacement fences. D4 correctly prevents an invalid receipt but does not establish how delivery progresses or guidance returns after this event. This is a missing lifecycle contract, not merely an absent test: define branch/context invalidation and restoration while preserving already-valid receipts, then qualify navigation with pending delivery. D8 currently names resume/fork/reload/compaction but does not resolve this transition."
+      }
+    },
+    {
+      "id": "047",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "The reproduction completes against the incorporated ordering contract. docs/superpowers/runs/2026-11-14-pi-harness/design.md explicitly makes AGENTS.md normative; its Delivery contract states that pending items are presented in priority, deadline, creation order. D4 keeps a staged item unsettled until its exact body is observed in model-bound context, so native queue acceptance does not remove it from pending delivery. (1) At settled idle with T=0, p3 arrives alone; D5 requires staging it as nextTurn without a run. (2) Before any context occurs, p0 arrives; D5 requires staging that body as nextTurn and submitting a wake. Both items remain awaiting D4 context evidence. (3) Upstream source fetched at https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts, sendCustomMessage lines 2335-2336, uses \"this._pendingNextTurnMessages.push(appMessage);\"; _prepareRun line 1924 uses \"messages.push(...this._pendingNextTurnMessages);\". Consequently the newly presented bodies are p3 then p0. Each daemon batch can satisfy D4 ordering independently while their first model-context presentation violates the incorporated priority order. D4 contains identity/context-version deduplication but no final union ordering; D5 mandates early native staging, with no replacement or context reordering step. This is a missing boundary contract, not merely an omitted qualification case: testing the prescribed staging sequence cannot itself make it ordered. The explicit downstream-transformation accepted limit in D4 concerns later extensions/provider failures and does not cover the adapter own queue order."
+      }
+    },
+    {
+      "id": "048",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Read the entire docs/superpowers/runs/2026-11-14-pi-harness/design.md. (a) No equivalent merge is specified: D4 supplies daemon ordering and identity/context-version deduplication, while D5 immediately stages each passive idle delivery and later stages waking deliveries. Neither deduplication nor receipt observation reorders that queue. (b) D4 accepts downstream extension transformations and provider failure, not ordering changes introduced by this bridge; staged items have not met its context-admission predicate yet. (c) This concerns two items in the supported terminal idle path, not extra scale or an excluded mode. The normative pending-item ordering and D4 daemon-ordering reuse are within scope. (d) p3 staged first at T=0 then p0 staged before the wake produces a first context with p3 before p0, despite both still awaiting context admission. This changes the required presentation order, though it does not prevent wake or lose either message, hence Should-fix. External grounding: fetched https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts ; nextTurn executes \"this._pendingNextTurnMessages.push(appMessage);\" and _prepareRun executes \"messages.push(...this._pendingNextTurnMessages);\" (lines 2335-2336 and 1923-1925). These preserve staging order without priority knowledge. D8 qualification and the final queue/context-ordering probe do not supply a union-ordering policy; adding only a test cannot reconcile D5 staging with pending-item ordering. Define admission-time ordering or explicitly amend the ordering contract."
+      }
+    },
+    {
+      "id": "049",
+      "result": {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "docs/superpowers/runs/2026-11-14-pi-harness/design.md D4 delegates ordering to the watch protocol; D5 explicitly stages passive idle bodies immediately in nextTurn and subsequently stages waking bodies there before starting the run. Actual upstream source fetched at https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts confirms FIFO staging: \"this._pendingNextTurnMessages.push(appMessage);\" (line 2336), followed by \"messages.push(...this._pendingNextTurnMessages);\" (line 1924). Thus a p3 staged before a p0 remains ahead of it when both first enter context. Reading the whole spec and searching order/queue/sort/merge/stage/priority/deadline/context found no final pending-union ordering or queue replacement rule. D4 deduplication and receipt admission do not reorder; the open-decision statement that a probe confirms queue/context ordering supplies no such mechanism or accepted exception. This is a host-boundary contract gap against the normative pending-item ordering, not merely absence of another qualification test: correct ordering within each daemon batch cannot correct FIFO order across still-unobserved batches. Severity is should-fix because wake eligibility and receipt honesty can remain correct while presentation ordering fails."
+      }
+    },
+    {
+      "id": "050",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The demonstration breaks at the required contradiction. In docs/superpowers/runs/2026-11-14-pi-harness/design.md, Goal requires bounded in-context delivery; D4 makes this concrete with a bounded tracked batch and existing bounded watch pages. It does not promise constant-time branch lookup, bounded total native session history, or a per-context callback lookup budget. D4 explicitly requires the matching current-branch entry and preserves pending receipts when matching evidence is unavailable, so a cache that ignores branch changes would violate the specified predicate rather than expose an unspecified receipt contract. A literal current-branch scan could grow with history, but the finding supplies no stated runtime bound that this would breach and no end-to-end failure of bounded delivered content or honest receipt attribution. An index is a possible implementation optimization, not a missing material requirement under this spec."
+      }
+    },
+    {
+      "id": "051",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Against docs/superpowers/runs/2026-11-14-pi-harness/design.md: (a) D4 specifies the bounded in-flight batch, exact identity/context-version deduplication, and current-branch matching, but does not prescribe an index or lookup budget; the literal omission is real. (b) The stated boundedness concerns delivery batches/pages and pending items (D4\u2013D5), not constant-time inspection of arbitrarily long native session histories. No CPU-time or history-size lookup guarantee is stated. (c) Requiring a bounded branch-search mechanism or an explicit performance ceiling introduces an additional algorithmic contract beyond those requirements. A straightforward current-branch search implements the specified evidence predicate without a cache; the finding identifies no semantic failure of that implementation. (d) The hypothetical cost of a literal search is not demonstrated to violate any stated runtime requirement or to threaten correct delivery. The goal of bounded in-context delivery does not by itself require history-independent lookup complexity. This is an implementation/performance consideration, not a material missing design contract."
+      }
+    },
+    {
+      "id": "052",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Read the complete docs/superpowers/runs/2026-11-14-pi-harness/design.md and searched boundedness, budget, index, lookup, branch, context, performance, history, cache, version and generation. D4 indeed requires current-branch evidence and does not prescribe a lookup index or runtime budget. However, the load-bearing inference that bounded in-context delivery requires history-independent lookup cost is unsupported: the stated bounds concern the offered batch (line 39), watch pages (line 45), and retained pending items (line 56), not receipt-check algorithmic complexity. The finding supplies no demonstrated cost or failure at a required workload. D4 already requires matching the current branch, so a stale cached match would violate the specified predicate rather than expose an unspecified correctness contract. Lookup strategy and its performance qualification remain implementation details; requiring a new performance limit here imposes an unstated requirement."
+      }
+    },
+    {
+      "id": "053",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The proposed reproduction stops before any violation of a stated requirement. In docs/superpowers/runs/2026-11-14-pi-harness/design.md D4, observing context while the matching current-branch entry is unavailable would indeed withhold an ACK, but the design explicitly requires that outcome: \"If the context path or matching session entry is unavailable, keep receipts pending\". D7 likewise explicitly defines the receipt contract as \"context-plus-current-branch\", rather than promising that context observation alone suffices. D3 additionally requires successor sessions never to ACK an old frame merely because they inherited a pane, so corroborating current-branch membership is consistent with its conservative attribution requirements, even if the spec does not isolate a unique false-receipt example prevented only by this conjunct. The finding identifies a possible simplification or rationale request, not a demonstrated material gap: no stated availability or acknowledgment-timing promise is contradicted by the explicitly accepted pending-receipt condition. D8 requires exact-receipt and late-callback qualification; uncertainty about implementing that observation is not itself evidence this internal contract is wrong."
+      }
+    },
+    {
+      "id": "054",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "(a) The proposed invariant is present explicitly, rather than accidentally added: docs/superpowers/runs/2026-11-14-pi-harness/design.md D4 defines context-plus-current-branch admission, and D7 requires that same predicate in the normative trust policy. D3 separately requires successor sessions never to ACK inherited old frames, providing the surrounding session-continuity concern, although the spec does not demonstrate that branch matching is uniquely necessary to enforce it. (b) The alleged withholding behavior is expressly accepted in D4: 'If the context path or matching session entry is unavailable, keep receipts pending'; the stated receipt contract deliberately requires both observations and disclaims disk/provider/model consumption. This refutation lands: a conservative, explicitly selected receipt predicate is not a contradiction of a narrower minimum guarantee. (c) Asking to minimize this predicate is a design alternative, not a requirement established by the spec. No stated requirement promises receipts whenever context observation alone succeeds. (d) The finding supplies no material failure under the proposed contract, only a possible redundancy and an opportunity to justify or simplify the design. D8 already requires exact-receipt and replay/late-callback qualification; those are implementation evidence obligations, not proof that this additional conjunct is a design gap. This judgment is internal to the spec and relies on no external API fact."
+      }
+    },
+    {
+      "id": "055",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The quotations are accurate, and a search of the whole spec for branch, context, receipt, stale/successor and evidence finds no explicit rationale for the extra conjunct. That does not establish a material contract gap: docs/superpowers/runs/2026-11-14-pi-harness/design.md D4 expressly chooses context plus current-branch entry as the admission predicate and expressly accepts keeping receipts pending when either observation is unavailable; D7 repeats that choice as the normative policy amendment. The finding challenges that conservative evidence policy without showing a contradiction, failure of a stated requirement, or significant implementation cost. A proof that context-only evidence suffices would support an optional simplification, but its absence is not a defect in the chosen contract. D8 separately requires qualification of exact receipt evidence and replay/late callbacks."
+      }
+    },
+    {
+      "id": "056",
+      "result": {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Against docs/superpowers/runs/2026-11-14-pi-harness/design.md: (a) D6 supplies the boundary in the same paragraph: \u201cInitial interactive options cover model/provider, thinking, continue/resume/fork and resource paths only where their current documented grammar is captured in tests; unknown or disabling options are refused.\u201d That explicitly limits the following general instruction to accept documented interactive options. (b) The contract deliberately allows a tested initial subset, with unknown options refused; it does not promise upstream CLI parity. (c) Requiring a complete flag-by-flag grammar at design time adds precision beyond the stated design-level boundary; D8 explicitly assigns launch grammar to required implementation qualification. (d) The adjacent broad wording could be tightened editorially, but reading it in context supplies an actionable scope and no material requirement to mirror all upstream flags. Therefore this is a documentation suggestion rather than a material open-ended parser requirement."
+      }
+    },
+    {
+      "id": "057",
+      "result": {
+        "verdict": "Blocking (9 confirmed) [low coverage] [review readiness incomplete]",
+        "reportMarkdown": "---\nsuper-roast verdict: Blocking (9 confirmed) [low coverage] [review readiness incomplete]\nmode: design        iteration: 1 of 3\nprofile (assumed): Internal same-user cooperative agent messaging. Identity, receipt provenance and priority-correct wake are core product contracts; there is no adversarial caller model. No production implementation exists yet.\ninputs: pi-harness/design.md research draft 2026-11-14\ncoverage: scouts 8/8 (premortem, completeness, yagni, failure-mode, feasibility, domain:agent-runtime-integration, domain:distributed-systems, domain:identity-and-session-lifecycle) \u00b7 raw 32 \u2192 deduped 16 \u2192 panel 15 \u00b7 spot 1 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0 \u00b7 review readiness: coverage bounded, provenance available \u2014 basis: \"Primary-source extracts and SDK fake-provider event traces; TUI and credentialed provider not exercised.\"\nindependence: same-family (OpenAI GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 15 \u00b7 rr 0.73 \u00b7 rg 0.73 \u00b7 fg 1.00 \u00b7 unanimous 0.73 \u00b7 ground-loo 1.00 (n=11) \u00b7 reproduce 5/10/0 \u00b7 refute 9/6/0 \u00b7 ground 9/6/0\n\n## Confirmed findings\n\n- [Blocking] D2, lines 21\u201327; D7, line 79; D2, lines 23\u201327; D2, final paragraph; D1 terminal-mode admission; D1 terminal-mode admission; D2 final paragraph and proposed environment contract \u2014 The admission contract lacks a positive top-level role witness that distinguishes a supported interactive TUI from an interactive child with its own valid session, PID and mode.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats: D2 requires a frozen role and forbids inferring top-level from missing evidence, but specifies only session, own PID and mode. An interactive child can supply all three. D7 excludes unknown children, while no positive admission rule lets the ordinary TUI establish its role.\n  fix-shape hint: Define the cooperative role assertion, its producer and the admission/refusal rule; document any indistinguishability limit.\n- [Blocking] D3, lines 31\u201335; D4, line 45; D5, lines 53\u201354; D3 first and final paragraphs; D5 state table; D3 shutdown/replacement fencing; D5 nextTurn staging; D3: shutdown/replacement fences the old execution; D4: clear local state on generation teardown; D5: idle passive nextTurn staging; D3 reload reconstruction and invalidation; D4 local deduplication; D5 nextTurn staging \u2014 Execution fencing does not define disposal or reconciliation of native queued bodies across replacement or reload, allowing stale or duplicate frames into successor contexts.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats establish the concrete reload case. D3 invalidates old candidates and D4 permits clearing execution-local records, but D5 already transferred passive bodies to Pi. In the fetched upstream agent-session.ts, sendCustomMessage appends to _pendingNextTurnMessages (2335\u20132336), _prepareRun consumes that array (1923\u20131925), and reload (3592\u20133637) replaces the runtime without clearing it. Fresh watch replay can duplicate the surviving body, repeatedly defeating bounded delivery. This evidence establishes reload, not every new/resume/fork path.\n  source: https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts (fetched by all three seats).\n  fix-shape hint: Define native-queue reconciliation or filtering across reload and qualify passive staging \u2192 reload \u2192 replay \u2192 prompt.\n- [Blocking] D4, lines 39 and 45; D5, lines 53\u201356; D4 lines 39\u201345; D5 lines 53\u201356; D4 bounded batch and retained local state; D5 idle passive staging; D4, bounded batch and 'Clear local state only on admitted completion or explicit generation teardown'; D5 passive-idle staging \u2014 The bounded pending-delivery design lacks an aggregate capacity and saturation policy that preserves progress for urgent mail while passive or unsettled records occupy capacity.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats: D4 retains full bodies until context admission or teardown; D5 stages passive idle items without starting a run. A full retained batch therefore cannot complete while idle. Another admitted waking item requires either excess retention, displacement not allowed by the clearing rule, or a separate progress path. Per-page daemon limits provide none of these aggregate-capacity semantics.\n  fix-shape hint: Define aggregate item/byte capacity, release/replay behavior and an urgent-control path that progresses at capacity.\n- [Should-fix] D4 line 39; D5 lines 54 and 60; D4 sendMessage fire-and-forget; D5 daemon-admitted idle wake and retained wake intent \u2014 The body-stage/wake-submit sequence lacks failure observation and a bounded retry transition when an idle wake produces no subsequent context or settled callback.\n  verdict: confirmed (reproduce REJECT / refute \u2717-survived / ground \u2713)\n  evidence: Refute and ground: D4:39 disclaims invocation as evidence; D5:54 stages a body and submits one wake, while D5:56,60 retains uncertain items and wake intent. No transition resolves an outstanding attempt when no start/context/settled callback arrives. D3:35 callback-driven check-in retry and D4:45 ACK retry do not define that transition. Reproduce rejects a stronger recovery guarantee; the majority addresses that distinction by identifying missing attempt semantics, without claiming Pi demonstrably loses ordinary submissions.\n  fix-shape hint: Define bounded outstanding-wake observation, refusal/recovery transitions and duplicate-start protection, or explicitly accept the no-progress limit.\n- [Blocking] D3 lines 31\u201335; D5 lines 53\u201358; D3 startup/reload; D5 positively settled idle rule \u2014 The idle state machine does not specify how a fresh or reloaded session becomes eligible for its first wake without a preceding agent_settled event.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats: D5:54,56,58 permits wake only at positively settled idle using agent_settled plus fresh isIdle, and retains uncertain state. D3:31\u201335 admits startup/reload but supplies no initial idle witness. A live admitted session can therefore remain unable to authorize its first wake before any run. This is an internal transition gap, not proof that Pi omits a startup callback.\n  fix-shape hint: Define startup/reload idle evidence or explicitly require and qualify an initialization settled event.\n- [Should-fix] D3 line 33; D4 lines 39\u201343 \u2014 The design does not define how startup and compact fixed guidance enters Pi context or which delivery provenance applies to that path.\n  verdict: confirmed (reproduce REJECT / refute \u2717-survived / ground \u2713)\n  evidence: Refute and ground: D3:33 requires lifecycle hook plumbing and compact guidance; D4:39\u201343 and D7 define context-plus-current-branch receipts only for watch custom frames. No rule maps lifecycle-returned guidance into Pi context or routes any accompanying mail through the same predicate. Reproduce correctly notes that premature ACK is not authorized; the majority confirms the missing routing decision, not an observed premature ACK.\n  fix-shape hint: Specify guidance insertion and make lifecycle mail either watch-only or subject to the same explicit context receipt boundary.\n- [Should-fix] D2 environment markers; D3 first and second paragraphs \u2014 Shutdown cleanup specifies local fencing and watch termination but leaves daemon binding disconnection and removal of the exported ownership claims undefined.\n  verdict: confirmed (reproduce REJECT / refute \u2717-survived / ground \u2713)\n  evidence: Refute and ground: D2 refreshes session/PID/mode markers; D3 maps startup/resume/clear and defines local teardown, but neither specifies owner-scoped marker withdrawal or daemon end/disconnect semantics when replacement admission fails. Reproduce notes that the native PID/session may remain valid. The majority addresses that distinction: the unresolved claim is integration ownership after disposal, not termination of the native process or proof that a particular reload triggers stale attribution.\n  fix-shape hint: Define daemon binding and owned-marker disposition on shutdown and failed replacement, including intentional continued native-session attribution if supported.\n- [Should-fix] D3 lifecycle handling; D4 current-branch predicate and context-version deduplication; D8 qualification list \u2014 Same-session tree navigation has no defined guidance-restoration or local delivery-state transition.\n  verdict: confirmed (reproduce REJECT / refute \u2717-survived / ground \u2713)\n  evidence: Refute and ground: D3 has no same-session tree transition; D4 requires current-branch evidence and context-version deduplication but only specifies clearing on completion or teardown. The fetched extensions/types.ts defines session_tree with oldLeafId/newLeafId separately from shutdown; agent-session.ts installs selected context before emitting it. Required guidance and retained pending observations need a branch-transition contract. Reproduce correctly notes that D4 already prevents ACKs from absent entries; the majority does not claim false receipts or require undoing valid receipts.\n  sources: https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/extensions/types.ts; https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts (fetched by the judging seats).\n  fix-shape hint: Define branch/context-version invalidation, pending-frame reconciliation and guidance restoration while preserving valid prior receipts.\n- [Should-fix] D4, line 45; D5, lines 53\u201354; D4 line 45; D5 idle rows, lines 53\u201354; D4: daemon ordering; D5: idle passive and daemon-admitted waking rows \u2014 Per-page daemon ordering does not preserve priority, deadline and age order across passive bodies already staged in the native queue and later waking batches.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats: D4 delegates ordering to watch, while D5 immediately stages passive bodies then later waking bodies. Upstream agent-session.ts sendCustomMessage (2335\u20132336) appends nextTurn messages and _prepareRun (1923\u20131925) preserves their order. A p3 staged at T=0 before a later p0 is presented first although both await D4 admission. This violates the incorporated AGENTS.md pending-item order; wake eligibility and receipt honesty can remain correct.\n  source: https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts (fetched by all three seats).\n  fix-shape hint: Define admission-time ordering over the outstanding union, or explicitly amend the ordering contract.\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- D5 active-run interval; Open decisions before implementation; D5 positive active-run interval; Open decisions before implementation \u2014 Busy delivery relies on an unverified active-run interval across retry, tool, abort and compaction transitions, risking passive mail starting a new run.\n  reason: All seats reject. D5 expressly holds retry gaps, compaction and uncertainty, requires positive active-run evidence and fresh synchronous checks, and promises busy delivery where possible. D8 and Open decisions already require phase qualification before support is complete; no unsafe permitted transition is established.\n- D4 first, third and fourth paragraphs; D4: sendMessage is fire-and-forget; deduplicate in-flight records; clear local state only on admitted completion or explicit generation teardown \u2014 The in-flight submission state lacks a recovery rule distinguishing a lost fire-and-forget injection from a still-queued frame, risking permanently suppressed replay or duplicate reinjection.\n  reason: All seats reject. D4 deduplicates records, not every retry submission. D5 preserves unconsumed wake intent and permits local retries without upgrading passive priority. Pending receipts without evidence are accepted, and fire-and-forget alone does not establish silent loss before queuing. This does not refute the separately confirmed concrete reload-queue or capacity cases.\n- D1 final paragraph; D3 final paragraph \u2014 Recovery from failed check-in or a dead watch depends on a future Pi callback, leaving an otherwise idle session without a specified autonomous path back to receiving wakeable mail.\n  reason: All seats reject. D1 explicitly accepts no idle wake without a live channel; D3 retries at the next eligible callback, and D7 requires documenting no-channel behavior. Autonomous idle reconnection would strengthen the chosen contract.\n- D5 final paragraph; D1 channel-only wake \u2014 Channel-only idle wake remains contingent on unqualified behavior of TUI selectors and extension dialogs.\n  reason: All seats reject. D5 requires real-binary modal/draft qualification and keeps an interfering path disabled until a supported guard exists. D8 and Open decisions retain that gate. Rejection does not establish modal safety or completed qualification.\n- D4 admission predicate \u2014 The design leaves bounded current-branch receipt lookup unspecified despite requiring it on the model-context path.\n  reason: All seats reject. D4\u2013D5 bound delivery batches and pending content, not native history length or lookup CPU time. Current-branch matching already forbids stale cache evidence. No workload failure or violated lookup budget is demonstrated.\n- D4. Delivery, evidence and receipt timing, admission predicate and accepted-limit paragraphs \u2014 D4 makes current-branch storage matching an additional mandatory receipt dependency without stating what it proves beyond the already required exact-frame observation in the current session context.\n  reason: All seats reject. D4 expressly selects context-plus-current-branch admission and pending receipts when either observation is missing; D7 repeats this policy. A context-only alternative may simplify it but no stated receipt-availability promise is violated.\n\n## Unverified nits (spot-checked)\n\n- [FYI] D6. Setup and launch, interactive option grammar paragraph \u2014 D6 leaves the launch parser scope open-ended by requiring documented interactive options generally after declaring a restricted initial option set.\n  refute spot vote: REJECT; unverified at panel strength. D6 already limits launch to a tested initial subset and refuses unknown options. Tightening adjacent general wording is editorial, not a requirement for full CLI parity.\n\n## Escalations (need human)\n\n- none\n---\n",
+        "confirmedCount": 9,
+        "escalations": []
+      }
+    }
+  ]
+}

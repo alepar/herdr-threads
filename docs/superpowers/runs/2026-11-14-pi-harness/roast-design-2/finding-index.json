@@ -1,0 +1,9 @@
+[
+  {
+    "finding_id": "R2-F1",
+    "packet_index": 0,
+    "claim": "D4 conditions replay refill on resident displacement, leaving incoming excess bodies discarded without displacement without a specified recovery transition after capacity is released.",
+    "location": "D4, paragraph 2: \"discard excess bodies without settlement\" and \"if displacement occurred, replace the watch once\"; D4, first and second paragraphs: \"a better item displaces a worse unsubmitted item\", \"discard excess bodies\", and \"if displacement occurred, replace the watch once\"",
+    "default_route": "confirmed"
+  }
+]

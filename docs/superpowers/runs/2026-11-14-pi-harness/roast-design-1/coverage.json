@@ -1,0 +1,78 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "unknownLanes": [],
+  "domainsDropped": [],
+  "rawFindings": 32,
+  "dedupedFindings": 16,
+  "dedupeOrphans": 0,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 15,
+  "spotCount": 1,
+  "promotedCount": 0,
+  "judgeLost": 0,
+  "spotLost": 0,
+  "laneYield": {
+    "premortem": {
+      "found": 4,
+      "confirmed": 4,
+      "unique": 0,
+      "refuted": 0
+    },
+    "completeness": {
+      "found": 6,
+      "confirmed": 6,
+      "unique": 1,
+      "refuted": 0
+    },
+    "yagni": {
+      "found": 2,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 2
+    },
+    "failure-mode": {
+      "found": 3,
+      "confirmed": 1,
+      "unique": 0,
+      "refuted": 2
+    },
+    "feasibility": {
+      "found": 7,
+      "confirmed": 4,
+      "unique": 0,
+      "refuted": 3
+    },
+    "domain:agent-runtime-integration": {
+      "found": 4,
+      "confirmed": 2,
+      "unique": 0,
+      "refuted": 2
+    },
+    "domain:distributed-systems": {
+      "found": 3,
+      "confirmed": 3,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:identity-and-session-lifecycle": {
+      "found": 3,
+      "confirmed": 3,
+      "unique": 2,
+      "refuted": 0
+    }
+  },
+  "judgeCompletionPct": 100,
+  "lowCoverage": false,
+  "panelCappedTag": "",
+  "emptyLateRound": false,
+  "reviewReadiness": {
+    "coverage": "bounded",
+    "provenance": "available",
+    "basis": "Primary-source extracts and SDK fake-provider event traces; TUI and credentialed provider not exercised."
+  },
+  "convergenceEligible": false
+}

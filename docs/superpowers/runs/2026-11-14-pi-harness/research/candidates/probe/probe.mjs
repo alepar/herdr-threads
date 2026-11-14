@@ -1,0 +1,42 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, getAgentDir} from '@earendil-works/pi-coding-agent';
+import {createAssistantMessageEventStream} from '@earendil-works/pi-ai';
+const root=path.resolve(import.meta.dirname,'scratch');
+fs.mkdirSync(root,{recursive:true});
+process.env.HOME=path.join(root,'home');
+process.env.PI_CODING_AGENT_DIR=path.join(root,'agent');
+const cwd=path.join(root,'project'),agentDir=getAgentDir();
+fs.mkdirSync(cwd,{recursive:true});fs.mkdirSync(agentDir,{recursive:true});
+let pi,ctx,session,release;
+const ids=()=>session?.sessionManager.getBranch().filter(x=>x.type==='custom_message').map(x=>x.customType)??[];
+const log=(event,extra={})=>console.log(JSON.stringify({event,idle:session?.isIdle,streaming:session?.isStreaming,stored:ids(),...extra}));
+const settings=SettingsManager.inMemory({});
+const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager:settings,noContextFiles:true,noSkills:true,noThemes:true,noPromptTemplates:true,extensionFactories:[api=>{pi=api;for(const name of ['session_start','before_agent_start','agent_start','turn_end','agent_end','agent_settled','context','message_end'])api.on(name,(e,c)=>{ctx=c;log('extension:'+name,{contextIdle:c.isIdle(),role:e.message?.role,customType:e.message?.customType,...(name==='context'?{contextCustom:e.messages.filter(x=>x.role==='custom').map(x=>x.customType)}:{})});});}]});
+await loader.reload();
+({session}=await createAgentSession({cwd,agentDir,settingsManager:settings,resourceLoader:loader,sessionManager:SessionManager.create(cwd,path.join(root,'sessions')),tools:[],model:{id:'fake',name:'Fake',api:'openai-completions',provider:'probe',baseUrl:'http://invalid.local',reasoning:false,input:['text'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:10000,maxTokens:1000}}));
+// Fake provider preflight only; streamFunction below never reaches a provider.
+session.modelRuntime.hasConfiguredAuth=()=>true;
+await session.bindExtensions({mode:'json'});
+session.subscribe(e=>{if(['message_start','message_end','agent_end','agent_settled'].includes(e.type))log('session:'+e.type,{role:e.message?.role,customType:e.message?.customType});});
+session.agent.streamFunction=(model,context)=>{log('provider_context',{roles:context.messages.map(x=>x.role),customText:JSON.stringify(context.messages).includes('busy-no-trigger')});const stream=createAssistantMessageEventStream();release=()=>{const message={role:'assistant',content:[{type:'text',text:'fake'}],api:model.api,provider:model.provider,model:model.id,usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:'stop',timestamp:Date.now()};stream.push({type:'done',reason:'stop',message});};return stream;};
+const send=(id,options)=>{const ret=pi.sendMessage({customType:id,content:id,display:true},options);log('send_return',{id,returnType:typeof ret});};
+log('isolation',{agentDirIsolated:agentDir===process.env.PI_CODING_AGENT_DIR,sessionId:session.sessionManager.getSessionId(),sessionFileRelative:path.relative(root,session.sessionManager.getSessionFile()),argvShape:process.argv.slice(0,2).map(x=>path.basename(x)),envSessionKeys:Object.keys(process.env).filter(k=>/^PI_/.test(k))});
+send('idle-no-trigger',{triggerTurn:false});
+const run=session.prompt('start');
+while(!release)await new Promise(r=>setTimeout(r,5));
+send('busy-no-trigger',{triggerTurn:false});send('next-turn',{deliverAs:'nextTurn',triggerTurn:false});
+release();await run;
+log('after_first_run');
+const run2=session.prompt('next user');
+await new Promise(r=>setTimeout(r,20));release();await run2;log('after_second_run');
+release=undefined;
+const run3=session.prompt('steer test');while(!release)await new Promise(r=>setTimeout(r,5));
+const observedBusy=session.isStreaming;
+send('busy-steer',{deliverAs:'steer',triggerTurn:true});release();
+// The steering queue makes another fake provider call.
+await new Promise(r=>setTimeout(r,20));release();await run3;log('after_steer');
+// Simulate an asynchronous poll that saw busy but resumes after settlement.
+log('race_observation',{observedBusy});release=undefined;send('stale-busy-steer',{deliverAs:'steer',triggerTurn:true});
+while(!release)await new Promise(r=>setTimeout(r,5));release();await new Promise(r=>setTimeout(r,30));log('after_stale_steer');
+await session.dispose();

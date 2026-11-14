@@ -1,0 +1,87 @@
+[
+  {
+    "id": "001",
+    "role": "triage",
+    "response": {
+      "lanes": [],
+      "domains": [
+        "agent-runtime-integration",
+        "distributed-systems",
+        "identity-and-receipt-provenance"
+      ]
+    }
+  },
+  {
+    "id": "002",
+    "role": "scout:premortem",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "003",
+    "role": "scout:completeness",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "004",
+    "role": "scout:yagni",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "005",
+    "role": "scout:failure-mode",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "006",
+    "role": "scout:feasibility",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "007",
+    "role": "scout:regression",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "008",
+    "role": "scout:domain:agent-runtime-integration",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "009",
+    "role": "scout:domain:distributed-systems",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "010",
+    "role": "scout:domain:identity-and-receipt-provenance",
+    "response": {
+      "findings": []
+    }
+  },
+  {
+    "id": "011",
+    "role": "reporter",
+    "response": {
+      "verdict": "clean (0 nits) [low coverage] [review readiness incomplete]",
+      "reportMarkdown": "super-roast verdict: clean (0 nits) [low coverage] [review readiness incomplete]\nmode: design        iteration: 3 of 3\nprofile (assumed): Internal same-user cooperative agent messaging. Identity, receipt provenance, bounded delivery and priority-correct wake are core contracts. No production implementation; primary-source and credential-free SDK probes exist. TUI/live qualification remains deferred explicitly.\ninputs: pi-harness/design.md final revised design 2026-11-14\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 1 resolved \u00b7 0 regressed (0 Blocking) \u00b7 0 punch-listed (open)\ncoverage: scouts 9/9 (premortem, completeness, yagni, failure-mode, feasibility, regression, domain:agent-runtime-integration, domain:distributed-systems, domain:identity-and-receipt-provenance) \u00b7 raw 0 \u2192 deduped 0 \u2192 panel 0 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion n/a (no panels) \u00b7 remainder-capped: 0 \u00b7 review readiness: coverage bounded, provenance available \u2014 basis: \"Primary sources, supported research claims and real SDK boundary probes; TUI/live provider not yet qualified.\"\nindependence: same-family (OpenAI GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\n\nPrior R2 replay-refill finding: resolved by explicit source comparison, not by scout silence. docs/superpowers/runs/2026-11-14-pi-harness/roast-design-2/design-input.md:45 requires refill only \u201cif displacement occurred,\u201d leaving discarded incoming overflow without a recovery transition. docs/superpowers/runs/2026-11-14-pi-harness/roast-design-3/design-input.md:45 sets replay-needed for every eligible unretained body, explicitly including incoming discards and resident displacement; capacity release consumes it through canonical replay without relying on old-watch re-offers. The same paragraph preserves the flag on failure, re-arms it on further drops, and requires the exact no-displacement/exhausted-re-offers regression. This closes the missing healthy-path transition at design level. docs/superpowers/runs/2026-11-14-pi-harness/roast-design-2-dispositions.md:3 independently records the same repair and explicitly disclaims an implemented or passing regression test at line 5.\n\nAll nine scouts returned no candidates; no panel or spot check ran. This does not establish source completeness or runtime qualification. Source readiness remains bounded, TUI/live-provider qualification remains incomplete, and no convergence is claimed. Prior rejections below remain standing without reconsideration; the prior spot-checked editorial FYI is not a current-round spot finding.\n\n## Confirmed findings\n\n- none\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- D5 active-run interval; Open decisions before implementation; D5 positive active-run interval; Open decisions before implementation \u2014 Busy delivery relies on an unverified active-run interval across retry, tool, abort and compaction transitions, risking passive mail starting a new run.\n  reason: All seats reject. D5 expressly holds retry gaps, compaction and uncertainty, requires positive active-run evidence and fresh synchronous checks, and promises busy delivery where possible. D8 and Open decisions already require phase qualification before support is complete; no unsafe permitted transition is established.\n- D4 first, third and fourth paragraphs; D4: sendMessage is fire-and-forget; deduplicate in-flight records; clear local state only on admitted completion or explicit generation teardown \u2014 The in-flight submission state lacks a recovery rule distinguishing a lost fire-and-forget injection from a still-queued frame, risking permanently suppressed replay or duplicate reinjection.\n  reason: All seats reject. D4 deduplicates records, not every retry submission. D5 preserves unconsumed wake intent and permits local retries without upgrading passive priority. Pending receipts without evidence are accepted, and fire-and-forget alone does not establish silent loss before queuing. This does not refute the separately confirmed concrete reload-queue or capacity cases.\n- D1 final paragraph; D3 final paragraph \u2014 Recovery from failed check-in or a dead watch depends on a future Pi callback, leaving an otherwise idle session without a specified autonomous path back to receiving wakeable mail.\n  reason: All seats reject. D1 explicitly accepts no idle wake without a live channel; D3 retries at the next eligible callback, and D7 requires documenting no-channel behavior. Autonomous idle reconnection would strengthen the chosen contract.\n- D5 final paragraph; D1 channel-only wake \u2014 Channel-only idle wake remains contingent on unqualified behavior of TUI selectors and extension dialogs.\n  reason: All seats reject. D5 requires real-binary modal/draft qualification and keeps an interfering path disabled until a supported guard exists. D8 and Open decisions retain that gate. Rejection does not establish modal safety or completed qualification.\n- D4 admission predicate \u2014 The design leaves bounded current-branch receipt lookup unspecified despite requiring it on the model-context path.\n  reason: All seats reject. D4\u2013D5 bound delivery batches and pending content, not native history length or lookup CPU time. Current-branch matching already forbids stale cache evidence. No workload failure or violated lookup budget is demonstrated.\n- D4. Delivery, evidence and receipt timing, admission predicate and accepted-limit paragraphs \u2014 D4 makes current-branch storage matching an additional mandatory receipt dependency without stating what it proves beyond the already required exact-frame observation in the current session context.\n  reason: All seats reject. D4 expressly selects context-plus-current-branch admission and pending receipts when either observation is missing; D7 repeats this policy. A context-only alternative may simplify it but no stated receipt-availability promise is violated.\n\n## Unverified nits (spot-checked)\n\n- none\n\n## Escalations (need human)\n\n- none\n",
+      "confirmedCount": 0,
+      "escalations": []
+    }
+  }
+]

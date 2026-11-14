@@ -1,0 +1,88 @@
+---
+super-roast verdict: Blocking (9 confirmed) [low coverage] [review readiness incomplete]
+mode: design        iteration: 1 of 3
+profile (assumed): Internal same-user cooperative agent messaging. Identity, receipt provenance and priority-correct wake are core product contracts; there is no adversarial caller model. No production implementation exists yet.
+inputs: pi-harness/design.md research draft 2026-11-14
+coverage: scouts 8/8 (premortem, completeness, yagni, failure-mode, feasibility, domain:agent-runtime-integration, domain:distributed-systems, domain:identity-and-session-lifecycle) · raw 32 → deduped 16 → panel 15 · spot 1 · promoted 0 · judge completion 100% · remainder-capped: 0 · review readiness: coverage bounded, provenance available — basis: "Primary-source extracts and SDK fake-provider event traces; TUI and credentialed provider not exercised."
+independence: same-family (OpenAI GPT) — seat-differentiated panel · rung: manual fan-out
+seat-agreement: panels 15 · rr 0.73 · rg 0.73 · fg 1.00 · unanimous 0.73 · ground-loo 1.00 (n=11) · reproduce 5/10/0 · refute 9/6/0 · ground 9/6/0
+lane-yield (found/confirmed/unique/refuted): premortem 4/4/0/0 · completeness 6/6/1/0 · yagni 2/0/0/2 · failure-mode 3/1/0/2 · feasibility 7/4/0/3 · domain:agent-runtime-integration 4/2/0/2 · domain:distributed-systems 3/3/0/0 · domain:identity-and-session-lifecycle 3/3/2/0
+
+## Confirmed findings
+
+- [Blocking] D2, lines 21–27; D7, line 79; D2, lines 23–27; D2, final paragraph; D1 terminal-mode admission; D1 terminal-mode admission; D2 final paragraph and proposed environment contract — The admission contract lacks a positive top-level role witness that distinguishes a supported interactive TUI from an interactive child with its own valid session, PID and mode. [lanes: premortem, completeness, feasibility, domain:identity-and-session-lifecycle]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: All three seats: D2 requires a frozen role and forbids inferring top-level from missing evidence, but specifies only session, own PID and mode. An interactive child can supply all three. D7 excludes unknown children, while no positive admission rule lets the ordinary TUI establish its role.
+  fix-shape hint: Define the cooperative role assertion, its producer and the admission/refusal rule; document any indistinguishability limit.
+- [Blocking] D3, lines 31–35; D4, line 45; D5, lines 53–54; D3 first and final paragraphs; D5 state table; D3 shutdown/replacement fencing; D5 nextTurn staging; D3: shutdown/replacement fences the old execution; D4: clear local state on generation teardown; D5: idle passive nextTurn staging; D3 reload reconstruction and invalidation; D4 local deduplication; D5 nextTurn staging — Execution fencing does not define disposal or reconciliation of native queued bodies across replacement or reload, allowing stale or duplicate frames into successor contexts. [lanes: premortem, failure-mode, feasibility, domain:agent-runtime-integration, domain:distributed-systems]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: All three seats establish the concrete reload case. D3 invalidates old candidates and D4 permits clearing execution-local records, but D5 already transferred passive bodies to Pi. In the fetched upstream agent-session.ts, sendCustomMessage appends to _pendingNextTurnMessages (2335–2336), _prepareRun consumes that array (1923–1925), and reload (3592–3637) replaces the runtime without clearing it. Fresh watch replay can duplicate the surviving body, repeatedly defeating bounded delivery. This evidence establishes reload, not every new/resume/fork path.
+  source: https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts (fetched by all three seats).
+  fix-shape hint: Define native-queue reconciliation or filtering across reload and qualify passive staging → reload → replay → prompt.
+- [Blocking] D4, lines 39 and 45; D5, lines 53–56; D4 lines 39–45; D5 lines 53–56; D4 bounded batch and retained local state; D5 idle passive staging; D4, bounded batch and 'Clear local state only on admitted completion or explicit generation teardown'; D5 passive-idle staging — The bounded pending-delivery design lacks an aggregate capacity and saturation policy that preserves progress for urgent mail while passive or unsettled records occupy capacity. [lanes: premortem, completeness, feasibility, domain:distributed-systems]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: All three seats: D4 retains full bodies until context admission or teardown; D5 stages passive idle items without starting a run. A full retained batch therefore cannot complete while idle. Another admitted waking item requires either excess retention, displacement not allowed by the clearing rule, or a separate progress path. Per-page daemon limits provide none of these aggregate-capacity semantics.
+  fix-shape hint: Define aggregate item/byte capacity, release/replay behavior and an urgent-control path that progresses at capacity.
+- [Should-fix] D4 line 39; D5 lines 54 and 60; D4 sendMessage fire-and-forget; D5 daemon-admitted idle wake and retained wake intent — The body-stage/wake-submit sequence lacks failure observation and a bounded retry transition when an idle wake produces no subsequent context or settled callback. [lanes: completeness, domain:distributed-systems]
+  verdict: confirmed (reproduce REJECT / refute ✗-survived / ground ✓)
+  evidence: Refute and ground: D4:39 disclaims invocation as evidence; D5:54 stages a body and submits one wake, while D5:56,60 retains uncertain items and wake intent. No transition resolves an outstanding attempt when no start/context/settled callback arrives. D3:35 callback-driven check-in retry and D4:45 ACK retry do not define that transition. Reproduce rejects a stronger recovery guarantee; the majority addresses that distinction by identifying missing attempt semantics, without claiming Pi demonstrably loses ordinary submissions.
+  fix-shape hint: Define bounded outstanding-wake observation, refusal/recovery transitions and duplicate-start protection, or explicitly accept the no-progress limit.
+- [Blocking] D3 lines 31–35; D5 lines 53–58; D3 startup/reload; D5 positively settled idle rule — The idle state machine does not specify how a fresh or reloaded session becomes eligible for its first wake without a preceding agent_settled event. [lanes: completeness, feasibility]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: All three seats: D5:54,56,58 permits wake only at positively settled idle using agent_settled plus fresh isIdle, and retains uncertain state. D3:31–35 admits startup/reload but supplies no initial idle witness. A live admitted session can therefore remain unable to authorize its first wake before any run. This is an internal transition gap, not proof that Pi omits a startup callback.
+  fix-shape hint: Define startup/reload idle evidence or explicitly require and qualify an initialization settled event.
+- [Should-fix] D3 line 33; D4 lines 39–43 — The design does not define how startup and compact fixed guidance enters Pi context or which delivery provenance applies to that path. [lanes: completeness]
+  verdict: confirmed (reproduce REJECT / refute ✗-survived / ground ✓)
+  evidence: Refute and ground: D3:33 requires lifecycle hook plumbing and compact guidance; D4:39–43 and D7 define context-plus-current-branch receipts only for watch custom frames. No rule maps lifecycle-returned guidance into Pi context or routes any accompanying mail through the same predicate. Reproduce correctly notes that premature ACK is not authorized; the majority confirms the missing routing decision, not an observed premature ACK.
+  fix-shape hint: Specify guidance insertion and make lifecycle mail either watch-only or subject to the same explicit context receipt boundary.
+- [Should-fix] D2 environment markers; D3 first and second paragraphs — Shutdown cleanup specifies local fencing and watch termination but leaves daemon binding disconnection and removal of the exported ownership claims undefined. [lanes: domain:identity-and-session-lifecycle]
+  verdict: confirmed (reproduce REJECT / refute ✗-survived / ground ✓)
+  evidence: Refute and ground: D2 refreshes session/PID/mode markers; D3 maps startup/resume/clear and defines local teardown, but neither specifies owner-scoped marker withdrawal or daemon end/disconnect semantics when replacement admission fails. Reproduce notes that the native PID/session may remain valid. The majority addresses that distinction: the unresolved claim is integration ownership after disposal, not termination of the native process or proof that a particular reload triggers stale attribution.
+  fix-shape hint: Define daemon binding and owned-marker disposition on shutdown and failed replacement, including intentional continued native-session attribution if supported.
+- [Should-fix] D3 lifecycle handling; D4 current-branch predicate and context-version deduplication; D8 qualification list — Same-session tree navigation has no defined guidance-restoration or local delivery-state transition. [lanes: domain:identity-and-session-lifecycle]
+  verdict: confirmed (reproduce REJECT / refute ✗-survived / ground ✓)
+  evidence: Refute and ground: D3 has no same-session tree transition; D4 requires current-branch evidence and context-version deduplication but only specifies clearing on completion or teardown. The fetched extensions/types.ts defines session_tree with oldLeafId/newLeafId separately from shutdown; agent-session.ts installs selected context before emitting it. Required guidance and retained pending observations need a branch-transition contract. Reproduce correctly notes that D4 already prevents ACKs from absent entries; the majority does not claim false receipts or require undoing valid receipts.
+  sources: https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/extensions/types.ts; https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts (fetched by the judging seats).
+  fix-shape hint: Define branch/context-version invalidation, pending-frame reconciliation and guidance restoration while preserving valid prior receipts.
+- [Should-fix] D4, line 45; D5, lines 53–54; D4 line 45; D5 idle rows, lines 53–54; D4: daemon ordering; D5: idle passive and daemon-admitted waking rows — Per-page daemon ordering does not preserve priority, deadline and age order across passive bodies already staged in the native queue and later waking batches. [lanes: premortem, completeness, domain:agent-runtime-integration]
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: All three seats: D4 delegates ordering to watch, while D5 immediately stages passive bodies then later waking bodies. Upstream agent-session.ts sendCustomMessage (2335–2336) appends nextTurn messages and _prepareRun (1923–1925) preserves their order. A p3 staged at T=0 before a later p0 is presented first although both await D4 admission. This violates the incorporated AGENTS.md pending-item order; wake eligibility and receipt honesty can remain correct.
+  source: https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/agent-session.ts (fetched by all three seats).
+  fix-shape hint: Define admission-time ordering over the outstanding union, or explicitly amend the ordering contract.
+
+## Not verified (beyond panel cap)
+
+- none
+
+## Not verified (dedupe failed or judge lost)
+
+- none
+
+## Beyond remainder cap (count only)
+
+- none
+
+## Rejected (with reason)
+
+- D5 active-run interval; Open decisions before implementation; D5 positive active-run interval; Open decisions before implementation — Busy delivery relies on an unverified active-run interval across retry, tool, abort and compaction transitions, risking passive mail starting a new run.
+  reason: All seats reject. D5 expressly holds retry gaps, compaction and uncertainty, requires positive active-run evidence and fresh synchronous checks, and promises busy delivery where possible. D8 and Open decisions already require phase qualification before support is complete; no unsafe permitted transition is established.
+- D4 first, third and fourth paragraphs; D4: sendMessage is fire-and-forget; deduplicate in-flight records; clear local state only on admitted completion or explicit generation teardown — The in-flight submission state lacks a recovery rule distinguishing a lost fire-and-forget injection from a still-queued frame, risking permanently suppressed replay or duplicate reinjection.
+  reason: All seats reject. D4 deduplicates records, not every retry submission. D5 preserves unconsumed wake intent and permits local retries without upgrading passive priority. Pending receipts without evidence are accepted, and fire-and-forget alone does not establish silent loss before queuing. This does not refute the separately confirmed concrete reload-queue or capacity cases.
+- D1 final paragraph; D3 final paragraph — Recovery from failed check-in or a dead watch depends on a future Pi callback, leaving an otherwise idle session without a specified autonomous path back to receiving wakeable mail.
+  reason: All seats reject. D1 explicitly accepts no idle wake without a live channel; D3 retries at the next eligible callback, and D7 requires documenting no-channel behavior. Autonomous idle reconnection would strengthen the chosen contract.
+- D5 final paragraph; D1 channel-only wake — Channel-only idle wake remains contingent on unqualified behavior of TUI selectors and extension dialogs.
+  reason: All seats reject. D5 requires real-binary modal/draft qualification and keeps an interfering path disabled until a supported guard exists. D8 and Open decisions retain that gate. Rejection does not establish modal safety or completed qualification.
+- D4 admission predicate — The design leaves bounded current-branch receipt lookup unspecified despite requiring it on the model-context path.
+  reason: All seats reject. D4–D5 bound delivery batches and pending content, not native history length or lookup CPU time. Current-branch matching already forbids stale cache evidence. No workload failure or violated lookup budget is demonstrated.
+- D4. Delivery, evidence and receipt timing, admission predicate and accepted-limit paragraphs — D4 makes current-branch storage matching an additional mandatory receipt dependency without stating what it proves beyond the already required exact-frame observation in the current session context.
+  reason: All seats reject. D4 expressly selects context-plus-current-branch admission and pending receipts when either observation is missing; D7 repeats this policy. A context-only alternative may simplify it but no stated receipt-availability promise is violated.
+
+## Unverified nits (spot-checked)
+
+- [FYI] D6. Setup and launch, interactive option grammar paragraph — D6 leaves the launch parser scope open-ended by requiring documented interactive options generally after declaring a restricted initial option set.
+  refute spot vote: REJECT; unverified at panel strength. D6 already limits launch to a tested initial subset and refuses unknown options. Tightening adjacent general wording is editorial, not a requirement for full CLI parity.
+
+## Escalations (need human)
+
+- none
+---

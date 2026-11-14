@@ -1,0 +1,84 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 9,
+  "scoutsDead": 0,
+  "unknownLanes": [],
+  "domainsDropped": [],
+  "rawFindings": 2,
+  "dedupedFindings": 1,
+  "dedupeOrphans": 0,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 1,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeLost": 0,
+  "spotLost": 0,
+  "laneYield": {
+    "premortem": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "completeness": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "yagni": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "failure-mode": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "feasibility": {
+      "found": 1,
+      "confirmed": 1,
+      "unique": 0,
+      "refuted": 0
+    },
+    "regression": {
+      "found": 1,
+      "confirmed": 1,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:distributed-systems": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:agent-runtime-integration": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:process-identity-and-lifecycle": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    }
+  },
+  "judgeCompletionPct": 100,
+  "lowCoverage": false,
+  "panelCappedTag": "",
+  "emptyLateRound": false,
+  "reviewReadiness": {
+    "coverage": "bounded",
+    "provenance": "available",
+    "basis": "Primary-source extracts, supported research claims and real SDK nine-case boundary probe; TUI/live-provider qualification not yet performed."
+  },
+  "convergenceEligible": false
+}

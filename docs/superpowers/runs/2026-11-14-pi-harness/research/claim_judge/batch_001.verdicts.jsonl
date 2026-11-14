@@ -1,0 +1,12 @@
+{"claim_id": "4fa5988ac40166ea", "digest": "aaf615edc2602e4c", "verdict": "supported", "reason": "The locations and project trust condition are explicitly stated.", "model": "gpt-6.1-terra"}
+{"claim_id": "5c6aa01d5870ed7c", "digest": "0e586f0551df4654", "verdict": "supported", "reason": "The replacement lifecycle and five start reasons are stated.", "model": "gpt-6.1-terra"}
+{"claim_id": "07f8977db1b6819b", "digest": "1b382837078001f3", "verdict": "supported", "reason": "The signature specifies void and all three delivery options.", "model": "gpt-6.1-terra"}
+{"claim_id": "a817ed31c86c1869", "digest": "8484dfc005ac7de1", "verdict": "partial", "reason": "Streaming messages use followUp when requested and nextTurn takes precedence; steering is not unconditional.", "model": "gpt-6.1-terra"}
+{"claim_id": "d061b5e3a0649487", "digest": "fcfc849e65caa716", "verdict": "partial", "reason": "Those paths apply except when deliverAs is nextTurn, which takes precedence and queues separately.", "model": "gpt-6.1-terra"}
+{"claim_id": "64aa49262ee29d4c", "digest": "09269e96b2444947", "verdict": "supported", "reason": "The lifecycle documentation explicitly makes this distinction.", "model": "gpt-6.1-terra"}
+{"claim_id": "97765e86902d54fd", "digest": "54fce779ff853a6c", "verdict": "supported", "reason": "The idle getter excludes both an active run and compaction.", "model": "gpt-6.1-terra"}
+{"claim_id": "f77822bbad775d44", "digest": "2790a4e8c7c05f25", "verdict": "supported", "reason": "The cited code orders extension events before insertion and context transformation before conversion.", "model": "gpt-6.1-terra"}
+{"claim_id": "f0eb1c5f9fd0a72a", "digest": "0f51d707c9e17ce8", "verdict": "supported", "reason": "Persistence returns before flushing when conversation content is absent.", "model": "gpt-6.1-terra"}
+{"claim_id": "f4b2f9c2ebb7f90a", "digest": "85b7375c5f7c4950", "verdict": "supported", "reason": "The context type and hasUI comment state these modes and behavior.", "model": "gpt-6.1-terra"}
+{"claim_id": "d032cb7bc207af4c", "digest": "69939397d6f702b2", "verdict": "partial", "reason": "The assignment is shown, but the excerpt does not identify what metadata \u201cThey\u201d refers to or establish its scope.", "model": "gpt-6.1-terra"}
+{"claim_id": "bf04ec3ddfda1b52", "digest": "5f0e51d5893dcc9a", "verdict": "partial", "reason": "Assignments and ID generation are shown, but the excerpts do not establish their connection to resume and fork.", "model": "gpt-6.1-terra"}
