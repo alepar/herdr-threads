@@ -57,6 +57,7 @@ function harness(opts = {}) {
     calls: [], // ordered: append / wake
     toasts: [],
     ledger: [],
+    timers: [], // io.after(ms) promises, fired by h.expire()
     statusMap: {}, // client.session.status(): non-idle sessions only
     sessions: {}, // client.session.get data by id
     seq: 0,
@@ -74,7 +75,7 @@ function harness(opts = {}) {
     get: async ({ path: { id } }) => (h.sessions[id] ? { data: h.sessions[id] } : { error: { name: 'NotFoundError' } }),
     prompt: async ({ path, body }) => {
       const id = nextMsg()
-      h.calls.push({ kind: 'append', sid: path.id, text: body.parts[0].text, body })
+      h.calls.push({ kind: 'append', sid: path.id, text: body.parts[0].text, body, id })
       // opencode fires chat.message for the stored message before the call returns (probe).
       await h.core.onChatMessage({ sessionID: path.id }, { message: { id, role: 'user' }, parts: body.parts.map((p) => ({ ...p })) })
       if (h.appendResult) return h.appendResult(body)
@@ -90,6 +91,7 @@ function harness(opts = {}) {
   h.client = { session, tui: { showToast: async ({ body }) => (h.toasts.push(body), { data: true }) } }
   h.io = {
     now: () => h.t,
+    after: (ms) => new Promise((fire) => h.timers.push({ ms, fire })),
     pid: 4242,
     env: { PATH: '/bin', OPENCODE_PID: '4242', ...(opts.env || {}) },
     argv: opts.argv ?? null,
@@ -116,6 +118,13 @@ function harness(opts = {}) {
     return p.source ? `${p.event}:${p.source}` : p.event
   })
   h.acks = () => h.runs.filter((r) => r.argv.includes('ack'))
+  /** Every bounded SDK call pending now runs out of time. */
+  h.expire = async () => {
+    for (const t of h.timers.splice(0)) t.fire()
+    await flush()
+  }
+  /** A model step of `sid` whose message list ended with user message `parentID`. */
+  h.step = (sid, parentID) => h.event('message.updated', { info: { id: h.nextMsg(), role: 'assistant', sessionID: sid, parentID } })
   h.appends = () => h.calls.filter((c) => c.kind === 'append')
   h.wakes = () => h.calls.filter((c) => c.kind === 'wake')
   h.watch = () => h.spawns[h.spawns.length - 1]
@@ -468,8 +477,8 @@ test('busy session: a waking item is appended, never woken while busy', async ()
   await h.line(waking('m1'))
   assert.deepEqual(h.calls.map((c) => c.kind), ['append'])
   assert.ok(h.core.snapshot().wakePending)
-  // the turn's next model step starts after the append: that turn reads it
-  await h.event('message.updated', { info: { id: h.nextMsg(), role: 'assistant', sessionID: A } })
+  // the turn's next model step read the append (its newest user message): that turn reads it
+  await h.step(A, h.appends()[0].id)
   assert.equal(h.core.snapshot().wakePending, null)
   h.statusMap = {}
   await h.idle(A)
@@ -480,10 +489,64 @@ test('a step that began before the append does not clear the wake-pending mark',
   const h = await harness().boot(A)
   await h.busy(A)
   h.statusMap = { [A]: { type: 'busy' } }
+  const userMsg = h.nextMsg()
   const earlier = h.nextMsg()
   await h.line(waking('m1'))
-  await h.event('message.updated', { info: { id: earlier, role: 'assistant', sessionID: A } })
+  await h.event('message.updated', { info: { id: earlier, role: 'assistant', sessionID: A, parentID: userMsg } })
   assert.ok(h.core.snapshot().wakePending)
+})
+
+test('E1: a step created after the append from a message list read before it still owes the wake', async () => {
+  const h = await harness().boot(A)
+  await h.busy(A)
+  h.statusMap = { [A]: { type: 'busy' } }
+  const userMsg = h.nextMsg() // the newest user message when the step read its list
+  await h.line(waking('m1'))
+  // opencode created the step's assistant message after the append was stored (a later id), but
+  // its parent is the older user message: the step's context lacks the append
+  await h.step(A, userMsg)
+  assert.ok(h.core.snapshot().wakePending)
+  // the loop then ends (its last assistant is newer than every user message): the wake goes out
+  h.statusMap = {}
+  await h.idle(A)
+  assert.deepEqual(h.calls.map((c) => c.kind), ['append', 'wake'])
+  // an assistant message without a parent proves nothing either
+  const h2 = await harness().boot(A)
+  await h2.busy(A)
+  h2.statusMap = { [A]: { type: 'busy' } }
+  await h2.line(waking('m1'))
+  await h2.event('message.updated', { info: { id: h2.nextMsg(), role: 'assistant', sessionID: A } })
+  assert.ok(h2.core.snapshot().wakePending)
+})
+
+test('E2: a user message whose turn has not started keeps the session busy against a status read', async () => {
+  const h = await harness().boot(A)
+  let release
+  h.hookReply = (event) => (event === 'UserPromptSubmit'
+    ? new Promise((r) => { release = () => r({ code: 0, stdout: '' }) })
+    : { code: 0, stdout: CHECKIN })
+  const output = { message: { id: h.nextMsg(), role: 'user' }, parts: [{ type: 'text', text: 'hi' }] }
+  const turn = h.core.onChatMessage({ sessionID: A, agent: 'build' }, output)
+  await flush()
+  // the server has not started the turn yet, so its status map says idle
+  h.statusMap = {}
+  await h.line(waking('m1'))
+  assert.deepEqual(h.calls.map((c) => c.kind), ['append'])
+  release()
+  await turn
+  // the turn starts and its first step reads the append: no wake is owed
+  await h.busy(A)
+  await h.step(A, h.appends()[0].id)
+  await h.idle(A)
+  assert.deepEqual(h.calls.map((c) => c.kind), ['append'])
+  // with no status event at all the mark expires and the status read decides again
+  const h2 = await harness().boot(A)
+  h2.hookReply = () => ({ code: 0, stdout: '' })
+  await h2.turn(A)
+  h2.t += 18_000
+  h2.statusMap = {}
+  await h2.line(waking('m2'))
+  assert.deepEqual(h2.calls.map((c) => c.kind), ['append', 'wake'])
 })
 
 test('idle session with a waking item: append, then the content-free wake', async () => {
@@ -687,6 +750,77 @@ test('promptAsync gone after the channel started: the channel stops at the first
   assert.equal(h.core.snapshot().channelless, true)
   assert.deepEqual(h.core.snapshot().degraded, ['wake'])
   assert.equal(h.watch().stopped, true)
+})
+
+// ---- E3: bounded SDK calls ----------------------------------------------------------------------
+
+const hang = () => new Promise(() => {})
+
+test('a hung append times out into the failed-append path and is offered again', async () => {
+  const h = await harness().boot(A)
+  const prompt = h.client.session.prompt
+  h.client.session.prompt = hang
+  await h.line(msg('m1', { ack_required: true }))
+  assert.equal(h.acks().length, 0)
+  await h.expire()
+  assert.ok(h.ledger.some((e) => e.reason === 'append:timeout'))
+  assert.deepEqual(h.core.snapshot().queue, ['m1'])
+  h.client.session.prompt = prompt
+  h.t += 30_000
+  await h.core.onTick()
+  await flush()
+  assert.equal(h.appends().length, 1)
+  assert.equal(h.acks().length, 1)
+})
+
+test('a hung wake times out, keeps the wake pending and retries after the backoff', async () => {
+  const h = await harness().boot(A)
+  const promptAsync = h.client.session.promptAsync
+  let hung = 0
+  h.client.session.promptAsync = () => (hung++, hang())
+  await h.line(waking('m1'))
+  assert.equal(hung, 1)
+  await h.expire()
+  assert.ok(h.core.snapshot().wakePending)
+  assert.ok(h.ledger.some((e) => e.reason === 'wake_drop:timeout'))
+  // if the timed-out wake does start its turn later, that turn is still recognised as the plugin's
+  await h.core.onChatMessage({ sessionID: A }, { message: { id: h.nextMsg() }, parts: [{ type: 'text', text: WAKE }] })
+  assert.deepEqual(h.hookEvents(), ['SessionStart:startup', 'UserPromptSubmit'])
+  await h.idle(A)
+  h.client.session.promptAsync = promptAsync
+  h.t += 30_000
+  await h.core.onTick()
+  assert.equal(h.wakes().length, 1)
+})
+
+test('a hung session.get never blocks a turn or a shell call', async () => {
+  const h = harness()
+  h.client.session.get = hang
+  const output = { message: { id: h.nextMsg(), role: 'user' }, parts: [{ type: 'text', text: 'hi' }] }
+  const turn = h.core.onChatMessage({ sessionID: A, agent: 'build' }, output)
+  const env = { env: {} }
+  const shell = h.core.onShellEnv({ sessionID: A }, env)
+  await h.expire()
+  await turn
+  await shell
+  // the role is unknown: no hook this turn, retried next message; the shell gets parent '?'
+  assert.equal(h.hooks().length, 0)
+  assert.equal(output.parts.length, 1)
+  assert.equal(env.env.HERDR_THREADS_OPENCODE_PARENT, '?')
+  assert.equal(env.env.HERDR_THREADS_OPENCODE_SESSION, A)
+  h.client.session.get = async () => ({ data: { id: A } })
+  await h.turn(A)
+  assert.deepEqual(h.hookEvents(), ['SessionStart:resume'])
+})
+
+test('a hung status read leaves the local status alone', async () => {
+  const h = await harness().boot(A)
+  await h.busy(A)
+  h.client.session.status = hang
+  await h.line(waking('m1'))
+  await h.expire()
+  assert.deepEqual(h.calls.map((c) => c.kind), ['append'])
+  assert.ok(h.core.snapshot().wakePending)
 })
 
 test('after /new the previous session stays bound and is still the wake target', async () => {

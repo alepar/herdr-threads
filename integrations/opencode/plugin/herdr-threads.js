@@ -53,6 +53,15 @@ const APPEND_MARK_GRACE_MS = 5000
 const WAKE_MARK_GRACE_MS = 30000
 // After a wake was accepted the session counts as busy until its next status event, or this long.
 const WAKE_SETTLE_MS = 10000
+// Bounds on opencode SDK calls (the in-process client never times out by itself): a call past
+// its bound is a failure and takes the call's existing retry or fallback path.
+const SDK_WRITE_TIMEOUT_MS = 15000 // session.prompt (append), session.promptAsync (wake)
+const SDK_READ_TIMEOUT_MS = 5000 // session.status, session.get
+// A timed-out append or wake may still be stored later: its mark lasts this long.
+const LATE_MARK_MS = 600000
+// A top-level user message counts as a turn about to start until its first status event, or this
+// long (its turn hook can take HOOK_TIMEOUT_MS before opencode starts the turn).
+const TURN_START_MS = 18000
 const APPEND_MAX_ITEMS = 32
 const APPEND_MAX_BYTES = 64 * 1024
 
@@ -180,7 +189,7 @@ function grantPermissions(cfg) {
 /**
  * io: { now(), pid, env, argv|null, directory, client, run(argv, {stdin, env, timeoutMs}) ->
  * Promise<{code, stdout}>, spawn(argv, {env}, {line, exit}) -> {stop()}, ledger(entry),
- * heartbeat(record) }.
+ * heartbeat(record), after(ms) -> Promise (resolves once ms have passed) }.
  */
 function createCore(io) {
   const S = {
@@ -189,6 +198,7 @@ function createCore(io) {
     titles: new Map(),
     created: new Set(), // sessions created in this process (session.created seen)
     status: new Map(), // sid -> idle | busy | retry
+    turnStart: null, // { sid, until }: a user message whose turn has not reported a status yet
     asks: new Map(), // sid -> Set of pending permission/question ids
     children: new Set(), // child sessions that got their SubagentStart
     everBound: new Set(),
@@ -226,6 +236,13 @@ function createCore(io) {
   }
 
   const cmd = (...rest) => [...(io.argv || ['herdr-threads']), ...rest]
+  const TIMEOUT = Symbol('timeout')
+  const after = io.after || ((ms) => new Promise((resolve) => {
+    const t = setTimeout(resolve, ms)
+    t.unref?.()
+  }))
+  /** `promise`, or TIMEOUT once `ms` have passed. */
+  const bounded = (promise, ms) => Promise.race([promise, after(ms).then(() => TIMEOUT)])
   const client = () => io.client || {}
   const hasFn = (obj, name) => !!obj && typeof obj[name] === 'function'
   const sessionApi = () => client().session
@@ -258,7 +275,8 @@ function createCore(io) {
     if (S.parents.has(sid)) return S.parents.get(sid)
     const api = sessionApi()
     if (!hasFn(api, 'get')) throw new Error('session.get missing')
-    const r = await api.get({ path: { id: sid } })
+    const r = await bounded(api.get({ path: { id: sid } }), SDK_READ_TIMEOUT_MS)
+    if (r === TIMEOUT) throw new Error('session.get timed out')
     if (!r || r.error || !r.data || typeof r.data !== 'object') throw new Error('session.get failed')
     const p = typeof r.data.parentID === 'string' && r.data.parentID ? r.data.parentID : null
     S.parents.set(sid, p)
@@ -375,6 +393,7 @@ function createCore(io) {
       return
     }
     S.status.set(sid, 'busy')
+    S.turnStart = { sid, until: io.now() + TURN_START_MS }
     const bound = S.bound && S.bound.sid === sid
     // A wake prompt runs the bound session's turn hook and is never a lifecycle trigger.
     if ((bound && S.bound.ok) || (mark && mark.kind === 'wake')) {
@@ -738,8 +757,16 @@ function createCore(io) {
     const api = sessionApi()
     if (!hasFn(api, 'prompt')) return { missing: true }
     const mark = addMark(sid, text, 'append')
+    let late = false
     try {
-      const r = await api.prompt({ path: { id: sid }, body: { noReply: true, parts: [{ type: 'text', text, synthetic: true }] } })
+      const r = await bounded(
+        api.prompt({ path: { id: sid }, body: { noReply: true, parts: [{ type: 'text', text, synthetic: true }] } }),
+        SDK_WRITE_TIMEOUT_MS,
+      )
+      if (r === TIMEOUT) {
+        late = true
+        return { error: 'timeout' }
+      }
       if (!r || r.error) return { error: String(r?.error?.name ?? r?.error ?? 'no result') }
       const id = r.data?.info?.id
       if (typeof id !== 'string' || !ROW_ID.test(id)) return { noId: true }
@@ -749,7 +776,7 @@ function createCore(io) {
     } catch (err) {
       return { error: String(err) }
     } finally {
-      mark.until = io.now() + APPEND_MARK_GRACE_MS
+      mark.until = io.now() + (late ? LATE_MARK_MS : APPEND_MARK_GRACE_MS)
     }
   }
 
@@ -771,11 +798,14 @@ function createCore(io) {
     const api = sessionApi()
     if (!hasFn(api, 'status')) return
     try {
-      const r = await api.status()
-      if (r && !r.error && r.data && typeof r.data === 'object') {
+      const r = await bounded(api.status(), SDK_READ_TIMEOUT_MS)
+      if (r !== TIMEOUT && r && !r.error && r.data && typeof r.data === 'object') {
         // The map lists only non-idle sessions.
         const st = r.data[sid]
-        S.status.set(sid, st && typeof st.type === 'string' ? st.type : 'idle')
+        const type = st && typeof st.type === 'string' ? st.type : 'idle'
+        // A user message whose turn has not started yet reads idle on the server: keep it busy.
+        const starting = S.turnStart && S.turnStart.sid === sid && io.now() < S.turnStart.until
+        if (type !== 'idle' || !starting) S.status.set(sid, type)
       }
     } catch {}
   }
@@ -841,15 +871,18 @@ function createCore(io) {
     S.pluginTurn = w.sid
     let r
     try {
-      r = await api.promptAsync({ path: { id: w.sid }, body: { parts: [{ type: 'text', text: WAKE_PROMPT }] } })
+      r = await bounded(api.promptAsync({ path: { id: w.sid }, body: { parts: [{ type: 'text', text: WAKE_PROMPT }] } }), SDK_WRITE_TIMEOUT_MS)
     } catch (err) {
       r = { error: String(err) }
     }
-    mark.until = io.now() + WAKE_MARK_GRACE_MS
+    const late = r === TIMEOUT
+    if (late) r = { error: 'timeout' }
+    mark.until = io.now() + (late ? LATE_MARK_MS : WAKE_MARK_GRACE_MS)
     if (S.disposed || gen !== S.gen) return
     S.wakeInflight = false
     if (!r || r.error) {
-      S.marks = S.marks.filter((m) => m !== mark)
+      // A timed-out wake may still start its turn: its mark stays, so that turn is still ours.
+      if (!late) S.marks = S.marks.filter((m) => m !== mark)
       S.pluginTurn = null
       S.wakeBackoffUntil = io.now() + DROP_BACKOFF_MS
       ledger('refused', { via: 'submit', reason: `wake_drop:${String(r?.error?.name ?? r?.error ?? 'no result')}` })
@@ -906,6 +939,7 @@ function createCore(io) {
         const type = event.type === 'session.idle' ? 'idle' : p.status?.type
         if (typeof type !== 'string') return
         S.status.set(sid, type)
+        if (S.turnStart && S.turnStart.sid === sid) S.turnStart = null
         if (S.wakeSettling && S.wakeSettling.sid === sid) S.wakeSettling = null
         if (type === 'idle') {
           if (S.pluginTurn === sid) S.pluginTurn = null
@@ -921,9 +955,11 @@ function createCore(io) {
       case 'message.updated': {
         const info = p.info
         const w = S.wakePending
-        // A model step started after the append: that turn reads it, so no wake is owed.
+        // A model step whose message list held the append: that step reads it, so no wake is owed.
+        // opencode reads the list, then creates the step's assistant message with `parentID` the
+        // newest user message read, so a step id after the append proves nothing; its parent does.
         if (w && info && info.role === 'assistant' && info.sessionID === w.sid
-            && typeof info.id === 'string' && info.id > w.after) S.wakePending = null
+            && typeof info.parentID === 'string' && info.parentID >= w.after) S.wakePending = null
         return
       }
       case 'permission.asked':
@@ -1017,6 +1053,10 @@ const DEFAULT_SYS = {
     const t = setInterval(fn, ms)
     return () => clearInterval(t)
   },
+  after: (ms) => new Promise((resolve) => {
+    const t = setTimeout(resolve, ms)
+    t.unref?.()
+  }),
   guard: globalThis,
 }
 
@@ -1029,6 +1069,7 @@ function buildIo(input, sys, argv, heartbeatPath) {
   let heartbeatBase = null
   const io = {
     now: sys.now,
+    after: sys.after,
     pid: sys.pid(),
     env,
     argv,
