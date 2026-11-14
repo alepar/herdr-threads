@@ -43,6 +43,9 @@ const BIN_ENV: &str = "HT_OPENCODE_BIN";
 const NETNS_ENV: &str = "HT_OPENCODE_GATE_NETNS";
 const WAKE_UP: &str = "herdr-threads: wake up";
 const SEAT_NAME: &str = "oc-gate";
+/// A non-default primary agent; its prompt marks every model call it runs.
+const AGENT: &str = "gatekeeper";
+const AGENT_PROMPT: &str = "GATE-AGENT-PROMPT: you are the gatekeeper agent.";
 
 // ------------------------------------------------------------------ the scripted model
 
@@ -342,6 +345,14 @@ impl Opencode {
         )
     }
 
+    /// The stored messages of `session` (`{info, parts}` each), oldest first.
+    fn messages(&self, session: &str) -> Vec<Value> {
+        self.get(&format!("/session/{session}/message"))
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Whether no session of this process is busy (`/session/status` lists only busy ones).
     fn all_idle(&self) -> bool {
         self.get("/session/status")
@@ -566,6 +577,7 @@ fn opencode_native_gate() {
                 "options": {"baseURL": format!("http://127.0.0.1:{}/v1", model.port), "apiKey": "none"},
                 "models": {"mock-1": {"name": "Mock 1", "tool_call": true}},
             }},
+            "agent": {AGENT: {"mode": "primary", "prompt": AGENT_PROMPT}},
         })
         .to_string(),
     )
@@ -817,6 +829,127 @@ fn opencode_native_gate() {
     });
 
     step("wake checked");
+    // 5b. A non-default agent (a `--agent` launch, or Tab in the TUI) is kept by the plugin's own
+    //    messages: opencode runs each step with the newest user message's agent, and a message
+    //    without one gets the default agent. A turn with the agent, a p1 appended mid-turn (the
+    //    step after it reads the append), then a p0 woken on idle.
+    let plain = |text: &str| json!({"agent": AGENT, "parts": [{"type": "text", "text": text}]});
+    let calls = model.agent_requests().len();
+    let (port, query) = (opencode.port, opencode.query());
+    let busy_turn = {
+        let body = plain("RUNBASH: sleep 6");
+        let session = session.clone();
+        std::thread::spawn(move || {
+            http(
+                port,
+                "POST",
+                &format!("/session/{session}/message?{query}"),
+                Some(&body),
+            )
+        })
+    };
+    wait_for("the agent's tool call", Duration::from_secs(30), || {
+        if model.agent_requests().len() > calls {
+            Ok(())
+        } else {
+            Err("no model call yet".to_owned())
+        }
+    });
+    let sent = rig.agent(
+        "alice",
+        "s-alice",
+        &["send", "--seat", &seat, "--body", "MIDTURN-FIG"],
+    );
+    assert_eq!(sent.code, Some(0), "{sent:?}");
+    let midturn = sent_message(&sent);
+    wait_for("the mid-turn append", Duration::from_secs(5), || {
+        if delivered(&ledger_file, &midturn) {
+            Ok(())
+        } else {
+            Err(read(&ledger_file))
+        }
+    });
+    let (status, text) = busy_turn.join().expect("the busy turn");
+    assert_eq!(status, 200, "{text}");
+    let after_append = model
+        .agent_requests()
+        .into_iter()
+        .skip(calls)
+        .find(|body| context_of(body).contains("MIDTURN-FIG"))
+        .expect("a step read the mid-turn append");
+    assert!(
+        context_of(&after_append).contains(AGENT_PROMPT),
+        "the step after the append runs as {AGENT}"
+    );
+    let calls = model.agent_requests().len();
+    let sent = rig.agent(
+        "alice",
+        "s-alice",
+        &["send", "--seat", &seat, "--nudge", "--body", "WAKE-PLUM"],
+    );
+    assert_eq!(sent.code, Some(0), "{sent:?}");
+    let woken = wait_for("the wake turn as the agent", Duration::from_secs(60), || {
+        model
+            .agent_requests()
+            .iter()
+            .skip(calls)
+            .find(|body| last_text(body).starts_with(WAKE_UP))
+            .cloned()
+            .ok_or_else(|| read(&ledger_file))
+    });
+    assert!(context_of(&woken).contains("WAKE-PLUM"));
+    assert!(
+        context_of(&woken).contains(AGENT_PROMPT),
+        "the plugin-started wake turn runs as {AGENT}"
+    );
+    wait_for("the agent's wake turn finished", Duration::from_secs(60), || {
+        if opencode.all_idle() {
+            Ok(())
+        } else {
+            Err("busy".to_owned())
+        }
+    });
+    // The stored messages say the same: the append, the wake prompt and every step after them
+    // carry the agent.
+    let stored = opencode.messages(&session);
+    let text_of_parts = |m: &Value| {
+        m["parts"]
+            .as_array()
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|p| p["text"].as_str())
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
+    };
+    let user_with = |needle: &str| {
+        stored
+            .iter()
+            .find(|m| m["info"]["role"] == "user" && text_of_parts(m).contains(needle))
+            .unwrap_or_else(|| panic!("a stored user message with {needle}"))
+    };
+    for needle in ["MIDTURN-FIG", WAKE_UP, "WAKE-PLUM"] {
+        let message = if needle == WAKE_UP {
+            stored
+                .iter()
+                .rev()
+                .find(|m| m["info"]["role"] == "user" && text_of_parts(m).starts_with(WAKE_UP))
+                .expect("the stored wake prompt")
+        } else {
+            user_with(needle)
+        };
+        assert_eq!(message["info"]["agent"], AGENT, "{needle}: {}", message["info"]);
+        let id = message["info"]["id"].as_str().unwrap();
+        for step in stored
+            .iter()
+            .filter(|m| m["info"]["role"] == "assistant" && m["info"]["parentID"] == id)
+        {
+            assert_eq!(step["info"]["agent"], AGENT, "{needle} step: {}", step["info"]);
+        }
+    }
+    println!("evidence: {AGENT} kept on the mid-turn step and the wake turn");
+
     // 6. A subagent (task tool): its shell call claims a read-only child, its write is refused.
     let calls = model.agent_requests().len();
     opencode.prompt(

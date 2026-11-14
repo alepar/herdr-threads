@@ -205,6 +205,10 @@ function createCore(io) {
     bound: null, // { sid, ok }: the top-level session whose last lifecycle check-in succeeded
     marks: [], // own in-flight messages: { sid, text, kind, until }
     ownIds: new Set(),
+    // sid -> the agent, model and variant of its newest real top-level user message: opencode runs
+    // each step with the newest user message's agent and model, and a message without them gets the
+    // default agent, so every append and wake repeats them
+    prompts: new Map(),
     hookChain: Promise.resolve(),
     // the channel
     chanSid: null,
@@ -295,6 +299,26 @@ function createCore(io) {
       }
     } catch {}
     return '?'
+  }
+
+  /** The agent/model/variant body fields of a real user message (its stored info, else its input). */
+  function promptFields(input, message) {
+    const out = {}
+    const str = (v) => typeof v === 'string' && v !== ''
+    const agent = str(message?.agent) ? message.agent : str(input?.agent) ? input.agent : null
+    if (agent) out.agent = agent
+    const stored = message?.model && typeof message.model === 'object' ? message.model : null
+    const model = stored ?? (input?.model && typeof input.model === 'object' ? input.model : null)
+    if (model && str(model.providerID) && str(model.modelID)) out.model = { providerID: model.providerID, modelID: model.modelID }
+    const variant = stored ? stored.variant : input?.variant
+    if (str(variant)) out.variant = variant
+    return out
+  }
+
+  function recordPrompt(sid, input, message) {
+    S.prompts.delete(sid)
+    S.prompts.set(sid, promptFields(input, message))
+    if (S.prompts.size > 64) S.prompts.delete(S.prompts.keys().next().value)
   }
 
   const childEnv = (sid, root) => ({ ...io.env, [SESSION_VAR]: sid, [PARENT_VAR]: root, [PID_VAR]: String(io.pid) })
@@ -392,6 +416,8 @@ function createCore(io) {
       inject(sid, output, r.text)
       return
     }
+    // The plugin's own wake carries the recorded fields already: it never replaces them.
+    if (!(mark && mark.kind === 'wake')) recordPrompt(sid, input, output?.message)
     S.status.set(sid, 'busy')
     S.turnStart = { sid, until: io.now() + TURN_START_MS }
     const bound = S.bound && S.bound.sid === sid
@@ -410,7 +436,7 @@ function createCore(io) {
     const r = await hook('SessionStart', { event: 'SessionStart', source: 'compact', session_id: sid, cwd: io.directory }, sid, '')
     if (S.disposed) return
     if (r.ok && S.bound && S.bound.sid === sid) S.bound.ok = true
-    if (r.text) {
+    if (r.text && S.prompts.has(sid)) {
       const a = await append(sid, r.text)
       if (a.id) S.ownIds.add(a.id)
     }
@@ -760,7 +786,7 @@ function createCore(io) {
     let late = false
     try {
       const r = await bounded(
-        api.prompt({ path: { id: sid }, body: { noReply: true, parts: [{ type: 'text', text, synthetic: true }] } }),
+        api.prompt({ path: { id: sid }, body: { ...S.prompts.get(sid), noReply: true, parts: [{ type: 'text', text, synthetic: true }] } }),
         SDK_WRITE_TIMEOUT_MS,
       )
       if (r === TIMEOUT) {
@@ -814,6 +840,9 @@ function createCore(io) {
     if (S.disposed || S.channelless || !S.live || S.appendInflight || !S.chanSid) return
     if (io.now() < S.appendBackoffUntil) return
     const sid = S.chanSid
+    // No real message of this session seen yet (unreachable: a session binds at one): nothing is
+    // sent with opencode's default agent; the items wait for the turn hook.
+    if (!S.prompts.has(sid)) return
     const batch = appendBatch(batchOrder(S.queue.filter((q) => !q.inflight && !q.recoveryOffered && q.run === S.run)), cmd())
     if (!batch.text) {
       void maybeWake()
@@ -860,7 +889,7 @@ function createCore(io) {
     const w = S.wakePending
     if (!w || S.disposed || S.wakeInflight || !S.live || S.channelless) return
     if (!S.bound || w.sid !== S.bound.sid || w.sid !== S.chanSid) return
-    if (io.now() < S.wakeBackoffUntil || !idle(w.sid)) return
+    if (io.now() < S.wakeBackoffUntil || !idle(w.sid) || !S.prompts.has(w.sid)) return
     const api = sessionApi()
     // No wake on this opencode: no channel either, so senders are told (D8).
     if (!hasFn(api, 'promptAsync')) return goChannelless('wake')
@@ -871,7 +900,7 @@ function createCore(io) {
     S.pluginTurn = w.sid
     let r
     try {
-      r = await bounded(api.promptAsync({ path: { id: w.sid }, body: { parts: [{ type: 'text', text: WAKE_PROMPT }] } }), SDK_WRITE_TIMEOUT_MS)
+      r = await bounded(api.promptAsync({ path: { id: w.sid }, body: { ...S.prompts.get(w.sid), parts: [{ type: 'text', text: WAKE_PROMPT }] } }), SDK_WRITE_TIMEOUT_MS)
     } catch (err) {
       r = { error: String(err) }
     }

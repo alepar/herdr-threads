@@ -82,7 +82,7 @@ function harness(opts = {}) {
       return { data: { info: { id, role: 'user' }, parts: [{ id: 'prt_1', type: 'text', synthetic: true }] } }
     },
     promptAsync: async ({ path, body }) => {
-      h.calls.push({ kind: 'wake', sid: path.id, text: body.parts[0].text })
+      h.calls.push({ kind: 'wake', sid: path.id, text: body.parts[0].text, body })
       if (h.wakeResult) return h.wakeResult()
       return { data: {} }
     },
@@ -140,8 +140,8 @@ function harness(opts = {}) {
   h.top = (sid) => {
     h.sessions[sid] = { id: sid }
   }
-  h.turn = async (sid, text = 'hi') => {
-    const output = { message: { id: nextMsg(), role: 'user' }, parts: [{ type: 'text', text }] }
+  h.turn = async (sid, text = 'hi', message = {}) => {
+    const output = { message: { id: nextMsg(), role: 'user', ...message }, parts: [{ type: 'text', text }] }
     await h.core.onChatMessage({ sessionID: sid, agent: 'build' }, output)
     await flush()
     return output
@@ -419,7 +419,7 @@ test('a watch line is appended and acked with the stored message id', async () =
   await h.line(msg('m1', { ack_required: true, wakes: true, priority: 0 }))
   const [a] = h.appends()
   assert.equal(a.sid, A)
-  assert.deepEqual(a.body, { noReply: true, parts: [{ type: 'text', text: a.text, synthetic: true }] })
+  assert.deepEqual(a.body, { agent: 'build', noReply: true, parts: [{ type: 'text', text: a.text, synthetic: true }] })
   assert.equal(a.text, '[herdr-threads] new messages:\n\n[herdr-threads] message m1 in T1 "plans" from S1 "alice" [p0]:\n  body of m1')
   const acks = h.acks()
   assert.equal(acks.length, 1)
@@ -431,6 +431,58 @@ test('a watch line is appended and acked with the stored message id', async () =
   // a re-streamed delivered item is not appended again
   await h.line(msg('m1', { ack_required: true, wakes: true }))
   assert.equal(h.appends().length, 1)
+})
+
+test('append and wake carry the agent, model and variant of the newest real user message', async () => {
+  const h = harness()
+  h.top(A)
+  await h.created(A)
+  const plan = { agent: 'plan', model: { providerID: 'p1', modelID: 'm-one', variant: 'high' } }
+  await h.turn(A, 'hi', plan)
+  await h.idle(A)
+  await h.line(connected)
+  await h.line(waking('m1'))
+  const fields = { agent: 'plan', model: { providerID: 'p1', modelID: 'm-one' }, variant: 'high' }
+  const [a] = h.appends()
+  const [w] = h.wakes()
+  assert.deepEqual(a.body, { ...fields, noReply: true, parts: [{ type: 'text', text: a.text, synthetic: true }] })
+  assert.deepEqual(w.body, { ...fields, parts: [{ type: 'text', text: WAKE }] })
+  // the plugin's own wake turn and its append never replace the record
+  await h.core.onChatMessage({ sessionID: A }, { message: { id: h.nextMsg(), role: 'user', agent: 'build' }, parts: [{ type: 'text', text: WAKE }] })
+  await h.idle(A)
+  await h.line(waking('m2'))
+  assert.deepEqual(h.appends()[1].body.agent, 'plan')
+  assert.deepEqual(h.wakes()[1].body.model, { providerID: 'p1', modelID: 'm-one' })
+  // a new real message (the user switched agent) replaces it; no variant stays absent
+  await h.turn(A, 'hi', { agent: 'build', model: { providerID: 'p2', modelID: 'm-two' } })
+  await h.idle(A)
+  await h.line(waking('m3'))
+  assert.deepEqual(h.appends()[2].body, { agent: 'build', model: { providerID: 'p2', modelID: 'm-two' }, noReply: true, parts: h.appends()[2].body.parts })
+  assert.deepEqual(h.wakes()[2].body, { agent: 'build', model: { providerID: 'p2', modelID: 'm-two' }, parts: [{ type: 'text', text: WAKE }] })
+})
+
+test('the agent record is per session: a rebound session uses its own', async () => {
+  const h = harness()
+  h.top(A)
+  h.top(B)
+  await h.created(A)
+  await h.turn(A, 'hi', { agent: 'plan', model: { providerID: 'p', modelID: 'a' } })
+  await h.created(B)
+  await h.turn(B, 'hi', { agent: 'review', model: { providerID: 'p', modelID: 'b' } })
+  assert.equal(h.core.snapshot().chanSid, B)
+  await h.idle(B)
+  await h.line(connected)
+  await h.line(waking('m1'))
+  assert.deepEqual(h.appends()[0].body.agent, 'review')
+  assert.deepEqual(h.wakes()[0].body.model, { providerID: 'p', modelID: 'b' })
+  // back to A: A's record, not B's
+  await h.turn(A)
+  assert.equal(h.core.snapshot().chanSid, A)
+  await h.idle(A)
+  await h.line(connected)
+  await h.line(waking('m2'))
+  assert.deepEqual(h.appends()[1].body.agent, 'build') // A's newest real message had input agent build only
+  assert.equal(h.appends()[1].body.model, undefined)
 })
 
 test('a lazy row is acked without a row id; a truncated item is never acked', async () => {
