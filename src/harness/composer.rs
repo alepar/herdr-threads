@@ -576,6 +576,28 @@ mod tests {
         assert_eq!(codex(screen), ComposerRead::Empty);
     }
 
+    /// A Codex launched without valid auth draws its sign-in menu, which Herdr reports as an
+    /// idle `codex` agent; the composer read is then the only gate keeping a wake's Enter from
+    /// choosing "Sign in with ChatGPT" (wake survey C, ht-rfvn). Captured with
+    /// `pane read --source detection` from Codex started with an empty `CODEX_HOME`.
+    #[test]
+    fn codex_sign_in_screen_is_unreadable() {
+        let screen = "  Welcome to Codex, OpenAI's command-line coding agent\n\n  \
+            Choose how you want to use Codex.\n\n\
+            > 1. Sign in with ChatGPT\n     \
+            Usage included with Plus, Pro, Business, and Enterprise plans\n\n  \
+            2. Sign in with Device Code\n     \
+            Sign in from another device with a one-time code\n\n  \
+            3. Sign in another way\n     \
+            Use an API key or another provider\n\n  \
+            Press enter to continue\n";
+        assert_eq!(codex(screen), ComposerRead::Unreadable);
+        assert_eq!(
+            read_composer(Harness::Codex, screen, None),
+            ComposerRead::Unreadable
+        );
+    }
+
     #[test]
     fn unrelated_text_and_other_harnesses_are_unreadable() {
         assert_eq!(
