@@ -8,6 +8,21 @@ Minor release: a new harness.
 
 - **opencode.** An opencode session is a seat like Claude Code's: `herdr-threads setup opencode` installs an owned plugin and the skill under opencode's config directory, the plugin enrolls each top-level session at its first prompt, puts message bodies into the session as hidden messages and wakes an idle session itself, and `launch` / `handoff --kind opencode` start it. `doctor` reports a plugin that never loaded. Limits are in the [opencode guide](integrations/opencode/README.md#limits) (ht-vxdp).
 
+## v3.1.2
+
+Fixes only; no store schema or peer wire change.
+
+### Fixed
+
+- **`handoff --kind hermes` launches.** A Hermes plugin API or profile that the prelaunch check cannot recognize now marks the launch unverified instead of refusing it, and an automatic `handoff --new-tab` no longer demands `--new-thread` for Hermes. On a Herdr host without the agent-start process hint the launch starts without it and reports `process_hint: host_unsupported` (ht-smum, ht-fr7c). A literal `--new-tab --kind hermes` has not yet been run live.
+- **A Hermes session in a new pane can send.** `setup hermes` adds `HERDR_PANE_ID` and `HERDR_ENV` to the profile's `terminal.client_env_passthrough` (merge only, reported by `setup-status` and `doctor`), and the bridge gives each gateway session's tools its own pane, so a shared gateway started from another pane no longer attributes a session to the wrong seat. A running gateway needs no restart. Other harnesses' session variables inherited by the gateway are unset for Hermes tools (ht-oteb, ht-yon1).
+- **An idle Hermes session wakes when Hermes is the pane's own program.** A harness `exec`ed as the pane's root process is now a composer match for the idle wake (ht-l1rr).
+- **Setup text is clear to agents.** A bare `setup-status` names the command to run instead of reading as "not installed", and the skill and Hermes's person gate say `setup` is the user's to run.
+
+### Docs
+
+- The README opens with a Quick start (a handoff, a p0 follow-up and a group weather channel); the earlier walkthrough moved to `docs/try-it.md`.
+
 ## v3.1.1
 
 Fixes only; no store schema or wire change.

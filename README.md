@@ -4,11 +4,9 @@
 
 A [Herdr](https://herdr.dev) plugin. Claude Code, Codex, Antigravity, opencode and Hermes agents, you and your scripts share threads that persist after any session ends, across machines. You stop copy-pasting between agent windows, and you know when a message landed.
 
-https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
+https://github.com/user-attachments/assets/123e4fa4-f026-41c3-b095-29f7a10bab75
 
-*Claude and Codex debate in a thread while a human joins in. [MP4](docs/media/try-it.mp4), [walkthrough](docs/try-it.md)*
-
-**Status:** v2.2.1. macOS, Linux. [Changelog](CHANGELOG.md)
+*Five Claude tabs post weather to one channel, from the [Quick start](#quick-start). [MP4](docs/media/quick-start.mp4)*
 
 ## Why
 
@@ -18,6 +16,31 @@ https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
 - **Handoff to another harness.** One command creates the thread, stores the assignment and launches Codex or Claude to do it.
 - **Quiet and token-efficient.** Default sends never wake an idle agent, but urgent ones do. Messages arrive inside the agent's turn, in compact pages, with summaries instead of replayed history.
 - **Humans in the loop.** You read, post and require ACKs with the same CLI.
+
+## Quick start
+
+1. [Install](#install), then start Claude Code or Codex in a Herdr pane.
+2. Hand work to a new tab (in your agent):
+
+   ```
+   /herdr-threads handoff to a new tab and ask it to fetch the weather in London
+   ```
+
+   Your agent opens the tab, starts an agent there and sends the task as a thread message.
+3. Follow up. A plain message waits for the tab's next turn; `p0` wakes it:
+
+   ```
+   /herdr-threads p0 ask the new tab to also fetch the weather in New York and reply back
+   ```
+
+In Codex, write `$herdr-threads`. Then try a channel, one prompt at a time:
+
+1. `create a new weather channel`
+2. `handoff to 5 new tabs, one per city, to find the weather in Tokyo, Paris, Cairo, Sydney and Rio`
+3. `invite every weather tab to the channel and ask each to post a one-line update there every 5s for a minute`
+4. In a shell pane: `herdr-threads follow weather`
+
+For a shorter `/ht`, ask your agent to create an `ht` skill that aliases `herdr-threads`.
 
 ## How it compares
 
@@ -58,31 +81,6 @@ Installs `~/.local/bin/herdr-threads`, registers the plugin and, with `--setup`,
 
 Linux is experimental: x86_64 and agent harness sessions remain unverified until the [rehearsal on a clean machine](docs/release.md#post-merge-follow-on-checklist). Intel macOS is untested, and Windows is unsupported. More in the [installation guide](docs/install.md).
 
-## Quick start
-
-1. [Install](#install), then start Claude Code or Codex in a Herdr pane.
-2. Hand work to a new tab (in your agent):
-
-   ```
-   /herdr-threads handoff to a new tab and ask it to fetch the weather in London
-   ```
-
-   Your agent opens the tab, starts an agent there and sends the task as a thread message.
-3. Follow up. A plain message waits for the tab's next turn; `p0` wakes it:
-
-   ```
-   /herdr-threads p0 ask the new tab to also fetch the weather in New York and reply back
-   ```
-
-In Codex, write `$herdr-threads`. More to ask for:
-
-- `handoff to a new codex tab to review this change`
-- `tell the main tab the fix is merged`
-- `handoff these issues, one tab per issue, and have each report back`
-- `create a project-dev thread and invite every agent tab in this space`
-
-For a shorter `/ht`, ask your agent to create an `ht` skill that aliases `herdr-threads`.
-
 ## Everyday commands
 
 | Command | |
@@ -117,11 +115,13 @@ For cooperative agents under one local account, not a security boundary. A comma
 ## Documentation
 
 - [Installation](docs/install.md): setup, cross-machine sync, settings, upgrades, removal
+- [Walkthrough](docs/try-it.md): two agents debate in a thread while you join in and require ACKs
 - [Agent and operator commands](docs/agent-usage.md): seats and sessions, direct channels, handoff
 - [Operations](docs/operations.md): health, delivery, recovery, seat repair
 - [Outside a Herdr pane](docs/environments.md): named seats (`HERDR_THREADS_SEAT_NAME`), tmux wake, herdr-core terminals
 - [Agent skill](integrations/skill/SKILL.md): how agents use it (`herdr-threads skill`)
 - [Release evidence](docs/release.md)
+- [Changelog](CHANGELOG.md)
 
 ## Contributing
 
