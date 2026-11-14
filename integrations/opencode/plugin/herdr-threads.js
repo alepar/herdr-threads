@@ -116,12 +116,38 @@ const batchOrder = (items) => [...items].sort((a, b) => {
 const shellArg = (arg) => /^[a-zA-Z0-9_@%+=:,./-]+$/.test(arg)
   ? arg : "'" + arg.replace(/'/g, "'\\''") + "'"
 
+// The daemon's own continuation markers (src/protocol/watch.rs `truncation_marker_for`,
+// `attention_marker_for`) spell the inbox command the session's shell needs: `herdr-threads` plus
+// only the selectors its own detection would not reach (src/cli/hook.rs `cli_prefix`). The plugin's
+// recovery line repeats the newest one seen, so it matches the consented `herdr-threads *` grant.
+const TRUNCATION_MARK = '…truncated; next: '
+const ATTENTION_MARK = 'herdr-threads: attention pending; run '
+const BARE_RECOVERY = 'next: herdr-threads inbox'
+
+/** The `next: herdr-threads … inbox` line a daemon marker in `text` spells, or null. */
+function markerRecovery(text, mark) {
+  const s = String(text ?? '')
+  const at = s.lastIndexOf(mark)
+  if (at < 0) return null
+  const command = s.slice(at + mark.length).split(LINE_BREAK)[0].trim()
+  return /^herdr-threads( .+)? inbox$/.test(command) ? `next: ${command}` : null
+}
+
+/**
+ * The recovery line before any marker was seen: the launch's selectors after the bare program
+ * name (they reach the right instance, if not always the shortest spelling); `herdr-threads inbox`
+ * with no rendered launch.
+ */
+function launchRecovery(argv) {
+  if (!argv || !argv.length) return BARE_RECOVERY
+  return 'next: ' + ['herdr-threads', ...argv.slice(1), 'inbox'].map(shellArg).join(' ')
+}
+
 /** A bounded complete prefix of `items`, with the recovery line inside the byte budget. */
-function appendBatch(items, argv) {
+function appendBatch(items, recovery) {
   const batch = []
   batch.deferred = []
   const encoder = new TextEncoder()
-  const recovery = 'next: ' + [...argv, 'inbox'].map(shellArg).join(' ')
   const render = (selected, more) => {
     const truncated = selected.some((it) => it.truncated)
     const framed = selected.length ? frame(selected.map((it) => {
@@ -237,6 +263,7 @@ function createCore(io) {
     gen: 0,
     degraded: new Set(),
     channelless: false,
+    recovery: null, // the newest daemon-spelled `next: … inbox` line
   }
 
   const cmd = (...rest) => [...(io.argv || ['herdr-threads']), ...rest]
@@ -597,6 +624,10 @@ function createCore(io) {
     }
     if (!['message', 'lazy', 'invitation', 'attention', 'notice'].includes(o.kind)) return
     ledger('received', { ids: [o.id] })
+    const learned = o.kind === 'attention' ? markerRecovery(o.text, ATTENTION_MARK)
+      : (o.kind === 'message' || o.kind === 'lazy') && o.truncated === true ? markerRecovery(o.body, TRUNCATION_MARK)
+        : null
+    if (learned) S.recovery = learned
     if (o.kind === 'attention') {
       const dup = S.queue.find((q) => q.id === o.id)
       if (dup) dup.run = S.run
@@ -843,7 +874,7 @@ function createCore(io) {
     // No real message of this session seen yet (unreachable: a session binds at one): nothing is
     // sent with opencode's default agent; the items wait for the turn hook.
     if (!S.prompts.has(sid)) return
-    const batch = appendBatch(batchOrder(S.queue.filter((q) => !q.inflight && !q.recoveryOffered && q.run === S.run)), cmd())
+    const batch = appendBatch(batchOrder(S.queue.filter((q) => !q.inflight && !q.recoveryOffered && q.run === S.run)), S.recovery ?? launchRecovery(io.argv))
     if (!batch.text) {
       void maybeWake()
       return
@@ -1291,6 +1322,8 @@ HerdrThreads.internals = {
   markers,
   batchOrder,
   appendBatch,
+  markerRecovery,
+  launchRecovery,
   grantPermissions,
   stateDirOf,
   constants: { WAKE_PROMPT, UNAVAILABLE, HEADER, SESSION_VAR, PARENT_VAR, PID_VAR, HEARTBEAT_FILE, GRANT_KEYS, GUARD },

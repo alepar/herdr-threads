@@ -15,7 +15,7 @@ const source = readFileSync(pluginPath, 'utf8')
 // The plugin is an ES module in a `.js` file with no package.json; a data: URL loads it as one.
 const mod = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))
 const { HerdrThreads } = mod
-const { createCore, makePlugin, frame, batchOrder, grantPermissions, constants } = HerdrThreads.internals
+const { createCore, makePlugin, frame, batchOrder, appendBatch, markerRecovery, launchRecovery, grantPermissions, constants } = HerdrThreads.internals
 
 const A = 'ses_AAAAAAAAAAAAAAAAAAAAAAAAAA'
 const B = 'ses_BBBBBBBBBBBBBBBBBBBBBBBBBB'
@@ -492,6 +492,52 @@ test('a lazy row is acked without a row id; a truncated item is never acked', as
   assert.equal(h.appends().length, 2)
   assert.deepEqual(h.acks().map((r) => r.argv.slice(3)), [['--session', A, '--via', 'append', 'm1']])
   assert.match(h.appends()[1].text, /cut…truncated\n\nnext: herdr-threads inbox$/)
+})
+
+test('the recovery line is the daemon-spelled inbox command, never the absolute launch argv', async () => {
+  const argv = ['/opt/ht', '--state-dir', '/s', '--host-endpoint', '/h.sock']
+  const h = await harness({ argv }).boot(A)
+  // a truncated body carries the watch's own marker: its command is the recovery line
+  await h.line(msg('m1', { truncated: true, body: 'cut…truncated; next: herdr-threads --state-dir /s inbox' }))
+  assert.match(h.appends()[0].text, /cut…truncated\n\nnext: herdr-threads --state-dir \/s inbox$/)
+  assert.doesNotMatch(h.appends()[0].text, /\/opt\/ht/)
+  // and stays the line for a later page that only overflows
+  const items = Array.from({ length: 33 }, (_, i) => ({ id: `x${i}`, kind: 'message', thread: 'T', body: 'b', priority: 1 }))
+  assert.match(appendBatch(items, 'next: herdr-threads --state-dir /s inbox').text, /\n\nnext: herdr-threads --state-dir \/s inbox$/)
+})
+
+test('recovery markers: only a herdr-threads inbox command is taken; the fallbacks need no absolute path', () => {
+  assert.equal(markerRecovery('cut…truncated; next: herdr-threads inbox', '…truncated; next: '), 'next: herdr-threads inbox')
+  assert.equal(markerRecovery('herdr-threads: attention pending; run herdr-threads --host-endpoint /h inbox', 'herdr-threads: attention pending; run '),
+    'next: herdr-threads --host-endpoint /h inbox')
+  assert.equal(markerRecovery('cut…truncated; next: herdr-threads accept t1', '…truncated; next: '), null)
+  assert.equal(markerRecovery('cut…truncated; next: /opt/ht inbox', '…truncated; next: '), null)
+  assert.equal(markerRecovery('no marker', '…truncated; next: '), null)
+  // before any marker: the launch's selectors after the bare name; no launch: the bare command
+  assert.equal(launchRecovery(['/opt/ht', '--state-dir', '/s s', '--host-endpoint', '/h.sock']),
+    "next: herdr-threads --state-dir '/s s' --host-endpoint /h.sock inbox")
+  assert.equal(launchRecovery(null), 'next: herdr-threads inbox')
+})
+
+test('an attention marker sets the recovery line of a later overflow page', async () => {
+  const h = await harness({ argv: ['/opt/ht', '--state-dir', '/s'] }).boot(A)
+  h.appendResult = () => new Promise(() => {}) // the first append hangs: later items queue up
+  await h.line(attention(1, { text: 'herdr-threads: attention pending; run herdr-threads --state-dir /s inbox' }))
+  for (let i = 0; i < 40; i++) await h.line(msg(`q${i}`))
+  await h.expire() // the hung append times out; the queue is offered after the backoff
+  h.appendResult = null
+  h.t += 31000
+  await h.core.onTick()
+  await flush()
+  const page = h.appends().find((a) => a.text.includes('q0'))
+  assert.ok(page, 'an overflowing page was appended')
+  assert.match(page.text, /\n\nnext: herdr-threads --state-dir \/s inbox$/)
+})
+
+test('the marker strings match the daemon source', () => {
+  const watch = readFileSync(join(root, 'src/protocol/watch.rs'), 'utf8')
+  assert.ok(watch.includes('"…truncated; next: {}"'))
+  assert.ok(watch.includes('"herdr-threads: attention pending; run {}"'))
 })
 
 test('no ack when the append fails; the item is offered again after the backoff', async () => {
