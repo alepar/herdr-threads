@@ -344,6 +344,9 @@ where
                             automatic
                                 .then_some(crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1),
                         )
+                        .chain(automatic.then_some(
+                            crate::protocol::capabilities::AUTOMATIC_HANDOFF_COMPOSED_ARGV_V1,
+                        ))
                         .chain((bootstrap && automatic).then_some(
                             crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1,
                         ))

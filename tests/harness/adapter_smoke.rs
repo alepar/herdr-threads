@@ -366,7 +366,9 @@ fn fourth_author_consumers() {
     assert!(matches!(
         herdr_threads::harness::launch::submit_prepared(&host, env.clock.as_ref(), managed)
             .unwrap(),
-        herdr_threads::ports::NativeLaunchOutcome::OutcomeUnknown
+        herdr_threads::ports::NativeLaunchOutcome::OutcomeUnknown {
+            process_hint_skipped: false
+        }
     ));
 
     let parsed = herdr_threads::cli::commands::parse_argv([
@@ -650,7 +652,9 @@ mod launch_fixture {
                 3,
                 "two fresh observations must precede submission"
             );
-            Ok(NativeLaunchOutcome::OutcomeUnknown)
+            Ok(NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false,
+            })
         }
         fn pane_agent_state(
             &self,

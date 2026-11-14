@@ -76,6 +76,8 @@ impl HarnessAdapter for OpencodeAdapter {
             process_match: None,
             pid_var: Some(witness::PID_VAR),
             paneless: None,
+            // The plugin's parent and pid-echo variables name the session's role (D2).
+            session_marker_vars: &[witness::PARENT_VAR, witness::PID_ECHO_VAR],
         })
     }
     fn output_policy(&self) -> OutputPolicy {

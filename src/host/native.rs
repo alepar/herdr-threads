@@ -37,6 +37,14 @@ pub const ENV_PANE_ID: &str = "HERDR_PANE_ID";
 /// The pane family's caller-location variables, as read by `cli::caller_location`.
 pub const ENV_VARS: &[&str] = &[ENV_HERDR, ENV_PANE_ID];
 
+/// An unconfirmed start after the start frame went out: it carries whether the frame went
+/// without the process hint the request asked for.
+fn unconfirmed(request: &NativeLaunchRequest, process_hint_sent: bool) -> NativeLaunchOutcome {
+    NativeLaunchOutcome::OutcomeUnknown {
+        process_hint_skipped: request.process_hint && !process_hint_sent,
+    }
+}
+
 /// Herdr `agent.start` errors that are checked before anything is typed.
 const CONFIRMED_PRESTART_REFUSALS: [&str; 3] = [
     "agent_pane_busy",
@@ -379,6 +387,9 @@ impl NativeCli {
         // short seat suffix. Only confirmed pre-start refusals may retry.
         let [first_name, retry_name] = request.agent_name_candidates();
         let mut name = first_name;
+        // Whether the start frame carried the hint: a host that does not advertise
+        // `agent_start_process_hint_v1` gets the same fenced start without it.
+        let mut process_hint_sent = false;
         let readiness_started = Instant::now();
         let (name, parsed, remaining, started, submitted_at_mono) = loop {
             self.check_epoch(current_epoch)
@@ -453,7 +464,7 @@ impl NativeCli {
                 );
                 if response.as_ref().is_err_and(|failure| {
                     matches!(
-                        failure.error.code,
+                        failure.failure.error.code,
                         ErrorCode::Cancelled
                             | ErrorCode::DeadlineExceeded
                             | ErrorCode::HostUnavailable
@@ -463,11 +474,20 @@ impl NativeCli {
                     self.epoch.fetch_add(1, Ordering::AcqRel);
                 }
                 match response {
-                    Ok(response) => Ok(response.body),
-                    Err(failure) if failure.submission == ports::NativeSubmission::NotSubmitted => {
-                        return Err(failure);
+                    Ok(start) => {
+                        process_hint_sent = start.process_hint_sent;
+                        Ok(start.response.body)
                     }
-                    Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                    Err(failure)
+                        if failure.failure.submission == ports::NativeSubmission::NotSubmitted =>
+                    {
+                        return Err(failure.failure);
+                    }
+                    Err(failure) => {
+                        return Ok(NativeLaunchOutcome::OutcomeUnknown {
+                            process_hint_skipped: failure.process_hint_skipped,
+                        });
+                    }
                 }
             } else {
                 self.dispatch(
@@ -481,11 +501,11 @@ impl NativeCli {
                 .map(|(body, _)| body)
             };
             let (refusal, name_taken, pane_busy) = match response {
-                Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                Err(_) => return Ok(unconfirmed(request, process_hint_sent)),
                 Ok(raw) => {
                     let parsed: serde_json::Value = match serde_json::from_str(&raw) {
                         Ok(value) => value,
-                        Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                        Err(_) => return Ok(unconfirmed(request, process_hint_sent)),
                     };
                     let Some(host_error) = structured_host_error(&parsed) else {
                         break (name, parsed, remaining, started, submitted_at_mono);
@@ -494,7 +514,7 @@ impl NativeCli {
                         .pointer("/error/code")
                         .and_then(serde_json::Value::as_str);
                     if !code.is_some_and(|code| CONFIRMED_PRESTART_REFUSALS.contains(&code)) {
-                        return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                        return Ok(unconfirmed(request, process_hint_sent));
                     }
                     (
                         host_error,
@@ -531,15 +551,15 @@ impl NativeCli {
         };
         let result = match parsed.get("result") {
             Some(result) => result,
-            None => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+            None => return Ok(unconfirmed(request, process_hint_sent)),
         };
         let agent = match result.get("agent") {
             Some(agent) => agent,
-            None => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+            None => return Ok(unconfirmed(request, process_hint_sent)),
         };
         let returned_args = result.get("argv").and_then(serde_json::Value::as_array);
         let args_match = returned_args.is_some_and(|values| {
-            if request.process_hint {
+            if process_hint_sent {
                 let crate::harness::adapter::ExecutableLookup::Path(executable) =
                     registration.metadata().executable
                 else {
@@ -565,7 +585,7 @@ impl NativeCli {
             || !args_match
             || !self.same_agent(agent, &name, request)
         {
-            return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            return Ok(unconfirmed(request, process_hint_sent));
         }
         // Herdr 0.9.1's socket `agent.start` answers as soon as the command
         // is submitted (`launch_pending: true`, captured live 2026-09-30);
@@ -578,7 +598,7 @@ impl NativeCli {
                 || context.budget.is_exhausted(self.clock.as_ref())
                 || !self.same_agent(&current, &name, request)
             {
-                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                return Ok(unconfirmed(request, process_hint_sent));
             }
             let pending = current
                 .get("launch_pending")
@@ -593,7 +613,7 @@ impl NativeCli {
                 .get("agent_status")
                 .and_then(serde_json::Value::as_str);
             if request.process_hint && status == Some("blocked") {
-                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                return Ok(unconfirmed(request, process_hint_sent));
             }
             let ready = (current
                 .get("interactive_ready")
@@ -622,7 +642,7 @@ impl NativeCli {
                 .and_then(serde_json::Value::as_str)
                 == Some("blocked")
             {
-                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                return Ok(unconfirmed(request, process_hint_sent));
             }
             // Herdr never updates the agent record when the harness exits
             // straight away (a usage error such as rc 2): it stays
@@ -672,11 +692,11 @@ impl NativeCli {
             };
             let polled = match response {
                 Ok(raw) => raw,
-                Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                Err(_) => return Ok(unconfirmed(request, process_hint_sent)),
             };
             let polled: serde_json::Value = match serde_json::from_str(&polled) {
                 Ok(value) => value,
-                Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                Err(_) => return Ok(unconfirmed(request, process_hint_sent)),
             };
             match polled.get("result") {
                 Some(result)
@@ -685,10 +705,10 @@ impl NativeCli {
                 {
                     current = match result.get("agent") {
                         Some(agent) => agent.clone(),
-                        None => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                        None => return Ok(unconfirmed(request, process_hint_sent)),
                     };
                 }
-                _ => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                _ => return Ok(unconfirmed(request, process_hint_sent)),
             }
         }
         let mut observed = preflight.clone();
@@ -704,6 +724,7 @@ impl NativeCli {
         let started_process = self.started_process(&request.target, &context.budget);
         let correlation = CorrelatedStartup {
             process_hint: request.process_hint,
+            process_hint_sent,
             seat: request.seat.clone(),
             agent_name: name,
             harness: request.harness,
@@ -1407,16 +1428,20 @@ impl HostPort for NativeCli {
         target: &HostTargetId,
         context: &HostCallContext,
     ) -> Result<Vec<u32>, ApiError> {
-        self.check_context(context)?;
-        let raw = self.run_unfenced(
-            &["pane", "process-info", target.as_str()],
-            &context.budget,
-            Duration::from_millis(750),
-        )?;
-        Ok(serde_json::from_str(&raw)
-            .ok()
-            .map(|response: serde_json::Value| foreground_process_pids(&response))
-            .unwrap_or_default())
+        Ok(self.read_pane_foreground(target, context, false)?.pids)
+    }
+
+    /// [`Self::foreground_pids`] and, from the same `pane.process_info` read, the registered
+    /// harness the pane's root process (`shell_pid`) is when it is the pane's only foreground
+    /// process (a harness `exec`ed as the pane's program). The process is classified from the
+    /// host process table by the adapters' declared shapes (a shell or unknown program
+    /// classifies as nothing).
+    fn pane_foreground(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::PaneForeground, ApiError> {
+        self.read_pane_foreground(target, context, true)
     }
 
     /// The pane's own process (`shell_pid`). Without an expected boot the read is advisory and
@@ -2021,6 +2046,35 @@ pub(crate) fn focused_empty_ready(
 }
 
 impl NativeCli {
+    /// One advisory, unfenced `pane.process_info` read: the pane's non-shell foreground pids
+    /// and, when `classify_root` is set and the root process is the only foreground process,
+    /// the registered harness it is.
+    fn read_pane_foreground(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+        classify_root: bool,
+    ) -> Result<crate::ports::PaneForeground, ApiError> {
+        use crate::ports::ProcessInfo as _;
+        self.check_context(context)?;
+        let raw = self.run_unfenced(
+            &["pane", "process-info", target.as_str()],
+            &context.budget,
+            Duration::from_millis(750),
+        )?;
+        let Ok(response) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return Ok(crate::ports::PaneForeground::default());
+        };
+        let pids = foreground_process_pids(&response);
+        let root_harness = classify_root
+            .then(|| root_only_foreground_pid(&response))
+            .flatten()
+            .and_then(|pid| crate::host::process_table::HostProcessTable.process(pid))
+            .and_then(|record| crate::harness::caller_env::classify(&record, None))
+            .map(str::to_owned);
+        Ok(crate::ports::PaneForeground { pids, root_harness })
+    }
+
     fn focused_empty_ready(
         &self,
         target: &SafeWakeTarget,
@@ -2770,6 +2824,21 @@ fn pane_shell_pid(response: &serde_json::Value) -> Option<u32> {
         .filter(|pid| *pid != 0)
 }
 
+/// The pane's root process (`shell_pid`) when Herdr reports it as the pane's only foreground
+/// process: the program the pane runs in its foreground with no child of its own there (a
+/// harness `exec`ed as the pane's program, or a shell at its prompt; the caller tells them
+/// apart by the process's shape).
+fn root_only_foreground_pid(response: &serde_json::Value) -> Option<u32> {
+    let shell = pane_shell_pid(response)?;
+    let foreground = response
+        .pointer("/result/process_info/foreground_processes")?
+        .as_array()?;
+    let mut pids = foreground
+        .iter()
+        .map(|process| process.get("pid").and_then(serde_json::Value::as_u64));
+    (pids.next()? == Some(u64::from(shell)) && pids.next().is_none()).then_some(shell)
+}
+
 fn foreground_process_pids(response: &serde_json::Value) -> Vec<u32> {
     let Some(info) = response.pointer("/result/process_info") else {
         return Vec::new();
@@ -3175,7 +3244,10 @@ pub(crate) mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn process_hint_old_host_receives_zero_start_frames() {
+    fn process_hint_old_host_receives_a_start_frame_without_the_hint() {
+        // A host that does not advertise `agent_start_process_hint_v1` gets the same fenced
+        // start without the field; the correlation keeps the requested mode and records
+        // that the hint was not sent.
         for capabilities in [
             None,
             Some(json!({})),
@@ -3190,6 +3262,7 @@ pub(crate) mod tests {
             request.harness = Harness::Agent(registry.agent("hinted").unwrap());
             request.process_hint = true;
             let name = request.agent_name();
+            let label = format!("{capabilities:?}");
             let mut fixture = HintSocketFixture::new(move |stream, wire| {
                 let result = match wire["method"].as_str().unwrap() {
                     "ping" => {
@@ -3200,7 +3273,11 @@ pub(crate) mod tests {
                         pong
                     }
                     "pane.get" => json!({"type":"pane_info"}),
-                    "agent.start" => started(name.clone()),
+                    "agent.start" => {
+                        assert!(wire["params"].get("process_hint").is_none());
+                        started(name.clone())
+                    }
+                    "pane.process_info" => process_info_fixture(),
                     other => panic!("unexpected fixture operation: {other}"),
                 };
                 answer(stream, wire, result);
@@ -3216,13 +3293,17 @@ pub(crate) mod tests {
                     .iter()
                     .filter(|frame| frame["method"] == "agent.start")
                     .count(),
-                0,
-                "unsupported host received a start frame"
+                1,
+                "{label}: one start frame"
             );
-            let failure =
-                result.expect_err("missing feature capability must refuse before submission");
-            assert_eq!(failure.error.code, ErrorCode::Unsupported);
-            assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+            let NativeLaunchOutcome::ObservedStartup { correlation, .. } =
+                result.unwrap_or_else(|failure| panic!("{label}: {failure:?}"))
+            else {
+                panic!("{label}: startup without the hint was not observed")
+            };
+            assert!(correlation.process_hint, "{label}: requested mode kept");
+            assert!(!correlation.process_hint_sent, "{label}: recorded unsent");
+            assert!(correlation.matches_request(&request, &context), "{label}");
         }
     }
 
@@ -3423,6 +3504,10 @@ pub(crate) mod tests {
                 correlation.process_hint,
                 "requested mode was lost in native startup correlation"
             );
+            assert!(
+                correlation.process_hint_sent,
+                "an advertising host gets the hint"
+            );
             assert!(correlation.matches_request(&request, &context));
             assert_eq!(correlation.argv, ["space arg", "apostrophe's arg"]);
             // ht-54r.4: the placeholder fingerprint is the pane's single foreground process
@@ -3506,6 +3591,59 @@ pub(crate) mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
+    fn process_hint_old_host_unconfirmed_start_records_the_hint_unsent() {
+        // A start frame sent without the hint whose start is never confirmed (a lost
+        // response, or a blocked agent) ends `OutcomeUnknown` that says the hint was skipped;
+        // a host that advertises the hint ends it without that mark.
+        for (advertised, case) in [
+            (false, "eof"),
+            (false, "blocked"),
+            (true, "eof"),
+            (true, "blocked"),
+        ] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(true);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = true;
+            let name = request.agent_name();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                match wire["method"].as_str().unwrap() {
+                    "ping" => answer(
+                        stream,
+                        wire,
+                        json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":advertised}}),
+                    ),
+                    "pane.get" => answer(stream, wire, json!({"type":"pane_info"})),
+                    "agent.start" => {
+                        if case == "eof" {
+                            return;
+                        }
+                        let mut result = started(name.clone());
+                        result["agent"]["agent_status"] = json!("blocked");
+                        answer(stream, wire, result);
+                    }
+                    "pane.process_info" => answer(stream, wire, process_info_fixture()),
+                    other => panic!("unexpected fixture operation: {other}"),
+                }
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            fixture.finish();
+            assert_eq!(
+                result.unwrap(),
+                NativeLaunchOutcome::OutcomeUnknown {
+                    process_hint_skipped: !advertised
+                },
+                "{case} advertised={advertised}"
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
     fn process_hint_retry_renegotiates_and_unknown_write_is_possible() {
         for case in [
             "lost-capability",
@@ -3542,7 +3680,13 @@ pub(crate) mod tests {
                     }
                     "pane.get" => answer(stream, wire, json!({"type":"pane_info"})),
                     "agent.start" => {
-                        assert_eq!(wire["params"]["process_hint"], true);
+                        // Each fenced start decides from its own pong: the retry after a
+                        // lost capability goes without the hint.
+                        let hinted = !(case == "lost-capability" && starts == 1);
+                        assert_eq!(
+                            wire["params"].get("process_hint"),
+                            hinted.then_some(&json!(true))
+                        );
                         assert_eq!(wire["params"]["name"], names[starts]);
                         starts += 1;
                         if matches!(case, "lost-capability" | "kept-capability") && starts == 1 {
@@ -3605,10 +3749,14 @@ pub(crate) mod tests {
                     .iter()
                     .filter(|frame| frame["method"] == "agent.start")
                     .count(),
-                if case == "kept-capability" { 2 } else { 1 },
+                if matches!(case, "kept-capability" | "lost-capability") {
+                    2
+                } else {
+                    1
+                },
                 "{case} retried without confirmed name refusal"
             );
-            if matches!(case, "lost-capability" | "unsupported") {
+            if case == "unsupported" {
                 let failure = result.expect_err(case);
                 assert_eq!(failure.error.code, ErrorCode::Unsupported, "{case}");
                 assert_eq!(
@@ -3616,17 +3764,20 @@ pub(crate) mod tests {
                     ports::NativeSubmission::NotSubmitted,
                     "{case}"
                 );
-            } else if case == "kept-capability" {
+            } else if matches!(case, "kept-capability" | "lost-capability") {
                 let NativeLaunchOutcome::ObservedStartup { correlation, .. } = result.unwrap()
                 else {
                     panic!("confirmed retry was not correlated")
                 };
                 assert_eq!(correlation.agent_name, expected_names[1]);
+                assert_eq!(correlation.process_hint_sent, case == "kept-capability");
                 assert!(correlation.matches_request(&request, &context));
             } else {
                 assert_eq!(
                     result.unwrap(),
-                    NativeLaunchOutcome::OutcomeUnknown,
+                    NativeLaunchOutcome::OutcomeUnknown {
+                        process_hint_skipped: false
+                    },
                     "{case} fabricated accepted startup"
                 );
             }
@@ -4098,7 +4249,7 @@ pub(crate) mod tests {
                 assert_eq!(diagnostic.execution, ExecutionEvidence::Unknown);
                 assert_eq!(diagnostic.incarnation, IncarnationEvidence::Unknown);
             }
-            NativeLaunchOutcome::OutcomeUnknown => panic!("matching ready response lost"),
+            NativeLaunchOutcome::OutcomeUnknown { .. } => panic!("matching ready response lost"),
         }
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4233,7 +4384,7 @@ pub(crate) mod tests {
             NativeLaunchOutcome::ObservedStartup { correlation, .. } => {
                 assert!(correlation.matches_request(&request, &context));
             }
-            NativeLaunchOutcome::OutcomeUnknown => panic!("readiness was not observed"),
+            NativeLaunchOutcome::OutcomeUnknown { .. } => panic!("readiness was not observed"),
         }
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4254,7 +4405,9 @@ pub(crate) mod tests {
             .unwrap()
         {
             NativeLaunchOutcome::ObservedStartup { .. } => {}
-            NativeLaunchOutcome::OutcomeUnknown => panic!("a working agent is a confirmed start"),
+            NativeLaunchOutcome::OutcomeUnknown { .. } => {
+                panic!("a working agent is a confirmed start")
+            }
         }
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4271,7 +4424,9 @@ pub(crate) mod tests {
         assert_eq!(
             cli.guarded_start_cli(&request, &context, &observation)
                 .unwrap(),
-            NativeLaunchOutcome::OutcomeUnknown
+            NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false
+            }
         );
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4306,7 +4461,9 @@ pub(crate) mod tests {
             assert_eq!(
                 cli.guarded_start_cli(&request, &context, &observation)
                     .unwrap(),
-                NativeLaunchOutcome::OutcomeUnknown
+                NativeLaunchOutcome::OutcomeUnknown {
+                    process_hint_skipped: false
+                }
             );
             worker.join().unwrap();
             fs::remove_file(socket).unwrap();
@@ -4345,7 +4502,12 @@ pub(crate) mod tests {
             if busy {
                 assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
             } else {
-                assert_eq!(result.unwrap(), NativeLaunchOutcome::OutcomeUnknown);
+                assert_eq!(
+                    result.unwrap(),
+                    NativeLaunchOutcome::OutcomeUnknown {
+                        process_hint_skipped: false
+                    }
+                );
             }
             worker.join().unwrap();
             fs::remove_file(socket).unwrap();
@@ -4459,7 +4621,7 @@ pub(crate) mod tests {
                 assert_eq!(correlation.agent_name, retry);
                 assert!(correlation.matches_request(&request, &context));
             }
-            NativeLaunchOutcome::OutcomeUnknown => panic!("retried start lost"),
+            NativeLaunchOutcome::OutcomeUnknown { .. } => panic!("retried start lost"),
         }
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4475,7 +4637,9 @@ pub(crate) mod tests {
         assert_eq!(
             cli.guarded_start_cli(&request, &context, &observation)
                 .unwrap(),
-            NativeLaunchOutcome::OutcomeUnknown
+            NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false
+            }
         );
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4536,7 +4700,9 @@ pub(crate) mod tests {
         assert_eq!(
             cli.guarded_start_cli(&request, &context, &observation)
                 .unwrap(),
-            NativeLaunchOutcome::OutcomeUnknown
+            NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false
+            }
         );
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -7120,6 +7286,29 @@ pub(crate) mod tests {
     /// helper while it starts), so the pane's foreground is a set. The composer wake matches a
     /// binding's fingerprint pid against the whole set. Kills: reading the set as `None` when
     /// it has several members, keeping the shell, or keeping a zero or oversized pid.
+    /// ht-fr7c.7: a harness `exec`ed as the pane's program is its root process (`shell_pid`) and
+    /// its only foreground process. Kills: taking the root when anything else is foreground, or
+    /// when the root is not foreground at all (a shell running a child).
+    #[test]
+    fn root_only_foreground_pid_is_the_root_alone_in_the_foreground() {
+        let info = |shell: u64, pids: &[u64]| {
+            serde_json::json!({"result":{"type":"pane_process_info","process_info":{
+                "shell_pid":shell,
+                "foreground_processes":pids.iter().map(|pid| serde_json::json!({"pid":pid}))
+                    .collect::<Vec<_>>()
+            }}})
+        };
+        assert_eq!(root_only_foreground_pid(&info(10, &[10])), Some(10));
+        assert_eq!(root_only_foreground_pid(&info(10, &[10, 20])), None);
+        assert_eq!(root_only_foreground_pid(&info(10, &[20])), None);
+        assert_eq!(root_only_foreground_pid(&info(10, &[])), None);
+        assert_eq!(root_only_foreground_pid(&info(0, &[0])), None);
+        assert_eq!(
+            root_only_foreground_pid(&serde_json::json!({"error":{}})),
+            None
+        );
+    }
+
     #[test]
     fn foreground_process_pids_are_every_non_shell_foreground_process() {
         let info = |shell: u64, pids: &[u64]| {

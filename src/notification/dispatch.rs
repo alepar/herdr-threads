@@ -339,11 +339,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                     Some("several targets, pane not idle"),
                 );
             }
-            let foreground = match self
+            let crate::ports::PaneForeground {
+                pids: foreground,
+                root_harness,
+            } = match self
                 .host
-                .foreground_pids(&reservation.target, &read_context)
+                .pane_foreground(&reservation.target, &read_context)
             {
-                Ok(pids) => pids,
+                Ok(read) => read,
                 // A gated wake keeps the gate's own refusal when the read fails.
                 Err(_) if gated => {
                     return refuse(
@@ -354,7 +357,15 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 }
                 Err(err) => return refuse_error(err),
             };
-            let choice = reservation.authority.composer_choice(&foreground);
+            let mut choice = reservation.authority.composer_choice(&foreground);
+            // No foreground child: the pane's program may be the harness itself (`exec`ed as
+            // the pane's root process). Only a seat-spanning harness's one composer matches it.
+            if foreground.is_empty()
+                && matches!(choice, ComposerChoice::NoMatch)
+                && let Some(root) = root_harness.as_deref()
+            {
+                choice = reservation.authority.root_composer_choice(root);
+            }
             // One process is one composer (ht-327): like a single target it needs no idle
             // classification here (a composer read that cannot classify it leaves it
             // `Unknown`); the adapter's final composer read before submission still refuses

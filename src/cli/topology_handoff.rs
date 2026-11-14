@@ -245,8 +245,8 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
     {
         return Err(fail("invalid automatic bootstrap target or channel"));
     }
-    // Any launch-capable adapter whose composition launches the caller arguments unchanged
-    // (checked after preflight below): the automatic plan freezes the adapter's own startup input.
+    // Any launch-capable adapter (composition limits checked after preflight below): the
+    // automatic plan freezes the adapter's own startup input.
     let (kind, harness) = request
         .kind
         .as_deref()
@@ -479,13 +479,20 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
     .map_err(fail)?;
     identity.validate_admission().map_err(fail)?;
     let effective = preflight_automatic_launch_request(&identity)?;
-    // Completion validates the retained native argv against the applied caller argv, not a
-    // frozen composition, so the automatic plan admits only an adapter whose composition
-    // launches those arguments unchanged. Others take the explicit-channel V2 route.
-    if crate::harness::launch::compose_bootstrap_v2_argv(
-        identity.plan.payload.launch.harness,
-        effective.argv.clone(),
-    )? != effective.argv
+    // A daemon advertising the composed-argv capability completes a V2 plan against the adapter's
+    // composition of the applied caller argv. A V3 target runs the frozen argv as is, and an
+    // older daemon compares with the applied argv itself, so there the automatic plan admits only
+    // an adapter whose composition launches the caller arguments unchanged. Others take the
+    // explicit-channel V2 route.
+    if (identity.plan.placement.is_some()
+        || !inputs.client.supports_capability(
+            crate::protocol::capabilities::AUTOMATIC_HANDOFF_COMPOSED_ARGV_V1,
+            &super::cooperative_budget(inputs.clock),
+        ))
+        && crate::harness::launch::compose_bootstrap_v2_argv(
+            identity.plan.payload.launch.harness,
+            effective.argv.clone(),
+        )? != effective.argv
     {
         return Err(super::unsupported(
             "automatic new-tab handoff needs an adapter that launches the caller arguments \

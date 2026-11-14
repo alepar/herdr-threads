@@ -242,6 +242,7 @@ BUSY_AFTER_S = 40.0
 BUSY_DONE_LINE = re.compile(r"^[^\w\n]*BUSY-DONE.*$", re.M)
 BUSY_PROMPT_END = "BUSY-DONE."
 BUSY_END_GRACE_S = 10.0  # idle this long with no BUSY-DONE line: the turn is over without one
+HERMES_BLANK_READ_S = 5.0  # a blank Hermes detection read is retried this long (a TUI not yet drawn)
 # Channel literal pinned to policy::CHANNEL_WAKE_UP by tests/harness/claude_mod.rs.
 CHANNEL_WAKE_UP = "wake up"
 # Keep the native and pre-upgrade channel forms ahead of their short suffix.
@@ -1848,7 +1849,14 @@ class Recipient:
 
     def status(self):
         if self.harness == "hermes":  # Herdr reports Hermes idle mid-turn
-            screen = self.run.herdr("agent", "read", self.pane, "--source", "detection", check=False).get("raw", "")
+            # Herdr detects Hermes by its process, before its TUI has drawn: a read right after startup (or
+            # during a full redraw) can come back blank once (live 2026-11-14, he-t0), so retry a few seconds.
+            end = time.time() + HERMES_BLANK_READ_S
+            while True:
+                screen = self.run.herdr("agent", "read", self.pane, "--source", "detection", check=False).get("raw", "")
+                if screen.strip() or time.time() >= end:
+                    break
+                time.sleep(0.5)
             if not screen.strip():
                 raise RuntimeError(f"{self.name}: unreadable Hermes screen")
             return "idle" if hermes_idle(screen) else "working"

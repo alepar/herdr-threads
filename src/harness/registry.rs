@@ -1549,6 +1549,19 @@ impl Registry {
             .iter()
             .filter_map(|r| Some((r.metadata().id, r.caller_env()?)))
     }
+    /// The session variables (`CallerEnvShape::session_vars`) of every harness but `own`, in
+    /// registry order, deduplicated: what a session of `own` never inherits as its own.
+    pub fn foreign_session_vars(&self, own: &str) -> Vec<&'static str> {
+        let mut vars = Vec::new();
+        for (_, shape) in self.caller_shapes().filter(|(id, _)| *id != own) {
+            for var in shape.session_vars() {
+                if !vars.contains(&var) {
+                    vars.push(var);
+                }
+            }
+        }
+        vars
+    }
     /// The prompt a native idle wake types for a harness id: the marker unless its delivery
     /// policy injects the pending items at turn start.
     pub fn wake_text(&self, harness_id: &str) -> &'static str {
@@ -2309,10 +2322,18 @@ mod tests {
                 assert_eq!(report["harnesses"][0]["harness"], "profileonly");
                 assert_eq!(report["harnesses"][0]["detected"], true);
                 assert_eq!(report["harnesses"][0]["outcome"], "skipped");
-                assert_eq!(
-                    report["harnesses"][0]["reason"],
-                    "requires explicit harness selection for a profile scope"
-                );
+                let expected = match verb {
+                    SetupVerb::Install => {
+                        "not set up; run: herdr-threads setup profileonly [--profile NAME]"
+                    }
+                    SetupVerb::Status => {
+                        "not checked; run: herdr-threads setup-status profileonly [--profile NAME]"
+                    }
+                    SetupVerb::Remove => {
+                        "not removed; run: herdr-threads unsetup profileonly [--profile NAME]"
+                    }
+                };
+                assert_eq!(report["harnesses"][0]["reason"], expected);
             }
         }
     }
@@ -2636,15 +2657,13 @@ mod tests {
         use crate::cli::setup::{PromptSuggestionPolicy, SetupVerb, execute_all_registered};
         let scratch = AggregateScratch::new();
         let environment = scratch.environment(&[]);
+        // `None`: a profile scope, whose reason names the command to run.
         for (scopes, reason) in [
-            (&[][..], "local setup unavailable"),
-            (
-                &[SetupScopeKind::Profile][..],
-                "requires explicit harness selection for a profile scope",
-            ),
+            (&[][..], Some("local setup unavailable")),
+            (&[SetupScopeKind::Profile][..], None),
             (
                 &[SetupScopeKind::ConfigRoot, SetupScopeKind::Profile][..],
-                "requires explicit harness selection for a profile scope",
+                None,
             ),
         ] {
             let adapter = aggregate_fixture("sparse", "Sparse", scopes, None);
@@ -2660,7 +2679,11 @@ mod tests {
                 .unwrap();
                 assert_eq!(report["exit_status"], 0);
                 assert_eq!(report["harnesses"][0]["outcome"], "skipped");
-                assert_eq!(report["harnesses"][0]["reason"], reason);
+                let expected = reason.map_or_else(
+                    || crate::cli::setup::profile_scope_skip_reason(verb, "sparse"),
+                    str::to_owned,
+                );
+                assert_eq!(report["harnesses"][0]["reason"], expected.as_str());
             }
         }
         let adapter = aggregate_fixture("missing", "Missing", &[SetupScopeKind::ConfigRoot], None);

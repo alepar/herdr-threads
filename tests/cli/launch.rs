@@ -152,13 +152,16 @@ impl HostPort for FakeHost {
     ) -> Result<NativeLaunchOutcome, ApiError> {
         self.submitted.lock().unwrap().push(request.clone());
         if self.unknown {
-            return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            return Ok(NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false,
+            });
         }
         let mut diagnostic = self.observation();
         diagnostic.occupancy = StructuralOccupancy::Occupied;
         Ok(NativeLaunchOutcome::ObservedStartup {
             correlation: CorrelatedStartup {
                 process_hint: false,
+                process_hint_sent: false,
                 seat: request.seat.clone(),
                 agent_name: request.agent_name(),
                 harness: request.harness,
@@ -2867,17 +2870,13 @@ pub(in crate::cli) fn task10_hermes_native_fixture<R>(
     let mut prelaunch = profile.clone();
     prelaunch["schema_version"] = json!(3);
     prelaunch["evidence_stage"] = json!("prelaunch_api_profile_observation");
-    prelaunch["api"] = json!({"register_hook":true,"on_unload":true,"invoke_hook":true,"callbacks":["pre_llm_call","post_tool_call","on_session_start","on_session_reset"]});
-    prelaunch["module_origins"]["hermes_cli.plugins"] =
-        json!("/fixture/native source/hermes_cli/plugins.py");
-    prelaunch["module_origins"]["hermes_cli.plugins_dispatch"] =
-        json!("/fixture/native source/hermes_cli/plugins_dispatch.py");
     let mut machine: Vec<String> =
         serde_json::from_slice(include_bytes!("../fixtures/hermes/runtime-command.json")).unwrap();
     machine[0] = interpreter.display().to_string();
     machine[6] = scratch
         .root
-        .join("state/setup/hermes-runtime-helper.py")
+        .join("state/setup")
+        .join(crate::harness::hermes::runtime_helper_file_name())
         .display()
         .to_string();
     fs::write(

@@ -23,7 +23,7 @@ Next steps:
   - To select the installed ht, put <root>/ubin first on PATH; caller shell aliases/functions may also override it.
   - Start Herdr (or restart its server) so the plugin's startup entry starts the daemon,
     then check it: herdr-threads doctor
-  - Try it: in a Herdr shell pane run herdr-threads human me init, then follow https://github.com/alepar/herdr-threads#try-it-yourself
+  - Try it: in a Herdr shell pane run herdr-threads human me init, then follow https://github.com/alepar/herdr-threads/blob/main/docs/try-it.md
 installed and linked: herdr-threads <version>
 
 --- claude settings.json

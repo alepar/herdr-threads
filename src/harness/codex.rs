@@ -1483,6 +1483,7 @@ impl HarnessAdapter for CodexAdapter {
                 matches: is_managed_daemon,
                 refusal: managed_daemon_refusal,
             }),
+            session_marker_vars: &["CODEX_THREAD_ID"],
         })
     }
     /// Under herdr-core a Codex daemon would reparent its hooks out of the terminal's process

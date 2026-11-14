@@ -46,8 +46,9 @@ enabled (`hermes --profile NAME plugins enable herdr-threads`): its session star
 the pane's seat and its first top-level turn gets the context. Delegated children
 (platform `subagent`) never enroll. There is no resume continuity (a resumed session
 starts fresh on the pane's seat). On macOS Herdr does not recognize a bare Hermes
-(`herdr-threads launch --kind hermes` adds the process hint that makes it recognized, but
-only a Herdr that advertises `agent_start_process_hint_v1` accepts it);
+(`herdr-threads launch --kind hermes` adds the process hint that makes it recognized when
+Herdr advertises `agent_start_process_hint_v1`; otherwise it starts without the hint and the
+report says `process_hint: host_unsupported`);
 on Linux it does. Either way the gateway keeps a Hermes seat from being woken while
 idle, as above. After upgrading herdr-threads, re-run
 `setup hermes --profile NAME` so the installed bridge sends the enrollment witness; an
@@ -57,12 +58,13 @@ limits).
 
 From Hermes 0.22.1 every CLI and TUI session of a profile runs in one shared gateway
 process, whose own environment is that of the pane that started it. Each pane's
-session must therefore carry its own pane: add both names to the profile's client
-environment passthrough, merged with any names already listed there:
-
-```sh
-hermes --profile NAME config set terminal.client_env_passthrough '[HERDR_PANE_ID, HERDR_ENV]'
-```
+session must therefore carry its own pane: both names must be in the profile's client
+environment passthrough. `setup hermes --profile NAME` adds them through Hermes's own
+`config get`/`config set`, after the names already listed (it writes nothing when both are
+there, and `unsetup` leaves them); `setup-status` and `doctor` report a profile that lacks
+them. If setup cannot run Hermes's CLI, it says so; then merge both names into the list
+yourself, keeping the names `hermes --profile NAME config get terminal.client_env_passthrough`
+shows (a `config set` replaces the whole list).
 
 A continuity key does not reach a gateway session: from 0.22.1 Hermes refuses any passthrough
 name containing `KEY`, so the session runs keyless.
@@ -72,7 +74,15 @@ that session's values to its hook child, so the session takes its own pane's sea
 also reach the session's tool subprocesses, so the model's own `herdr-threads` calls name
 the same pane. A gateway session without them (passthrough unset, a session created
 before it was set, Desktop or a messaging platform) runs no hook: it is never seated on
-the gateway's pane. Start a new `hermes` session after changing the setting. A classic
+the gateway's pane, and its first turn gets one line naming the fix for a client in a Herdr pane. On a Hermes with
+`ctx.register_session_env`, the bridge also sets each session's tool subprocesses to its own
+pane (a delegated child: its parent's) and, for a session without one, unsets the pane
+variables, so its `herdr-threads` calls answer "no pane" instead of naming the gateway's, and
+unsets other harnesses' session variables (`CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, ...);
+on an older Hermes, or one that refuses the registration (another plugin holds one of the
+names; the bridge logs a warning), they inherit the gateway's environment. The setting applies to new sessions
+only: a session created before setup added it stays unseated until you start a new `hermes`
+session. A classic
 Hermes (before 0.22.1) runs in its pane's own process and needs no setting. Native `delegate_task`
 children run with platform `subagent`; their parented `pre_llm_call` gets the
 subagent restriction locally and every other subagent callback is ignored, except the delegate

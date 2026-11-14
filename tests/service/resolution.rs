@@ -2848,13 +2848,16 @@ impl HostPort for LaunchHost {
     ) -> Result<NativeLaunchOutcome, ApiError> {
         self.submitted.lock().unwrap().push(request.clone());
         if self.unknown {
-            return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            return Ok(NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false,
+            });
         }
         let mut diagnostic = self.observation();
         diagnostic.occupancy = StructuralOccupancy::Occupied;
         Ok(NativeLaunchOutcome::ObservedStartup {
             correlation: CorrelatedStartup {
                 process_hint: false,
+                process_hint_sent: false,
                 seat: request.seat.clone(),
                 agent_name: request.agent_name(),
                 harness: request.harness,

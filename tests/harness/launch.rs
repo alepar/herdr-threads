@@ -400,6 +400,7 @@ impl HostPort for FakeHost {
                         .clone()
                         .unwrap_or(CorrelatedStartup {
                             process_hint: false,
+                            process_hint_sent: false,
                             seat: request.seat.clone(),
                             agent_name: request.agent_name(),
                             harness: request.harness,
@@ -422,7 +423,7 @@ impl HostPort for FakeHost {
                     diagnostic: diagnostic.clone(),
                 }
             }
-            NativeLaunchOutcome::OutcomeUnknown => NativeLaunchOutcome::OutcomeUnknown,
+            unknown @ NativeLaunchOutcome::OutcomeUnknown { .. } => unknown.clone(),
         })
     }
     fn send_submit_key(
@@ -557,6 +558,7 @@ fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
     };
     CorrelatedStartup {
         process_hint: false,
+        process_hint_sent: false,
         seat: request.seat.clone(),
         agent_name: request.agent_name(),
         harness: request.harness,
@@ -821,7 +823,9 @@ fn conflicting_codex_mode_and_unsupported_adapter_never_start() {
 #[test]
 fn uncertain_transport_stays_unknown_and_does_not_resolve_again() {
     let (mut host, seats, hooks, clock, budget) = fixture();
-    host.outcome = NativeLaunchOutcome::OutcomeUnknown;
+    host.outcome = NativeLaunchOutcome::OutcomeUnknown {
+        process_hint_skipped: false,
+    };
     assert!(matches!(
         launch_managed(
             &host,
@@ -832,7 +836,9 @@ fn uncertain_transport_stays_unknown_and_does_not_resolve_again() {
             &budget
         )
         .unwrap(),
-        NativeLaunchOutcome::OutcomeUnknown
+        NativeLaunchOutcome::OutcomeUnknown {
+            process_hint_skipped: false
+        }
     ));
     assert_eq!(seats.calls.load(Ordering::SeqCst), 1);
     assert_eq!(host.submitted.lock().unwrap().len(), 1);
@@ -849,7 +855,9 @@ fn uncertain_transport_stays_unknown_and_does_not_resolve_again() {
             &budget
         )
         .unwrap(),
-        NativeLaunchOutcome::OutcomeUnknown
+        NativeLaunchOutcome::OutcomeUnknown {
+            process_hint_skipped: false
+        }
     ));
     assert_eq!(host.submitted.lock().unwrap().len(), 1);
 
@@ -943,7 +951,12 @@ fn unchanged_empty_response_never_proves_startup_for_both_harnesses() {
             &budget,
         )
         .unwrap();
-        assert_eq!(result, NativeLaunchOutcome::OutcomeUnknown);
+        assert_eq!(
+            result,
+            NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false
+            }
+        );
         assert_eq!(host.submitted.lock().unwrap().len(), 1);
     }
 }
@@ -992,7 +1005,9 @@ fn mismatched_startup_correlation_stays_unknown_for_both_harnesses() {
             .unwrap();
             assert_eq!(
                 result,
-                NativeLaunchOutcome::OutcomeUnknown,
+                NativeLaunchOutcome::OutcomeUnknown {
+                    process_hint_skipped: false
+                },
                 "{harness:?} {mismatch}"
             );
             assert_eq!(host.submitted.lock().unwrap().len(), 1);

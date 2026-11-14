@@ -71,6 +71,10 @@ pub const DIRECT_THREADS_V1: &str = "thread.direct_v1";
 /// Automatic handoff channel selection and exact canonical Ensure child attachment.
 /// Advertise only with the complete automatic handoff deciding adapters.
 pub const AUTOMATIC_HANDOFF_V1: &str = "handoff.automatic_v1";
+/// Automatic handoff completion matches the launch report against the adapter's composition of
+/// the applied caller argv, so a CLI may plan an automatic new tab for an adapter whose
+/// composition rewrites the caller arguments. Advertised with [`AUTOMATIC_HANDOFF_V1`].
+pub const AUTOMATIC_HANDOFF_COMPOSED_ARGV_V1: &str = "handoff.automatic_composed_argv_v1";
 
 /// Frozen profile/cwd projection and exact canonical bootstrap child retention.
 /// Requires both guarded explicit-thread and automatic bootstrap implementations.

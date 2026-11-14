@@ -6,7 +6,7 @@ A [Herdr](https://herdr.dev) plugin. Claude Code, Codex, Antigravity, opencode a
 
 https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
 
-*Claude and Codex debate in a thread while a human joins in. [MP4](docs/media/try-it.mp4)*
+*Claude and Codex debate in a thread while a human joins in. [MP4](docs/media/try-it.mp4), [walkthrough](docs/try-it.md)*
 
 **Status:** v2.2.1. macOS, Linux. [Changelog](CHANGELOG.md)
 
@@ -58,45 +58,43 @@ Installs `~/.local/bin/herdr-threads`, registers the plugin and, with `--setup`,
 
 Linux is experimental: x86_64 and agent harness sessions remain unverified until the [rehearsal on a clean machine](docs/release.md#post-merge-follow-on-checklist). Intel macOS is untested, and Windows is unsupported. More in the [installation guide](docs/install.md).
 
-## Try it yourself
+## Quick start
 
-1. In your shell pane, join as a person:
+1. [Install](#install), then start Claude Code or Codex in a Herdr pane.
+2. Hand work to a new tab (in your agent):
 
-   ```sh
-   herdr-threads human me init
+   ```
+   /herdr-threads handoff to a new tab and ask it to fetch the weather in London
    ```
 
-2. Split two empty panes and name them `alice` and `bob` (`herdr pane rename "$HERDR_PANE_ID" alice`). Ask your agent to run:
+   Your agent opens the tab, starts an agent there and sends the task as a thread message.
+3. Follow up. A plain message waits for the tab's next turn; `p0` wakes it:
 
-   ```sh
-   herdr-threads handoff --new-thread --thread-name review --topic "Tabs or spaces?" \
-     --pane alice --kind claude -- "Argue for spaces. Wait for Bob, then debate him here."
-   herdr-threads handoff --thread review --pane bob --kind codex -- \
-     "Argue for tabs. Tell Alice you are ready, debate, and agree on a recommendation."
+   ```
+   /herdr-threads p0 ask the new tab to also fetch the weather in New York and reply back
    ```
 
-3. Join in, require ACKs within five minutes, and watch:
+In Codex, write `$herdr-threads`. More to ask for:
 
-   ```sh
-   herdr-threads human join review
-   herdr-threads human send review --require-ack-pane alice --require-ack-pane bob \
-     --deadline 300 --body "Settle on one recommendation."
-   herdr-threads pending-receipts --thread review
-   herdr-threads follow review
-   ```
+- `handoff to a new codex tab to review this change`
+- `tell the main tab the fix is merged`
+- `handoff these issues, one tab per issue, and have each report back`
+- `create a project-dev thread and invite every agent tab in this space`
+
+For a shorter `/ht`, ask your agent to create an `ht` skill that aliases `herdr-threads`.
 
 ## Everyday commands
 
 | Command | |
 | --- | --- |
+| `doctor` | Diagnose, with fixes |
+| `update` | Update to the latest release |
+| `human peer add user@host` | Link a machine |
 | `read`, `follow THREAD` | Pick a thread; watch one live |
+| `summary THREAD` | Catch up |
+| `human send THREAD --body TEXT` | Post (`--require-ack-pane PANE --deadline SECONDS` for receipts) |
 | `thread list --all --search TEXT` | Find threads |
 | `human join THREAD` | Join a thread |
-| `human send THREAD --body TEXT` | Post (`--require-ack-pane PANE --deadline SECONDS` for receipts) |
-| `pending-receipts`, `overdue` | Who owes an ACK; what is late |
-| `summary THREAD` | Catch up |
-| `human peer add user@host` | Link a machine |
-| `doctor` | Diagnose, with fixes |
 
 All are `herdr-threads` subcommands with `--help`. Agents learn the rest from the [skill](integrations/skill/SKILL.md) the installer adds.
 

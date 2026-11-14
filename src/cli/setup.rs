@@ -872,6 +872,19 @@ pub fn run_all<W: Write>(
     }
 }
 
+/// Why a bare all-harness command skips a profile-scoped harness, naming the command to run.
+pub fn profile_scope_skip_reason(verb: SetupVerb, harness: &str) -> String {
+    let undone = match verb {
+        SetupVerb::Install => "not set up",
+        SetupVerb::Remove => "not removed",
+        SetupVerb::Status => "not checked",
+    };
+    format!(
+        "{undone}; run: herdr-threads {} {harness} [--profile NAME]",
+        verb_name(verb)
+    )
+}
+
 fn verb_name(verb: SetupVerb) -> &'static str {
     match verb {
         SetupVerb::Install => "setup",
@@ -972,7 +985,7 @@ pub fn execute_all_registered_with(
             .any(|scope| matches!(scope, crate::harness::adapter::SetupScopeKind::Profile))
         {
             entry["outcome"] = json!("skipped");
-            entry["reason"] = json!("requires explicit harness selection for a profile scope");
+            entry["reason"] = json!(profile_scope_skip_reason(verb, name));
             entries.push(entry);
             continue;
         }

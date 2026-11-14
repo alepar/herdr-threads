@@ -81,6 +81,7 @@ impl HarnessAdapter for AgyAdapter {
             process_match: None,
             pid_var: None,
             paneless: None,
+            session_marker_vars: &[],
         })
     }
     fn output_policy(&self) -> OutputPolicy {

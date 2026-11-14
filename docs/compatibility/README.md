@@ -40,7 +40,8 @@ Herdr build is in [native acceptance](../evidence/harness-adapters/native-accept
 A bare Hermes CLI session in a Herdr pane enrolls through herdr-threads' Hermes hooks (its
 CLI session start, or a top-level turn on an unowned pane) when the selected profile has the
 plugin set up (`setup hermes --profile NAME`) and enabled; `launch --kind hermes` is the other
-path and adds the guarded process hint that makes the seat wakeable.
+path and adds the guarded process hint that makes the seat wakeable, when Herdr advertises it
+(see "Process hints are cooperative recognition input" in TRUST-POLICY.md).
 `native_callback`/`native_shape_observation` and `bridge_envelope`/`bridge_envelope`
 remain independent domains; `qualified_turn` and `qualified_post_tool` must be
 measured separately for each exact runtime/contract. Native loader gate and timely

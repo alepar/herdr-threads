@@ -546,14 +546,16 @@ fn guarded_start_inner(
     provider: &dyn ProcessInfoProvider,
     validate: &StartValidator<'_>,
     observe: &PingObserver<'_>,
-) -> Result<WitnessedResponse, crate::ports::NativeLaunchFailure> {
+) -> Result<GuardedStart, GuardedStartFailure> {
     use crate::ports::{NativeLaunchFailure, NativeSubmission};
     let started = Instant::now();
+    let mut params = params;
     std::thread::scope(|scope| {
         scope
             .spawn(move || {
                 let attempted = Cell::new(false);
-                let result: Result<WitnessedResponse, ApiError> = (|| {
+                let hint_skipped = Cell::new(false);
+                let result: Result<GuardedStart, ApiError> = (|| {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_io()
                         .enable_time()
@@ -576,17 +578,17 @@ fn guarded_start_inner(
                         )
                         .await?;
                         let pong = compatible_pong(&ping, observe)?;
-                        if pong
+                        // A host that does not advertise the hint gets the same fenced start
+                        // without it: only recognition by hint degrades (decided from this
+                        // pong, never from a version).
+                        let process_hint_sent = pong
                             .pointer("/capabilities/agent_start_process_hint_v1")
                             .and_then(Value::as_bool)
-                            != Some(true)
-                        {
-                            return Err(error(
-                                ErrorCode::Unsupported,
-                                "host does not advertise agent_start_process_hint_v1; start the agent in the \
-                                 pane itself",
-                            ));
+                            == Some(true);
+                        if !process_hint_sent && let Some(fields) = params.as_object_mut() {
+                            fields.remove("process_hint");
                         }
+                        hint_skipped.set(!process_hint_sent);
                         let witness = witness.ok_or_else(|| {
                             error(
                                 ErrorCode::StaleHostObservation,
@@ -639,31 +641,60 @@ fn guarded_start_inner(
                                 "host API response encoding failed",
                             )
                         })?;
-                        Ok(WitnessedResponse { body, witness })
+                        Ok(GuardedStart {
+                            response: WitnessedResponse { body, witness },
+                            process_hint_sent,
+                        })
                     })
                 })();
-                result.map_err(|error| NativeLaunchFailure {
-                    error,
-                    submission: if attempted.get() {
-                        NativeSubmission::Possible
-                    } else {
-                        NativeSubmission::NotSubmitted
-                    },
+                result.map_err(|error| {
+                    let possible = attempted.get();
+                    GuardedStartFailure {
+                        failure: NativeLaunchFailure {
+                            error,
+                            submission: if possible {
+                                NativeSubmission::Possible
+                            } else {
+                                NativeSubmission::NotSubmitted
+                            },
+                        },
+                        process_hint_skipped: possible && hint_skipped.get(),
+                    }
                 })
             })
             .join()
-            .map_err(|_| NativeLaunchFailure {
-                error: error(
-                    ErrorCode::HostUnavailable,
-                    "host API task panicked; outcome unknown",
-                ),
-                submission: NativeSubmission::Possible,
+            .map_err(|_| GuardedStartFailure {
+                failure: NativeLaunchFailure {
+                    error: error(
+                        ErrorCode::HostUnavailable,
+                        "host API task panicked; outcome unknown",
+                    ),
+                    submission: NativeSubmission::Possible,
+                },
+                process_hint_skipped: false,
             })?
     })
 }
 
-/// Required-mode start: each actual ping negotiates capability, and the
-/// connected operation peer is fenced before polling the first write.
+/// A fenced start that failed, and whether a possibly submitted frame went without the
+/// `process_hint` field the request carried.
+#[derive(Debug)]
+pub(crate) struct GuardedStartFailure {
+    pub failure: crate::ports::NativeLaunchFailure,
+    pub process_hint_skipped: bool,
+}
+
+/// A fenced start's response and whether its frame carried `process_hint`.
+#[derive(Debug, Clone)]
+pub(crate) struct GuardedStart {
+    pub response: WitnessedResponse,
+    /// False when the pong did not advertise `agent_start_process_hint_v1`: the frame was
+    /// sent without the field.
+    pub process_hint_sent: bool,
+}
+
+/// Required-mode start: each actual ping negotiates the hint capability (sent only when
+/// advertised), and the connected operation peer is fenced before polling the first write.
 // Allowed: existing guarded-start inputs plus the diagnostic ping observer.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn request_guarded_start(
@@ -675,7 +706,7 @@ pub(crate) fn request_guarded_start(
     limit: Duration,
     validate: &StartValidator<'_>,
     observe: &PingObserver<'_>,
-) -> Result<WitnessedResponse, crate::ports::NativeLaunchFailure> {
+) -> Result<GuardedStart, GuardedStartFailure> {
     guarded_start_inner(
         socket,
         id,
@@ -1025,7 +1056,7 @@ mod process_hint_tests {
                 "{case} wrote an operation"
             );
             assert_no_partial_bytes(&frames, received);
-            let failure = result.expect_err(case);
+            let failure = result.expect_err(case).failure;
             assert_eq!(failure.submission, NativeSubmission::NotSubmitted, "{case}");
             let code = match case {
                 "expired" | "expired-before" => ErrorCode::DeadlineExceeded,
@@ -1083,7 +1114,7 @@ mod process_hint_tests {
             if supported {
                 result.unwrap();
             } else {
-                let failure = result.unwrap_err();
+                let failure = result.unwrap_err().failure;
                 assert_eq!(failure.error.code, ErrorCode::Unsupported);
                 assert_eq!(failure.submission, NativeSubmission::NotSubmitted);
             }
@@ -1115,7 +1146,8 @@ mod process_hint_tests {
                     cancellation: Cancellation::default(),
                 };
                 let observe = |release| *observed.lock().unwrap() = release;
-                let submitted = version != "0.9.0" && (!guarded || capability);
+                // A guarded start on a host without the hint capability is sent without it.
+                let submitted = version != "0.9.0";
                 if guarded {
                     let failure = request_guarded_start(
                         fixture.endpoint(),
@@ -1127,7 +1159,8 @@ mod process_hint_tests {
                         &|_, _| Ok(()),
                         &observe,
                     )
-                    .unwrap_err();
+                    .unwrap_err()
+                    .failure;
                     assert_eq!(failure.error.code, ErrorCode::Unsupported);
                     assert_eq!(
                         failure.submission,
@@ -1159,6 +1192,16 @@ mod process_hint_tests {
                         .count(),
                     usize::from(submitted)
                 );
+                if guarded
+                    && let Some(start) =
+                        frames.iter().find(|frame| frame["method"] == "agent.start")
+                {
+                    assert_eq!(
+                        start["params"].get("process_hint"),
+                        capability.then_some(&json!(true)),
+                        "the hint is sent only to a host that advertises it"
+                    );
+                }
                 let release = observed.into_inner().unwrap();
                 if version == "0.9.0" {
                     assert!(
@@ -1283,7 +1326,7 @@ mod process_hint_tests {
                 "{case}"
             );
             assert_no_partial_bytes(&frames, received);
-            let failure = result.expect_err(case);
+            let failure = result.expect_err(case).failure;
             assert_eq!(
                 failure.submission,
                 if case == "unsupported-exact" {

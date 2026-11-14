@@ -1576,7 +1576,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
     assert_eq!(report["exit_status"], 0);
     assert_eq!(
         report["harnesses"][2]["reason"],
-        "requires explicit harness selection for a profile scope"
+        "not set up; run: herdr-threads setup hermes [--profile NAME]"
     );
 
     let status = s.run(&["--json", "setup-status"]);
@@ -3651,7 +3651,10 @@ impl HermesScopeFixture {
             (package.join("__init__.py"),String::new()),
             (package.join("profiles.py"),format!("from pathlib import Path\ndef normalize_profile_name(p): return p.strip().lower()\ndef validate_profile_name(p):\n if p not in ('default','work'): raise ValueError('private')\ndef resolve_profile_env(p):\n p=normalize_profile_name(p);validate_profile_name(p)\n root=Path({});home=root if p=='default' else root/'profiles'/p\n if not home.is_dir(): raise FileNotFoundError('private')\n return str(home)\n",py(&native_home))),
             (package.join("version_info.py"),"from types import SimpleNamespace\ndef get_version_info(): return SimpleNamespace(source='git',base_version='0.21.5',derived_version='0.21.5+1.g1234567',commit='1234567890abcdef1234567890abcdef12345678',dirty=False,distance=1)\n".into()),
-            (package.join("config.py"),"class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':['herdr-threads'],'disabled':[]}}\n".into()),
+            // The 0.23.1 plugin API layout: PluginContext in plugins_context.py, re-exported.
+            (package.join("plugins_context.py"), "class PluginContext:\n def register_hook(self): pass\n def on_unload(self): pass\n".into()),
+            (package.join("plugins.py"), "from hermes_cli.plugins_context import PluginContext\nclass PluginManager:\n def invoke_hook(self): pass\nVALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n".into()),
+            (package.join("config.py"),"class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':['herdr-threads'],'disabled':[]},'terminal':{'client_env_passthrough':['HERDR_PANE_ID','HERDR_ENV']}}\n".into()),
         ] { fs::write(path,bytes).unwrap(); }
         for home in [&native_home, native_home.join("profiles/work").as_path()] {
             fs::write(
@@ -4608,7 +4611,11 @@ fn task51_target(f: &HermesScopeFixture, name: &str) -> PathBuf {
             .selected_home("work")
             .join("plugins/.herdr-threads-operation.identity"),
         "manifest" => task51_manifest(f),
-        "helper" => f.scratch.state.join("setup/hermes-runtime-helper.py"),
+        "helper" => f
+            .scratch
+            .state
+            .join("setup")
+            .join(herdr_threads::harness::hermes::runtime_helper_file_name()),
         name => f
             .selected_home("work")
             .join("plugins/herdr-threads")
