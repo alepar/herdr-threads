@@ -1575,7 +1575,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
     assert_eq!(report["exit_status"], 0);
     assert_eq!(
         report["harnesses"][2]["reason"],
-        "requires explicit harness selection for a profile scope"
+        "not set up; run: herdr-threads setup hermes [--profile NAME]"
     );
 
     let status = s.run(&["--json", "setup-status"]);

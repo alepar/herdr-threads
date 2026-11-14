@@ -37,6 +37,8 @@ SLOT = "_herdr_threads_hermes_reader_schema1"
 # Hermes 0.22.1+ filters HERDR_THREADS_CONTINUITY_KEY on both sides, so it stays empty for a gateway session.
 PANE_ENV = ("HERDR_PANE_ID", "HERDR_ENV", "HERDR_THREADS_SEAT_NAME", "HERDR_THREADS_SEAT_READONLY",
             "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "HERDR_THREADS_CONTINUITY_KEY")
+# The once-per-session notice of a gateway session whose client sent no pane (no hook runs for it).
+NO_PANE_NOTICE = 'herdr-threads: this session has no pane; ask your user to run "herdr-threads setup hermes" and start a new session'
 CHILD_RESTRICTION = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent."
 # First 16 SHA-256 hex chars of sorted compact JSON of the normalized schema
 # declaration in testdata/callbacks.json. This identifies transport, not the
@@ -403,6 +405,7 @@ class Sessions:
         self.lock = threading.Lock()
         self.panes = OrderedDict()  # top-level session -> pane values
         self.parents = OrderedDict()  # delegated child session -> parent session
+        self.noticed = OrderedDict()  # sessions already shown NO_PANE_NOTICE
         self.foreign = tuple(foreign)
         self.names = PANE_ENV + self.foreign
 
@@ -437,12 +440,21 @@ class Sessions:
                 if name == "on_session_finalize":
                     with self.lock:
                         self.panes.pop(session, None)
+                        self.noticed.pop(session, None)
                     return
                 pane = session_pane()
                 if isinstance(pane, dict):
                     self.put(self.panes, session, pane)
         except Exception:
             pass
+
+    def notice(self, session):
+        """True only the first time it is asked for a session."""
+        with self.lock:
+            if session in self.noticed:
+                return False
+        self.put(self.noticed, session, True)
+        return True
 
     def resolve(self, session_id):
         try:
@@ -644,6 +656,9 @@ class Bridge:
             return {"context": CHILD_RESTRICTION}
         env = pane_env()
         if env is False:
+            # Delegated children returned above: a top-level turn of an unseated gateway session.
+            if name == "pre_llm_call" and self.sessions.notice(session):
+                return {"context": NO_PANE_NOTICE}
             return None
         # Exact native session/turn key is stable across callback retries and
         # process restarts. Observers/missing turns have invocation-only IDs.
@@ -869,7 +884,7 @@ def pre_tool_call(tool_name=None, args=None, **_):
     if gated is None:
         return None
     return {"action": "approve", "rule_key": f"herdr-threads:{gated}",
-            "message": f"`herdr-threads {gated}` acts for the person or changes agent permissions"}
+            "message": f"`herdr-threads {gated}` is your user's to run: ask them instead of waiting here"}
 
 
 def register(ctx):

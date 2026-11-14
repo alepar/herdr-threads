@@ -535,7 +535,8 @@ class BridgeTests(unittest.TestCase):
             self.load()
             token = bound.set({"HC_TERMINAL_ID": "t7", "PATH": "/bin"})
             try:
-                self.assertIsNone(self.request())
+                # No hook child; the session gets only the local no-pane notice.
+                self.assertEqual(self.request(), {"context": self.module.NO_PANE_NOTICE})
             finally:
                 bound.reset(token)
         self.assertEqual(self.requests(), [])
@@ -546,10 +547,12 @@ class BridgeTests(unittest.TestCase):
             self.load()
             # A shell client's session that sent no pane (passthrough not configured), then an
             # unbound gateway turn (Desktop, messaging): neither may claim the gateway's pane.
-            for client in ({"PATH": "/bin"}, {"HERDR_PANE_ID": ""}, None):
+            # The session's first turn alone gets the local no-pane notice.
+            for index, client in enumerate(({"PATH": "/bin"}, {"HERDR_PANE_ID": ""}, None)):
                 token = bound.set(client)
                 try:
-                    self.assertIsNone(self.request())
+                    self.assertEqual(self.request(),
+                                     {"context": self.module.NO_PANE_NOTICE} if index == 0 else None)
                     self.assertIsNone(self.request("on_session_start", {**self.callbacks["qualified"], "turn_id": None}))
                 finally:
                     bound.reset(token)
@@ -629,6 +632,27 @@ class BridgeTests(unittest.TestCase):
             [(names, resolve)] = self.load_session_env(foreign=False)
             self.assertEqual(names, self.pane_names())
             self.assertEqual(resolve("other"), dict.fromkeys(self.pane_names()))
+
+    def test_no_pane_notice_once_per_top_level_session_never_for_children(self):
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1", "_HERMES_GATEWAY": "1"}):
+            self.load()
+            token = bound.set({"PATH": "/bin"})
+            try:
+                notice = self.request()
+                self.assertEqual(notice, {"context": self.module.NO_PANE_NOTICE})
+                self.assertLessEqual(len(notice["context"].encode()), 120)
+                self.assertIn("herdr-threads setup hermes", notice["context"])
+                self.assertIsNone(self.request(payload={**self.callbacks["qualified"], "turn_id": "turn-2"}))
+                other = {**self.callbacks["qualified"], "session_id": "other-session"}
+                self.assertEqual(self.request(payload=other), notice)
+                self.assertEqual(self.request(payload=self.callbacks["child"]),
+                                 {"context": self.module.CHILD_RESTRICTION})
+                self.assertIsNone(self.request("on_session_start", {**self.callbacks["qualified"],
+                                                                    "session_id": "third", "turn_id": None}))
+            finally:
+                bound.reset(token)
+        self.assertEqual(self.requests(), [])
 
     def test_envelopes_match_rust_fixture(self):
         # The Rust strict parser is pinned to the same file
@@ -1510,6 +1534,11 @@ class PersonGateTests(unittest.TestCase):
             ("! env X=1 ht doctor fix", "doctor fix"),
         ):
             self.assertEqual(self.decide(command), ("approve", f"herdr-threads:{gated}"), command)
+
+    def test_gate_message_tells_the_agent_to_ask_its_user(self):
+        result = self.module.pre_tool_call(tool_name="terminal", args={"command": "herdr-threads setup"})
+        self.assertEqual(result["message"],
+                         "`herdr-threads setup` is your user's to run: ask them instead of waiting here")
 
     def test_ordinary_and_unrelated_commands_pass(self):
         for command in ("herdr-threads inbox", "ht send t --body 'human setup'", "herdr-threads doctor",

@@ -72,7 +72,7 @@ that session's values to its hook child, so the session takes its own pane's sea
 also reach the session's tool subprocesses, so the model's own `herdr-threads` calls name
 the same pane. A gateway session without them (passthrough unset, a session created
 before it was set, Desktop or a messaging platform) runs no hook: it is never seated on
-the gateway's pane. On a Hermes with `ctx.register_session_env`, the bridge also sets each
+the gateway's pane, and its first turn gets one line naming the fix. On a Hermes with `ctx.register_session_env`, the bridge also sets each
 session's tool subprocesses to its own pane (a delegated child: its parent's) and, for a
 session without one, unsets the pane variables, so its `herdr-threads` calls answer "no
 pane" instead of naming the gateway's, and unsets other harnesses' session variables
