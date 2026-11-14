@@ -7,17 +7,11 @@ use herdr_threads::cli::{
 /// Keeps person actions Human and coordinating-agent handoffs Agent.
 #[test]
 fn readme_quickstart_commands_preserve_actor_routes() {
-    let readme =
-        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
-            .unwrap();
-    // Examples below the walkthrough are owned by the producer parser tests.
-    let quickstart = readme
-        .split("## Try it yourself")
-        .nth(1)
-        .unwrap()
-        .split("## Everyday commands")
-        .next()
-        .unwrap();
+    // The walkthrough the README links to; its examples are runnable as written.
+    let quickstart = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/try-it.md"),
+    )
+    .unwrap();
     let mut checked = 0;
     for block in quickstart.split("```sh\n").skip(1) {
         let script = block.split("```").next().unwrap().replace("\\\n", " ");

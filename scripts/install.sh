@@ -1213,7 +1213,7 @@ next_steps() {
         complete) ;;
         *) step "Set up agent hooks: herdr-threads setup (every detected harness; check: herdr-threads setup-status)" ;;
     esac
-    step "Try it: in a Herdr shell pane run herdr-threads human me init, then follow https://github.com/$REPO#try-it-yourself"
+    step "Try it: in a Herdr shell pane run herdr-threads human me init, then follow https://github.com/$REPO/blob/main/docs/try-it.md"
     if [ "$os" = linux ]; then
         printf '%s\n' "  - Linux is experimental (x86_64 and agent harness sessions unverified); please report problems."
     fi
