@@ -97,10 +97,7 @@ pub(crate) fn codex_layer_paths_with(
         dirs.push(home.to_path_buf());
     }
     dirs.push(PathBuf::from("/etc/codex"));
-    let project_depth = cwd
-        .ancestors()
-        .position(is_git_root)
-        .unwrap_or(0);
+    let project_depth = cwd.ancestors().position(is_git_root).unwrap_or(0);
     for dir in cwd.ancestors().take(project_depth + 1) {
         let project = dir.join(".codex");
         if home_identity.as_ref() == Some(&identity(&project)) {

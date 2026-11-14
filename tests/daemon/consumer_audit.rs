@@ -360,20 +360,30 @@ fn operator_host_none_prints_no_host_attached() {
     assert_eq!(no_host_attached().detail, "no host attached");
 }
 
-// Kills: a discovery gate that opens for a dialled session of another kind.
+// Kills: a discovery gate that opens for a dialled session of another kind, or for a Herdr
+// session marked down. The fake refuses every capture, so its observation lane marks each
+// dialled session down on its first pass (ht-mbv0); the lanes are stopped and joined before
+// reachability is set by hand, so no capture races the asserts.
 #[test]
 fn any_reachable_ignores_non_herdr_kind() {
     let rig = Rig::new("audit-reachable");
     rig.builtin(AuditHost::HERDR);
-    rig.dial(
+    let other = rig.dial(
         "/herdr/a.sock",
         AuditHost {
             kind: HostKind::Unknown,
             ..AuditHost::HERDR
         },
     );
-    assert!(!rig.sessions.any_reachable());
-    rig.dial("/herdr/b.sock", AuditHost::HERDR);
+    let herdr = rig.dial("/herdr/b.sock", AuditHost::HERDR);
+    rig.sessions.stop_all();
+    other.reachability().mark_up();
+    herdr.reachability().mark_down();
+    assert!(
+        !rig.sessions.any_reachable(),
+        "an up session of another kind opened the gate"
+    );
+    herdr.reachability().mark_up();
     assert!(rig.sessions.any_reachable());
 }
 
