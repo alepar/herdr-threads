@@ -220,7 +220,7 @@ fn a_refused_wake_renders_through_wake_status() {
     let mut rows = vec![seat];
     let episodes = classify_wake_rows(&mut rows, &hosts, &|_| false);
     assert_eq!(rows[0].wake, Some(WakeBlock::Unknown));
-    assert!(matches!(episodes[0], WakeEpisode::Composer));
+    assert!(matches!(episodes[0], WakeEpisode::Ended));
     sessions.stop_all();
 }
 
@@ -255,13 +255,65 @@ fn opencode_wakes_only_through_its_live_channel() {
         ]
     };
     let mut down = rows();
-    classify_wake_rows(&mut down, &hosts, &|_| false);
+    let episodes = classify_wake_rows(&mut down, &hosts, &|_| false);
     assert_eq!(down[0].wake, Some(WakeBlock::NoWake));
     assert_eq!(down[1].wake, Some(WakeBlock::NoWake));
+    // Both are persisted no-wake episodes (once per sender across restarts and flaps)...
+    assert!(matches!(episodes[0], WakeEpisode::HostNoWake));
+    assert!(matches!(episodes[1], WakeEpisode::HostNoWake));
     let mut live = rows();
-    classify_wake_rows(&mut live, &hosts, &|_| true);
+    let episodes = classify_wake_rows(&mut live, &hosts, &|_| true);
     assert_eq!(live[0].wake, None);
     assert_eq!(live[1].wake, None);
+    // ...that the channel's return ends.
+    assert!(matches!(episodes[0], WakeEpisode::Ended));
+    assert!(matches!(episodes[1], WakeEpisode::Ended));
+    sessions.stop_all();
+}
+
+// Kills: the channel-only episode rule reaching a harness with a composer: every other harness
+// keeps its classification (rows and episodes) on both hosts, channel down and live.
+#[test]
+fn other_harness_episodes_are_unchanged() {
+    let (hosts, sessions, _isolation) = two_hosts("wsh-unchanged", None);
+    let (herdr, bare) = (hosts[0].host_id(), hosts[1].host_id());
+    let tag = |e: &WakeEpisode| match e {
+        WakeEpisode::HostNoWake => "host",
+        WakeEpisode::Ended => "ended",
+        WakeEpisode::Other => "other",
+    };
+    for harness in ["claude", "codex", "hermes", "agy"] {
+        for (live, want_herdr, want_bare) in [
+            (false, (None, "ended"), (Some(WakeBlock::NoWake), "host")),
+            (
+                true,
+                if harness == "claude" {
+                    (None, "other")
+                } else {
+                    (None, "ended")
+                },
+                if harness == "claude" {
+                    (None, "other")
+                } else {
+                    (Some(WakeBlock::NoWake), "host")
+                },
+            ),
+        ] {
+            let mut rows = vec![
+                row("on-herdr", harness, Some(herdr)),
+                row("on-bare", harness, Some(bare)),
+            ];
+            let episodes = classify_wake_rows(&mut rows, &hosts, &|_| live);
+            assert_eq!(
+                [
+                    (rows[0].wake, tag(&episodes[0])),
+                    (rows[1].wake, tag(&episodes[1]))
+                ],
+                [want_herdr, want_bare],
+                "{harness} live={live}"
+            );
+        }
+    }
     sessions.stop_all();
 }
 

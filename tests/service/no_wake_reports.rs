@@ -462,3 +462,58 @@ fn per_target_none_composer_none_reports_once_per_episode() {
     );
     assert_eq!(read(true), (Some(WakeBlock::NoWake), false));
 }
+
+// Kills: an opencode seat in a Herdr pane (a composer host, but a harness woken only through its
+// plugin channel) reporting `no_wake` again after each daemon restart or channel flap within one
+// episode (the in-memory set), or its channel's return not ending the episode.
+#[test]
+fn channel_only_harness_reports_once_per_channel_down_episode() {
+    let mut rig = Rig::new("nwr-channel-only");
+    let sender = rig.named_seat("s", "codex");
+    let target = rig.named_seat("oc", "opencode");
+    let composer_host: i64 = rig
+        .sql()
+        .query_row(
+            "SELECT host_id FROM herdr_hosts WHERE kind='herdr'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    rig.sql()
+        .execute(
+            "UPDATE seats SET host_id=?1 WHERE id=?2",
+            rusqlite::params![composer_host, target.as_str()],
+        )
+        .unwrap();
+    let read = |rig: &Rig| {
+        let row = rig.status(&sender, &target);
+        (row.wake, row.first)
+    };
+    assert_eq!(
+        read(&rig),
+        (Some(WakeBlock::NoWake), true),
+        "episode 1 reports"
+    );
+    assert_eq!(read(&rig), (Some(WakeBlock::NoWake), false));
+    assert_eq!(rig.reports().len(), 1, "persisted");
+    rig.restart();
+    assert_eq!(
+        read(&rig),
+        (Some(WakeBlock::NoWake), false),
+        "a daemon restart does not repeat it"
+    );
+    // The plugin channel comes back: the seat wakes, and the episode ends.
+    rig.channel.0.store(true, Ordering::SeqCst);
+    assert_eq!(read(&rig), (None, false));
+    assert!(
+        rig.reports().is_empty(),
+        "the channel's return ends the episode"
+    );
+    rig.channel.0.store(false, Ordering::SeqCst);
+    assert_eq!(
+        read(&rig),
+        (Some(WakeBlock::NoWake), true),
+        "episode 2 reports"
+    );
+    assert_eq!(read(&rig), (Some(WakeBlock::NoWake), false));
+}

@@ -461,7 +461,7 @@ impl DomainService {
                     .map(|(row, _)| row.seat.clone())
                     .collect()
             };
-            let (persist, clear) = (pick(WakeEpisode::HostNoWake), pick(WakeEpisode::Composer));
+            let (persist, clear) = (pick(WakeEpisode::HostNoWake), pick(WakeEpisode::Ended));
             let fresh = if persist.is_empty() && clear.is_empty() {
                 None
             } else {
@@ -2900,12 +2900,16 @@ fn classify_wake_rows(
             },
         );
         let idle = registry.idle_wake_on(harness, capability, channel_live(&row.seat));
+        // A harness woken only through its own channel has no wake on any host while that
+        // channel is down: an episode like a host with no wake path, ended by the channel's return.
+        let channel_only = registry.wakes_only_through_channel(harness);
         if let Some(episode) = episodes.last_mut() {
             *episode = match idle {
-                Some(IdleWakeOn::None) if capability == WakeCapability::None => {
+                Some(IdleWakeOn::None) if capability == WakeCapability::None || channel_only => {
                     WakeEpisode::HostNoWake
                 }
-                Some(IdleWakeOn::Composer) => WakeEpisode::Composer,
+                Some(IdleWakeOn::Composer) => WakeEpisode::Ended,
+                Some(IdleWakeOn::Channel) if channel_only => WakeEpisode::Ended,
                 _ => WakeEpisode::Other,
             };
         }
@@ -2926,11 +2930,13 @@ fn classify_wake_rows(
 /// What a `wake_status` row says about its no-wake episode (`no_wake_reports`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WakeEpisode {
-    /// No wake because the seat's host has no wake path and no live channel stands in:
-    /// the report is persisted once per (sender, seat).
+    /// No wake because the seat's host has no wake path and no live channel stands in, or the
+    /// harness wakes only through its channel and that is down: the report is persisted once
+    /// per (sender, seat).
     HostNoWake,
-    /// A composer wake: ends the episode (the persisted row is deleted).
-    Composer,
+    /// A composer wake, or the live channel of a harness woken only through it: ends the
+    /// episode (the persisted row is deleted).
+    Ended,
     /// Anything else (a live channel, a harness without a wake, no binding): the row stays.
     Other,
 }
