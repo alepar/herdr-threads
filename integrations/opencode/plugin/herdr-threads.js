@@ -1269,9 +1269,22 @@ async function makePlugin(input, sys = DEFAULT_SYS, options = {}) {
   }
   const core = createCore(io)
   const active = owns()
+  // The heartbeat names the instance that owns now: one that loaded inert and took over (a reload
+  // whose new instance loaded before the old one was disposed) rewrites it as active.
+  let role = active ? 'active' : 'inert'
+  const owning = () => {
+    if (!owns()) return false
+    if (role !== 'active') {
+      role = 'active'
+      try {
+        io.heartbeat({ role })
+      } catch {}
+    }
+    return true
+  }
   const wrap = (fn) => async (...args) => {
     try {
-      if (owns()) await fn(...args)
+      if (owning()) await fn(...args)
     } catch {}
   }
   const stopTimer = sys.every(1000, () => {
@@ -1303,7 +1316,7 @@ async function makePlugin(input, sys = DEFAULT_SYS, options = {}) {
     schema: 1,
     plugin: 'herdr-threads',
     pid: io.pid,
-    role: active ? 'active' : 'inert',
+    role,
     directory: io.directory,
     launch: !!argv,
     permissions: grant ? 'consented' : 'not_consented',

@@ -375,6 +375,35 @@ test('one plugin instance per process: a second stays inert until the first is d
   assert.equal(await env(second), A)
 })
 
+test('an instance that loaded inert and takes over rewrites the heartbeat as active', async () => {
+  const guard = {}
+  const writes = []
+  let now = 1
+  const fs = {
+    mkdirSync() {},
+    writeFileSync: (f, data) => writes.push(JSON.parse(data)),
+    renameSync() {},
+    appendFileSync() {},
+  }
+  const sys = { spawn() {}, fs, now: () => now, env: () => ({}), pid: () => 7, every: () => () => {}, guard }
+  const client = { session: { get: async () => ({ data: { id: A } }) } }
+  const argv = ['/x/ht', '--state-dir', '/state', '--host-endpoint', '/h']
+  const old = await makePlugin({ client, directory: '/w' }, sys, { argv, grant: false })
+  const reloaded = await makePlugin({ client, directory: '/w' }, sys, { argv, grant: false })
+  // the reload's instance loaded while the old one owned: its heartbeat (the newest) says inert
+  assert.equal(writes.at(-1).role, 'inert')
+  await old.hooks.dispose()
+  now = 5
+  await reloaded.hooks['shell.env']({ sessionID: A }, { env: {} })
+  assert.equal(writes.length, 3)
+  assert.equal(writes.at(-1).role, 'active')
+  assert.equal(writes.at(-1).at, 5)
+  assert.equal(writes.at(-1).loaded_at, 1)
+  // written once, not on every hook call
+  await reloaded.hooks['shell.env']({ sessionID: A }, { env: {} })
+  assert.equal(writes.length, 3)
+})
+
 test('the heartbeat is written at the end of init into the state dir', async () => {
   const writes = []
   const fs = {
