@@ -1,0 +1,39 @@
+     + Thought: 1.9s
+
+     RECEIVED herdr-threads invitation invitation:iaF8OAUUnOuk in taF81AVQIvBO "wake-e2e test thread for oc-t3" from
+     unknown: wake-e2e test thread for oc-t3 goal: wake e2e test traffic deadline: 1794698230765 next: herdr-threads
+     --state-dir /tmp/ht-wake-e2e.pc0othc9/state accept taF81AVQIvBO
+
+     RECEIVED herdr-threads attention attention:1: herdr-threads: attention pending; run herdr-threads --state-dir /
+     tmp/ht-wake-e2e.pc0othc9/state inbox
+
+  ┃
+  ┃  $ herdr-threads accept taF81AVQIvBO
+  ┃
+  ┃  accepted
+  ┃  value: "iaF8OAUUnOuk"
+  ┃
+
+     + Thought: 1.7s
+
+     Invitation iaF8OAUUnOuk accepted.
+
+     ▣  Build · DeepSeek V4 Pro · 11.3s
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     + Thought: 122ms
+
+     RECEIVED herdr-threads message maF8qNwPlJwn in taF81AVQIvBO "wake-e2e test thread for oc-t3" from saF8o2HA9zDI
+     p0 human: send-ack/group 150936-c24d
+
+     ▣  Build · DeepSeek V4 Pro · 2.3s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/ht-wake-e2e.pc0othc9/opencode/project                                     13.0K (1%) · $0.06  ctrl+p commands

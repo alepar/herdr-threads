@@ -1,0 +1,2 @@
+nudge-threshold 0
+--state-dir /tmp/ht-wake-e2e.pc0othc9/state accept taF8rtfNFpoo

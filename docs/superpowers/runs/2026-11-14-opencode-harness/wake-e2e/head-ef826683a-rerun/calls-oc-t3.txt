@@ -1,0 +1,12 @@
+nudge-threshold 3
+accept maF8oqxMn1db
+accept d6COoUIDqop
+inbox
+accept --help
+threads
+thread d6COoUIDqop
+thread --help
+thread show d6COoUIDqop
+accept d6COoUIDqop
+pending-receipts
+accept taF81AVQIvBO

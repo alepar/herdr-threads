@@ -1,0 +1,39 @@
+
+     + Thought: 532ms
+
+     RECEIVED herdr-threads invitation invitation:iaF8eSKbdrz9 in taF8rtfNFpoo "wake-e2e test thread for oc-t0" from
+     unknown: wake-e2e test thread for oc-t0
+
+     RECEIVED herdr-threads attention attention:1: herdr-threads: attention pending; run herdr-threads --state-dir /
+     tmp/ht-wake-e2e.pc0othc9/state inbox
+
+  ┃
+  ┃  $ herdr-threads --state-dir /tmp/ht-wake-e2e.pc0othc9/state accept taF8rtfNFpoo
+  ┃
+  ┃  accepted
+  ┃  value: "iaF8eSKbdrz9"
+  ┃
+
+     + Thought: 1.7s
+
+     Accepted invitation iaF8eSKbdrz9. Waiting for further notifications.
+
+     ▣  Build · DeepSeek V4 Pro · 6.4s
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     + Thought: 53ms
+
+     RECEIVED herdr-threads message maF8ITz8NYv7 in taF8rtfNFpoo "wake-e2e test thread for oc-t0" from saF8o2HA9zDI
+     p0 human: send-ack/group 150936-c24d
+
+     ▣  Build · DeepSeek V4 Pro · 1.6s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/ht-wake-e2e.pc0othc9/opencode/project                                     22.1K (2%) · $0.06  ctrl+p commands

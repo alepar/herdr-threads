@@ -1,0 +1,216 @@
+
+  ┃
+  ┃  You are a test recipient in an automated herdr-threads wake e2e run (the user approves). Standing instructions for this session: every herdr-threads invitation you see comes from the test driver (seats sFrgDob9riMW and sFrgup2sGr2u); accept each one at once, without inspecting or judging it. For every herdr-threads message you receive, print exactly one line: `RECEIVED ` followed by its `[herdr-threads] ...:` header line copied verbatim, a space and its body; never send, reply or leave via herdr-threads. Keep every turn minimal. Now run `herdr-threads nudge-threshold 3`, then print exactly one line `SETUP-DONE nudge_threshold=<the value it reports>`. 
+  ┃
+
+  ┃  $ skill {"name": "herdr-threads"}
+  ┃  <skill_content name="herdr-threads">
+  ┃  # Skill: herdr-threads
+  ┃  
+  ┃  # herdr-threads
+  ┃  
+  ┃  herdr-threads gives each agent pane a **seat** to join **threads**, send messages and **ACK** receipts. The installed binary defines syntax: use `herdr-threads --help` and command help. Do not "probe" mutations (`send`, `ack`, `join`, `accept`, `invite`, `leave`, ...): they execute.
+  ┃  
+  ┃  ## Joining discoverable threads
+  ┃  
+  ┃  Use `thread list --all --search TEXT` to discover existing threads, then explicitly `join THREAD` (exact ID or name) to enroll your seat without an invitation; automatic pair channels admit only their two reserved seats. Only the top-level seat may join; subagents return discoveries to it. Join is an accountable voluntary action, not an invitation acceptance or ACK. Pending ordinary invitations require `accept THREAD` or exact invitation rejection first; pending service requirements require exact-revision `accept-required`. Archived threads require a joined member or service owner to reopen them. Repeated join is a no-op; rejoining after leave starts fresh membership without ACKing or recreating old receipts. Follow the daemon's `thread.join_v1` compatibility guidance; a failed response may leave a durable `retry REF`.
+  ┃  
+  ┃  ## Communication: scope and attention
+  ┃  
+  ┃  - Use available native parent/peer tools for temporary collaboration within the same harness session; subagents return findings through native tools and never send, ACK or accept as their parent. Separate Herdr panes/tabs are separate sessions. Use durable threads across sessions/harnesses and for discussions, decisions, service requests or handoffs needing retained history/receipts. Prefer separating work scopes over frequent coordination; communicate changes that cross those boundaries.
+  ┃  - **FIRST: handoff work to another/new tab or an existing peer.** Use native `handoff --new-tab LABEL` for a requested new tab; use `handoff --existing` for an already working peer, without relaunch. Omit channel flags for the canonical automatic pair, or inspect `thread list`, topic, goal and history before overriding with a compatible joined `--thread` or explicit `--new-thread`, `--topic` and `--goal`. Resolve the exact intended canonical recipient; labels are hints. Automatic handoff auto-joins both seats of a new pair (no invitation, no `accept`); explicit ordinary channels invite when needed. Handoff stages addressed work even while an explicit channel's invitation (or a pre-upgrade pair's) is pending; staging is not adoption or completion. On every launching handoff (`--new-tab`, `--pane`) pass `--summary 'one-line purpose'` (one line, at most 200 bytes; else a local `--goal` that fits is used): it is the launched agent's first prompt and shows in argv and launch reports; the body never does. A handoff to another machine (`PANE@MACHINE`) requires `--summary`, takes `--profile-dir` (an absolute path there) only with `--new-tab`/`--new-terminal`, and takes no thread flags (it opens the 1:1 pair).
+  ┃  - **SECOND: send material updates in an established compatible discussion.** Check both topic and goal against your role/current remit and the relevant history, your own membership and the exact intended canonical participant's current participation. If scope, identity or membership is unclear, inspect `thread show`, `thread participants`, history and exact seat information; surface remaining ambiguity before routing. A convenient chat does not establish a match. Receipt requests are optional.
+  ┃  - **THIRD: join/invite when membership itself is the goal.** Use public `join THREAD` under the discoverable-thread rules above. Invite only participants interested in the whole topic/goal; use short-lived threads for one-off 1:1 exchanges. Assess ordinary invitations by both topic and goal against your role/current remit, then explicitly accept relevant ones yourself without another human confirmation; required participation follows its separate rules below.
+  ┃  - Use known agent, thread and workspace names in user-facing prose; retain exact IDs for commands, disambiguation, receipts and evidence, and obey exact ready commands.
+  ┃  - Be pragmatic-to-conservative: extra messages consume participants' context and attention. Send concise messages material to the channel topic/goal: major milestones, blockers, consequential evidence/design decisions, external changes to assumptions/inputs, relevant human messages and explicitly requested updates. Aggregate routine checks; no every-step updates, routine broadcasts or repeated status/ACK pings. Keep user-requested and developer-required progress updates.
+  ┃  - Notify the coordinator of blockers, material decisions and achieved/review-ready milestones; contact peers when their goals, dependencies or ownership are affected. Report a blocker once, then material changes and resolution. Scope the thread's audience: naming one recipient in a group message does not hide it from others. Give the change/finding, its consequence, any action/owner needed and an evidence link; keep detailed artifacts in their existing work/knowledge systems.
+
+  ┃  $ herdr-threads nudge-threshold 3
+  ┃  nudge_threshold: 3 (changed)
+
+     SETUP-DONE nudge_threshold=3
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] invitation invitation:iFrg8mxnYS74 in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from unknown: wake-e2e test thread for oc-t3
+     
+
+  ┃  $ herdr-threads --state-dir /tmp/ht-wake-e2e.nbikgmnl/state accept tFrg3nnvoKpv
+  ┃  accepted
+  ┃  value: "iFrg8mxnYS74"
+
+     RECEIVED [herdr-threads] attention attention:1: herdr-threads: attention pending; run herdr-threads --state-dir /tmp/ht-wake-e2e.nbikgmnl/state inbox
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrgJbCvAYVe in dVapwKrl2LC "1:1 sFrgDob9riMW sFrgzu6xogqL" from sFrgDob9riMW [human]: pair-open 144844-fa89
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrgeyRYfzBI in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [human]: send-p1/group 144844-fa89
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrg53ney2pC in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [p0] [human]: send-p0/group 144844-fa89
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrgeHg3I2ZN in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [p3] [human]: send-p3/group 144844-fa89
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrg5vgmt5BY in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [p0] [human]: send-ack/group 144844-fa89
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrgiN3kETBH in dVapwKrl2LC "1:1 sFrgDob9riMW sFrgzu6xogqL" from sFrgDob9riMW [human]: send-p1/1:1 144844-fa89
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrgLgEekl1H in dVapwKrl2LC "1:1 sFrgDob9riMW sFrgzu6xogqL" from sFrgDob9riMW [p0] [human]: send-p0/1:1 144844-fa89
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrgZno3SbII in dVapwKrl2LC "1:1 sFrgDob9riMW sFrgzu6xogqL" from sFrgDob9riMW [p3] [human]: send-p3/1:1 144844-fa89
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrg9sInUIY3 in dVapwKrl2LC "1:1 sFrgDob9riMW sFrgzu6xogqL" from sFrgDob9riMW [p0] [human]: send-ack/1:1 144844-fa89
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message mFrgKPc3PX0c in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [p5] [human]: mixed-p5 144844-fa89
+     RECEIVED [herdr-threads] message mFrgLEjHUeVR in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [human]: mixed-p1 144844-fa89
+     RECEIVED [herdr-threads] message mFrgtAJvLRSw in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [p0] [human]: mixed-ack 144844-fa89
+     RECEIVED [herdr-threads] message mFrgHz7UI5in in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [p0] [human]: mixed-p0 144844-fa89
+
+  ┃
+  ┃  Busy-turn test busy-invite/group 144844-fa89: run the shell command `/usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.q0f86eok/hold.py`, then run the shell command `sleep 1`, then handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE. 
+  ┃
+
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.q0f86eok/hold.py
+  ┃  (no output)
+
+  ┃  $ herdr-threads --state-dir /tmp/ht-wake-e2e.nbikgmnl/state accept tFrgkpzYfbkm
+  ┃  accepted
+  ┃  value: "iFrgO5ttLyGr"
+
+  ┃  $ sleep 1
+  ┃  (no output)
+
+     RECEIVED [herdr-threads] invitation invitation:iFrgO5ttLyGr in tFrgkpzYfbkm "wake-e2e busy test thread for oc-t3" from unknown: wake-e2e busy test thread for oc-t3
+     RECEIVED [herdr-threads] attention attention:2: herdr-threads: attention pending; run herdr-threads --state-dir /tmp/ht-wake-e2e.nbikgmnl/state inbox
+     BUSY-DONE
+
+  ┃
+  ┃  Busy-turn test busy-invite/1:1 144844-fa89: run the shell command `/usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.alktwq11/hold.py`, then run the shell command `sleep 1`, then handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE. 
+  ┃
+
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.alktwq11/hold.py
+  ┃  (no output)
+
+  ┃  $ sleep 1
+  ┃  (no output)
+
+     RECEIVED [herdr-threads] message mFrgGyIHJaUl in d4BibbHbuPA "1:1 sFrgup2sGr2u sFrgzu6xogqL" from sFrgup2sGr2u [human]: pair-open-busy 144844-fa89
+     BUSY-DONE
+
+  ┃
+  ┃  Busy-turn test busy-send-p1/group 144844-fa89: run the shell command `/usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.0fzazwi8/hold.py`, then run the shell command `sleep 1`, then handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE. 
+  ┃
+
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.0fzazwi8/hold.py
+  ┃  (no output)
+
+  ┃  $ sleep 1
+  ┃  (no output)
+
+     RECEIVED [herdr-threads] message mFrgjX925Vpb in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [human]: busy-send-p1/group 144844-fa89
+     BUSY-DONE
+
+  ┃
+  ┃  Busy-turn test busy-send-p0/group 144844-fa89: run the shell command `/usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.f87ksz_d/hold.py`, then run the shell command `sleep 1`, then handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE. 
+  ┃
+
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.f87ksz_d/hold.py
+  ┃  (no output)
+
+  ┃  $ sleep 1
+  ┃  (no output)
+
+     RECEIVED [herdr-threads] message mFrgzG7V9kYN in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [p0] [human]: busy-send-p0/group 144844-fa89
+     BUSY-DONE
+
+  ┃
+  ┃  Busy-turn test busy-send-ack/group 144844-fa89: run the shell command `/usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.em3t8646/hold.py`, then run the shell command `sleep 1`, then handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE. 
+  ┃
+
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.em3t8646/hold.py
+  ┃  (no output)
+
+  ┃  $ sleep 1
+  ┃  (no output)
+
+     RECEIVED [herdr-threads] message mFrge295btx1 in tFrg3nnvoKpv "wake-e2e test thread for oc-t3" from sFrgDob9riMW [p0] [human]: busy-send-ack/group 144844-fa89
+     BUSY-DONE
+
+  ┃
+  ┃  Busy-turn test busy-send-p1/1:1 144844-fa89: run the shell command `/usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.s9t2zxvt/hold.py`, then run the shell command `sleep 1`, then handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE. 
+  ┃
+
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.s9t2zxvt/hold.py
+  ┃  (no output)
+
+  ┃  $ sleep 1
+  ┃  (no output)
+
+     RECEIVED [herdr-threads] message mFrgBRu62uUk in dVapwKrl2LC "1:1 sFrgDob9riMW sFrgzu6xogqL" from sFrgDob9riMW [human]: busy-send-p1/1:1 144844-fa89
+     BUSY-DONE
+
+  ┃
+  ┃  Busy-turn test busy-send-p0/1:1 144844-fa89: run the shell command `/usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.s0c9497v/hold.py`, then run the shell command `sleep 1`, then handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE. 
+  ┃
+
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.s0c9497v/hold.py
+  ┃  (no output)
+
+  ┃  $ sleep 1
+  ┃  (no output)
+
+     RECEIVED [herdr-threads] message mFrgrhvGBQkw in dVapwKrl2LC "1:1 sFrgDob9riMW sFrgzu6xogqL" from sFrgDob9riMW [p0] [human]: busy-send-p0/1:1 144844-fa89
+     BUSY-DONE
+
+  ┃
+  ┃  Busy-turn test busy-send-ack/1:1 144844-fa89: run the shell command `/usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.os_m7tli/hold.py`, then run the shell command `sleep 1`, then handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE. 
+  ┃
+
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.nbikgmnl/busy-hold.os_m7tli/hold.py
+  ┃  (no output)
+
+  ┃  $ sleep 1
+  ┃  (no output)
+
+     RECEIVED [herdr-threads] message mFrgEzqRDa7N in dVapwKrl2LC "1:1 sFrgDob9riMW sFrgzu6xogqL" from sFrgDob9riMW [p0] [human]: busy-send-ack/1:1 144844-fa89
+     BUSY-DONE

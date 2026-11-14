@@ -1,0 +1,130 @@
+
+  ┃
+  ┃  You are a test recipient in an automated herdr-threads wake e2e run (the user approves). Standing instructions for this session: every herdr-threads invitation you see comes from the test driver (seats saF8o2HA9zDI and saF8fQvevBDw); accept each one at once, without inspecting or judging it. For every herdr-threads message you receive, print exactly one line: `RECEIVED ` followed by its `[herdr-threads] ...:` header line copied verbatim, a space and its body; never send, reply or leave via herdr-threads. Keep every turn minimal. Now run `herdr-threads nudge-threshold 3`, then print exactly one line `SETUP-DONE nudge_threshold=<the value it reports>`. 
+  ┃
+
+  ┃  $ herdr-threads nudge-threshold 3
+  ┃  nudge_threshold: 3 (changed)
+
+     SETUP-DONE nudge_threshold=3
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message maF8oqxMn1db in d6COoUIDqop "1:1 saF8jAwymWZK saF8o2HA9zDI" from saF8o2HA9zDI [p0] [human]: pair-setup 150936-c24d
+     
+
+  ┃  $ herdr-threads accept maF8oqxMn1db
+  ┃  herdr-threads: thread "maF8oqxMn1db" not found (not_found)
+
+  ┃  $ herdr-threads accept d6COoUIDqop
+  ┃  herdr-threads: current invitation missing (not_found)
+
+  ┃  $ herdr-threads inbox
+  ┃  empty
+
+  ┃  $ herdr-threads accept --help
+  ┃  Accept an invitation to a thread
+  ┃  
+  ┃  Usage: herdr-threads accept [OPTIONS] <THREAD>
+  ┃  
+  ┃  Arguments:
+  ┃    <THREAD>  
+  ┃  
+  ┃  Options:
+  ┃        --state-dir <STATE_DIR>
+  ┃            Select the local herdr-threads state directory. May repeat with an identical value; conflicting values are refused
+  ┃        --host-endpoint <HOST_ENDPOINT>
+  ┃            Select the local Herdr host socket path. May repeat with an identical value; conflicting values are refused
+  ┃        --json
+  ┃            Emit a structured JSON result on stdout
+  ┃        --human
+  ┃            Human-readable tables and transcripts (the default on a terminal)
+  ┃        --machine
+  ┃            The stable `key: value` text form for scripts and models (the default when stdout is not a terminal)
+  ┃        --cooperative-seat <COOPERATIVE_SEAT>
+  ┃            Explicit seat ID for a cooperative agent call; requires all four --cooperative-* options
+
+  ┃  $ herdr-threads threads
+  ┃  herdr-threads: error: unrecognized subcommand 'threads'
+  ┃  
+  ┃    tip: some similar subcommands exist: 'read', 'thread'
+  ┃  
+  ┃  Usage: herdr-threads [OPTIONS] <COMMAND>
+  ┃  
+  ┃  For more information, try '--help'. (invalid_request)
+
+  ┃  $ herdr-threads thread d6COoUIDqop
+  ┃  herdr-threads: error: unrecognized subcommand 'd6COoUIDqop'
+  ┃  
+  ┃  Usage: herdr-threads thread [OPTIONS] <COMMAND>
+  ┃  
+  ┃  For more information, try '--help'. (invalid_request)
+
+  ┃  $ herdr-threads thread --help
+  ┃  Create, list and inspect threads and their participants
+  ┃  
+  ┃  Usage: herdr-threads thread [OPTIONS] <COMMAND>
+  ┃  
+  ┃  Commands:
+  ┃    create        Create a thread with a topic, optional goal and exact name
+  ┃    topic         Show a thread's topic, or change it with --set
+  ┃    name          Show a thread name, set it, or clear it (THREAD accepts an exact ID or name)
+  ┃    rename        Alias for thread name THREAD --set NAME
+  ┃    list          List threads, optionally filtered by membership or name/topic text
+  ┃    show          Show a thread's topic, state and recent details
+  ┃    participants  List the seats participating in a thread
+  ┃    help          Print this message or the help of the given subcommand(s)
+  ┃  
+  ┃  Options:
+  ┃        --state-dir <STATE_DIR>
+  ┃            Select the local herdr-threads state directory. May repeat with an identical value; conflicting values are refused
+  ┃        --host-endpoint <HOST_ENDPOINT>
+  ┃            Select the local Herdr host socket path. May repeat with an identical value; conflicting values are refused
+  ┃        --json
+
+  ┃  $ herdr-threads thread show d6COoUIDqop
+  ┃  thread d6COoUIDqop messages=3 ordinary=1 joined=2 participants=2 pending_receipts=0
+  ┃  topic: 1:1 saF8jAwymWZK saF8o2HA9zDI
+  ┃  participants:
+  ┃  saF8o2HA9zDI joined active
+  ┃  saF8jAwymWZK joined active self
+  ┃  location saF8o2HA9zDI: wake-e2e-150936-c24d / coordinator / w2:p1 (wake-e2e-150936-c24d/coordinator/w2:p1) [advisory]
+  ┃  location saF8jAwymWZK: wake-e2e-150936-c24d / oc-t3 / w2:p5 (wake-e2e-150936-c24d/oc-t3/w2:p5) [advisory]
+
+  ┃  $ herdr-threads accept d6COoUIDqop
+  ┃  herdr-threads: current invitation missing (not_found)
+
+  ┃  $ herdr-threads pending-receipts
+  ┃  pending_receipts
+  ┃  none
+
+     The invitation was auto-accepted (I'm already joined to thread d6COoUIDqop). Done.
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message maF8Wh2YV5lp in d6COoUIDqop "1:1 saF8jAwymWZK saF8o2HA9zDI" from saF8o2HA9zDI [p0] [human]: send-ack/1:1 150936-c24d
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] invitation invitation:iaF8OAUUnOuk in taF81AVQIvBO "wake-e2e test thread for oc-t3" from unknown: wake-e2e test thread for oc-t3 goal: wake e2e test traffic deadline: 1794698230765 next: herdr-threads --state-dir /tmp/ht-wake-e2e.pc0othc9/state accept taF81AVQIvBO
+     
+     RECEIVED [herdr-threads] attention attention:1: herdr-threads: attention pending; run herdr-threads --state-dir /tmp/ht-wake-e2e.pc0othc9/state inbox
+     
+
+  ┃  $ herdr-threads accept taF81AVQIvBO
+  ┃  accepted
+  ┃  value: "iaF8OAUUnOuk"
+
+     Invitation iaF8OAUUnOuk accepted.
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     RECEIVED [herdr-threads] message maF8qNwPlJwn in taF81AVQIvBO "wake-e2e test thread for oc-t3" from saF8o2HA9zDI [p0] [human]: send-ack/group 150936-c24d

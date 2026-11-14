@@ -1,0 +1,205 @@
+{
+  "facts": {
+    "run_id": "150936-c24d",
+    "sha": "ef826683a230391105ef72e59a8a91e98e84fa99",
+    "dirty": false,
+    "versions": {
+      "herdr": "herdr 0.9.5",
+      "herdr-threads": "herdr-threads 3.1.2",
+      "opencode": "1.18.1"
+    },
+    "harness_mode": "linux",
+    "codex_args": "--approve-for-me",
+    "bin": "/var/home/alepar/AleCode/herdr-threads/.worktrees/opencode-harness/bin/herdr-threads",
+    "bin_sha256": "49e10bb8a30eb5e9c74118b284b3b62eeb48687858ff2832ee7348785c5a9f7c",
+    "root": "/tmp/ht-wake-e2e.pc0othc9",
+    "started_utc": "2026-11-14T23:09:36Z",
+    "finished_utc": "2026-11-14T23:13:39Z",
+    "exit_code": 0
+  },
+  "completeness": {
+    "expected": 6,
+    "collected": 6,
+    "missing": [],
+    "extra": []
+  },
+  "cleanup": {
+    "steps": [
+      {
+        "workspace_close_rc": 0
+      },
+      {
+        "daemon_stop_rc": 0
+      },
+      {
+        "root_removed": "/tmp/ht-wake-e2e.pc0othc9"
+      }
+    ],
+    "problems": []
+  },
+  "codex_hook_guidance": null,
+  "results": [
+    {
+      "case": "send-ack/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "maF8AzsbNCL7"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T23:11:18Z"
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "maF8RqVthiJI"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T23:11:22Z"
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "maF8Wh2YV5lp"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T23:12:10Z"
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "maF8ITz8NYv7"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T23:12:41Z"
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "maF8jZ3fPQ8w"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T23:12:51Z"
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.51,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "maF8qNwPlJwn"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T23:13:39Z"
+    }
+  ]
+}

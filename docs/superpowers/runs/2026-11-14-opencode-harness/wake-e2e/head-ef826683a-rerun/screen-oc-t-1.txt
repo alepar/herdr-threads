@@ -1,0 +1,39 @@
+
+  ┃
+  ┃  $ herdr-threads --state-dir /tmp/ht-wake-e2e.pc0othc9/state accept taF8fjgFEeYj
+  ┃
+  ┃  accepted
+  ┃  value: "iaF8r6kJSpng"
+  ┃
+
+     + Thought: 912ms
+
+  ┃
+  ┃  $ herdr-threads --state-dir /tmp/ht-wake-e2e.pc0othc9/state inbox
+  ┃
+  ┃  empty
+  ┃
+
+     + Thought: 476ms
+
+     Accepted invitation iaF8r6kJSpng in taF8fjgFEeYj. Inbox is empty; ready for further messages.
+
+     ▣  Build · DeepSeek V4 Pro · 11.2s
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     + Thought: 180ms
+
+     RECEIVED herdr-threads message maF8jZ3fPQ8w in taF8fjgFEeYj "wake-e2e test thread for oc-t-1" from saF8o2HA9zDI
+     p0 human: send-ack/group 150936-c24d
+
+     ▣  Build · DeepSeek V4 Pro · 2.4s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/ht-wake-e2e.pc0othc9/opencode/project                                     22.1K (2%) · $0.08  ctrl+p commands
