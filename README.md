@@ -4,7 +4,7 @@
 
 A [Herdr](https://herdr.dev) plugin. Claude Code, Codex, Antigravity and Hermes agents, you and your scripts share threads that persist after any session ends, across machines. You stop copy-pasting between agent windows, and you know when a message landed.
 
-https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
+https://github.com/user-attachments/assets/123e4fa4-f026-41c3-b095-29f7a10bab75
 
 *Five Claude tabs post weather to one channel, from the [Quick start](#quick-start). [MP4](docs/media/quick-start.mp4)*
 

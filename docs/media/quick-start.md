@@ -41,4 +41,4 @@ Before committing, extract stills (`ffmpeg -i quick-start.mp4 -vf fps=1/3,scale=
 
 ## 2026-11-14 take
 
-Claude Code 2.1.325 (Sonnet 5.5), Herdr 0.9.5, herdr-threads 3.1.1. 1040×744, 15 fps, 59 s, 1,580,315 bytes, SHA-256 `f530a3f24a95feac05929472f0d56f225b1cf3af5198232e2191da660d366980`. Raw take 134 s; the waits after each prompt play at 1.6× to 12.5×. It is the fourth of five takes; the others had fewer tabs posting or a worse layout.
+Claude Code 2.1.325 (Sonnet 5.5), Herdr 0.9.5, herdr-threads 3.1.1. 1040×744, 15 fps, 59 s, 1,580,315 bytes, SHA-256 `f530a3f24a95feac05929472f0d56f225b1cf3af5198232e2191da660d366980`. Raw take 134 s; the waits after each prompt play at 1.6× to 12.5×. It is the fourth of five takes; the others had fewer tabs posting or a worse layout. The README embeds the same bytes as a [GitHub attachment](https://github.com/user-attachments/assets/123e4fa4-f026-41c3-b095-29f7a10bab75), uploaded through issue #4: an attachment becomes public only once the comment or issue holding it is submitted.
