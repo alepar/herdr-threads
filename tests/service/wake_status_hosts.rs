@@ -240,6 +240,31 @@ fn a_live_channel_lifts_no_wake_only_for_a_self_waking_harness() {
     sessions.stop_all();
 }
 
+// Kills: a composer fallback for opencode, the first `Channel` harness with no composer policy
+// (opencode design D8, review M6): with no live channel it is `no_wake` on a Herdr composer host
+// as on a host with no wake path, and a live channel lifts it on both.
+#[test]
+fn opencode_wakes_only_through_its_live_channel() {
+    let (hosts, sessions, _isolation) = two_hosts("wsh-opencode", None);
+    let herdr = hosts[0].host_id();
+    let bare = hosts[1].host_id();
+    let rows = || {
+        vec![
+            row("opencode-herdr", "opencode", Some(herdr)),
+            row("opencode-bare", "opencode", Some(bare)),
+        ]
+    };
+    let mut down = rows();
+    classify_wake_rows(&mut down, &hosts, &|_| false);
+    assert_eq!(down[0].wake, Some(WakeBlock::NoWake));
+    assert_eq!(down[1].wake, Some(WakeBlock::NoWake));
+    let mut live = rows();
+    classify_wake_rows(&mut live, &hosts, &|_| true);
+    assert_eq!(live[0].wake, None);
+    assert_eq!(live[1].wake, None);
+    sessions.stop_all();
+}
+
 // Kills: a row with no host (an older store row or an unattached host) changing Herdr
 // classification: it keeps `has_idle_wake`, and an unregistered harness stays unclassified.
 #[test]
