@@ -379,6 +379,9 @@ impl NativeCli {
         // short seat suffix. Only confirmed pre-start refusals may retry.
         let [first_name, retry_name] = request.agent_name_candidates();
         let mut name = first_name;
+        // Whether the start frame carried the hint: a host that does not advertise
+        // `agent_start_process_hint_v1` gets the same fenced start without it.
+        let mut process_hint_sent = false;
         let readiness_started = Instant::now();
         let (name, parsed, remaining, started, submitted_at_mono) = loop {
             self.check_epoch(current_epoch)
@@ -463,7 +466,10 @@ impl NativeCli {
                     self.epoch.fetch_add(1, Ordering::AcqRel);
                 }
                 match response {
-                    Ok(response) => Ok(response.body),
+                    Ok(start) => {
+                        process_hint_sent = start.process_hint_sent;
+                        Ok(start.response.body)
+                    }
                     Err(failure) if failure.submission == ports::NativeSubmission::NotSubmitted => {
                         return Err(failure);
                     }
@@ -539,7 +545,7 @@ impl NativeCli {
         };
         let returned_args = result.get("argv").and_then(serde_json::Value::as_array);
         let args_match = returned_args.is_some_and(|values| {
-            if request.process_hint {
+            if process_hint_sent {
                 let crate::harness::adapter::ExecutableLookup::Path(executable) =
                     registration.metadata().executable
                 else {
@@ -704,6 +710,7 @@ impl NativeCli {
         let started_process = self.started_process(&request.target, &context.budget);
         let correlation = CorrelatedStartup {
             process_hint: request.process_hint,
+            process_hint_sent,
             seat: request.seat.clone(),
             agent_name: name,
             harness: request.harness,
@@ -3175,7 +3182,10 @@ pub(crate) mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn process_hint_old_host_receives_zero_start_frames() {
+    fn process_hint_old_host_receives_a_start_frame_without_the_hint() {
+        // A host that does not advertise `agent_start_process_hint_v1` gets the same fenced
+        // start without the field; the correlation keeps the requested mode and records
+        // that the hint was not sent.
         for capabilities in [
             None,
             Some(json!({})),
@@ -3190,6 +3200,7 @@ pub(crate) mod tests {
             request.harness = Harness::Agent(registry.agent("hinted").unwrap());
             request.process_hint = true;
             let name = request.agent_name();
+            let label = format!("{capabilities:?}");
             let mut fixture = HintSocketFixture::new(move |stream, wire| {
                 let result = match wire["method"].as_str().unwrap() {
                     "ping" => {
@@ -3200,7 +3211,11 @@ pub(crate) mod tests {
                         pong
                     }
                     "pane.get" => json!({"type":"pane_info"}),
-                    "agent.start" => started(name.clone()),
+                    "agent.start" => {
+                        assert!(wire["params"].get("process_hint").is_none());
+                        started(name.clone())
+                    }
+                    "pane.process_info" => process_info_fixture(),
                     other => panic!("unexpected fixture operation: {other}"),
                 };
                 answer(stream, wire, result);
@@ -3216,13 +3231,17 @@ pub(crate) mod tests {
                     .iter()
                     .filter(|frame| frame["method"] == "agent.start")
                     .count(),
-                0,
-                "unsupported host received a start frame"
+                1,
+                "{label}: one start frame"
             );
-            let failure =
-                result.expect_err("missing feature capability must refuse before submission");
-            assert_eq!(failure.error.code, ErrorCode::Unsupported);
-            assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+            let NativeLaunchOutcome::ObservedStartup { correlation, .. } =
+                result.unwrap_or_else(|failure| panic!("{label}: {failure:?}"))
+            else {
+                panic!("{label}: startup without the hint was not observed")
+            };
+            assert!(correlation.process_hint, "{label}: requested mode kept");
+            assert!(!correlation.process_hint_sent, "{label}: recorded unsent");
+            assert!(correlation.matches_request(&request, &context), "{label}");
         }
     }
 
@@ -3423,6 +3442,10 @@ pub(crate) mod tests {
                 correlation.process_hint,
                 "requested mode was lost in native startup correlation"
             );
+            assert!(
+                correlation.process_hint_sent,
+                "an advertising host gets the hint"
+            );
             assert!(correlation.matches_request(&request, &context));
             assert_eq!(correlation.argv, ["space arg", "apostrophe's arg"]);
             // ht-54r.4: the placeholder fingerprint is the pane's single foreground process
@@ -3542,7 +3565,13 @@ pub(crate) mod tests {
                     }
                     "pane.get" => answer(stream, wire, json!({"type":"pane_info"})),
                     "agent.start" => {
-                        assert_eq!(wire["params"]["process_hint"], true);
+                        // Each fenced start decides from its own pong: the retry after a
+                        // lost capability goes without the hint.
+                        let hinted = !(case == "lost-capability" && starts == 1);
+                        assert_eq!(
+                            wire["params"].get("process_hint"),
+                            hinted.then_some(&json!(true))
+                        );
                         assert_eq!(wire["params"]["name"], names[starts]);
                         starts += 1;
                         if matches!(case, "lost-capability" | "kept-capability") && starts == 1 {
@@ -3605,10 +3634,14 @@ pub(crate) mod tests {
                     .iter()
                     .filter(|frame| frame["method"] == "agent.start")
                     .count(),
-                if case == "kept-capability" { 2 } else { 1 },
+                if matches!(case, "kept-capability" | "lost-capability") {
+                    2
+                } else {
+                    1
+                },
                 "{case} retried without confirmed name refusal"
             );
-            if matches!(case, "lost-capability" | "unsupported") {
+            if case == "unsupported" {
                 let failure = result.expect_err(case);
                 assert_eq!(failure.error.code, ErrorCode::Unsupported, "{case}");
                 assert_eq!(
@@ -3616,12 +3649,13 @@ pub(crate) mod tests {
                     ports::NativeSubmission::NotSubmitted,
                     "{case}"
                 );
-            } else if case == "kept-capability" {
+            } else if matches!(case, "kept-capability" | "lost-capability") {
                 let NativeLaunchOutcome::ObservedStartup { correlation, .. } = result.unwrap()
                 else {
                     panic!("confirmed retry was not correlated")
                 };
                 assert_eq!(correlation.agent_name, expected_names[1]);
+                assert_eq!(correlation.process_hint_sent, case == "kept-capability");
                 assert!(correlation.matches_request(&request, &context));
             } else {
                 assert_eq!(

@@ -2855,6 +2855,7 @@ impl HostPort for LaunchHost {
         Ok(NativeLaunchOutcome::ObservedStartup {
             correlation: CorrelatedStartup {
                 process_hint: false,
+                process_hint_sent: false,
                 seat: request.seat.clone(),
                 agent_name: request.agent_name(),
                 harness: request.harness,

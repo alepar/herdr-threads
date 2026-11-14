@@ -1250,6 +1250,12 @@ fn execute_guarded_inner(
         "binding": binding,
     });
     append_adapter_projection(&mut record, &preparation.report);
+    // The policy asked for a process hint the host does not advertise: started without it.
+    let hint_unsupported = matches!(&outcome, NativeLaunchOutcome::ObservedStartup { correlation, .. }
+        if correlation.process_hint && !correlation.process_hint_sent);
+    if hint_unsupported {
+        record["process_hint"] = json!("host_unsupported");
+    }
     if let Some(dir) = parts.record_dir
         && let Err(error) = append_record(dir, &record)
     {
@@ -1283,6 +1289,9 @@ fn execute_guarded_inner(
         "warnings": warnings,
     });
     append_adapter_projection(&mut report, &preparation.report);
+    if hint_unsupported {
+        report["process_hint"] = json!("host_unsupported");
+    }
     if let Some(candidates) = agent_name_candidates {
         report["agent_name_candidates"] = json!(candidates);
     }
@@ -1333,6 +1342,8 @@ mod task23_tests {
         submitted: Mutex<Vec<NativeLaunchRequest>>,
         unknown: bool,
         confirmed_refusal: bool,
+        /// The host advertises no `agent_start_process_hint_v1`: the start goes without it.
+        hint_unsupported: bool,
     }
     impl FakeHost {
         fn new() -> Self {
@@ -1342,6 +1353,7 @@ mod task23_tests {
                 submitted: Mutex::new(Vec::new()),
                 unknown: false,
                 confirmed_refusal: false,
+                hint_unsupported: false,
             }
         }
         fn observation(&self) -> HostObservation {
@@ -1454,6 +1466,7 @@ mod task23_tests {
             Ok(NativeLaunchOutcome::ObservedStartup {
                 correlation: CorrelatedStartup {
                     process_hint: request.process_hint,
+                    process_hint_sent: request.process_hint && !self.hint_unsupported,
                     seat: request.seat.clone(),
                     agent_name: request.agent_name(),
                     harness: request.harness,
@@ -1766,9 +1779,35 @@ mod task23_tests {
                 "first turn's text"
             ]
         );
+        assert!(
+            report.report.get("process_hint").is_none(),
+            "the hint was sent"
+        );
         assert_eq!(seats.recorded.lock().unwrap().len(), 1);
         assert_eq!(report.report["hermes"]["callback_qualified"], false);
         assert_eq!(report.report["hermes"]["native_acceptance"], "unmet");
+    }
+
+    #[test]
+    fn hermes_launch_on_a_host_without_the_hint_starts_and_reports_it_unsent() {
+        let s = hermes_fixture();
+        let mut host = FakeHost::new();
+        host.hint_unsupported = true;
+        let seats = seats();
+        let handoff = handoff();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        let report = s
+            .launch(&host, &seats, &handoff, request(harness, &["-q", "first"]))
+            .expect("a host without the hint capability still starts the agent");
+        assert_eq!(report.exit, 0);
+        assert_eq!(report.report["outcome"], "started");
+        assert_eq!(report.report["process_hint"], "host_unsupported");
+        assert_eq!(host.submitted().len(), 1);
+        assert_eq!(
+            seats.recorded.lock().unwrap().len(),
+            1,
+            "the binding is still recorded"
+        );
     }
 
     #[test]

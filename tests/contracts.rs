@@ -2551,6 +2551,7 @@ fn process_hint_mode_mismatch_rejects_correlation() {
     };
     let mut correlation = CorrelatedStartup {
         process_hint: false,
+        process_hint_sent: false,
         seat: request.seat.clone(),
         agent_name: "worker".into(),
         harness: request.harness,

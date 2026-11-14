@@ -2363,6 +2363,9 @@ fn validate_native_argv_with_reservation(
 pub struct CorrelatedStartup {
     /// Requested transport mode, not evidence of effective child environment.
     pub process_hint: bool,
+    /// Whether the start frame carried the requested hint: false when the host did not
+    /// advertise it (the start then went without it) or none was requested.
+    pub process_hint_sent: bool,
     pub seat: SeatId,
     pub agent_name: String,
     pub harness: Harness,

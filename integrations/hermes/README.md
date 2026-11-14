@@ -46,8 +46,9 @@ enabled (`hermes --profile NAME plugins enable herdr-threads`): its session star
 the pane's seat and its first top-level turn gets the context. Delegated children
 (platform `subagent`) never enroll. There is no resume continuity (a resumed session
 starts fresh on the pane's seat). On macOS Herdr does not recognize a bare Hermes
-(`herdr-threads launch --kind hermes` adds the process hint that makes it recognized, but
-only a Herdr that advertises `agent_start_process_hint_v1` accepts it);
+(`herdr-threads launch --kind hermes` adds the process hint that makes it recognized when
+Herdr advertises `agent_start_process_hint_v1`; otherwise it starts without the hint and the
+report says `process_hint: host_unsupported`);
 on Linux it does. Either way the gateway keeps a Hermes seat from being woken while
 idle, as above. After upgrading herdr-threads, re-run
 `setup hermes --profile NAME` so the installed bridge sends the enrollment witness; an

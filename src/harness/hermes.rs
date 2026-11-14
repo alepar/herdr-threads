@@ -41,15 +41,14 @@ static TEXT: AdapterText = AdapterText {
     launch_notes: "Hermes is experimental, natively
 measured on 0.21.5 with a private Herdr build; a bare Hermes CLI session also
 joins through its hooks; this launch adds the guarded process hint that lets Herdr
-recognize it. Its separate startup/profile/API prelaunch observation
+recognize it, when Herdr advertises it. Its separate startup/profile/API prelaunch observation
 must match the selected executable, owned generation and configured enabled profile.
 Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
 --cli and one policy-owned chat token compose the captured interactive grammar.
 Known-arity model/provider options and chat -q/--query are supported in their native
 positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
 approval bypass forms refuse. Launch never enables a plugin or grants native consent.
-The private host must support guarded process hints; a hint or observed launch is
-neither callback activation nor model consumption. No composer stash/restore.",
+A hint or observed launch is neither callback activation nor model consumption. No composer stash/restore.",
     ..AdapterText::NONE
 };
 static METADATA: AdapterMetadata = AdapterMetadata {

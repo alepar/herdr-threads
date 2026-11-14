@@ -400,6 +400,7 @@ impl HostPort for FakeHost {
                         .clone()
                         .unwrap_or(CorrelatedStartup {
                             process_hint: false,
+                            process_hint_sent: false,
                             seat: request.seat.clone(),
                             agent_name: request.agent_name(),
                             harness: request.harness,
@@ -557,6 +558,7 @@ fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
     };
     CorrelatedStartup {
         process_hint: false,
+        process_hint_sent: false,
         seat: request.seat.clone(),
         agent_name: request.agent_name(),
         harness: request.harness,

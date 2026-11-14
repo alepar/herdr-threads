@@ -2821,8 +2821,13 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   not an effective child environment or proof of native execution. Same-user processes can inherit or
   imitate recognition hints; platform support, environment readability and descendant coverage can
   prevent recognition. Hints add no registration, receipt, continuity or caller authority and no new
-  provenance (A1–A3, C1); arbitrary environment overrides remain refused. A possibly submitted start
-  with an uncertain response remains unknown, without a safe fallback or inferred binding.
+  provenance (A1–A3, C1); arbitrary environment overrides remain refused. A host whose pong at the
+  fenced start does not advertise `agent_start_process_hint_v1` gets the same fenced start without the
+  field (only recognition by hint degrades, decided per start from that pong, never from a version); the
+  correlation records `process_hint_sent: false` and the launch report `process_hint: host_unsupported`.
+  The readiness wait still requires Herdr to report the agent's own kind, so a host that cannot
+  recognize the agent without the hint ends `outcome_unknown`, never an inferred start. A possibly
+  submitted start with an uncertain response remains unknown, without a safe fallback or inferred binding.
 - **A launch binding can outlive its agent.** Like any binding (Unseen exits), a `managed_launch` binding
   whose agent exits before checking in stays until a check-in of its harness replaces it or the seat is unresolved or
   retired (the liveness sweep disconnects it once its fingerprinted process is gone, without ending it); a later
