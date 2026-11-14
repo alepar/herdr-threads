@@ -1038,8 +1038,11 @@ model open work, and summary closure never changes receipt state or installs glo
   is structural evidence, never a heuristic: it goes through the one `store::bindings::disconnect`
   transition, and the worker never ends a binding, retires, moves or merges a seat. It never judges a
   human binding (a person has no harness process), and it skips seats that are unresolved or retired
-  and every seat of an instance under a recovery hold, so a Herdr restart never disconnects through the
-  worker: the reconciler's C2 path owns those seats. A verdict is applied only if the binding is still
+  and every seat of a Herdr server under a recovery hold until the reconciliation marker (C2) names that
+  server's current recovery boot and epoch, so a Herdr restart never disconnects through the
+  worker: the reconciler's C2 path owns those seats. Past the marker every seat still resolved is proven in
+  the current incarnation, so a seat left unresolved, which keeps the hold armed until it is repaired or
+  retired, never silences the liveness of the server's resolved seats (ht-j9yc). A verdict is applied only if the binding is still
   connected with the fingerprint it was judged on. Availability follows liveness per binding (C4).
 - *Refusals*: an agent call without a harness session id (empty, a `launch:` placeholder, and from
   a `plugin_context:` session), reads included, is refused with `session_claim_required`. An agent

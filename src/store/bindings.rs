@@ -696,10 +696,12 @@ pub struct LivenessDecision {
 }
 
 /// Connected open bindings of resolved seats the liveness check may judge. Human bindings are
-/// never judged by process evidence (ht-54r.4). Unresolved and retired seats, and seats of an
-/// instance under a recovery hold (open `recovery_holds` or an unclaimed baseline hold), are
-/// skipped entirely: a Herdr restart never leads to a disconnect from here (the reconciler owns
-/// those seats). `seat` narrows the read to one seat.
+/// never judged by process evidence (ht-54r.4). Unresolved and retired seats are skipped, and so
+/// is every seat of a host under a recovery hold (open `recovery_holds` or an unclaimed baseline
+/// hold) until that host's reconciliation pass for its current recovery boot/epoch finished: a
+/// Herdr restart never leads to a disconnect from here (the reconciler owns those seats), while a
+/// seat left unresolved after the pass, which keeps the hold armed, no longer silences the
+/// host's resolved seats (ht-j9yc). `seat` narrows the read to one seat.
 pub fn liveness_candidates(
     db: &Connection,
     seat: Option<&SeatId>,
@@ -710,8 +712,9 @@ pub fn liveness_candidates(
              FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' AND harness<>'human' \
              AND (?1 IS NULL OR seat_id=?1) \
              AND seat_id IN (SELECT s.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id AND h.node_id=s.instance_id \
-                 WHERE s.state='resolved' AND s.{LOCAL_SEAT} AND COALESCE(h.baseline_hold_unclaimed,0)=0 \
+                 WHERE s.state='resolved' AND s.{LOCAL_SEAT} AND ((COALESCE(h.baseline_hold_unclaimed,0)=0 \
                  AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=s.host_id AND rh.released_at IS NULL)) \
+                 OR (h.recovery_boot IS NOT NULL AND h.recovery_boot=h.reconciled_boot AND h.recovery_epoch=h.reconciled_epoch))) \
              ORDER BY ordinal",
             LOCAL_SEAT = super::seats::LOCAL_SEAT
         ))

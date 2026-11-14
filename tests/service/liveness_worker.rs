@@ -594,6 +594,46 @@ fn held_unresolved_or_retired_seats_are_skipped() {
 }
 
 #[test]
+fn an_unresolved_seat_past_reconciliation_does_not_silence_the_hosts_resolved_seats() {
+    // Wake survey issue B (ht-j9yc): one seat unresolved after the host's reconciliation pass
+    // keeps the baseline hold armed indefinitely. The resolved seats are proven in the current
+    // incarnation by then, so their dead bindings must still be judged.
+    let fx = Fx::new("liveness-reconciled-hold");
+    fx.seat("unresolved");
+    let on_resolved = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    let on_unresolved = fx.bind("unresolved", "claude", "B", Some((101, 5)), 10);
+    let db = fx.raw();
+    db.execute(
+        "UPDATE seats SET state='unresolved', unresolved_reason='other' WHERE id='unresolved'",
+        [],
+    )
+    .unwrap();
+    // Recovery of boot `b` epoch 1 not yet reconciled: the hold silences every seat.
+    db.execute(
+        "UPDATE herdr_hosts SET baseline_hold_unclaimed=1, recovery_boot='b', recovery_epoch=1",
+        [],
+    )
+    .unwrap();
+    assert_eq!(fx.worker.pass(&budget()).unwrap(), PassOutcome::default());
+    assert!(fx.connected(&on_resolved));
+    // The pass for that recovery finished; the unresolved seat keeps the hold armed.
+    db.execute(
+        "UPDATE herdr_hosts SET reconciled_boot='b', reconciled_epoch=1",
+        [],
+    )
+    .unwrap();
+    fx.worker.pass(&budget()).unwrap();
+    assert_eq!(
+        fx.state(&on_resolved),
+        ("disconnected".into(), Some("liveness_process_exit".into()))
+    );
+    assert!(
+        fx.connected(&on_unresolved),
+        "unresolved seats stay skipped"
+    );
+}
+
+#[test]
 fn idle_pass_commits_nothing() {
     let fx = Fx::new("liveness-idle");
     fx.table.set(100, 5);
