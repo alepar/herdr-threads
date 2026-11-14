@@ -49,5 +49,6 @@
       "on_session_start",
       "on_session_reset"
     ]
-  }
+  },
+  "client_env_passthrough_missing": []
 }

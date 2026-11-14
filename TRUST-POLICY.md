@@ -2665,7 +2665,8 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   refused, never attributed to the gateway's own pane. A process without the marker (classic Hermes) keeps
   its inherited environment. Accepted limit: without the passthrough the session's tool subprocesses
   inherit the gateway's pane, so a model-issued `herdr-threads` call names that pane with its own
-  `HERMES_SESSION_ID`; setup documents the setting but does not write native YAML.
+  `HERMES_SESSION_ID`. `setup hermes` adds the two names through Hermes's own `config set`, merge only;
+  no other native config is written.
   The gateway's sessions share its process fingerprint, so Hermes declares `process_spans_seats`
   (ht-gagu): the same-process rule (supersede, plain-reconnect hold, the liveness worker) holds only
   within one seat, and a session in another pane no longer disconnects the first pane's session. A new

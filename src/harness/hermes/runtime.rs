@@ -159,11 +159,23 @@ fn drain(pipe: &mut impl Read, bytes: &mut Vec<u8>) -> Result<bool, ProbeFailure
     }
 }
 fn run_capture(
-    mut command: Command,
+    command: Command,
     clock: &dyn crate::protocol::time::Clock,
     budget: &crate::protocol::time::CallBudget,
     started: Instant,
 ) -> Result<Vec<u8>, ProbeFailure> {
+    match run_output(command, clock, budget, started)? {
+        (true, out, _) => Ok(out),
+        _ => Err(ProbeFailure::ChildFailed),
+    }
+}
+/// Run one bounded child: (exit success, stdout, stderr), each stream capped at 16 KiB.
+fn run_output(
+    mut command: Command,
+    clock: &dyn crate::protocol::time::Clock,
+    budget: &crate::protocol::time::CallBudget,
+    started: Instant,
+) -> Result<(bool, Vec<u8>, Vec<u8>), ProbeFailure> {
     check_budget(clock, budget, started)?;
     let mut child = OwnedProbe(command.spawn().map_err(|_| ProbeFailure::ChildFailed)?);
     let mut stdout = child.0.stdout.take().ok_or(ProbeFailure::ChildFailed)?;
@@ -186,13 +198,111 @@ fn run_capture(
             && let Some(status) = status
         {
             check_budget(clock, budget, started)?;
-            return if status.success() {
-                Ok(out)
-            } else {
-                Err(ProbeFailure::ChildFailed)
-            };
+            return Ok((status.success(), out, err));
         }
         std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// What [`ensure_passthrough`] changed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PassthroughChange {
+    /// Every required name was already listed; nothing was written.
+    Complete,
+    /// These names were appended after the listed ones.
+    Added(Vec<String>),
+}
+
+/// One `hermes --profile P config ...` call: Hermes's own CLI, never a YAML edit.
+fn native_config(
+    launcher: &Path,
+    profile: &str,
+    args: &[&str],
+    env: &crate::harness::adapter::SetupEnvironment,
+    budget: &crate::protocol::time::CallBudget,
+) -> Result<(bool, Vec<u8>, Vec<u8>), ProbeFailure> {
+    let started = Instant::now();
+    if !absolute(launcher) || !safe(profile, 256) || !env.cwd.is_absolute() {
+        return Err(ProbeFailure::Malformed);
+    }
+    let mut command = Command::new(launcher);
+    command
+        .args(["--profile", profile, "config"])
+        .args(args)
+        .env_clear()
+        .envs(&env.declared)
+        .env("HOME", env.home.as_ref().ok_or(ProbeFailure::Malformed)?)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .current_dir(&env.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    if let Some(path) = &env.path {
+        command.env("PATH", path);
+    }
+    #[cfg(feature = "test-support")]
+    crate::test_support::spawn::tag(&mut command);
+    run_output(command, env.clock.as_ref(), budget, started)
+}
+
+/// Ensure the profile's `terminal.client_env_passthrough` lists [`PASSTHROUGH_NAMES`]
+/// through Hermes's own `config get` / `config set`: merge only (listed names kept in
+/// order, missing ones appended), no write when complete. Any failure leaves the
+/// config as it was and is reported by the caller with the manual command.
+pub fn ensure_passthrough(
+    launcher: &Path,
+    profile: &str,
+    env: &crate::harness::adapter::SetupEnvironment,
+    budget: &crate::protocol::time::CallBudget,
+) -> Result<PassthroughChange, ProbeFailure> {
+    let listed: Vec<String> = match native_config(
+        launcher,
+        profile,
+        &["get", PASSTHROUGH_KEY, "--json"],
+        env,
+        budget,
+    )? {
+        (true, out, _) => {
+            match serde_json::from_slice(&out).map_err(|_| ProbeFailure::Malformed)? {
+                serde_json::Value::Null => vec![],
+                serde_json::Value::Array(names) => names
+                    .into_iter()
+                    .map(|name| match name {
+                        serde_json::Value::String(name) if safe(&name, 256) => Ok(name),
+                        _ => Err(ProbeFailure::Malformed),
+                    })
+                    .collect::<Result<_, _>>()?,
+                _ => return Err(ProbeFailure::Malformed),
+            }
+        }
+        // An absent key lists nothing (older Hermes without a default).
+        (false, _, err) if String::from_utf8_lossy(&err).contains("not set") => vec![],
+        _ => return Err(ProbeFailure::ChildFailed),
+    };
+    if listed.len() > 256 {
+        return Err(ProbeFailure::Malformed);
+    }
+    let missing: Vec<String> = PASSTHROUGH_NAMES
+        .iter()
+        .filter(|required| !listed.iter().any(|name| name.trim() == **required))
+        .map(|name| (*name).to_owned())
+        .collect();
+    if missing.is_empty() {
+        return Ok(PassthroughChange::Complete);
+    }
+    let merged: Vec<&String> = listed.iter().chain(&missing).collect();
+    let value = serde_json::to_string(&merged).map_err(|_| ProbeFailure::Malformed)?;
+    match native_config(
+        launcher,
+        profile,
+        &["set", PASSTHROUGH_KEY, &value],
+        env,
+        budget,
+    )? {
+        (true, _, _) => Ok(PassthroughChange::Added(missing)),
+        _ => Err(ProbeFailure::ChildFailed),
     }
 }
 
@@ -632,6 +742,62 @@ mod tests {
 
     #[test]
     #[cfg(feature = "test-support")]
+    fn passthrough_is_merged_through_hermes_config_get_and_set_only() {
+        // $1..$4 = --profile P config get|set; every call is logged, `set`
+        // records its value; GET_OUT/GET_RC/SET_RC script each case.
+        let body = |get: &str, get_rc: u8, set_rc: u8| {
+            format!(
+                "printf '%s\\n' \"$*\" >> calls\n[ \"$1 $2 $3\" = '--profile work config' ] || exit 70\ncase \"$4\" in\n get) [ \"$5 $6\" = 'terminal.client_env_passthrough --json' ] || exit 71; printf '%s' '{get}'; [ {get_rc} = 1 ] && printf 'Config key not set: x' >&2; exit {get_rc} ;;\n set) [ \"$5\" = terminal.client_env_passthrough ] || exit 72; printf '%s' \"$6\" > value; exit {set_rc} ;;\nesac\nexit 73"
+            )
+        };
+        let run = |get: &str, get_rc: u8, set_rc: u8| {
+            let (tmp, launch, env, budget) = launcher(&body(get, get_rc, set_rc));
+            let result = ensure_passthrough(&launch, "work", &env, &budget);
+            let read = |name: &str| std::fs::read_to_string(tmp.path().join(name)).ok();
+            (
+                result,
+                read("calls").unwrap_or_default().lines().count(),
+                read("value"),
+            )
+        };
+        let (result, calls, value) = run(r#"[" PATH ","HERDR_ENV"]"#, 0, 0);
+        assert_eq!(
+            result.unwrap(),
+            PassthroughChange::Added(vec!["HERDR_PANE_ID".into()])
+        );
+        assert_eq!(
+            (calls, value.as_deref()),
+            (2, Some(r#"[" PATH ","HERDR_ENV","HERDR_PANE_ID"]"#))
+        );
+        let (result, calls, value) = run(r#"["HERDR_PANE_ID","X","HERDR_ENV"]"#, 0, 0);
+        assert_eq!(result.unwrap(), PassthroughChange::Complete);
+        assert_eq!(
+            (calls, value),
+            (1, None),
+            "a complete list is never written"
+        );
+        let (result, _, value) = run("null", 0, 0);
+        assert!(matches!(result.unwrap(), PassthroughChange::Added(n) if n.len() == 2));
+        assert_eq!(value.as_deref(), Some(r#"["HERDR_PANE_ID","HERDR_ENV"]"#));
+        let (result, _, value) = run("", 1, 0);
+        assert!(result.is_ok(), "an unset key lists nothing");
+        assert_eq!(value.as_deref(), Some(r#"["HERDR_PANE_ID","HERDR_ENV"]"#));
+        for (get, get_rc, set_rc) in [("", 2, 0), ("{}", 0, 0), (r#"["a\nb"]"#, 0, 0)] {
+            let (result, calls, value) = run(get, get_rc, set_rc);
+            assert!(result.is_err(), "{get} {get_rc}");
+            assert_eq!(
+                (calls, value),
+                (1, None),
+                "a failed or odd read never writes"
+            );
+        }
+        let (result, calls, _) = run("[]", 0, 1);
+        assert_eq!(result.unwrap_err(), ProbeFailure::ChildFailed);
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    #[cfg(feature = "test-support")]
     fn capture_tolerates_bootstrap_slower_than_two_seconds() {
         // Real Hermes bootstrap takes about 2 s; a 2 s local cap made setup
         // fail with Deadline against every real install.
@@ -819,7 +985,14 @@ pub struct ProfileObservation {
     /// The plugin API the bridge uses was recognized by callability. `false` only
     /// degrades launch to an unverified API and adds a diagnostic; it never refuses.
     pub api_recognized: bool,
+    /// Which of [`PASSTHROUGH_NAMES`] the profile's `terminal.client_env_passthrough`
+    /// lacks (never other names); None when the config could not be read.
+    pub passthrough_missing: Option<Vec<String>>,
 }
+/// The client env names a shared-gateway session needs to carry its own pane.
+pub const PASSTHROUGH_NAMES: [&str; 2] = ["HERDR_PANE_ID", "HERDR_ENV"];
+/// The Hermes config key that lists them.
+pub const PASSTHROUGH_KEY: &str = "terminal.client_env_passthrough";
 impl ProfileObservation {
     pub fn configured_enabled(&self) -> Option<bool> {
         let enabled = self.enabled.as_ref()?;
@@ -866,6 +1039,7 @@ struct ProfileResult {
     identity_provenance: String,
     evidence_stage: String,
     api: Option<PluginApi>,
+    client_env_passthrough_missing: Option<Vec<String>>,
 }
 /// Strict complete schema2. `api` is the callability-only plugin API shape (null:
 /// not recognized); legacy callback-qualification facts are intentionally absent.
@@ -900,6 +1074,7 @@ pub fn decode_profile_observation(
         "identity_provenance",
         "evidence_stage",
         "api",
+        "client_env_passthrough_missing",
     ];
     if !value
         .as_object()
@@ -922,6 +1097,7 @@ pub fn decode_profile_observation(
             || r.evidence_stage != "unavailable"
             || r.config_quality != ConfigQuality::Unknown
             || r.api.is_some()
+            || r.client_env_passthrough_missing.is_some()
             || fields[3..13].iter().any(|k| !value[*k].is_null())
         {
             return Err(ProbeFailure::Malformed);
@@ -999,7 +1175,17 @@ pub fn decode_profile_observation(
         return Err(ProbeFailure::Malformed);
     }
     let origins = r.module_origins.ok_or(ProbeFailure::Malformed)?;
-    if r.api.as_ref().is_some_and(|api| !api.complete()) {
+    if r.api.as_ref().is_some_and(|api| !api.complete())
+        || r.client_env_passthrough_missing
+            .as_ref()
+            .is_some_and(|missing| {
+                // An ordered subset of the required names, nothing else.
+                let mut wanted = PASSTHROUGH_NAMES.iter();
+                !missing
+                    .iter()
+                    .all(|name| wanted.any(|required| required == name))
+            })
+    {
         return Err(ProbeFailure::Malformed);
     }
     let names = [
@@ -1051,6 +1237,7 @@ pub fn decode_profile_observation(
         enabled: r.enabled,
         disabled: r.disabled,
         api_recognized: r.api.is_some(),
+        passthrough_missing: r.client_env_passthrough_missing,
     })
 }
 
@@ -1120,7 +1307,7 @@ pub fn decode_prelaunch_observation(
         serde_json::from_slice(bytes).map_err(|_| ProbeFailure::Malformed)?;
     let mut value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|_| ProbeFailure::Malformed)?;
-    if value.as_object().is_none_or(|v| v.len() != 21)
+    if value.as_object().is_none_or(|v| v.len() != 22)
         || typed.schema_version != 3
         || (typed.status != "unavailable"
             && typed.evidence_stage != "prelaunch_api_profile_observation")
@@ -1133,7 +1320,13 @@ pub fn decode_prelaunch_observation(
     // These exact schema3 keys describe integration readiness, not selected
     // native launch inputs. All validation and the original full stamp remain.
     let mut launch_inputs = value.clone();
-    for key in ["enabled", "disabled", "config_quality", "fallback_kind"] {
+    for key in [
+        "enabled",
+        "disabled",
+        "config_quality",
+        "fallback_kind",
+        "client_env_passthrough_missing",
+    ] {
         launch_inputs
             .as_object_mut()
             .ok_or(ProbeFailure::Malformed)?
@@ -1455,6 +1648,7 @@ mod profile_observation_tests {
             "dependency_paths",
             "enabled",
             "disabled",
+            "client_env_passthrough_missing",
         ] {
             unavailable[key] = serde_json::Value::Null;
         }
@@ -1470,6 +1664,64 @@ mod profile_observation_tests {
             )
             .unwrap_err(),
             ProbeFailure::Unavailable("inspection_unavailable".into())
+        );
+    }
+    #[test]
+    fn passthrough_facts_are_only_an_ordered_subset_of_the_required_names() {
+        let scope = fixture_scope();
+        let base: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/hermes/plugin-assets.json"
+        ))
+        .unwrap();
+        for (value, expected) in [
+            (serde_json::json!([]), Some(vec![])),
+            (
+                serde_json::json!(["HERDR_ENV"]),
+                Some(vec!["HERDR_ENV".to_owned()]),
+            ),
+            (
+                serde_json::json!(["HERDR_PANE_ID", "HERDR_ENV"]),
+                Some(vec!["HERDR_PANE_ID".to_owned(), "HERDR_ENV".to_owned()]),
+            ),
+            (serde_json::Value::Null, None),
+        ] {
+            let mut changed = base.clone();
+            changed["client_env_passthrough_missing"] = value;
+            let got =
+                decode_profile_observation(&serde_json::to_vec(&changed).unwrap(), &scope).unwrap();
+            assert_eq!(got.passthrough_missing, expected);
+        }
+        for value in [
+            serde_json::json!(["PRIVATE"]),
+            serde_json::json!(["HERDR_ENV", "HERDR_PANE_ID"]),
+            serde_json::json!(["HERDR_ENV", "HERDR_ENV"]),
+            serde_json::json!("HERDR_ENV"),
+        ] {
+            let mut changed = base.clone();
+            changed["client_env_passthrough_missing"] = value.clone();
+            assert!(
+                decode_profile_observation(&serde_json::to_vec(&changed).unwrap(), &scope).is_err(),
+                "accepted {value}"
+            );
+        }
+        // The passthrough is readiness, not a launch input.
+        let mut prelaunch = prelaunch_fixture();
+        let first = decode_prelaunch_observation(
+            &serde_json::to_vec(&prelaunch).unwrap(),
+            &scope.interpreter,
+            "default",
+        )
+        .unwrap();
+        prelaunch["client_env_passthrough_missing"] = serde_json::json!(["HERDR_PANE_ID"]);
+        let second = decode_prelaunch_observation(
+            &serde_json::to_vec(&prelaunch).unwrap(),
+            &scope.interpreter,
+            "default",
+        )
+        .unwrap();
+        assert_eq!(
+            first.launch_input_fingerprint,
+            second.launch_input_fingerprint
         );
     }
     #[test]

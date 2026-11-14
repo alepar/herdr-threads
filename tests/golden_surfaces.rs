@@ -476,7 +476,7 @@ impl HermesScope {
             // The 0.23.1 plugin API layout: PluginContext in plugins_context.py, re-exported.
             (package.join("plugins_context.py"), "class PluginContext:\n def register_hook(self): pass\n def on_unload(self): pass\n".into()),
             (package.join("plugins.py"), "from hermes_cli.plugins_context import PluginContext\nclass PluginManager:\n def invoke_hook(self): pass\nVALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n".into()),
-            (package.join("config.py"), "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':['herdr-threads'],'disabled':[]}}\n".into()),
+            (package.join("config.py"), "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':['herdr-threads'],'disabled':[]},'terminal':{'client_env_passthrough':['HERDR_PANE_ID','HERDR_ENV']}}\n".into()),
         ] {
             fs::write(path, bytes).unwrap();
         }

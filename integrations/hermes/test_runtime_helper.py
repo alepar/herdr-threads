@@ -38,7 +38,8 @@ class RuntimeHelperTests(unittest.TestCase):
             "from types import SimpleNamespace\ndef get_version_info():\n return SimpleNamespace(source='git',base_version='0.21.5',derived_version='0.21.5+1.g1234567',commit='1234567890abcdef1234567890abcdef12345678',dirty=False,distance=1)\n")
         (package / "config.py").write_text(
             "import os\nclass FailedConfigRead(dict): pass\ndef load_config_readonly():\n"
-            " value={'plugins':{'enabled':['herdr-threads'],'disabled':[]}}\n"
+            " value={'plugins':{'enabled':['herdr-threads'],'disabled':[]},"
+            "'terminal':{'client_env_passthrough':['PATH','HERDR_PANE_ID','HERDR_ENV']}}\n"
             " return FailedConfigRead(value) if os.environ.get('FIXTURE_FAILED') else value\n")
         self.home = self.root / "home with Ω"
         (self.home / "profiles" / "work").mkdir(parents=True)
@@ -199,6 +200,31 @@ class RuntimeHelperTests(unittest.TestCase):
                 self.assertEqual(self.probe()['status'], 'unavailable')
         boot.write_text(original)
         self.assertEqual(self.probe()['status'], 'observed')
+
+    def test_passthrough_reports_only_missing_required_names(self):
+        config = self.native / 'hermes_cli' / 'config.py'
+        self.assertEqual(self.probe()['client_env_passthrough_missing'], [])
+        for terminal, missing in (
+            ("{'client_env_passthrough':['PRIVATE_NAME',' HERDR_ENV ']}", ['HERDR_PANE_ID']),
+            ("{'client_env_passthrough':'private secret'}", ['HERDR_PANE_ID', 'HERDR_ENV']),
+            ("{}", ['HERDR_PANE_ID', 'HERDR_ENV']),
+            ("'private secret'", ['HERDR_PANE_ID', 'HERDR_ENV']),
+        ):
+            with self.subTest(terminal=terminal):
+                config.write_text("class FailedConfigRead(dict): pass\ndef load_config_readonly(): "
+                                  f"return {{'plugins':{{'enabled':[],'disabled':[]}},'terminal':{terminal}}}\n")
+                for prelaunch in (False, True):
+                    result = self.probe(prelaunch=prelaunch)
+                    self.assertEqual(result['client_env_passthrough_missing'], missing)
+                    self.assertNotIn('PRIVATE', json.dumps(result))
+                    self.assertNotIn('private', json.dumps(result))
+        # Unreadable config is unknown, never reported as missing.
+        config.write_text("class FailedConfigRead(dict): pass\ndef load_config_readonly(): "
+                          "return FailedConfigRead({'terminal':{'client_env_passthrough':[]}})\n")
+        self.assertIsNone(self.probe()['client_env_passthrough_missing'])
+        config.write_text("class FailedConfigRead(dict): pass\ndef load_config_readonly(): raise OSError('private')\n")
+        self.assertIsNone(self.probe()['client_env_passthrough_missing'])
+        self.assertIsNone(self.probe('missing')['client_env_passthrough_missing'])
 
     def test_malformed_config_projection_is_unknown_without_raw_values(self):
         config = self.native / 'hermes_cli' / 'config.py'

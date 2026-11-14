@@ -18,6 +18,8 @@ SCOPE = 'declared_child_input_plus_native_bootstrap_profile_effects'
 FIELDS = ('runtime_descriptor', 'profile', 'home', 'physical_home', 'interpreter',
           'source_root', 'module_origins', 'dependency_paths', 'enabled', 'disabled')
 HOOKS = ('pre_llm_call', 'post_tool_call', 'on_session_start', 'on_session_reset')
+# A shared-gateway session carries its own pane only through these client env names.
+PASSTHROUGH = ('HERDR_PANE_ID', 'HERDR_ENV')
 
 
 def opaque(value, limit=256):
@@ -53,7 +55,7 @@ def empty(reason, prelaunch=False):
             **dict.fromkeys(FIELDS), 'config_quality': 'unknown', 'fallback_kind': None,
             'environment_scope': SCOPE, 'cli_dotenv_loaded': False,
             'cli_scratch_rehomed': False, 'identity_provenance': 'startup_captured',
-            'evidence_stage': 'unavailable', 'api': None}
+            'evidence_stage': 'unavailable', 'api': None, 'client_env_passthrough_missing': None}
     return result
 
 
@@ -163,7 +165,7 @@ def inspect(profile):
             or (descriptor['commit'] is not None and (not isinstance(descriptor['commit'], str) or len(descriptor['commit']) != 40 or any(c not in '0123456789abcdef' for c in descriptor['commit'])))
             or (info.source == 'git' and (info.commit is None or info.distance is None))):
         raise ValueError('identity')
-    quality, enabled, disabled = 'unknown', None, None
+    quality, enabled, disabled, data = 'unknown', None, None, None
     try:
         data = config.load_config_readonly()
         failed_type = config.FailedConfigRead
@@ -178,12 +180,24 @@ def inspect(profile):
                     enabled, disabled = lists
     except Exception:
         pass  # Only allowlisted quality, never config values/errors or inferred fallback.
+    # Which required passthrough names the profile lacks, read as Hermes reads the key
+    # (a non-list value lists nothing); never other names. None: config unreadable.
+    missing = None
+    if type(data) is dict:
+        try:
+            terminal = data.get('terminal')
+            raw = terminal.get('client_env_passthrough') if isinstance(terminal, dict) else None
+            listed = {n.strip() for n in raw if isinstance(n, str)} if isinstance(raw, list) else set()
+            missing = [name for name in PASSTHROUGH if name not in listed]
+        except Exception:
+            missing = None
     api = api_facts()
     result = empty(None, prelaunch)
     result.update(status='observed', runtime_descriptor=descriptor, profile=profile,
                   home=home, physical_home=physical, interpreter=str(interpreter), source_root=str(root),
                   module_origins=origins, dependency_paths=[selected], enabled=enabled, disabled=disabled,
-                  config_quality=quality, api=api, evidence_stage='startup_profile_observation')
+                  config_quality=quality, api=api, client_env_passthrough_missing=missing,
+                  evidence_stage='startup_profile_observation')
     if prelaunch:
         result.update(evidence_stage='prelaunch_api_profile_observation')
     return result

@@ -57,8 +57,12 @@ limits).
 
 From Hermes 0.22.1 every CLI and TUI session of a profile runs in one shared gateway
 process, whose own environment is that of the pane that started it. Each pane's
-session must therefore carry its own pane: add both names to the profile's client
-environment passthrough, merged with any names already listed there:
+session must therefore carry its own pane: both names must be in the profile's client
+environment passthrough. `setup hermes --profile NAME` adds them through Hermes's own
+`config get`/`config set`, after the names already listed (it writes nothing when both are
+there, and `unsetup` leaves them); `setup-status` and `doctor` report a profile that lacks
+them. If setup cannot run Hermes's CLI, it prints the manual form, to merge with the names
+already listed:
 
 ```sh
 hermes --profile NAME config set terminal.client_env_passthrough '[HERDR_PANE_ID, HERDR_ENV]'
@@ -72,7 +76,8 @@ that session's values to its hook child, so the session takes its own pane's sea
 also reach the session's tool subprocesses, so the model's own `herdr-threads` calls name
 the same pane. A gateway session without them (passthrough unset, a session created
 before it was set, Desktop or a messaging platform) runs no hook: it is never seated on
-the gateway's pane. Start a new `hermes` session after changing the setting. A classic
+the gateway's pane. The setting applies to new sessions only: a session created before
+setup added it stays unseated until you start a new `hermes` session. A classic
 Hermes (before 0.22.1) runs in its pane's own process and needs no setting. Native `delegate_task`
 children run with platform `subagent`; their parented `pre_llm_call` gets the
 subagent restriction locally and every other subagent callback is ignored, except the delegate

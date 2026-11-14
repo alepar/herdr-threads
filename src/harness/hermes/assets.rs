@@ -39,6 +39,9 @@ pub struct AssetStatus {
     pub launch_settings: Option<LaunchAssetSettings>,
     /// The profile observation recognized the plugin API shape (diagnostic only).
     pub api_recognized: bool,
+    /// Required `terminal.client_env_passthrough` names the profile lacks (diagnostic
+    /// only); None when the profile config could not be read.
+    pub passthrough_missing: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -894,6 +897,7 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
         launch_hook: None,
         launch_settings: None,
         api_recognized: o.api_recognized,
+        passthrough_missing: o.passthrough_missing.clone(),
     };
     if matches!(fs::symlink_metadata(o.physical_home.join("plugins")),Err(e) if e.kind()==std::io::ErrorKind::NotFound)
     {
@@ -1124,6 +1128,7 @@ mod tests {
                 enabled: Some(vec!["herdr-threads".into()]),
                 disabled: Some(vec!["herdr-threads".into()]),
                 api_recognized: true,
+                passthrough_missing: Some(vec![]),
             }
         }
         fn install(&self) -> Result<(), SetupError> {
