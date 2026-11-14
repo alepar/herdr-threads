@@ -192,8 +192,9 @@ pub trait LaunchSeatResolver: Send + Sync {
     }
 
     /// TRUST-POLICY A3 `managed_launch` (ht-5n6): report one accepted,
-    /// correlated startup so the daemon can open an unregistered binding on a
-    /// seat with none. Called only after an accepted `ObservedStartup`, never
+    /// correlated startup so the daemon can open an unregistered binding beside
+    /// any the seat holds (none once the launched agent has checked in, ht-t17l).
+    /// Called only after an accepted `ObservedStartup`, never
     /// on `OutcomeUnknown`. `Ok(None)`: the daemon does not record managed
     /// launches (an older daemon); the default records nothing.
     fn record_managed_launch(

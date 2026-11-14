@@ -3093,6 +3093,154 @@ fn a_launch_recorded_after_its_agent_checked_in_adds_no_placeholder() {
     assert_eq!(bindings(&conn).len(), 2);
 }
 
+/// ht-t17l: only a live session binding of the started process suppresses the placeholder. Kills
+/// a match that also counts a same-process binding that is disconnected, ended, a concurrent
+/// (`/side`) fork or plain-only (`cooperative_env_session`): none of those is the launched
+/// session's check-in, so each launch still records its placeholder.
+#[test]
+fn a_same_process_binding_that_is_no_live_session_leaves_the_launch_its_placeholder() {
+    for (case, sql) in [
+        (
+            "disconnected",
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=1,disconnect_reason='process_exit'",
+        ),
+        (
+            "ended",
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=1,disconnect_reason='replaced',ended_at=1",
+        ),
+        (
+            "concurrent",
+            "UPDATE occupant_bindings SET concurrent_session=1",
+        ),
+        (
+            "plain-only",
+            "UPDATE occupant_bindings SET observation_provenance='cooperative_env_session'",
+        ),
+    ] {
+        let (store, conn, _) = fixture();
+        let mut launched = claim();
+        launched.liveness = Some(LIVENESS_OF_LAUNCH);
+        check_in(&store, lifecycle(launched, "launched")).unwrap();
+        conn.execute(sql, []).unwrap();
+        let record = record_launch(&store, managed_launch()).unwrap();
+        assert!(record.recorded, "{case}");
+        assert_eq!(record.provenance, "managed_launch", "{case}");
+        assert_eq!(bindings(&conn).len(), 2, "{case}");
+    }
+    // A tool-boundary (Current) check-in enrolls the process plain-only: still a placeholder.
+    let (store, conn, _) = fixture();
+    let mut launched = claim();
+    launched.liveness = Some(LIVENESS_OF_LAUNCH);
+    check_in(&store, current(&launched, "tool-boundary")).unwrap();
+    assert_eq!(bindings(&conn)[0].1, "cooperative_env_session");
+    assert!(record_launch(&store, managed_launch()).unwrap().recorded);
+}
+
+/// ht-t17l, the wake survey D2 symptom end to end: the launched agent checks in, `launch` then
+/// records, and the seat sends a p0 message. Kills a late placeholder that holds the seat's own
+/// send unread: then a binding has unread mail, the seat is a wake target and its T = 0 wake
+/// frontier admits the row, so the seat is woken for its own message and `inbox` shows nothing.
+#[test]
+fn a_launched_seats_own_p0_send_owes_it_no_wake() {
+    let (store, mut conn, _, context) = fixture_with_context();
+    conn.execute_batch(
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
+         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined');\
+         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);",
+    )
+    .unwrap();
+    let mut launched = claim();
+    launched.liveness = Some(LIVENESS_OF_LAUNCH);
+    check_in(&store, lifecycle(launched.clone(), "launched")).unwrap();
+    record_launch(&store, managed_launch()).unwrap();
+    let request = crate::protocol::commands::SendMessage {
+        priority: Some(crate::protocol::priority::DeliveryPriority::new(0).unwrap()),
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+        thread: crate::protocol::ids::ThreadId::new("t"),
+        body: "own p0".into(),
+        direct_recipient: None,
+        invited_recipients: vec![],
+        deadline_millis: None,
+        operation: OperationId::new("send"),
+        claim: launched,
+        relays_user: false,
+        user_intent: None,
+    };
+    loop {
+        let step = crate::store::messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            crate::store::messages::MessageLimits::default(),
+            &budget(),
+            crate::ports::DurableWorkAdmission::new(16).unwrap(),
+        )
+        .unwrap();
+        if matches!(step, crate::ports::SendPreparationProgress::Ready { .. }) {
+            break;
+        }
+    }
+    let digest = schema::canonical_digest(&crate::store::messages::send_payload(&request)).unwrap();
+    let mut permit = store
+        .issue_cooperative_permit(
+            CooperativePermitRequest {
+                claim: request.claim.clone(),
+                operation: request.operation.clone(),
+                obligation: ObligationRef::Control(request.thread.clone()),
+                payload_hash: digest,
+                check_in_mode: None,
+            },
+            &budget(),
+        )
+        .unwrap();
+    let sent = crate::store::messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit,
+        &budget(),
+        || crate::store::messages::MAX_BODY_BYTES,
+    )
+    .unwrap();
+    assert!(matches!(sent, CommandResult::MessageSent(_)), "{sent:?}");
+    let author_rows: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(author_rows, 1, "the send stages the author sibling row");
+    let seat = SeatId::new("s");
+    for binding in conn
+        .prepare("SELECT binding_id FROM occupant_bindings WHERE seat_id='s'")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+    {
+        let binding = crate::protocol::ids::BindingId::new(binding.unwrap());
+        assert!(
+            !crate::store::read_cursors::has_unread(&conn, &binding).unwrap(),
+            "{binding:?} holds the seat's own send unread"
+        );
+    }
+    assert!(
+        crate::store::wake::wake_targets(&conn, &seat, false)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        crate::store::lazy_delivery::wake::wake_frontier(
+            &conn,
+            "s",
+            crate::protocol::priority::NudgeThreshold::new(0).unwrap()
+        )
+        .unwrap(),
+        None,
+        "the seat's own p0 send holds no wake"
+    );
+}
+
 /// The launched agent's first lifecycle check-in replaces only the placeholder
 /// of its own harness. Kills: a check-in that ends the agent binding that was
 /// already connected, a placeholder of another harness, or no placeholder.

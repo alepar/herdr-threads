@@ -107,7 +107,7 @@ any it already holds (report `binding`; `seat inspect` shows it as launched, not
 in): it lets the daemon wake the idle agent for pending work before its first check-in
 (some harnesses run no session-start hook until their first turn), and the launched
 harness's first check-in replaces it. It is not recorded when Herdr shows no single
-started process.
+started process, or when the launched agent has already checked in.
 
 A harness that exits right after the start (for example a harness refusing its arguments)
 fails launch at once with invalid_request and the pane's last lines.

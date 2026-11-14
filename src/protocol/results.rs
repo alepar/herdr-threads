@@ -1437,8 +1437,11 @@ pub struct RepairHistory {
 }
 /// The outcome of one `RecordManagedLaunch` (TRUST-POLICY A3
 /// `managed_launch`): `recorded` when this decision opened a placeholder
-/// `managed_launch` binding (always, since ht-54r.4; an older daemon instead
-/// left an existing open binding unchanged and described it here).
+/// `managed_launch` binding. Since ht-54r.4 it opens one beside any other
+/// binding, except when the started process already holds its session's
+/// binding (the launched agent checked in first, ht-t17l): then `recorded` is
+/// false and this describes that binding. An older daemon instead left any
+/// existing open binding unchanged and described it here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLaunchRecord {

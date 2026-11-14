@@ -1220,8 +1220,8 @@ pub fn register_available(
 /// availability, receipt timer or wake binding generation: it authorizes
 /// nothing but a wake prompt to the bound harness. The launched agent's first
 /// lifecycle check-in replaces only the placeholders of its own harness
-/// (`bindings::launch_placeholder_replace`); when that check-in came first (the
-/// started process already holds such a binding), none is recorded (ht-t17l).
+/// (`bindings::launch_placeholder_replace`); when the agent checked in first (the
+/// started process already holds its session's binding), none is recorded (ht-t17l).
 pub fn record_managed_launch(
     context: &StoreContext,
     conn: &mut Connection,
@@ -1299,8 +1299,10 @@ pub fn record_managed_launch(
         },
         |tx, at, (generation, seat_target_generation, boot, epoch, terminal, incarnation)| {
             // The launched agent's lifecycle check-in can land before this record (ht-t17l). Its
-            // process then already has a session binding, the one the same-process rule would
-            // keep over a placeholder: record none, so no placeholder holds the seat's own sends.
+            // process then already has a lifecycle-claimed session binding (the one the
+            // same-process rule keeps over a placeholder): record none, so no placeholder holds
+            // the seat's own sends. A disconnected, ended, concurrent (`/side`) or plain-only
+            // (`cooperative_env_session`, a tool-boundary enrollment) binding is no such session.
             let checked_in: Option<(i64, String)> = tx
                 .query_row(
                     "SELECT generation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND harness=?2 \

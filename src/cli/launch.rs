@@ -575,7 +575,11 @@ fn binding_report(
             },
             "provenance": record.provenance,
             "binding_generation": record.binding_generation,
-            "note": "the seat already had an open binding; it was left unchanged",
+            "note": if record.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE {
+                "the seat already had an open binding; it was left unchanged"
+            } else {
+                "the launched agent had already checked in; no launch binding was recorded"
+            },
         }),
         Ok(None) => json!({
             "recorded": false,

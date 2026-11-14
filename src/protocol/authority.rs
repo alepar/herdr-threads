@@ -163,7 +163,8 @@ pub const STRUCTURAL_SHELL_CONTINUITY_PROVENANCE: &str = "structural_shell_conti
 /// TRUST-POLICY A3: Herdr's guarded `agent.start` in this pane was observed
 /// starting the harness and the agent has not checked in. Bindings only (an
 /// unregistered occupant binding the daemon opens after a correlated launch,
-/// on a seat with no open binding); never on receipts; it authorizes nothing
+/// beside any binding the seat holds, unless the started process already holds
+/// its session's binding); never on receipts; it authorizes nothing
 /// but a wake prompt to the bound harness. Its session and execution are
 /// placeholders ([`MANAGED_LAUNCH_PLACEHOLDER_PREFIX`]) that no caller claim
 /// can match, and the first lifecycle check-in replaces it.

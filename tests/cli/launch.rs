@@ -1596,7 +1596,7 @@ fn unconfirmed_start_records_no_binding() {
 #[test]
 fn binding_record_outcomes_never_fail_the_launch() {
     for (answer, recorded, needle) in [
-        (RecordAnswer::AlreadyBound, false, "left unchanged"),
+        (RecordAnswer::AlreadyBound, false, "already checked in"),
         (RecordAnswer::Unsupported, false, "seat.managed_launch"),
         (RecordAnswer::Refused, false, "StaleHostObservation"),
     ] {
