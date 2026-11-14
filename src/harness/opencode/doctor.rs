@@ -11,9 +11,13 @@
 //!   "loaded_at":ms,"at":ms,"permission":{"granted":[..],"denied":[..]}?,
 //!   "degraded":["append"|"append_row"|"wake"]?}`. Unknown fields are ignored.
 //! No heartbeat with the plugin installed is "never loaded"; a `loaded_at` older than the
-//! installed file is "not loaded since setup"; role `inert` is a second loaded copy; a `false`
+//! installed file is "not loaded since setup"; a `pid` that is no longer a live process of this
+//! user is "exited" (no opencode has the plugin loaded now); role `inert` is a second loaded copy;
+//! a `false`
 //! capability or a `degraded` entry is a degraded capability; `permission.denied` lists the
 //! allow keys a user `deny` rule kept the plugin from adding.
+//! The file is one per state dir: with several opencode processes on one state dir the last one
+//! to load or degrade wins (a diagnostics limit, integrations/opencode/README.md).
 use super::setup::{
     self, ALLOW_KEYS, InstallStatus, PLUGIN_PATH, PLUGIN_SOURCE, heartbeat_path, xdg_config_dir,
 };
@@ -22,6 +26,7 @@ use crate::{
     harness::adapter::{
         DoctorProjection, DoctorTextForm, SetupEnvironment, SetupStatus, StatusRequest,
     },
+    ports::ProcessInfo,
     protocol::time::CallBudget,
 };
 use serde::Deserialize;
@@ -202,7 +207,19 @@ fn capability_effect(name: &str) -> &'static str {
     }
 }
 
-fn heartbeat_json(path: Option<&Path>, read: &HeartbeatRead, status: &InstallStatus) -> Value {
+/// `Some(false)` when `pid` is not a live process of this user; `None` when the process table
+/// cannot be read here (it does not even show this process).
+fn pid_alive(processes: &dyn ProcessInfo, pid: u64) -> Option<bool> {
+    processes.process(std::process::id())?;
+    Some(u32::try_from(pid).is_ok_and(|pid| processes.process(pid).is_some()))
+}
+
+fn heartbeat_json(
+    path: Option<&Path>,
+    read: &HeartbeatRead,
+    status: &InstallStatus,
+    processes: &dyn ProcessInfo,
+) -> Value {
     let owned = status.root.join(PLUGIN_PATH);
     let mut value = json!({
         "path": path.map(|p| p.display().to_string()),
@@ -218,8 +235,14 @@ fn heartbeat_json(path: Option<&Path>, read: &HeartbeatRead, status: &InstallSta
                 (Some(at), Some(written)) => at < written,
                 _ => false,
             };
+            let exited = heartbeat
+                .pid
+                .and_then(|pid| pid_alive(processes, pid))
+                .is_some_and(|alive| !alive);
             let state = if stale {
                 "stale"
+            } else if exited {
+                "exited"
             } else if heartbeat.role.as_deref() == Some("inert") {
                 "inert"
             } else {
@@ -340,7 +363,12 @@ pub(super) fn doctor_projection(
         .as_deref()
         .map_or(HeartbeatRead::Absent, read_heartbeat);
     let mut hooks = status.projection.clone();
-    hooks["heartbeat"] = heartbeat_json(heartbeat.as_deref(), &read, &install);
+    hooks["heartbeat"] = heartbeat_json(
+        heartbeat.as_deref(),
+        &read,
+        &install,
+        &crate::host::process_table::HostProcessTable,
+    );
     hooks["copies"] = json!(
         plugin_copies(&root, env)
             .iter()

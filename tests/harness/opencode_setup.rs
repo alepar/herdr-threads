@@ -698,14 +698,27 @@ fn doctor_reads_the_heartbeat() {
     let all = serde_json::json!({"append": true, "wake": true, "status": true, "session_get": true, "toast": true});
     heartbeat(
         &fx,
-        serde_json::json!({"schema": 1, "plugin": "herdr-threads", "pid": 42, "role": "active",
+        serde_json::json!({"schema": 1, "plugin": "herdr-threads", "pid": std::process::id(), "role": "active",
             "directory": "/p", "launch": true, "permissions": "not_consented", "capabilities": all,
             "loaded_at": now_ms(), "at": now_ms()}),
     );
     let (hooks, limitations) = doctor_hooks(&fx);
     assert_eq!(hooks["heartbeat"]["state"], "loaded");
-    assert_eq!(hooks["heartbeat"]["pid"], 42);
+    assert_eq!(hooks["heartbeat"]["pid"], std::process::id());
     assert!(limitations.is_empty(), "{limitations:?}");
+
+    // The process that wrote it is gone: nothing has the plugin loaded now, and that is no fault.
+    heartbeat(
+        &fx,
+        serde_json::json!({"pid": 999_999_999u64, "role": "inert", "loaded_at": now_ms(), "capabilities": all}),
+    );
+    let (hooks, limitations) = doctor_hooks(&fx);
+    assert_eq!(hooks["heartbeat"]["state"], "exited");
+    assert!(limitations.is_empty(), "{limitations:?}");
+    assert!(
+        doctor::doctor_text(&hooks, DoctorTextForm::Summary).contains("heartbeat exited"),
+        "{hooks}"
+    );
 
     // Loaded before the installed file was written: not loaded since setup.
     heartbeat(&fx, serde_json::json!({"role": "active", "loaded_at": 0}));

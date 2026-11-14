@@ -91,7 +91,9 @@ the plugin writes `<state>/opencode/plugin-heartbeat.json` at the end of its loa
 - a capability this opencode lacks (for example no wake: `wake=no_wake`);
 - a user `deny` rule on a grant key.
 
-Doctor also lists same-named `herdr-threads` skills in `~/.agents/skills` and `~/.claude/skills`.
+A heartbeat whose process has exited reads `heartbeat exited`, with no limitation: no opencode
+has the plugin loaded now. Doctor also lists same-named `herdr-threads` skills in
+`~/.agents/skills` and `~/.claude/skills`.
 
 ## Limits
 
@@ -107,6 +109,8 @@ Doctor also lists same-named `herdr-threads` skills in `~/.agents/skills` and `~
   server's pane.
 - **A plain `launch --new-terminal` onto a herdr-core terminal** gets no first prompt, so the seat
   enrolls at the first prompt you type (ht-vxdp.11).
+- **One heartbeat per state directory.** Several opencode processes on one herdr-threads state
+  directory overwrite each other's heartbeat, so doctor shows the one that loaded or degraded last.
 - **Duplicate skill names.** opencode shows one `herdr-threads` skill and picks among same-named
   copies (`~/.agents/skills`, `~/.claude/skills`) unpredictably. The opencode guidance also rides
   each check-in, so it does not depend on which copy wins.
