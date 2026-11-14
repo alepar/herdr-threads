@@ -237,7 +237,7 @@ def check_finish_seed(sock, state):
     live = terminal(sock, kept)
     expect(live["state"] == "live" and live["keep"] and live["pid"], f"kept terminal before stop: {live['state']} pid {live['pid']}")
     with open(state, "w") as out:
-        json.dump({"kept": kept, "exited": exited, "core": call(sock, "hello")["core"]["id"]}, out)
+        json.dump({"kept": kept, "kept_pid": live["pid"], "exited": exited, "core": call(sock, "hello")["core"]["id"]}, out)
     ok(f"{exited} keep:false exited -> finished/exited (final); {kept} keep:true live pid {live['pid']}")
 
 
@@ -245,12 +245,17 @@ def check_finish_after(sock, state):
     seed = json.load(open(state))
     core = call(sock, "hello")["core"]["id"]
     kept = terminal(sock, seed["kept"])
-    expect(kept["state"] == "live" and kept["keep"] and kept["pid"] is None and kept["reason"] == "stopped_by_restart",
-           f"kept after restart: {kept['state']} keep={kept['keep']} pid={kept['pid']} reason={kept['reason']}")
+    # The new core restarts a kept terminal on its own, at once or after a grace delay, so a read
+    # may see it pending (stopped_by_restart, no pid) or already restarted (a new pid, same address).
+    pending = kept["pid"] is None and kept["reason"] == "stopped_by_restart"
+    restarted = kept["pid"] is not None and kept["pid"] != seed["kept_pid"]
+    expect(kept["state"] == "live" and kept["keep"] and (pending or restarted),
+           f"kept after restart: {kept['state']} keep={kept['keep']} pid={kept['pid']} (seed {seed['kept_pid']}) reason={kept['reason']}")
     expect(kept["labels"].get("smoke") == "kept", f"kept labels lost: {kept['labels']}")
     gone = terminal(sock, seed["exited"])
     expect(gone["state"] == "finished" and gone["reason"] == "exited", f"{seed['exited']} after restart: {gone['state']}/{gone['reason']}")
-    ok(f"{seed['kept']} keep:true -> live/stopped_by_restart/no pid (pending restart, same address); {seed['exited']} stays final")
+    how = "live/stopped_by_restart/no pid (pending restart)" if pending else f"live, restarted as pid {kept['pid']}"
+    ok(f"{seed['kept']} keep:true -> {how}, same address; {seed['exited']} stays final")
 
 
 def check_l2(sock, scratch):
@@ -380,7 +385,8 @@ else
     record core FAIL "isolated core did not start"
 fi
 
-# D10 finish-reason rows: keep:false exited is final; keep:true stopped_by_restart survives server.stop + restart.
+# D10 finish-reason rows: keep:false exited is final; keep:true survives server.stop + restart on its
+# address, read either pending (stopped_by_restart) or already restarted by the new core.
 if new_core finish; then
     session=$(cat "$CORE_ROOT/session")
     if check finish-seed "$WORK/finish.json" && ic_server_stop "$CORE_SOCK"; then
