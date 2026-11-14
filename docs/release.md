@@ -2,6 +2,18 @@
 
 ## Current release status
 
+[v3.1.2 is published](https://github.com/alepar/herdr-threads/releases/tag/v3.1.2) from source `5694a2fb2`, a patch release: fixes only, no store schema change and no peer wire change (`scripts/check-wire-compat` passes with no baseline delta). The 3.1.2 peer wire is frozen in `tests/fixtures/peer_wire/3.1.2` (generated at `d83d117ee`); the tag commit adds only those fixtures, so the post-tag `--check` was not rerun.
+
+It carries ht-fr7c, Hermes as a first-class harness (ht-smum, ht-oteb, ht-yon1, ht-l1rr): a prelaunch API check that cannot recognize the plugin API degrades the launch to unverified instead of refusing it; automatic `handoff --new-tab` composes Hermes's argv; `setup hermes` merges the pane variables into the profile's client env passthrough; the bridge gives each gateway session's tools its own pane and unsets other harnesses' session variables; a harness exec'ed as the pane's root process is a composer match for the idle wake; agent-facing setup text says setup is the user's to run. TRUST-POLICY is amended in the same commits. The fixer's super-roast converged with no Blocking; two independent reviews found no Blocking and six Should-fix or Nit items, all fixed before merge with a fresh unfiltered suite (9501 passed). A live Hermes 0.23.1 run covered a pane launch, idle wake and a second-pane send; a literal `handoff --new-tab --kind hermes` was not yet run live. Also in this release: the README Quick start.
+
+**Qualification** on `d83d117ee` (the version-bump commit).
+- Static checks, both clippy variants, default features, the Herdr matrix 0.9.1-0.9.5 (628 s), the package gate (617 s), the installer suites and every leak check pass.
+- The full suite passed 9498/9501 in 273 s. The 3 failures are the ht-97ir tests that read the environment the qualify script exports for the wake step; rerun on the same tree without it, all 3 pass.
+- The wake e2e passed 119/120 against Herdr 0.9.5. The failure was `mixed-order/group` on Codex at T = 0: delivery and order were right, but the expected header was not captured on screen; a rerun of the case passed 3/3.
+- The fixture-only commit `5694a2fb2` reuses this evidence.
+
+**CI** on `5694a2fb2` (run 43640571266) passed. The [release run 43643169034](https://github.com/alepar/herdr-threads/actions/runs/43643169034) passed. The archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 3.1.2, the right TARGET, modes 755/644 and licenses; `scripts/install.sh` equals main's; the credential scan is clean.
+
 [v3.1.1 is published](https://github.com/alepar/herdr-threads/releases/tag/v3.1.1) from source `251b3f204`, a patch release: fixes only, no store schema change and no peer wire change (`scripts/check-wire-compat` passes with no baseline delta). The 3.1.1 peer wire is frozen in `tests/fixtures/peer_wire/3.1.1` (generated at `3f4a3e6ad`); `scripts/freeze-peer-wire 3.1.1 --at v3.1.1 --check` differs only in the MANIFEST's `at`/`commit` lines.
 
 It carries the fixes from an external pause/resume report and from a survey of wake behaviour across agent tabs. Each fix had a failing-first test, the fixer's super-roast and an independent review, plus an unfiltered suite on its merge tree:
