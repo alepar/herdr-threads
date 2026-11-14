@@ -1,0 +1,39 @@
+  ┃  $ herdr-threads --state-dir /tmp/ht-wake-e2e._t42jw7t/state inbox
+  ┃
+  ┃  empty
+  ┃
+
+     + Thought: 6ms
+
+     Inbox empty.
+
+     ▣  Build · DeepSeek V4 Pro · 11.2s
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     + Thought: 398ms
+
+     RECEIVED herdr-threads message mq8fnwZdUNjl in tq8fDUJXst16 "wake-e2e test thread for oc-t-1" from sq8frJ2KlYCS
+     p5 human: mixed-p5 135319-6882
+
+     ▣  Build · DeepSeek V4 Pro · 2.3s
+
+     + Thought: 220ms
+
+     RECEIVED herdr-threads message mq8f4L12AUBT in tq8fDUJXst16 "wake-e2e test thread for oc-t-1" from sq8frJ2KlYCS
+     p0 human: mixed-p0 135319-6882
+     RECEIVED herdr-threads message mq8fC4ODEKSb in tq8fDUJXst16 "wake-e2e test thread for oc-t-1" from sq8frJ2KlYCS
+     human: mixed-p1 135319-6882
+     RECEIVED herdr-threads message mq8frfTgvetz in tq8fDUJXst16 "wake-e2e test thread for oc-t-1" from sq8frJ2KlYCS
+     p0 human: mixed-ack 135319-6882
+
+     ▣  Build · DeepSeek V4 Pro · 5.7s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/ht-wake-e2e._t42jw7t/opencode/project                                     23.9K (2%) · $0.13  ctrl+p commands

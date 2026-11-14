@@ -1,0 +1,1598 @@
+{
+  "facts": {
+    "run_id": "133205-6d3f",
+    "sha": "67a5ad27dd64cdfc73ab6eb9a9973363522374fe",
+    "dirty": false,
+    "versions": {
+      "herdr": "herdr 0.9.5",
+      "herdr-threads": "herdr-threads 3.1.2",
+      "opencode": "1.18.1"
+    },
+    "harness_mode": "linux",
+    "codex_args": "--approve-for-me",
+    "bin": "/var/home/alepar/AleCode/herdr-threads/.worktrees/opencode-harness/bin/herdr-threads",
+    "bin_sha256": "c2d72e9b1fe08fd4057b9af430140540f6388adbfb00ab661037e2468940f8d7",
+    "root": "/tmp/ht-wake-e2e.acwxpkqr",
+    "started_utc": "2026-11-14T21:32:05Z",
+    "finished_utc": "2026-11-14T21:52:30Z",
+    "exit_code": 1
+  },
+  "completeness": {
+    "expected": 57,
+    "collected": 57,
+    "missing": [],
+    "extra": []
+  },
+  "cleanup": {
+    "steps": [
+      {
+        "workspace_close_rc": 0
+      },
+      {
+        "daemon_stop_rc": 0
+      },
+      {
+        "root_removed": "/tmp/ht-wake-e2e.acwxpkqr"
+      }
+    ],
+    "problems": []
+  },
+  "codex_hook_guidance": null,
+  "results": [
+    {
+      "case": "invite/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "trailing_wake_s": null,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "thread": "tqLOK1WOiu69"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:33:52Z"
+    },
+    {
+      "case": "invite/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "trailing_wake_s": null,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "thread": "tqLO3nGHXEg7"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:33:54Z"
+    },
+    {
+      "case": "invite/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "trailing_wake_s": null,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "thread": "tqLO3aFCKQUT"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:34:01Z"
+    },
+    {
+      "case": "pair-open/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "opening_message_delivered": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOVL9TITuR"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:34:34Z"
+    },
+    {
+      "case": "pair-open/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "opening_message_delivered": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOkPfaCvNt"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:34:41Z"
+    },
+    {
+      "case": "pair-open/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "joined": true,
+        "late_wake_s": null,
+        "opening_message_delivered": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOyO6fyPw8"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:34:42Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.51,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOkP93g1My"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:35:13Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOsvwpP225"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:35:22Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "late_wake_s": null,
+        "delivered": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOzJLbUyZD"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:35:30Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOYR5w9fg5"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:35:53Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLObjJmOfFa"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:36:02Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.51,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOmpYOuOG1"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:36:11Z"
+    },
+    {
+      "case": "send-p3/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.51,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOz7pIU0LM"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:36:34Z"
+    },
+    {
+      "case": "send-p3/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOGeIxswGJ"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:36:42Z"
+    },
+    {
+      "case": "send-p3/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "late_wake_s": null,
+        "delivered": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOB4EIaIyf"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:36:59Z"
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.51,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOWYgqnqRe"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:37:15Z"
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOmoKyvjBq"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:37:22Z"
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.52,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOBKhn6nWR"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:37:39Z"
+    },
+    {
+      "case": "send-p1/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.51,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLO0NKDmLzu"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:37:55Z"
+    },
+    {
+      "case": "send-p1/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOimIc4Ny0"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:38:02Z"
+    },
+    {
+      "case": "send-p1/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "late_wake_s": null,
+        "delivered": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOzuqvdKkR"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:38:27Z"
+    },
+    {
+      "case": "send-p0/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.52,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLObmG3tEVE"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:38:36Z"
+    },
+    {
+      "case": "send-p0/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOTRXq0rnI"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:38:42Z"
+    },
+    {
+      "case": "send-p0/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOzoEJlec8"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:39:08Z"
+    },
+    {
+      "case": "send-p3/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.51,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLO2IeGZRsn"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:39:16Z"
+    },
+    {
+      "case": "send-p3/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOxaBYqJh2"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:39:22Z"
+    },
+    {
+      "case": "send-p3/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "late_wake_s": null,
+        "delivered": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOhfepnKEr"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:39:56Z"
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLO1JzjiguH"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:39:57Z"
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOctQj2pRQ"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:40:02Z"
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.36,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "ack": "acknowledged",
+        "admission_row": true,
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOKcJATI5J"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:40:36Z"
+    },
+    {
+      "case": "mixed-order/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.26,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "order": "unjudged",
+        "order_judged": false,
+        "order_shown": [
+          "mqLOp3vCXhN9",
+          "mqLOwddYsBLf",
+          "mqLOP4GaX9QD",
+          "mqLO3p8qwzpQ"
+        ],
+        "order_pages": [
+          [
+            "mqLOp3vCXhN9",
+            "mqLOwddYsBLf",
+            "mqLOP4GaX9QD",
+            "mqLO3p8qwzpQ"
+          ]
+        ],
+        "order_expected": [
+          "mqLOP4GaX9QD",
+          "mqLO3p8qwzpQ",
+          "mqLOwddYsBLf",
+          "mqLOp3vCXhN9"
+        ],
+        "markers": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "p5": "mqLOp3vCXhN9",
+        "p1": "mqLOwddYsBLf",
+        "p0": "mqLO3p8qwzpQ",
+        "ack": "mqLOP4GaX9QD"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:40:41Z"
+    },
+    {
+      "case": "mixed-order/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.26,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "order": "unjudged",
+        "order_judged": false,
+        "order_shown": [
+          "mqLOQSbs9F8f",
+          "mqLOqadN7Idl",
+          "mqLOprUGG9dy",
+          "mqLOFxrAuP5y"
+        ],
+        "order_pages": [
+          [
+            "mqLOQSbs9F8f",
+            "mqLOqadN7Idl",
+            "mqLOprUGG9dy",
+            "mqLOFxrAuP5y"
+          ]
+        ],
+        "order_expected": [
+          "mqLOFxrAuP5y",
+          "mqLOqadN7Idl",
+          "mqLOprUGG9dy",
+          "mqLOQSbs9F8f"
+        ],
+        "markers": false,
+        "markers_reason": "mixed-order/group: no expected [herdr-threads] header on screen",
+        "ack": "acknowledged",
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "p5": "mqLOQSbs9F8f",
+        "p1": "mqLOprUGG9dy",
+        "p0": "mqLOqadN7Idl",
+        "ack": "mqLOFxrAuP5y"
+      },
+      "result": "FAIL",
+      "utc": "2026-11-14T21:40:45Z"
+    },
+    {
+      "case": "mixed-order/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.25,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "order": "unjudged",
+        "order_judged": false,
+        "order_shown": [
+          "mqLOJt3uDtKU",
+          "mqLOlRykuiqK",
+          "mqLOfzvGYNKt",
+          "mqLOrNEJ1IzE"
+        ],
+        "order_pages": [
+          [
+            "mqLOJt3uDtKU",
+            "mqLOlRykuiqK",
+            "mqLOfzvGYNKt",
+            "mqLOrNEJ1IzE"
+          ]
+        ],
+        "order_expected": [
+          "mqLOfzvGYNKt",
+          "mqLOrNEJ1IzE",
+          "mqLOlRykuiqK",
+          "mqLOJt3uDtKU"
+        ],
+        "markers": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null,
+        "appended": true,
+        "plugin_wakes": 1,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "p5": "mqLOJt3uDtKU",
+        "p1": "mqLOlRykuiqK",
+        "p0": "mqLOrNEJ1IzE",
+        "ack": "mqLOfzvGYNKt"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:41:19Z"
+    },
+    {
+      "case": "busy-invite/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "thread": "tqLO8i0KWCLq"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:41:40Z"
+    },
+    {
+      "case": "busy-invite/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "thread": "tqLO8TmawRlf"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:41:41Z"
+    },
+    {
+      "case": "busy-invite/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "thread": "tqLOnV6Hz9sc"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:42:16Z"
+    },
+    {
+      "case": "busy-invite/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "opening_message_delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOLxfn97nC",
+        "thread": "dAJlksJOTe9"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:43:06Z"
+    },
+    {
+      "case": "busy-invite/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "opening_message_delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLO0kgC1VbZ",
+        "thread": "ddrxxBMA1EZ"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:43:07Z"
+    },
+    {
+      "case": "busy-invite/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "opening_message_delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOMb0uZ5p9",
+        "thread": "d7uFUoHUDto"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:43:42Z"
+    },
+    {
+      "case": "busy-send-p1/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOvxXw2Jah"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:44:32Z"
+    },
+    {
+      "case": "busy-send-p1/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOkvbySgmQ"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:44:33Z"
+    },
+    {
+      "case": "busy-send-p1/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOXul4teda"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:45:09Z"
+    },
+    {
+      "case": "busy-send-p0/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOtf4Wq5X9"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:45:59Z"
+    },
+    {
+      "case": "busy-send-p0/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOdtQhkfA7"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:46:00Z"
+    },
+    {
+      "case": "busy-send-p0/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLO15ZNFYnl"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:46:36Z"
+    },
+    {
+      "case": "busy-send-ack/group",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged",
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLO7BFZOdit"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:47:24Z"
+    },
+    {
+      "case": "busy-send-ack/group",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged",
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOtrTHLahb"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:47:26Z"
+    },
+    {
+      "case": "busy-send-ack/group",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged",
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOXZIRttF7"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:48:02Z"
+    },
+    {
+      "case": "busy-send-p1/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOWNPqbgix"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:48:50Z"
+    },
+    {
+      "case": "busy-send-p1/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": false,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOrXDvRRtP"
+      },
+      "result": "FAIL",
+      "utc": "2026-11-14T21:49:05Z"
+    },
+    {
+      "case": "busy-send-p1/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOjkCrmWGv"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:49:28Z"
+    },
+    {
+      "case": "busy-send-p0/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOIErXYgeK"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:50:15Z"
+    },
+    {
+      "case": "busy-send-p0/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": false,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOwPZgvaeb"
+      },
+      "result": "FAIL",
+      "utc": "2026-11-14T21:50:40Z"
+    },
+    {
+      "case": "busy-send-p0/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOEiGnI5Fi"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:50:54Z"
+    },
+    {
+      "case": "busy-send-ack/1:1",
+      "harness": "opencode",
+      "threshold": -1,
+      "recipient": "oc-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged",
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOxlHf8FGG"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:51:40Z"
+    },
+    {
+      "case": "busy-send-ack/1:1",
+      "harness": "opencode",
+      "threshold": 0,
+      "recipient": "oc-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged",
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOo0vyCtHw"
+      },
+      "result": "PASS",
+      "utc": "2026-11-14T21:52:20Z"
+    },
+    {
+      "case": "busy-send-ack/1:1",
+      "harness": "opencode",
+      "threshold": 3,
+      "recipient": "oc-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": false,
+        "ack": "acknowledged",
+        "appended": true,
+        "plugin_wakes": 0,
+        "plugin_wake_ok": true,
+        "composer_empty": true
+      },
+      "ref": {
+        "message": "mqLOAFqGxIIj"
+      },
+      "result": "FAIL",
+      "utc": "2026-11-14T21:52:30Z"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+     + Thought: 1.6s
+
+     RECEIVED herdr-threads invitation invitation:iq8fp5p1YtLe in tq8fbiCs6Mny "wake-e2e test thread for oc-t0" from
+     unknown: wake-e2e test thread for oc-t0
+       goal: wake e2e test traffic
+       deadline: 1794693780913
+       next: herdr-threads --state-dir /tmp/ht-wake-e2e._t42jw7t/state accept tq8fbiCs6Mny
+
+     RECEIVED herdr-threads attention attention:1: herdr-threads: attention pending; run herdr-threads --state-dir /
+     tmp/ht-wake-e2e._t42jw7t/state inbox
+
+     ▣  Build · DeepSeek V4 Pro · 5.7s
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     + Thought: 1.2s
+
+     RECEIVED herdr-threads message mq8fFZZ8amh1 in tq8fbiCs6Mny "wake-e2e test thread for oc-t0" from sq8frJ2KlYCS
+     p5 human: mixed-p5 135319-6882
+
+     RECEIVED herdr-threads message mq8f0bA6WI3f in tq8fbiCs6Mny "wake-e2e test thread for oc-t0" from sq8frJ2KlYCS
+     human: mixed-p1 135319-6882
+
+     RECEIVED herdr-threads message mq8fO9QKCG79 in tq8fbiCs6Mny "wake-e2e test thread for oc-t0" from sq8frJ2KlYCS
+     p0 human: mixed-ack 135319-6882
+
+     RECEIVED herdr-threads message mq8fEd6ZEVpm in tq8fbiCs6Mny "wake-e2e test thread for oc-t0" from sq8frJ2KlYCS
+     p0 human: mixed-p0 135319-6882
+
+     ▣  Build · DeepSeek V4 Pro · 3.6s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/ht-wake-e2e._t42jw7t/opencode/project                                     24.2K (2%) · $0.08  ctrl+p commands

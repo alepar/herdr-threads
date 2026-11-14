@@ -1,0 +1,39 @@
+  ┃
+  ┃  $ sleep 1
+  ┃
+  ┃  (no output)
+  ┃
+
+     + Thought: 1.6s
+
+     RECEIVED herdr-threads HANDSHAKE: SEND readline wrapper HANDSHAKE
+     BUSY-D
+
+  ┃
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.acwxpkqr/busy-hold.xby9l3qu/hold.py
+  ┃
+  ┃  /usr/bin/python3: can't open file '/tmp/ht-wake-e2e.acwxpkqr/busy-hold.xby9l3qu/hold.py': [Errno 2] No such
+  ┃  file or directory
+  ┃
+
+     + Thought: 880ms
+
+  ┃
+  ┃  $ sleep 1
+  ┃
+  ┃  (no output)
+  ┃
+
+     + Thought: 426ms
+
+     RECEIVED herdr-threads HANDSHAKE: SEND readline wrapper HANDSHAKE
+     BUSY-DONE
+
+     ▣  Build · DeepSeek V4 Pro · 28.8s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/ht-wake-e2e.acwxpkqr/opencode/project                                     30.2K (3%) · $0.41  ctrl+p commands
