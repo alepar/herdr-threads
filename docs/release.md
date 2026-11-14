@@ -2,6 +2,25 @@
 
 ## Current release status
 
+[v3.1.1 is published](https://github.com/alepar/herdr-threads/releases/tag/v3.1.1) from source `251b3f204`, a patch release: fixes only, no store schema change and no peer wire change (`scripts/check-wire-compat` passes with no baseline delta). The 3.1.1 peer wire is frozen in `tests/fixtures/peer_wire/3.1.1` (generated at `3f4a3e6ad`); `scripts/freeze-peer-wire 3.1.1 --at v3.1.1 --check` differs only in the MANIFEST's `at`/`commit` lines.
+
+It carries the fixes from an external pause/resume report and from a survey of wake behaviour across agent tabs. Each fix had a failing-first test, the fixer's super-roast and an independent review, plus an unfiltered suite on its merge tree:
+- ht-1nva and ht-x772: setup's config lock and a dead daemon's socket survive a volume whose device number changes (a paused and resumed workspace).
+- ht-y3iv: a restarted session no longer replays the seat's own sends and already-offered notices.
+- ht-t17l: a launched agent that checked in first gets no launch placeholder, so its own p0 sends no longer wake it.
+- ht-2alm: a check-in offer's continuation works past 100 threads.
+- ht-6oev: binding enrollment no longer holds the store writer for seconds, which caused deadline storms and `unknown_outcome` sends.
+- ht-0n3b: an origin's attention for an already-carried notice names the notice instead of an empty inbox.
+- ht-hrbx and ht-esl: an unresolved seat no longer silences liveness for its whole host, a process-exit verdict waits for a capture begun after the read, and a several-target wake reads the classified composer. TRUST-POLICY is amended in the same commits, including the accepted limit that a server which never returns keeps its dead bindings connected until a server publishes again.
+
+**Qualification** on `3f4a3e6ad` (the version-bump commit).
+- Static checks, both clippy variants, default features, the Herdr matrix 0.9.1-0.9.5 (629 s), the package gate (578 s), the installer suites and every leak check pass.
+- The full suite passed 9485/9489 in 257 s. The 4 failures are tests that read the `CODEX_HOME` the qualify script exports for the wake step (ht-97ir, as in 3.1.0); rerun on the same tree without that variable, all 4 pass.
+- The wake e2e passed 120/120 against Herdr 0.9.5.
+- The fixture-only commit `251b3f204` reuses this evidence.
+
+**CI** on `251b3f204` (run 43566202499) passed after rerunning one failed shard. That failure was a test race, ht-mbv0, fixed on main after the release. The [release run 43569471146](https://github.com/alepar/herdr-threads/actions/runs/43569471146) passed. The archives check out: SHA256SUMS matches GitHub's digests; each archive has 14 files with VERSION 3.1.1, the right TARGET, modes 755/644 and licenses; `scripts/install.sh` equals main's; the credential scan is clean.
+
 [v3.1.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v3.1.0) from source `482e0d2f8`, a minor release. It carries a **one-way store upgrade to node schema 17** (migrations 0016, graph clone identity, and 0017, the kept claim's kernel boot); binaries before 3.1.0 refuse an upgraded store. Peer wire: two new replicated seat facts, `seat.retired_reversible` and `seat.unretired`, which a 3.0.x node parks; `scripts/check-wire-compat` passes with new baseline types only. A service client built on 3.1.0 registers `service_session_v3`, which an older daemon refuses.
 
 It carries ht-ma6i (super-auto run, squash-merged at `e3ed33f82` from `ab5ed5a67`), the threads side of herdr-graph's clone identity design, which the user approved: continuity keys reserved by a registered service, reversible retirement with `UnretireSeat` and `FinalizeRetirement`, seat-level shell fingerprints for live handoff, and retirement of seats whose pane never returns after a restart. TRUST-POLICY changes in the same commits (new provenance values, C1/C2 text, accepted limits). The run's design roast converged; its code roast rounds were bounded and its final review was cut short, so the coordinator ran three independent reviews before merge. They found nothing Blocking and seven Should-fix items (a reboot could pass for a live handoff, a failed capability read dropped the key in the CLI and the hook, the watch's key presentation contradicted its comment, a session reattachment left a reserved key unbound, deadlines could differ across nodes after an un-retire, and one accepted limit over-claimed), plus `retirement_state` breaking older clients. All were fixed (ht-ma6i.44-.49) and checked by a fourth independent review, whose three Nits were fixed before release (ht-mq64, ht-22wz with migration 0017, ht-ow3l; fast-forwarded at `f890db586`).
