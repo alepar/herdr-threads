@@ -258,8 +258,13 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
     ids.wait_for(&expected);
     assert_eq!(ids.seen[at + 1].trim(), expected, "{:?}", ids.seen);
     ids.interrupt();
+    assert!(
+        ids.seen.iter().all(|line| line.chars().count() <= 100),
+        "--show-ids wrapped at the default width: {:?}",
+        ids.seen
+    );
 
-    // Agent nicks retain the space and seat ID even for a caller in that space.
+    // Agent nicks keep the workspace and tab even for a caller in that space.
     let mut human = plugin.follow_from(
         Some("w1:p1"),
         &["read", &thread, "--follow", "--human", "--recent", "5"],
@@ -275,7 +280,7 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
     );
     assert!(
         human.count("-!- w1/w1:t1/mad-hatter joined") == 1,
-        "join notice with the space, pane name and seat ID: {:?}",
+        "join notice with the workspace, tab and pane name: {:?}",
         human.seen
     );
     let raven = human

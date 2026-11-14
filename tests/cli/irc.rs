@@ -153,12 +153,14 @@ fn directory_agent_nick_drops_a_pane_that_is_only_its_id() {
         agent_seat_nick_named("office", Some("build"), "w1:p3", Some(&target)),
         "office/build"
     );
-    // An unnamed hc terminal is published as `<session>:tN`.
-    let terminal = crate::protocol::ids::HostTargetId::new("t4");
-    assert_eq!(
-        agent_seat_nick_named("office", Some("t2"), "core:t4", Some(&terminal)),
-        "office/t2"
-    );
+    // A local seat's pane is an id only when it is its target: a pane
+    // deliberately labelled like an id keeps its segment.
+    for label in ["t2", "notes:t3", "w2:p9"] {
+        assert_eq!(
+            agent_seat_nick_named("office", Some("build"), label, Some(&target)),
+            format!("office/build/{label}"),
+        );
+    }
     // A remote seat has no local target: an ID-shaped pane is still an id.
     for id in ["w1:p3", "core:t4", "t4"] {
         assert_eq!(
@@ -171,10 +173,114 @@ fn directory_agent_nick_drops_a_pane_that_is_only_its_id() {
         agent_seat_nick_named("office", Some("build"), "reviewer", None),
         "office/build/reviewer"
     );
+    // No tab level (`-`: an hc terminal without labels, a named seat): the
+    // pane keeps its id, so two such seats never read the same.
+    assert_eq!(
+        agent_seat_nick_named("-", Some("-"), "core:t4", None),
+        "-/-/core:t4"
+    );
+    assert_eq!(
+        agent_seat_nick_named("office", Some("-"), "core:t5", None),
+        "office/-/core:t5"
+    );
+    let named = crate::protocol::ids::HostTargetId::new("reviewer");
+    assert_eq!(
+        agent_seat_nick_named("-", Some("-"), "reviewer", Some(&named)),
+        "-/-/reviewer"
+    );
     // A peer that publishes no tab keeps the workspace and pane.
     assert_eq!(
         agent_seat_nick_named("office", None, "reviewer", Some(&target)),
         "office/reviewer"
+    );
+}
+
+fn host_labels(
+    target: &str,
+    workspace: (&str, Option<&str>),
+    tab: (&str, Option<&str>),
+    pane: Option<&str>,
+) -> crate::host::observation::SeatHostLabels {
+    crate::host::observation::SeatHostLabels {
+        terminal: target.into(),
+        incarnation: None,
+        target: crate::protocol::ids::HostTargetId::new(target),
+        workspace_id: workspace.0.into(),
+        workspace_label: workspace.1.map(str::to_owned),
+        tab_id: tab.0.into(),
+        tab_label: tab.1.map(str::to_owned),
+        pane_label: pane.map(str::to_owned),
+        session: None,
+    }
+}
+
+/// hc fills `-` for a missing space or tab; an unnamed terminal must keep its
+/// address there, not collapse every terminal to `-/-`.
+#[test]
+fn unnamed_hc_terminals_keep_their_address_and_differ() {
+    let seat = SeatId::new("sQ7aAb12Cd34");
+    let t4 = host_labels("core:t4", ("-", None), ("-", None), None);
+    let t5 = host_labels("core:t5", ("-", None), ("-", None), None);
+    assert_eq!(agent_seat_nick(&seat, Some(&t4)), "-/-/core:t4");
+    assert_eq!(agent_seat_nick(&seat, Some(&t5)), "-/-/core:t5");
+    let spaced = host_labels("core:t6", ("s1", Some("office")), ("-", None), None);
+    assert_eq!(agent_seat_nick(&seat, Some(&spaced)), "office/-/core:t6");
+    // A named hc terminal, and one in a labelled tab, follow the Herdr rule.
+    let named = host_labels("core:t7", ("-", None), ("-", None), Some("builder"));
+    assert_eq!(agent_seat_nick(&seat, Some(&named)), "-/-/builder");
+    let tabbed = host_labels(
+        "core:t8",
+        ("s1", Some("office")),
+        ("b1", Some("build")),
+        None,
+    );
+    assert_eq!(agent_seat_nick(&seat, Some(&tabbed)), "office/build");
+}
+
+/// A named seat's labels (src/host/named.rs): synthetic `-` parents, its name
+/// as both target and pane label.
+#[test]
+fn named_seats_render_dash_dash_name() {
+    let seat = SeatId::new("sQ7aAb12Cd34");
+    let labels = host_labels("reviewer", ("-", None), ("-", None), Some("reviewer"));
+    assert_eq!(agent_seat_nick(&seat, Some(&labels)), "-/-/reviewer");
+}
+
+#[test]
+fn show_ids_under_a_wide_nick_and_on_a_narrow_terminal() {
+    let seat = "sQ7aAb12Cd34";
+    let ids = Some(seat_ids_line(
+        Some(&crate::protocol::ids::HostTargetId::new("w1:p3")),
+        &SeatId::new(seat),
+    ));
+    // A nick wider than half the line: the body wraps at indent 8, so the ids
+    // take a line of their own under the nick text.
+    let mut wide = Fixed(vec![(
+        seat,
+        "a-long-workspace/a-long-tab/a-long-pane",
+        Some("claude"),
+    )]);
+    let mut wide_ids = IdsLookup(&mut wide, ids.clone());
+    let style = Style {
+        width: 60,
+        ..Style::plain()
+    };
+    assert_eq!(
+        render_message(&summary(1, seat, "one\ntwo"), &mut wide_ids, &style),
+        "[12:34] <a-long-workspace/a-long-tab/a-long-pane> one\n         w1:p3 sQ7aAb12Cd34\n        two\n"
+    );
+    // A terminal too narrow for the ids clips them with an ellipsis.
+    let mut short = Fixed(vec![(seat, "w/t", Some("claude"))]);
+    let mut short_ids = IdsLookup(&mut short, ids);
+    let style = Style {
+        width: 20,
+        ..Style::plain()
+    };
+    let text = render_message(&summary(1, seat, "hi"), &mut short_ids, &style);
+    assert_eq!(text, "[12:34] <w/t> hi\n         w1:p3 sQ7a…\n");
+    assert!(
+        text.lines().all(|line| line.chars().count() <= 20),
+        "{text}"
     );
 }
 

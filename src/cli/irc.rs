@@ -83,8 +83,8 @@ impl Nick {
             .is_some_and(|id| crate::harness::registry::builtins().agent(id).is_ok())
     }
 
-    /// Agent names are already bounded per host component; preserve their
-    /// complete canonical seat ID. Human names retain the harness suffix.
+    /// Agent names are already bounded per host component and kept whole
+    /// (the bare-seat-ID fallback included). Human names retain the harness suffix.
     pub fn display(&self) -> String {
         let agent = self.is_agent();
         let bound = if self.name.contains('/') {
@@ -112,11 +112,16 @@ impl Nick {
     }
 }
 
+/// The parent id a host without that level reports (an hc terminal with no
+/// space or tab label, a named seat): a no-value sentinel, not an id.
+const NO_PARENT: &str = "-";
+
 /// Absolute agent nick from the canonical seat target's advisory host labels:
-/// `workspace/tab[/pane]`, each the label else the id, the pane only when it
-/// has a label (`--show-ids` names it by id). Without a host read, only the
-/// canonical seat ID is honest. Names use the existing terminal escaping and
-/// independent component bounds.
+/// `workspace/tab[/pane]`, each the label else the id. An unnamed pane is left
+/// out under a real tab (`--show-ids` names it by id); under a `-` tab (no tab
+/// level) it keeps its target, else every unnamed hc terminal would read `-/-`.
+/// Without a host read, only the canonical seat ID is honest. Names use the
+/// existing terminal escaping and independent component bounds.
 pub fn agent_seat_nick(
     seat: &SeatId,
     pane: Option<&crate::host::observation::SeatHostLabels>,
@@ -124,22 +129,23 @@ pub fn agent_seat_nick(
     let Some(pane) = pane else {
         return seat.as_str().to_owned();
     };
-    let mut parts = vec![
-        nick_label(&pane.workspace_label, &pane.workspace_id),
-        nick_label(&pane.tab_label, &pane.tab_id),
-    ];
-    if let Some(label) = pane.pane_label.as_deref().filter(|label| !label.is_empty()) {
-        parts.push(nick_label(&None, label));
+    let tab = nick_label(&pane.tab_label, &pane.tab_id);
+    let mut parts = vec![nick_label(&pane.workspace_label, &pane.workspace_id)];
+    match pane.pane_label.as_deref().filter(|label| !label.is_empty()) {
+        Some(label) => parts.extend([tab, nick_label(&None, label)]),
+        None if tab == NO_PARENT => parts.extend([tab, nick_label(&None, pane.target.as_str())]),
+        None => parts.push(tab),
     }
     parts.join("/")
 }
 
 /// [`agent_seat_nick`] from the daemon's already-resolved labels of the seat's
 /// own host (each the label, else the id). The published pane falls back to its
-/// target, and a remote seat has no local target to compare with, so a pane that
-/// is ID-shaped (a Herdr `w<N>:p<N>` pane, an hc `[<session>:]tN` terminal) or
-/// equal to the seat's target is taken as an id and left out, as the paste-safe
-/// renderer treats an ID-shaped label; a peer that publishes no tab omits it.
+/// target; under a real tab such a pane is an id and left out. A local seat's
+/// pane is an id when it equals its target. A remote seat has no local target,
+/// so there a pane that is ID-shaped (a Herdr `w<N>:p<N>` pane, an hc
+/// `[<session>:]tN` terminal) is taken as an id, as the paste-safe renderer
+/// treats an ID-shaped label. A peer that publishes no tab omits it.
 pub fn agent_seat_nick_named(
     workspace: &str,
     tab: Option<&str>,
@@ -147,13 +153,19 @@ pub fn agent_seat_nick_named(
     target: Option<&crate::protocol::ids::HostTargetId>,
 ) -> String {
     let mut parts = vec![nick_label(&None, workspace)];
-    if let Some(tab) = tab.filter(|tab| !tab.is_empty()) {
+    let tab = tab.filter(|tab| !tab.is_empty());
+    if let Some(tab) = tab {
         parts.push(nick_label(&None, tab));
     }
-    let pane_is_id = target.is_some_and(|target| pane == target.as_str())
-        || crate::protocol::address::looks_like_pane_id(pane)
-        || crate::host::hc::labels::HcAddress::parse(pane).is_some();
-    if !pane.is_empty() && !pane_is_id {
+    let pane_is_id = match target {
+        Some(target) => pane == target.as_str(),
+        None => {
+            crate::protocol::address::looks_like_pane_id(pane)
+                || crate::host::hc::labels::HcAddress::parse(pane).is_some()
+        }
+    };
+    let under_real_tab = tab.is_some_and(|tab| tab != NO_PARENT);
+    if !pane.is_empty() && !(pane_is_id && under_real_tab) {
         parts.push(nick_label(&None, pane));
     }
     parts.join("/")
@@ -493,6 +505,7 @@ fn emit(
         if index == 0 {
             out.push_str(prefix_shown);
         } else if let Some((column, text)) = ids.take() {
+            let text = clip_ids(&text, column, style);
             let width = display_width(&text);
             out.push_str(&" ".repeat(column));
             out.push_str(&paint(&text, "2", style));
@@ -511,6 +524,7 @@ fn emit(
             && shown == 1
             && let Some((column, text)) = ids.take()
         {
+            let text = clip_ids(&text, column, style);
             out.push_str(&" ".repeat(column));
             out.push_str(&paint(&text, "2", style));
             out.push('\n');
@@ -521,6 +535,18 @@ fn emit(
         out.push_str(&paint(&format!("… ({hint})"), "2", style));
         out.push('\n');
     }
+}
+
+/// The `--show-ids` text clipped (with an ellipsis) to the columns left after
+/// `column`, at least 10 as for body lines.
+fn clip_ids(text: &str, column: usize, style: &Style) -> String {
+    let room = style.width.saturating_sub(column).max(10);
+    if text.chars().count() <= room {
+        return text.to_owned();
+    }
+    let mut clipped: String = text.chars().take(room - 1).collect();
+    clipped.push('…');
+    clipped
 }
 
 /// Greedy word wrap of one paragraph; words longer than a line are split.
