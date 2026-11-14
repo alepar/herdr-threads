@@ -61,6 +61,7 @@ impl Lookup for Fixed {
                 |(_, name, harness)| Nick {
                     name: (*name).into(),
                     harness: harness.map(str::to_owned),
+                    ids: None,
                 },
             )
     }
@@ -100,7 +101,7 @@ fn agent_harness_is_never_appended_to_display_names() {
 }
 
 #[test]
-fn agent_nick_escapes_host_names_bounds_each_component_and_keeps_full_legacy_id() {
+fn agent_nick_is_workspace_tab_and_pane_label_escaped_and_bounded_per_component() {
     let seat = SeatId::new("seat-0b5a1c2e-1111-2222-3333-444455556666");
     let mut labels = crate::host::observation::SeatHostLabels {
         terminal: "terminal".into(),
@@ -109,7 +110,7 @@ fn agent_nick_escapes_host_names_bounds_each_component_and_keeps_full_legacy_id(
         workspace_id: "w1".into(),
         workspace_label: Some("a/b\x1b\n".into()),
         tab_id: "t1".into(),
-        tab_label: Some("must-not-appear".into()),
+        tab_label: Some("build".into()),
         pane_label: Some("alice\u{202e}".into()),
         session: None,
     };
@@ -117,27 +118,219 @@ fn agent_nick_escapes_host_names_bounds_each_component_and_keeps_full_legacy_id(
         Nick {
             name: agent_seat_nick(&seat, labels),
             harness: Some("codex".into()),
+            ids: None,
         }
         .display()
     };
     // Slash text follows the existing label convention; controls are visible.
-    assert_eq!(
-        nick(Some(&labels)),
-        "a/b\\u{001b}\\n/alice\\u{202e}/seat-0b5a1c2e-1111-2222-3333-444455556666"
-    );
+    assert_eq!(nick(Some(&labels)), "a/b\\u{001b}\\n/build/alice\\u{202e}");
     labels.workspace_label = Some("w".repeat(100));
+    labels.tab_label = Some("t".repeat(100));
     labels.pane_label = Some("p".repeat(100));
     assert_eq!(
         nick(Some(&labels)),
-        "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww…/pppppppppppppppppppppppppppppppp…/seat-0b5a1c2e-1111-2222-3333-444455556666"
+        "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww…/tttttttttttttttttttttttttttttttt…/pppppppppppppppppppppppppppppppp…"
     );
+    // No host read: only the canonical seat ID is honest.
     assert_eq!(nick(None), "seat-0b5a1c2e-1111-2222-3333-444455556666");
+    // Unlabelled workspace and tab show their ids; an unlabelled pane is left out.
     labels.workspace_label = Some(String::new());
+    labels.tab_label = None;
     labels.pane_label = None;
+    assert_eq!(nick(Some(&labels)), "w1/t1");
+    labels.pane_label = Some(String::new());
+    assert_eq!(nick(Some(&labels)), "w1/t1");
+}
+
+#[test]
+fn directory_agent_nick_drops_a_pane_that_is_only_its_id() {
+    let target = crate::protocol::ids::HostTargetId::new("w1:p3");
     assert_eq!(
-        nick(Some(&labels)),
-        "w1/w1:p1/seat-0b5a1c2e-1111-2222-3333-444455556666"
+        agent_seat_nick_named("office", Some("build"), "reviewer", Some(&target)),
+        "office/build/reviewer"
     );
+    assert_eq!(
+        agent_seat_nick_named("office", Some("build"), "w1:p3", Some(&target)),
+        "office/build"
+    );
+    // A local seat's pane is an id only when it is its target: a pane
+    // deliberately labelled like an id keeps its segment.
+    for label in ["t2", "notes:t3", "w2:p9"] {
+        assert_eq!(
+            agent_seat_nick_named("office", Some("build"), label, Some(&target)),
+            format!("office/build/{label}"),
+        );
+    }
+    // A remote seat has no local target: an ID-shaped pane is still an id.
+    for id in ["w1:p3", "core:t4", "t4"] {
+        assert_eq!(
+            agent_seat_nick_named("office", Some("w1:t2"), id, None),
+            "office/w1:t2",
+            "{id}"
+        );
+    }
+    assert_eq!(
+        agent_seat_nick_named("office", Some("build"), "reviewer", None),
+        "office/build/reviewer"
+    );
+    // No tab level (`-`: an hc terminal without labels, a named seat): the
+    // pane keeps its id, so two such seats never read the same.
+    assert_eq!(
+        agent_seat_nick_named("-", Some("-"), "core:t4", None),
+        "-/-/core:t4"
+    );
+    assert_eq!(
+        agent_seat_nick_named("office", Some("-"), "core:t5", None),
+        "office/-/core:t5"
+    );
+    let named = crate::protocol::ids::HostTargetId::new("reviewer");
+    assert_eq!(
+        agent_seat_nick_named("-", Some("-"), "reviewer", Some(&named)),
+        "-/-/reviewer"
+    );
+    // A peer that publishes no tab keeps the workspace and pane.
+    assert_eq!(
+        agent_seat_nick_named("office", None, "reviewer", Some(&target)),
+        "office/reviewer"
+    );
+}
+
+fn host_labels(
+    target: &str,
+    workspace: (&str, Option<&str>),
+    tab: (&str, Option<&str>),
+    pane: Option<&str>,
+) -> crate::host::observation::SeatHostLabels {
+    crate::host::observation::SeatHostLabels {
+        terminal: target.into(),
+        incarnation: None,
+        target: crate::protocol::ids::HostTargetId::new(target),
+        workspace_id: workspace.0.into(),
+        workspace_label: workspace.1.map(str::to_owned),
+        tab_id: tab.0.into(),
+        tab_label: tab.1.map(str::to_owned),
+        pane_label: pane.map(str::to_owned),
+        session: None,
+    }
+}
+
+/// hc fills `-` for a missing space or tab; an unnamed terminal must keep its
+/// address there, not collapse every terminal to `-/-`.
+#[test]
+fn unnamed_hc_terminals_keep_their_address_and_differ() {
+    let seat = SeatId::new("sQ7aAb12Cd34");
+    let t4 = host_labels("core:t4", ("-", None), ("-", None), None);
+    let t5 = host_labels("core:t5", ("-", None), ("-", None), None);
+    assert_eq!(agent_seat_nick(&seat, Some(&t4)), "-/-/core:t4");
+    assert_eq!(agent_seat_nick(&seat, Some(&t5)), "-/-/core:t5");
+    let spaced = host_labels("core:t6", ("s1", Some("office")), ("-", None), None);
+    assert_eq!(agent_seat_nick(&seat, Some(&spaced)), "office/-/core:t6");
+    // A named hc terminal, and one in a labelled tab, follow the Herdr rule.
+    let named = host_labels("core:t7", ("-", None), ("-", None), Some("builder"));
+    assert_eq!(agent_seat_nick(&seat, Some(&named)), "-/-/builder");
+    let tabbed = host_labels(
+        "core:t8",
+        ("s1", Some("office")),
+        ("b1", Some("build")),
+        None,
+    );
+    assert_eq!(agent_seat_nick(&seat, Some(&tabbed)), "office/build");
+}
+
+/// A named seat's labels (src/host/named.rs): synthetic `-` parents, its name
+/// as both target and pane label.
+#[test]
+fn named_seats_render_dash_dash_name() {
+    let seat = SeatId::new("sQ7aAb12Cd34");
+    let labels = host_labels("reviewer", ("-", None), ("-", None), Some("reviewer"));
+    assert_eq!(agent_seat_nick(&seat, Some(&labels)), "-/-/reviewer");
+}
+
+#[test]
+fn show_ids_under_a_wide_nick_and_on_a_narrow_terminal() {
+    let seat = "sQ7aAb12Cd34";
+    let ids = Some(seat_ids_line(
+        Some(&crate::protocol::ids::HostTargetId::new("w1:p3")),
+        &SeatId::new(seat),
+    ));
+    // A nick wider than half the line: the body wraps at indent 8, so the ids
+    // take a line of their own under the nick text.
+    let mut wide = Fixed(vec![(
+        seat,
+        "a-long-workspace/a-long-tab/a-long-pane",
+        Some("claude"),
+    )]);
+    let mut wide_ids = IdsLookup(&mut wide, ids.clone());
+    let style = Style {
+        width: 60,
+        ..Style::plain()
+    };
+    assert_eq!(
+        render_message(&summary(1, seat, "one\ntwo"), &mut wide_ids, &style),
+        "[12:34] <a-long-workspace/a-long-tab/a-long-pane> one\n         w1:p3 sQ7aAb12Cd34\n        two\n"
+    );
+    // A terminal too narrow for the ids clips them with an ellipsis.
+    let mut short = Fixed(vec![(seat, "w/t", Some("claude"))]);
+    let mut short_ids = IdsLookup(&mut short, ids);
+    let style = Style {
+        width: 20,
+        ..Style::plain()
+    };
+    let text = render_message(&summary(1, seat, "hi"), &mut short_ids, &style);
+    assert_eq!(text, "[12:34] <w/t> hi\n         w1:p3 sQ7a…\n");
+    assert!(
+        text.lines().all(|line| line.chars().count() <= 20),
+        "{text}"
+    );
+}
+
+#[test]
+fn show_ids_puts_pane_and_seat_ids_on_the_name_columns_second_line() {
+    let seat = "sQ7aAb12Cd34";
+    let mut lookup = Fixed(vec![(seat, "office/build/reviewer", Some("claude"))]);
+    let ids = Some(seat_ids_line(
+        Some(&crate::protocol::ids::HostTargetId::new("w1:p3")),
+        &SeatId::new(seat),
+    ));
+    assert_eq!(ids.as_deref(), Some("w1:p3 sQ7aAb12Cd34"));
+    let mut with_ids = IdsLookup(&mut lookup, ids.clone());
+    // One-line body: the ids get their own line under the nick.
+    assert_eq!(
+        render(&summary(1, seat, "looks good"), &mut with_ids),
+        "[12:34] <office/build/reviewer> looks good\n         w1:p3 sQ7aAb12Cd34\n"
+    );
+    // A longer body continues beside the ids, in the message column.
+    assert_eq!(
+        render(&summary(1, seat, "first\nsecond\nthird"), &mut with_ids),
+        "[12:34] <office/build/reviewer> first\n         w1:p3 sQ7aAb12Cd34     second\n                                third\n"
+    );
+    // Ids wider than the nick take a line of their own.
+    let mut narrow = Fixed(vec![(seat, "w/t", Some("claude"))]);
+    let mut narrow_ids = IdsLookup(&mut narrow, ids);
+    assert_eq!(
+        render(&summary(1, seat, "a\nb"), &mut narrow_ids),
+        "[12:34] <w/t> a\n         w1:p3 sQ7aAb12Cd34\n              b\n"
+    );
+    // Without a target only the seat id is shown; without the flag, nothing.
+    assert_eq!(seat_ids_line(None, &SeatId::new(seat)), "sQ7aAb12Cd34");
+    assert_eq!(
+        render(&summary(1, seat, "looks good"), &mut lookup),
+        "[12:34] <office/build/reviewer> looks good\n"
+    );
+}
+
+struct IdsLookup<'a>(&'a mut dyn Lookup, Option<String>);
+
+impl Lookup for IdsLookup<'_> {
+    fn nick(&mut self, seat: &SeatId) -> Nick {
+        Nick {
+            ids: self.1.clone(),
+            ..self.0.nick(seat)
+        }
+    }
+    fn full(&mut self, summary: &MessageSummary) -> Option<Full> {
+        self.0.full(summary)
+    }
 }
 
 #[test]
@@ -484,6 +677,7 @@ fn relative_nick_long_parents_keep_pane_component() {
     let nick = Nick {
         name: relative_pane_nick(&labels, None),
         harness: None,
+        ids: None,
     };
     assert!(
         nick.display().ends_with("/alice"),
@@ -513,6 +707,7 @@ fn relative_nick_expanded_escaped_parents_reserve_pane_budget() {
         let nick = Nick {
             name: formatted.clone(),
             harness: None,
+            ids: None,
         }
         .display();
         assert!(
@@ -606,7 +801,7 @@ fn registered_agents_render_messages_and_recipients_without_suffix_or_id_clippin
         workspace_id: "w1".into(),
         workspace_label: Some("a/b\x1b\n".into()),
         tab_id: "t1".into(),
-        tab_label: Some("must-not-appear".into()),
+        tab_label: Some("build".into()),
         pane_label: Some("alice\u{202e}".into()),
         session: None,
     };
@@ -616,18 +811,14 @@ fn registered_agents_render_messages_and_recipients_without_suffix_or_id_clippin
             (
                 Some("a/b\x1b\n".to_owned()),
                 Some("alice\u{202e}".to_owned()),
-                "a/b\\u{001b}\\n/alice\\u{202e}/seat-0b5a1c2e-1111-2222-3333-444455556666",
+                "a/b\\u{001b}\\n/build/alice\\u{202e}",
             ),
             (
                 Some("w".repeat(100)),
                 Some("p".repeat(100)),
-                "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww…/pppppppppppppppppppppppppppppppp…/seat-0b5a1c2e-1111-2222-3333-444455556666",
+                "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww…/build/pppppppppppppppppppppppppppppppp…",
             ),
-            (
-                Some(String::new()),
-                None,
-                "w1/w1:p1/seat-0b5a1c2e-1111-2222-3333-444455556666",
-            ),
+            (Some(String::new()), None, "w1/build"),
         ] {
             labels.workspace_label = workspace;
             labels.pane_label = pane;
@@ -636,6 +827,7 @@ fn registered_agents_render_messages_and_recipients_without_suffix_or_id_clippin
                 nick: Nick {
                     name: agent_seat_nick(&seat, Some(&labels)),
                     harness: Some(id.into()),
+                    ids: None,
                 },
             };
             let text = render_message(
@@ -672,13 +864,14 @@ fn registered_agents_render_messages_and_recipients_without_suffix_or_id_clippin
                 "registered {id}: {text}"
             );
             assert!(!text.contains('·'), "registered {id}: {text}");
-            assert!(!text.contains("must-not-appear"), "registered {id}: {text}");
+            assert!(!text.contains("seat-0b5a1c2e"), "registered {id}: {text}");
         }
         let mut lookup = RegisteredNick {
             seat: seat.clone(),
             nick: Nick {
                 name: agent_seat_nick(&seat, None),
                 harness: Some(id.into()),
+                ids: None,
             },
         };
         assert_eq!(
@@ -708,6 +901,7 @@ fn unregistered_and_human_nicks_retain_clipping_and_suffix_behavior() {
             nick: Nick {
                 name: "abcdefghijklmnopqrstuvwxyz0123456789".into(),
                 harness: harness.map(str::to_owned),
+                ids: None,
             },
         };
         assert_eq!(

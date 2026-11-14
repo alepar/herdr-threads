@@ -164,10 +164,13 @@ pub(crate) fn live_style() -> Style {
     }
 }
 
-/// A seat's host target (when mapped), binding generation and the daemon's
-/// workspace and pane labels for it (`SeatSummary.directory`, keyed by the
-/// seat's own host).
-type SeatBinding = (Option<HostTargetId>, u64, Option<(String, String)>);
+/// The daemon's workspace, tab (absent from an older peer) and pane labels of
+/// a seat's own host (`SeatSummary.directory`), each the label else the id.
+type DirectoryLabels = (String, Option<String>, String);
+
+/// A seat's host target (when mapped), binding generation and its
+/// [`DirectoryLabels`].
+type SeatBinding = (Option<HostTargetId>, u64, Option<DirectoryLabels>);
 
 /// Resolves the invoking pane at the claim host (moves included), supplied
 /// by the one CLI site that observes the claim host's panes.
@@ -277,6 +280,8 @@ pub(crate) struct NickCache {
     page_panes_read: Option<bool>,
     /// Cancelled by Ctrl-C; carried by every call budget this cache mints.
     cancel: Cancellation,
+    /// `--show-ids`: give every seat nick its pane and seat ID line.
+    show_ids: bool,
 }
 
 impl NickCache {
@@ -323,6 +328,7 @@ impl NickCache {
             mapped: None,
             page_panes_read: None,
             cancel: Cancellation::default(),
+            show_ids: false,
         }
     }
 
@@ -337,6 +343,15 @@ impl NickCache {
             self.caller = None;
             self.panes = None;
             self.page_panes_read = None;
+            self.nicks.clear();
+        }
+        self
+    }
+
+    /// `--show-ids`: nicks carry the seat's pane and seat ID line.
+    pub(crate) fn with_show_ids(mut self, show_ids: bool) -> Self {
+        if self.show_ids != show_ids {
+            self.show_ids = show_ids;
             self.nicks.clear();
         }
         self
@@ -464,10 +479,13 @@ impl NickCache {
         seat: &SeatId,
         target: Option<&HostTargetId>,
         generation: u64,
-        directory_pane: Option<&(String, String)>,
+        directory: Option<&DirectoryLabels>,
     ) -> Nick {
         let mut nick = Nick::seat(seat);
         nick.harness = self.harness(seat, generation).map(str::to_owned);
+        if self.show_ids {
+            nick.ids = Some(irc::seat_ids_line(target, seat));
+        }
         if nick.is_agent() {
             if let Some(target) = target {
                 self.refresh_panes(
@@ -477,8 +495,10 @@ impl NickCache {
             }
             // The daemon's labels for the seat's own host win: the same target
             // id can exist on two hosts, the pooled topology cannot tell.
-            nick.name = match directory_pane {
-                Some((workspace, pane)) => irc::agent_seat_nick_named(seat, workspace, pane),
+            nick.name = match directory {
+                Some((workspace, tab, pane)) => {
+                    irc::agent_seat_nick_named(workspace, tab.as_deref(), pane, target)
+                }
                 None => {
                     let pane = target.and_then(|target| {
                         self.labels
@@ -593,10 +613,9 @@ impl NickCache {
                     .items
                     .into_iter()
                     .map(|row| {
-                        let pane = row
-                            .directory
-                            .as_deref()
-                            .and_then(|d| Some((d.workspace.clone()?, d.pane.clone()?)));
+                        let pane = row.directory.as_deref().and_then(|d| {
+                            Some((d.workspace.clone()?, d.tab.clone(), d.pane.clone()?))
+                        });
                         (row.seat, (row.target, row.generation, pane))
                     })
                     .collect(),
@@ -650,7 +669,10 @@ impl NickCache {
                 None,
             );
         }
-        let nick = Nick::seat(seat);
+        let mut nick = Nick::seat(seat);
+        if self.show_ids {
+            nick.ids = Some(irc::seat_ids_line(None, seat));
+        }
         self.nicks
             .insert(seat.clone(), (Instant::now(), nick.clone()));
         nick
@@ -1156,6 +1178,7 @@ pub(crate) fn run(
     };
     let (instance, _, mut client) = connect(paths, clock)?;
     let mut cache = NickCache::new(context, paths, instance, clock, resolver)?
+        .with_show_ids(request.show_ids)
         .with_caller(if form == Form::Human {
             caller_pane
         } else {

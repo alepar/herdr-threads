@@ -442,34 +442,69 @@ fn agent_contexts(fx: &mut Fixture, root: &std::path::Path) {
 }
 
 #[test]
-fn agent_nicknames_use_canonical_targets_space_pane_and_full_seat_ids() {
+fn agent_nicknames_use_canonical_targets_workspace_tab_and_pane_without_seat_ids() {
     let root = NickScratch::new();
     let mut fx = fixture(standard_daemon(vec![
         message(1, seat(0)),
         message(2, seat(1)),
     ]));
     agent_contexts(&mut fx, &root.0);
-    let labels = Arc::new(Mutex::new(Some(vec![
-        scoped_labels(0, "w1", "t1"),
-        scoped_labels(1, "w2", "t2"),
-    ])));
+    let mut second = scoped_labels(1, "w2", "t2");
+    second.pane_label = Some("bob".into());
+    let labels = Arc::new(Mutex::new(Some(vec![scoped_labels(0, "w1", "t1"), second])));
     fx.cache.host = Box::new(ScopedPanes {
         labels: Arc::clone(&labels),
     });
     fx.cache = fx.cache.with_caller(Some(target(0).as_str()));
     let shown = read_page(&mut fx);
-    assert!(shown.contains("<project/alice/seat-Author00>"), "{shown}");
-    assert!(shown.contains("<project/alice/seat-Author01>"), "{shown}");
+    assert!(shown.contains("<project/tryout/alice>"), "{shown}");
+    assert!(shown.contains("<project/tryout/bob>"), "{shown}");
     assert!(!shown.contains('·'), "{shown}");
-    // A host rename refreshes display only, without changing the seat ID.
+    assert!(!shown.contains("seat-Author"), "{shown}");
+    // A host rename refreshes display only.
     labels.lock().unwrap().as_mut().unwrap()[0].workspace_label = Some("renamed".into());
     fx.cache.panes = None;
-    assert!(read_page(&mut fx).contains("<renamed/alice/seat-Author00>"));
+    assert!(read_page(&mut fx).contains("<renamed/tryout/alice>"));
     *labels.lock().unwrap() = None;
     fx.cache.panes = None;
     let shown = read_page(&mut fx);
     assert!(shown.contains("<seat-Author00>"), "{shown}");
-    assert!(!shown.contains("project/alice"), "{shown}");
+    assert!(!shown.contains("project/tryout"), "{shown}");
+}
+
+#[test]
+fn show_ids_adds_the_pane_and_seat_id_line_under_each_agent_name() {
+    let root = NickScratch::new();
+    let mut fx = fixture(standard_daemon(vec![
+        message(1, seat(0)),
+        message(2, seat(1)),
+    ]));
+    agent_contexts(&mut fx, &root.0);
+    let mut second = scoped_labels(1, "w1", "t1");
+    second.pane_label = None;
+    fx.cache.host = Box::new(ScopedPanes {
+        labels: Arc::new(Mutex::new(Some(vec![scoped_labels(0, "w1", "t1"), second]))),
+    });
+    let shown = read_page(&mut fx);
+    assert!(shown.contains("<project/tryout/alice>"), "{shown}");
+    assert!(shown.contains("<project/tryout>"), "{shown}");
+    assert!(!shown.contains("w1:p"), "{shown}");
+    fx.cache = fx.cache.with_show_ids(true);
+    let shown = read_page(&mut fx);
+    let lines: Vec<&str> = shown.lines().collect();
+    let first = lines
+        .iter()
+        .position(|line| line.contains("<project/tryout/alice>"))
+        .unwrap_or_else(|| panic!("{shown}"));
+    assert_eq!(lines[first + 1].trim(), "w1:p0 seat-Author00", "{shown}");
+    let second = lines
+        .iter()
+        .position(|line| line.contains("<project/tryout>"))
+        .unwrap_or_else(|| panic!("{shown}"));
+    assert_eq!(lines[second + 1].trim(), "w1:p1 seat-Author01", "{shown}");
+    // The ids sit under the nick text, after `[HH:MM] <`.
+    let column = lines[first].find('<').unwrap() + 1;
+    assert_eq!(lines[first + 1].find('w'), Some(column), "{shown}");
 }
 
 #[test]
@@ -487,10 +522,7 @@ fn agent_event_recipient_missing_names_uses_host_ids_without_tab_alias() {
         labels: Arc::new(Mutex::new(Some(vec![recipient]))),
     });
     let shown = read_page(&mut fx);
-    assert!(
-        shown.contains("w2/w1:p1/seat-Author01 is overdue"),
-        "{shown}"
-    );
+    assert!(shown.contains("w2/tryout is overdue"), "{shown}");
 }
 #[test]
 fn relative_nick_scope_uses_ids_refreshes_caller_move_and_survives_host_failure() {
@@ -814,7 +846,7 @@ fn registered_agents_history_and_follow_use_canonical_full_names_and_refresh() {
             let root = NickScratch::new();
             let (mut fx, author, labels) =
                 registered_display_fixture(&root, Some((metadata.context_spelling, 1)), workspace);
-            let full = "project/alice/seat-0b5a1c2e-1111-2222-3333-444455556666";
+            let full = "project/tryout/alice";
             let text = read_page(&mut fx);
             assert!(
                 text.contains(&format!("<{full}>")),
@@ -881,7 +913,7 @@ fn registered_agents_history_and_follow_use_canonical_full_names_and_refresh() {
                 metadata.id
             );
             assert!(
-                lines[1].contains("<renamed/alice/seat-0b5a1c2e-1111-2222-3333-444455556666>"),
+                lines[1].contains("<renamed/tryout/alice>"),
                 "registered {}: {text}",
                 metadata.id
             );
@@ -924,7 +956,7 @@ fn registered_agents_history_and_follow_use_canonical_full_names_and_refresh() {
 }
 
 #[test]
-fn registered_agents_history_missing_labels_keep_host_ids_without_tab_names() {
+fn registered_agents_history_missing_labels_show_ids_and_drop_the_pane() {
     for registration in crate::harness::registry::builtins().registrations() {
         let root = NickScratch::new();
         let (mut fx, _, labels) = registered_display_fixture(
@@ -935,16 +967,17 @@ fn registered_agents_history_missing_labels_keep_host_ids_without_tab_names() {
         let mut labels = labels.lock().unwrap();
         let pane = &mut labels.as_mut().unwrap()[1];
         pane.workspace_label = Some(String::new());
+        pane.tab_label = None;
         pane.pane_label = None;
         drop(labels);
         let text = read_page(&mut fx);
         assert!(
-            text.contains("<w2/w1:p1/seat-0b5a1c2e-1111-2222-3333-444455556666>"),
+            text.contains("<w2/t2>"),
             "registered {}: {text}",
             registration.metadata().id
         );
         assert!(
-            !text.contains("tryout"),
+            !text.contains("tryout") && !text.contains("w1:p1"),
             "registered {}: {text}",
             registration.metadata().id
         );
@@ -1037,8 +1070,8 @@ fn agent_headers_of_two_hosts_owning_the_same_target_differ() {
         labels: Arc::new(Mutex::new(Some(vec![pooled]))),
     });
     let shown = read_page(&mut fx);
-    assert!(shown.contains("<alpha/pane-a/seat-Author00>"), "{shown}");
-    assert!(shown.contains("<beta/pane-b/seat-Author01>"), "{shown}");
+    assert!(shown.contains("<alpha/tab/pane-a>"), "{shown}");
+    assert!(shown.contains("<beta/tab/pane-b>"), "{shown}");
     assert!(!shown.contains("project/alice"), "{shown}");
 }
 

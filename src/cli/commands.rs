@@ -537,6 +537,7 @@ pub struct PickerRequest {
     pub initial: Option<HistoryRange>,
     pub follow: bool,
     pub no_system: bool,
+    pub show_ids: bool,
 }
 impl PickerRequest {
     pub fn selected(&self, thread: ThreadId) -> CliAction {
@@ -552,6 +553,7 @@ impl PickerRequest {
                     _ => None,
                 },
                 no_system: self.no_system,
+                show_ids: self.show_ids,
             })
         } else {
             CliAction::Wire(WireCommand::History(HistoryQuery {
@@ -574,6 +576,8 @@ pub struct FollowRequest {
     pub after: Option<u64>,
     /// Hide system notices (joins, ACKs, warnings).
     pub no_system: bool,
+    /// Show each author's pane and seat IDs under its name.
+    pub show_ids: bool,
 }
 
 /// Recent messages `read --follow` prints before following.
@@ -1141,7 +1145,7 @@ enum Top {
     PendingReceipts(PendingReceiptsArgs),
     /// Read thread history or follow new messages; reading never ACKs.
     #[command(
-        after_help = "Without THREAD, browse channels across this instance, including archives and nonmembers. Rows show active/archived status, joined participants, sampled messages/minute and the last message; active channels rank first by participants weighted with activity. Type a fuzzy name/topic filter; arrows or Ctrl-N/P move, Enter reads the canonical ID, Esc/Ctrl-C cancel with exit 0. Requires stdin/stdout/stderr TTYs, usable TERM, and no agent/cooperative caller, --machine or --json. Agents and scripts must supply an exact thread ID or unique name.\n\nAgent author/recipient nicknames are SPACE/PANE/SEAT_ID with no harness suffix. Human nicknames are relative to the live caller: alice, tryout/alice, project/tryout/alice. History and follow never ACK or accept."
+        after_help = "Without THREAD, browse channels across this instance, including archives and nonmembers. Rows show active/archived status, joined participants, sampled messages/minute and the last message; active channels rank first by participants weighted with activity. Type a fuzzy name/topic filter; arrows or Ctrl-N/P move, Enter reads the canonical ID, Esc/Ctrl-C cancel with exit 0. Requires stdin/stdout/stderr TTYs, usable TERM, and no agent/cooperative caller, --machine or --json. Agents and scripts must supply an exact thread ID or unique name.\n\nAgent author/recipient nicknames are SPACE/TAB/PANE (SPACE/TAB for an unnamed pane; each label else its ID) with no harness suffix; --show-ids adds a line with the pane and seat IDs. Human nicknames are relative to the live caller: alice, tryout/alice, project/tryout/alice. History and follow never ACK or accept."
     )]
     Read(ReadArgs),
     /// Follow new messages, shorthand for `read --follow`; never ACKs or accepts.
@@ -1981,6 +1985,10 @@ struct ReadArgs {
     /// With --follow: hide system notices (joins, ACKs, warnings).
     #[arg(long, requires = "follow")]
     no_system: bool,
+    /// With --follow: show each author's pane and seat IDs on a second line
+    /// under its name (names alone by default).
+    #[arg(long, requires = "follow")]
+    show_ids: bool,
     /// Number of latest messages to read; with --follow, defaults to 20.
     #[arg(long, group = "initial")]
     recent: Option<u16>,
@@ -2006,6 +2014,10 @@ struct FollowArgs {
     /// Hide system notices (joins, ACKs, warnings).
     #[arg(long)]
     no_system: bool,
+    /// Show each author's pane and seat IDs on a second line under its name
+    /// (names alone by default).
+    #[arg(long)]
+    show_ids: bool,
     /// Same byte-budget option as `read --follow`.
     #[arg(long)]
     max_bytes: Option<u32>,
@@ -2999,6 +3011,7 @@ fn parse_cli_in_registry(
             thread: args.thread,
             follow: true,
             no_system: args.no_system,
+            show_ids: args.show_ids,
             recent: args.recent,
             after: args.after,
             before: None,
@@ -3501,6 +3514,7 @@ fn parse_cli_in_registry(
                 initial,
                 follow: args.follow,
                 no_system: args.no_system,
+                show_ids: args.show_ids,
             })
         }
         Top::Read(args) if args.follow => {
@@ -3517,6 +3531,7 @@ fn parse_cli_in_registry(
                 recent,
                 after: args.after,
                 no_system: args.no_system,
+                show_ids: args.show_ids,
             })
         }
         Top::Read(args) => {
