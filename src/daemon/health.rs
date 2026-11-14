@@ -313,11 +313,16 @@ pub fn cooperative_receipt_line_for(registry: &crate::harness::registry::Registr
     )
 }
 
+/// Names only the registered harnesses Herdr can prompt: a host kind to detect and a composer
+/// policy to type into. A harness that wakes only through its own channel is never prompted.
 pub fn cooperative_wake_line_for(registry: &crate::harness::registry::Registry) -> String {
     let ids: Vec<_> = registry
         .registrations()
         .iter()
-        .filter(|registration| !registration.metadata().host_kinds.is_empty())
+        .filter(|registration| {
+            !registration.metadata().host_kinds.is_empty()
+                && registration.composer_policy().is_some()
+        })
         .map(|registration| registration.metadata().id)
         .collect();
     let kinds = match ids.as_slice() {
