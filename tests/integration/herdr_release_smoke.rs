@@ -1901,10 +1901,13 @@ fn herdr_release_live_handoff() {
     // handoff, so not held) is typed into its composer. A wake needs Herdr to report the agent
     // awaiting input; a Herdr that does not carry the agent state across the import reports it
     // `unknown` until the agent redraws, and the wake is then rightly held (delivery contract
-    // rule 4). Keyed on what this Herdr reports, never on its version.
+    // rule 4). Keyed on what this Herdr reports at the wake, never on its version: a status read
+    // before the send is only a hint, since the agent can redraw to idle before the daemon's
+    // attempt, which then types the wake correctly and logs no refusal (ht-caa5).
     let (sender_pane, _sender) = m.person_seat("handoff-sender");
     let status = m.status(&agent_pane);
     let woken = wakes();
+    let since = m.log_of(&agent_pane).len();
     let sent = Instant::now();
     m.person(
         &sender_pane,
@@ -1917,6 +1920,16 @@ fn herdr_release_live_handoff() {
             "after-handoff-p0",
         ],
     );
+    // Never a wake typed into a working agent: the stand-in logs every input it reads during a
+    // turn as `during_turn`, and nothing else types into this pane here.
+    let typed_into_turn = || {
+        let log = m.log_of(&agent_pane);
+        log[since.min(log.len())..]
+            .iter()
+            .filter(|e| e["kind"] == "input" && e["during_turn"] == true)
+            .map(|e| e["data"].to_string())
+            .collect::<Vec<_>>()
+    };
     if matches!(status.as_str(), "idle" | "done") {
         wait_for("p0 wake after the handoff", Duration::from_secs(30), || {
             if wakes() > woken {
@@ -1930,33 +1943,68 @@ fn herdr_release_live_handoff() {
             }
         });
     } else {
-        wait_for(
-            "the p0 wake held for an agent Herdr reports not awaiting input",
+        // Either outcome is right, by what Herdr reports when the daemon attempts: held with the
+        // refusal logged while it reads the agent not awaiting input, or typed once it reads it
+        // idle or done.
+        let mut seen: Vec<String> = Vec::new();
+        let held = wait_for(
+            "the p0 wake held for an agent Herdr reports not awaiting input, or typed once it reports it idle",
             // Usually under a second. When the first attempt logs no refusal the next chance is the
-            // wake ladder's retry, at 30 s or later, so a 30 s wait raced it (ht-caa5).
+            // wake ladder's retry, at 30 s or later, so a 30 s wait raced it.
             Duration::from_secs(90),
             || {
+                let now = m.status(&agent_pane);
+                if seen.last() != Some(&now) {
+                    seen.push(now);
+                }
                 let lane = m.wake_lane_log();
                 if lane
                     .iter()
                     .any(|line| line.contains(&agent) && line.contains("not awaiting input"))
                 {
-                    Ok(())
+                    Ok(true)
+                } else if wakes() > woken {
+                    Ok(false)
                 } else {
                     Err(format!(
-                        "status {status}; wakes since the send: {}; daemon: {lane:?}",
+                        "status before the send {status}; since: {seen:?}; wakes since the send: {}; daemon: {lane:?}",
                         wakes() - woken
                     ))
                 }
             },
         );
-        assert_eq!(wakes(), woken, "a wake was typed into a non-idle agent");
+        if !held {
+            // The typed wake's turn ends with Herdr reporting the agent awaiting input again:
+            // the agent's state is known to this Herdr, no longer `unknown`.
+            wait_for(
+                "Herdr reports the woken agent idle or done",
+                Duration::from_secs(30),
+                || {
+                    let now = m.status(&agent_pane);
+                    if matches!(now.as_str(), "idle" | "done") {
+                        Ok(())
+                    } else {
+                        Err(format!("status {now}; since the send: {seen:?}"))
+                    }
+                },
+            );
+        }
         println!(
-            "herdr {}: agent status `{status}` after the handoff; wake held until it redraws ({:?} after the send)",
+            "herdr {}: agent status `{status}` before the send ({seen:?} after it); wake {} ({:?} after the send)",
             m.version,
+            if held {
+                "held until the agent redraws"
+            } else {
+                "typed after the agent redrew"
+            },
             sent.elapsed()
         );
     }
+    assert_eq!(
+        typed_into_turn(),
+        Vec::<String>::new(),
+        "a wake was typed into a working agent"
+    );
 
     // A cold restart: the panes' processes die with the server. A seat of the old incarnation
     // stays unresolved; no process continuity decision is recorded for it.
