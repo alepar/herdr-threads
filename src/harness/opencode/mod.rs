@@ -6,6 +6,8 @@
 pub mod contract;
 pub mod decode;
 pub mod delivery;
+pub mod doctor;
+pub mod setup;
 pub mod witness;
 
 pub use decode::OpencodeEvent;
@@ -32,9 +34,7 @@ static METADATA: AdapterMetadata = AdapterMetadata {
     context_aliases: &["opencode"],
     executable: ExecutableLookup::Path("opencode"),
     host_kinds: &["opencode"],
-    // ht-vxdp.3: setup, status and unsetup land with the plugin installer; until then
-    // `setup` with no harness named skips opencode ("local setup unavailable").
-    setup_scopes: &[],
+    setup_scopes: &[SetupScopeKind::ConfigRoot],
     budget: EventBudgetPolicy {
         lifecycle_ms: 5000,
         observer_ms: 1500,
@@ -50,13 +50,11 @@ static METADATA: AdapterMetadata = AdapterMetadata {
 
 static DELIVERY: delivery::OpencodeDelivery = delivery::OpencodeDelivery;
 
-/// ht-vxdp.3: the not-yet-implemented setup operations.
-fn unsupported(operation: &'static str) -> UnsupportedOperation {
-    UnsupportedOperation {
-        adapter: METADATA.id,
-        operation,
-    }
-}
+static TEXT: AdapterText = AdapterText {
+    setup_scope: "  opencode: $OPENCODE_CONFIG_DIR, else ${XDG_CONFIG_HOME:-~/.config}/opencode (plugins/herdr-threads.js, skills/herdr-threads/SKILL.md)\n",
+    config_root_hint: "OPENCODE_CONFIG_DIR",
+    ..AdapterText::NONE
+};
 
 impl HarnessAdapter for OpencodeAdapter {
     type Admission = OpencodeAdmission;
@@ -166,15 +164,89 @@ impl HarnessAdapter for OpencodeAdapter {
             diagnostic: "opencode payload carries no runtime version".into(),
         }
     }
-    // ht-vxdp.3: setup, status and unsetup are filled in with the plugin installer.
-    fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("setup")))
+    fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+        setup::setup(request)
     }
-    fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
-        SetupStatus::Unsupported(unsupported("setup status"))
+    fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
+        setup::status(request)
     }
-    fn unsetup(&self, _: &UnsetupRequest, _: &CallBudget) -> Result<RemovalOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("unsetup")))
+    fn unsetup(
+        &self,
+        request: &UnsetupRequest,
+        _: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        setup::unsetup(request)
+    }
+    fn setup_options(&self) -> &'static [SetupOption] {
+        &[
+            SetupOption {
+                name: crate::cli::setup::WITH_PERMISSIONS,
+                conflicts: &[crate::cli::setup::WITHOUT_PERMISSIONS],
+            },
+            SetupOption {
+                name: crate::cli::setup::WITHOUT_PERMISSIONS,
+                conflicts: &[crate::cli::setup::WITH_PERMISSIONS],
+            },
+        ]
+    }
+    fn settle_setup_consent(
+        &self,
+        environment: &SetupEnvironment,
+        projection: &mut serde_json::Value,
+        reader: &mut dyn std::io::BufRead,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), SetupFailure> {
+        let scope = self.resolve_setup_scope(&SetupScopeRequest::Default, environment)?;
+        setup::settle_permissions(&scope, environment, projection, reader, writer)
+    }
+    fn setup_status_extras(&self, request: &StatusRequest, projection: &mut serde_json::Value) {
+        setup::setup_status_extras(request, projection)
+    }
+    fn setup_report_lines(&self, report: &serde_json::Value) -> Vec<String> {
+        setup::setup_report_lines(report)
+    }
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        daemon: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        doctor::doctor_projection(request, daemon, budget)
+    }
+    fn doctor_text(&self, hooks: &serde_json::Value, form: DoctorTextForm) -> String {
+        doctor::doctor_text(hooks, form)
+    }
+    fn text(&self) -> &'static AdapterText {
+        &TEXT
+    }
+    /// `OPENCODE_CONFIG_DIR` and `XDG_CONFIG_HOME` resolve the default config root.
+    fn setup_environment_inputs(&self) -> &'static [&'static str] {
+        &["OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME"]
+    }
+    /// `--config-root` (the environment's `config_roots`) > `OPENCODE_CONFIG_DIR` >
+    /// `$XDG_CONFIG_HOME/opencode` > `~/.config/opencode` (design D6).
+    fn resolve_setup_scope(
+        &self,
+        request: &SetupScopeRequest,
+        environment: &SetupEnvironment,
+    ) -> Result<ResolvedSetupScope, SetupFailure> {
+        match request {
+            SetupScopeRequest::Default => environment
+                .config_roots
+                .get(METADATA.id)
+                .cloned()
+                .or_else(|| self.default_config_root(environment))
+                .map(ResolvedSetupScope::ConfigRoot)
+                .ok_or_else(|| {
+                    SetupFailure::Invalid("opencode: config root unavailable (HOME unset)".into())
+                }),
+            SetupScopeRequest::Profile(_) => Err(SetupFailure::Invalid(
+                "opencode: named profile is unsupported".into(),
+            )),
+        }
+    }
+    fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf> {
+        setup::default_config_root(environment)
     }
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         Some(&DELIVERY)

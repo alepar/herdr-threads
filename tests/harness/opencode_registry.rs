@@ -1,7 +1,7 @@
 //! The opencode registry row (opencode design D2, D3, D10): metadata, host kind, the agent
 //! marker moved off the unsupported list, the caller shape, versionless admission, the output
 //! policy, the idle-wake classification of the first `Channel` harness with no composer policy
-//! (review M6) and the setup stubs left for ht-vxdp.3. Included from
+//! (review M6) and the config-root setup scope. Included from
 //! `src/harness/opencode/mod.rs`.
 use super::*;
 use crate::harness::registry::{IdleWakeOn, builtins};
@@ -163,49 +163,19 @@ fn opencode_wakes_only_through_a_live_channel() {
     }
 }
 
-/// ht-vxdp.3 fills these in; until then they are refused honestly and `setup` with no harness
-/// skips opencode.
+/// Setup takes the config-root scope; a named profile is refused (design D6).
 #[test]
-fn setup_operations_are_unsupported_until_the_installer_lands() {
-    use std::path::PathBuf;
-    let budget = CallBudget {
-        deadline: crate::protocol::time::MonoInstant(100),
-        cancellation: Default::default(),
-    };
-    let scope = ResolvedSetupScope::ConfigRoot(PathBuf::from("unused"));
-    assert!(METADATA.setup_scopes.is_empty());
+fn setup_takes_the_config_root_scope() {
     assert!(matches!(
-        OpencodeAdapter.status(
-            &StatusRequest {
-                scope: scope.clone(),
-                environment: SetupEnvironment::default(),
-                native_binary: None,
-            },
-            &budget
-        ),
-        SetupStatus::Unsupported(_)
+        METADATA.setup_scopes,
+        [SetupScopeKind::ConfigRoot]
     ));
-    assert!(matches!(
-        OpencodeAdapter.setup(
-            &SetupRequest {
-                scope: scope.clone(),
-                environment: SetupEnvironment::default(),
-                native_binary: None,
-                executable: PathBuf::from("unused"),
-                options: Default::default(),
-            },
-            &budget
-        ),
-        Err(SetupFailure::Unsupported(_))
-    ));
-    assert!(matches!(
-        OpencodeAdapter.unsetup(
-            &UnsetupRequest {
-                scope,
-                environment: SetupEnvironment::default(),
-            },
-            &budget
-        ),
-        Err(SetupFailure::Unsupported(_))
-    ));
+    assert!(
+        OpencodeAdapter
+            .resolve_setup_scope(
+                &SetupScopeRequest::Profile("p".into()),
+                &SetupEnvironment::default()
+            )
+            .is_err()
+    );
 }

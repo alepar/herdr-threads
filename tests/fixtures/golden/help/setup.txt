@@ -108,6 +108,8 @@ Scope (user level, like Herdr's own agent hooks):
           guidance.
   agy: ~/.gemini (plugin config/plugins/herdr-threads; allow entry in antigravity-cli/settings.json)
 
+  opencode: $OPENCODE_CONFIG_DIR, else ${XDG_CONFIG_HOME:-~/.config}/opencode (plugins/herdr-threads.js, skills/herdr-threads/SKILL.md)
+
 
 Foreground agents (inspection; a change only with the explicit consent noted): setup and
 setup-status report user settings and manual advice for every

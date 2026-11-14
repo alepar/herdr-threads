@@ -41,6 +41,11 @@ hooks.agy.allow_entry: command(herdr-threads) not-granted in <root>/home/.gemini
 hooks.agy.installed: unavailable (binary none)
 hooks.agy.witness: presence_dir=no brain_entries=0 bounded=yes recent_top_level_without_lock=0
 hooks.agy.sandbox: agy --sandbox sessions may not reach the herdr-threads daemon socket (untested); launch refuses --sandbox
+hooks.opencode.plugin: <root>/home/.config/opencode/plugins/herdr-threads.js not-installed
+hooks.opencode.skill: <root>/home/.config/opencode/skills/herdr-threads/SKILL.md not-installed
+hooks.opencode.permissions: not-granted (herdr-threads *, ht *)
+hooks.opencode.installed: unavailable (binary none)
+hooks.opencode.heartbeat: <root>/state/opencode/plugin-heartbeat.json absent pid=none loaded_at=none permissions=none
 limitation: codex is on PATH (<root>/bin dir/codex) but its hooks are not installed in <root>/codex home/hooks.json: run `herdr-threads setup codex` with this CODEX_HOME
 claude local_config_root : installed: true, enabled: unknown, admitted: true, observed: unknown
   Native enablement and runtime observation are separate from local installation
@@ -51,8 +56,7 @@ codex local_config_root : installed: false, enabled: unknown, admitted: true, ob
 hermes local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: Hermes launcher unavailable
 agy local_config_root : installed: false, enabled: true, admitted: unknown, observed: unknown
-opencode local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
-  setup: invalid adapter input: opencode: config root unavailable
+opencode local_config_root : installed: false, enabled: unknown, admitted: unknown, observed: unknown
 synthetic_fourth local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: synthetic fourth: explicit fixture root unavailable
 rich harness evidence unavailable: the daemon is not reachable

@@ -1589,7 +1589,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("codex", "status"),
             ("hermes", "skipped"),
             ("agy", "status"),
-            ("opencode", "skipped"),
+            ("opencode", "status"),
             ("synthetic_fourth", "status")
         ])
     );
@@ -1601,7 +1601,10 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
     {
         assert_eq!(
             entry["report"]["installed"],
-            !matches!(entry["harness"].as_str(), Some("synthetic_fourth" | "agy")),
+            !matches!(
+                entry["harness"].as_str(),
+                Some("synthetic_fourth" | "agy" | "opencode")
+            ),
             "{entry}"
         );
     }
@@ -1633,7 +1636,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("codex", "not_installed"),
             ("hermes", "skipped"),
             ("agy", "not_installed"),
-            ("opencode", "skipped"),
+            ("opencode", "not_installed"),
             ("synthetic_fourth", "not_installed")
         ])
     );
@@ -1689,7 +1692,7 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
             ("codex", "removed"),
             ("hermes", "skipped"),
             ("agy", "not_installed"),
-            ("opencode", "skipped"),
+            ("opencode", "not_installed"),
             ("synthetic_fourth", "not_installed")
         ])
     );

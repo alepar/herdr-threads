@@ -2759,7 +2759,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   agy allow member `command(herdr-threads)` has no ask counterpart herdr-threads can
   write, so once granted it also covers person and setup commands; agy's consent
   question says so, and it is installed only with consent (`--with-permissions` or a
-  yes) or kept from an earlier recorded grant.
+  yes) or kept from an earlier recorded grant. The opencode grant is in-process: with the
+  same consent (recorded in setup's manifest), the owned plugin's `config` hook adds
+  `permission.bash` allow keys `herdr-threads *` and `ht *` to opencode's merged config of
+  that process, last in key order, and never writes `opencode.json`; it likewise covers person
+  and setup commands, a user rule that sets either exact key to `deny` is left in place (the
+  plugin adds nothing for it; doctor reports it), and because rules are last-match-wins a
+  narrower user rule under either key (for example `herdr-threads send *: ask`) is overridden
+  by the grant. Without consent the plugin adds no rule and opencode asks.
 - **Unattributed public reads retain ordinary daemon spelling.** Public read requests
   carry no invocation actor; a Human subject seat or peer label cannot identify the
   requesting viewer. Known current caller/action producers include Human spelling before
