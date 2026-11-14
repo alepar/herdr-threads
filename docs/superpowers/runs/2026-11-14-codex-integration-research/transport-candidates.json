@@ -1,0 +1,661 @@
+{
+  "status": "complete-bounded-facet",
+  "sources": [
+    {
+      "source_id": "T1",
+      "title": "Queue CLI release implementation",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/cli/src/queue_cmd.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/cli/src/queue_cmd.rs"
+    },
+    {
+      "source_id": "T2",
+      "title": "Queue CLI installed-tag implementation",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.167.0/codex-rs/cli/src/queue_cmd.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.167.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.167.0/codex-rs/cli/src/queue_cmd.rs"
+    },
+    {
+      "source_id": "T3",
+      "title": "Session queue command",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_queue_commands.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_queue_commands.rs"
+    },
+    {
+      "source_id": "T4",
+      "title": "Durable queue service current release",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/ext/queue/src/service.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/ext/queue/src/service.rs"
+    },
+    {
+      "source_id": "T5",
+      "title": "Durable queue service installed tag",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.167.0/codex-rs/ext/queue/src/service.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.167.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.167.0/codex-rs/ext/queue/src/service.rs"
+    },
+    {
+      "source_id": "T6",
+      "title": "Queue extension registration",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/ext/queue/src/lib.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/ext/queue/src/lib.rs"
+    },
+    {
+      "source_id": "T7",
+      "title": "App-server extension installation",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/extensions.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/extensions.rs"
+    },
+    {
+      "source_id": "T8",
+      "title": "Queue backend construction",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/message_processor.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/message_processor.rs"
+    },
+    {
+      "source_id": "T9",
+      "title": "Embedded app-server host",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/in_process.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/in_process.rs"
+    },
+    {
+      "source_id": "T10",
+      "title": "TUI embedded state and runtime",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/lib.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/lib.rs"
+    },
+    {
+      "source_id": "T11",
+      "title": "Connection targets",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/app_server_connection.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/app_server_connection.rs"
+    },
+    {
+      "source_id": "T12",
+      "title": "Session command startup",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_archive_commands.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_archive_commands.rs"
+    },
+    {
+      "source_id": "T13",
+      "title": "Daemon selection",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/daemon_startup.rs",
+      "type": "official-tagged-source",
+      "release": "rust-v0.169.0",
+      "credibility": "primary source",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/daemon_startup.rs"
+    },
+    {
+      "source_id": "T14",
+      "title": "Codex developer commands",
+      "url": "https://learn.chatgpt.com/docs/developer-commands",
+      "type": "official-docs",
+      "document_key": "https://learn.chatgpt.com/docs/developer-commands"
+    },
+    {
+      "source_id": "T15",
+      "title": "Codex app-server",
+      "url": "https://learn.chatgpt.com/docs/app-server",
+      "type": "official-docs",
+      "document_key": "https://learn.chatgpt.com/docs/app-server"
+    },
+    {
+      "source_id": "T16",
+      "title": "Queue interruption report",
+      "url": "https://github.com/openai/codex/issues/56914",
+      "type": "upstream-issue",
+      "document_key": "https://github.com/openai/codex/issues/56914"
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "ET1",
+      "source_id": "T1",
+      "quote": "Session UUID or exact session name.",
+      "locator": "L18-35, L104-146",
+      "claim": "Queue targets an explicit UUID/name and delegates to TUI session queue client.",
+      "retrieval_id": "RT1",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET2",
+      "source_id": "T2",
+      "quote": "Session UUID or exact session name.",
+      "locator": "L18-35, L104-146",
+      "claim": "The installed 0.167.0 tag exposes the same queue flags and delegation.",
+      "retrieval_id": "RT2",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET3",
+      "source_id": "T3",
+      "quote": "Queuing must discover the shared server to avoid writing through a separate server.",
+      "locator": "L29-89, L96-176",
+      "claim": "Queue sender rejects --no-daemon, calls thread/queue/add with UserInput::Text and random client UUID; --resume only resumes NotLoaded and may warn while returning success.",
+      "retrieval_id": "RT3",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET4",
+      "source_id": "T4",
+      "quote": "Check SQLite's inexpensive data version every 10 seconds, then use the",
+      "locator": "L83-236, L378-495, L504-575",
+      "claim": "The watcher discovers changed loaded-thread queues across processes; Running/Interrupted/Shutdown/NotFound suppress dispatch. Automatic and explicit dispatch use start_turn_if_idle. Queue accepts user input only, deletes after Started, and interrupted idle cause returns.",
+      "retrieval_id": "RT4",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET5",
+      "source_id": "T5",
+      "quote": "Check SQLite's inexpensive data version every 10 seconds, then use the",
+      "locator": "L82-235, L347-456, L519-535",
+      "claim": "The installed tag has the same ten-second external watcher, Interrupted suppression and start_turn_if_idle dispatch.",
+      "retrieval_id": "RT5",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET6",
+      "source_id": "T6",
+      "quote": "tokio::spawn(QueuedItemService::watch_external_messages(watcher));",
+      "locator": "L11-18",
+      "claim": "Installing queue extension registers lifecycle contributor and starts watcher.",
+      "retrieval_id": "RT6",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET7",
+      "source_id": "T7",
+      "quote": "if let Some(queue_service) = queue_service {",
+      "locator": "L67-79",
+      "claim": "Queue installation is conditional on a provided service, without a queue feature flag here.",
+      "retrieval_id": "RT7",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET8",
+      "source_id": "T8",
+      "quote": "Queue persistence requires SQLite, so in-memory thread stores and",
+      "locator": "L331-390",
+      "claim": "Local thread store plus state_db constructs LocalQueueStore; InMemory has no queue backend. Shared MessageProcessor passes service into extensions.",
+      "retrieval_id": "RT8",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET9",
+      "source_id": "T9",
+      "quote": "replaces socket/stdio transports with bounded in-memory",
+      "locator": "L0-23, L487-512",
+      "claim": "Embedded app-server uses the same MessageProcessor, including state_db and extension setup.",
+      "retrieval_id": "RT9",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET10",
+      "source_id": "T10",
+      "quote": "AppServerTarget::Embedded => state_db::try_init(config).await.map(Some).map_err(|err| {",
+      "locator": "L404-417, L558-617, L719-742",
+      "claim": "Embedded TUI initializes a state database and passes it to in-process client; remote unix:// default resolves the home-specific control socket.",
+      "retrieval_id": "RT10",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET11",
+      "source_id": "T11",
+      "quote": "embedded sessions have no remote connection",
+      "locator": "L14-21",
+      "claim": "Embedded TUI has no reconnectable remote endpoint; local daemon and explicit remote do.",
+      "retrieval_id": "RT11",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET12",
+      "source_id": "T12",
+      "quote": "leave authentication and execution to",
+      "locator": "L208-275",
+      "claim": "Explicit remote queue leaves execution/auth to that server; implicit route chooses shared server or embedded from current config and executor env.",
+      "retrieval_id": "RT12",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET13",
+      "source_id": "T13",
+      "quote": "Some(\"executor selection (CODEX_EXEC_SERVER_URL)\")",
+      "locator": "L54-78",
+      "claim": "--no-daemon, executor env presence and profiles exclude shared-daemon selection for ordinary TUI.",
+      "retrieval_id": "RT13",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET14",
+      "source_id": "T14",
+      "quote": "Queued messages use the session\u2019s model.",
+      "locator": "Queue command details and maturity",
+      "claim": "Docs mark queue stable; --resume requires daemon/remote and warning does not change successful queue exit.",
+      "retrieval_id": "RT14",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET15",
+      "source_id": "T15",
+      "quote": "These items are persisted to the rollout and included in subsequent model requests.",
+      "locator": "Connect CLI terminal UI; protocol; Start a turn; Inject items",
+      "claim": "Remote TUI can remain visible while attached to same server as controller; turn/start toolOutput preserves tool provenance; inject_items persists without starting turn.",
+      "retrieval_id": "RT15",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    },
+    {
+      "evidence_id": "ET16",
+      "source_id": "T16",
+      "quote": "The sender can confirm acceptance but cannot tell the user that dispatch needs explicit intervention.",
+      "locator": "Issue body and linked source",
+      "claim": "Issue reports interruption pause and queue acceptance versus execution; current tagged service independently confirms suppression.",
+      "retrieval_id": "RT16",
+      "capture_tool": "web.run open/find",
+      "verbatim": false
+    }
+  ],
+  "retrievals": [
+    {
+      "retrieval_id": "RT1",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/cli/src/queue_cmd.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/cli/src/queue_cmd.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT2",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.167.0/codex-rs/cli/src/queue_cmd.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.167.0/codex-rs/cli/src/queue_cmd.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT3",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_queue_commands.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_queue_commands.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT4",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/ext/queue/src/service.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/ext/queue/src/service.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT5",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.167.0/codex-rs/ext/queue/src/service.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.167.0/codex-rs/ext/queue/src/service.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT6",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/ext/queue/src/lib.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/ext/queue/src/lib.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT7",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/extensions.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/extensions.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT8",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/message_processor.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/message_processor.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT9",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/in_process.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/in_process.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT10",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/lib.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/lib.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT11",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/app_server_connection.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/app_server_connection.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT12",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_archive_commands.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_archive_commands.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT13",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/daemon_startup.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/daemon_startup.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT14",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://learn.chatgpt.com/docs/developer-commands",
+      "document_key": "https://learn.chatgpt.com/docs/developer-commands",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT15",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://learn.chatgpt.com/docs/app-server",
+      "document_key": "https://learn.chatgpt.com/docs/app-server",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "RT16",
+      "query_id": null,
+      "tool": "web.run open/find",
+      "url": "https://github.com/openai/codex/issues/56914",
+      "document_key": "https://github.com/openai/codex/issues/56914",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "TF1",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/cli/src/queue.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/cli/src/queue.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "404 or cache miss while discovering source path",
+      "error_category": "not_found"
+    },
+    {
+      "retrieval_id": "TF2",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_queue.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/session_queue.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "404 or cache miss while discovering source path",
+      "error_category": "not_found"
+    },
+    {
+      "retrieval_id": "TF3",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/thread-store/src/local_queue.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/thread-store/src/local_queue.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "404 or cache miss while discovering source path",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "TF4",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/thread-store/src/queue.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/thread-store/src/queue.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "404 or cache miss while discovering source path",
+      "error_category": "not_found"
+    },
+    {
+      "retrieval_id": "TF5",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/request_processors/thread_queue.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/request_processors/thread_queue.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "404 or cache miss while discovering source path",
+      "error_category": "not_found"
+    },
+    {
+      "retrieval_id": "TF6",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/request_processors/thread_queue/mod.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/request_processors/thread_queue/mod.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "404 or cache miss while discovering source path",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "TX1",
+      "query_id": null,
+      "tool": "search -m extract",
+      "url": "https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/cli/src/main.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/cli/src/main.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "github and jina providers both failed network; web raw-source fallback used",
+      "error_category": "network",
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "TX2",
+      "query_id": null,
+      "tool": "search -m extract",
+      "url": "https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/cli/src/queue_cmd.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/cli/src/queue_cmd.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "github and jina providers both failed network; web raw-source fallback used",
+      "error_category": "network",
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "TX3",
+      "query_id": null,
+      "tool": "search -m extract",
+      "url": "https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/ext/queue/src/service.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/ext/queue/src/service.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "github and jina providers both failed network; web raw-source fallback used",
+      "error_category": "network",
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "TX4",
+      "query_id": null,
+      "tool": "search -m extract",
+      "url": "https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/app-server/src/message_processor.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/app-server/src/message_processor.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "github and jina providers both failed network; web raw-source fallback used",
+      "error_category": "network",
+      "verbatim": false
+    }
+  ],
+  "queries": [
+    {
+      "query_id": "TQ1",
+      "round": 1,
+      "facet_ids": [
+        "transport"
+      ],
+      "gap": "Find queue dispatch limits",
+      "family": "counterevidence",
+      "query": "site:github.com/openai/codex codex queue resume queued messages",
+      "provider": "search -m deep",
+      "status": "success",
+      "results_considered": 6,
+      "error": null,
+      "error_category": null,
+      "provider_failures": []
+    }
+  ],
+  "accounting_note": "One additional raw main.rs document successfully read to discover queue_cmd module (not retained as supporting evidence); wrong queue.rs extract returned only a GitHub 404 page, counted failed. Repeated find/open on a source counted one original document. All evidence is conservatively non-verbatim because captured through web tool.",
+  "gaps": [
+    "No authenticated live experiment authorized or run.",
+    "sqlite config/root equivalence for target and sender must be established; CODEX_HOME alone is not a proof when config overrides storage.",
+    "Queue delayed-marker cancellation and duplicate reconciliation not validated.",
+    "Direct controller socket is absent for embedded TUI; persistent queue is separate transport."
+  ],
+  "extra_retrievals": [
+    {
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/cli/src/main.rs",
+      "status": "retrieved",
+      "tool": "web.run open/find",
+      "content_scope": "partial",
+      "purpose": "discover queue_cmd module"
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/ext/queue/src/service.rs",
+      "status": "retrieved",
+      "tool": "web.run click",
+      "content_scope": "partial",
+      "purpose": "follow issue source link before current-tag check"
+    },
+    {
+      "url": "https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/app-server/tests/suite/v2/thread_queue.rs",
+      "status": "retrieved",
+      "tool": "web.run click",
+      "content_scope": "partial",
+      "purpose": "follow interruption integration-test link"
+    }
+  ]
+}

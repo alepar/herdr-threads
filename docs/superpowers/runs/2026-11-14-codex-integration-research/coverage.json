@@ -1,0 +1,222 @@
+{
+  "question": "Newer Codex features for a channel-style herdr-threads integration without send-keys; research only",
+  "initial_facets": [
+    {
+      "id": "F1",
+      "question": "Can released Codex app-server or queue deliver and idle-wake a live TUI without composer typing?",
+      "priority": "high",
+      "active": true,
+      "status": "unsearched",
+      "counterevidence": "unchecked",
+      "query_ids": [],
+      "evidence_ids": [],
+      "gap_note": ""
+    },
+    {
+      "id": "F2",
+      "question": "Can hooks, plugins, MCP, side/goals or agent messaging provide the same channel semantics?",
+      "priority": "high",
+      "active": true,
+      "status": "unsearched",
+      "counterevidence": "unchecked",
+      "query_ids": [],
+      "evidence_ids": [],
+      "gap_note": ""
+    },
+    {
+      "id": "F3",
+      "question": "What adapter design preserves canonical seat attribution, priority/idle rules and fallback?",
+      "priority": "high",
+      "active": true,
+      "status": "unsearched",
+      "counterevidence": "unchecked",
+      "query_ids": [],
+      "evidence_ids": [],
+      "gap_note": ""
+    }
+  ],
+  "facets": [
+    {
+      "id": "F1",
+      "question": "Can released Codex app-server or queue deliver and idle-wake a live TUI without composer typing?",
+      "priority": "high",
+      "active": true,
+      "status": "supported",
+      "counterevidence": "found",
+      "query_ids": [
+        "TQ1",
+        "PQ1",
+        "PQ2",
+        "PQ3",
+        "PQ4",
+        "PQ5",
+        "PQ6",
+        "PQ7",
+        "PQ8"
+      ],
+      "evidence_ids": [
+        "ET4",
+        "ET8",
+        "EP1"
+      ],
+      "gap_note": "Feasibility established from tagged source; no live test performed.",
+      "source_types": [
+        "official documentation",
+        "tagged upstream source",
+        "repository policy"
+      ],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "F2",
+      "question": "Can hooks, plugins, MCP, side/goals or agent messaging provide the same channel semantics?",
+      "priority": "high",
+      "active": true,
+      "status": "unresolved",
+      "counterevidence": "found",
+      "query_ids": [
+        "WFQ1",
+        "WFQ2",
+        "WFQ3",
+        "WFQ4",
+        "PQ1",
+        "PQ2",
+        "PQ3",
+        "PQ4",
+        "PQ5",
+        "PQ6",
+        "PQ7",
+        "PQ8"
+      ],
+      "evidence_ids": [
+        "EP2",
+        "WFE5"
+      ],
+      "gap_note": "Complete MCP notification and extension ingress implementation could not be retrieved; no blanket absence claim.",
+      "source_types": [
+        "official documentation",
+        "tagged upstream source",
+        "repository policy"
+      ],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "F3",
+      "question": "What adapter design preserves canonical seat attribution, priority/idle rules and fallback?",
+      "priority": "high",
+      "active": true,
+      "status": "unresolved",
+      "counterevidence": "found",
+      "query_ids": [
+        "TQ1",
+        "PQ1",
+        "PQ2",
+        "PQ3",
+        "PQ4",
+        "PQ5",
+        "PQ6",
+        "PQ7",
+        "PQ8"
+      ],
+      "evidence_ids": [
+        "ET4",
+        "EP1"
+      ],
+      "gap_note": "Live idle/busy races, interruption, storage mismatch, stale markers and unknown enqueue reconciliation remain unqualified.",
+      "source_types": [
+        "official documentation",
+        "tagged upstream source",
+        "repository policy"
+      ],
+      "contested_positions": [],
+      "scope_change": null
+    }
+  ],
+  "completed_rounds": [
+    {
+      "round": 1,
+      "query_ids": [
+        "TQ1",
+        "WFQ1",
+        "WFQ2",
+        "WFQ3",
+        "WFQ4",
+        "PQ1",
+        "PQ2",
+        "PQ3",
+        "PQ4",
+        "PQ5",
+        "PQ6",
+        "PQ7",
+        "PQ8"
+      ],
+      "families": [
+        "counterevidence",
+        "source-specific",
+        "literal"
+      ],
+      "target_high_priority_facet_ids": [
+        "F1",
+        "F2",
+        "F3"
+      ],
+      "new_relevant_source_ids": [],
+      "material_changes": [
+        {
+          "facet_id": "F1",
+          "kind": "status",
+          "before": "unsearched",
+          "after": "supported"
+        },
+        {
+          "facet_id": "F1",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        },
+        {
+          "facet_id": "F2",
+          "kind": "status",
+          "before": "unsearched",
+          "after": "unresolved"
+        },
+        {
+          "facet_id": "F2",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        },
+        {
+          "facet_id": "F3",
+          "kind": "status",
+          "before": "unsearched",
+          "after": "unresolved"
+        },
+        {
+          "facet_id": "F3",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        }
+      ],
+      "coverage_ready_after": false
+    }
+  ],
+  "stop": {
+    "reason": "budget-exhausted",
+    "at": "2026-11-14",
+    "round": 1,
+    "unresolved_high_priority_facet_ids": [
+      "F2",
+      "F3"
+    ],
+    "remaining_gaps": [
+      "F2: Complete incoming MCP notification and extension APIs unqualified after source retrieval failures.",
+      "F3: Authenticated isolated qualification was explicitly excluded without further approval; race, cancellation, retry and storage matching remain open."
+    ],
+    "basis": "Bounded research allocation completed with tagged source and documentation; no saturation claim, no live experiment authorized."
+  },
+  "schema_version": 1
+}

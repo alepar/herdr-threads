@@ -2108,6 +2108,11 @@ mod tests {
                 &loc("/builtin/named"),
             )
             .unwrap();
+        // The dialled session's observation worker captures the fake host (no topology), freezes
+        // and marks it down on its own schedule (ht-t302). Join the workers, which leaves both
+        // sessions registered, and reset what they wrote: this test drives the reachability.
+        rig.sessions.stop_all();
+        dialled.reachability().mark_up();
         let gate = Arc::downgrade(&rig.sessions);
         assert_eq!(gate.liveness(builtin.host_id()), HostLiveness::Open);
         let token = dialled.reachability().begin_capture();
@@ -2117,7 +2122,7 @@ mod tests {
             HostLiveness::Published(CaptureMarks {
                 started: token,
                 published: token,
-                recoveries: 0,
+                recoveries: dialled.reachability().recoveries(),
             })
         );
         dialled.reachability().mark_down();

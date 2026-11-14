@@ -1,0 +1,49 @@
+
+============================================================
+CITATION VERIFICATION: report.md
+============================================================
+
+Found 29 citations
+
+
+============================================================
+VERIFICATION SUMMARY
+============================================================
+
+DOI Verified: 0/29
+URL Verified: 0/29
+Suspicious: 0/29
+Unverified: 29/29
+
+UNVERIFIED CITATIONS (Could not check):
+  [1] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [2] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [3] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [4] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [5] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [6] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [7] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [8] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [9] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [10] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [11] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [12] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [13] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [14] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [15] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [16] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [17] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [18] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [19] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [20] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [21] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [22] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [23] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [24] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [25] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [26] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [27] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [28] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+  [29] URL check failed: URL error: [Errno -3] Temporary failure in name resolution
+
+WARNING: Less than 50% citations verified
