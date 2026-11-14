@@ -2455,8 +2455,6 @@ fn registered_requests() -> Vec<HandoffRequest> {
     registry
         .registrations()
         .iter()
-        // A harness without a launch policy has no handoff (opencode until ht-vxdp.5).
-        .filter(|registration| registration.launch_policy().is_some())
         .map(|registration| {
             let mut req = request();
             let id = registry.agent(registration.metadata().id).unwrap();

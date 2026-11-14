@@ -29,7 +29,7 @@ fn the_declaration_is_a_self_waking_push_channel() {
 fn no_composer_no_local_witness_no_hook_step_no_turn_edge() {
     assert!(OpencodeAdapter.composer_policy().is_none());
     assert!(OpencodeAdapter.hook_step().is_none());
-    assert!(OpencodeAdapter.launch_policy().is_none(), "ht-vxdp.5");
+    assert!(OpencodeAdapter.launch_policy().is_some(), "ht-vxdp.5");
     let input = crate::harness::adapter::HookInput {
         bytes: br#"{"event":"UserPromptSubmit","session_id":"ses_a","cwd":"/w"}"#.to_vec(),
         registered_event: Some("UserPromptSubmit".into()),
