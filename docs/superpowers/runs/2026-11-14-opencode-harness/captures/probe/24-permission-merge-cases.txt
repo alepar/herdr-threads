@@ -1,0 +1,3 @@
+C1 user={"herdr-threads *":"deny","*":"ask"} merged={"herdr-threads *": "allow", "*": "ask", "ht *": "allow"}
+C2 user={"*":"ask","herdr-threads probe *":"deny"} merged={"*": "ask", "herdr-threads probe *": "deny", "herdr-threads *": "allow", "ht *": "allow"}
+C3 user="ask" merged={"*": "ask", "herdr-threads *": "allow", "ht *": "allow"}

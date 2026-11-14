@@ -1,0 +1,40 @@
+
+  ┃
+  ┃  Run exactly these two bash commands, as two separate tool calls, in order: `herdr-threads probe one` then `ls /
+  ┃  etc/hostname`. Then report both outputs in one line.
+  ┃
+
+     + Thought: 153ms
+
+  ┃
+  ┃  $ herdr-threads probe one
+  ┃
+  ┃  STUB-HERDR-THREADS args=probe one session=ses_e26a4fbfcffeBGYrmY24SxXzFd
+  ┃
+
+     + Thought: 136ms
+
+  ┃
+  ┃  $ ls /etc/hostname
+  ┃
+  ┃  /etc/hostname
+  ┃
+
+     + Thought: 242ms
+
+     STUB-HERDR-THREADS args=probe one session=ses_e26a4fbfcffeBGYrmY24SxXzFd | /etc/hostname
+
+     ▣  Build · DeepSeek V4 Pro · 32.5s
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-        8.3K (1%) · $0 ctrl+p
+   30a107a133eb/scratchpad/oc-probe/proj                                                                  commands
+

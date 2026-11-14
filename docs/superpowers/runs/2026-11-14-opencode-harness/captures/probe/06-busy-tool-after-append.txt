@@ -1,0 +1,40 @@
+  ┃  $ ls /etc/hostname
+  ┃
+  ┃  /etc/hostname
+  ┃
+
+     + Thought: 242ms
+
+     STUB-HERDR-THREADS args=probe one session=ses_e26a4fbfcffeBGYrmY24SxXzFd | /etc/hostname
+
+     ▣  Build · DeepSeek V4 Pro · 32.5s
+
+  ┃
+  ┃  hi
+  ┃
+
+     + Thought: 6ms
+
+     PINEAPPLE
+
+     ▣  Build · DeepSeek V4 Pro · 1.1s
+
+  ┃
+  ┃  Run the bash command `herdr-threads sleep 12` and tell me its output.
+  ┃
+
+     + Thought: 405ms
+
+  ┃
+  ┃  ⠼ herdr-threads sleep 12
+  ┃
+
+     ▣  Build · DeepSeek V4 Pro
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                                                          8.3K (1%) · $0.01  ctrl+p commands
+

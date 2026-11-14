@@ -1,0 +1,466 @@
+{"t":1794647972830,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794647972830,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794647972830,"kind":"config.after","data":{"permission":{"bash":{"*":"ask","herdr-threads *":"allow","ht *":"allow"}}}}
+{"t":1794647983110,"kind":"event","data":{"type":"session.created","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","info":{"id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","slug":"gentle-squid","version":"1.18.1","projectID":"global","directory":"$SCRATCH/oc-probe/proj","path":"","title":"New session - 2026-11-14T09:19:43.107Z","agent":"build","model":{"id":"deepseek/deepseek-v4-pro","providerID":"openrouter"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1794647983107,"updated":1794647983107}}}}}
+{"t":1794647983118,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","agent":"build","msgId":"msg_1d95b040c001zaEPWCOKeuulwS","parts":[{"type":"text","text":"Run exactly these two bash commands, as two separate tool calls, in order: `herdr-threads probe one` then `ls /etc/hostn"}]}}
+{"t":1794647983119,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b040c001zaEPWCOKeuulwS","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794647983126,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794647983128,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b0417001yemvrz9YRVnwTX","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794647983216,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b040c001zaEPWCOKeuulwS","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794647983772,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794647985052,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","args":{"command":"herdr-threads probe one"}}}
+{"t":1794647985075,"kind":"shell.env","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","callID":"call_883215febe5d47a5a6dfe96d"}}
+{"t":1794647985086,"kind":"tool.after","data":{"tool":"bash","sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","output":"STUB-HERDR-THREADS args=probe one session=ses_e26a4fbfcffeBGYrmY24SxXzFd\n"}}
+{"t":1794647985098,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b0417001yemvrz9YRVnwTX","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"tool-calls"}}
+{"t":1794647985112,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b0417001yemvrz9YRVnwTX","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"tool-calls"}}
+{"t":1794647985113,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794647985115,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b0bda001NOC1awQw1EdnDQ","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794647985134,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794647985151,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b040c001zaEPWCOKeuulwS","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794647986289,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","args":{"command":"ls /etc/hostname"}}}
+{"t":1794647986290,"kind":"event","data":{"type":"permission.asked","p":{"id":"per_1d95b1072001yQAfqXS3FV3m19","sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","permission":"bash","patterns":["ls /etc/hostname"],"metadata":{"command":"ls /etc/hostname"},"always":["ls *"],"tool":{"messageID":"msg_1d95b0bda001NOC1awQw1EdnDQ","callID":"call_a6915bab2a0046439eeded7c"}}}}
+{"t":1794648014195,"kind":"event","data":{"type":"permission.replied","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","requestID":"per_1d95b1072001yQAfqXS3FV3m19","reply":"once"}}}
+{"t":1794648014195,"kind":"shell.env","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","callID":"call_a6915bab2a0046439eeded7c"}}
+{"t":1794648014205,"kind":"tool.after","data":{"tool":"bash","sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","output":"/etc/hostname\n"}}
+{"t":1794648014222,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b0bda001NOC1awQw1EdnDQ","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"tool-calls"}}
+{"t":1794648014230,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b0bda001NOC1awQw1EdnDQ","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"tool-calls"}}
+{"t":1794648014230,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648014232,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b7d98001Tdzf4dmgYG4caE","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648014249,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648014260,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b040c001zaEPWCOKeuulwS","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648015641,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b7d98001Tdzf4dmgYG4caE","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648015651,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b7d98001Tdzf4dmgYG4caE","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648015652,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648015653,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"idle"}}}}
+{"t":1794648015653,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}}
+{"t":1794648015661,"kind":"event","data":{"type":"message.updated","id":"msg_1d95b040c001zaEPWCOKeuulwS","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648032954,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","msgId":"msg_1d95bc6ba001YdEQIRa3Uetov9","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST1 in tTEST from sTEST:\n  Reply with the single word PINEAPPL"}]}}
+{"t":1794648032955,"kind":"event","data":{"type":"message.updated","id":"msg_1d95bc6ba001YdEQIRa3Uetov9","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648032958,"kind":"append","data":{"why":"ctl","id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":200,"dataKeys":["info","parts"],"infoId":"msg_1d95bc6ba001YdEQIRa3Uetov9","infoRole":"user","parts":[{"id":"prt_1d95bc6ba002LOzCOUVZUMDBqu","type":"text","synthetic":true}]}}
+{"t":1794648043193,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","agent":"build","msgId":"msg_1d95beeb9001JehyrW71BR3ovk","parts":[{"type":"text","text":"hi"}]}}
+{"t":1794648043195,"kind":"event","data":{"type":"message.updated","id":"msg_1d95beeb9001JehyrW71BR3ovk","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648043198,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648043199,"kind":"event","data":{"type":"message.updated","id":"msg_1d95beebe001OLnElk8mlXSLR1","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648043209,"kind":"event","data":{"type":"message.updated","id":"msg_1d95beeb9001JehyrW71BR3ovk","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648043210,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648044300,"kind":"event","data":{"type":"message.updated","id":"msg_1d95beebe001OLnElk8mlXSLR1","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648044312,"kind":"event","data":{"type":"message.updated","id":"msg_1d95beebe001OLnElk8mlXSLR1","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648044312,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648044314,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"idle"}}}}
+{"t":1794648044314,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}}
+{"t":1794648044329,"kind":"event","data":{"type":"message.updated","id":"msg_1d95beeb9001JehyrW71BR3ovk","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648068684,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","agent":"build","msgId":"msg_1d95c524c0019Hl4L25kWuxpFl","parts":[{"type":"text","text":"Run the bash command `herdr-threads sleep 12` and tell me its output."}]}}
+{"t":1794648068686,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c524c0019Hl4L25kWuxpFl","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648068690,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648068692,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c52530018kdJZqy6ZU0Lzf","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648068704,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c524c0019Hl4L25kWuxpFl","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648068705,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648070136,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","args":{"command":"herdr-threads sleep 12","timeout":30000}}}
+{"t":1794648070137,"kind":"shell.env","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","callID":"call_c285a3f4c36e4bdba1872e0c"}}
+{"t":1794648072652,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","msgId":"msg_1d95c61cc001Z0tayKUM7TakrD","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST2 in tTEST from sTEST:\n  Also include the single word MANGO "}]}}
+{"t":1794648072653,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c61cc001Z0tayKUM7TakrD","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648072656,"kind":"append","data":{"why":"ctl","id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":200,"dataKeys":["info","parts"],"infoId":"msg_1d95c61cc001Z0tayKUM7TakrD","infoRole":"user","parts":[{"id":"prt_1d95c61cc002W42DJOiMOOGioG","type":"text","synthetic":true}]}}
+{"t":1794648082146,"kind":"tool.after","data":{"tool":"bash","sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","output":"STUB-HERDR-THREADS args=sleep 12 session=ses_e26a4fbfcffeBGYrmY24SxXzFd\n"}}
+{"t":1794648082156,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c52530018kdJZqy6ZU0Lzf","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"tool-calls"}}
+{"t":1794648082161,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c52530018kdJZqy6ZU0Lzf","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"tool-calls"}}
+{"t":1794648082162,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648082164,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c86f30011J1hlAKqlEfAc6","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648082180,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648082192,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c524c0019Hl4L25kWuxpFl","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648083490,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c86f30011J1hlAKqlEfAc6","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648083500,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c86f30011J1hlAKqlEfAc6","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648083500,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648083501,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"idle"}}}}
+{"t":1794648083501,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}}
+{"t":1794648083507,"kind":"event","data":{"type":"message.updated","id":"msg_1d95c61cc001Z0tayKUM7TakrD","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648110838,"kind":"armtext","data":{"bound":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648111859,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","agent":"build","msgId":"msg_1d95cfaf20017SQIH1ay0bN48s","parts":[{"type":"text","text":"Write four sentences about rivers. No tools."}]}}
+{"t":1794648111860,"kind":"event","data":{"type":"message.updated","id":"msg_1d95cfaf20017SQIH1ay0bN48s","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648111867,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","msgId":"msg_1d95cfafa00114xZs61ztqUNkq","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST3 in tTEST from sTEST:\n  Reply with the single word KIWI."}]}}
+{"t":1794648111868,"kind":"event","data":{"type":"message.updated","id":"msg_1d95cfafa00114xZs61ztqUNkq","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648111871,"kind":"append","data":{"why":"armtext","id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":200,"dataKeys":["info","parts"],"infoId":"msg_1d95cfafa00114xZs61ztqUNkq","infoRole":"user","parts":[{"id":"prt_1d95cfafb001MATXRNsvaflFXB","type":"text","synthetic":true}]}}
+{"t":1794648111871,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648111873,"kind":"event","data":{"type":"message.updated","id":"msg_1d95cfb00001NSQd4o9vLGRnP7","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648111883,"kind":"event","data":{"type":"message.updated","id":"msg_1d95cfafa00114xZs61ztqUNkq","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648111885,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648113458,"kind":"event","data":{"type":"message.updated","id":"msg_1d95cfb00001NSQd4o9vLGRnP7","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648113470,"kind":"event","data":{"type":"message.updated","id":"msg_1d95cfb00001NSQd4o9vLGRnP7","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648113470,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648113472,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"idle"}}}}
+{"t":1794648113472,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}}
+{"t":1794648113485,"kind":"event","data":{"type":"message.updated","id":"msg_1d95cfafa00114xZs61ztqUNkq","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648177104,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648177104,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648177104,"kind":"config.after","data":{"permission":{"bash":{"*":"ask","herdr-threads *":"allow","ht *":"allow"}}}}
+{"t":1794648182510,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","agent":"build","msgId":"msg_1d95e0eec001xZzCBRJ0S05GV3","parts":[{"type":"text","text":"Write ten sentences about mountains. No tools."}]}}
+{"t":1794648182514,"kind":"event","data":{"type":"message.updated","id":"msg_1d95e0eec001xZzCBRJ0S05GV3","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648182520,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648182523,"kind":"event","data":{"type":"message.updated","id":"msg_1d95e0efa001PUWkcwHFNXrmsb","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648182545,"kind":"event","data":{"type":"message.updated","id":"msg_1d95e0eec001xZzCBRJ0S05GV3","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648183091,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648183565,"kind":"armtext","data":{"bound":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648184227,"kind":"armtext.fire","data":{"messageID":"msg_1d95e0efa001PUWkcwHFNXrmsb","delay":1500}}
+{"t":1794648185179,"kind":"event","data":{"type":"message.updated","id":"msg_1d95e0efa001PUWkcwHFNXrmsb","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648185189,"kind":"event","data":{"type":"message.updated","id":"msg_1d95e0efa001PUWkcwHFNXrmsb","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648185190,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648185191,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"idle"}}}}
+{"t":1794648185191,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}}
+{"t":1794648185199,"kind":"event","data":{"type":"message.updated","id":"msg_1d95e0eec001xZzCBRJ0S05GV3","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648185742,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","msgId":"msg_1d95e1b8e001Yboa3M1WnuQ78r","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST4 in tTEST from sTEST:\n  Reply with the single word KIWI."}]}}
+{"t":1794648185743,"kind":"event","data":{"type":"message.updated","id":"msg_1d95e1b8e001Yboa3M1WnuQ78r","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648185746,"kind":"append","data":{"why":"armtext","id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":200,"dataKeys":["info","parts"],"infoId":"msg_1d95e1b8e001Yboa3M1WnuQ78r","infoRole":"user","parts":[{"id":"prt_1d95e1b8e002QVJ1EV2w4Yd6wv","type":"text","synthetic":true}]}}
+{"t":1794648247338,"kind":"armtext","data":{"bound":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648248259,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","agent":"build","msgId":"msg_1d95f0fc2001e9K90waHYVFZMh","parts":[{"type":"text","text":"Write twelve sentences about forests. No tools."}]}}
+{"t":1794648248260,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f0fc2001e9K90waHYVFZMh","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648248263,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648248264,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f0fc8001DL1QAYMK0gLw07","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648248278,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f0fc2001e9K90waHYVFZMh","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648248280,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648249025,"kind":"armtext.fire","data":{"messageID":"msg_1d95f0fc8001DL1QAYMK0gLw07","delay":150}}
+{"t":1794648249181,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","msgId":"msg_1d95f135c001OyI11sKMM5ZFZ2","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST5 in tTEST from sTEST:\n  Reply with the single word GUAVA."}]}}
+{"t":1794648249182,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f135c001OyI11sKMM5ZFZ2","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648249184,"kind":"append","data":{"why":"armtext","id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":200,"dataKeys":["info","parts"],"infoId":"msg_1d95f135c001OyI11sKMM5ZFZ2","infoRole":"user","parts":[{"id":"prt_1d95f135d0011a2RXE9i1AhcHy","type":"text","synthetic":true}]}}
+{"t":1794648250403,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f0fc8001DL1QAYMK0gLw07","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648250414,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f0fc8001DL1QAYMK0gLw07","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648250414,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648250416,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f182f0017h3AYHcOqvxGOR","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648250431,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648250442,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f0fc2001e9K90waHYVFZMh","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648251458,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f182f0017h3AYHcOqvxGOR","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648251465,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f182f0017h3AYHcOqvxGOR","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648251465,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648251468,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"idle"}}}}
+{"t":1794648251468,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}}
+{"t":1794648251482,"kind":"event","data":{"type":"message.updated","id":"msg_1d95f135c001OyI11sKMM5ZFZ2","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648292034,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","msgId":"msg_1d95fbac1001uzDWLNjjF6LKp6","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST6 in tTEST from sTEST [p0]:\n  Reply with the single word PAP"}]}}
+{"t":1794648292035,"kind":"event","data":{"type":"message.updated","id":"msg_1d95fbac1001uzDWLNjjF6LKp6","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648292038,"kind":"append","data":{"why":"ctl-appendwake","id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":200,"dataKeys":["info","parts"],"infoId":"msg_1d95fbac1001uzDWLNjjF6LKp6","infoRole":"user","parts":[{"id":"prt_1d95fbac2001qmg4vLuHoOEUQo","type":"text","synthetic":true}]}}
+{"t":1794648292040,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","msgId":"msg_1d95fbac80011IDD32zf36rY7E","parts":[{"type":"text","text":"herdr-threads: wake up"}]}}
+{"t":1794648292041,"kind":"event","data":{"type":"message.updated","id":"msg_1d95fbac80011IDD32zf36rY7E","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648292043,"kind":"wake","data":{"id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":204,"data":{}}}
+{"t":1794648292043,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648292045,"kind":"event","data":{"type":"message.updated","id":"msg_1d95fbacc001i4yLdwiBXGW7Yc","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648292056,"kind":"event","data":{"type":"message.updated","id":"msg_1d95fbac80011IDD32zf36rY7E","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648292057,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648292829,"kind":"event","data":{"type":"message.updated","id":"msg_1d95fbacc001i4yLdwiBXGW7Yc","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648292834,"kind":"event","data":{"type":"message.updated","id":"msg_1d95fbacc001i4yLdwiBXGW7Yc","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648292835,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648292836,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"idle"}}}}
+{"t":1794648292836,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}}
+{"t":1794648292848,"kind":"event","data":{"type":"message.updated","id":"msg_1d95fbac80011IDD32zf36rY7E","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648325931,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","msgId":"msg_1d9603f2b001xAwXdN137X9InL","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST7 in tTEST from sTEST [p0]:\n  Reply with the single word LYC"}]}}
+{"t":1794648325932,"kind":"event","data":{"type":"message.updated","id":"msg_1d9603f2b001xAwXdN137X9InL","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648325935,"kind":"append","data":{"why":"ctl-appendwake","id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":200,"dataKeys":["info","parts"],"infoId":"msg_1d9603f2b001xAwXdN137X9InL","infoRole":"user","parts":[{"id":"prt_1d9603f2b0027MNctEA6QTwsis","type":"text","synthetic":true}]}}
+{"t":1794648325937,"kind":"chat.message","data":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","msgId":"msg_1d9603f30001Om0tewvqkJc5PM","parts":[{"type":"text","text":"herdr-threads: wake up"}]}}
+{"t":1794648325937,"kind":"event","data":{"type":"message.updated","id":"msg_1d9603f30001Om0tewvqkJc5PM","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648325940,"kind":"wake","data":{"id":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":204,"data":{}}}
+{"t":1794648325940,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648325941,"kind":"event","data":{"type":"message.updated","id":"msg_1d9603f35001VZIaIFTJTv3Fyw","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648325952,"kind":"event","data":{"type":"message.updated","id":"msg_1d9603f30001Om0tewvqkJc5PM","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648325953,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648327223,"kind":"event","data":{"type":"message.updated","id":"msg_1d9603f35001VZIaIFTJTv3Fyw","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648327236,"kind":"event","data":{"type":"message.updated","id":"msg_1d9603f35001VZIaIFTJTv3Fyw","role":"assistant","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd","finish":"stop"}}
+{"t":1794648327236,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"busy"}}}}
+{"t":1794648327239,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd","status":{"type":"idle"}}}}
+{"t":1794648327239,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}}
+{"t":1794648327249,"kind":"event","data":{"type":"message.updated","id":"msg_1d9603f30001Om0tewvqkJc5PM","role":"user","sid":"ses_e26a4fbfcffeBGYrmY24SxXzFd"}}
+{"t":1794648344015,"kind":"messages","data":{"n":27,"list":[{"id":"msg_1d95b040c001zaEPWCOKeuulwS","role":"user","parts":[{"type":"text","text":"Run exactly these two bash commands, as two separate tool calls, in order: `herdr-threads probe one` then `ls /etc/hostname`. Then report both outputs in one li"}]},{"id":"msg_1d95b0417001yemvrz9YRVnwTX","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The user wants me to run two bash commands as separate tool calls, in order. Let me run the first one first."},{"type":"tool","tool":"bash"},{"type":"step-finish"}]},{"id":"msg_1d95b0bda001NOC1awQw1EdnDQ","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"First command succeeded. Now run the second command."},{"type":"tool","tool":"bash"},{"type":"step-finish"}]},{"id":"msg_1d95b7d98001Tdzf4dmgYG4caE","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"Both commands have run successfully. Let me report both outputs in one line.\n\nOutput 1: STUB-HERDR-THREADS args=probe one session=ses_e26a4fbfcffeBGYrmY24SxXzFd"},{"type":"text","text":"`STUB-HERDR-THREADS args=probe one session=ses_e26a4fbfcffeBGYrmY24SxXzFd` | `/etc/hostname`"},{"type":"step-finish"}]},{"id":"msg_1d95bc6ba001YdEQIRa3Uetov9","role":"user","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST1 in tTEST from sTEST:\n  Reply with the single word PINEAPPLE."}]},{"id":"msg_1d95beeb9001JehyrW71BR3ovk","role":"user","parts":[{"type":"text","text":"hi"}]},{"id":"msg_1d95beebe001OLnElk8mlXSLR1","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The user (via herdr-threads) is sending a message asking me to reply with the single word \"PINEAPPLE\"."},{"type":"text","text":"PINEAPPLE"},{"type":"step-finish"}]},{"id":"msg_1d95c524c0019Hl4L25kWuxpFl","role":"user","parts":[{"type":"text","text":"Run the bash command `herdr-threads sleep 12` and tell me its output."}]},{"id":"msg_1d95c52530018kdJZqy6ZU0Lzf","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The user wants me to run `herdr-threads sleep 12` and report its output."},{"type":"tool","tool":"bash"},{"type":"step-finish"}]},{"id":"msg_1d95c61cc001Z0tayKUM7TakrD","role":"user","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST2 in tTEST from sTEST:\n  Also include the single word MANGO in your reply."}]},{"id":"msg_1d95c86f30011J1hlAKqlEfAc6","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The command output was `STUB-HERDR-THREADS args=sleep 12 session=ses_e26a4fbfcffeBGYrmY24SxXzFd`.\n\nNow the herdr-threads message says to also include \"MANGO\" in"},{"type":"text","text":"`STUB-HERDR-THREADS args=sleep 12 session=ses_e26a4fbfcffeBGYrmY24SxXzFd` MANGO"},{"type":"step-finish"}]},{"id":"msg_1d95cfaf20017SQIH1ay0bN48s","role":"user","parts":[{"type":"text","text":"Write four sentences about rivers. No tools."}]},{"id":"msg_1d95cfafa00114xZs61ztqUNkq","role":"user","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST3 in tTEST from sTEST:\n  Reply with the single word KIWI."}]},{"id":"msg_1d95cfb00001NSQd4o9vLGRnP7","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The user wants me to write four sentences about rivers, and also the herdr-threads message says to reply with the single word KIWI. I need to handle both. Let m"},{"type":"text","text":"Rivers carve landscapes over millennia, transporting sediment and nutrients from mountains to seas. Freshwater ecosystems along riverbanks support a vast divers"},{"type":"step-finish"}]},{"id":"msg_1d95e0eec001xZzCBRJ0S05GV3","role":"user","parts":[{"type":"text","text":"Write ten sentences about mountains. No tools."}]},{"id":"msg_1d95e0efa001PUWkcwHFNXrmsb","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The user wants ten sentences about mountains. No tools."},{"type":"text","text":"Mountains form through tectonic collisions when continental plates push against each other. The Himalayas continue rising today as the Indian plate presses into"},{"type":"step-finish"}]},{"id":"msg_1d95e1b8e001Yboa3M1WnuQ78r","role":"user","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST4 in tTEST from sTEST:\n  Reply with the single word KIWI."}]},{"id":"msg_1d95f0fc2001e9K90waHYVFZMh","role":"user","parts":[{"type":"text","text":"Write twelve sentences about forests. No tools."}]},{"id":"msg_1d95f0fc8001DL1QAYMK0gLw07","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The herdr-threads message says to reply with the single word KIWI, and the user wants twelve sentences about forests. No tools."},{"type":"text","text":"KIWI\n\nForests cover roughly one-third of Earth's land surface and host the majority of terrestrial biodiversity. Tropical rainforests pulse with life across eve"},{"type":"step-finish"}]},{"id":"msg_1d95f135c001OyI11sKMM5ZFZ2","role":"user","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST5 in tTEST from sTEST:\n  Reply with the single word GUAVA."}]},{"id":"msg_1d95f182f0017h3AYHcOqvxGOR","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The herdr-threads message asks me to reply with the single word GUAVA."},{"type":"text","text":"GUAVA"},{"type":"step-finish"}]},{"id":"msg_1d95fbac1001uzDWLNjjF6LKp6","role":"user","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST6 in tTEST from sTEST [p0]:\n  Reply with the single word PAPAYA."}]},{"id":"msg_1d95fbac80011IDD32zf36rY7E","role":"user","parts":[{"type":"text","text":"herdr-threads: wake up"}]},{"id":"msg_1d95fbacc001i4yLdwiBXGW7Yc","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The herdr-threads message asks me to reply with the single word PAPAYA."},{"type":"text","text":"PAPAYA"},{"type":"step-finish"}]},{"id":"msg_1d9603f2b001xAwXdN137X9InL","role":"user","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST7 in tTEST from sTEST [p0]:\n  Reply with the single word LYCHEE."}]},{"id":"msg_1d9603f30001Om0tewvqkJc5PM","role":"user","parts":[{"type":"text","text":"herdr-threads: wake up"}]},{"id":"msg_1d9603f35001VZIaIFTJTv3Fyw","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"The herdr-threads message asks me to reply with the single word LYCHEE."},{"type":"text","text":"LYCHEE"},{"type":"step-finish"}]}]}}
+{"t":1794648367706,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648367706,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648367706,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648376373,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648376374,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648376374,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648387707,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648387707,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648387707,"kind":"config.after","data":{"permission":{"bash":{"*":"ask","herdr-threads *":"allow","ht *":"allow"}}}}
+{"t":1794648393079,"kind":"event","data":{"type":"session.created","p":{"sessionID":"ses_e269eba8bffeZObu3JEykdTtOJ","info":{"id":"ses_e269eba8bffeZObu3JEykdTtOJ","slug":"glowing-wolf","version":"1.18.1","projectID":"global","directory":"$SCRATCH/oc-probe/proj","path":"","title":"New session - 2026-11-14T09:26:33.076Z","agent":"build","model":{"id":"deepseek/deepseek-v4-pro","providerID":"openrouter"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1794648393076,"updated":1794648393076}}}}}
+{"t":1794648393090,"kind":"chat.message","data":{"sessionID":"ses_e269eba8bffeZObu3JEykdTtOJ","agent":"build","msgId":"msg_1d9614580001V5gUnww1XR91xF","parts":[{"type":"text","text":"Say OK."}]}}
+{"t":1794648393093,"kind":"event","data":{"type":"message.updated","id":"msg_1d9614580001V5gUnww1XR91xF","role":"user","sid":"ses_e269eba8bffeZObu3JEykdTtOJ"}}
+{"t":1794648393103,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269eba8bffeZObu3JEykdTtOJ","status":{"type":"busy"}}}}
+{"t":1794648393106,"kind":"event","data":{"type":"message.updated","id":"msg_1d9614591001sHlo7yowSduUGM","role":"assistant","sid":"ses_e269eba8bffeZObu3JEykdTtOJ"}}
+{"t":1794648393122,"kind":"system","data":{"sessionID":"ses_e269eba8bffeZObu3JEykdTtOJ","lines":[]}}
+{"t":1794648393164,"kind":"event","data":{"type":"message.updated","id":"msg_1d9614580001V5gUnww1XR91xF","role":"user","sid":"ses_e269eba8bffeZObu3JEykdTtOJ"}}
+{"t":1794648393757,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269eba8bffeZObu3JEykdTtOJ","status":{"type":"busy"}}}}
+{"t":1794648393758,"kind":"system","data":{"sessionID":"ses_e269eba8bffeZObu3JEykdTtOJ","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648395157,"kind":"event","data":{"type":"message.updated","id":"msg_1d9614591001sHlo7yowSduUGM","role":"assistant","sid":"ses_e269eba8bffeZObu3JEykdTtOJ","finish":"stop"}}
+{"t":1794648395172,"kind":"event","data":{"type":"message.updated","id":"msg_1d9614591001sHlo7yowSduUGM","role":"assistant","sid":"ses_e269eba8bffeZObu3JEykdTtOJ","finish":"stop"}}
+{"t":1794648395172,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269eba8bffeZObu3JEykdTtOJ","status":{"type":"busy"}}}}
+{"t":1794648395174,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269eba8bffeZObu3JEykdTtOJ","status":{"type":"idle"}}}}
+{"t":1794648395174,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e269eba8bffeZObu3JEykdTtOJ"}}}
+{"t":1794648395190,"kind":"event","data":{"type":"message.updated","id":"msg_1d9614580001V5gUnww1XR91xF","role":"user","sid":"ses_e269eba8bffeZObu3JEykdTtOJ"}}
+{"t":1794648415131,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648415131,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648415131,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648415668,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648415668,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648415668,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648416228,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648416228,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648416228,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648423722,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648423722,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648423722,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648424286,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648424286,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648424286,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648424822,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648424822,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648424822,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648425368,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648425369,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648425369,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648425913,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648425913,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648425913,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648426481,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648426482,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648426482,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648427038,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648427038,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648427038,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648427585,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648427586,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648427586,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648428136,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648428136,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648428136,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648428701,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648428702,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648428702,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648429246,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648429246,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648429246,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648429793,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648429793,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648429793,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648437300,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648437300,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648437300,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648437851,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648437851,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648437851,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648438409,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648438410,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648438410,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648438967,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648438967,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648438967,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648439486,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648439486,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648439486,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648440029,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648440029,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648440029,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648440548,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648440548,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648440548,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648441094,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648441094,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648441094,"kind":"config.after","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648454437,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648551011,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648551011,"kind":"config.before","data":{"permission":{"bash":{"herdr-threads *":"deny","*":"ask"}}}}
+{"t":1794648551011,"kind":"config.after","data":{"permission":{"bash":{"herdr-threads *":"allow","*":"ask","ht *":"allow"}}}}
+{"t":1794648551903,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648551903,"kind":"config.before","data":{"permission":{"bash":{"*":"ask","herdr-threads probe *":"deny"}}}}
+{"t":1794648551903,"kind":"config.after","data":{"permission":{"bash":{"*":"ask","herdr-threads probe *":"deny","herdr-threads *":"allow","ht *":"allow"}}}}
+{"t":1794648552651,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648552651,"kind":"config.before","data":{"permission":{"bash":"ask"}}}
+{"t":1794648552651,"kind":"config.after","data":{"permission":{"bash":{"*":"ask","herdr-threads *":"allow","ht *":"allow"}}}}
+{"t":1794648563066,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648563066,"kind":"config.before","data":{"permission":{"bash":{"herdr-threads *":"deny","*":"ask"}}}}
+{"t":1794648563066,"kind":"config.after","data":{"permission":{"bash":{"herdr-threads *":"allow","*":"ask","ht *":"allow"}}}}
+{"t":1794648568060,"kind":"event","data":{"type":"session.created","p":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","info":{"id":"ses_e269c0f07ffeQojQPAbHYwIsgZ","slug":"silent-meadow","version":"1.18.1","projectID":"global","directory":"$SCRATCH/oc-probe/proj","path":"","title":"New session - 2026-11-14T09:29:28.056Z","agent":"build","model":{"id":"deepseek/deepseek-v4-pro","providerID":"openrouter"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1794648568056,"updated":1794648568056}}}}}
+{"t":1794648568075,"kind":"chat.message","data":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","agent":"build","msgId":"msg_1d963f109001m7A1DDv2HDZKyG","parts":[{"type":"text","text":"Run the bash command `herdr-threads probe one` and show its output."}]}}
+{"t":1794648568078,"kind":"event","data":{"type":"message.updated","id":"msg_1d963f109001m7A1DDv2HDZKyG","role":"user","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ"}}
+{"t":1794648568090,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","status":{"type":"busy"}}}}
+{"t":1794648568096,"kind":"event","data":{"type":"message.updated","id":"msg_1d963f11e001palrvEU5k2yJP1","role":"assistant","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ"}}
+{"t":1794648568155,"kind":"system","data":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","lines":[]}}
+{"t":1794648568230,"kind":"event","data":{"type":"message.updated","id":"msg_1d963f109001m7A1DDv2HDZKyG","role":"user","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ"}}
+{"t":1794648569069,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","status":{"type":"busy"}}}}
+{"t":1794648569070,"kind":"system","data":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648571061,"kind":"tool.before","data":{"tool":"skill","sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","args":{"name":"herdr-threads"}}}
+{"t":1794648571098,"kind":"tool.after","data":{"tool":"skill","sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","output":"<skill_content name=\"herdr-threads\">\n# Skill: herdr-threads\n\nBody from home/.agents/skills.\n\nBase directory for this skill: $SCRATCH/oc-probe/home/.agents/skills/herdr-threads\nRelative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\nNote: file list is sampled.\n\n<skil"}}
+{"t":1794648571123,"kind":"event","data":{"type":"message.updated","id":"msg_1d963f11e001palrvEU5k2yJP1","role":"assistant","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ","finish":"tool-calls"}}
+{"t":1794648571135,"kind":"event","data":{"type":"message.updated","id":"msg_1d963f11e001palrvEU5k2yJP1","role":"assistant","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ","finish":"tool-calls"}}
+{"t":1794648571136,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","status":{"type":"busy"}}}}
+{"t":1794648571138,"kind":"event","data":{"type":"message.updated","id":"msg_1d963fd01001FX3n0d4vhv0aqj","role":"assistant","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ"}}
+{"t":1794648571157,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","status":{"type":"busy"}}}}
+{"t":1794648571164,"kind":"system","data":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648571173,"kind":"event","data":{"type":"message.updated","id":"msg_1d963f109001m7A1DDv2HDZKyG","role":"user","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ"}}
+{"t":1794648573205,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","args":{"command":"herdr-threads probe one","timeout":30000}}}
+{"t":1794648573244,"kind":"event","data":{"type":"permission.asked","p":{"id":"per_1d964053c001WZPQruuF225YM4","sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","permission":"bash","patterns":["herdr-threads probe one"],"metadata":{"command":"herdr-threads probe one"},"always":["herdr-threads *"],"tool":{"messageID":"msg_1d963fd01001FX3n0d4vhv0aqj","callID":"call_3b00b0f00b9244d898f855ac"}}}}
+{"t":1794648583007,"kind":"event","data":{"type":"permission.replied","p":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","requestID":"per_1d964053c001WZPQruuF225YM4","reply":"reject"}}}
+{"t":1794648583023,"kind":"event","data":{"type":"message.updated","id":"msg_1d963fd01001FX3n0d4vhv0aqj","role":"assistant","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ","finish":"tool-calls"}}
+{"t":1794648583031,"kind":"event","data":{"type":"message.updated","id":"msg_1d963fd01001FX3n0d4vhv0aqj","role":"assistant","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ","finish":"tool-calls"}}
+{"t":1794648583033,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ","status":{"type":"idle"}}}}
+{"t":1794648583033,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e269c0f07ffeQojQPAbHYwIsgZ"}}}
+{"t":1794648583053,"kind":"event","data":{"type":"message.updated","id":"msg_1d963f109001m7A1DDv2HDZKyG","role":"user","sid":"ses_e269c0f07ffeQojQPAbHYwIsgZ"}}
+{"t":1794648588782,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648588782,"kind":"config.before","data":{"permission":{"bash":{"*":"ask","herdr-threads probe *":"deny"}}}}
+{"t":1794648588782,"kind":"config.after","data":{"permission":{"bash":{"*":"ask","herdr-threads probe *":"deny","herdr-threads *":"allow","ht *":"allow"}}}}
+{"t":1794648594149,"kind":"event","data":{"type":"session.created","p":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","info":{"id":"ses_e269ba91effejjufQKIOr6wWj0","slug":"cosmic-nebula","version":"1.18.1","projectID":"global","directory":"$SCRATCH/oc-probe/proj","path":"","title":"New session - 2026-11-14T09:29:54.145Z","agent":"build","model":{"id":"deepseek/deepseek-v4-pro","providerID":"openrouter"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1794648594145,"updated":1794648594145}}}}}
+{"t":1794648594159,"kind":"chat.message","data":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","agent":"build","msgId":"msg_1d96456ed0011KUj6Kyz4DF3KM","parts":[{"type":"text","text":"Run the bash command `herdr-threads probe one` and show its output."}]}}
+{"t":1794648594161,"kind":"event","data":{"type":"message.updated","id":"msg_1d96456ed0011KUj6Kyz4DF3KM","role":"user","sid":"ses_e269ba91effejjufQKIOr6wWj0"}}
+{"t":1794648594168,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","status":{"type":"busy"}}}}
+{"t":1794648594171,"kind":"event","data":{"type":"message.updated","id":"msg_1d96456fa001beyUiWYyUlaMEt","role":"assistant","sid":"ses_e269ba91effejjufQKIOr6wWj0"}}
+{"t":1794648594197,"kind":"system","data":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","lines":[]}}
+{"t":1794648594236,"kind":"event","data":{"type":"message.updated","id":"msg_1d96456ed0011KUj6Kyz4DF3KM","role":"user","sid":"ses_e269ba91effejjufQKIOr6wWj0"}}
+{"t":1794648594871,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","status":{"type":"busy"}}}}
+{"t":1794648594872,"kind":"system","data":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.claude herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.claude/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648596192,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e269ba91effejjufQKIOr6wWj0","args":{"command":"herdr-threads probe one","timeout":30000}}}
+{"t":1794648596225,"kind":"shell.env","data":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","callID":"call_0b337e2d8acf41d3b693a799"}}
+{"t":1794648596243,"kind":"tool.after","data":{"tool":"bash","sessionID":"ses_e269ba91effejjufQKIOr6wWj0","output":"STUB-HERDR-THREADS args=probe one session=ses_e269ba91effejjufQKIOr6wWj0\n"}}
+{"t":1794648596275,"kind":"event","data":{"type":"message.updated","id":"msg_1d96456fa001beyUiWYyUlaMEt","role":"assistant","sid":"ses_e269ba91effejjufQKIOr6wWj0","finish":"tool-calls"}}
+{"t":1794648596291,"kind":"event","data":{"type":"message.updated","id":"msg_1d96456fa001beyUiWYyUlaMEt","role":"assistant","sid":"ses_e269ba91effejjufQKIOr6wWj0","finish":"tool-calls"}}
+{"t":1794648596292,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","status":{"type":"busy"}}}}
+{"t":1794648596295,"kind":"event","data":{"type":"message.updated","id":"msg_1d9645f45001IM0dmy61XOPppS","role":"assistant","sid":"ses_e269ba91effejjufQKIOr6wWj0"}}
+{"t":1794648596316,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","status":{"type":"busy"}}}}
+{"t":1794648596323,"kind":"system","data":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.claude herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.claude/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648596341,"kind":"event","data":{"type":"message.updated","id":"msg_1d96456ed0011KUj6Kyz4DF3KM","role":"user","sid":"ses_e269ba91effejjufQKIOr6wWj0"}}
+{"t":1794648597378,"kind":"event","data":{"type":"message.updated","id":"msg_1d9645f45001IM0dmy61XOPppS","role":"assistant","sid":"ses_e269ba91effejjufQKIOr6wWj0","finish":"stop"}}
+{"t":1794648597392,"kind":"event","data":{"type":"message.updated","id":"msg_1d9645f45001IM0dmy61XOPppS","role":"assistant","sid":"ses_e269ba91effejjufQKIOr6wWj0","finish":"stop"}}
+{"t":1794648597392,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","status":{"type":"busy"}}}}
+{"t":1794648597394,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0","status":{"type":"idle"}}}}
+{"t":1794648597394,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e269ba91effejjufQKIOr6wWj0"}}}
+{"t":1794648597415,"kind":"event","data":{"type":"message.updated","id":"msg_1d96456ed0011KUj6Kyz4DF3KM","role":"user","sid":"ses_e269ba91effejjufQKIOr6wWj0"}}
+{"t":1794648662997,"kind":"init","data":{"keys":["client","project","worktree","directory","experimental_workspace","serverUrl","$"],"directory":"$SCRATCH/oc-probe/proj"}}
+{"t":1794648662997,"kind":"config.before","data":{"permission":{"bash":{"*":"ask"}}}}
+{"t":1794648662997,"kind":"config.after","data":{"permission":{"bash":{"*":"ask","herdr-threads *":"allow","ht *":"allow"}}}}
+{"t":1794648678078,"kind":"event","data":{"type":"session.created","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","info":{"id":"ses_e269a6145ffeeu0jSx02au9Ku9","slug":"glowing-wizard","version":"1.18.1","projectID":"global","directory":"$SCRATCH/oc-probe/proj","path":"","title":"New session - 2026-11-14T09:31:18.074Z","agent":"build","model":{"id":"deepseek/deepseek-v4-pro","providerID":"openrouter"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1794648678074,"updated":1794648678074}}}}}
+{"t":1794648678089,"kind":"chat.message","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","agent":"build","msgId":"msg_1d9659ec70019ccAnzp1tA72VG","parts":[{"type":"text","text":"Run the bash command `herdr-threads sleep 15` and tell me its output."}]}}
+{"t":1794648678091,"kind":"event","data":{"type":"message.updated","id":"msg_1d9659ec70019ccAnzp1tA72VG","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648678098,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648678102,"kind":"event","data":{"type":"message.updated","id":"msg_1d9659ed5001QOqTcVInMLPQKE","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648678135,"kind":"system","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","lines":[]}}
+{"t":1794648678181,"kind":"event","data":{"type":"message.updated","id":"msg_1d9659ec70019ccAnzp1tA72VG","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648678809,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648678824,"kind":"system","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648679763,"kind":"tool.before","data":{"tool":"skill","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","args":{"name":"herdr-threads"}}}
+{"t":1794648679779,"kind":"tool.after","data":{"tool":"skill","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","output":"<skill_content name=\"herdr-threads\">\n# Skill: herdr-threads\n\nBody from home/.agents/skills.\n\nBase directory for this skill: $SCRATCH/oc-probe/home/.agents/skills/herdr-threads\nRelative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\nNote: file list is sampled.\n\n<skil"}}
+{"t":1794648679840,"kind":"tool.before","data":{"tool":"glob","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","args":{"pattern":"**/herdr-threads*"}}}
+{"t":1794648679849,"kind":"tool.after","data":{"tool":"glob","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","output":"No files found"}}
+{"t":1794648679869,"kind":"event","data":{"type":"message.updated","id":"msg_1d9659ed5001QOqTcVInMLPQKE","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648679882,"kind":"event","data":{"type":"message.updated","id":"msg_1d9659ed5001QOqTcVInMLPQKE","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648679882,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648679884,"kind":"event","data":{"type":"message.updated","id":"msg_1d965a5cb001ublf0s4CXuEd3d","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648679912,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648679915,"kind":"event","data":{"type":"message.updated","id":"msg_1d9659ec70019ccAnzp1tA72VG","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648679915,"kind":"system","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648680875,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","args":{"command":"which herdr-threads 2>/dev/null || type herdr-threads 2>/dev/null || echo \"not found in PATH\""}}}
+{"t":1794648680936,"kind":"event","data":{"type":"permission.asked","p":{"id":"per_1d965a9e7001YAR4H3cLfrnUA3","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","permission":"bash","patterns":["which herdr-threads 2>/dev/null","type herdr-threads","echo \"not found in PATH\""],"metadata":{"command":"which herdr-threads 2>/dev/null || type herdr-threads 2>/dev/null || echo \"not found in PATH\""},"always":["which *","type *","echo *"],"tool":{"messageID":"msg_1d965a5cb001ublf0s4CXuEd3d","callID":"call_c764cfa7d7464288bc841792"}}}}
+{"t":1794648681097,"kind":"tool.before","data":{"tool":"read","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","args":{"filePath":"$SCRATCH/oc-probe/home/.agents/skills/herdr-threads"}}}
+{"t":1794648681110,"kind":"tool.after","data":{"tool":"read","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","output":"<path>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads</path>\n<type>directory</type>\n<entries>\nSKILL.md\n\n(1 entries)\n</entries>"}}
+{"t":1794648718138,"kind":"event","data":{"type":"permission.replied","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","requestID":"per_1d965a9e7001YAR4H3cLfrnUA3","reply":"once"}}}
+{"t":1794648718139,"kind":"shell.env","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","callID":"call_c764cfa7d7464288bc841792"}}
+{"t":1794648718148,"kind":"tool.after","data":{"tool":"bash","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","output":"$SCRATCH/oc-probe/bin/herdr-threads\n"}}
+{"t":1794648718160,"kind":"event","data":{"type":"message.updated","id":"msg_1d965a5cb001ublf0s4CXuEd3d","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648718177,"kind":"event","data":{"type":"message.updated","id":"msg_1d965a5cb001ublf0s4CXuEd3d","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648718177,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648718179,"kind":"event","data":{"type":"message.updated","id":"msg_1d9663b62001Ge5LjUn08xW1BS","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648718196,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648718197,"kind":"system","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648718208,"kind":"event","data":{"type":"message.updated","id":"msg_1d9659ec70019ccAnzp1tA72VG","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648719686,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","args":{"command":"file $SCRATCH/oc-probe/bin/herdr-threads"}}}
+{"t":1794648719688,"kind":"event","data":{"type":"permission.asked","p":{"id":"per_1d96641470015vmd6Fk3qWOR8L","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","permission":"bash","patterns":["file $SCRATCH/oc-probe/bin/herdr-threads"],"metadata":{"command":"file $SCRATCH/oc-probe/bin/herdr-threads"},"always":["file *"],"tool":{"messageID":"msg_1d9663b62001Ge5LjUn08xW1BS","callID":"call_bf6b36e774f0491980a22759"}}}}
+{"t":1794648758316,"kind":"event","data":{"type":"permission.replied","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","requestID":"per_1d96641470015vmd6Fk3qWOR8L","reply":"reject"}}}
+{"t":1794648758331,"kind":"event","data":{"type":"message.updated","id":"msg_1d9663b62001Ge5LjUn08xW1BS","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648758338,"kind":"event","data":{"type":"message.updated","id":"msg_1d9663b62001Ge5LjUn08xW1BS","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648758340,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"idle"}}}}
+{"t":1794648758341,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9"}}}
+{"t":1794648758357,"kind":"event","data":{"type":"message.updated","id":"msg_1d9659ec70019ccAnzp1tA72VG","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648763457,"kind":"chat.message","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","agent":"build","msgId":"msg_1d966ec41001AXWu6Mgpb95oWh","parts":[{"type":"text","text":"Run exactly `ht sleep 12` with the bash tool, nothing else, then reply DONE."}]}}
+{"t":1794648763458,"kind":"event","data":{"type":"message.updated","id":"msg_1d966ec41001AXWu6Mgpb95oWh","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648763461,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648763463,"kind":"event","data":{"type":"message.updated","id":"msg_1d966ec46001ZI066T6PtQ40ER","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648763473,"kind":"event","data":{"type":"message.updated","id":"msg_1d966ec41001AXWu6Mgpb95oWh","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648763474,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648763475,"kind":"system","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648764330,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","args":{"command":"ht sleep 12"}}}
+{"t":1794648764331,"kind":"shell.env","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","callID":"call_b42bb2e9d19a42e2b6bd0d44"}}
+{"t":1794648776342,"kind":"tool.after","data":{"tool":"bash","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","output":"STUB-HERDR-THREADS args=sleep 12 session=ses_e269a6145ffeeu0jSx02au9Ku9\n"}}
+{"t":1794648776353,"kind":"event","data":{"type":"message.updated","id":"msg_1d966ec46001ZI066T6PtQ40ER","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648776366,"kind":"event","data":{"type":"message.updated","id":"msg_1d966ec46001ZI066T6PtQ40ER","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648776366,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648776367,"kind":"event","data":{"type":"message.updated","id":"msg_1d9671eaf001c6jvbBTX5pPQqP","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648776384,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648776385,"kind":"system","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648776390,"kind":"event","data":{"type":"message.updated","id":"msg_1d966ec41001AXWu6Mgpb95oWh","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648777342,"kind":"event","data":{"type":"message.updated","id":"msg_1d9671eaf001c6jvbBTX5pPQqP","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"stop"}}
+{"t":1794648777349,"kind":"event","data":{"type":"message.updated","id":"msg_1d9671eaf001c6jvbBTX5pPQqP","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"stop"}}
+{"t":1794648777350,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648777352,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"idle"}}}}
+{"t":1794648777352,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9"}}}
+{"t":1794648777367,"kind":"event","data":{"type":"message.updated","id":"msg_1d966ec41001AXWu6Mgpb95oWh","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648804912,"kind":"chat.message","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","msgId":"msg_1d9678e30001Xt8GGSjFJrhRTL","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST8 in tTEST from sTEST [p0]:\n  Run exactly `ht sleep 10` with"}]}}
+{"t":1794648804914,"kind":"event","data":{"type":"message.updated","id":"msg_1d9678e30001Xt8GGSjFJrhRTL","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648804917,"kind":"append","data":{"why":"ctl-appendwake","id":"ses_e269a6145ffeeu0jSx02au9Ku9","status":200,"dataKeys":["info","parts"],"infoId":"msg_1d9678e30001Xt8GGSjFJrhRTL","infoRole":"user","parts":[{"id":"prt_1d9678e30002X4szXrlviXik9I","type":"text","synthetic":true}]}}
+{"t":1794648804919,"kind":"chat.message","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","msgId":"msg_1d9678e370017CMEtCtfuXlN3S","parts":[{"type":"text","text":"herdr-threads: wake up"}]}}
+{"t":1794648804920,"kind":"event","data":{"type":"message.updated","id":"msg_1d9678e370017CMEtCtfuXlN3S","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648804922,"kind":"wake","data":{"id":"ses_e269a6145ffeeu0jSx02au9Ku9","status":204,"data":{}}}
+{"t":1794648804923,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648804924,"kind":"event","data":{"type":"message.updated","id":"msg_1d9678e3b001E2ZF3RM3xeZyUp","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648804934,"kind":"event","data":{"type":"message.updated","id":"msg_1d9678e370017CMEtCtfuXlN3S","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648804935,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648804935,"kind":"system","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648806223,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","args":{"command":"ht sleep 10"}}}
+{"t":1794648806224,"kind":"shell.env","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","callID":"call_6b4b3011f67942d2bc563baa"}}
+{"t":1794648816234,"kind":"tool.after","data":{"tool":"bash","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","output":"STUB-HERDR-THREADS args=sleep 10 session=ses_e269a6145ffeeu0jSx02au9Ku9\n"}}
+{"t":1794648816246,"kind":"event","data":{"type":"message.updated","id":"msg_1d9678e3b001E2ZF3RM3xeZyUp","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648816259,"kind":"event","data":{"type":"message.updated","id":"msg_1d9678e3b001E2ZF3RM3xeZyUp","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648816259,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648816260,"kind":"event","data":{"type":"message.updated","id":"msg_1d967ba840010KtNhG5yY8QQuv","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648816278,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648816280,"kind":"system","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648816289,"kind":"event","data":{"type":"message.updated","id":"msg_1d9678e370017CMEtCtfuXlN3S","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648817646,"kind":"event","data":{"type":"message.updated","id":"msg_1d967ba840010KtNhG5yY8QQuv","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"stop"}}
+{"t":1794648817655,"kind":"event","data":{"type":"message.updated","id":"msg_1d967ba840010KtNhG5yY8QQuv","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"stop"}}
+{"t":1794648817655,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648817656,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"idle"}}}}
+{"t":1794648817656,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9"}}}
+{"t":1794648817662,"kind":"event","data":{"type":"message.updated","id":"msg_1d9678e370017CMEtCtfuXlN3S","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648832048,"kind":"chat.message","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","msgId":"msg_1d967f82f001sB5tyNzDbnYNyi","parts":[{"type":"text","synthetic":true,"text":"[herdr-threads] new messages:\n\n[herdr-threads] message mTEST9 in tTEST from sTEST [p0]:\n  Run exactly `ls /etc/hostname`"}]}}
+{"t":1794648832050,"kind":"event","data":{"type":"message.updated","id":"msg_1d967f82f001sB5tyNzDbnYNyi","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648832052,"kind":"append","data":{"why":"ctl-appendwake","id":"ses_e269a6145ffeeu0jSx02au9Ku9","status":200,"dataKeys":["info","parts"],"infoId":"msg_1d967f82f001sB5tyNzDbnYNyi","infoRole":"user","parts":[{"id":"prt_1d967f830001AxQNQPIkqHBoAh","type":"text","synthetic":true}]}}
+{"t":1794648832054,"kind":"chat.message","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","msgId":"msg_1d967f836001EYCnifoSqcmRxH","parts":[{"type":"text","text":"herdr-threads: wake up"}]}}
+{"t":1794648832055,"kind":"event","data":{"type":"message.updated","id":"msg_1d967f836001EYCnifoSqcmRxH","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648832057,"kind":"wake","data":{"id":"ses_e269a6145ffeeu0jSx02au9Ku9","status":204,"data":{}}}
+{"t":1794648832057,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648832059,"kind":"event","data":{"type":"message.updated","id":"msg_1d967f83a001SgZDSXLNHSddwF","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648832068,"kind":"event","data":{"type":"message.updated","id":"msg_1d967f836001EYCnifoSqcmRxH","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}
+{"t":1794648832069,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"busy"}}}}
+{"t":1794648832070,"kind":"system","data":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648833410,"kind":"tool.before","data":{"tool":"bash","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","args":{"command":"ls /etc/hostname"}}}
+{"t":1794648833411,"kind":"event","data":{"type":"permission.asked","p":{"id":"per_1d967fd83001cEcE3ztBgUcIsN","sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","permission":"bash","patterns":["ls /etc/hostname"],"metadata":{"command":"ls /etc/hostname"},"always":["ls *"],"tool":{"messageID":"msg_1d967f83a001SgZDSXLNHSddwF","callID":"call_40e5fb824d804b2fafd5bc38"}}}}
+{"t":1794648853861,"kind":"event","data":{"type":"session.created","p":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","info":{"id":"ses_e2697b29cffetJRWIUCAKWJnL0","slug":"glowing-harbor","version":"1.18.1","projectID":"global","directory":"$SCRATCH/oc-probe/proj","path":"","title":"New session - 2026-11-14T09:34:13.859Z","agent":"build","model":{"id":"deepseek/deepseek-v4-pro","providerID":"openrouter"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1794648853859,"updated":1794648853859}}}}}
+{"t":1794648853865,"kind":"chat.message","data":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","agent":"build","msgId":"msg_1d9684d69001OMQuWASz926uum","parts":[{"type":"text","text":"l"}]}}
+{"t":1794648853866,"kind":"event","data":{"type":"message.updated","id":"msg_1d9684d69001OMQuWASz926uum","role":"user","sid":"ses_e2697b29cffetJRWIUCAKWJnL0"}}
+{"t":1794648853869,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","status":{"type":"busy"}}}}
+{"t":1794648853870,"kind":"event","data":{"type":"message.updated","id":"msg_1d9684d6d001Z6TKvuD1ptB94b","role":"assistant","sid":"ses_e2697b29cffetJRWIUCAKWJnL0"}}
+{"t":1794648853871,"kind":"system","data":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","lines":[]}}
+{"t":1794648853883,"kind":"event","data":{"type":"message.updated","id":"msg_1d9684d69001OMQuWASz926uum","role":"user","sid":"ses_e2697b29cffetJRWIUCAKWJnL0"}}
+{"t":1794648853889,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","status":{"type":"busy"}}}}
+{"t":1794648853890,"kind":"system","data":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648855463,"kind":"tool.before","data":{"tool":"read","sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","args":{"filePath":"$SCRATCH/oc-probe/proj"}}}
+{"t":1794648855465,"kind":"tool.after","data":{"tool":"read","sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","output":"<path>$SCRATCH/oc-probe/proj</path>\n<type>directory</type>\n<entries>\n.git/\n\n(1 entries)\n</entries>"}}
+{"t":1794648855494,"kind":"event","data":{"type":"message.updated","id":"msg_1d9684d6d001Z6TKvuD1ptB94b","role":"assistant","sid":"ses_e2697b29cffetJRWIUCAKWJnL0","finish":"tool-calls"}}
+{"t":1794648855503,"kind":"event","data":{"type":"message.updated","id":"msg_1d9684d6d001Z6TKvuD1ptB94b","role":"assistant","sid":"ses_e2697b29cffetJRWIUCAKWJnL0","finish":"tool-calls"}}
+{"t":1794648855503,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","status":{"type":"busy"}}}}
+{"t":1794648855504,"kind":"event","data":{"type":"message.updated","id":"msg_1d96853cf0012GsURRZvnBrMzn","role":"assistant","sid":"ses_e2697b29cffetJRWIUCAKWJnL0"}}
+{"t":1794648855514,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","status":{"type":"busy"}}}}
+{"t":1794648855520,"kind":"system","data":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","lines":["  Working directory: $SCRATCH/oc-probe/proj","  Workspace root folder: $SCRATCH/oc-probe/proj","    <name>herdr-threads</name>","    <description>SKILLCOPY-home_.agents herdr-threads messaging skill.</description>","    <location>$SCRATCH/oc-probe/home/.agents/skills/herdr-threads/SKILL.md</location>"]}}
+{"t":1794648855525,"kind":"event","data":{"type":"message.updated","id":"msg_1d9684d69001OMQuWASz926uum","role":"user","sid":"ses_e2697b29cffetJRWIUCAKWJnL0"}}
+{"t":1794648856881,"kind":"event","data":{"type":"message.updated","id":"msg_1d96853cf0012GsURRZvnBrMzn","role":"assistant","sid":"ses_e2697b29cffetJRWIUCAKWJnL0","finish":"stop"}}
+{"t":1794648856894,"kind":"event","data":{"type":"message.updated","id":"msg_1d96853cf0012GsURRZvnBrMzn","role":"assistant","sid":"ses_e2697b29cffetJRWIUCAKWJnL0","finish":"stop"}}
+{"t":1794648856894,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","status":{"type":"busy"}}}}
+{"t":1794648856895,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0","status":{"type":"idle"}}}}
+{"t":1794648856895,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e2697b29cffetJRWIUCAKWJnL0"}}}
+{"t":1794648856901,"kind":"event","data":{"type":"message.updated","id":"msg_1d9684d69001OMQuWASz926uum","role":"user","sid":"ses_e2697b29cffetJRWIUCAKWJnL0"}}
+{"t":1794648868990,"kind":"status","data":{"bound":"ses_e2697b29cffetJRWIUCAKWJnL0","data":{"ses_e269a6145ffeeu0jSx02au9Ku9":{"type":"busy"}},"local":{"ses_e269a6145ffeeu0jSx02au9Ku9":"busy","ses_e2697b29cffetJRWIUCAKWJnL0":"idle"}}}
+{"t":1794648890569,"kind":"event","data":{"type":"permission.replied","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","requestID":"per_1d967fd83001cEcE3ztBgUcIsN","reply":"reject"}}}
+{"t":1794648890582,"kind":"event","data":{"type":"message.updated","id":"msg_1d967f83a001SgZDSXLNHSddwF","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648890589,"kind":"event","data":{"type":"message.updated","id":"msg_1d967f83a001SgZDSXLNHSddwF","role":"assistant","sid":"ses_e269a6145ffeeu0jSx02au9Ku9","finish":"tool-calls"}}
+{"t":1794648890591,"kind":"event","data":{"type":"session.status","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9","status":{"type":"idle"}}}}
+{"t":1794648890591,"kind":"event","data":{"type":"session.idle","p":{"sessionID":"ses_e269a6145ffeeu0jSx02au9Ku9"}}}
+{"t":1794648890604,"kind":"event","data":{"type":"message.updated","id":"msg_1d967f836001EYCnifoSqcmRxH","role":"user","sid":"ses_e269a6145ffeeu0jSx02au9Ku9"}}

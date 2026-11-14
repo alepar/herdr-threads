@@ -1,0 +1,12 @@
+     + Thought: 144ms
+     $ ls /etc/hostname
+     ▣  Build · DeepSeek V4 Pro
+  ┃
+  ┃  △ Permission required
+  ┃    # Shell command
+  ┃
+  ┃  $ ls /etc/hostname
+  ┃
+  ┃
+  ┃   Allow once   Allow always   Reject                                ctrl+f fullscreen  ⇆ select  enter confirm
+  ┃

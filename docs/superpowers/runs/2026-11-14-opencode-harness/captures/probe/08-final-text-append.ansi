@@ -1,0 +1,40 @@
+[38;5;15m[48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;233m                                                                                                                   [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;233m  [38;5;255mRun the bash command `herdr-threads sleep 12` and tell me its output.[38;5;15m                                            [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;233m                                                                                                                   [48;5;232m
+
+     [38;5;215m+ Thought: 405ms[38;5;15m
+
+  [38;5;232m[48;5;233m┃[38;5;15m                                                                                                                   [48;5;232m
+  [38;5;232m[48;5;233m┃[38;5;15m  [38;5;255m$ herdr-threads sleep 12[38;5;15m                                                                                         [48;5;232m
+  [38;5;232m[48;5;233m┃[38;5;15m                                                                                                                   [48;5;232m
+  [38;5;232m[48;5;233m┃[38;5;15m  [38;5;255mSTUB-HERDR-THREADS args=sleep 12 session=ses_e26a4fbfcffeBGYrmY24SxXzFd[38;5;15m                                          [48;5;232m
+  [38;5;232m[48;5;233m┃[38;5;15m                                                                                                                   [48;5;232m
+
+     [38;5;215m+ Thought: 215ms[38;5;15m
+
+     [38;5;114mSTUB-HERDR-THREADS args=sleep 12 session=ses_e26a4fbfcffeBGYrmY24SxXzFd[38;5;255m MANGO[38;5;15m
+
+     [38;5;75m▣ [38;5;15m [38;5;255mBuild[38;5;8m · DeepSeek V4 Pro · 10.8s[38;5;15m
+
+  [38;5;75m┃[38;5;15m[48;5;233m                                                                                                                   [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;233m  [38;5;255mWrite four sentences about rivers. No tools.[38;5;15m                                                                     [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;233m                                                                                                                   [48;5;232m
+
+     [38;5;215m+ Thought: 129ms[38;5;15m
+
+     [38;5;255mRivers carve landscapes over millennia, transporting sediment and nutrients from mountains to seas. Freshwater [38;5;15m
+     [38;5;255mecosystems along riverbanks support a vast diversity of plant and animal life. Human civilizations have [38;5;15m
+     [38;5;255mflourished along major rivers like the Nile, the Ganges, and the Mississippi for thousands of years. Many modern [38;5;15m
+     [38;5;255mcities still depend on rivers for drinking water, transportation, and hydroelectric power. KIWI[38;5;15m
+
+     [38;5;75m▣ [38;5;15m [38;5;255mBuild[38;5;8m · DeepSeek V4 Pro · 1.6s[38;5;15m
+
+  [38;5;75m┃[38;5;15m[48;5;234m                                                                                                                   [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;234m                                                                                                                   [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;234m                                                                                                                   [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;234m  [38;5;75mBuild[38;5;15m [38;5;8m·[38;5;15m [38;5;255mDeepSeek V4 Pro[38;5;15m [38;5;8mOpenRouter[38;5;15m                                                                               [48;5;232m
+  [38;5;75m╹[38;5;234m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀[38;5;15m
+   [38;5;8m/tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-[38;5;15m        [38;5;8m8.8K (1%) · $0[38;5;15m [38;5;255mctrl+p [38;5;15m
+   [38;5;8m30a107a133eb/scratchpad/oc-probe/proj[38;5;15m                                                                  [38;5;8mcommands[38;5;15m
+

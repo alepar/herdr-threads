@@ -1,0 +1,40 @@
+  ┃
+  ┃  $ env | grep -E "^(OPENCODE|AGENT|HERDR)" | sort
+  ┃
+  ┃  AGENT=1
+  ┃  OPENCODE=1
+  ┃  OPENCODE_DISABLE_AUTOUPDATE=1
+  ┃  OPENCODE_PID=1347005
+  ┃  OPENCODE_PURE=1
+  ┃
+
+  ┃
+  ┃  $ herdr-threads probe pure
+  ┃
+  ┃  STUB-HERDR-THREADS args=probe pure session=none
+  ┃
+
+     + Thought: 392ms
+
+     env | grep -E "^(OPENCODE|AGENT|HERDR)" | sort:
+
+     AGENT=1
+     OPENCODE=1
+     OPENCODE_DISABLE_AUTOUPDATE=1
+     OPENCODE_PID=1347005
+     OPENCODE_PURE=1
+
+     herdr-threads probe pure:
+
+     STUB-HERDR-THREADS args=probe pure session=none
+
+     ▣  Build · DeepSeek V4 Pro · 27.1s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-        8.4K (1%) · $0 ctrl+p
+   30a107a133eb/scratchpad/oc-probe/proj                                                                  commands
+

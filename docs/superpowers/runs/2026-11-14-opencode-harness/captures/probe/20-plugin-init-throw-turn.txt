@@ -1,0 +1,40 @@
+
+  ┃
+  ┃  Say OK.
+  ┃
+
+     + Thought: 3ms
+
+     OK.
+
+     ▣  Build · DeepSeek V4 Pro · 1.8s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-        8.0K (1%) · $0 ctrl+p
+   30a107a133eb/scratchpad/oc-probe/proj                                                                  commands
+

@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                          ▄
+                                         █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+                                         █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+                                         ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+
+
+                       ┃
+                       ┃  Ask anything... "What is the tech stack of this project?"
+                       ┃
+                       ┃  Build · DeepSeek V4 Pro OpenRouter
+                       ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                       tab agents  ctrl+p commands
+
+
+
+                                         ● Tip Use /help to show the help dialog
+
+
+
+
+
+
+
+
+
+  $SCRATCH/      1.18.1
+  oc-probe/proj:master
+

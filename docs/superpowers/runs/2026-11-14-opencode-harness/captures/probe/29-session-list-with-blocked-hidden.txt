@@ -1,0 +1,16 @@
+  ┃
+  ┃  l
+  ┃
+     + Thought: 331ms
+     → Read .
+     + Thought: 192ms
+     This direct    Sessions                                                                     esc    re you
+     working on?
+                    Search
+     ▣  Build ·
+                    Today
+                  ● New session - 2026-11-14T09:34:13.859Z                                      proj
+                  ⠼ Herdr-threads sleep command output                                          proj
+                    Running herdr-threads probe one                                             proj
+                    New session - 2026-11-14T09:29:28.056Z                                      proj
+                    Environment variable inspection                                             proj

@@ -1,0 +1,40 @@
+
+  ┃
+  ┃  Run exactly these two bash commands, as two separate tool calls, in order: `herdr-threads probe one` then `ls /
+  ┃  etc/hostname`. Then report both outputs in one line.
+  ┃
+
+     + Thought: 153ms
+
+  ┃
+  ┃  $ herdr-threads probe one
+  ┃
+  ┃  STUB-HERDR-THREADS args=probe one session=ses_e26a4fbfcffeBGYrmY24SxXzFd
+  ┃
+
+     + Thought: 136ms
+
+     $ ls /etc/hostname
+
+     ▣  Build · DeepSeek V4 Pro
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃  △ Permission required
+  ┃    # Shell command
+  ┃
+  ┃  $ ls /etc/hostname
+  ┃
+  ┃
+  ┃   Allow once   Allow always   Reject                                 ctrl+f fullscreen  ⇆ select  enter confirm
+  ┃
+

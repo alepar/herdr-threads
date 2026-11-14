@@ -1,0 +1,2 @@
+      9 cfg/opencode/skills/herdr-threads/SKILL.md
+      3 home/.agents/skills/herdr-threads/SKILL.md

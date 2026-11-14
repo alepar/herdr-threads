@@ -1,0 +1,40 @@
+     STUB-HERDR-THREADS args=probe one session=ses_e26a4fbfcffeBGYrmY24SxXzFd | /etc/hostname
+
+     ▣  Build · DeepSeek V4 Pro · 32.5s
+
+  ┃
+  ┃  hi
+  ┃
+
+     + Thought: 6ms
+
+     PINEAPPLE
+
+     ▣  Build · DeepSeek V4 Pro · 1.1s
+
+  ┃
+  ┃  Run the bash command `herdr-threads sleep 12` and tell me its output.
+  ┃
+
+     + Thought: 405ms
+
+  ┃
+  ┃  $ herdr-threads sleep 12
+  ┃
+  ┃  STUB-HERDR-THREADS args=sleep 12 session=ses_e26a4fbfcffeBGYrmY24SxXzFd
+  ┃
+
+     + Thought: 215ms
+
+     STUB-HERDR-THREADS args=sleep 12 session=ses_e26a4fbfcffeBGYrmY24SxXzFd MANGO
+
+     ▣  Build · DeepSeek V4 Pro · 10.8s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-        8.6K (1%) · $0 ctrl+p
+   30a107a133eb/scratchpad/oc-probe/proj                                                                  commands
+

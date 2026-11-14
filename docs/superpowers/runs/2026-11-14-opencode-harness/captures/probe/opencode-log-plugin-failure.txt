@@ -1,0 +1,1 @@
+timestamp=2026-11-14T09:27:34.438Z level=ERROR run=6a7bea4a message="failed to load plugin" path=file://$SCRATCH/oc-probe/cfg/opencode/plugins/probe.js error="PROBE_THROW: deliberate init failure"

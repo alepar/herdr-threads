@@ -1,0 +1,40 @@
+
+  ┃
+  ┃  Run the bash command `env | grep -E "^(OPENCODE|AGENT|HERDR)" | sort` then `herdr-threads probe pure` and show
+  ┃  both outputs verbatim.
+  ┃
+
+     + Thought: 1.7s
+
+  ┃
+  ┃  $ env | grep -E "^(OPENCODE|AGENT|HERDR)" | sort
+  ┃
+  ┃  AGENT=1
+  ┃  OPENCODE=1
+  ┃  OPENCODE_DISABLE_AUTOUPDATE=1
+  ┃  OPENCODE_PID=1347005
+  ┃  OPENCODE_PURE=1
+  ┃
+
+     $ herdr-threads probe pure
+
+     ▣  Build · DeepSeek V4 Pro
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃  △ Permission required
+  ┃    # Shell command
+  ┃
+  ┃  $ herdr-threads probe pure
+  ┃
+  ┃
+  ┃   Allow once   Allow always   Reject                                 ctrl+f fullscreen  ⇆ select  enter confirm
+  ┃
+

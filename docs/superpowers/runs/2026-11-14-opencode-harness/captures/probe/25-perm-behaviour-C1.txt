@@ -1,0 +1,40 @@
+
+  ┃
+  ┃  Run the bash command `herdr-threads probe one` and show its output.
+  ┃
+
+     + Thought: 1.0s
+
+     → Skill "herdr-threads"
+
+     + Thought: 1.3s
+
+     $ herdr-threads probe one
+
+     ▣  Build · DeepSeek V4 Pro
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃  △ Permission required
+  ┃    # Shell command
+  ┃
+  ┃  $ herdr-threads probe one
+  ┃
+  ┃
+  ┃   Allow once   Allow always   Reject                                 ctrl+f fullscreen  ⇆ select  enter confirm
+  ┃
+

@@ -1,0 +1,2 @@
+      7 home/.agents/skills/herdr-threads/SKILL.md
+      1 home/.claude/skills/herdr-threads/SKILL.md

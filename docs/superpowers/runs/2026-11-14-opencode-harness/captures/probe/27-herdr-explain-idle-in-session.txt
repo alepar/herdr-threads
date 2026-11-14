@@ -1,0 +1,5 @@
+agent: opencode
+state: idle
+manifest: remote:/tmp/ih.CSO9rR/st/herdr/agent-detection/remote/opencode.toml 2026.06.10.1
+rule: none
+fallback_reason: default_known_agent_idle_fallback

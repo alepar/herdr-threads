@@ -1,0 +1,87 @@
+// herdr-threads opencode probe plugin (real-model probe, 2026-11-14). Logs hooks/events
+// and drives SDK calls from control files in $PROBE_CTL. Never logs headers or env.
+import fs from "node:fs"
+const LOG = process.env.PROBE_LOG
+const CTL = process.env.PROBE_CTL
+const log = (kind, data) => { try { fs.appendFileSync(LOG, JSON.stringify({ t: Date.now(), kind, data }) + "\n") } catch (e) {} }
+const short = (v, n = 1200) => { const s = JSON.stringify(v); return s && s.length > n ? s.slice(0, n) + "...<trunc>" : v }
+export const Probe = async (input) => {
+  log("init", { keys: Object.keys(input), directory: input.directory })
+  if (process.env.PROBE_THROW === "1") throw new Error("PROBE_THROW: deliberate init failure")
+  const { client } = input
+  let bound            // last top-level session seen in chat.message
+  const parents = {}   // sessionID -> parentID|null
+  const status = {}    // sessionID -> busy|idle|retry
+  let armText = null   // text to append once on the first assistant text part of the bound session
+  const assistantMsgs = new Set()
+  let armDelay = 0
+  const append = async (id, text, why) => {
+    const r = await client.session.prompt({ path: { id }, body: { noReply: true, parts: [{ type: "text", text, synthetic: true }] } })
+    log("append", { why, id, status: r?.response?.status, error: r?.error, dataKeys: r?.data && Object.keys(r.data), infoId: r?.data?.info?.id, infoRole: r?.data?.info?.role, parts: r?.data?.parts?.map((p) => ({ id: p.id, type: p.type, synthetic: p.synthetic })) })
+    return r
+  }
+  const wake = async (id, text) => {
+    const r = await client.session.promptAsync({ path: { id }, body: { parts: [{ type: "text", text }] } })
+    log("wake", { id, status: r?.response?.status, error: r?.error, data: r?.data })
+  }
+  setInterval(async () => {
+    for (const name of ["append", "wake", "appendwake", "armtext", "messages", "status", "target"]) {
+      const f = CTL + "/" + name
+      if (!fs.existsSync(f)) continue
+      const text = fs.readFileSync(f, "utf8").replace(/\n$/, ""); fs.unlinkSync(f)
+      try {
+        if (name === "target") { bound = text; log("target", { bound }) }
+        if (name === "append") await append(bound, text, "ctl")
+        if (name === "wake") await wake(bound, text)
+        if (name === "appendwake") { const [a, w] = text.split("\n---\n"); await append(bound, a, "ctl-appendwake"); await wake(bound, w) }
+        if (name === "armtext") { const m = text.match(/^delay=(\d+)\n/); armDelay = m ? Number(m[1]) : 0; armText = m ? text.slice(m[0].length) : text; log("armtext", { bound }) }
+        if (name === "messages") { const r = await client.session.messages({ path: { id: bound } }); log("messages", { n: r?.data?.length, list: r?.data?.map((m) => ({ id: m.info.id, role: m.info.role, parts: m.parts.map((p) => ({ type: p.type, synthetic: p.synthetic, text: p.text?.slice(0, 160), tool: p.tool })) })) }) }
+        if (name === "status") { const s = await client.session.status(); log("status", { bound, data: s.data, local: status }) }
+      } catch (e) { log("ctl." + name + ".throw", String(e && e.stack || e)) }
+    }
+  }, 250)
+  return {
+    config: async (cfg) => {
+      log("config.before", { permission: cfg.permission })
+      if (process.env.PROBE_PERM === "1") {
+        cfg.permission ??= {}
+        if (typeof cfg.permission.bash !== "object" || cfg.permission.bash === null) cfg.permission.bash = cfg.permission.bash ? { "*": cfg.permission.bash } : {}
+        cfg.permission.bash["herdr-threads *"] = "allow"
+        cfg.permission.bash["ht *"] = "allow"
+      }
+      log("config.after", { permission: cfg.permission })
+    },
+    event: async ({ event }) => {
+      const p = event.properties || {}
+      if (event.type === "message.part.delta") return
+      if (event.type === "session.created") parents[p.info?.id] = p.info?.parentID ?? null
+      if (event.type === "session.status") status[p.sessionID] = p.status?.type
+      if (event.type === "message.updated" && p.info?.role === "assistant") assistantMsgs.add(p.info.id)
+      if (armText && event.type === "message.part.updated" && p.part?.type === "text" && p.part?.sessionID === bound && assistantMsgs.has(p.part?.messageID)) {
+        const t = armText; armText = null
+        // fired on the first streamed assistant text part: the final text step of the turn
+        log("armtext.fire", { messageID: p.part.messageID, delay: armDelay })
+        setTimeout(() => append(bound, t, "armtext").catch((e) => log("armtext.throw", String(e))), armDelay)
+      }
+      if (["session.created", "session.status", "session.idle", "session.error", "permission.asked", "permission.replied", "session.compacted"].includes(event.type)) log("event", { type: event.type, p: short(p, 600) })
+      if (event.type === "message.updated") log("event", { type: event.type, id: p.info?.id, role: p.info?.role, sid: p.info?.sessionID, finish: p.info?.finish })
+    },
+    "chat.message": async (i, o) => {
+      log("chat.message", { sessionID: i.sessionID, agent: i.agent, msgId: o.message?.id, parts: o.parts.map((x) => ({ type: x.type, synthetic: x.synthetic, text: x.text?.slice(0, 120) })) })
+      if (parents[i.sessionID] === undefined) {
+        try { const g = await client.session.get({ path: { id: i.sessionID } }); parents[i.sessionID] = g?.data?.parentID ?? null } catch (e) {}
+      }
+      if (!parents[i.sessionID]) bound = i.sessionID
+    },
+    "shell.env": async (i, o) => {
+      log("shell.env", { sessionID: i.sessionID, callID: i.callID })
+      o.env.HERDR_THREADS_OPENCODE_SESSION = i.sessionID ?? ""
+    },
+    "experimental.chat.system.transform": async (i, o) => {
+      const lines = o.system.join("\n").split("\n").filter((l) => /herdr-threads|SKILLCOPY/.test(l))
+      log("system", { sessionID: i.sessionID, lines })
+    },
+    "tool.execute.before": async (i, o) => log("tool.before", { tool: i.tool, sessionID: i.sessionID, args: short(o.args, 400) }),
+    "tool.execute.after": async (i, o) => log("tool.after", { tool: i.tool, sessionID: i.sessionID, output: String(o.output).slice(0, 400) }),
+  }
+}

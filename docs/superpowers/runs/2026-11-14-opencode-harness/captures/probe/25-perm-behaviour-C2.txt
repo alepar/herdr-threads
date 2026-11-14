@@ -1,0 +1,40 @@
+
+  ┃
+  ┃  Run the bash command `herdr-threads probe one` and show its output.
+  ┃
+
+     + Thought: 177ms
+
+  ┃
+  ┃  $ herdr-threads probe one
+  ┃
+  ┃  STUB-HERDR-THREADS args=probe one session=ses_e269ba91effejjufQKIOr6wWj0
+  ┃
+
+     + Thought: 164ms
+
+     Output:
+
+     STUB-HERDR-THREADS args=probe one session=ses_e269ba91effejjufQKIOr6wWj0
+
+     The herdr-threads command appears to be a stub that echoes back the arguments (probe one) along with a generated
+     session ID.
+
+     ▣  Build · DeepSeek V4 Pro · 3.2s
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-        8.3K (1%) · $0 ctrl+p
+   30a107a133eb/scratchpad/oc-probe/proj                                                                  commands
+

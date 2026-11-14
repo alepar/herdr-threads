@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                          ▄
+                                         █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+                                         █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+                                         ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+
+
+                       ┃
+                       ┃  Ask anything... "Fix a TODO in the codebase"
+                       ┃
+                       ┃  Build · DeepSeek V4 Pro OpenRouter
+                       ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                       tab agents  ctrl+p commands
+
+
+
+                            ● Tip Use /export or ctrl+x x to save the conversation as Markdown
+
+
+
+
+
+
+
+
+
+  $SCRATCH/      1.18.1
+  oc-probe/proj:master
+

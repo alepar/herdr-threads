@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                         ▄
+                                        █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+                                        █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+                                        ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+
+
+                      ┃
+                      ┃  Ask anything... "Fix broken tests"
+                      ┃
+                      ┃  Build · DeepSeek V4 Pro OpenRouter
+                      ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                      tab agents  ctrl+p commands
+
+
+
+                            ● Tip Use instructions in config to load additional rules files
+
+
+
+
+
+
+
+
+
+  $SCRATCH/     1.18.1
+  oc-probe/proj:master
+

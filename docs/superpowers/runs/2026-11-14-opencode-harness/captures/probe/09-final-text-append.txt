@@ -1,0 +1,40 @@
+     ▣  Build · DeepSeek V4 Pro · 10.8s
+
+  ┃
+  ┃  Write four sentences about rivers. No tools.
+  ┃
+
+     + Thought: 129ms
+
+     Rivers carve landscapes over millennia, transporting sediment and nutrients from mountains to seas. Freshwater
+     ecosystems along riverbanks support a vast diversity of plant and animal life. Human civilizations have
+     flourished along major rivers like the Nile, the Ganges, and the Mississippi for thousands of years. Many modern
+     cities still depend on rivers for drinking water, transportation, and hydroelectric power. KIWI
+
+     ▣  Build · DeepSeek V4 Pro · 1.6s
+
+  ┃
+  ┃  Write ten sentences about mountains. No tools.
+  ┃
+
+     + Thought: 30ms
+
+     Mountains form through tectonic collisions when continental plates push against each other. The Himalayas
+     continue rising today as the Indian plate presses into Eurasia. Volcanic mountains emerge from magma breaking
+     through the Earth's crust. Erosion from wind, water, and ice gradually sculpts jagged peaks and valleys over
+     eons. Tree lines mark the altitude above which forests can no longer grow. Alpine meadows host resilient
+     wildflowers that bloom in brief summer windows. Mountain ranges influence weather by forcing moisture-laden air
+     upward to condense into rain or snow. Snowmelt from high elevations feeds rivers that supply water to billions
+     downstream. Many cultures revere mountains as sacred places of spiritual significance. Climbers test endurance
+     against thin air, extreme cold, and steep terrain in pursuit of summits like Everest.
+
+     ▣  Build · DeepSeek V4 Pro · 2.7s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-        9.0K (1%) · $0 ctrl+p
+   30a107a133eb/scratchpad/oc-probe/proj                                                                  commands
+

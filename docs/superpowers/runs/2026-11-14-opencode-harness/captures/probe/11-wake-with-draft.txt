@@ -1,0 +1,40 @@
+     KIWI
+
+     Forests cover roughly one-third of Earth's land surface and host the majority of terrestrial biodiversity.
+     Tropical rainforests pulse with life across every layer from the dark floor to the emergent canopy. Deciduous
+     trees shed leaves each autumn in a strategy to conserve water through freezing winters. Mycelial networks thread
+     through forest soils, linking root systems in what some call the wood wide web. Old-growth forests store
+     centuries of carbon in massive trunks and deep soils. Fire-adapted ecosystems like lodgepole pine forests depend
+     on periodic burns to release seeds. Mangrove forests straddle saltwater and freshwater, shielding coastlines
+     from storm surges. Boreal forests form a vast green belt circling the northern hemisphere across Canada, Russia,
+     and Scandinavia. Agroforestry blends crops with trees to restore degraded land and improve yields. Urban forests
+     cool city heat islands and filter airborne pollutants. Logging, agriculture, and development continue to clear
+     millions of acres of primary forest each year. Reforestation and afforestation efforts aim to regrow lost
+     woodlands and slow desertification.
+
+     ▣  Build · DeepSeek V4 Pro · 2.2s
+
+     + Thought: 50ms
+
+     GUAVA
+
+     ▣  Build · DeepSeek V4 Pro · 2.3s
+
+  ┃
+  ┃  herdr-threads: wake up
+  ┃
+
+     + Thought: 46ms
+
+     PAPAYA
+
+     ▣  Build · DeepSeek V4 Pro · 794ms
+
+  ┃
+  ┃  my unsent draft
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-        9.4K (1%) · $0 ctrl+p
+   30a107a133eb/scratchpad/oc-probe/proj                                                                  commands
+

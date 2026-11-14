@@ -1,6 +1,6 @@
 # opencode harness adapter
 
-Epic `ht-vxdp`. Design 2026-11-14, coordinator seat `snSGlLkotnaR` (tab `opencode`). Status: draft, revised after design review 1 ([review-design-1.md](review-design-1.md)); awaiting the user's decisions (§Decisions for the user) and the live probe (§Probe).
+Epic `ht-vxdp`. Design 2026-11-14, coordinator seat `snSGlLkotnaR` (tab `opencode`). Status: draft, revised after design review 1 ([review-design-1.md](review-design-1.md)); and after the live probe ([probe-real-model.md](probe-real-model.md)); awaiting the user's decisions (§Decisions for the user).
 
 ## Goal
 
@@ -48,7 +48,7 @@ The cost is the dormant cases in D8, where no channel is live. A typed fallback 
 
 ### D2. Identity and session claim
 
-- `AdapterMetadata`: id `opencode`, label "opencode", executable `opencode`, env marker `OPENCODE` (moved out of `src/harness/unsupported.rs`, where it is registered today as an unsupported harness), host kinds from the probe.
+- `AdapterMetadata`: id `opencode`, label "opencode", executable `opencode`, env marker `OPENCODE` (moved out of `src/harness/unsupported.rs`, where it is registered today as an unsupported harness), host kinds `["opencode"]` (the kind Herdr reports, probe item 5).
 - `CallerEnvShape`: `process_names: ["opencode"]`, `pid_var: OPENCODE_PID`, `session_var: HERDR_THREADS_OPENCODE_SESSION`, and a role witness that reads `HERDR_THREADS_OPENCODE_PARENT`.
 - The plugin's `shell.env` hook sets all three variables on every shell call that has a `sessionID` (tool calls and the user's `!shell`), so a nested opencode never inherits a stale value:
   - `HERDR_THREADS_OPENCODE_SESSION` = the call's `sessionID`;
@@ -77,7 +77,7 @@ The plugin keeps one **bound session**: the top-level session whose last lifecyc
 - `hook_admission_policy` is `RegisteredContract`; admission is versionless (`contract_declared`), no version probe.
 - No `local_evidence`, no `hook_step`, no `turn_state_edge`: the channel serves delivery, and the plugin holds the turn state.
 - A session is marked bound only when its lifecycle hook succeeded; until then every turn retries it. A watch refusal `no_binding` or `session_mismatch` clears the bound mark, so the next turn checks in again.
-- The plugin's own appends and wake prompts also raise `chat.message`. An append is skipped by a re-entrancy mark; a wake prompt is an ordinary top-level message and runs the turn hook.
+- The plugin's own appends and wake prompts also raise `chat.message` (probe). The plugin recognises them by the message ids and in-flight marks it keeps, never by payload shape: an append runs no hook, and a wake prompt runs the turn hook of the bound session and is never a lifecycle trigger.
 - **One plugin instance per process.** opencode can run a plugin's init more than once per process, and can load a second installed copy from another config directory. The plugin keeps a process-global guard: a later instance takes over only after the earlier one's `dispose`, and a second copy stays inert. Doctor flags a second installed copy.
 - A plugin reload loses the "created in this process" memory; the next lifecycle is then reported as `resume`, which is safe (C1 continuity by session id).
 - Hook failure, timeout or daemon down: the plugin injects nothing and the turn proceeds; a lifecycle hook prints the shared `check-in unavailable` notice as the other harnesses do. A hook that throws can fail an opencode turn, so every plugin hook body is wrapped and never throws.
@@ -87,15 +87,17 @@ The plugin keeps one **bound session**: the top-level session whose last lifecyc
 One primitive: **append**. The plugin stores the framed page in the bound session with `client.session.prompt({noReply: true, parts: [{type: "text", text, synthetic: true}]})`.
 
 - Framing is the existing one (`[herdr-threads] new messages:` then per-item header lines and indented bodies), produced in the plugin as `register.js` does, in the daemon's batch order. No new model-visible string.
-- **Busy session:** the appended message is read by the next step of the running turn, and no wake is sent. A waking item appended while busy sets a **wake-pending** mark, cleared only when a model step is seen starting after the append. If the session goes idle with the mark still set (the turn ended on its final text, an interrupt or a rejected permission), the plugin sends the wake. This is the Claude mod's rule: the append is the delivery, the wake only guarantees it a turn.
+- **Busy session:** the appended message is read by the next step of the running turn, and no wake is sent. A waking item appended while busy sets a **wake-pending** mark, cleared only when a model step is seen starting after the append. If the session goes idle with the mark still set (the turn ended on its final text, an interrupt or a rejected permission), the plugin sends the wake. The plugin also re-reads the status after every append, because an append that lands just after the session went idle starts no turn (probe). This is the Claude mod's rule: the append is the delivery, the wake only guarantees it a turn.
 - **Idle session, passive item** (not `wakes`, no ACK needed): appended, no turn. It is in context for the next turn. The session stays idle.
 - **Idle session, waking item** (`wakes: true` or ACK-required): appended, then the plugin calls `client.session.promptAsync` with the content-free wake text `herdr-threads: wake up` (22 bytes, the existing `WAKE_UP`). The turn that starts sees the appended rows.
-- **Ack:** after the append call returns the stored message, the plugin runs `watch ack --via append --row <msg id> <ids>`. The stored message id is the host evidence of entry that the `DeliveryPolicy` admission rule asks for, the same evidence class as the Claude mod's stored row. A truncated item is never acked. A failed append acks nothing and the item is offered again.
+- The appended message is hidden in the TUI (a synthetic part shows no bubble, probe item 1); the user sees the model's reply, as with the Claude mod's hidden rows.
+- **Ack:** after the append call returns the stored message (`data.info.id`), the plugin runs `watch ack --via append --row <msg id> <ids>`. The stored message id is the host evidence of entry that the `DeliveryPolicy` admission rule asks for, the same evidence class as the Claude mod's stored row. A truncated item is never acked. A failed append acks nothing and the item is offered again.
 - The wake is reported as `via submit` with no ids, as the Claude mod does.
 - The frame and batch-order code in the plugin is a third copy (after `src/delivery/frame.rs` and `register.js`); a parity golden pins it to the Rust framing. The plugin handles the whole watch-line protocol the mod does (attention lines, `presentation_epoch`, ack retry, restart on `binding_changed`, stop on `replaced` / `disabled`).
 - **Channel not live** (stalled and in its cooldown, `mod_delivery` off, watch refused): the turn hook delivers pending items at each turn start, as for a hooks-only harness. There is no wake in that state.
 - Idle gate for the wake: the bound session has no `busy` or `retry` status, no pending permission or question, no wake in flight, and the channel is live. Backoff after a failed submit follows the mod's rule.
 - Child sessions never receive deliveries and are never woken.
+- A woken turn can run in a session the TUI is not showing (D8), where a permission or question prompt blocks unseen. When the bound session raises `permission.asked` or `question.asked` during a turn the plugin started, the plugin shows a TUI toast naming the session. The toast is for the person; the model sees nothing.
 
 Alternative considered and kept as the in-plugin fallback if the probe shows append is unreliable with a real model: inject at `chat.message` (turn start) and `tool.execute.after` (post-tool), acked `via context`.
 
@@ -110,13 +112,13 @@ Alternative considered and kept as the in-plugin fallback if the probe shows app
 `herdr-threads setup opencode` writes two owned files under the opencode config root, recorded in the setup manifest with digests, as the agy plugin directory is:
 
 - `plugins/herdr-threads.js`: the plugin, embedded from `integrations/opencode/plugin/herdr-threads.js`, with a rendered launch line (absolute executable, `--state-dir`, `--host-endpoint`) as `register.js` has. No npm dependency, so opencode's dependency install is irrelevant to it.
-- `skills/herdr-threads/SKILL.md`: the shared skill plus an opencode section (its shell tool, the session variables).
+- `skills/herdr-threads/SKILL.md`: the shared skill plus an opencode section (its shell tool, the session variables). opencode dedupes same-named skills from `~/.agents/skills` and `~/.claude/skills` and picks the winner unpredictably (probe item 4). The copies share the common text, so the opencode-specific guidance also rides the lifecycle check-in (`OutputPolicy.extra_guidance`) and does not depend on which copy wins; doctor notes same-named copies.
 
 Config root: `--config-root`, else `OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`. `opencode.json` is never edited, so JSONC is not a concern.
 
-**Permission.** With consent (`--with-permissions`, asked interactively otherwise, as for agy), the rendered plugin adds `permission.bash["herdr-threads *"] = "allow"` and the same for `ht *` in its `config` hook. Without consent, opencode asks the user on the first call and its own "Allow always" covers the rest. This is the one unconfirmed mechanism; the probe checks it. If it does not work, there is no grant and doctor says so.
+**Permission.** With consent (`--with-permissions`, asked interactively otherwise, as for agy), the rendered plugin adds `permission.bash["herdr-threads *"] = "allow"` and the same for `ht *` in its `config` hook. Without consent, opencode asks the user on the first call and its own "Allow always" covers the rest. The probe confirmed the mechanism. Rules are last-match-wins in key order, so the plugin removes and re-adds its two keys to place them last. A user rule that sets either exact key to `deny` is respected: the plugin adds nothing for it and doctor reports it.
 
-Consent changes the rendered plugin, so the manifest records which variant was written and status does not report it as modified. `unsetup opencode` removes only the owned files. `status` and `doctor` report: plugin missing, modified or stale; skill missing; consent state. A plugin that failed to load is invisible to opencode's UI, so the plugin writes a small heartbeat record into the instance state dir at init, and doctor reports "installed, never loaded".
+Consent changes the rendered plugin, so the manifest records which variant was written and status does not report it as modified. `unsetup opencode` removes only the owned files. `status` and `doctor` report: plugin missing, modified or stale; skill missing; consent state. A plugin that failed to load is invisible to opencode's UI, so the plugin writes a small heartbeat record into the instance state dir at the end of its init, after its hooks are set up (code before a throw still runs, so an earlier write would prove nothing), and doctor reports "installed, never loaded".
 
 No `installer_policy` in this epic: `install.sh` keeps handling Claude and Codex; opencode is set up by `herdr-threads setup opencode`, as agy and Hermes are.
 
@@ -138,7 +140,7 @@ No `installer_policy` in this epic: `install.sh` keeps handling Claude and Codex
 | Plugin not loaded (`--pure`, load error, not set up) | No enrollment, no delivery, no wake. CLI calls are refused `session_claim_required`. Doctor reports "never loaded". |
 | opencode at the home screen with no session yet | Not enrolled until the first prompt. |
 | Resumed by hand (`-c` / `-s`) | Bound again at its first prompt. Until then the seat has no live channel and a sender sees `wake=no_wake`. |
-| `/new`, then idle at the home screen | The previous session stays bound and is still woken; its turn runs in a session the TUI is not showing. The next prompt rebinds to the new session. |
+| `/new`, then idle at the home screen | The previous session stays bound and is still woken; its turn runs in a session the TUI is not showing, the home screen does not change, and Herdr reports the pane `idle` (its status is read from the screen). A permission prompt in that turn blocks unseen except for the plugin's toast. The next prompt rebinds to the new session. |
 | `opencode serve` + `attach` | Plugins run in the server process, so its sessions are attributed to the server's pane, not the attaching client's. Existing accepted limit "foreground harness execution is user managed". |
 | Channel stalled (10-minute cooldown), or `mod_delivery` off | Items arrive at the next turn start through the turn hook; no wake; the sender sees `wake=no_wake`. CLI calls show the `N pending` hint. |
 | No permission consent | opencode asks the user per command until "Allow always". |
@@ -188,7 +190,7 @@ No invariant is weakened and no provenance value is added.
 3. **Wake e2e (opt-in, real model).** `scripts/wake-e2e.py --harness opencode`, a channel harness like Claude. Credential: `OPENROUTER_API_KEY` read from the Hermes env file at run time and passed only through a mode-0600 env file in the scratch root, removed at cleanup even with `--keep`; model `openrouter/deepseek/deepseek-v4-pro`. Never printed, logged, committed or kept in evidence. Not in the default release matrix.
 4. **Herdr matrix.** `scripts/herdr-release-smoke` gains an opencode stand-in for `launch` and every handoff target, as agy has.
 
-## Probe (first task, before the plugin is written)
+## Probe (done 2026-11-14, results in [probe-real-model.md](probe-real-model.md))
 
 A real opencode under isolated dirs, the OpenRouter DeepSeek model and an isolated Herdr test session. It records evidence for:
 
@@ -200,13 +202,13 @@ A real opencode under isolated dirs, the OpenRouter DeepSeek model and an isolat
 6. Plugin init failure visibility and `--pure`.
 7. An append during the final text step and during a rejected permission (the wake-pending cases).
 
-Each result either confirms a decision above or switches it to the stated fallback.
+Results: items 1-3 and 5-7 confirmed with `openrouter/deepseek/deepseek-v4-pro`; item 4 found the unpredictable skill winner. The findings are folded into D2-D8 above. No decision switched to its fallback.
 
 ## Decisions for the user
 
 1. **Wake by plugin channel, with no composer typing** (D1). The original brief assumed a typed composer wake; the research shows the plugin wake is safer and simpler. Cost: the dormant cases in D8.
 2. **Session claim through plugin-set variables** `HERDR_THREADS_OPENCODE_SESSION` / `_PARENT` (D2), since opencode exports none.
-3. **Delivery by appending a stored message** (D4), visible in the session transcript, rather than hidden hook injection.
+3. **Delivery by appending a stored message** (D4). It is hidden in the TUI, like the Claude mod's rows; the user sees the model's reply.
 4. **Permission grant inside the plugin, with consent**, never by editing `opencode.json` (D6).
 5. **Scope:** no typed fallback, no `install.sh` integration, no `serve`/`attach` support in this epic.
 

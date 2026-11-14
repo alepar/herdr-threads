@@ -1,0 +1,40 @@
+[38;5;15m[48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;233m                                                                                                                   [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;233m  [38;5;255mRun the bash command `herdr-threads probe one` and show its output.[38;5;15m                                              [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;233m                                                                                                                   [48;5;232m
+
+     [38;5;215m+ Thought: 177ms[38;5;15m
+
+  [38;5;232m[48;5;233m┃[38;5;15m                                                                                                                   [48;5;232m
+  [38;5;232m[48;5;233m┃[38;5;15m  [38;5;255m$ herdr-threads probe one[38;5;15m                                                                                        [48;5;232m
+  [38;5;232m[48;5;233m┃[38;5;15m                                                                                                                   [48;5;232m
+  [38;5;232m[48;5;233m┃[38;5;15m  [38;5;255mSTUB-HERDR-THREADS args=probe one session=ses_e269ba91effejjufQKIOr6wWj0[38;5;15m                                         [48;5;232m
+  [38;5;232m[48;5;233m┃[38;5;15m                                                                                                                   [48;5;232m
+
+     [38;5;215m+ Thought: 164ms[38;5;15m
+
+     [38;5;255mOutput:[38;5;15m
+
+     [38;5;255mSTUB-HERDR-THREADS args=probe one session=ses_e269ba91effejjufQKIOr6wWj0[38;5;15m
+
+     [38;5;255mThe [38;5;114mherdr-threads[38;5;255m command appears to be a stub that echoes back the arguments ([38;5;114mprobe one[38;5;255m) along with a generated [38;5;15m
+     [38;5;255msession ID.[38;5;15m
+
+     [38;5;75m▣ [38;5;15m [38;5;255mBuild[38;5;8m · DeepSeek V4 Pro · 3.2s[38;5;15m
+
+
+
+
+
+
+
+
+
+  [38;5;75m┃[38;5;15m[48;5;234m                                                                                                                   [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;234m                                                                                                                   [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;234m                                                                                                                   [48;5;232m
+  [38;5;75m┃[38;5;15m[48;5;234m  [38;5;75mBuild[38;5;15m [38;5;8m·[38;5;15m [38;5;255mDeepSeek V4 Pro[38;5;15m [38;5;8mOpenRouter[38;5;15m                                                                               [48;5;232m
+  [38;5;75m╹[38;5;234m▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀[38;5;15m
+   [38;5;8m/tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-[38;5;15m        [38;5;8m8.3K (1%) · $0[38;5;15m [38;5;255mctrl+p [38;5;15m
+   [38;5;8m30a107a133eb/scratchpad/oc-probe/proj[38;5;15m                                                                  [38;5;8mcommands[38;5;15m
+
