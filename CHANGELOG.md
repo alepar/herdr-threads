@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **`follow` names an agent `workspace/tab/pane`.** An agent author reads `project/tryout/alice`: the workspace and tab labels (else their IDs) and the pane label, left out for an unnamed pane (`project/tryout`). The seat ID is no longer part of the name. The name is also a `--seat SPACE/TAB/PANE` selector when the pane is named. Person seats and the bare seat ID shown without host labels are unchanged (ht-io66).
+
+### Added
+
+- **`follow --show-ids`** (also `read --follow --show-ids`) shows each author's pane ID and seat ID on a second line under its name (ht-io66).
+
 ## v3.1.2
 
 Fixes only; no store schema or peer wire change.

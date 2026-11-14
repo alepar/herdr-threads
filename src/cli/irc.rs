@@ -1,8 +1,8 @@
 //! IRC-style human transcript of a thread: `[HH:MM] <nick> message`.
 //!
-//! Used by the human form of `read` and by `read --follow`. A nick is the
-//! agent seat's Herdr space/pane label followed by its full seat ID. Human
-//! names remain relative to the live caller. Host labels and local occupant
+//! Used by the human form of `read` and by `read --follow`. An agent seat's
+//! nick is its Herdr `workspace/tab[/pane]` labels (`--show-ids` adds its pane
+//! and seat IDs on a second line). Human names remain relative to the live caller. Host labels and local occupant
 //! kinds are advisory display inputs only. System events (joins, accepts, leaves,
 //! ACKs, warnings) become `-!-` notice lines. Bodies are shown in full,
 //! wrapped under the message column; very long bodies are folded with a hint
@@ -61,6 +61,9 @@ pub struct Nick {
     pub name: String,
     /// The seat's canonical registered agent ID, or `human`.
     pub harness: Option<String>,
+    /// With `--show-ids`: the pane and seat IDs shown on the name column's
+    /// second line of a message ([`seat_ids_line`]).
+    pub ids: Option<String>,
 }
 
 impl Nick {
@@ -68,6 +71,7 @@ impl Nick {
         Self {
             name: short_seat(seat.as_str()),
             harness: None,
+            ids: None,
         }
     }
 
@@ -108,10 +112,11 @@ impl Nick {
     }
 }
 
-/// Absolute agent nick from the canonical seat target's advisory host labels.
-/// Without a host read, only the canonical seat ID is honest. Names use the
-/// existing terminal escaping and independent component bounds; no tab alias
-/// substitutes for a missing pane name.
+/// Absolute agent nick from the canonical seat target's advisory host labels:
+/// `workspace/tab[/pane]`, each the label else the id, the pane only when it
+/// has a label (`--show-ids` names it by id). Without a host read, only the
+/// canonical seat ID is honest. Names use the existing terminal escaping and
+/// independent component bounds.
 pub fn agent_seat_nick(
     seat: &SeatId,
     pane: Option<&crate::host::observation::SeatHostLabels>,
@@ -119,22 +124,54 @@ pub fn agent_seat_nick(
     let Some(pane) = pane else {
         return seat.as_str().to_owned();
     };
-    format!(
-        "{}/{}/{}",
+    let mut parts = vec![
         nick_label(&pane.workspace_label, &pane.workspace_id),
-        nick_label(&pane.pane_label, pane.target.as_str()),
-        seat.as_str()
-    )
+        nick_label(&pane.tab_label, &pane.tab_id),
+    ];
+    if let Some(label) = pane.pane_label.as_deref().filter(|label| !label.is_empty()) {
+        parts.push(nick_label(&None, label));
+    }
+    parts.join("/")
 }
 
-/// [`agent_seat_nick`] from the daemon's already-resolved workspace and pane
-/// labels of the seat's own host (label, else id).
-pub fn agent_seat_nick_named(seat: &SeatId, workspace: &str, pane: &str) -> String {
-    format!(
-        "{}/{}/{}",
-        nick_label(&None, workspace),
-        nick_label(&None, pane),
-        seat.as_str()
+/// [`agent_seat_nick`] from the daemon's already-resolved labels of the seat's
+/// own host (each the label, else the id). The published pane falls back to its
+/// target (`<session>:tN` for an hc terminal), so a pane equal to the seat's
+/// target is an id and left out; a peer that publishes no tab omits it.
+pub fn agent_seat_nick_named(
+    workspace: &str,
+    tab: Option<&str>,
+    pane: &str,
+    target: Option<&crate::protocol::ids::HostTargetId>,
+) -> String {
+    let mut parts = vec![nick_label(&None, workspace)];
+    if let Some(tab) = tab.filter(|tab| !tab.is_empty()) {
+        parts.push(nick_label(&None, tab));
+    }
+    let pane_is_id = target.is_some_and(|target| {
+        let target = target.as_str();
+        pane == target
+            || pane
+                .strip_suffix(target)
+                .is_some_and(|session| session.ends_with(':'))
+    });
+    if !pane.is_empty() && !pane_is_id {
+        parts.push(nick_label(&None, pane));
+    }
+    parts.join("/")
+}
+
+/// The `--show-ids` line of a seat: its pane (host target) ID when mapped,
+/// then its full seat ID.
+pub fn seat_ids_line(target: Option<&crate::protocol::ids::HostTargetId>, seat: &SeatId) -> String {
+    let ids = match target {
+        Some(target) => format!("{} {}", target.as_str(), seat.as_str()),
+        None => seat.as_str().to_owned(),
+    };
+    one_line(
+        &crate::view::escape::escape_for_terminal(&ids, crate::view::escape::Context::SingleLine),
+        false,
+        usize::MAX,
     )
 }
 
@@ -285,12 +322,14 @@ fn author(summary: &MessageSummary, lookup: &mut dyn Lookup) -> Option<Nick> {
                 .clone()
                 .unwrap_or_else(|| service.as_str().to_owned()),
             harness: None,
+            ids: None,
         }),
         (Some(EventAuthor::Native(seat)), _) | (_, Some(seat)) => Some(lookup.nick(seat)),
         (Some(EventAuthor::BuiltIn), None) | (None, None) => {
             summary.actor_label.as_ref().map(|label| Nick {
                 name: label.clone(),
                 harness: None,
+                ids: None,
             })
         }
     }
@@ -303,8 +342,9 @@ pub fn render_message(summary: &MessageSummary, lookup: &mut dyn Lookup, style: 
     let mut out = String::new();
     match summary.kind {
         MessageKind::Ordinary => {
-            let nick =
-                author(summary, lookup).map_or_else(|| "system".to_owned(), |nick| nick.display());
+            let author = author(summary, lookup);
+            let ids = author.as_ref().and_then(|nick| nick.ids.clone());
+            let nick = author.map_or_else(|| "system".to_owned(), |nick| nick.display());
             let markers = summary.author_markers();
             let prefix_plain = format!("{time} <{nick}>{markers} ");
             let prefix_shown = format!(
@@ -312,11 +352,14 @@ pub fn render_message(summary: &MessageSummary, lookup: &mut dyn Lookup, style: 
                 paint(&nick, nick_color(&nick), style)
             );
             let (body, hint) = ordinary_body(summary, lookup);
+            // The ids sit under the nick text, after `<`.
+            let ids = ids.map(|ids| (display_width(&time) + 2, ids));
             emit(
                 &prefix_plain,
                 &prefix_shown,
                 &body,
                 hint,
+                ids,
                 summary,
                 style,
                 &mut out,
@@ -340,6 +383,7 @@ pub fn render_message(summary: &MessageSummary, lookup: &mut dyn Lookup, style: 
                 &prefix_plain,
                 &prefix_shown,
                 &text,
+                None,
                 None,
                 summary,
                 style,
@@ -403,11 +447,16 @@ fn body_hint(summary: &MessageSummary) -> String {
 }
 
 /// Wrap `body` under the message column and fold it past `style.max_lines`.
+/// `ids` (column, text) is the name column's second line: the second body
+/// line continues beside it when it fits before the message column, else it
+/// takes a line of its own.
+#[allow(clippy::too_many_arguments)]
 fn emit(
     prefix_plain: &str,
     prefix_shown: &str,
     body: &str,
     hint: Option<String>,
+    ids: Option<(usize, String)>,
     summary: &MessageSummary,
     style: &Style,
     out: &mut String,
@@ -441,14 +490,33 @@ fn emit(
     } else {
         total
     };
+    let mut ids = ids;
     for (index, line) in lines.iter().take(shown).enumerate() {
         if index == 0 {
             out.push_str(prefix_shown);
+        } else if let Some((column, text)) = ids.take() {
+            let width = display_width(&text);
+            out.push_str(&" ".repeat(column));
+            out.push_str(&paint(&text, "2", style));
+            if column + width < indent {
+                out.push_str(&" ".repeat(indent - column - width));
+            } else {
+                out.push('\n');
+                out.push_str(&pad);
+            }
         } else {
             out.push_str(&pad);
         }
         out.push_str(line.trim_end());
         out.push('\n');
+        if index == 0
+            && shown == 1
+            && let Some((column, text)) = ids.take()
+        {
+            out.push_str(&" ".repeat(column));
+            out.push_str(&paint(&text, "2", style));
+            out.push('\n');
+        }
     }
     if let Some(hint) = hint {
         out.push_str(&pad);

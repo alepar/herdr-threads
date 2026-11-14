@@ -4719,9 +4719,9 @@ mod scoped_runtime {
                     "w1:t2",
                     "tryout",
                     "alice",
-                    "project/alice/recipient",
+                    "project/tryout/alice",
                 ),
-                ("peer", "w1:p3", "w1:t1", "main", "bob", "project/bob/peer"),
+                ("peer", "w1:p3", "w1:t1", "main", "bob", "project/main/bob"),
             ] {
                 let nick = crate::cli::irc::agent_seat_nick(
                     &SeatId::new(seat),
@@ -4733,7 +4733,8 @@ mod scoped_runtime {
                     .run(&["inbox", "--seat", &nick])
                     .unwrap_or_else(|e| panic!("{nick}: {e:?}"));
                 assert_eq!(frozen_read_seats(&runtime), vec![seat.to_owned()], "{nick}");
-                assert!(lines().is_empty(), "{nick} is a nickname, not a name");
+                // The nick is a SPACE/TAB/PANE name: it resolves like one.
+                assert_eq!(lines().len(), 1, "{nick} resolves as a name");
             }
             // The same nickname through an agent name of the pane.
             let runtime = matrix_runtime();

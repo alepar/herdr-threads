@@ -1025,6 +1025,7 @@ mod escaping {
                 irc::Nick {
                     name: "漢字漢字".into(),
                     harness: None,
+                    ids: None,
                 }
             }
         }
