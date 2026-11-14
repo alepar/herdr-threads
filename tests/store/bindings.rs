@@ -2488,6 +2488,53 @@ mod lineage {
         assert_eq!(third.lineage_from, Some(successor.binding_id.clone()));
         assert_eq!(unread(&db, &third), ["msg-4"]);
     }
+
+    // ht-y3iv (wake survey 2026-11-13, A). The live replays all followed a Herdr server
+    // restart: the seat went unresolved (every binding ended), then the resumed session's C1
+    // reattachment resolved a lifecycle claim for the same native session, which reopens its row
+    // or enrolls a new one at the seat's read position. Kills: either outcome offering the seat's
+    // own earlier sends (this session's or an earlier session's) as unread.
+    #[test]
+    fn a_session_resumed_after_a_host_restart_is_not_offered_the_seats_own_sends() {
+        let db = db();
+        let earlier = resolve(&db, &claim("sess-old", 6), None);
+        own_send(&db, 3, &earlier);
+        end_open_bindings(
+            &db,
+            &SeatId::new("s"),
+            DisconnectReason::SeatUnresolved,
+            UtcMillis(20),
+        )
+        .unwrap();
+        let session = resolve(&db, &claim("sess-A", 7), None);
+        assert!(
+            unread(&db, &session).is_empty(),
+            "an earlier session's send"
+        );
+        own_send(&db, 4, &session);
+        end_open_bindings(
+            &db,
+            &SeatId::new("s"),
+            DisconnectReason::SeatUnresolved,
+            UtcMillis(30),
+        )
+        .unwrap();
+        // Reopened: the same row, its own read position kept.
+        let reopened = resolve(&db, &claim("sess-A", 7), None);
+        assert_eq!(reopened.binding_id, session.binding_id);
+        assert!(unread(&db, &reopened).is_empty(), "the session's own send");
+        // Enrolled anew (a reattachment whose row was not reopened): the seat's read position.
+        end_open_bindings(
+            &db,
+            &SeatId::new("s"),
+            DisconnectReason::Superseded,
+            UtcMillis(40),
+        )
+        .unwrap();
+        let fresh = resolve(&db, &claim("sess-A", 7), None);
+        assert_ne!(fresh.binding_id, session.binding_id);
+        assert!(unread(&db, &fresh).is_empty(), "every earlier own send");
+    }
 }
 
 /// ht-54r.25: the side-effect registries are wired. A hook that is written but not registered
