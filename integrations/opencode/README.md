@@ -102,6 +102,10 @@ has the plugin loaded now. Doctor also lists same-named `herdr-threads` skills i
 
 - **Plugin not loaded** (`--pure`, a load error, setup not run): no enrollment, delivery or wake;
   CLI calls are refused `session_claim_required` naming `HERDR_THREADS_OPENCODE_SESSION`.
+- **The first start after setup needs the npm registry.** Once any plugin is configured, opencode
+  waits for its own `@opencode-ai/plugin` install before it starts: about 5 s once when online;
+  without registry access the TUI stays blank for about 70 s, and typed keys are lost, on every
+  start until one install succeeds.
 - **A woken session can be one the TUI is not showing.** After `/new` or a session switch the
   plugin keeps the previous session bound until the next prompt, so a wake runs it in the
   background and Herdr shows the pane idle. A permission or question in that turn blocks unseen;

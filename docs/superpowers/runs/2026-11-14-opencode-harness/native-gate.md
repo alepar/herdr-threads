@@ -49,6 +49,35 @@ None in the plugin or the adapter. Two harness-side facts, kept in the test:
 - opencode's HTTP server keeps the connection open despite `connection: close`, so a client must read by `content-length` or chunked framing.
 - The background dependency install blocks the instance bootstrap until it fails, which takes about 70 s against a refused proxy. The registry redirect avoids that wait.
 
+## Startup dependency install (PR roast 1, F2)
+
+Measured 2026-11-14 on opencode `1.18.1` (observed, not pinned), model-free, with the herdr-threads plugin as the only configured plugin.
+
+**Method.**
+- Driver: a throwaway script, not committed. Each run used its own scratch root: `HOME`, the four `XDG_*_HOME`, `TMPDIR`, and `OPENCODE_CONFIG_DIR` set to `$XDG_CONFIG_HOME/opencode`, so there is one config dir. There was no credential. The model was a custom provider on a dead loopback port, and `OPENCODE_DISABLE_AUTOUPDATE`, `_MODELS_FETCH`, `_LSP_DOWNLOAD` and `_SHARE` were set.
+- The plugin was this branch's file with its launch line pointing at a stub `herdr-threads` that logs a timestamp per hook call. The stub prints nothing, so the session never binds and no `watch` runs. The heartbeat's `loaded_at` marks the end of the plugin's init.
+- "Offline" means a private network namespace with loopback only (`unshare -rn`, as the gate does). "Online" means the host network with the real npm registry, a read-only fetch into the scratch dirs.
+- Serve runs: `opencode serve` on loopback, then `POST /session`, then a `noReply` message, which fires `chat.message` and so the first hook. TUI runs: the TUI in a private tmux, 120x40, with the namespace entered inside the pane. `hi` + Enter was typed 1 s after the composer was drawn.
+
+| Run | Plugin loaded (heartbeat) | First hook | Notes |
+|---|---|---|---|
+| serve, offline, no plugin configured | n/a | n/a | `POST /session` answered at 0.7 s: no wait without a plugin |
+| serve, offline, first start (never installed) | 70.8 s | 70.8 s | `POST /session` blocked 70 s; the log has `background dependency install failed`; nothing written to the config dir |
+| serve, offline, second start (still never installed) | 70.8 s | 70.9 s | the same wait on every start until one install succeeds |
+| serve, online, first start | 4.8 s | 4.8 s | installs `@opencode-ai/plugin` `1.18.1` into the config dir: `package.json`, `package-lock.json`, `node_modules/` (62 MB) |
+| serve, online, later start | 0.6 s | 0.7 s | installed dir reused |
+| serve, offline, after a successful install | 0.6 s | 0.6 s | no network needed once installed |
+| TUI, offline, first start | 71.8 s | 73.5 s | **the screen stays blank until 72.5 s**: no composer, and keys typed before it appears are lost (a `hi` typed at 3 s never arrived); the first prompt typed after it ran its hook at once |
+| TUI, offline, after a successful install | 1.6 s | 3.3 s | composer at 2.2 s |
+
+Side observation: copying only `node_modules/` and `package.json` (no `package-lock.json`) into a fresh offline root still waited 71.8 s. Only a complete install skips the wait.
+
+**Source** (`anomalyco/opencode` v1.18.1):
+- `config/config.ts` forks an `@opencode-ai/plugin` install for every config directory at every instance bootstrap, detached.
+- `plugin/index.ts:180` joins those installs (`waitForDependencies`) before it loads external plugins, only `if (plugins.length)`.
+
+So the wait comes from configuring any plugin, ours included. A user on a network sees it once, about 5 s, at the first start after setup. A user without registry access waits about 70 s, behind a blank TUI, on every start until one install succeeds. No cheap doctor signal was added: the wait joins the installs of every config directory opencode reads, project `.opencode/` directories included, so checking one root's `node_modules` would be a partial answer.
+
 ## Hygiene
 
 - The real `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`, `~/.cache/opencode` and `~/.opencode` kept their mtimes, and no file under them was newer than the session start.
