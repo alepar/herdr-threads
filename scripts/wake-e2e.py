@@ -61,6 +61,20 @@ harnesses get their credentials:
   is read or used. The first-run screens (colour scheme, Terms of Service) are walked with keys. Like Codex, agy
   wakes natively (`herdr-threads: wake up` typed into an empty composer) and its hook delivers a page, so its
   mixed-order presentation order is judged.
+- opencode (opt-in only, `--harness opencode`, never in the default matrix; any harness mode): real opencode TUIs
+  (`oc-t0`, `oc-t-1`, `oc-t3`) with HOME, the four XDG_*_HOME dirs, TMPDIR and OPENCODE_CONFIG_DIR in the scratch
+  root. `setup opencode --with-permissions` (the consent an unattended run gives) installs the plugin and skill into
+  that OPENCODE_CONFIG_DIR; a scratch global opencode.json selects the OpenRouter model (--opencode-model, default
+  openrouter/deepseek/deepseek-v4-pro) and allows every shell command (no permission dialog can hold a turn). The
+  agents work in a scratch project dir. The model credential comes only from OPENROUTER_API_KEY in the driver's
+  environment: it is never passed to a helper process, reaches the panes only through a private mode-0600 env file in
+  the scratch root (removed at cleanup even with --keep), and every evidence file is scanned for it at the end (a
+  hit is scrubbed and fails the run). opencode is a channel harness like Claude's mod: its plugin appends each item
+  to the session and wakes it itself, so mixed-order is unjudged; every opencode row also checks, from the plugin's
+  own ledger, that items arrived by append and that a wake was the plugin's submit (none when no wake is expected),
+  and that the composer is left empty. The recipient's transcript is read from its own sessions in the scratch
+  opencode.db (synthetic appended parts left out, as the TUI hides them), so a turn that scrolled off the
+  alternate screen is still judged.
 - hermes (opt-in only, `--harness hermes --hermes-home DIR`, never in the default matrix): DIR is a scratch HOME that
   Hermes' own installer (`HOME=DIR bash setup-hermes.sh`) installed into, with its model credential and the telemetry
   answer already in DIR/.hermes (docs/evidence/hermes-composer/README.md). The driver runs `setup hermes` and
@@ -321,16 +335,129 @@ CODEX_BYPASS_ARGS = "--dangerously-bypass-approvals-and-sandbox"
 CONTAINER_MARKER = "HT_LINUX_E2E_CONTAINER"
 DOCKERENV = Path("/.dockerenv")
 CLAUDE_CREDENTIAL_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
-HARNESSES = ("claude", "codex", "agy", "hermes")
+HARNESSES = ("claude", "codex", "agy", "hermes", "opencode")
 # What a Hermes 0.22.1+ pane's client must send its gateway session for the session to take that pane's seat.
 HERMES_PASSTHROUGH = ("HERDR_PANE_ID", "HERDR_ENV")
 # An inherited Hermes root or profile (any Hermes session exports HERMES_HOME) would point `setup hermes` and every
 # `hermes --profile default` command at the operator's real Hermes, not the scratch home.
 HERMES_ROOT_ENV = ("HERMES_HOME", "HERMES_PROFILE")
 DEFAULT_HARNESSES = "claude,codex"
+SHORT_NAMES = {"opencode": "oc"}  # recipient name prefix; the others use the harness's first two letters
 # agy (opt-in): its model credential, and the optional endpoint override the agy relay uses.
 AGY_CREDENTIAL_ENV = "GEMINI_API_KEY"
 AGY_ENDPOINT_ENV = "GOOGLE_GEMINI_BASE_URL"
+# opencode (opt-in): its OpenRouter credential (never handed to a helper process, see Run.run) and model.
+OPENCODE_CREDENTIAL_ENV = "OPENROUTER_API_KEY"
+OPENCODE_MODEL = "openrouter/deepseek/deepseek-v4-pro"
+OPENCODE_SMALL_MODEL = "openrouter/deepseek/deepseek-v4-flash"
+# opencode's TUI draws a user turn (a typed prompt or the plugin's wake) and a tool call as `┃`-bordered blocks; its
+# composer is the last such block, closed by a `╹▀▀▀` rule, whose last row is the agent/model line.
+OPENCODE_BORDER = "┃"
+OPENCODE_COMPOSER_END = "╹▀"
+OPENCODE_PLACEHOLDER = "Ask anything"  # the home-screen composer's placeholder
+OPENCODE_SETTLE_S = 5.0
+
+
+def opencode_config(model):
+    """The scratch global opencode.json: the OpenRouter model, no update or share traffic, and every shell command
+    and outside directory allowed, so no permission dialog can hold a recipient's turn (setup's own consented
+    `herdr-threads *` / `ht *` grant is added by the plugin's config hook on top)."""
+    return {"$schema": "https://opencode.ai/config.json", "model": model, "small_model": OPENCODE_SMALL_MODEL,
+            "autoupdate": False, "share": "disabled",
+            "permission": {"bash": {"*": "allow"}, "external_directory": "allow"}}
+
+
+def opencode_composer(screen):
+    """The text in opencode's composer on a visible screen ('' when empty), or None when no composer is drawn: the
+    `┃` rows directly above the last `╹▀` rule, without the last one (the agent/model line)."""
+    lines = screen.splitlines()
+    end = max((i for i, l in enumerate(lines) if l.lstrip().startswith(OPENCODE_COMPOSER_END)), default=None)
+    if end is None:
+        return None
+    block = []
+    for line in reversed(lines[:end]):
+        if not line.lstrip().startswith(OPENCODE_BORDER):
+            break
+        block.append(line.strip()[len(OPENCODE_BORDER):].strip())
+    if not block:
+        return None
+    return " ".join(t for t in reversed(block[1:]) if t)
+
+
+def opencode_transcript(db, sessions, output_lines=20):
+    """What opencode's TUI shows of `sessions` (ids), rebuilt from its opencode.db read-only, in message order: a
+    user text part as a `┃`-bordered block, a tool call as `┃  $ <command>` plus its first output lines, assistant
+    text indented. Synthetic parts (the plugin's appended pages, the hook's check-in context) are left out, as the
+    TUI hides them, so an id seen here was printed by the model or a tool. '' without a readable db."""
+    if not sessions or not Path(db).is_file():
+        return ""
+    marks = ",".join("?" * len(sessions))
+    try:
+        with contextlib.closing(sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)) as c:
+            rows = c.execute(
+                f"SELECT m.data, p.data FROM part p JOIN message m ON m.id = p.message_id WHERE p.session_id IN "
+                f"({marks}) ORDER BY m.time_created, m.id, p.time_created, p.id", list(sessions)).fetchall()
+    except sqlite3.Error:
+        return ""
+    out = []
+    for mdata, pdata in rows:
+        try:
+            role, part = json.loads(mdata).get("role"), json.loads(pdata)
+        except (ValueError, AttributeError):
+            continue
+        if not isinstance(part, dict) or part.get("synthetic"):
+            continue
+        kind = part.get("type")
+        if kind == "text" and role == "user":
+            out += ["", f"  {OPENCODE_BORDER}"] + [f"  {OPENCODE_BORDER}  {l}" for l in str(part.get("text", "")).splitlines()]
+            out.append(f"  {OPENCODE_BORDER}")
+        elif kind == "text":
+            out += [""] + [f"     {l}" for l in str(part.get("text", "")).splitlines()]
+        elif kind == "tool":
+            state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            inp = state.get("input") if isinstance(state.get("input"), dict) else {}
+            what = inp.get("command") or f"{part.get('tool')} {json.dumps(inp)[:200]}"
+            body = str(state.get("output") or "").splitlines()[:output_lines]
+            out += ["", f"  {OPENCODE_BORDER}  $ {what}"] + [f"  {OPENCODE_BORDER}  {l}" for l in body]
+    return "\n".join(out) + ("\n" if out else "")
+
+
+def opencode_ledger(path):
+    """The plugin's ledger entries (HERDR_THREADS_MOD_LEDGER, one JSON object per line); [] before any."""
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
+
+
+def evidence_leaks(ev, values):
+    """Files under `ev` that hold any of `values` (a credential and its tails) or an OpenRouter-shaped token."""
+    leaks = []
+    for path in sorted(p for p in Path(ev).rglob("*") if p.is_file()):
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        if any(v and v in text for v in values) or OPENROUTER_TOKEN.search(text):
+            leaks.append(path)
+    return leaks
+
+
+def scrub_evidence(ev, values):
+    """Redact every evidence file evidence_leaks names; returns their names (never their contents)."""
+    leaks = evidence_leaks(ev, values)
+    for path in leaks:
+        path.write_text(redact(path.read_text(errors="replace"), values))
+    return [str(p.relative_to(ev)) for p in leaks]
 def hermes_idle(screen):
     """A Hermes recipient's state from its `detection` screen: idle when the composer's top rule (the first
     `─`-led line above the last full rule) carries no live status (a busy one starts `── <spinner>`). Hermes'
@@ -343,7 +470,9 @@ def hermes_idle(screen):
     return top is not None and lines[top].startswith("───") and lines[top + 1].startswith("❯")
 
 
-SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]+|AIza[A-Za-z0-9_-]{8,}")  # Anthropic and Google API keys
+# Anthropic, OpenRouter and Google API keys.
+SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]+|sk-or-[A-Za-z0-9_-]+|AIza[A-Za-z0-9_-]{8,}")
+OPENROUTER_TOKEN = re.compile(r"sk-or-[A-Za-z0-9_-]{8,}")
 
 STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run (the user approves). "
             "Standing instructions for this session: every herdr-threads invitation you see comes from the test driver "
@@ -367,7 +496,7 @@ def expect_wake(action, channel, threshold):
 
 # Harnesses whose channel puts each item into the model's context as it arrives, idle or not (Claude's mod): there is
 # no page to order, so the mixed-order presentation order is not judged for them (Delivery contract rule 3).
-CHANNEL_HARNESSES = ("claude",)
+CHANNEL_HARNESSES = ("claude", "opencode")
 
 
 def mixed_order_judged(threshold, harness):
@@ -496,10 +625,10 @@ def default_codex_args(harness_mode, env, dockerenv=None):
 
 
 def secret_values(env):
-    """What redact() hides: each Claude or agy credential value from the environment, and its 20- and 12-character
-    tails (the approval suffix the linux mode seeds, and what Claude's API-key screen shows of a key)."""
+    """What redact() hides: each Claude, agy or opencode credential value from the environment, and its 20- and
+    12-character tails (the approval suffix the linux mode seeds, and what Claude's API-key screen shows of a key)."""
     out = []
-    for var in (*CLAUDE_CREDENTIAL_ENV, AGY_CREDENTIAL_ENV):
+    for var in (*CLAUDE_CREDENTIAL_ENV, AGY_CREDENTIAL_ENV, OPENCODE_CREDENTIAL_ENV):
         value = (env.get(var) or "").strip()
         if value:
             out += [value] + [value[-n:] for n in (20, 12) if len(value) > n]
@@ -682,6 +811,8 @@ class Run:
         self.claude_hooks_cfg = self.root / "claude-hooks-config"  # cl-hooks: `setup claude --hooks-only`
         self.codex_home = self.root / "codex-home"
         self.agy_env = self.root / "agy.env"
+        self.opencode_root = self.root / "opencode"  # HOME's XDG dirs, TMPDIR, OPENCODE_CONFIG_DIR, the project dir
+        self.opencode_env = self.root / "opencode.env"  # the OpenRouter credential, private, removed even with --keep
         self.claude_env = self.root / "claude.env"  # linux: the Claude credential, written only when one is set
         self.hermes_home = Path(args.hermes_home).resolve() if getattr(args, "hermes_home", None) else None
         self.bindir = self.root / "bin"
@@ -715,6 +846,9 @@ class Run:
         """Run one helper process. Every helper is registered while it runs, so cleanup can terminate it; once
         cleanup has begun only cleanup's own helpers may start (others raise Stopped)."""
         started = time.monotonic()
+        # The opencode credential reaches no helper (herdr, the daemon, a version probe): only the panes, through
+        # the private env file.
+        env = {k: v for k, v in (os.environ if env is None else env).items() if k != OPENCODE_CREDENTIAL_ENV}
         with self.lock:  # admission and registration are atomic with cleanup's stop
             if self.stopping.is_set() and not cleanup:
                 raise Stopped(f"cleanup has begun: not starting {argv[:3]}")
@@ -820,11 +954,15 @@ class Run:
         if "agy" in self.args.harness and not (os.environ.get(AGY_CREDENTIAL_ENV) or "").strip():
             problems.append(f"no agy credential in the environment: --harness agy needs {AGY_CREDENTIAL_ENV} "
                             "(no Google sign-in is used)")
+        if "opencode" in self.args.harness and not (os.environ.get(OPENCODE_CREDENTIAL_ENV) or "").strip():
+            problems.append(f"no opencode credential in the environment: --harness opencode needs "
+                            f"{OPENCODE_CREDENTIAL_ENV} (OpenRouter)")
         if problems:
             raise Refused("; ".join(problems))
         versions = {}
         for name, argv in (("herdr", ["herdr", "--version"]), ("herdr-threads", [self.bin, "--version"]),
-                           *((h, [h, "--version"]) for h in self.args.harness if h != "hermes")):
+                           # opencode's version is read in setup_opencode, under its scratch HOME and XDG dirs
+                           *((h, [h, "--version"]) for h in self.args.harness if h not in ("hermes", "opencode"))):
             versions[name] = clip(self.run(argv, tag="version")[1].strip(), 120, getattr(self, 'secrets', None))
         if "hermes" in self.args.harness:
             out = self.run([str(self.hermes_bin()), "--version"], env=self.hermes_env(), tag="version")[1]
@@ -938,7 +1076,11 @@ class Run:
         if "agy" in self.args.harness:
             seed_agy_home(self.home, self.cwd)
             write_private(self.agy_env, "".join(f"export {k}={shlex.quote(v)}\n" for k, v in agy_env(os.environ)))
+        if "opencode" in self.args.harness:
+            self.setup_opencode()
         for h in self.args.harness:
+            if h == "opencode":
+                continue
             if h == "hermes":
                 env = {"HOME": str(self.hermes_home), "PATH": self.hermes_env()["PATH"]}
                 self.ht("setup", h, "--profile", "default", env=env, tag="setup:hermes", timeout=120)
@@ -968,6 +1110,47 @@ class Run:
                 text = text.rstrip("\n") + "\n\n[notice]\nhide_rate_limit_model_nudge = true\n"
             cfg.write_text(text)
         print(f"  isolated daemon up; hooks installed by setup for {', '.join(self.args.harness)}", flush=True)
+
+    def opencode_dirs(self):
+        """name -> scratch path of every directory an opencode recipient's environment names."""
+        o = self.opencode_root
+        return {"XDG_CONFIG_HOME": o / "config", "XDG_DATA_HOME": o / "data", "XDG_STATE_HOME": o / "state",
+                "XDG_CACHE_HOME": o / "cache", "TMPDIR": o / "tmp", "OPENCODE_CONFIG_DIR": o / "config-dir",
+                "project": o / "project", "ledger": o / "ledger"}
+
+    @property
+    def opencode_db(self):
+        return self.opencode_dirs()["XDG_DATA_HOME"] / "opencode" / "opencode.db"
+
+    def setup_opencode(self):
+        """The scratch opencode: its dirs, the global opencode.json, the credential file, then the public
+        `setup opencode --with-permissions` into the scratch OPENCODE_CONFIG_DIR (plugin and skill)."""
+        dirs = self.opencode_dirs()
+        for d in dirs.values():
+            d.mkdir(mode=0o700, parents=True, exist_ok=True)
+        cfg = dirs["XDG_CONFIG_HOME"] / "opencode"
+        cfg.mkdir(mode=0o700, exist_ok=True)
+        write_private(cfg / "opencode.json", json.dumps(opencode_config(self.args.opencode_model), indent=2) + "\n")
+        key = (os.environ.get(OPENCODE_CREDENTIAL_ENV) or "").strip()
+        write_private(self.opencode_env, f"export {OPENCODE_CREDENTIAL_ENV}={shlex.quote(key)}\n")
+        env = {"HOME": str(self.home), "XDG_CONFIG_HOME": str(dirs["XDG_CONFIG_HOME"]),
+               "OPENCODE_CONFIG_DIR": str(dirs["OPENCODE_CONFIG_DIR"])}
+        self.ht("setup", "opencode", "--with-permissions", env=env, tag="setup:opencode", timeout=120)
+        out = self.run([shutil.which("opencode") or "opencode", "--version"], env=self.opencode_env_vars(),
+                       tag="version", timeout=60)[1]
+        self.facts["versions"]["opencode"] = clip(out.strip(), 120, self.secrets)
+        print(f"  opencode: {self.facts['versions']['opencode']}", flush=True)
+
+    def opencode_env_vars(self):
+        """The environment of an opencode the driver itself runs (no model, so no credential): the scratch HOME,
+        XDG dirs and TMPDIR, never the real ones."""
+        dirs = self.opencode_dirs()
+        env = {k: v for k, v in os.environ.items()
+               if k not in CALLER_SESSION_ENV and not k.startswith(("XDG_", "OPENCODE")) and k != "HERDR_PANE_ID"}
+        env.update({k: str(dirs[k]) for k in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+                                              "TMPDIR", "OPENCODE_CONFIG_DIR")},
+                   HOME=str(self.home), OPENCODE_DISABLE_AUTOUPDATE="1")
+        return env
 
     def tab(self, label):
         data = self.herdr("tab", "create", "--workspace", self.workspace, "--cwd", self.cwd, "--label", label,
@@ -1000,7 +1183,7 @@ class Run:
         self.recipients = []
         for h in self.args.harness:
             for threshold in THRESHOLDS:
-                name = f"{h[:2]}-t{threshold}"
+                name = f"{SHORT_NAMES.get(h, h[:2])}-t{threshold}"
                 pane = self.tab(name)
                 self.recipients.append(Recipient(self, name, h, threshold, pane, self.seat(pane)))
         if "codex" in self.args.harness and getattr(self, "side_cases", False):
@@ -1016,7 +1199,7 @@ class Run:
         print(f"  workspace {self.workspace}: coordinators {self.coord_seats()}; " +
               ", ".join(f"{r.name}={r.seat or r.pane}" for r in self.recipients), flush=True)
 
-    def launch_line(self, harness, plain=False, hooks_only=False):
+    def launch_line(self, harness, plain=False, hooks_only=False, name=None):
         q = shlex.quote
         path = f"PATH={q(str(self.bindir))}:\"$PATH\""
         if harness == "claude":
@@ -1045,6 +1228,16 @@ class Run:
             hh = self.hermes_home
             return (f"unset CODEX_HOME {' '.join(HERMES_ROOT_ENV)}; PATH={q(str(self.bindir))}:{q(str(self.hermes_bin().parent))}:\"$PATH\" "
                     f"HOME={q(str(hh))} HERDR_AGENT=hermes exec hermes")
+        if harness == "opencode":
+            # The credential stays in the private env file; the pane's command line and screen never carry it.
+            dirs = self.opencode_dirs()
+            xdg = " ".join(f"{k}={q(str(dirs[k]))}" for k in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+                                                               "XDG_CACHE_HOME", "TMPDIR", "OPENCODE_CONFIG_DIR"))
+            ledger = f"HERDR_THREADS_MOD_LEDGER={q(str(dirs['ledger'] / (name or 'opencode')))}.jsonl "
+            opencode = shutil.which("opencode") or "opencode"
+            return (f"( . {q(str(self.opencode_env))} && cd {q(str(dirs['project']))} && {path} "
+                    f"HOME={q(str(self.home))} {xdg} OPENCODE_DISABLE_AUTOUPDATE=1 {ledger}HERDR_AGENT=opencode "
+                    f"exec {q(opencode)} )")
         if harness == "agy":
             # The credential stays in the private env file; the pane's command line and screen never carry it.
             # By absolute path: the pane's shell has the Herdr server's PATH, not this driver's.
@@ -1080,6 +1273,7 @@ class Run:
             problems = [f"drain raised: {e!r}"]
         steps = []
         self.remove_agy_env(problems)  # a running agy already holds the key; the file never outlives the run
+        self.remove_opencode_env(problems)  # likewise for a running opencode
         self.remove_claude_env(problems)
         if self.args.keep:
             self.cleanup_report = {"skipped": "--keep", "workspace": self.workspace,
@@ -1301,6 +1495,15 @@ class Run:
             path.unlink(missing_ok=True)
         except OSError as e:
             problems.append(f"agy credential file not removed: {e!r}")
+
+    def remove_opencode_env(self, problems):
+        path = getattr(self, "opencode_env", None)
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            problems.append(f"opencode credential file not removed: {e!r}")
 
     def remove_claude_env(self, problems):
         path = getattr(self, "claude_env", None)
@@ -1545,7 +1748,7 @@ def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROM
 
 
 def is_wake_line(text):
-    text = text.strip().lstrip("›❯> ")  # Codex, Claude, agy prompt glyphs
+    text = text.strip().lstrip("›❯> ┃")  # Codex, Claude, agy prompt glyphs; opencode's user-turn border
     return text in ("herdr-threads: wake up", CHANNEL_WAKE_UP) or text.startswith("herdr-threads: attention pending")
 
 
@@ -1664,8 +1867,75 @@ class Recipient:
         return self.read("visible") or ""
 
     def screen(self, lines=400):
+        if self.harness == "opencode":  # the alternate screen keeps no history: read the session transcript
+            text = self.transcript()
+            if text:
+                return text
         data = self.read("recent-unwrapped", "--lines", str(lines))
         return data if data is not None else self.visible()
+
+    # ---------- opencode (channel harness) ----------
+    def opencode_sessions(self):
+        """Every native session the seat's top-level bindings named, ended ones included (a session rebinds)."""
+        return sorted({s for (s,) in self.store_rows(
+            "SELECT DISTINCT native_session FROM occupant_bindings WHERE seat_id=? AND role='top_level' "
+            "AND native_session IS NOT NULL", (self.seat,)) if s})
+
+    def transcript(self):
+        return opencode_transcript(self.run.opencode_db, self.opencode_sessions())
+
+    def ledger_path(self):
+        return self.run.opencode_dirs()["ledger"] / f"{self.name}.jsonl"
+
+    def ledger(self):
+        return opencode_ledger(self.ledger_path())
+
+    def channel_checks(self, checks, since, expect_wake, mids=()):
+        """opencode's channel evidence for one case, from the plugin's ledger entries after index `since`: each of
+        `mids` arrived by append (`appended`), a wake was the plugin's own submit exactly when one is expected
+        (`plugin_wake_ok`; the count is `plugin_wakes`), and the composer is left empty (`composer_empty`: nothing
+        was typed into it)."""
+        entries = self.ledger()[since:]
+        # Ledger ids carry the watch item's kind (`invitation:iX`); a message id is matched without it.
+        appended = {str(i).rsplit(":", 1)[-1] for e in entries if e.get("kind") == "delivered"
+                    and e.get("via") == "append" for i in e.get("ids") or []}
+        mids = [m for m in mids if m]
+        if mids:
+            checks["appended"] = all(m in appended for m in mids)
+        checks["plugin_wakes"] = sum(1 for e in entries if e.get("kind") == "submit")
+        checks["plugin_wake_ok"] = (checks["plugin_wakes"] >= 1) if expect_wake else checks["plugin_wakes"] == 0
+        composer = opencode_composer(self.visible())
+        checks["composer_empty"] = composer == "" or (composer if composer else "composer not found")
+
+    def opencode_admission_row(self, mid):
+        """The ACK observation names, as `row`, the stored message the plugin's append returned, and that message is
+        in one of this recipient's own sessions with only synthetic parts. True, or what was missing."""
+        observations = [json.loads(text) for table in ("receipt_state", "receipts") for (text,) in self.store_rows(
+            f"SELECT ack_observation FROM {table} WHERE message_id=? AND seat_id=? AND ack_observation IS NOT NULL",
+            (mid, self.seat))]
+        obs = admission_observation(observations)
+        if obs is None:
+            return "no ack observation"
+        if obs.get("via") != "append":
+            return f"via {obs.get('via')}"
+        row = obs.get("row")
+        if not row:
+            return "no row"
+        sessions = self.opencode_sessions()
+        db = self.run.opencode_db
+        try:
+            with contextlib.closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)) as c:
+                found = c.execute("SELECT session_id FROM message WHERE id=?", (row,)).fetchone()
+                parts = [json.loads(d) for (d,) in c.execute("SELECT data FROM part WHERE message_id=?", (row,))]
+        except (sqlite3.Error, ValueError) as e:
+            return f"opencode.db unreadable: {e!r}"
+        if not found:
+            return f"row {row} not in opencode.db"
+        if found[0] not in sessions:
+            return f"row {row} in another session"
+        if not parts or not all(isinstance(p, dict) and p.get("synthetic") for p in parts):
+            return f"row {row} is not a synthetic append"
+        return True
 
     def dismiss_notice(self):
         """Cancel Claude's between-turn notice (HARNESS_NOTICE) when it covers the composer; True when one was."""
@@ -1754,6 +2024,8 @@ class Recipient:
                 line = self.run.launch_line(self.harness, plain=True)
             elif self.hooks_only:
                 line = self.run.launch_line(self.harness, hooks_only=True)
+            elif self.harness == "opencode":  # its own plugin ledger file
+                line = self.run.launch_line(self.harness, name=self.name)
             else:
                 line = self.run.launch_line(self.harness)
             self.run.herdr("pane", "run", self.pane, line)
@@ -1797,6 +2069,8 @@ class Recipient:
                 raise RuntimeError(f"{self.name}: {self.harness} is not logged in (check --claude-config-dir)")
             if self.status() == "blocked" or DIALOG.search(self.observed_tail()):
                 raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
+        if self.harness == "opencode":
+            self.opencode_ready()
         for _attempt in range(2):  # one retry: a transient model/capacity error ends the first turn early
             reported = setup_done(self.threshold)
             self.prompt(STANDING.format(coord=self.run.coord_seats(), threshold=self.threshold)
@@ -1806,6 +2080,15 @@ class Recipient:
                 break
         else:
             raise RuntimeError(f"{self.name}: agent did not report nudge-threshold {self.threshold}: {self.tail()}")
+
+    def opencode_ready(self, timeout=60):
+        """opencode's home screen draws (and Herdr reports it idle) before its composer takes input: a prompt typed
+        then is dropped (seen on 1.18.1: the composer still showed its placeholder). Wait for the placeholder, then
+        a short settle."""
+        end = time.time() + timeout
+        while time.time() < end and OPENCODE_PLACEHOLDER not in self.visible():
+            time.sleep(0.5)
+        time.sleep(OPENCODE_SETTLE_S)
 
     def prompt(self, text, expect=None):
         """Submit a turn and return once it is over: `expect` (text the turn prints) seen, then settled idle.
@@ -1918,6 +2201,7 @@ class Recipient:
             self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
+        ledger_before = len(self.ledger()) if self.harness == "opencode" else 0
         with BusyBarrier(self.run.root) as hold:
             if action.startswith("busy-tool-"):
                 prompt = BUSY_TOOL_PROMPT.format(tag=tag, hold=hold.command(), tool=BUSY_TOOL[self.harness].format(dir=hold.path))
@@ -1982,13 +2266,15 @@ class Recipient:
                                       else re.search(r"\bRead(\(| \d+ files?\b)", in_turn) is not None)
             if kind == "ack":
                 checks["ack"] = self.receipt(ref["message"])
+        if self.harness == "opencode":  # served in the turn: appended, never a wake
+            self.channel_checks(checks, ledger_before, False, [ref.get("message")])
         self.settled()
         passed = (busy_at_send not in IDLE and checks["self_started_turn_after_s"] is None
                   and checks["busy_turn_end_seen"] is True
                   and checks["wake_prompts_in_busy_turn"] == 0 and checks["wake_prompts_after_busy_turn"] == 0
                   and all(v is True or v == "acknowledged" for k, v in checks.items()
                           if k in ("joined", "opening_message_delivered_in_turn", "delivered_in_turn", "ack",
-                                   "tool_ran")))
+                                   "tool_ran", "appended", "plugin_wake_ok", "composer_empty")))
         self.run.record({"case": record or case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                          "expect_wake": False,
                          "woke": checks["self_started_turn_after_s"] is not None
@@ -2503,6 +2789,7 @@ class Recipient:
         body = f"{case} {self.run.run_id}"
         checks = {}
         calls_before = self.inbox_calls()
+        ledger_before = len(self.ledger()) if self.harness == "opencode" else 0
         if action == "invite" and channel == "group":
             name = f"wake-e2e-{self.name}-{self.run.run_id}"
             data = self.coord("thread", "create", "--name", name, "--topic", f"wake-e2e test thread for {self.name}",
@@ -2566,6 +2853,8 @@ class Recipient:
                 checks["ack"] = status
                 if self.harness == "claude" and status == "acknowledged":
                     checks["admission_row"] = self.admission_row(ref["message"])
+                if self.harness == "opencode" and status == "acknowledged":
+                    checks["admission_row"] = self.opencode_admission_row(ref["message"])
         # The case owns the rest of the spacing window: a turn the recipient starts on its own in here (a follow-up
         # wake for an item this case left pending) fails this case, and spacing restarts after it, so the next case
         # is never measured against the 30 s guard of a wake it did not cause.
@@ -2573,8 +2862,11 @@ class Recipient:
         if checks["trailing_wake_s"] is not None:
             self.wait_idle()
             self.settled()
+        if self.harness == "opencode":
+            # pair-open's opener wakes nobody at T >= 1 by priority; the expectation is the case's own.
+            self.channel_checks(checks, ledger_before, expect, [ref.get("message")])
         verified = all(v is True or v == "acknowledged" for k, v in checks.items()
-                       if k not in ("late_wake_s", "trailing_wake_s", "inbox_calls"))
+                       if k not in ("late_wake_s", "trailing_wake_s", "inbox_calls", "plugin_wakes"))
         passed = woke == expect and verified and checks["trailing_wake_s"] is None
         row = {"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                "expect_wake": expect, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
@@ -2654,6 +2946,7 @@ class Recipient:
         self.wait_idle()
         rid = self.run.run_id
         ids = {}
+        ledger_before = len(self.ledger()) if self.harness == "opencode" else 0
         ids["p5"] = self.send("p5", f"mixed-p5 {rid}", direct=False)
         ids["p1"] = self.send("p1", f"mixed-p1 {rid}", direct=False)
         errors = []
@@ -2718,8 +3011,11 @@ class Recipient:
             self.wait_idle()
             self.settled()
         expect = True
+        if self.harness == "opencode":
+            self.channel_checks(checks, ledger_before, True, every)
         verified = all(v is True or v == "acknowledged" or (k == "order" and v == "unjudged")
-                       for k, v in checks.items() if k in ("delivered", "order", "markers", "ack"))
+                       for k, v in checks.items()
+                       if k in ("delivered", "order", "markers", "ack", "appended", "plugin_wake_ok", "composer_empty"))
         passed = woke == expect and verified and checks["trailing_wake_s"] is None
         self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                          "expect_wake": expect, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
@@ -2778,6 +3074,13 @@ class Recipient:
                 (self.run.ev / f"pane-{self.name}.txt").write_text(
                     capture_evidence(self.screen(1000), 1000, getattr(self.run, "secrets", ())))
                 self.save_calls()
+                if self.harness == "opencode":
+                    secrets = getattr(self.run, "secrets", ())
+                    (self.run.ev / f"screen-{self.name}.txt").write_text(
+                        capture_evidence(self.visible(), 1000, secrets))
+                    if self.ledger_path().exists():
+                        (self.run.ev / f"ledger-{self.name}.jsonl").write_text(
+                            redact(self.ledger_path().read_text(errors="replace"), secrets))
             except Stopped:
                 pass  # interrupted: no pane capture, the summary marks unfinished cases missing
 
@@ -3061,7 +3364,8 @@ def main(argv=None):
     ap.add_argument("--bin", default=str(REPO / "bin" / "herdr-threads"), help="herdr-threads binary under test")
     ap.add_argument("--harness", default=DEFAULT_HARNESSES,
                     help="comma-separated: claude,codex; opt-in: agy (credential from %s), hermes "
-                         "(--hermes-home)" % AGY_CREDENTIAL_ENV)
+                         "(--hermes-home), opencode (credential from %s)" % (AGY_CREDENTIAL_ENV,
+                                                                           OPENCODE_CREDENTIAL_ENV))
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
                     + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES
                                                       + RESUME_CASES)
@@ -3084,6 +3388,8 @@ def main(argv=None):
     ap.add_argument("--codex-auth-home", help="Codex home whose auth.json is copied (private, mode 0600) into "
                                               "the scratch CODEX_HOME "
                                               "(default $CODEX_HOME or ~/.codex)")
+    ap.add_argument("--opencode-model", default=OPENCODE_MODEL,
+                    help="--harness opencode: the provider/model its scratch opencode.json selects (default %(default)s)")
     ap.add_argument("--hermes-home", help="--harness hermes: a scratch HOME Hermes is installed and logged in to "
                                           "(setup and the plugin enable write there)")
     ap.add_argument("--self-test", action="store_true",
@@ -3161,6 +3467,17 @@ def main(argv=None):
                   file=sys.stderr)
             rc = EXIT_FAIL
         write_evidence(run, rc)
+        # The last gate: no evidence file may hold a credential. A hit is scrubbed and fails the run (only the file
+        # names are printed).
+        secrets = getattr(run, "secrets", None) or secret_values(os.environ)
+        leaked = scrub_evidence(run.ev, secrets) if run.ev is not None else []
+        if leaked:
+            print(f"wake-e2e: credential found in evidence (scrubbed): {', '.join(leaked)}", file=sys.stderr)
+            rc = EXIT_FAIL
+            run.facts = dict(getattr(run, "facts", {}), evidence_scrubbed=leaked)
+            write_evidence(run, rc)
+            if scrub_evidence(run.ev, secrets):
+                print("wake-e2e: evidence still holds a credential after scrubbing", file=sys.stderr)
         print(f"evidence: {run.ev} (exit {rc})", flush=True)
         for sig, handler in saved.items():
             signal.signal(sig, handler)

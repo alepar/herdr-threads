@@ -123,6 +123,7 @@ python3 scripts/wake-e2e.py                   # both harnesses, all cases (~10 m
 #   opt-in: --harness codex --cases resume-idle/group (Codex killed and resumed in its pane: p1 stays silent, p0 wakes it)
 #   opt-in end-of-turn delivery (Codex Stop continuation): --harness codex --cases eot-send-p0/group
 #   opt-in real-model agy: --harness agy (credential GEMINI_API_KEY, optionally GOOGLE_GEMINI_BASE_URL for the relay)
+#   opt-in real-model opencode: --harness opencode (credential OPENROUTER_API_KEY; --opencode-model, default openrouter/deepseek/deepseek-v4-pro)
 scripts/wake-e2e-herdr 0.9.5 [ARGS...]        # the same run inside a private server of one listed Herdr release
 ```
 
