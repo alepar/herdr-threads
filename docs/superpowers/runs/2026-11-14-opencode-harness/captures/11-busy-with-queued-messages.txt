@@ -1,0 +1,40 @@
+     OPENCODE_PID=411873
+     PROBE_CALL_ID=call_7
+     PROBE_CTL=/tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/
+     scratchpad/oc-research/ctl
+     PROBE_INJECT=1
+     PROBE_LOG=/tmp/claude-1001/-var-home-alepar-AleCode-herdr-
+
+     ▣  Build · Mock 1 · 808ms
+
+  ┃
+  ┃  WAKE-FROM-PLUGIN hello
+  ┃
+
+     MOCK-REPLY 9 to: WAKE-FROM-PLUGIN hello INJECTED-CHAT-MESSAGE
+
+     ▣  Build · Mock 1 · 71ms
+
+  ┃
+  ┃  SLOW12 first
+  ┃
+
+     ▣  Build · Mock 1
+
+  ┃
+  ┃  typed while busy
+  ┃   QUEUED
+  ┃
+
+  ┃
+  ┃  PLUGIN-PROMPT-WHILE-BUSY
+  ┃   QUEUED
+  ┃
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Mock 1 Mock
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                                                                    15 (0%)  ctrl+p commands
+

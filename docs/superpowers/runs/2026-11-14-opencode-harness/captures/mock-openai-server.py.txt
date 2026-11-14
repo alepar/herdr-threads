@@ -1,0 +1,52 @@
+import json, sys, time, re, os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+LOG = sys.argv[2]
+n = 0
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        self.send_response(200); self.send_header('content-type','application/json'); self.end_headers()
+        self.wfile.write(b'{"object":"list","data":[{"id":"mock-1","object":"model"}]}')
+    def do_POST(self):
+        global n
+        body = json.loads(self.rfile.read(int(self.headers.get('content-length', 0))) or b'{}')
+        n += 1; rid = n
+        with open(LOG, 'a') as f:
+            f.write(json.dumps({"rid": rid, "t": time.time(), "path": self.path, "headers": {k: v for k, v in self.headers.items() if k.lower().startswith('x-') or k.lower()=='user-agent'}, "body": body}) + "\n")
+        msgs = body.get('messages', [])
+        last = msgs[-1] if msgs else {}
+        def text_of(m):
+            c = m.get('content')
+            if isinstance(c, str): return c
+            if isinstance(c, list): return "\n".join(p.get('text', '') for p in c if isinstance(p, dict))
+            return ''
+        lt = text_of(last)
+        tools = [t['function']['name'] for t in body.get('tools', [])] if body.get('tools') else []
+        tool_call = None; text = None
+        if last.get('role') == 'tool':
+            text = "TOOLRESULT-SEEN: " + lt[:300]
+        else:
+            m = re.search(r'RUNBASH:(.*)', lt)
+            if 'SLOW' in lt: time.sleep(int(re.search(r'SLOW(\d+)', lt).group(1)))
+            if m and 'bash' in tools:
+                tool_call = ('bash', {"command": m.group(1).strip(), "description": "mock run"})
+            elif 'RUNTASK' in lt and 'task' in tools:
+                tool_call = ('task', {"description": "mock subtask", "prompt": "RUNBASH:" + lt.split('RUNTASK:',1)[1].strip(), "subagent_type": "general"})
+            elif 'RUNQUESTION' in lt and 'question' in tools:
+                tool_call = ('question', {"questions": [{"question": "Which colour do you want?", "header": "Colour", "options": [{"label": "Red", "description": "the red one"}, {"label": "Blue", "description": "the blue one"}]}]})
+            else:
+                text = "MOCK-REPLY %d to: %s" % (rid, lt[:80].replace("\n", " "))
+        self.send_response(200); self.send_header('content-type', 'text/event-stream'); self.end_headers()
+        def ev(d): self.wfile.write(b'data: ' + json.dumps(d).encode() + b'\n\n'); self.wfile.flush()
+        base = {"id": "chatcmpl-%d" % rid, "object": "chat.completion.chunk", "created": int(time.time()), "model": "mock-1"}
+        if not body.get('stream'):
+            pass
+        if tool_call:
+            ev({**base, "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_%d" % rid, "type": "function", "function": {"name": tool_call[0], "arguments": json.dumps(tool_call[1])}}]}, "finish_reason": None}]})
+            ev({**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
+        else:
+            ev({**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}]})
+            ev({**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        ev({**base, "choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})
+        self.wfile.write(b'data: [DONE]\n\n'); self.wfile.flush()
+ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()

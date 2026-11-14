@@ -1,0 +1,40 @@
+     ▣  Build · Mock 1 · 12.1s
+
+  ┃
+  ┃  typed while busy
+  ┃
+
+  ┃
+  ┃  PLUGIN-PROMPT-WHILE-BUSY
+  ┃
+
+     MOCK-REPLY 11 to: PLUGIN-PROMPT-WHILE-BUSY INJECTED-CHAT-MESSAGE
+
+     ▣  Build · Mock 1 · 7.7s
+
+  ┃
+  ┃  NOREPLY-WHILE-IDLE
+  ┃
+
+  ┃
+  ┃  RUNBASH:sleep 8
+  ┃
+
+  ┃
+  ┃  ⠧ sleep 8
+  ┃
+
+     ▣  Build · Mock 1
+
+  ┃
+  ┃  NOREPLY-MIDTURN
+  ┃   QUEUED
+  ┃
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Mock 1 Mock
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                                                                    15 (0%)  ctrl+p commands
+

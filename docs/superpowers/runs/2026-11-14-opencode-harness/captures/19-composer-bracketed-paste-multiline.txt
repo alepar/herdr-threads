@@ -1,0 +1,40 @@
+
+  ┃
+  ┃  "hello nonpure"
+  ┃
+
+     MOCK-REPLY 17 to: "hello nonpure" INJECTED-CHAT-MESSAGE INJECTED-CHAT-MESSAGE
+
+     ▣  Build · Mock 1 · 618ms
+
+  ┃
+  ┃  HTTP-PROMPT-ASYNC
+  ┃
+
+     MOCK-REPLY 18 to: HTTP-PROMPT-ASYNC INJECTED-CHAT-MESSAGE INJECTED-CHAT-MESSAGE
+
+     ▣  Build · Mock 1 · 655ms
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃  pasted line1
+  ┃  pasted line2
+  ┃
+  ┃  Build · Mock 1 Mock
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/ 15 (0%) ctrl+p
+   scratchpad/oc-research/proj                                                                           commands
+

@@ -1,0 +1,40 @@
+  ┃  $ sleep 8
+  ┃
+  ┃  (no output)
+  ┃
+
+  ┃
+  ┃  NOREPLY-MIDTURN
+  ┃
+
+     MOCK-REPLY 13 to: NOREPLY-MIDTURN INJECTED-CHAT-MESSAGE
+
+     ▣  Build · Mock 1 · 5.0s
+
+  ┃
+  ┃  my draftTUI-APPENDED
+  ┃
+
+     MOCK-REPLY 14 to: my draftTUI-APPENDED INJECTED-CHAT-MESSAGE
+
+     ▣  Build · Mock 1 · 55ms
+
+  ┃
+  ┃  RUNTASK:/tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/scratchpad/
+  ┃  oc-research/tools/show.sh; sleep 4
+  ┃
+
+     ⠼ General Task — mock subtask
+       ↳ 1 toolcall
+
+     ctrl+x down view subagents
+
+     ▣  Build · Mock 1
+
+  ┃
+  ┃  kept draft
+  ┃
+  ┃  Build · Mock 1 Mock
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                                                                    15 (0%)  ctrl+p commands
+

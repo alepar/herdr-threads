@@ -1,0 +1,40 @@
+  ┃  research/tools/show.sh
+  ┃
+  ┃  == env
+  ┃  AGENT=1
+  ┃  OPENCODE=1
+  ┃  OPENCODE_DISABLE_AUTOUPDATE=1
+  ┃  OPENCODE_PID=411873
+  ┃  PROBE_CALL_ID=call_7
+  ┃  PROBE_CTL=/tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/
+  ┃  scratchpad/oc-research/ctl
+  ┃  PROBE_INJECT=1
+  ┃  PROBE_LOG=/tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/
+  ┃  scratchpad/oc-research/logs/probe.jsonl
+  ┃  PROBE_SESSION_ID=ses_e26b86463ffe00SJEoEd8WYiQk
+  ┃  …
+  ┃
+  ┃  Click to expand
+  ┃
+
+     TOOLRESULT-SEEN: == env
+     AGENT=1
+     OPENCODE=1
+     OPENCODE_DISABLE_AUTOUPDATE=1
+     OPENCODE_PID=411873
+     PROBE_CALL_ID=call_7
+     PROBE_CTL=/tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/
+     scratchpad/oc-research/ctl
+     PROBE_INJECT=1
+     PROBE_LOG=/tmp/claude-1001/-var-home-alepar-AleCode-herdr-
+
+     ▣  Build · Mock 1 · 808ms
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Mock 1 Mock
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/ 15 (0%) ctrl+p
+   scratchpad/oc-research/proj                                                                           commands
+

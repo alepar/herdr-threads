@@ -1,0 +1,50 @@
+import fs from "node:fs"
+const LOG = process.env.PROBE_LOG
+const log = (kind, data) => { try { fs.appendFileSync(LOG, JSON.stringify({ t: Date.now(), pid: process.pid, kind, data }) + "\n") } catch (e) {} }
+export const Probe = async (input) => {
+  log("init", { keys: Object.keys(input), directory: input.directory, worktree: input.worktree, serverUrl: String(input.serverUrl), project: input.project, hasDollar: typeof input.$, bun: typeof Bun === "undefined" ? null : Bun.version, isMain: typeof Bun === "undefined" ? null : Bun.isMainThread, argv: process.argv, execPath: process.execPath })
+  let last
+  const dir = process.env.PROBE_CTL
+  const timer = setInterval(async () => {
+    for (const name of ["wake", "noreply", "tui", "toast", "status"]) {
+      const f = dir + "/" + name
+      if (!fs.existsSync(f)) continue
+      const text = fs.readFileSync(f, "utf8").trim(); fs.unlinkSync(f)
+      try {
+        let r
+        if (name === "wake") r = await input.client.session.promptAsync({ path: { id: last }, body: { parts: [{ type: "text", text }] } })
+        if (name === "noreply") r = await input.client.session.prompt({ path: { id: last }, body: { noReply: true, parts: [{ type: "text", text }] } })
+        if (name === "tui") { r = await input.client.tui.appendPrompt({ body: { text } }); const r2 = await input.client.tui.submitPrompt(); r = { append: r.data, submit: r2.data, e1: r.error, e2: r2.error } }
+        if (name === "toast") r = await input.client.tui.showToast({ body: { message: text, variant: "info" } })
+        if (name === "status") { const s = await input.client.session.status(); const g = await input.client.session.get({ path: { id: last } }); const ch = await input.client.session.children({ path: { id: last } }); r = { data: { status: s.data, get: g.data, children: ch.data } } }
+        log("ctl." + name, { last, data: r?.data ?? r, error: r?.error, status: r?.response?.status })
+      } catch (e) { log("ctl." + name + ".throw", String(e && e.stack || e)) }
+    }
+  }, 300)
+  return {
+    dispose: async () => { clearInterval(timer); log("dispose", {}) },
+    config: async (cfg) => log("config", { keys: Object.keys(cfg) }),
+    event: async ({ event }) => {
+      const p = event.properties || {}
+      if (event.type === "message.part.delta" || event.type.startsWith("session.next.text.delta")) return
+      if (event.type === "session.created" && !p.info?.parentID) last = p.info?.id ?? p.sessionID ?? last
+      if (event.type === "tui.session.select") last = p.sessionID ?? last
+      log("event", { type: event.type, properties: JSON.stringify(p).length > 1500 ? { _trunc: JSON.stringify(p).slice(0, 1500) } : p })
+    },
+    "chat.message": async (i, o) => { log("chat.message", { i, message: o.message, parts: o.parts }); if (!last) last = i.sessionID
+      if (process.env.PROBE_INJECT) o.parts.push({ id: "prt_ffffffffffff" + Math.random().toString(36).slice(2, 16).padEnd(14, "0"), sessionID: i.sessionID, messageID: o.message.id, type: "text", text: "[INJECTED-CHAT-MESSAGE]", synthetic: true }) },
+    "chat.params": async (i, o) => log("chat.params", { sessionID: i.sessionID, agent: i.agent, model: i.model?.id, o }),
+    "chat.headers": async (i, o) => { log("chat.headers", { sessionID: i.sessionID, agent: i.agent }); o.headers["x-probe-session"] = i.sessionID },
+    "permission.ask": async (i, o) => log("permission.ask", { i, o }),
+    "command.execute.before": async (i, o) => log("command.execute.before", { i, o }),
+    "tool.execute.before": async (i, o) => log("tool.execute.before", { i, o }),
+    "shell.env": async (i, o) => { log("shell.env", { i }); o.env.PROBE_SESSION_ID = i.sessionID ?? "none"; o.env.PROBE_CALL_ID = i.callID ?? "none" },
+    "tool.execute.after": async (i, o) => { log("tool.execute.after", { i, o: { title: o.title, output: String(o.output).slice(0, 3000), metadata: o.metadata } }); if (process.env.PROBE_INJECT && typeof o.output === "string") o.output += "\n[INJECTED-AFTER-TOOL sid=" + i.sessionID + "]" },
+    "experimental.chat.messages.transform": async (i, o) => log("messages.transform", { i, n: o.messages.length, last: o.messages.at(-1)?.info, sessionIDs: [...new Set(o.messages.map((m) => m.info.sessionID))] }),
+    "experimental.chat.system.transform": async (i, o) => { log("system.transform", { sessionID: i.sessionID, model: i.model?.id, n: o.system.length, lens: o.system.map((s) => s.length) }); if (process.env.PROBE_INJECT) o.system.push("[INJECTED-SYSTEM sid=" + i.sessionID + "]") },
+    "experimental.session.compacting": async (i, o) => { log("session.compacting", { i, o }); o.context.push("[INJECTED-COMPACT-CONTEXT]") },
+    "experimental.compaction.autocontinue": async (i, o) => log("compaction.autocontinue", { sessionID: i.sessionID, o }),
+    "experimental.text.complete": async (i, o) => log("text.complete", { i, o }),
+    "tool.definition": async (i, o) => { if (i.toolID === "bash" || i.toolID === "task") log("tool.definition", { i }) },
+  }
+}

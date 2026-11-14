@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+                                  Select model                                     esc
+
+                                  Search
+
+                                  Inkling 2 Small Free                            Free
+                                  LongCat 2.5 Free                                Free
+                                  Flint 40B Free                                  Free
+                       ┃          MiniMax M3.1 Flash Free                         Free
+                       ┃  Ask     DeepSeek V4.1 Flash Free                        Free
+                       ┃          Nemotron 3.5 Super VL Free                      Free
+                       ┃  Buil    Beam Free                                       Free
+                       ╹▀▀▀▀▀▀    MiMo-V2.6-Flash Free                            Free    ▀▀▀▀▀▀▀▀
+                       tab age    GLM-5.3-Flash Free                              Free
+                                  Nemotron 3.5 Lightning Free                     Free
+                                  Big Pickle                                      Free
+
+                          ● Ti    Mock                                                    pboard
+                                ● Mock 1
+
+                                  Connect provider ctrl+a  Favorite ctrl+f
+
+
+
+
+
+
+  /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/scratchpad/      1.18.1
+  oc-research/proj:master
+

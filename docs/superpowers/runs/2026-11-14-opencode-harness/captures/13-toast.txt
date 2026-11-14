@@ -1,0 +1,40 @@
+     ▣  Build · Mock 1 · 7.7s
+
+  ┃                                                                                              ┃                   ┃
+  ┃  NOREPLY-WHILE-IDLE                                                                          ┃  toast text here  ┃
+  ┃                                                                                              ┃                   ┃
+
+  ┃
+  ┃  RUNBASH:sleep 8
+  ┃
+
+  ┃
+  ┃  $ sleep 8
+  ┃
+  ┃  (no output)
+  ┃
+
+  ┃
+  ┃  NOREPLY-MIDTURN
+  ┃
+
+     MOCK-REPLY 13 to: NOREPLY-MIDTURN INJECTED-CHAT-MESSAGE
+
+     ▣  Build · Mock 1 · 5.0s
+
+  ┃
+  ┃  my draftTUI-APPENDED
+  ┃
+
+     MOCK-REPLY 14 to: my draftTUI-APPENDED INJECTED-CHAT-MESSAGE
+
+     ▣  Build · Mock 1 · 55ms
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Mock 1 Mock
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/ 15 (0%) ctrl+p
+   scratchpad/oc-research/proj                                                                           commands
+

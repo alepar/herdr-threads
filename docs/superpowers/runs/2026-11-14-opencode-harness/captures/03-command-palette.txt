@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+                                  Commands                                         esc
+
+                                  Search
+
+                                  Suggested
+                                  Switch session                              ctrl+x l
+                                  Switch model                                ctrl+x m
+                       ┃
+                       ┃  Ask     System
+                       ┃          Hide tips                                   ctrl+x h
+                       ┃  Buil    Plugins
+                       ╹▀▀▀▀▀▀    Install plugin                                          ▀▀▀▀▀▀▀▀
+                       tab age    View status                                 ctrl+x s
+                                  View debug info
+                                  Switch theme                                ctrl+x t
+                                  Switch to light mode
+                          ● Ti    Lock theme mode                                         pboard
+                                  Help
+
+
+
+
+
+
+
+
+  /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/scratchpad/      1.18.1
+  oc-research/proj:master
+

@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+                       ┃ /agents     Switch agent                                                ┃
+                       ┃ /connect    Connect provider                                            ┃
+                       ┃ /debug      View debug info                                             ┃
+                       ┃ /diff       Open diff viewer                                            ┃
+                       ┃ /editor     Open editor                                                 ┃
+                       ┃ /exit       Exit the app                                                ┃
+                       ┃ /help       Help                                                        ┃
+                       ┃ /init       guided AGENTS.md setup                                      ┃
+                       ┃ /mcps       Toggle MCPs                                                 ┃
+                       ┃ /models     Switch model                                                ┃
+                       ┃
+                       ┃  /
+                       ┃
+                       ┃  Build · Mock 1 Mock
+                       ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                       tab agents  ctrl+p commands
+
+
+
+                          ● Tip Press ctrl+x y to copy the assistant's last message to clipboard
+
+
+
+
+
+
+
+
+
+  /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/6dfad040-15c5-4d57-b96f-30a107a133eb/scratchpad/      1.18.1
+  oc-research/proj:master
+
