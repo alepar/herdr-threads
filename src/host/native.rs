@@ -37,6 +37,14 @@ pub const ENV_PANE_ID: &str = "HERDR_PANE_ID";
 /// The pane family's caller-location variables, as read by `cli::caller_location`.
 pub const ENV_VARS: &[&str] = &[ENV_HERDR, ENV_PANE_ID];
 
+/// An unconfirmed start after the start frame went out: it carries whether the frame went
+/// without the process hint the request asked for.
+fn unconfirmed(request: &NativeLaunchRequest, process_hint_sent: bool) -> NativeLaunchOutcome {
+    NativeLaunchOutcome::OutcomeUnknown {
+        process_hint_skipped: request.process_hint && !process_hint_sent,
+    }
+}
+
 /// Herdr `agent.start` errors that are checked before anything is typed.
 const CONFIRMED_PRESTART_REFUSALS: [&str; 3] = [
     "agent_pane_busy",
@@ -456,7 +464,7 @@ impl NativeCli {
                 );
                 if response.as_ref().is_err_and(|failure| {
                     matches!(
-                        failure.error.code,
+                        failure.failure.error.code,
                         ErrorCode::Cancelled
                             | ErrorCode::DeadlineExceeded
                             | ErrorCode::HostUnavailable
@@ -470,10 +478,16 @@ impl NativeCli {
                         process_hint_sent = start.process_hint_sent;
                         Ok(start.response.body)
                     }
-                    Err(failure) if failure.submission == ports::NativeSubmission::NotSubmitted => {
-                        return Err(failure);
+                    Err(failure)
+                        if failure.failure.submission == ports::NativeSubmission::NotSubmitted =>
+                    {
+                        return Err(failure.failure);
                     }
-                    Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                    Err(failure) => {
+                        return Ok(NativeLaunchOutcome::OutcomeUnknown {
+                            process_hint_skipped: failure.process_hint_skipped,
+                        });
+                    }
                 }
             } else {
                 self.dispatch(
@@ -487,11 +501,11 @@ impl NativeCli {
                 .map(|(body, _)| body)
             };
             let (refusal, name_taken, pane_busy) = match response {
-                Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                Err(_) => return Ok(unconfirmed(request, process_hint_sent)),
                 Ok(raw) => {
                     let parsed: serde_json::Value = match serde_json::from_str(&raw) {
                         Ok(value) => value,
-                        Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                        Err(_) => return Ok(unconfirmed(request, process_hint_sent)),
                     };
                     let Some(host_error) = structured_host_error(&parsed) else {
                         break (name, parsed, remaining, started, submitted_at_mono);
@@ -500,7 +514,7 @@ impl NativeCli {
                         .pointer("/error/code")
                         .and_then(serde_json::Value::as_str);
                     if !code.is_some_and(|code| CONFIRMED_PRESTART_REFUSALS.contains(&code)) {
-                        return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                        return Ok(unconfirmed(request, process_hint_sent));
                     }
                     (
                         host_error,
@@ -537,11 +551,11 @@ impl NativeCli {
         };
         let result = match parsed.get("result") {
             Some(result) => result,
-            None => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+            None => return Ok(unconfirmed(request, process_hint_sent)),
         };
         let agent = match result.get("agent") {
             Some(agent) => agent,
-            None => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+            None => return Ok(unconfirmed(request, process_hint_sent)),
         };
         let returned_args = result.get("argv").and_then(serde_json::Value::as_array);
         let args_match = returned_args.is_some_and(|values| {
@@ -571,7 +585,7 @@ impl NativeCli {
             || !args_match
             || !self.same_agent(agent, &name, request)
         {
-            return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            return Ok(unconfirmed(request, process_hint_sent));
         }
         // Herdr 0.9.1's socket `agent.start` answers as soon as the command
         // is submitted (`launch_pending: true`, captured live 2026-09-30);
@@ -584,7 +598,7 @@ impl NativeCli {
                 || context.budget.is_exhausted(self.clock.as_ref())
                 || !self.same_agent(&current, &name, request)
             {
-                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                return Ok(unconfirmed(request, process_hint_sent));
             }
             let pending = current
                 .get("launch_pending")
@@ -599,7 +613,7 @@ impl NativeCli {
                 .get("agent_status")
                 .and_then(serde_json::Value::as_str);
             if request.process_hint && status == Some("blocked") {
-                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                return Ok(unconfirmed(request, process_hint_sent));
             }
             let ready = (current
                 .get("interactive_ready")
@@ -628,7 +642,7 @@ impl NativeCli {
                 .and_then(serde_json::Value::as_str)
                 == Some("blocked")
             {
-                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                return Ok(unconfirmed(request, process_hint_sent));
             }
             // Herdr never updates the agent record when the harness exits
             // straight away (a usage error such as rc 2): it stays
@@ -678,11 +692,11 @@ impl NativeCli {
             };
             let polled = match response {
                 Ok(raw) => raw,
-                Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                Err(_) => return Ok(unconfirmed(request, process_hint_sent)),
             };
             let polled: serde_json::Value = match serde_json::from_str(&polled) {
                 Ok(value) => value,
-                Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                Err(_) => return Ok(unconfirmed(request, process_hint_sent)),
             };
             match polled.get("result") {
                 Some(result)
@@ -691,10 +705,10 @@ impl NativeCli {
                 {
                     current = match result.get("agent") {
                         Some(agent) => agent.clone(),
-                        None => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                        None => return Ok(unconfirmed(request, process_hint_sent)),
                     };
                 }
-                _ => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                _ => return Ok(unconfirmed(request, process_hint_sent)),
             }
         }
         let mut observed = preflight.clone();
@@ -3572,6 +3586,59 @@ pub(crate) mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
+    fn process_hint_old_host_unconfirmed_start_records_the_hint_unsent() {
+        // A start frame sent without the hint whose start is never confirmed (a lost
+        // response, or a blocked agent) ends `OutcomeUnknown` that says the hint was skipped;
+        // a host that advertises the hint ends it without that mark.
+        for (advertised, case) in [
+            (false, "eof"),
+            (false, "blocked"),
+            (true, "eof"),
+            (true, "blocked"),
+        ] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(true);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = true;
+            let name = request.agent_name();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                match wire["method"].as_str().unwrap() {
+                    "ping" => answer(
+                        stream,
+                        wire,
+                        json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":advertised}}),
+                    ),
+                    "pane.get" => answer(stream, wire, json!({"type":"pane_info"})),
+                    "agent.start" => {
+                        if case == "eof" {
+                            return;
+                        }
+                        let mut result = started(name.clone());
+                        result["agent"]["agent_status"] = json!("blocked");
+                        answer(stream, wire, result);
+                    }
+                    "pane.process_info" => answer(stream, wire, process_info_fixture()),
+                    other => panic!("unexpected fixture operation: {other}"),
+                }
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            fixture.finish();
+            assert_eq!(
+                result.unwrap(),
+                NativeLaunchOutcome::OutcomeUnknown {
+                    process_hint_skipped: !advertised
+                },
+                "{case} advertised={advertised}"
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
     fn process_hint_retry_renegotiates_and_unknown_write_is_possible() {
         for case in [
             "lost-capability",
@@ -3703,7 +3770,9 @@ pub(crate) mod tests {
             } else {
                 assert_eq!(
                     result.unwrap(),
-                    NativeLaunchOutcome::OutcomeUnknown,
+                    NativeLaunchOutcome::OutcomeUnknown {
+                        process_hint_skipped: false
+                    },
                     "{case} fabricated accepted startup"
                 );
             }
@@ -4175,7 +4244,7 @@ pub(crate) mod tests {
                 assert_eq!(diagnostic.execution, ExecutionEvidence::Unknown);
                 assert_eq!(diagnostic.incarnation, IncarnationEvidence::Unknown);
             }
-            NativeLaunchOutcome::OutcomeUnknown => panic!("matching ready response lost"),
+            NativeLaunchOutcome::OutcomeUnknown { .. } => panic!("matching ready response lost"),
         }
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4310,7 +4379,7 @@ pub(crate) mod tests {
             NativeLaunchOutcome::ObservedStartup { correlation, .. } => {
                 assert!(correlation.matches_request(&request, &context));
             }
-            NativeLaunchOutcome::OutcomeUnknown => panic!("readiness was not observed"),
+            NativeLaunchOutcome::OutcomeUnknown { .. } => panic!("readiness was not observed"),
         }
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4331,7 +4400,9 @@ pub(crate) mod tests {
             .unwrap()
         {
             NativeLaunchOutcome::ObservedStartup { .. } => {}
-            NativeLaunchOutcome::OutcomeUnknown => panic!("a working agent is a confirmed start"),
+            NativeLaunchOutcome::OutcomeUnknown { .. } => {
+                panic!("a working agent is a confirmed start")
+            }
         }
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4348,7 +4419,9 @@ pub(crate) mod tests {
         assert_eq!(
             cli.guarded_start_cli(&request, &context, &observation)
                 .unwrap(),
-            NativeLaunchOutcome::OutcomeUnknown
+            NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false
+            }
         );
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4383,7 +4456,9 @@ pub(crate) mod tests {
             assert_eq!(
                 cli.guarded_start_cli(&request, &context, &observation)
                     .unwrap(),
-                NativeLaunchOutcome::OutcomeUnknown
+                NativeLaunchOutcome::OutcomeUnknown {
+                    process_hint_skipped: false
+                }
             );
             worker.join().unwrap();
             fs::remove_file(socket).unwrap();
@@ -4422,7 +4497,12 @@ pub(crate) mod tests {
             if busy {
                 assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
             } else {
-                assert_eq!(result.unwrap(), NativeLaunchOutcome::OutcomeUnknown);
+                assert_eq!(
+                    result.unwrap(),
+                    NativeLaunchOutcome::OutcomeUnknown {
+                        process_hint_skipped: false
+                    }
+                );
             }
             worker.join().unwrap();
             fs::remove_file(socket).unwrap();
@@ -4536,7 +4616,7 @@ pub(crate) mod tests {
                 assert_eq!(correlation.agent_name, retry);
                 assert!(correlation.matches_request(&request, &context));
             }
-            NativeLaunchOutcome::OutcomeUnknown => panic!("retried start lost"),
+            NativeLaunchOutcome::OutcomeUnknown { .. } => panic!("retried start lost"),
         }
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4552,7 +4632,9 @@ pub(crate) mod tests {
         assert_eq!(
             cli.guarded_start_cli(&request, &context, &observation)
                 .unwrap(),
-            NativeLaunchOutcome::OutcomeUnknown
+            NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false
+            }
         );
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
@@ -4613,7 +4695,9 @@ pub(crate) mod tests {
         assert_eq!(
             cli.guarded_start_cli(&request, &context, &observation)
                 .unwrap(),
-            NativeLaunchOutcome::OutcomeUnknown
+            NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false
+            }
         );
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();

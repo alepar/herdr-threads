@@ -2414,7 +2414,25 @@ pub enum NativeLaunchOutcome {
         correlation: CorrelatedStartup,
         diagnostic: HostObservation,
     },
-    OutcomeUnknown,
+    OutcomeUnknown {
+        /// The policy asked for a process hint and the start frame went out without it (the
+        /// host did not advertise `agent_start_process_hint_v1`). False when no frame was
+        /// sent or it is not known which frame was sent.
+        process_hint_skipped: bool,
+    },
+}
+impl NativeLaunchOutcome {
+    /// Whether the start went out without the process hint its policy asked for.
+    pub fn process_hint_skipped(&self) -> bool {
+        match self {
+            Self::ObservedStartup { correlation, .. } => {
+                correlation.process_hint && !correlation.process_hint_sent
+            }
+            Self::OutcomeUnknown {
+                process_hint_skipped,
+            } => *process_hint_skipped,
+        }
+    }
 }
 /// Evidence produced by the adapter at its native submission boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

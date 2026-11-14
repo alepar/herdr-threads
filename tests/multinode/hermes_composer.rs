@@ -150,12 +150,17 @@ fn hermes_exec_as_pane_root_is_woken_and_a_bare_shell_root_is_not() {
         &["--seat", &a.id, "--body", "for-a", "--nudge"],
     );
     support::wait_wakes(&cluster, 0, P1, 1);
+    let baseline = host.process_infos_for(P2);
     support::send(
         &cluster,
         &sender,
         &["--seat", &b.id, "--body", "for-b", "--nudge"],
     );
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // The wake decision for P2 reads its process info; wait for it to have run.
+    cluster.wait_until("the wake decision for P2", crate::WAIT, || {
+        (host.process_infos_for(P2) >= baseline + 2).then_some(())
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
     assert_eq!(
         host.prompts_for(P2),
         0,

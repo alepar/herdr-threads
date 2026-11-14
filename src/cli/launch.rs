@@ -1186,7 +1186,7 @@ fn execute_guarded_inner(
             Some(correlation.agent_name.clone()),
             0,
         ),
-        NativeLaunchOutcome::OutcomeUnknown => {
+        NativeLaunchOutcome::OutcomeUnknown { .. } => {
             ("outcome_unknown", None, None, EXIT_START_UNCONFIRMED)
         }
     };
@@ -1196,11 +1196,11 @@ fn execute_guarded_inner(
         NativeLaunchOutcome::ObservedStartup { correlation, .. } => {
             Some(binding_report(&seats, correlation, parts.clock))
         }
-        NativeLaunchOutcome::OutcomeUnknown => None,
+        NativeLaunchOutcome::OutcomeUnknown { .. } => None,
     };
     // Unconfirmed: either name may now be live in the pane.
     let agent_name_candidates = match (&outcome, &seat) {
-        (NativeLaunchOutcome::OutcomeUnknown, Some(seat)) => {
+        (NativeLaunchOutcome::OutcomeUnknown { .. }, Some(seat)) => {
             Some(crate::ports::launch_agent_names(seat, name_hint.as_deref()).to_vec())
         }
         _ => None,
@@ -1250,9 +1250,9 @@ fn execute_guarded_inner(
         "binding": binding,
     });
     append_adapter_projection(&mut record, &preparation.report);
-    // The policy asked for a process hint the host does not advertise: started without it.
-    let hint_unsupported = matches!(&outcome, NativeLaunchOutcome::ObservedStartup { correlation, .. }
-        if correlation.process_hint && !correlation.process_hint_sent);
+    // The policy asked for a process hint the host does not advertise: the start frame went
+    // out without it, whether or not the start was then confirmed.
+    let hint_unsupported = outcome.process_hint_skipped();
     if hint_unsupported {
         record["process_hint"] = json!("host_unsupported");
     }
@@ -1459,7 +1459,9 @@ mod task23_tests {
         ) -> Result<NativeLaunchOutcome, ApiError> {
             self.submitted.lock().unwrap().push(request.clone());
             if self.unknown {
-                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+                return Ok(NativeLaunchOutcome::OutcomeUnknown {
+                    process_hint_skipped: request.process_hint && self.hint_unsupported,
+                });
             }
             let mut diagnostic = self.observation();
             diagnostic.occupancy = StructuralOccupancy::Occupied;
@@ -1808,6 +1810,39 @@ mod task23_tests {
             1,
             "the binding is still recorded"
         );
+    }
+
+    #[test]
+    fn hermes_launch_unconfirmed_on_a_host_without_the_hint_reports_it_unsent() {
+        let s = hermes_fixture();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        for hint_unsupported in [true, false] {
+            let mut host = FakeHost::new();
+            host.unknown = true;
+            host.hint_unsupported = hint_unsupported;
+            let report = s
+                .launch(
+                    &host,
+                    &seats(),
+                    &handoff(),
+                    request(harness, &["-q", "first"]),
+                )
+                .expect("an unconfirmed start is a report, not an error");
+            assert_eq!(report.exit, EXIT_START_UNCONFIRMED);
+            assert_eq!(report.report["outcome"], "outcome_unknown");
+            let record = s.records().pop().expect("the launch record is written");
+            assert_eq!(record["outcome"], "outcome_unknown");
+            if hint_unsupported {
+                assert_eq!(report.report["process_hint"], "host_unsupported");
+                assert_eq!(record["process_hint"], "host_unsupported");
+            } else {
+                assert!(
+                    report.report.get("process_hint").is_none(),
+                    "the hint was sent"
+                );
+                assert!(record.get("process_hint").is_none(), "the hint was sent");
+            }
+        }
     }
 
     #[test]

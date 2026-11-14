@@ -152,7 +152,9 @@ impl HostPort for FakeHost {
     ) -> Result<NativeLaunchOutcome, ApiError> {
         self.submitted.lock().unwrap().push(request.clone());
         if self.unknown {
-            return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            return Ok(NativeLaunchOutcome::OutcomeUnknown {
+                process_hint_skipped: false,
+            });
         }
         let mut diagnostic = self.observation();
         diagnostic.occupancy = StructuralOccupancy::Occupied;

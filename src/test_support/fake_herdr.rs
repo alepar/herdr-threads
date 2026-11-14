@@ -51,6 +51,8 @@ struct World {
     /// A pane whose root process (`shell_pid`) is this pid and is its only foreground process
     /// (a harness `exec`ed as the pane's program).
     roots: Mutex<HashMap<String, u32>>,
+    /// Every pane a `pane.process_info` asked for, in order.
+    process_infos: Mutex<Vec<String>>,
 }
 
 impl World {
@@ -67,7 +69,14 @@ impl World {
         let id = request["id"].clone();
         let params = &request["params"];
         let missing = |code: &str| json!({"id":id,"error":{"code":code,"message":code}});
-        match request["method"].as_str().unwrap_or_default() {
+        let method = request["method"].as_str().unwrap_or_default();
+        if method == "pane.process_info" {
+            self.process_infos
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(params["pane_id"].as_str().unwrap_or("").to_owned());
+        }
+        match method {
             "ping" => json!({"id":id,"result":{"type":"pong","version":"0.9.1","protocol":22}}),
             "session.snapshot" => {
                 let panes = self.panes.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -215,6 +224,7 @@ impl FakeHerdr {
             reads: Mutex::new(Vec::new()),
             tabs_created: Mutex::new(Vec::new()),
             roots: Mutex::new(HashMap::new()),
+            process_infos: Mutex::new(Vec::new()),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let (serving, stopped) = (Arc::clone(&world), Arc::clone(&stop));
@@ -297,6 +307,17 @@ impl FakeHerdr {
     }
 
     /// How many `agent.read` calls asked for `pane` with `source`.
+    /// How many `pane.process_info` requests named `pane`.
+    pub fn process_infos_for(&self, pane: &str) -> usize {
+        self.world
+            .process_infos
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|p| *p == pane)
+            .count()
+    }
+
     pub fn reads_for(&self, pane: &str, source: &str) -> usize {
         self.world
             .reads

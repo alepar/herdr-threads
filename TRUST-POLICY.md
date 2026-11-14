@@ -2652,7 +2652,7 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   A qualified top-level turn with the same native session can recover an unresolved seat through C1;
   a confirmed no-match on an unowned pane may use the guarded Unowned-turn enrollment fallback. Wake: a
   bare macOS Hermes is not process-detected by Herdr (`launch --kind hermes` adds the process hint that
-  makes it recognized); on Linux Herdr recognizes a bare Hermes. Its idle seat is woken natively through
+  makes it recognized, when Herdr advertises it: see "Process hints are cooperative recognition input"); on Linux Herdr recognizes a bare Hermes. Its idle seat is woken natively through
   the pane's own composer although its bindings live in the gateway process (the A4 second exception,
   ht-f0xn); an unrecognized pane is not woken. CLI side agents (`/background`: platform `cli`, own
   session, no parent, no native side-agent flag) are indistinguishable from the foreground session: they
@@ -2829,7 +2829,8 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   provenance (A1–A3, C1); arbitrary environment overrides remain refused. A host whose pong at the
   fenced start does not advertise `agent_start_process_hint_v1` gets the same fenced start without the
   field (only recognition by hint degrades, decided per start from that pong, never from a version); the
-  correlation records `process_hint_sent: false` and the launch report `process_hint: host_unsupported`.
+  correlation records `process_hint_sent: false`, and the launch report and record carry
+  `process_hint: host_unsupported`, whether or not the start is then confirmed.
   The readiness wait still requires Herdr to report the agent's own kind, so a host that cannot
   recognize the agent without the hint ends `outcome_unknown`, never an inferred start. A possibly
   submitted start with an uncertain response remains unknown, without a safe fallback or inferred binding.
