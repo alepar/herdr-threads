@@ -1426,6 +1426,13 @@ mod tests {
             crate::test_support::scratch::temp_path(format!("ht-walk-{}", uuid::Uuid::new_v4()));
         let cwd = dir.join("x/a/b");
         fs::create_dir_all(&cwd).unwrap();
+        // Probe only inside the owned tree: the shared temp dir's ancestors may briefly hold a
+        // `.git` of another process (ht-tx1t).
+        let walk = |cwd: &Path| {
+            codex_layer_paths_with(Some(Path::new("/ch")), cwd, |d| {
+                d.starts_with(&dir) && d.join(".git").exists()
+            })
+        };
         let layers = |root: &Path| {
             ["config.toml", "hooks.json"]
                 .into_iter()
@@ -1444,13 +1451,10 @@ mod tests {
                 .chain(roots.iter().flat_map(|root| layers(root)))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(
-            codex_layer_paths(Some(Path::new("/ch")), &cwd),
-            expect(std::slice::from_ref(&cwd))
-        );
+        assert_eq!(walk(&cwd), expect(std::slice::from_ref(&cwd)));
         fs::create_dir(dir.join("x/.git")).unwrap();
         assert_eq!(
-            codex_layer_paths(Some(Path::new("/ch")), &cwd),
+            walk(&cwd),
             expect(&[cwd.clone(), dir.join("x/a"), dir.join("x")])
         );
         fs::remove_dir_all(&dir).unwrap();
@@ -1698,6 +1702,7 @@ use crate::harness::{
         settle_prompt_suggestions,
     },
     codex::setup::{
-        codex_home_from, codex_layer_paths, observe_codex_layer, snake, toml_hook_events,
+        codex_home_from, codex_layer_paths, codex_layer_paths_with, observe_codex_layer, snake,
+        toml_hook_events,
     },
 };

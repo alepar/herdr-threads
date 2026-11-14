@@ -80,6 +80,16 @@ pub struct CodexLayerFile {
 /// trust is not ours to read). Like Codex (`discover_project_layers` skips a `.codex/` equal to
 /// `CODEX_HOME`), a `.codex/` that resolves to `CODEX_HOME` itself is not a project layer.
 pub fn codex_layer_paths(codex_home: Option<&Path>, cwd: &Path) -> Vec<PathBuf> {
+    codex_layer_paths_with(codex_home, cwd, |dir| dir.join(".git").exists())
+}
+
+/// `codex_layer_paths` with the Git-root probe supplied, so a test can bound the walk to a tree
+/// it owns instead of reading whatever the shared temp dir's ancestors hold.
+pub(crate) fn codex_layer_paths_with(
+    codex_home: Option<&Path>,
+    cwd: &Path,
+    is_git_root: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
     let identity = |dir: &Path| lib::canonical_path(dir).unwrap_or_else(|_| dir.to_path_buf());
     let home_identity = codex_home.map(identity);
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -89,7 +99,7 @@ pub fn codex_layer_paths(codex_home: Option<&Path>, cwd: &Path) -> Vec<PathBuf> 
     dirs.push(PathBuf::from("/etc/codex"));
     let project_depth = cwd
         .ancestors()
-        .position(|dir| dir.join(".git").exists())
+        .position(is_git_root)
         .unwrap_or(0);
     for dir in cwd.ancestors().take(project_depth + 1) {
         let project = dir.join(".codex");
