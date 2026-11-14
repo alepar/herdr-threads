@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run the opencode plugin's model-free logic tests
+# (integrations/opencode/plugin/tests/plugin.test.mjs) with `node --test`. No opencode, model,
+# daemon or Herdr is needed: the tests drive the plugin with a fake client, runner and clock.
+# Prints `skipped: <reason>` and exits 0 when node is missing. The cargo test
+# `opencode_plugin_js::plugin_logic_tests_pass` (tests/combined.rs) runs the same file.
+set -u
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "skipped: node not found on PATH"
+  exit 0
+fi
+
+echo "== node --test ($(node --version))"
+exec node --test "$root/integrations/opencode/plugin/tests/plugin.test.mjs"
