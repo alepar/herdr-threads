@@ -32,7 +32,9 @@ and left in place. Restart opencode after setup or unsetup.
 With consent, the plugin allows `herdr-threads *` and `ht *` in opencode's bash permissions. It
 adds the two rules in its `config` hook, to the merged config held in memory, last so they win
 (last match wins); a user `deny` on either exact key is kept and that grant is skipped. The grant
-covers every herdr-threads command, person and setup commands included.
+covers every herdr-threads command, person and setup commands included. An agent's own
+`permission.bash` (`agent.<name>.permission` in opencode's config) is applied after the global
+rules, so it overrides the grant for that agent; doctor does not report it.
 
 `setup opencode --with-permissions` renders the plugin with the grant; `--without-permissions`
 renders it without. A plain `setup opencode` keeps the recorded choice; when there is none it asks
