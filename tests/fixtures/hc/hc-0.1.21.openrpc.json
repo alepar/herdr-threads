@@ -3,11 +3,19 @@
     "schemas": {
       "AttachResult": {
         "properties": {
+          "automatic_input": {
+            "description": "The entire attach path accepts AUTOMATIC_INPUT (kind 6). Absent means use DATA.",
+            "type": "boolean"
+          },
           "channel": {
             "description": "Stream channel: first paint, then live bytes. Send keys as DATA on it;\nRESIZE, FOCUS, FACTS, CREDIT and CLOSE frames control it.",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "resize_notifications": {
+            "description": "True only when the entire path sends RESIZE before replacement paints.\nFalse or absent means the observer must track size changes separately.",
+            "type": "boolean"
           },
           "terminal": {
             "$ref": "#/components/schemas/Terminal"
@@ -15,7 +23,9 @@
         },
         "required": [
           "channel",
-          "terminal"
+          "terminal",
+          "resize_notifications",
+          "automatic_input"
         ],
         "type": "object"
       },
@@ -312,6 +322,31 @@
             "minimum": 0,
             "type": "integer"
           },
+          "keeps_running_after_logout": {
+            "description": "True: systemd lingering is enabled; false: programs stop at last logout.\nNull: unsupported, not applicable or unknown.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "login_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoginSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "OS login inherited by this core. Absent when unavailable or unsupported."
+          },
+          "logout_linger_user": {
+            "description": "Account for the administrator's loginctl enable-linger command.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "methods": {
             "items": {
               "type": "string"
@@ -367,6 +402,29 @@
           "working"
         ],
         "type": "string"
+      },
+      "InitialSize": {
+        "properties": {
+          "cols": {
+            "description": "Initial terminal width in columns (at least 1).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rows": {
+            "description": "Initial terminal height in rows (at least 1).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cols",
+          "rows"
+        ],
+        "type": "object"
       },
       "InterruptResult": {
         "properties": {
@@ -434,6 +492,33 @@
         ],
         "type": "object"
       },
+      "LoginSession": {
+        "description": "The OS login a process inherited, rather than text restored from its environment.",
+        "properties": {
+          "gui": {
+            "description": "Unknown provenance never triggers automatic replacement.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "user"
+        ],
+        "type": "object"
+      },
       "Machine": {
         "properties": {
           "host": {
@@ -443,6 +528,22 @@
           "id": {
             "description": "The other core's permanent id.",
             "type": "string"
+          },
+          "keeps_running_after_logout": {
+            "default": null,
+            "description": "Last observed systemd logout protection; null for old or unsupported cores.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "logout_linger_user": {
+            "default": null,
+            "description": "Remote account for loginctl enable-linger, when applicable.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "name": {
             "description": "What this core calls it: `rohan` in `rohan/t7`.",
@@ -507,6 +608,22 @@
           "id": {
             "description": "The other core's permanent id.",
             "type": "string"
+          },
+          "keeps_running_after_logout": {
+            "default": null,
+            "description": "Last observed systemd logout protection; null for old or unsupported cores.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "logout_linger_user": {
+            "default": null,
+            "description": "Remote account for loginctl enable-linger, when applicable.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "name": {
             "description": "What this core calls it: `rohan` in `rohan/t7`.",
@@ -599,7 +716,7 @@
             "type": "string"
           },
           "why": {
-            "description": "Why only the screen: \"working\" (a full-screen app isn't scrolled while\nit works; read again once it stops).",
+            "description": "Why only the screen: \"working\", \"blocked\" or \"error\" (a full-screen app\nis not scrolled in these states).",
             "type": [
               "string",
               "null"
@@ -986,10 +1103,24 @@
               "null"
             ]
           },
+          "keeps_running_after_logout": {
+            "description": "True: systemd lingering is enabled; false: programs stop at last logout.\nNull: unsupported, not applicable or unknown. Checked on every request.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "live": {
             "format": "uint",
             "minimum": 0,
             "type": "integer"
+          },
+          "logout_linger_user": {
+            "description": "Account for the administrator's loginctl enable-linger command.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "pid": {
             "format": "uint32",
@@ -1142,6 +1273,17 @@
               "integer",
               "null"
             ]
+          },
+          "first_message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FirstMessage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A template first message that was not sent; retained for later inspection."
           },
           "foreground": {
             "anyOf": [
@@ -1389,7 +1531,7 @@
       "name": "Apache-2.0"
     },
     "title": "herdr-core",
-    "version": "0.1.15"
+    "version": "0.1.21"
   },
   "methods": [
     {
@@ -1432,6 +1574,19 @@
               }
             ],
             "description": "Another core dialing in: who it is. Its terminals may then be parents\nof terminals here, and hear from them."
+          }
+        },
+        {
+          "description": "Features supported by a core dialing in, including relaying size notifications.",
+          "name": "features",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Features supported by a core dialing in, including relaying size notifications.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         {
@@ -1494,10 +1649,34 @@
     },
     {
       "description": "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
-      "errors": [],
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        }
+      ],
       "name": "server.restart",
       "paramStructure": "by-name",
-      "params": [],
+      "params": [
+        {
+          "description": "Replacement environment for the next core; requires PATH. Omit to preserve\nthis core's environment. Normal startup filtering applies; session paths\nand service bookkeeping still belong to the next launcher.",
+          "name": "environment",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Replacement environment for the next core; requires PATH. Omit to preserve\nthis core's environment. Normal startup filtering applies; session paths\nand service bookkeeping still belong to the next launcher.",
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      ],
       "result": {
         "name": "result",
         "schema": {
@@ -1616,7 +1795,23 @@
           }
         },
         {
-          "description": "Set on top of the core's environment. Clients pass their terminal\nidentity here (TERM, TERM_PROGRAM, COLORTERM).",
+          "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches.",
+          "name": "display",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Display"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches."
+          }
+        },
+        {
+          "description": "Override the core's environment and terminal identity. Omit terminal\nidentity variables to use the core's defaults.",
           "name": "env",
           "required": false,
           "schema": {
@@ -1624,7 +1819,7 @@
               "type": "string"
             },
             "default": {},
-            "description": "Set on top of the core's environment. Clients pass their terminal\nidentity here (TERM, TERM_PROGRAM, COLORTERM).",
+            "description": "Override the core's environment and terminal identity. Omit terminal\nidentity variables to use the core's defaults.",
             "type": "object"
           }
         },
@@ -1737,6 +1932,22 @@
             "default": false,
             "description": "Remove it right after it exits (once a waiting parent has the exit code).",
             "type": "boolean"
+          }
+        },
+        {
+          "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.",
+          "name": "size",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InitialSize"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally."
           }
         },
         {
@@ -2246,6 +2457,16 @@
           }
         },
         {
+          "description": "Observer understands core-to-viewer RESIZE before replacement paints.",
+          "name": "resize_notifications",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Observer understands core-to-viewer RESIZE before replacement paints.",
+            "type": "boolean"
+          }
+        },
+        {
           "description": "Back after a dropped line: sets the size only once active again.",
           "name": "resumed",
           "required": false,
@@ -2283,7 +2504,7 @@
       }
     },
     {
-      "description": "Paste text and press Enter, once nobody has typed for ~3 s; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
+      "description": "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.",
       "errors": [
         {
           "code": -32000,
@@ -2340,6 +2561,13 @@
             "kind": "config"
           },
           "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "cancelled"
+          },
+          "message": "cancelled"
         }
       ],
       "name": "terminal.send",
@@ -2487,7 +2715,7 @@
           }
         },
         {
-          "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).",
+          "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped.",
           "name": "children",
           "required": false,
           "schema": {
@@ -2499,7 +2727,7 @@
                 "type": "null"
               }
             ],
-            "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`)."
+            "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped."
           }
         },
         {
@@ -2548,7 +2776,7 @@
       }
     },
     {
-      "description": "Press named keys, encoded for the program's current keyboard modes. Same quiet rule as send.",
+      "description": "Press named keys, encoded for the program's current keyboard modes, after ~3 s of quiet. Does not wait for an unsent draft.",
       "errors": [
         {
           "code": -32000,
@@ -3536,11 +3764,11 @@
           }
         },
         {
-          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.",
+          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
           "name": "target",
           "required": false,
           "schema": {
-            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.",
+            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
             "type": [
               "string",
               "null"
@@ -3558,11 +3786,11 @@
           }
         },
         {
-          "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name.",
+          "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name. On Windows, a program and its\narguments (CommandLineToArgvW split, no shell), with the remote line\nappended as one argument, no console window; Unix stays an sh line.\nWSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl.",
           "name": "via",
           "required": false,
           "schema": {
-            "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name.",
+            "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name. On Windows, a program and its\narguments (CommandLineToArgvW split, no shell), with the remote line\nappended as one argument, no console window; Unix stays an sh line.\nWSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl.",
             "type": [
               "string",
               "null"

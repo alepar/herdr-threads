@@ -1,5 +1,5 @@
 //! Leaf (a) of the real-core smoke: every `fake_hc` reply conforms to the
-//! result schema of its method in the vendored `hc-0.1.15.openrpc.json`
+//! result schema of its method in the vendored `hc-0.1.21.openrpc.json`
 //! (required fields present, types match, extra fields tolerated), and every
 //! event notification it emits conforms to the shapes in herdr-core
 //! `schema/README.md` (encoded below as tables). This always ships; it is
@@ -126,7 +126,7 @@ fn validate(root: &Value, schema: &Value, value: &Value, path: &str) -> Vec<Stri
 fn openrpc() -> Value {
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/hc/hc-0.1.15.openrpc.json"
+        "/tests/fixtures/hc/hc-0.1.21.openrpc.json"
     ))
     .unwrap();
     serde_json::from_str(&text).unwrap()
