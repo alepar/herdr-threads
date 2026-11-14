@@ -1,6 +1,6 @@
 # Pi implementation plan
 
-Status: proposed; execution waits for the design gate. Tracker: `ht-jr1g`.
+Status: approved by the user; execution started after opencode landed. Tracker: `ht-jr1g`.
 
 ## Ownership and ordering
 
@@ -44,3 +44,19 @@ Run focused Rust tests and required `cargo fmt`, all-target/all-feature clippy, 
 Finally run the integrated tree's unfiltered full nextest suite with a unique leak-run ID, then scoped process/temp cleanup checks. Run the live wake matrix only after credential authorization, through the real terminal extension and the public setup/launch paths; record missing coverage honestly. A minor release is the main coordinator's subsequent responsibility, including release-specific gates.
 
 A review-ready report names the branch/commits, independent super-roast verdict and open findings, exact checks and evidence paths, live e2e result or remaining permission gap, and cleanup status. Main reviews and merges. After confirmed merge, remove owned target/worktree/branch resources and report cleanup.
+
+## Task 1: Native extension (ht-jr1g.3)
+
+Read design.md D1-D5 and the research boundary probe results. Implement only `integrations/pi/` (extension, focused tests, integration README). Freeze the Rust/extension interface in event-contract.md; report any necessary correction before deviating. Use a dependency-free JavaScript extension entrypoint `integrations/pi/extension/herdr-threads.js`, with supporting focused modules if needed; verify the native loader shape from the recorded source. Setup will install the owned extension directory. Export one default registration function; tests may reach explicit internal exports if pi's loader allows them.
+
+Implement the approved owner/session/role/mode guards, lifecycle guidance, bounded priority buffer and every-overflow replay debt, native boundary proposals, exact context-and-current-branch receipt predicate, completed-only continuation, idle wake fencing/timeouts, and watch/process cleanup. Reuse the actual watch wire and frame semantics, including nonordinary presentation/control confirmation if elected; never confuse presentation confirmation with mail ACK. No native queued message bodies. No credential access in this task. Preserve selected model/provider on self-wake and report real-TUI uncertainty honestly.
+
+Test causal behavior with the real extension callbacks and controlled IO, then the recorded real-SDK scripted provider where feasible. Include overflow with exhausted reoffers, lifecycle late callbacks, foreign parent markers, error/abort guards, rejected or altered draft evidence, passive idle silence, and failed ACK/replay. TDD is required for new state-machine behavior. Run tests through the heavy/toolbox wrapper; report RED/GREEN commands and output. Do not run the full Rust suite for this isolated integration task. Commit only owned paths, with required trailer; do not create subagents. Report to the coordinator before any shared code change.
+
+## Task 2: Rust adapter and public integration (ht-jr1g.2)
+
+Implement `src/harness/pi/` and the minimal neutral output-policy seam, registry/unsupported-marker registration, process identity, setup/doctor, hook decode, launch parser and relevant Rust tests/goldens. Consume Task 1's real extension assets and event-contract.md, not a stub. Amend TRUST-POLICY.md in this activating commit for D7. Preserve default behavior for every other adapter. No pi-name conditional in neutral core. Scope existing files only where registration or the neutral policy requires it; leave shared herdr-core launch gaps to their owners. TDD for behavioral changes and required per-change checks; task review follows.
+
+## Task 3: Integrated qualification and documentation (ht-jr1g.4)
+
+Use the integrated public setup/launch/watch paths with isolated real pi and controlled provider tests, then the authorized live OpenRouter/DeepSeek credential under the coordinator's private brief. Qualify TUI drafts/modals, busy boundaries, lifecycle, receipts, priority/threshold wake, no-channel behavior, model continuity and cleanup. Add pi dispatch to wake e2e/Herdr matrix and user docs as appropriate; preserve existing harness qualification. Run required checks and one unfiltered full suite with scoped leak checks on the integrated tree. Any unsupported runtime capability must degrade only that capability with evidence and documented limits; do not silently declare a test bypass as support.
