@@ -364,10 +364,37 @@ impl OwnerLock {
     }
 }
 
+/// The published endpoint, validated against its socket. A socket whose
+/// inode matches but whose device alone differs, while no process holds the
+/// owner lock, is a dead boot's endpoint on a renumbered volume (a macOS
+/// reboot, a Linux workspace pause/resume): it reads as stale (`NotFound`,
+/// daemon unavailable), never as substituted, and is left for the next
+/// elected owner to reclaim (ht-x772). Under a live lock holder, or with a
+/// differing inode, the mismatch stays substituted.
 pub fn read_descriptor(paths: &NodePaths, node_uuid: NodeUuid) -> io::Result<EndpointDescriptor> {
     let descriptor = parse_descriptor(paths, Some(node_uuid))?;
-    validate_descriptor_socket(&descriptor, &paths.descriptor_path)?;
-    Ok(descriptor)
+    match validate_descriptor_socket(&descriptor, &paths.descriptor_path) {
+        Err(error)
+            if is_socket_substituted(&error) && renumbered_without_owner(paths, &descriptor) =>
+        {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "stale endpoint descriptor: no daemon holds the owner lock",
+            ))
+        }
+        Err(error) => Err(error),
+        Ok(()) => Ok(descriptor),
+    }
+}
+
+/// The published socket keeps the descriptor's inode on another device and
+/// the owner lock is free. Any failure to establish either is `false`.
+fn renumbered_without_owner(paths: &NodePaths, descriptor: &EndpointDescriptor) -> bool {
+    validate_socket(&descriptor.endpoint).is_ok_and(|meta| {
+        meta.ino() == descriptor.socket_inode && meta.dev() != descriptor.socket_device
+    }) && owner_lock_identity(paths)
+        .and_then(|identity| previous_owner_released(paths, identity))
+        .unwrap_or(false)
 }
 
 /// The published socket's device or inode differs from its descriptor. The

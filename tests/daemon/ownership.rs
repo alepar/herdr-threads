@@ -1079,3 +1079,45 @@ fn renumbered_device_never_reclaims_live_or_unsafe_artifacts() {
     drop(owner);
     fs::remove_dir_all(root).unwrap();
 }
+
+/// After a pause/resume or reboot that renumbers the state volume's device
+/// (the socket keeps its inode, every process died), a client reading the
+/// descriptor with no owner holding the lock sees a stale endpoint
+/// (NotFound: daemon unavailable), not a substituted socket, and nothing is
+/// removed (ht-x772). An inode mismatch stays substituted. Kills: reporting
+/// a dead boot's renumbered socket as substituted to clients, or a client
+/// deleting endpoint artifacts.
+#[test]
+fn renumbered_socket_without_an_owner_reads_as_stale_to_clients() {
+    use std::os::unix::fs::MetadataExt;
+    let root = fixture();
+    let instance = paths(&root, root.sock("renumbered-client.sock"));
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
+    let node = owner.node_uuid().unwrap();
+    let bound = owner.bind_socket().unwrap();
+    let published = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
+    drop(bound);
+    drop(owner);
+    let renumbered = EndpointDescriptor {
+        socket_device: published.socket_device ^ 1,
+        ..published.clone()
+    };
+    rewrite_descriptor(&instance, &renumbered);
+    let error = read_descriptor(&instance, node).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+    assert!(!is_socket_substituted(&error), "{error}");
+    assert!(instance.descriptor_path.exists());
+    assert!(fs::symlink_metadata(&instance.socket_path).is_ok());
+
+    let meta = fs::symlink_metadata(&instance.socket_path).unwrap();
+    rewrite_descriptor(
+        &instance,
+        &EndpointDescriptor {
+            socket_inode: meta.ino() + 1,
+            ..renumbered
+        },
+    );
+    let error = read_descriptor(&instance, node).unwrap_err();
+    assert!(is_socket_substituted(&error), "{error}");
+    fs::remove_dir_all(root).unwrap();
+}
