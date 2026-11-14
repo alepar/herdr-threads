@@ -2690,6 +2690,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   session event on `--continue` / `--session` or at the home screen, so the plugin binds the
   session and starts its `watch` only at the first prompt; until then the seat has no live channel
   and no wake, and a sender sees `wake=no_wake`.
+- **An opencode append that fails after storing can repeat.** The plugin treats an append call that
+  errors or runs past its 15 s bound as failed: it claims nothing and appends the items again after
+  its 30 s backoff, so a call that stored the message before failing leaves the page in the session
+  twice. At-least-once, as the mod's limits below; never lost, never settled twice.
 - **opencode `serve` with `attach` is attributed to the server's pane.** Plugins run in the server
   process, so its sessions enroll on the pane of the server, not of the attaching client; this is
   "Foreground harness execution is user managed" below.

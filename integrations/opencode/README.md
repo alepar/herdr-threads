@@ -108,6 +108,8 @@ has the plugin loaded now. Doctor also lists same-named `herdr-threads` skills i
   the plugin shows a toast naming the session.
 - **A session resumed by hand** (`-c`, `-s`) has no channel until its first prompt: no wake, and a
   sender sees `wake=no_wake`.
+- **A failed append can repeat a page.** An append that errors or times out after opencode stored
+  it is appended again after a 30 s backoff (at-least-once); no receipt settles twice.
 - **`opencode serve` with `attach`**: plugins run in the server, so its sessions belong to the
   server's pane.
 - **A plain `launch --new-terminal` onto a herdr-core terminal** gets no first prompt, so the seat
