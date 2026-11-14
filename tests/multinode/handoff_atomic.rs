@@ -1006,7 +1006,11 @@ fn linked_then_overdue_on_the_sender_only() {
 // partition heals (the re-send).
 #[test]
 fn overdue_while_partitioned() {
-    let rig = Rig::new("mn-handoff-overdue", &[]);
+    // The partition below starts right after the cluster converges, which can be before node
+    // 0's deadline lane saw its start-up sync round complete; the cut link then holds overdue
+    // emission for the whole 60 s cap and the alert comes a minute late. This test is not about
+    // that hold, so its cap is shortened (the deadline is due seconds after it lapses).
+    let rig = Rig::new("mn-handoff-overdue", &[(0, "HT_TEST_SYNC_HOLD_MS", "1000")]);
     let cluster = &rig.cluster;
     let warnings = |node| {
         cluster
@@ -1056,6 +1060,8 @@ fn overdue_while_partitioned() {
     // Heal and release the target's launch: its real `Launched` answer (fetched by the re-send
     // on link-up) and the replicated message reach node 0, in either order.
     cluster.heal(0, 1);
+    // The cut outlasted the 12 s poll: node 0's dial backoff can be tens of seconds out.
+    cluster.redial(0, 1);
     std::fs::remove_file(rig.log.join("hold")).unwrap();
     cluster.wait_until(
         "exactly one overdue warning on the sender",

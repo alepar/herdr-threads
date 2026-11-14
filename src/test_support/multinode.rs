@@ -37,7 +37,8 @@
 //! that raced the flag re-checks it after recording its pid, so no link
 //! survives a partition. A healed pair relinks at the dialer's next backoff
 //! attempt (full jitter, one second doubling per failure), so keep a
-//! partition to a few seconds and wait for convergence with a generous bound.
+//! partition to a few seconds and wait for convergence with a generous bound,
+//! or follow the heal with [`Cluster::redial`].
 //!
 //! Targets live in the node's store and the Dialer loads them at start, so
 //! [`Cluster::link`] restarts the dialing node (stop, insert, start), as the
@@ -1252,6 +1253,17 @@ impl Cluster {
         for (from, to) in [(a, b), (b, a)] {
             let _ = fs::remove_file(self.cut_flag(from, to));
         }
+    }
+
+    /// Has `dialer` dial `dest` now: the operator's `peer add` of the existing
+    /// target, which clears its backoff (attempts and retry time) and reloads
+    /// the Dialer. After a partition longer than a few seconds the next backoff
+    /// attempt can be a minute away (the window doubles per failed dial), so a
+    /// test that waits on the healed link calls this after [`Cluster::heal`].
+    pub fn redial(&self, dialer: usize, dest: usize) {
+        let dest = self.nodes[dest].state.to_str().unwrap().to_owned();
+        let added = self.human(dialer, &["peer", "add", &dest]);
+        assert!(added.status.success(), "peer add {dest}: {added:?}");
     }
 
     /// Kills the pump `from` last recorded for `to`, after checking the pid
