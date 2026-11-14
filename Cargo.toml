@@ -90,6 +90,11 @@ path = "tests/named_seats.rs"
 required-features = ["test-support"]
 
 [[test]]
+name = "opencode_native"
+path = "tests/opencode_native.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "config_smoke"
 path = "tests/config_smoke.rs"
 required-features = ["test-support"]

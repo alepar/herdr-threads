@@ -231,6 +231,11 @@ priority = 60
 test-group = "named-seats"
 
 [[profile.default.overrides]]
+filter = "binary(opencode_native)"
+priority = 60
+test-group = "named-seats"
+
+[[profile.default.overrides]]
 filter = "binary(config_smoke)"
 priority = 60
 test-group = "config-smoke"
