@@ -81,12 +81,19 @@ fn the_plugin_recovery_line_reads_the_daemon_markers() {
     // session shell's `cli_prefix` plus `inbox`): its marker prefixes must match these functions.
     use crate::protocol::{ids::MessageId, watch};
     let source = crate::harness::opencode::setup::PLUGIN_SOURCE;
-    let prefix = ["herdr-threads".to_owned(), "--state-dir".to_owned(), "/s".to_owned()];
+    let prefix = [
+        "herdr-threads".to_owned(),
+        "--state-dir".to_owned(),
+        "/s".to_owned(),
+    ];
     let truncation = watch::truncation_marker_for(&prefix, &MessageId::new("m1"), false);
     let attention = watch::attention_marker_for(&prefix);
     for (marker, constant) in [
         (&truncation, "const TRUNCATION_MARK = '…truncated; next: '"),
-        (&attention, "const ATTENTION_MARK = 'herdr-threads: attention pending; run '"),
+        (
+            &attention,
+            "const ATTENTION_MARK = 'herdr-threads: attention pending; run '",
+        ),
     ] {
         assert!(source.contains(constant), "{constant}");
         let mark = constant.split('\'').nth(1).unwrap();

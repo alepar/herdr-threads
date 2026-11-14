@@ -888,27 +888,35 @@ fn opencode_native_gate() {
         &["send", "--seat", &seat, "--nudge", "--body", "WAKE-PLUM"],
     );
     assert_eq!(sent.code, Some(0), "{sent:?}");
-    let woken = wait_for("the wake turn as the agent", Duration::from_secs(60), || {
-        model
-            .agent_requests()
-            .iter()
-            .skip(calls)
-            .find(|body| last_text(body).starts_with(WAKE_UP))
-            .cloned()
-            .ok_or_else(|| read(&ledger_file))
-    });
+    let woken = wait_for(
+        "the wake turn as the agent",
+        Duration::from_secs(60),
+        || {
+            model
+                .agent_requests()
+                .iter()
+                .skip(calls)
+                .find(|body| last_text(body).starts_with(WAKE_UP))
+                .cloned()
+                .ok_or_else(|| read(&ledger_file))
+        },
+    );
     assert!(context_of(&woken).contains("WAKE-PLUM"));
     assert!(
         context_of(&woken).contains(AGENT_PROMPT),
         "the plugin-started wake turn runs as {AGENT}"
     );
-    wait_for("the agent's wake turn finished", Duration::from_secs(60), || {
-        if opencode.all_idle() {
-            Ok(())
-        } else {
-            Err("busy".to_owned())
-        }
-    });
+    wait_for(
+        "the agent's wake turn finished",
+        Duration::from_secs(60),
+        || {
+            if opencode.all_idle() {
+                Ok(())
+            } else {
+                Err("busy".to_owned())
+            }
+        },
+    );
     // The stored messages say the same: the append, the wake prompt and every step after them
     // carry the agent.
     let stored = opencode.messages(&session);
@@ -939,13 +947,21 @@ fn opencode_native_gate() {
         } else {
             user_with(needle)
         };
-        assert_eq!(message["info"]["agent"], AGENT, "{needle}: {}", message["info"]);
+        assert_eq!(
+            message["info"]["agent"], AGENT,
+            "{needle}: {}",
+            message["info"]
+        );
         let id = message["info"]["id"].as_str().unwrap();
         for step in stored
             .iter()
             .filter(|m| m["info"]["role"] == "assistant" && m["info"]["parentID"] == id)
         {
-            assert_eq!(step["info"]["agent"], AGENT, "{needle} step: {}", step["info"]);
+            assert_eq!(
+                step["info"]["agent"], AGENT,
+                "{needle} step: {}",
+                step["info"]
+            );
         }
     }
     println!("evidence: {AGENT} kept on the mid-turn step and the wake turn");
