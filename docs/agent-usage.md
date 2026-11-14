@@ -343,7 +343,8 @@ selection. Existing-seat delivery and guarded pane launches refuse either option
 before effects; use `--new-tab` instead. Plain `launch` is unchanged.
 
 Profile directories map through the selected adapter: Codex uses `CODEX_HOME`,
-Claude uses `CLAUDE_CONFIG_DIR`, and Hermes uses `HERMES_HOME`. Hermes native named
+Claude uses `CLAUDE_CONFIG_DIR`, opencode uses `OPENCODE_CONFIG_DIR`, and Hermes uses
+`HERMES_HOME`. Hermes native named
 profiles remain separate and may resolve below the supplied root; the effective
 setup scope follows that named profile. agy rejects explicit profile selection;
 new-tab cwd remains supported. Selection neither changes HOME nor creates a

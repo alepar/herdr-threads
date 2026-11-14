@@ -114,7 +114,7 @@ Alternative considered and kept as the in-plugin fallback if the probe shows app
 - `plugins/herdr-threads.js`: the plugin, embedded from `integrations/opencode/plugin/herdr-threads.js`, with a rendered launch line (absolute executable, `--state-dir`, `--host-endpoint`) as `register.js` has. No npm dependency, so opencode's dependency install is irrelevant to it.
 - `skills/herdr-threads/SKILL.md`: the shared skill plus an opencode section (its shell tool, the session variables). opencode dedupes same-named skills from `~/.agents/skills` and `~/.claude/skills` and picks the winner unpredictably (probe item 4). The copies share the common text, so the opencode-specific guidance also rides the lifecycle check-in (`OutputPolicy.extra_guidance`) and does not depend on which copy wins; doctor notes same-named copies.
 
-Config root: `--config-root`, else `OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`. `opencode.json` is never edited, so JSONC is not a concern.
+Config root: `OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`. `setup opencode` has no root flag; only the installer's internal `installer-integrations --config-root opencode=DIR` names another root. `opencode.json` is never edited, so JSONC is not a concern.
 
 **Permission.** With consent (`--with-permissions`, asked interactively otherwise, as for agy), the rendered plugin adds `permission.bash["herdr-threads *"] = "allow"` and the same for `ht *` in its `config` hook. Without consent, opencode asks the user on the first call and its own "Allow always" covers the rest. The probe confirmed the mechanism. Rules are last-match-wins in key order, so the plugin removes and re-adds its two keys to place them last. A user rule that sets either exact key to `deny` is respected: the plugin adds nothing for it and doctor reports it.
 
@@ -130,6 +130,7 @@ No `installer_policy` in this epic: `install.sh` keeps handling Claude and Codex
 - Accepts `-m/--model`, `--agent`, `-c/--continue`, `-s/--session`, `--fork`.
 - Refuses subcommands (`run`, `serve`, `attach`, `acp`, …), `--pure` (no plugin), `--auto` and its aliases `--yolo` / `--dangerously-skip-permissions`, `--port` / `--hostname` / `--mdns` (an unauthenticated server), `--mini`, and unknown flags.
 - The startup input goes through `prepare_startup_input` (`before: ["--prompt"]`) and the model through `apply_model`; `compose_argv` leaves argv unchanged.
+- Scope: an explicit `--profile-dir`, else the pane shell's `OPENCODE_CONFIG_DIR`, else its `$XDG_CONFIG_HOME/opencode`, else the launcher's root as setup resolves it, else `~/.config/opencode`; the readiness warning and the fingerprint read that root. An explicit `--profile-dir` is exported to the launched opencode as `OPENCODE_CONFIG_DIR`.
 - Handoff uses the V2 bootstrap, as agy does. `--prompt` creates the session at startup, so a launched opencode enrolls at once.
 - A `launch` with no startup input would leave a seat nothing can reach, because no session exists until a prompt. The policy then supplies the content-free prompt `herdr-threads: wake up`, so the launched session enrolls with one short turn.
 

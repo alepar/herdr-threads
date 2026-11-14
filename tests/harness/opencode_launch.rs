@@ -14,6 +14,24 @@ const HELP: &str =
 const POLICY: OpencodeLaunch = OpencodeLaunch;
 struct NoProbe;
 impl PaneShellProbe for NoProbe {}
+/// A pane shell exporting fixed values.
+struct PaneExports(Vec<(String, String)>);
+impl PaneShellProbe for PaneExports {
+    fn pane_shell_env(&self, var: &str) -> Option<String> {
+        self.0
+            .iter()
+            .find(|(name, _)| name == var)
+            .map(|(_, value)| value.clone())
+    }
+}
+fn pane(exports: &[(&str, &str)]) -> PaneExports {
+    PaneExports(
+        exports
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect(),
+    )
+}
 
 fn budget() -> CallBudget {
     CallBudget {
@@ -408,34 +426,53 @@ fn admitted() -> AdmittedHandle {
         .unwrap_or_else(|e| panic!("admit: {e}"))
 }
 
+fn root_of(scope: &LaunchScope) -> &std::path::Path {
+    match &scope.setup {
+        ResolvedSetupScope::ConfigRoot(root) => root,
+        ResolvedSetupScope::Profile { .. } => panic!("profile scope"),
+    }
+}
+
+// Setup's precedence (design D6), read from the pane shell the launched opencode inherits:
+// explicit > pane OPENCODE_CONFIG_DIR > pane $XDG_CONFIG_HOME/opencode > launcher > home.
 #[test]
-fn resolve_scope_prefers_explicit_then_launcher_then_home() {
+fn resolve_scope_follows_setup_precedence_from_the_pane_shell() {
     let fx = Fixture::new();
     let mut request = fx.request(&["-c"]);
-    let scope = fx.scope(&request);
-    assert_eq!(
-        scope.setup,
-        ResolvedSetupScope::ConfigRoot(fx.config_root())
-    );
+    let resolve = |request: &LaunchRequest, probe: &dyn PaneShellProbe| {
+        POLICY.resolve_scope(request, probe, &budget()).unwrap()
+    };
+    let scope = resolve(&request, &NoProbe);
+    assert_eq!(root_of(&scope), fx.config_root());
     assert_eq!(scope.config_source, "home_default");
     assert_eq!(scope.working_directory, fx.root.join("work"));
+
     request
         .environment
         .config_roots
-        .insert("opencode".into(), fx.root.join("xdg/opencode"));
-    let scope = fx.scope(&request);
-    assert_eq!(
-        scope.setup,
-        ResolvedSetupScope::ConfigRoot(fx.root.join("xdg/opencode"))
-    );
+        .insert("opencode".into(), fx.root.join("launcher/opencode"));
+    let scope = resolve(&request, &NoProbe);
+    assert_eq!(root_of(&scope), fx.root.join("launcher/opencode"));
     assert_eq!(scope.config_source, "launcher");
+
+    let xdg = pane(&[("XDG_CONFIG_HOME", "/pane/xdg")]);
+    let scope = resolve(&request, &xdg);
+    assert_eq!(root_of(&scope), std::path::Path::new("/pane/xdg/opencode"));
+    assert_eq!(scope.config_source, "pane_shell");
+
+    let both = pane(&[
+        ("XDG_CONFIG_HOME", "/pane/xdg"),
+        ("OPENCODE_CONFIG_DIR", "/pane/oc"),
+    ]);
+    let scope = resolve(&request, &both);
+    assert_eq!(root_of(&scope), std::path::Path::new("/pane/oc"));
+    assert_eq!(scope.config_source, "pane_shell");
+
     request.environment.explicit_profile_directory = Some(fx.root.join("explicit"));
-    let scope = fx.scope(&request);
-    assert_eq!(
-        scope.setup,
-        ResolvedSetupScope::ConfigRoot(fx.root.join("explicit"))
-    );
+    let scope = resolve(&request, &both);
+    assert_eq!(root_of(&scope), fx.root.join("explicit"));
     assert_eq!(scope.config_source, "explicit_profile_directory");
+
     // The grammar applies before any scope, and no HOME is a missing root.
     assert!(
         POLICY
@@ -451,6 +488,119 @@ fn resolve_scope_prefers_explicit_then_launcher_then_home() {
             .code,
         ErrorCode::MissingHook
     );
+}
+
+// As setup does, a relative or empty pane value is no root: the next level applies.
+#[test]
+fn relative_or_empty_pane_values_are_ignored() {
+    let fx = Fixture::new();
+    let request = fx.request(&[]);
+    for exports in [
+        &[("OPENCODE_CONFIG_DIR", ""), ("XDG_CONFIG_HOME", "")][..],
+        &[
+            ("OPENCODE_CONFIG_DIR", "rel/oc"),
+            ("XDG_CONFIG_HOME", "rel/xdg"),
+        ],
+    ] {
+        let scope = POLICY
+            .resolve_scope(&request, &pane(exports), &budget())
+            .unwrap();
+        assert_eq!(root_of(&scope), fx.config_root(), "{exports:?}");
+        assert_eq!(scope.config_source, "home_default");
+    }
+    // A relative OPENCODE_CONFIG_DIR falls through to an absolute XDG_CONFIG_HOME.
+    let scope = POLICY
+        .resolve_scope(
+            &request,
+            &pane(&[("OPENCODE_CONFIG_DIR", "rel"), ("XDG_CONFIG_HOME", "/x")]),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(root_of(&scope), std::path::Path::new("/x/opencode"));
+}
+
+// The launcher root comes from setup's own resolution of the launcher environment, so a
+// launch with no pane export reads the root setup wrote.
+#[test]
+fn the_launcher_root_is_setups_default_root() {
+    let fx = Fixture::new();
+    let mut environment = fx.request(&[]).environment;
+    environment
+        .declared
+        .insert("XDG_CONFIG_HOME".into(), fx.root.join("xdg").into());
+    assert_eq!(
+        crate::harness::opencode::OpencodeAdapter.default_config_root(&environment),
+        Some(fx.root.join("xdg/opencode"))
+    );
+    environment
+        .declared
+        .insert("OPENCODE_CONFIG_DIR".into(), fx.root.join("oc").into());
+    assert_eq!(
+        crate::harness::opencode::OpencodeAdapter.default_config_root(&environment),
+        Some(fx.root.join("oc"))
+    );
+}
+
+// An explicit profile directory reaches the launched opencode as OPENCODE_CONFIG_DIR, the way
+// other adapters export their config-dir variable; no other launch sets any environment.
+#[test]
+fn an_explicit_profile_directory_is_exported_as_opencode_config_dir() {
+    let fx = Fixture::new();
+    let dir = fx.root.join("explicit");
+    assert_eq!(
+        POLICY.explicit_directory_env(&dir).unwrap(),
+        [(
+            "OPENCODE_CONFIG_DIR".to_owned(),
+            dir.to_str().unwrap().to_owned()
+        )]
+        .into()
+    );
+    let mut request = fx.request(&[]);
+    request.environment.explicit_profile_directory = Some(dir.clone());
+    let scope = fx.scope(&request);
+    let mut status = fx.status(None);
+    status.scope = scope.setup.clone();
+    let prepared = POLICY
+        .prepare_launch(&request, &scope, &admitted(), &status, &NoProbe, &budget())
+        .unwrap();
+    assert!(prepared.environment_overrides.is_empty());
+}
+
+// Readiness and the fingerprint read the resolved root, not the launcher's or HOME's.
+#[test]
+fn the_fingerprint_reads_the_pane_shell_root() {
+    let fx = Fixture::new();
+    let pane_root = fx.root.join("pane-oc");
+    let exports = pane(&[("OPENCODE_CONFIG_DIR", pane_root.to_str().unwrap())]);
+    let request = fx.request(&[]);
+    let scope = POLICY.resolve_scope(&request, &exports, &budget()).unwrap();
+    assert_eq!(root_of(&scope), pane_root);
+    // A plugin only under the home default does not satisfy the pane-shell root.
+    let home_plugin = fx.config_root().join("plugins/herdr-threads.js");
+    std::fs::create_dir_all(home_plugin.parent().unwrap()).unwrap();
+    std::fs::write(&home_plugin, "export default {}\n").unwrap();
+    assert_eq!(
+        POLICY
+            .configuration_fingerprint(&request, &scope)
+            .unwrap_err()
+            .code,
+        ErrorCode::MissingHook
+    );
+    let plugin = pane_root.join("plugins/herdr-threads.js");
+    std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    std::fs::write(&plugin, "export default {}\n").unwrap();
+    POLICY.configuration_fingerprint(&request, &scope).unwrap();
+    // The status checked for preparation is the resolved scope's.
+    let mut status = fx.status(None);
+    assert!(
+        POLICY
+            .prepare_launch(&request, &scope, &admitted(), &status, &NoProbe, &budget())
+            .is_err()
+    );
+    status.scope = scope.setup.clone();
+    POLICY
+        .prepare_launch(&request, &scope, &admitted(), &status, &NoProbe, &budget())
+        .unwrap();
 }
 
 #[test]

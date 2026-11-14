@@ -25,6 +25,8 @@ pub const OPTIONS_ENV: &str = "HERDR_THREADS_OPENCODE_OPTS";
 const PROMPT_PREFIX: &str = "--prompt=";
 /// The setup-owned plugin file under the config root (design D6).
 const PLUGIN_FILE: &str = "plugins/herdr-threads.js";
+/// opencode's extra config directory variable; an explicit profile directory is exported as it.
+const CONFIG_DIR_ENV: &str = "OPENCODE_CONFIG_DIR";
 
 pub(super) const LAUNCH_NOTES: &str = "opencode launch accepts -m/--model, --agent, -c/--continue, -s/--session, --fork (with -c or -s) and --prompt (--name value or --name=value). It refuses positionals and so every subcommand (run, serve, attach, acp, ...), --pure, --auto/--yolo/--dangerously-skip-permissions, --port/--hostname/--mdns, --mini, unknown flags and `--`. opencode creates its session at the first prompt, so a launch without --prompt starts with the prompt \"herdr-threads: wake up\". Extra arguments come from HERDR_THREADS_OPENCODE_OPTS in the same grammar.";
 
@@ -190,16 +192,47 @@ impl LaunchPolicy for OpencodeLaunch {
         template.prefix = PROMPT_PREFIX.into();
         Ok(Some(template))
     }
+    /// The launched opencode loads `OPENCODE_CONFIG_DIR` as a config directory, so an explicit
+    /// profile directory is exported as it.
+    fn explicit_directory_env(
+        &self,
+        directory: &std::path::Path,
+    ) -> Result<std::collections::BTreeMap<String, String>, ApiError> {
+        let directory = directory
+            .to_str()
+            .ok_or_else(|| invalid("invalid explicit profile directory"))?;
+        Ok([(CONFIG_DIR_ENV.into(), directory.into())].into())
+    }
+    /// Setup's precedence (design D6) read where the launched process gets its environment:
+    /// an explicit profile directory, else the pane shell's `OPENCODE_CONFIG_DIR`, else its
+    /// `$XDG_CONFIG_HOME/opencode`, else the launcher's root (setup's own resolution of the
+    /// launcher environment), else `~/.config/opencode`. Relative or empty values are ignored.
     fn resolve_scope(
         &self,
         request: &LaunchRequest,
-        _: &dyn PaneShellProbe,
-        _: &CallBudget,
+        probe: &dyn PaneShellProbe,
+        budget: &CallBudget,
     ) -> Result<LaunchScope, ApiError> {
         parse(&request.argv)?;
         let environment = &request.environment;
+        if budget.is_exhausted(environment.clock.as_ref()) {
+            return Err(error(
+                ErrorCode::DeadlineExceeded,
+                "launch budget exhausted",
+            ));
+        }
+        let pane = |variable: &str| {
+            probe
+                .pane_shell_env_bounded(variable, environment.clock.as_ref(), budget)
+                .map(std::path::PathBuf::from)
+                .filter(|path| path.is_absolute())
+        };
         let (root, source) = if let Some(root) = &environment.explicit_profile_directory {
             (root.clone(), "explicit_profile_directory")
+        } else if let Some(root) =
+            pane(CONFIG_DIR_ENV).or_else(|| pane("XDG_CONFIG_HOME").map(|dir| dir.join("opencode")))
+        {
+            (root, "pane_shell")
         } else if let Some(root) = environment.config_roots.get(super::METADATA.id) {
             (root.clone(), "launcher")
         } else {

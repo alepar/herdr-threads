@@ -108,8 +108,8 @@ pub fn xdg_config_dir(env: &SetupEnvironment) -> Option<PathBuf> {
         })
 }
 
-/// The default config root: `OPENCODE_CONFIG_DIR`, else [`xdg_config_dir`]. An explicit
-/// `--config-root` (the environment's `config_roots`) wins over both.
+/// The default config root: `OPENCODE_CONFIG_DIR`, else [`xdg_config_dir`]. An entry in the
+/// environment's `config_roots` (the internal installer's `--config-root`) wins over both.
 pub fn default_config_root(env: &SetupEnvironment) -> Option<PathBuf> {
     absolute(env.declared.get("OPENCODE_CONFIG_DIR")).or_else(|| xdg_config_dir(env))
 }

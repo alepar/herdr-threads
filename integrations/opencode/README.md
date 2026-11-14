@@ -74,6 +74,10 @@ the prompt `herdr-threads: wake up` and the session enrolls at once. A handoff p
 as `--prompt`, so a caller's own `--prompt` conflicts with it. A launch with the plugin missing
 warns and starts anyway.
 
+The launch checks the plugin in the root the pane's shell selects (`OPENCODE_CONFIG_DIR`, else
+`$XDG_CONFIG_HOME/opencode`), else in setup's root. `handoff --new-tab --profile-dir DIR` starts
+opencode with `OPENCODE_CONFIG_DIR=DIR`; run `setup opencode` with that variable set first.
+
 ## Doctor
 
 `herdr-threads doctor` reports the plugin, skill and permission states and the plugin heartbeat:

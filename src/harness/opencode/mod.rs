@@ -227,8 +227,9 @@ impl HarnessAdapter for OpencodeAdapter {
     fn setup_environment_inputs(&self) -> &'static [&'static str] {
         &["OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME"]
     }
-    /// `--config-root` (the environment's `config_roots`) > `OPENCODE_CONFIG_DIR` >
-    /// `$XDG_CONFIG_HOME/opencode` > `~/.config/opencode` (design D6).
+    /// The environment's `config_roots` (an internal installer `--config-root`; `setup` has no
+    /// root flag) > `OPENCODE_CONFIG_DIR` > `$XDG_CONFIG_HOME/opencode` > `~/.config/opencode`
+    /// (design D6).
     fn resolve_setup_scope(
         &self,
         request: &SetupScopeRequest,
