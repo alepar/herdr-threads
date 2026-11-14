@@ -1150,10 +1150,21 @@ fn due_phase_continuation_clears_with_many_ended_lapsed_rows() {
     }
 }
 
-/// Wake survey G (ht-2alm): the check-in's inbox page walks every instance thread, a bounded
-/// number per page. On an instance with more threads than that bound, a pending row in a late
-/// thread must still be reachable from the offer: shown, or one `inbox.next` away on the plain
-/// (v2) inbox, never behind a chain of empty v1 pages.
+/// Wake survey G (ht-2alm): the check-in's inbox page walks every instance thread, at most 100
+/// (`CANDIDATE_LIMIT`) per page. On an instance with more threads, a pending item in a late
+/// thread must be one plain (v2) `inbox` away from the offer, never behind a chain of empty v1
+/// pages; with nothing beyond the page pending, the offer is complete.
+const LATE: &str = "late";
+
+/// A real seat's mapping generation is at least 1; the v2 inbox refuses a generation-0 cursor.
+fn store_at_generation_one() -> Store {
+    let f = store();
+    f.conn
+        .execute("UPDATE seats SET generation=1 WHERE id='s'", [])
+        .unwrap();
+    f
+}
+
 fn many_threads(conn: &Connection, count: usize) {
     for i in 0..count {
         conn.execute(
@@ -1162,49 +1173,204 @@ fn many_threads(conn: &Connection, count: usize) {
         )
         .unwrap();
     }
+    conn.execute(
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",
+        [LATE],
+    )
+    .unwrap();
+}
+
+fn pending_receipt(conn: &Connection, thread: &str, id: &str, sequence: i64) {
+    conn.execute(
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,?3,'ordinary','b',0,(SELECT decision_seq+1 FROM local_node),'agent')",
+        params![id, thread, sequence],
+    )
+    .unwrap();
+    // Every decision is published: the v2 inbox reads only through the node's decision_seq.
+    conn.execute("UPDATE local_node SET decision_seq=decision_seq+1", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,?2,'s','pending',100)",
+        params![id, thread],
+    )
+    .unwrap();
+}
+
+/// The offer past the walk bound: `late` unseen, continued on the plain inbox first page.
+fn assert_continues_on_plain_inbox(offer: &crate::protocol::results::CheckInResult) {
+    assert!(
+        offer
+            .inbox
+            .items
+            .iter()
+            .all(|item| item.thread.as_str() != LATE),
+        "the late thread is past the walk bound: {:?}",
+        offer.inbox.items
+    );
+    assert!(offer.inbox.has_more);
+    assert_eq!(
+        offer.inbox.stop_reason,
+        crate::protocol::pagination::StopReason::Work
+    );
+    offer.inbox.validate().unwrap();
+    let argv = offer.inbox.next_argv.clone().expect("continuation argv");
+    assert_eq!(argv[0], "herdr-threads");
+    assert!(argv.iter().any(|arg| arg == "inbox"), "{argv:?}");
+    assert!(
+        !argv.iter().any(|arg| arg == "--cursor"),
+        "the offer continues the v1 walk instead of the plain inbox: {argv:?}"
+    );
+}
+
+/// The plain (v2) inbox first page, as the continuation argv reads it.
+fn plain_inbox(f: &Store) -> Vec<String> {
+    let CommandResult::InboxBatchV2(page) = f
+        .store
+        .query(
+            &crate::protocol::commands::Command::InboxBatchV2(
+                crate::protocol::commands::InboxQuery {
+                    pushed: false,
+                    thread: None,
+                    claim: None,
+                    seat: Some(seat("s")),
+                    page: crate::protocol::pagination::PageRequest::default(),
+                    seat_alerts: false,
+                },
+            ),
+            &ReadContext {
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+                output: Default::default(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("v2 page")
+    };
+    page.items
+        .iter()
+        .map(|item| match item {
+            crate::protocol::results::InboxBatchV2Item::Message { message, .. }
+            | crate::protocol::results::InboxBatchV2Item::LazyMessage { message, .. } => {
+                message.as_str().to_owned()
+            }
+            crate::protocol::results::InboxBatchV2Item::Invitation { invitation, .. } => {
+                invitation.as_str().to_owned()
+            }
+            other => format!("{other:?}"),
+        })
+        .collect()
 }
 
 #[test]
 fn check_in_offer_reaches_a_pending_row_past_the_thread_walk_bound() {
-    let f = store();
-    check_in(&f.store, EXEC_1, 0);
+    let f = store_at_generation_one();
+    check_in(&f.store, EXEC_1, 1);
     many_threads(&f.conn, 150);
-    f.conn.execute_batch(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('late','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('mlate','34750f98bd59fcfc946da45aaabe933b','late',1,'ordinary','b',0,1,'agent');\
-         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('mlate','late','s','pending',100);",
-    )
-    .unwrap();
-    let offer = check_in_result(&f.store, EXEC_2, 0);
-    let shown = offer
+    pending_receipt(&f.conn, LATE, "mlate", 1);
+    let offer = check_in_result(&f.store, EXEC_2, 1);
+    assert!(offer.inbox.items.is_empty(), "{:?}", offer.inbox.items);
+    assert_continues_on_plain_inbox(&offer);
+    assert!(plain_inbox(&f).contains(&"mlate".to_owned()));
+}
+
+#[test]
+fn check_in_offer_with_shown_rows_still_continues_to_a_late_row() {
+    let f = store_at_generation_one();
+    check_in(&f.store, EXEC_1, 1);
+    pending_receipt(&f.conn, "t", "mearly", 1);
+    many_threads(&f.conn, 150);
+    pending_receipt(&f.conn, LATE, "mlate", 1);
+    let offer = check_in_result(&f.store, EXEC_2, 1);
+    assert!(
+        offer
+            .inbox
+            .items
+            .iter()
+            .any(|item| item.thread.as_str() == "t"),
+        "{:?}",
+        offer.inbox.items
+    );
+    assert_continues_on_plain_inbox(&offer);
+    let plain = plain_inbox(&f);
+    assert!(plain.contains(&"mearly".to_owned()), "{plain:?}");
+    assert!(plain.contains(&"mlate".to_owned()), "{plain:?}");
+}
+
+#[test]
+fn check_in_offer_continues_while_the_seat_wide_count_is_saturated() {
+    let f = store_at_generation_one();
+    check_in(&f.store, EXEC_1, 1);
+    // One more than the count cap in the first thread: the shown count saturates at the cap,
+    // equal to the seat-wide count, so only the saturation flag tells that more may wait.
+    let cap = crate::store::attention::ATTENTION_COUNT_CAP as i64;
+    f.conn.execute_batch("BEGIN").unwrap();
+    for n in 0..=cap {
+        pending_receipt(&f.conn, "t", &format!("m{n}"), n + 1);
+    }
+    f.conn.execute_batch("COMMIT").unwrap();
+    many_threads(&f.conn, 150);
+    let offer = check_in_result(&f.store, EXEC_2, 1);
+    let first = offer
         .inbox
         .items
         .iter()
-        .any(|item| item.thread.as_str() == "late");
-    if !shown {
-        assert!(
-            offer.inbox.has_more,
-            "the pending row is neither shown nor continued"
-        );
-        let argv = offer.inbox.next_argv.clone().expect("continuation argv");
-        assert!(
-            !argv.iter().any(|arg| arg == "--cursor"),
-            "the offer continues a bounded v1 thread walk instead of the plain inbox: {argv:?}"
-        );
-    }
+        .find(|item| item.thread.as_str() == "t")
+        .expect("the first thread is shown");
+    assert_eq!(first.pending_receipts as i64, cap);
+    assert_continues_on_plain_inbox(&offer);
+}
+
+#[test]
+fn check_in_offer_reaches_a_late_invitation() {
+    let f = store_at_generation_one();
+    check_in(&f.store, EXEC_1, 1);
+    many_threads(&f.conn, 150);
+    f.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('ilate',?1,'s',1,'pending',(SELECT decision_seq+1 FROM local_node),0,300,99999999,(SELECT id FROM local_node))", [LATE]).unwrap();
+    f.conn
+        .execute("UPDATE local_node SET decision_seq=decision_seq+1", [])
+        .unwrap();
+    let offer = check_in_result(&f.store, EXEC_2, 1);
+    assert!(offer.inbox.items.is_empty(), "{:?}", offer.inbox.items);
+    assert_continues_on_plain_inbox(&offer);
+    let plain = plain_inbox(&f);
+    assert!(plain.contains(&"ilate".to_owned()), "{plain:?}");
 }
 
 #[test]
 fn check_in_offer_with_nothing_pending_is_complete_past_the_thread_walk_bound() {
-    let f = store();
-    check_in(&f.store, EXEC_1, 0);
+    let f = store_at_generation_one();
+    check_in(&f.store, EXEC_1, 1);
     many_threads(&f.conn, 150);
-    let offer = check_in_result(&f.store, EXEC_2, 0);
+    let offer = check_in_result(&f.store, EXEC_2, 1);
     assert!(offer.inbox.items.is_empty());
     assert!(
         !offer.inbox.has_more,
         "an offer with nothing pending advertises more: {:?}",
         offer.inbox.next_argv
     );
+    assert!(offer.inbox.next_cursor.is_none());
+    offer.inbox.validate().unwrap();
+}
+
+#[test]
+fn check_in_offer_whose_shown_rows_cover_everything_is_complete() {
+    let f = store_at_generation_one();
+    check_in(&f.store, EXEC_1, 1);
+    pending_receipt(&f.conn, "t", "mearly", 1);
+    many_threads(&f.conn, 150);
+    let offer = check_in_result(&f.store, EXEC_2, 1);
+    assert!(
+        offer
+            .inbox
+            .items
+            .iter()
+            .any(|item| item.thread.as_str() == "t"),
+        "{:?}",
+        offer.inbox.items
+    );
+    assert!(!offer.inbox.has_more, "{:?}", offer.inbox.next_argv);
+    assert!(offer.inbox.next_cursor.is_none());
     offer.inbox.validate().unwrap();
 }

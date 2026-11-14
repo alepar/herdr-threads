@@ -3447,8 +3447,9 @@ fn codex_stop_continues_once_for_a_waking_item_and_stays_quiet_otherwise() {
 }
 
 // Retained from fix2 (root adoption, wave-1 fix1 item a): more than 100
-// instance threads, so the check-in inbox page (100 scanned threads) is
-// truncated; a new invitation, then a new require-ack message, in thread 106
+// instance threads, so the check-in inbox walk (100 scanned threads) stops
+// early (its offer is complete only because nothing is pending seat-wide,
+// ht-2alm); a new invitation, then a new require-ack message, in thread 106
 // are each emitted on the next tool call, and a repeat is quiet. Kills: a
 // coalescing decision built from the check-in page (the invitation and
 // message in thread 106 would be suppressed) and a fail-open path taken for a

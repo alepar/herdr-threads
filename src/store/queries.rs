@@ -5380,15 +5380,15 @@ fn inbox(
     )?))
 }
 
-/// The check-in builder calls this on its writer Transaction after the
-/// provisional binding is visible. It shares that transaction's snapshot and
-/// returns an exact count for every included thread or an explicit error.
 /// The inbox page a check-in offer carries (wave-survey G, ht-2alm). It is the v1 summary page,
 /// but its thread walk visits every instance thread, `CANDIDATE_LIMIT` per page, so past that
 /// many threads it stops on work with nothing shown and its `c3:` continuation keeps the reader
 /// on v1, several empty pages from a late thread's row. The offer therefore judges `has_more`
 /// from the seat-wide pending counts, and continues on the plain (v2) inbox first page, which
-/// shows every pending item. The v1 cursor stays for machine readers.
+/// shows every pending item. `next_cursor` keeps the v1 cursor on purpose: a machine reader
+/// that follows cursors still walks the v1 pages, while text readers follow `next_argv`. When
+/// the budget runs out during the seat-wide counts, the v1 page is returned unchanged
+/// (`has_more` with its v1 continuation), as before this check existed.
 pub fn check_in_inbox_in_transaction(
     db: &Connection,
     instance: &str,
@@ -5404,6 +5404,34 @@ pub fn check_in_inbox_in_transaction(
     if !page.has_more || page.stop_reason != StopReason::Work {
         return Ok(page);
     }
+    let complete = match seat_pending_beyond(db, seat, &page.items, budget, clock) {
+        Ok(beyond) => !beyond,
+        Err(error) if error.code == ErrorCode::ReadBudgetExhausted => return Ok(page),
+        Err(error) => return Err(error),
+    };
+    if complete {
+        page.has_more = false;
+        page.next_cursor = None;
+        page.next_argv = None;
+        page.stop_reason = StopReason::Complete;
+    } else {
+        page.next_argv = Some(contextual_argv(
+            inbox_request_argv(seat, None, request),
+            output,
+        ));
+    }
+    Ok(page)
+}
+
+/// Whether the seat may have pending invitations, receipts or warnings beyond what `shown`
+/// counts: a saturated seat-wide set always may.
+fn seat_pending_beyond(
+    db: &Connection,
+    seat: &SeatId,
+    shown: &[InboxItem],
+    budget: &CallBudget,
+    clock: &dyn Clock,
+) -> Result<bool, ApiError> {
     let check = || {
         if budget.is_exhausted(clock) {
             Err(api_error(
@@ -5420,26 +5448,17 @@ pub fn check_in_inbox_in_transaction(
         super::attention::pending_receipts(db, seat.as_str(), None)?.count(),
         super::attention::pending_warnings(db, seat.as_str(), None, &backlog, &check)?.count(),
     ];
-    let shown: u64 = page
-        .items
+    let shown: u64 = shown
         .iter()
         .map(|item| item.invitations + item.pending_receipts + item.warnings)
         .sum();
     let pending: u64 = sets.iter().map(|(count, _)| count).sum();
-    if sets.iter().any(|(_, saturated)| *saturated) || pending > shown {
-        page.next_argv = Some(contextual_argv(
-            inbox_request_argv(seat, None, request),
-            output,
-        ));
-    } else {
-        page.has_more = false;
-        page.next_cursor = None;
-        page.next_argv = None;
-        page.stop_reason = StopReason::Complete;
-    }
-    Ok(page)
+    Ok(sets.iter().any(|(_, saturated)| *saturated) || pending > shown)
 }
 
+/// The check-in builder calls this on its writer Transaction after the
+/// provisional binding is visible. It shares that transaction's snapshot and
+/// returns an exact count for every included thread or an explicit error.
 pub fn inbox_in_transaction(
     db: &Connection,
     instance: &str,
