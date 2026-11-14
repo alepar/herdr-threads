@@ -844,6 +844,7 @@ impl HarnessAdapter for HermesAdapter {
             process_match: Some(is_hermes_launcher),
             pid_var: None,
             paneless: None,
+            session_marker_vars: &[],
         })
     }
     /// The parent registers a Hermes child session as a subagent binding keyed by the child.

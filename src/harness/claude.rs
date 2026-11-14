@@ -1018,6 +1018,7 @@ impl HarnessAdapter for ClaudeAdapter {
             }),
             pid_var: Some("CLAUDE_PID"),
             paneless: None,
+            session_marker_vars: &[],
         })
     }
     /// Claude's hook passes a subagent's id to the CLI as `--agent-id`.

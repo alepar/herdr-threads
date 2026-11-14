@@ -4,7 +4,7 @@ claude: foreground user settings: required; execution unknown
 codex: installed: codex contract declared (codex-hooks-v1); <root>/codex home/hooks.json
 codex: pane environment: advised: Add to your shell startup file: zsh/bash `if [ "${HERDR_ENV-}" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi`; fish `if test "$HERDR_ENV" = 1; set -gx CODEX_EXEC_SERVER_URL ""; end`. `herdr-threads setup codex --with-pane-env` adds the block to <root>/home/.zshenv.
 codex: foreground user settings: required; execution unknown
-hermes: skipped: requires explicit harness selection for a profile scope
+hermes: skipped: not set up; run: herdr-threads setup hermes [--profile NAME]
 agy: skipped: no executable `agy` on PATH
 synthetic_fourth: skipped: no executable `synthetic_fourth` on PATH
 warning: claude: Claude Code shows a dim prompt suggestion in its input box after every turn (on by default). herdr-threads tells it from text you typed by its dim style, so wakes and soft-deadline reminders (pokes) still reach an idle Claude pane that shows one. Where Herdr's styled screen read fails, the suggestion counts as typed text and only the hard-deadline warning reaches the pane; with prompt suggestions off (`promptSuggestionEnabled: false` in Claude's user settings), an idle Claude pane reads empty either way. unsetup reverts the setting if setup set it. Prompt suggestions are on in <root>/claude config/settings.json and were left unchanged: re-run `herdr-threads setup claude --disable-prompt-suggestions` to turn them off (or turn off Prompt suggestions in Claude's /config), or pass --keep-prompt-suggestions to keep them without this note

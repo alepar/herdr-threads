@@ -331,6 +331,19 @@ pub struct CallerEnvShape {
     /// A process of this harness that has no pane (a managed daemon): a caller under it is
     /// refused `managed_daemon`.
     pub paneless: Option<PanelessProcess>,
+    /// Other variables naming the harness's session or its role in its descendants (a subagent's
+    /// thread id), beyond `session_var` and `pid_var`. Default: none.
+    pub session_marker_vars: &'static [&'static str],
+}
+
+impl CallerEnvShape {
+    /// Every variable this shape reads to name a session: `session_var`, `pid_var` and
+    /// `session_marker_vars`.
+    pub fn session_vars(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.session_var)
+            .chain(self.pid_var)
+            .chain(self.session_marker_vars.iter().copied())
+    }
 }
 
 /// A process of a harness that has no pane, and the refusal text for a caller under it.

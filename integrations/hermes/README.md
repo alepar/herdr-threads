@@ -76,8 +76,14 @@ that session's values to its hook child, so the session takes its own pane's sea
 also reach the session's tool subprocesses, so the model's own `herdr-threads` calls name
 the same pane. A gateway session without them (passthrough unset, a session created
 before it was set, Desktop or a messaging platform) runs no hook: it is never seated on
-the gateway's pane. The setting applies to new sessions only: a session created before
-setup added it stays unseated until you start a new `hermes` session. A classic
+the gateway's pane, and its first turn gets one line naming the fix. On a Hermes with
+`ctx.register_session_env`, the bridge also sets each session's tool subprocesses to its own
+pane (a delegated child: its parent's) and, for a session without one, unsets the pane
+variables, so its `herdr-threads` calls answer "no pane" instead of naming the gateway's, and
+unsets other harnesses' session variables (`CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, ...);
+on an older Hermes they inherit the gateway's environment. The setting applies to new sessions
+only: a session created before setup added it stays unseated until you start a new `hermes`
+session. A classic
 Hermes (before 0.22.1) runs in its pane's own process and needs no setting. Native `delegate_task`
 children run with platform `subagent`; their parented `pre_llm_call` gets the
 subagent restriction locally and every other subagent callback is ignored, except the delegate

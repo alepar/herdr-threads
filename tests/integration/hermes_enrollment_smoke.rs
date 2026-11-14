@@ -711,7 +711,8 @@ fn in_session(mut step: Value, client_env: Value) -> Value {
 /// Hermes >= 0.22.1 runs every pane's session in one gateway whose own `HERDR_PANE_ID` is the
 /// pane that started it. Each session binds the pane its client sent (`terminal.
 /// client_env_passthrough`); a session whose client sent none, and an unbound gateway turn,
-/// are refused before any hook runs, never seated on the gateway's pane.
+/// are refused before any hook runs, never seated on the gateway's pane (their first turn gets
+/// the bridge's one-line notice).
 #[test]
 fn hermes_gateway_sessions_bind_their_client_pane() {
     let Some(mut smoke) = Smoke::new("hermes_gateway_sessions_bind_their_client_pane", true) else {
@@ -736,8 +737,17 @@ fn hermes_gateway_sessions_bind_their_client_pane() {
     );
     assert_seated_turn(&driven, 1, "startup");
     assert_seated_turn(&driven, 3, "startup");
+    assert!(driven.result(4).is_null(), "{}", driven.steps[4]);
     for step in 4..7 {
-        assert!(driven.result(step).is_null(), "{}", driven.steps[step]);
+        // An unseated session's first turn gets only the bridge's local no-pane notice.
+        if step > 4 {
+            assert_eq!(
+                *driven.result(step),
+                json!({"context": "herdr-threads: this session has no pane; ask your user to run \"herdr-threads setup hermes\" and start a new session"}),
+                "{}",
+                driven.steps[step]
+            );
+        }
         assert_eq!(
             driven.steps[step]["child"],
             json!([]),
