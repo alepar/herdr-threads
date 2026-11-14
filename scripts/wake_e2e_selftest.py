@@ -3018,6 +3018,267 @@ class AgyOptIn(TempDir):
         self.assertNotIn(key, W.redact(key, ()))
 
 
+class OpencodeOptIn(TempDir):
+    """--harness opencode: opt-in only; the OpenRouter credential reaches the panes only through a private env file,
+    never a helper process, a command line or the evidence; the channel checks read the plugin's ledger, the
+    composer and the session transcript from opencode.db."""
+
+    FAKE_KEY = "sk-or-v1-" + "0123456789abcdef" * 4
+
+    def test_opencode_is_accepted_but_not_in_the_default_matrix(self):
+        self.assertEqual(parsed_args([]).harness, ["claude", "codex"])
+        args = parsed_args(["--harness", "opencode"])
+        self.assertEqual(args.harness, ["opencode"])
+        self.assertEqual(args.opencode_model, "openrouter/deepseek/deepseek-v4-pro")
+        self.assertEqual(parsed_args(["--harness", "opencode", "--opencode-model", "openrouter/x/y"]).opencode_model,
+                         "openrouter/x/y")
+        self.assertIn("opencode", W.CHANNEL_HARNESSES)
+        self.assertFalse(W.mixed_order_judged(0, "opencode"))
+
+    def preflight(self, **env):
+        r = object.__new__(W.Run)
+        r.args = SimpleNamespace(harness=["opencode"], harness_mode="linux", codex_auth_home=None,
+                                 codex_args="--approve-for-me")
+        r.endpoint, r.bin, r.run_id, r.root = "/fake/sock", "/bin/sh", "000000-test", self.tmp
+        started = []
+        r.run = lambda argv, **kw: started.append(argv) or (0, "x 1.0", "")
+        path = self.tmp / "path"
+        path.mkdir(exist_ok=True)
+        for tool in ("herdr", "opencode"):
+            (path / tool).write_text("#!/bin/sh\nexit 0\n")
+            (path / tool).chmod(0o700)
+        values = {"HERDR_ENV": "1", "OPENROUTER_API_KEY": None, "PATH": str(path)}
+        values.update(env)
+        import io
+        with Env(**values), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                r.preflight()
+                return None, started
+            except W.Refused as e:
+                return str(e), started
+
+    def test_no_credential_refuses_before_any_process(self):
+        why, started = self.preflight()
+        self.assertIn("OPENROUTER_API_KEY", why)
+        self.assertEqual(started, [])
+        why, started = self.preflight(OPENROUTER_API_KEY=" \n")
+        self.assertIn("no opencode credential", why)
+        self.assertEqual(started, [])
+
+    def test_preflight_never_runs_opencode_outside_its_scratch_dirs(self):
+        why, started = self.preflight(OPENROUTER_API_KEY=self.FAKE_KEY)
+        self.assertIsNone(why)
+        self.assertTrue(started)
+        self.assertFalse([a for a in started if Path(a[0]).name == "opencode"], started)
+
+    def scratch_run(self):
+        r = launch_run(SimpleNamespace(harness_mode="linux", opencode_model="openrouter/m/n"))
+        r.root = self.tmp
+        r.home, r.opencode_root, r.opencode_env = self.tmp / "home", self.tmp / "opencode", self.tmp / "opencode.env"
+        return r
+
+    def test_launch_line_isolates_opencode_and_never_carries_the_credential(self):
+        r = self.scratch_run()
+        with Env(OPENROUTER_API_KEY=self.FAKE_KEY):
+            line = r.launch_line("opencode", name="oc-t0")
+        self.assertNotIn(self.FAKE_KEY, line)
+        self.assertTrue(line.startswith(f"( . {r.opencode_env} && cd {self.tmp / 'opencode' / 'project'} && "), line)
+        for var, sub in (("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"),
+                         ("XDG_CACHE_HOME", "cache"), ("TMPDIR", "tmp"), ("OPENCODE_CONFIG_DIR", "config-dir")):
+            self.assertIn(f" {var}={self.tmp / 'opencode' / sub} ", line)
+        self.assertIn(f" HOME={self.tmp / 'home'} ", line)
+        self.assertIn(f"HERDR_THREADS_MOD_LEDGER={self.tmp / 'opencode' / 'ledger' / 'oc-t0'}.jsonl ", line)
+        self.assertTrue(line.rstrip(" )").endswith(shutil.which("opencode") or "opencode"))
+
+    def test_setup_writes_private_config_and_credential_and_runs_public_setup(self):
+        r = self.scratch_run()
+        r.facts, r.secrets, calls = {"versions": {}}, (), []
+        r.ht = lambda *argv, **kw: calls.append((argv, kw)) or ""
+        r.run = lambda argv, **kw: calls.append((argv, kw)) or (0, "1.18.1\n", "")
+        import io
+        with Env(OPENROUTER_API_KEY=f" {self.FAKE_KEY}\n"), contextlib.redirect_stdout(io.StringIO()):
+            r.setup_opencode()
+        cfg = self.tmp / "opencode" / "config" / "opencode" / "opencode.json"
+        self.assertEqual(json.loads(cfg.read_text())["model"], "openrouter/m/n")
+        self.assertEqual(json.loads(cfg.read_text())["permission"]["bash"], {"*": "allow"})
+        self.assertNotIn(self.FAKE_KEY, cfg.read_text())
+        self.assertEqual(stat.S_IMODE(r.opencode_env.stat().st_mode), 0o600)
+        self.assertEqual(r.opencode_env.read_text(), f"export OPENROUTER_API_KEY={self.FAKE_KEY}\n")
+        (argv, kw), (version, vkw) = calls
+        self.assertEqual(argv, ("setup", "opencode", "--with-permissions"))
+        self.assertEqual(kw["env"]["OPENCODE_CONFIG_DIR"], str(self.tmp / "opencode" / "config-dir"))
+        self.assertEqual(kw["env"]["HOME"], str(self.tmp / "home"))
+        self.assertNotIn("OPENROUTER_API_KEY", kw["env"])
+        # the version probe runs under the scratch dirs, without the credential
+        self.assertEqual(Path(version[0]).name, "opencode")
+        for var in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR"):
+            self.assertTrue(vkw["env"][var].startswith(str(self.tmp)), var)
+        self.assertEqual(r.facts["versions"]["opencode"], "1.18.1")
+
+    def test_no_helper_process_inherits_the_credential(self):
+        r = object.__new__(W.Run)
+        r.lock, r.stopping, r.children, r.secrets = threading.Lock(), threading.Event(), set(), ()
+        r.cmdlog = open(self.tmp / "commands.jsonl", "a")
+        self.addCleanup(r.cmdlog.close)
+        probe = [sys.executable, "-c", "import os; print(os.environ.get('OPENROUTER_API_KEY', 'absent'))"]
+        with Env(OPENROUTER_API_KEY=self.FAKE_KEY):
+            self.assertEqual(r.run(probe)[1].strip(), "absent")
+            self.assertEqual(r.run(probe, env=dict(os.environ))[1].strip(), "absent")
+        self.assertNotIn(self.FAKE_KEY, (self.tmp / "commands.jsonl").read_text())
+
+    def test_cleanup_removes_the_credential_file_even_with_keep(self):
+        r = object.__new__(W.Run)
+        r.args = SimpleNamespace(keep=True)
+        r.opencode_env, r.agy_env, r.claude_env = self.tmp / "opencode.env", None, None
+        W.write_private(r.opencode_env, "export OPENROUTER_API_KEY=x\n")
+        r.lock, r.stopping, r.children, r.workers, r.start_attempted = threading.Lock(), threading.Event(), set(), [], set()
+        r.child_term_grace_s, r.drain_timeout_s, r.workspace, r.daemon_attempted = 0.1, 0.1, None, False
+        self.assertEqual(r.cleanup(), [])
+        self.assertFalse(r.opencode_env.exists())
+        self.assertEqual(r.cleanup_report["skipped"], "--keep")
+
+    def test_credential_is_redacted_and_an_evidence_leak_is_scrubbed(self):
+        secrets = W.secret_values({"OPENROUTER_API_KEY": self.FAKE_KEY})
+        self.assertNotIn(self.FAKE_KEY, W.redact(f"key={self.FAKE_KEY}", secrets))
+        self.assertNotIn(self.FAKE_KEY[-12:], W.redact(f"...{self.FAKE_KEY[-12:]}", secrets))
+        self.assertNotIn("sk-or-v1-abcdefgh1234", W.redact("token sk-or-v1-abcdefgh1234", ()))
+        ev = self.tmp / "ev"
+        ev.mkdir()
+        (ev / "report.md").write_text("clean\n")
+        (ev / "pane-oc-t0.txt").write_text(f"| {self.FAKE_KEY} |\n")
+        (ev / "screen-oc-t3.txt").write_text("other sk-or-v1-zzzzzzzzzzzz\n")
+        self.assertEqual(W.scrub_evidence(ev, secrets), ["pane-oc-t0.txt", "screen-oc-t3.txt"])
+        self.assertEqual(W.evidence_leaks(ev, secrets), [])
+        self.assertNotIn(self.FAKE_KEY, (ev / "pane-oc-t0.txt").read_text())
+
+    def test_a_scrubbed_evidence_leak_fails_the_run(self):
+        """main(): a credential found in the evidence after the run is scrubbed and the exit code is 1."""
+        def fake_init(run, args):
+            run.args, run.ev, run.cleanup_report, run.results = args, self.tmp / "ev", None, []
+            run.ev.mkdir()
+            run.secrets, run.run_id, run.auth_digest, run.lock = W.secret_values(os.environ), "x", None, threading.Lock()
+            run.recipients = []
+
+        def fake_preflight(run):
+            (run.ev / "pane-oc-t0.txt").write_text(f"leak {self.FAKE_KEY}\n")
+            raise W.Refused("self-test")
+        import io
+        with mock.patch.object(W.Run, "__init__", fake_init), mock.patch.object(W.Run, "preflight", fake_preflight), \
+                mock.patch.object(W.Run, "cleanup", lambda run: []), Env(OPENROUTER_API_KEY=self.FAKE_KEY), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = W.main(["--harness", "opencode"])
+        self.assertEqual(rc, W.EXIT_FAIL)
+        self.assertIn("credential found in evidence (scrubbed): pane-oc-t0.txt", err.getvalue())
+        self.assertNotIn(self.FAKE_KEY, err.getvalue())
+        self.assertEqual(W.evidence_leaks(self.tmp / "ev", W.secret_values({"OPENROUTER_API_KEY": self.FAKE_KEY})), [])
+
+    def test_wake_bubble_counts_as_a_wake(self):
+        self.assertEqual(W.wake_count("  ┃\n  ┃  herdr-threads: wake up\n  ┃\n"), 1)
+        self.assertEqual(W.wake_count("  ┃  hello\n  ┃  Build · DeepSeek V4 Pro OpenRouter\n"), 0)
+
+    def test_composer_reader(self):
+        # captured in the probe (captures/probe/11-wake-with-draft.txt, 07-busy-tool-result.txt)
+        rule = "  ╹" + "▀" * 40 + "\n   /tmp/proj     9.4K (1%) · $0 ctrl+p\n"
+        draft = "     PAPAYA\n\n  ┃\n  ┃  my unsent draft\n  ┃\n  ┃  Build · DeepSeek V4 Pro OpenRouter\n" + rule
+        empty = "  ┃  $ herdr-threads sleep 12\n  ┃\n\n     MANGO\n\n  ┃\n  ┃\n  ┃\n  ┃  Build · DeepSeek V4 Pro OpenRouter\n" + rule
+        self.assertEqual(W.opencode_composer(draft), "my unsent draft")
+        self.assertEqual(W.opencode_composer(empty), "")
+        self.assertIsNone(W.opencode_composer("no composer drawn"))
+
+    def make_db(self):
+        db = self.tmp / "opencode.db"
+        with contextlib.closing(sqlite3.connect(db)) as c:
+            c.execute("CREATE TABLE message (id text, session_id text, time_created integer, time_updated integer, data text)")
+            c.execute("CREATE TABLE part (id text, message_id text, session_id text, time_created integer, "
+                      "time_updated integer, data text)")
+            rows = [("msg_1", "ses_A", 1, {"role": "user"}, [{"type": "text", "text": "Busy-turn test x"},
+                                                            {"type": "text", "text": "check-in ctx", "synthetic": True}]),
+                    ("msg_2", "ses_A", 2, {"role": "user"}, [{"type": "text", "text": "[herdr-threads] message mX",
+                                                            "synthetic": True}]),
+                    ("msg_3", "ses_A", 3, {"role": "assistant"},
+                     [{"type": "tool", "tool": "bash", "state": {"input": {"command": "sleep 1"}, "output": "o1\no2"}},
+                      {"type": "text", "text": "RECEIVED [herdr-threads] message mY\nBUSY-DONE"}]),
+                    ("msg_4", "ses_A", 4, {"role": "user"}, [{"type": "text", "text": "herdr-threads: wake up"}]),
+                    ("msg_9", "ses_B", 5, {"role": "assistant"}, [{"type": "text", "text": "other recipient mZ"}])]
+            for mid, sid, at, mdata, parts in rows:
+                c.execute("INSERT INTO message VALUES (?,?,?,?,?)", (mid, sid, at, at, json.dumps(mdata)))
+                for n, part in enumerate(parts):
+                    c.execute("INSERT INTO part VALUES (?,?,?,?,?,?)", (f"prt_{mid}{n}", mid, sid, at, at, json.dumps(part)))
+            c.commit()
+        return db
+
+    def test_transcript_leaves_synthetic_parts_and_other_sessions_out(self):
+        text = W.opencode_transcript(self.make_db(), ["ses_A"])
+        self.assertIn("  ┃  Busy-turn test x", text)
+        self.assertIn("  ┃  $ sleep 1\n  ┃  o1\n  ┃  o2", text)
+        self.assertIn("     RECEIVED [herdr-threads] message mY", text)
+        self.assertNotIn("mX", text)
+        self.assertNotIn("check-in ctx", text)
+        self.assertNotIn("mZ", text)
+        self.assertEqual(W.wake_count(text), 1)
+        self.assertEqual(W.busy_turn_split(text, "Busy-turn test x")[2], True)
+        self.assertEqual(W.opencode_transcript(self.tmp / "missing.db", ["ses_A"]), "")
+        self.assertEqual(W.opencode_transcript(self.tmp / "opencode.db", []), "")
+
+    def recipient(self, ledger_lines, screen):
+        run = SimpleNamespace(opencode_dirs=lambda: {"ledger": self.tmp})
+        rec = W.Recipient(run, "oc-t0", "opencode", 0, "w1:p2", "sAAAAAAAAAAA")
+        (self.tmp / "oc-t0.jsonl").write_text("".join(json.dumps(e) + "\n" for e in ledger_lines) + "not json\n")
+        rec.visible = lambda: screen
+        return rec
+
+    EMPTY = "  ┃\n  ┃  Build · M\n  ╹▀▀▀▀\n"
+
+    def test_channel_checks_from_the_ledger(self):
+        old = {"kind": "submit", "via": "submit"}
+        delivered = {"kind": "delivered", "ids": ["message:mA", "invitation:iB"], "via": "append", "row": "msg_1"}
+        rec = self.recipient([old, delivered, {"kind": "submit", "via": "submit", "reason": "wake"}], self.EMPTY)
+        checks = {}
+        rec.channel_checks(checks, 1, True, ["mA", None])
+        self.assertEqual(checks, {"appended": True, "plugin_wakes": 1, "plugin_wake_ok": True, "composer_empty": True})
+        checks = {}
+        rec.channel_checks(checks, 1, False, ["mA"])
+        self.assertFalse(checks["plugin_wake_ok"])  # a wake where none is expected
+        rec = self.recipient([old, {"kind": "delivered", "ids": ["mA"], "via": "context"}],
+                             self.EMPTY.replace("┃\n", "┃  typed text\n", 1))
+        checks = {}
+        rec.channel_checks(checks, 1, False, ["mA"])
+        self.assertEqual(checks, {"appended": False, "plugin_wakes": 0, "plugin_wake_ok": True,
+                                  "composer_empty": "typed text"})
+        checks = {}
+        self.recipient([], "nothing").channel_checks(checks, 0, True, [])
+        self.assertEqual(checks, {"plugin_wakes": 0, "plugin_wake_ok": False, "composer_empty": "composer not found"})
+
+
+class WakeE2eHerdrHandoff(TempDir):
+    """scripts/wake-e2e-herdr: opt-in model credentials reach only the driver (a private file its pane sources and
+    deletes), never the private server's environment, which every pane inherits."""
+
+    def wrapper(self):
+        from importlib.machinery import SourceFileLoader
+        loader = SourceFileLoader("wake_e2e_herdr", str(Path(W.REPO) / "scripts" / "wake-e2e-herdr"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+
+    def test_credentials_leave_the_server_env_for_a_private_handoff_file(self):
+        H = self.wrapper()
+        environ = {"OPENROUTER_API_KEY": "sk-or-v1-x'y", "GEMINI_API_KEY": " ", "PATH": "/bin",
+                   "ANTHROPIC_API_KEY": "kept", "CLAUDECODE": "1"}
+        env = H.server_env(environ)
+        self.assertNotIn("OPENROUTER_API_KEY", env)
+        self.assertNotIn("GEMINI_API_KEY", env)
+        self.assertNotIn("CLAUDECODE", env)
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "kept")
+        path = self.tmp / "handoff.env"
+        self.assertEqual(H.handoff_file(path, environ), ["OPENROUTER_API_KEY"])
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        out = subprocess.run(["sh", "-c", f". {shlex.quote(str(path))} && printf %s \"$OPENROUTER_API_KEY\""],
+                             capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"}).stdout
+        self.assertEqual(out, "sk-or-v1-x'y")
+
+
 class CodexHookGuidance(TempDir):
     """ht-static-once: the rollout gate passes when each session carries the fixed instruction at most once per start
     plus once per compaction (whatever optional lines it trimmed), fails when a delivering hook repeats it, and is

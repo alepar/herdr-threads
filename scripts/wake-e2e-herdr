@@ -40,6 +40,25 @@ CALLER_ENV = ("AI_AGENT", "HERMES_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "A
               "PI_CODING_AGENT", "OPENCODE")
 # The harness's real config (credentials), as in the default run, and the linux mode's environment credentials.
 KEEP_ENV = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+# Opt-in harness model credentials: the driver alone gets them, through a private file its pane sources and deletes,
+# never the server's environment (every pane of the server would inherit it); the driver hands each to its own
+# harness's panes through its private env file.
+HANDOFF_ENV = ("OPENROUTER_API_KEY", "GEMINI_API_KEY")
+
+
+def handoff_file(path: Path, environ) -> list[str]:
+    """Write the set HANDOFF_ENV values of `environ` as `export` lines to a new mode-0600 `path`; their names."""
+    names = [k for k in HANDOFF_ENV if (environ.get(k) or "").strip()]
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("".join(f"export {k}={shlex.quote(environ[k].strip())}\n" for k in names))
+    return names
+
+
+def server_env(environ) -> dict[str, str]:
+    """The private server's environment: no caller harness markers and no HANDOFF_ENV credential."""
+    return {k: v for k, v in environ.items()
+            if k not in HANDOFF_ENV and (k in KEEP_ENV or not (k.startswith(CALLER_ENV_PREFIXES) or k in CALLER_ENV))}
 
 
 def smoke_module():
@@ -71,8 +90,7 @@ def main() -> int:
     (root / "cfg/herdr.toml").write_text("default_shell = '/bin/sh'\n")
     (root / "bin/herdr").symlink_to(herdr)
     socket = root / "h.sock"
-    env = {k: v for k, v in os.environ.items()
-           if k in KEEP_ENV or not (k.startswith(CALLER_ENV_PREFIXES) or k in CALLER_ENV)}
+    env = server_env(os.environ)
     # A private XDG_CONFIG_HOME too: Herdr loads plugins from there, and a user's linked plugins
     # (an installed herdr-threads among them) must not start in this server.
     env.update(HERDR_SOCKET_PATH=str(socket), HERDR_CONFIG_PATH=str(root / "cfg/herdr.toml"),
@@ -100,8 +118,11 @@ def main() -> int:
         created = herdr_cli("workspace", "create", "--label", "wake-e2e-control", "--cwd", str(ROOT), "--no-focus")
         pane = created["result"]["root_pane"]["pane_id"]
         log, rc = root / "wake-e2e.log", root / "wake-e2e.rc"
+        handoff = root / "handoff.env"
+        handoff_file(handoff, os.environ)
         # The pane's login shell rc can put another `herdr` ahead of this release's: set PATH in the command.
-        command = (f"cd {shlex.quote(str(ROOT))} && PATH={shlex.quote(str(root / 'bin'))}:\"$PATH\" "
+        command = (f"cd {shlex.quote(str(ROOT))} && . {shlex.quote(str(handoff))} && rm -f {shlex.quote(str(handoff))} "
+                   f"&& PATH={shlex.quote(str(root / 'bin'))}:\"$PATH\" "
                    f"python3 scripts/wake-e2e.py {shlex.join(e2e_args)} "
                    f"> {shlex.quote(str(log))} 2>&1; echo $? > {shlex.quote(str(rc))}")
         herdr_cli("pane", "run", pane, command)

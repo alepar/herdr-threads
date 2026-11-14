@@ -1,0 +1,39 @@
+  ┃  (no output)
+  ┃
+
+     RECEIVED herdr-threads message m6Vm06Ioopa0 in deb2Q5TvdDL "1:1 s6VmWzuVZkIi s6VmvDww8yKN" from s6VmWzuVZkIi p0
+     human: busy-send-p0/1:1 042019-15b5
+     BUSY-DONE
+
+     ▣  Build · DeepSeek V4 Pro · 3.4s
+
+  ┃
+  ┃  Busy-turn test busy-send-ack/1:1 042019-15b5: run the shell command `/usr/bin/python3 /tmp/ht-wake-e2e.d75fndfa/
+  ┃  busy-hold.ucutgaoy/hold.py`, then run the shell command `sleep 1`, then handle any herdr-threads items exactly
+  ┃  as your standing instructions say, and finally print BUSY-DONE.
+  ┃
+
+  ┃
+  ┃  $ /usr/bin/python3 /tmp/ht-wake-e2e.d75fndfa/busy-hold.ucutgaoy/hold.py
+  ┃
+  ┃  (no output)
+  ┃
+
+  ┃
+  ┃  $ sleep 1
+  ┃
+  ┃  (no output)
+  ┃
+
+     RECEIVED herdr-threads message m6Vm94yQXLtD in deb2Q5TvdDL "1:1 s6VmWzuVZkIi s6VmvDww8yKN" from s6VmWzuVZkIi p0
+     human: busy-send-ack/1:1 042019-15b5
+     BUSY-DONE
+
+     ▣  Build · DeepSeek V4 Pro · 4.0s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4 Pro OpenRouter
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/ht-wake-e2e.d75fndfa/opencode/project                                     28.4K (3%) · $0.26  ctrl+p commands

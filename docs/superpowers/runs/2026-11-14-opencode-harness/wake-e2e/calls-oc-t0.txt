@@ -1,0 +1,4 @@
+nudge-threshold 0
+--state-dir /tmp/ht-wake-e2e.d75fndfa/state accept t6VmIq5HyxGn
+--state-dir /tmp/ht-wake-e2e.d75fndfa/state accept t6VmqtftyJme
+--state-dir /tmp/ht-wake-e2e.d75fndfa/state inbox --machine
