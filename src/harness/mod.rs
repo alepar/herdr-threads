@@ -53,6 +53,7 @@ pub mod manifest;
 #[cfg(test)]
 #[path = "../../tests/harness/manifest.rs"]
 mod manifest_tests;
+pub mod opencode;
 #[cfg(test)]
 #[path = "../../tests/harness/optimistic_render.rs"]
 mod optimistic_render;

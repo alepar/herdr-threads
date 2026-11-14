@@ -5762,7 +5762,7 @@ pub(crate) mod tests {
             ),
             (
                 "unrecognized",
-                recheck_exchange(wake_agent("idle", Some("opencode"), "term_1")),
+                recheck_exchange(wake_agent("idle", Some("pi"), "term_1")),
             ),
             (
                 "replaced terminal",

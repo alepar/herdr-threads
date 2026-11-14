@@ -504,7 +504,14 @@ fn harness_adapter_end_to_end_wiring_uses_registry_values_across_boundaries() {
             .iter()
             .map(|a| a["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["claude", "codex", "hermes", "agy", "synthetic_fourth"]
+        [
+            "claude",
+            "codex",
+            "hermes",
+            "agy",
+            "opencode",
+            "synthetic_fourth"
+        ]
     );
     let binary = w.fourth.join("ht-synthetic-fourth");
     w.json(&[

@@ -104,7 +104,7 @@ fn no_push_channel_keeps_the_frozen_not_claude_wire_spelling() {
 }
 
 #[test]
-fn watch_harness_possible_values_are_exactly_claude() {
+fn watch_harness_possible_values_are_the_push_channel_harnesses() {
     let command = crate::cli::commands::command_for_registry(builtins());
     let watch = command.find_subcommand("watch").expect("watch subcommand");
     let arg = watch
@@ -116,7 +116,7 @@ fn watch_harness_possible_values_are_exactly_claude() {
         .iter()
         .map(|value| value.get_name().to_owned())
         .collect();
-    assert_eq!(values, ["claude"]);
+    assert_eq!(values, ["claude", "opencode"]);
 }
 
 #[test]

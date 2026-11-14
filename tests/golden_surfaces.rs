@@ -752,8 +752,8 @@ fn env_marker_detection() {
             vec![("CLAUDECODE", "1"), ("CODEX_SANDBOX", "seatbelt")],
         ),
         ("CODEX_HOME-only", vec![("CODEX_HOME", "/nowhere")]),
-        // Agent harnesses with no adapter (Pi, OpenCode); AI_AGENT, which Claude Code also
-        // sets, is no marker.
+        // An agent harness with no adapter (Pi) and opencode's registered marker; AI_AGENT,
+        // which Claude Code also sets, is no marker.
         ("PI_CODING_AGENT", vec![("PI_CODING_AGENT", "true")]),
         ("OPENCODE", vec![("OPENCODE", "1")]),
         ("AI_AGENT-only", vec![("AI_AGENT", "pi")]),

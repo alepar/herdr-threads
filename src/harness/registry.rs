@@ -1613,6 +1613,7 @@ pub fn builtins() -> &'static Registry {
             Registration::new(&crate::harness::codex::CodexAdapter),
             Registration::new(&crate::harness::hermes::HermesAdapter),
             Registration::new(&crate::harness::agy::AgyAdapter),
+            Registration::new(&crate::harness::opencode::OpencodeAdapter),
         ];
         #[cfg(feature = "test-support")]
         let registrations = {
@@ -1651,18 +1652,25 @@ mod tests {
         #[cfg(feature = "test-support")]
         assert_eq!(
             rows,
-            ["claude", "codex", "hermes", "agy", "synthetic_fourth"]
+            [
+                "claude",
+                "codex",
+                "hermes",
+                "agy",
+                "opencode",
+                "synthetic_fourth"
+            ]
         );
         #[cfg(not(feature = "test-support"))]
-        assert_eq!(rows, ["claude", "codex", "hermes", "agy"]);
+        assert_eq!(rows, ["claude", "codex", "hermes", "agy", "opencode"]);
     }
     fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
         UnsupportedOperation { adapter, operation }
     }
     use super::*;
 
-    /// The send warning's `no_wake` rests on this classification: Claude (channel), Codex, agy
-    /// and Hermes (composer) wake; an unregistered id is unknown, never `no_wake`. A host with
+    /// The send warning's `no_wake` rests on this classification: Claude and opencode (channel),
+    /// Codex, agy and Hermes (composer) wake; an unregistered id is unknown, never `no_wake`. A host with
     /// no wake path also produces `wake=no_wake`, and `tests/host_no_wake_tripwire.rs` makes
     /// SKILL.md explain it (K2) whenever any implemented host kind has one; this test keeps the
     /// harness half: every shipped harness wakes on a composer host, and only the test-support
@@ -1685,18 +1693,26 @@ mod tests {
         assert_eq!(registry.has_idle_wake("pi"), None);
     }
     /// `idle_wake_on` never regresses `has_idle_wake`: on a Herdr composer host, for every
-    /// registration and either channel state, it is a wake path exactly when the oracle says so.
+    /// registration and either channel state, it is a wake path exactly when the oracle says so;
+    /// except that a `Channel` harness with no composer policy (opencode) has its only wake path
+    /// while its channel is live: with the channel down nothing can wake it (opencode design D8).
     #[test]
     fn idle_wake_on_agrees_with_has_idle_wake() {
         use crate::ports::{ComposerTraits, WakeCapability};
         let registry = builtins();
         for r in registry.registrations() {
             let id = r.metadata().id;
+            let channel_only = r.composer_policy().is_none()
+                && r.delivery_policy()
+                    .is_some_and(|p| p.idle_wake() == IdleWake::Channel);
             for c in [false, true] {
                 let got = registry
                     .idle_wake_on(id, WakeCapability::Composer(ComposerTraits::HERDR_TUI), c)
                     .map(|w| w != IdleWakeOn::None);
-                assert_eq!(got, registry.has_idle_wake(id), "{id} channel_live={c}");
+                let want = registry
+                    .has_idle_wake(id)
+                    .map(|wakes| wakes && (c || !channel_only));
+                assert_eq!(got, want, "{id} channel_live={c}");
             }
         }
     }
@@ -1716,6 +1732,7 @@ mod tests {
             ("codex", [Composer, Composer, NoWake, NoWake]),
             ("hermes", [Composer, Composer, NoWake, NoWake]),
             ("agy", [Composer, Composer, NoWake, NoWake]),
+            ("opencode", [NoWake, Channel, NoWake, Channel]),
         ];
         #[cfg(feature = "test-support")]
         rows.push(("synthetic_fourth", [NoWake; 4]));
@@ -2850,15 +2867,18 @@ mod tests {
         assert!(registry.delivery_policy("test-beta").is_none());
         assert!(registry.delivery_policy("test-alpha").is_some());
         assert_eq!(registry.push_channel_ids(), ["test-alpha"]);
-        // Claude declares a push channel; agy and the test-support synthetic_fourth
-        // declare hook pull; nothing else declares a policy.
+        // Claude and opencode declare a push channel; agy and the test-support
+        // synthetic_fourth declare hook pull; nothing else declares a policy.
         for r in builtins().registrations() {
             assert_eq!(
                 builtins().delivery_policy(r.metadata().id).is_some(),
-                matches!(r.metadata().id, "claude" | "agy" | "synthetic_fourth")
+                matches!(
+                    r.metadata().id,
+                    "claude" | "agy" | "opencode" | "synthetic_fourth"
+                )
             );
         }
-        assert_eq!(builtins().push_channel_ids(), ["claude"]);
+        assert_eq!(builtins().push_channel_ids(), ["claude", "opencode"]);
     }
     fn registry(adapters: &[&'static TestAdapter]) -> Result<Registry, RegistryError> {
         Registry::new(Box::leak(
@@ -3377,7 +3397,7 @@ mod tests {
                 process_spans_seats: true
             }
         );
-        for id in ["codex", "agy", "human", "no-such-harness"] {
+        for id in ["codex", "agy", "opencode", "human", "no-such-harness"] {
             assert_eq!(
                 registry.binding_policy(id),
                 BindingPolicy::default(),
@@ -3427,5 +3447,7 @@ mod tests {
             sorted(crate::harness::hermes::REQUIRED_HOOK_EVENTS.to_vec())
         );
         assert!(events("agy").is_empty());
+        // ht-vxdp.3: the plugin installer declares its events.
+        assert!(events("opencode").is_empty());
     }
 }

@@ -12,10 +12,4 @@ pub(crate) static AGENT_ENV_MARKERS: &[AgentEnvMarker] = &[
         name: "PI_CODING_AGENT",
         person_guard: true,
     },
-    // OpenCode: `OPENCODE=1`, process-wide through 1.x (packages/opencode/src/index.ts), on the
-    // shell tool's environment on dev (packages/core/src/tool/plugin/shell.ts).
-    AgentEnvMarker {
-        name: "OPENCODE",
-        person_guard: true,
-    },
 ];

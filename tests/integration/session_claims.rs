@@ -378,7 +378,7 @@ fn unsupported_harness_agent_is_refused_never_a_person() {
         }
         run(command)
     };
-    for marker in [("PI_CODING_AGENT", "true"), ("OPENCODE", "1")] {
+    for marker in [("PI_CODING_AGENT", "true")] {
         for args in [&["inbox"][..], &["thread", "create", "--topic", "x"][..]] {
             let out = marked(marker, args);
             assert_eq!(
@@ -406,23 +406,37 @@ fn unsupported_harness_agent_is_refused_never_a_person() {
         );
     }
     // A registered harness's marker beside one (its ancestor not visible) keeps the registered
-    // harness wording: the caller is not told it runs an unsupported harness.
-    let mut command = crate::scrubbed_command(BIN);
-    command
-        .args(world.person_argv(&["inbox"]))
-        .env("HERDR_PANE_ID", "w1:p1")
-        .env("CLAUDECODE", "1")
-        .env("OPENCODE", "1");
-    for (key, value) in world.env() {
-        command.env(key, value);
+    // harness wording: the caller is not told it runs an unsupported harness. opencode's marker
+    // alone is a registered harness's (no `opencode` ancestor here) and reads the same.
+    for extra in [Some(("PI_CODING_AGENT", "true")), None] {
+        let mut command = crate::scrubbed_command(BIN);
+        command
+            .args(world.person_argv(&["inbox"]))
+            .env("HERDR_PANE_ID", "w1:p1")
+            .env(
+                if extra.is_some() {
+                    "CLAUDECODE"
+                } else {
+                    "OPENCODE"
+                },
+                "1",
+            );
+        if let Some((key, value)) = extra {
+            command.env(key, value);
+        }
+        for (key, value) in world.env() {
+            command.env(key, value);
+        }
+        let out = run(command);
+        assert_eq!(out.status.code(), Some(REFUSED), "{out:?}");
+        let text = stderr(&out);
+        assert!(
+            text.contains("an agent harness environment marker is set")
+                && !text.contains("PI_CODING_AGENT")
+                && text.contains("opencode"),
+            "{text}"
+        );
     }
-    let out = run(command);
-    assert_eq!(out.status.code(), Some(REFUSED), "{out:?}");
-    let text = stderr(&out);
-    assert!(
-        text.contains("an agent harness environment marker is set") && !text.contains("OPENCODE"),
-        "{text}"
-    );
     // Nothing reached the seat: no binding of any kind, so no person seat either.
     let seat = world.seat("w1:p1");
     assert!(

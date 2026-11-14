@@ -1561,6 +1561,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("codex", "already_installed"),
             ("hermes", "skipped"),
             ("agy", "skipped"),
+            ("opencode", "skipped"),
             ("synthetic_fourth", "skipped")
         ])
     );
@@ -1588,6 +1589,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("codex", "status"),
             ("hermes", "skipped"),
             ("agy", "status"),
+            ("opencode", "skipped"),
             ("synthetic_fourth", "status")
         ])
     );
@@ -1631,6 +1633,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("codex", "not_installed"),
             ("hermes", "skipped"),
             ("agy", "not_installed"),
+            ("opencode", "skipped"),
             ("synthetic_fourth", "not_installed")
         ])
     );
@@ -1670,6 +1673,7 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
             ("codex", "installed"),
             ("hermes", "skipped"),
             ("agy", "skipped"),
+            ("opencode", "skipped"),
             ("synthetic_fourth", "skipped")
         ])
     );
@@ -1685,6 +1689,7 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
             ("codex", "removed"),
             ("hermes", "skipped"),
             ("agy", "not_installed"),
+            ("opencode", "skipped"),
             ("synthetic_fourth", "not_installed")
         ])
     );
@@ -1720,6 +1725,7 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
             ("codex", "installed"),
             ("hermes", "skipped"),
             ("agy", "skipped"),
+            ("opencode", "skipped"),
             ("synthetic_fourth", "skipped")
         ])
     );

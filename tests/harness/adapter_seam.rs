@@ -344,8 +344,8 @@ fn adapter_seam_registry_lists_markers_in_registry_order_and_splits_guards() {
             "CODEX_SANDBOX",
             "CODEX_SANDBOX_NETWORK_DISABLED",
             "ANTIGRAVITY_AGENT",
-            "PI_CODING_AGENT",
-            "OPENCODE"
+            "OPENCODE",
+            "PI_CODING_AGENT"
         ]
     );
     let guards: Vec<_> = names(registry.person_guard_markers());
@@ -356,13 +356,13 @@ fn adapter_seam_registry_lists_markers_in_registry_order_and_splits_guards() {
             "CODEX_SANDBOX",
             "CODEX_SANDBOX_NETWORK_DISABLED",
             "ANTIGRAVITY_AGENT",
-            "PI_CODING_AGENT",
-            "OPENCODE"
+            "OPENCODE",
+            "PI_CODING_AGENT"
         ]
     );
     assert_eq!(
         names(registry.unsupported_markers().iter()),
-        ["PI_CODING_AGENT", "OPENCODE"]
+        ["PI_CODING_AGENT"]
     );
     // AI_AGENT is set by Claude Code too: never a marker of a harness without an adapter.
     assert!(!names(registry.env_markers()).contains(&"AI_AGENT"));
@@ -545,7 +545,7 @@ fn adapter_seam_builtin_me_init_help_names_the_guard_markers_only() {
     let me = crate::cli::help::me_init_help();
     assert!(
         me.contains(
-            "agent markers (CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT, PI_CODING_AGENT, OPENCODE) or a registered agent harness reported by Herdr are present"
+            "agent markers (CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT, OPENCODE, PI_CODING_AGENT) or a registered agent harness reported by Herdr are present"
         ),
         "{me}"
     );

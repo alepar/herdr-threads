@@ -151,6 +151,10 @@ while an unresolved seat keeps the hold armed, and applies a process-exit verdic
 process was read dead published with no outage in between; a several-target wake classifies the composer for its idle
 gate. One accepted limit (a server that stays away keeps its dead bindings connected). No new provenance or wire value.
 
+Amended 2026-11-14 for the opencode adapter (ht-vxdp.2): the opencode plugin enrolls top-level sessions through its
+hook commands with a payload-declared role, and its `shell.env` hook carries the session claim
+(`cooperative_env_session`, guarded by a pid echo); no invariant weakened, no new provenance or wire value.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -782,7 +786,7 @@ records there are replay machinery, never its identity.
 | `peer_handoff:<node_uuid>` | the target's audit of a remote handoff's three staged facts on the executing node only (`peer_requests.handoff_thread`, `handoff_message`, `handoff_prompt`, and the staging `daemon.log` line) | The linked peer node `<node_uuid>`, on its authenticated direct link (N6) with cap `peer.handoff.v1`, asked this node to launch an agent with a task message signed by that node (N15 *Remote handoff*); this node verified the sender block and staged the pair thread, the recipient's join and the signed message in one transaction. Never on bindings or receipts, and never replicated. |
 | `cooperative_named_seat` | named-host observation (snapshot rows of the built-in named host) | The named host's enumeration is a store read of the live local seats with `host_id = named` (`NamedSeatSource::live_named`), and `observe_current_target(name)` reports every valid `SeatName` present (generation 1, terminal `named:<name>`, fixed per-node boot and incarnation `named-host:node=<uuid>`). It is cooperative: presence is what the store says, not host evidence. Its snapshot is complete and stamped with the host's fixed boot and incarnation (`CoherentVerified` by `stamp_fixed_structure`, see Named presence), but the host is `NonClosing`, so it authorizes no absence closure; the host is `NonClosing`, and reconcile plans no `BeginRetirement` and no `MarkUnresolved` for a named seat an enumeration does not show. It names the observation only: a binding's provenance stays the caller's. Also the named-continuity record (C1): the reattachment of an unresolved named seat by the resolve of its name is written to seat history as a `cooperative_continuity` decision whose `operator_label` is `cooperative_named_seat`. Never on bindings or receipts. Named presence (SA17): the observation lane publishes the named capture with the host's fixed boot/incarnation stamped by reconcile (so the store admits it; closure authority stays `NonClosing`), the publication gives each resolved named seat its structural proof so the C4 carry keeps live bindings available across a daemon restart, and the named host never arms `baseline_hold_unclaimed` or a recovery hold (one unresolved named row never silences the liveness of the others; a publication releases any open hold). A named seat goes offline only when its bindings end, then shows inactive, unavailable since T, with one `recipient_unavailable` per episode. |
 | `cooperative_self_retire` | local `allocation_decisions.operator_label` (`cooperative_self_retire:<binding>`) of a self retirement only | A named seat's own top-level binding retired the seat with `seat retire --self` (`Command::SelfRetire`, a cooperative mutation: a declared subagent is refused). The daemon decides against A2: the seat is live, local and named (a pane or terminal seat is refused, M20), and no other top-level binding of the seat is connected unless `--force` (M18, which names the other bindings). It is scoped `self-retire:<seat>:<operation>` and checked before the live-seat precheck, so a replay returns the stored result. **Replicates as `RetireReason::Operator`:** the wire enum is closed (no `serde(other)`), so peers cannot tell a self retirement from an operator one; the distinction is node-local, in `seat inspect`'s allocation decisions. A same-user cooperative claim, not proof: anything that can act as the seat's binding can retire it. Never on bindings or receipts. |
-| `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
+| `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID` and opencode's plugin-set `HERDR_THREADS_OPENCODE_SESSION`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
 | `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
 | `liveness_process_exit` | binding disconnections only | The binding's fingerprinted process (pid and start time) no longer exists, or the pid now has a different start time. Structural evidence; it disconnects the binding and never ends it, moves a seat or merges seats. |
 | `liveness_end_event` | binding disconnections only | The harness reported an end event for this session (Codex SessionEnd/SubagentStop, Claude SubagentStop, Hermes `on_session_finalize`/`subagent_stop`; never Hermes `on_session_end`, which fires after every turn). The hook sends a `BindingEvent` for the pane's seat; the daemon disconnects the named binding (a session end also disconnects the subagents attached to it) and never ends it, moves a seat or merges seats. An unknown or already disconnected binding is a no-op. A `BindingEvent` is not an accountable seat write, so a subagent claim may report one; a subagent start enrolls only the subagent binding (the parent first, if needed). |
@@ -2601,9 +2605,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   they never grant evidence verification, seat continuity or receipt authority. The filter is in memory
   and starts empty on daemon restart; suppression does not claim durable session history.
 
-- **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook or
-  the agy plugin's hooks enroll every supported top-level lifecycle session in its Herdr
-  instance, including sessions started outside `launch`, subject to the ordinary canonical guards
+- **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook, the
+  agy plugin's hooks or the opencode plugin's hook commands enroll every supported top-level
+  lifecycle session in its Herdr instance, including sessions started outside `launch`, subject to the ordinary canonical guards
   above. Outside Herdr it remains silent. No wrapper or global configuration change is made by
   enrollment. The actual pane environment must come from the user's foreground harness
   configuration; enrollment cannot infer a different attaching TUI pane or turn a shared-server
@@ -2636,6 +2640,27 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   parent's conversation, the child id as agent id, `cooperative_env_session`) and enrolls as a subagent
   binding of the parent. A conversation with neither a presence lock nor a listing, or whose witnesses
   cannot be read, is refused `unattributed_session`, never attributed to the parent's top level.
+- **The opencode plugin enrolls a session at its first prompt.** opencode creates a session lazily, so
+  the plugin runs the `SessionStart` hook command at the first `chat.message` of a top-level session
+  that is not its bound one, and the turn hook on every later one. The role is payload-declared from
+  opencode's native `parentID` (`parent_session_id`), the same class of evidence as Claude's and
+  Codex's payload roles: a parent makes a child, which is answered locally with the subagent
+  restriction and never reaches the daemon; an unparseable parent is refused. The daemon decides every
+  enrollment against A2. A session switch or a plugin reload is reported as `resume`, which C1
+  continuity keys on the native session id.
+- **An opencode session's CLI calls name their session through plugin-set variables.** opencode
+  exports no session variable; the herdr-threads plugin's `shell.env` hook adds the call's own
+  `sessionID` as `HERDR_THREADS_OPENCODE_SESSION` to every shell call that has one, the root top-level
+  session of a child as `HERDR_THREADS_OPENCODE_PARENT` (empty for a top-level session) and its own
+  process id as `HERDR_THREADS_OPENCODE_PID`. The claim is `cooperative_env_session` (A3) with the
+  plugin as carrier, fingerprinted on the `opencode` process named by `OPENCODE_PID`. The pid echo
+  must equal `OPENCODE_PID`, else the variables were inherited from an outer opencode (a nested one
+  without the plugin) and the call is refused `unattributed_session`. An empty parent is top-level, a
+  valid one makes a read-only subagent claim of that parent (native session swapped to the parent, the
+  child's session id as agent id), and anything else is refused `malformed_subagent_marker`: an unknown
+  role is never read as top-level. A call under an `opencode` process with no session variable (the
+  plugin missing, or `--pure`) is refused `session_claim_required` naming the variable, never
+  attributed to the pane. A user's `!` shell command claims the session it was typed in.
 - **Hermes enrolls through its CLI hooks.** The witness is Hermes's native `platform == "cli"`
   (cooperative, A1): delegated children run with platform `subagent`: the bridge answers them locally with the subagent
   restriction, and their `subagent_start` registers the child session as a read-only subagent binding of

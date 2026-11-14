@@ -35,7 +35,7 @@ Options:
       --cwd <CWD>
           Working directory for --new-tab; guarded pane launches cannot change it
       --cooperative-harness <COOPERATIVE_HARNESS>
-          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
       --profile-dir <PROFILE_DIR>
           Existing profile directory for --new-tab, distinct from native named profiles. Guarded pane launches cannot change the profile directory. For a handoff to another machine: an absolute directory on that machine, checked there
       --cooperative-role <COOPERATIVE_ROLE>
@@ -59,7 +59,7 @@ Options:
       --summary <SUMMARY>
           One-line purpose the launched agent's first prompt shows (at most 200 bytes; default: --goal when it fits). It appears in native argv; the body never does and arrives as the thread message. Required for a handoff to another machine
       --kind <KIND>
-          [possible values: claude, codex, hermes, agy, synthetic_fourth]
+          [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
       --harness-binary <HARNESS_BINARY>
           
       --model <MODEL>

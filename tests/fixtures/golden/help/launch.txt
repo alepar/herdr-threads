@@ -21,7 +21,7 @@ Options:
       --human
           Human-readable tables and transcripts (the default on a terminal)
       --kind <KIND>
-          Native agent to start [possible values: claude, codex, hermes, agy, synthetic_fourth]
+          Native agent to start [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
       --harness-binary <PATH>
           Absolute harness executable whose `--version` is gated (default: the harness's executable on PATH, which Herdr starts by name)
       --machine
@@ -35,7 +35,7 @@ Options:
       --new-tab <LABEL>
           A new tab labelled LABEL to launch in: in --space, else the caller's workspace on Herdr; a herdr-core needs --space
       --cooperative-harness <COOPERATIVE_HARNESS>
-          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, opencode, synthetic_fourth]
       --new-terminal
           A new terminal on a herdr-core host, parented on the calling terminal (no app labels)
       --cooperative-role <COOPERATIVE_ROLE>

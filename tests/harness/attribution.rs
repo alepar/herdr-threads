@@ -621,6 +621,7 @@ fn adapter_runtime_attribution_uses_native_reader_reason() {
                     "codex" => Unattributed::CreatorOnly.as_str(),
                     "hermes" => "startup_callback_unavailable",
                     "agy" => "agy payload carries no runtime version",
+                    "opencode" => "opencode payload carries no runtime version",
                     "synthetic_fourth" => "synthetic_runtime_unavailable",
                     other => panic!("unexpected builtin {other}"),
                 };

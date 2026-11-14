@@ -51,6 +51,8 @@ codex local_config_root : installed: false, enabled: unknown, admitted: true, ob
 hermes local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: Hermes launcher unavailable
 agy local_config_root : installed: false, enabled: true, admitted: unknown, observed: unknown
+opencode local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
+  setup: invalid adapter input: opencode: config root unavailable
 synthetic_fourth local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: synthetic fourth: explicit fixture root unavailable
 rich harness evidence unavailable: the daemon is not reachable
