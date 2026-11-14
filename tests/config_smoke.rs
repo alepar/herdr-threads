@@ -182,12 +182,15 @@ impl World {
         assert_eq!(run(mkfifo, None).code, Some(0), "mkfifo");
         rig::executable(
             &dir.join("runner.sh"),
+            // The exit code lands by rename: the reader polls for the file, and a redirect creates it
+            // empty before `echo` writes, which read as `exit None` (ht-mz13).
             r#"#!/bin/bash
 d=$1
 exec 3<>"$d/fifo"
 while read -r n <&3; do
   /bin/bash "$d/$n.sh" <"$d/$n.in" >"$d/$n.out" 2>"$d/$n.err"
-  echo $? >"$d/$n.code"
+  echo $? >"$d/$n.code.tmp"
+  mv "$d/$n.code.tmp" "$d/$n.code"
 done
 "#,
         );
