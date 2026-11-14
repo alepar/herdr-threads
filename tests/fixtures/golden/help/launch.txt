@@ -62,7 +62,7 @@ Preflight (nothing is started when any step refuses):
   - the pane's seat is resolved like `seat resolve --pane`; a recovery-held target
     needs `seat rebind ... --operator` or a fresh seat first;
   - the owned user-level hooks must be set up (`herdr-threads setup HARNESS`) in the
-    settings or hook file of the CLAUDE_CONFIG_DIR / CODEX_HOME / HOME the agent
+    settings or hook file of the CLAUDE_CONFIG_DIR / CODEX_HOME / HOME / OPENCODE_CONFIG_DIR the agent
     will use (an absolute one the pane's shell exports, else launch's own, else HOME;
     the report's config_dir names it);
   - a last fresh read of the pane just before Herdr starts the agent.

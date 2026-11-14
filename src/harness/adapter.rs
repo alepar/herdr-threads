@@ -1958,9 +1958,6 @@ mod tests {
             );
             if matches!(registration.metadata().id, "hermes" | "synthetic_fourth") {
                 assert!(matches!(status, SetupStatus::Failed(_)));
-            } else if registration.metadata().id == "opencode" {
-                // ht-vxdp.3: the plugin installer replaces the stub.
-                assert!(matches!(status, SetupStatus::Unsupported(_)));
             } else {
                 assert!(matches!(status, SetupStatus::Detailed(_)));
             }

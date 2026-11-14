@@ -3491,7 +3491,7 @@ mod tests {
             sorted(crate::harness::hermes::REQUIRED_HOOK_EVENTS.to_vec())
         );
         assert!(events("agy").is_empty());
-        // ht-vxdp.3: the plugin installer declares its events.
+        // As for agy, the plugin's events live in its own file, not in a hook file setup checks.
         assert!(events("opencode").is_empty());
     }
 }
