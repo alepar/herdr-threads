@@ -232,11 +232,32 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
         outside
             .seen
             .iter()
-            .any(|line| line.contains(&format!("<w1/alice/{alice_seat}>"))),
+            .any(|line| line.contains("<w1/w1:t1/alice>")),
         "{:?}",
         outside.seen
     );
     outside.interrupt();
+
+    // --show-ids: the pane and seat IDs on the line under the name.
+    let mut ids = plugin.follow(&[
+        "read",
+        &thread,
+        "--follow",
+        "--human",
+        "--recent",
+        "1",
+        "--show-ids",
+    ]);
+    ids.wait_for("raven");
+    let at = ids
+        .seen
+        .iter()
+        .position(|line| line.contains("<w1/w1:t1/alice> Why is a raven"))
+        .unwrap_or_else(|| panic!("{:?}", ids.seen));
+    let expected = format!("w1:p1 {alice_seat}");
+    ids.wait_for(&expected);
+    assert_eq!(ids.seen[at + 1].trim(), expected, "{:?}", ids.seen);
+    ids.interrupt();
 
     // Agent nicks retain the space and seat ID even for a caller in that space.
     let mut human = plugin.follow_from(
@@ -253,7 +274,7 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
         human.seen
     );
     assert!(
-        human.count(&format!("-!- w1/mad-hatter/{hatter_seat} joined")) == 1,
+        human.count("-!- w1/w1:t1/mad-hatter joined") == 1,
         "join notice with the space, pane name and seat ID: {:?}",
         human.seen
     );
@@ -264,8 +285,7 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
         .unwrap()
         .clone();
     assert!(
-        raven.starts_with('[')
-            && raven.contains(&format!("] <w1/alice/{alice_seat}> Why is a raven")),
+        raven.starts_with('[') && raven.contains("] <w1/w1:t1/alice> Why is a raven"),
         "{raven}"
     );
 
@@ -290,20 +310,24 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
     let hatter_line = human
         .seen
         .iter()
-        .position(|line| line.contains(&format!("<w1/mad-hatter/{hatter_seat}> I haven't")))
+        .position(|line| line.contains("<w1/w1:t1/mad-hatter> I haven't"))
         .unwrap_or_else(|| panic!("{:?}", human.seen));
     let cups_line = human
         .seen
         .iter()
-        .position(|line| line.contains(&format!("<w1/alice/{alice_seat}> Move down!")))
+        .position(|line| line.contains("<w1/w1:t1/alice> Move down!"))
         .unwrap();
     assert!(hatter_line < cups_line, "{:?}", human.seen);
     // The full (beyond-preview) body is shown, wrapped across lines.
-    let bats: usize = human
+    // Counted across line breaks: the wrap column moves with the nick width.
+    let bats = human
         .seen
-        .iter()
-        .map(|line| line.matches("little bat!").count())
-        .sum();
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .matches("little bat!")
+        .count();
     assert_eq!(bats, 20, "{:?}", human.seen);
     assert!(
         human.seen.iter().all(|line| line.chars().count() <= 100),
@@ -366,12 +390,10 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
     let cups = text
-        .find(&format!("] <w1/alice/{alice_seat}> Move down! Clean cups!"))
+        .find("] <w1/w1:t1/alice> Move down! Clean cups!")
         .expect(&text);
     let heads = text
-        .find(&format!(
-            "] <w1/mad-hatter/{hatter_seat}> Off with their heads!"
-        ))
+        .find("] <w1/w1:t1/mad-hatter> Off with their heads!")
         .expect(&text);
     assert!(cups < heads, "{text}");
 }

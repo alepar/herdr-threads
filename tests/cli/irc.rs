@@ -159,6 +159,18 @@ fn directory_agent_nick_drops_a_pane_that_is_only_its_id() {
         agent_seat_nick_named("office", Some("t2"), "core:t4", Some(&terminal)),
         "office/t2"
     );
+    // A remote seat has no local target: an ID-shaped pane is still an id.
+    for id in ["w1:p3", "core:t4", "t4"] {
+        assert_eq!(
+            agent_seat_nick_named("office", Some("w1:t2"), id, None),
+            "office/w1:t2",
+            "{id}"
+        );
+    }
+    assert_eq!(
+        agent_seat_nick_named("office", Some("build"), "reviewer", None),
+        "office/build/reviewer"
+    );
     // A peer that publishes no tab keeps the workspace and pane.
     assert_eq!(
         agent_seat_nick_named("office", None, "reviewer", Some(&target)),

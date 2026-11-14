@@ -136,8 +136,10 @@ pub fn agent_seat_nick(
 
 /// [`agent_seat_nick`] from the daemon's already-resolved labels of the seat's
 /// own host (each the label, else the id). The published pane falls back to its
-/// target (`<session>:tN` for an hc terminal), so a pane equal to the seat's
-/// target is an id and left out; a peer that publishes no tab omits it.
+/// target, and a remote seat has no local target to compare with, so a pane that
+/// is ID-shaped (a Herdr `w<N>:p<N>` pane, an hc `[<session>:]tN` terminal) or
+/// equal to the seat's target is taken as an id and left out, as the paste-safe
+/// renderer treats an ID-shaped label; a peer that publishes no tab omits it.
 pub fn agent_seat_nick_named(
     workspace: &str,
     tab: Option<&str>,
@@ -148,13 +150,9 @@ pub fn agent_seat_nick_named(
     if let Some(tab) = tab.filter(|tab| !tab.is_empty()) {
         parts.push(nick_label(&None, tab));
     }
-    let pane_is_id = target.is_some_and(|target| {
-        let target = target.as_str();
-        pane == target
-            || pane
-                .strip_suffix(target)
-                .is_some_and(|session| session.ends_with(':'))
-    });
+    let pane_is_id = target.is_some_and(|target| pane == target.as_str())
+        || crate::protocol::address::looks_like_pane_id(pane)
+        || crate::host::hc::labels::HcAddress::parse(pane).is_some();
     if !pane.is_empty() && !pane_is_id {
         parts.push(nick_label(&None, pane));
     }
