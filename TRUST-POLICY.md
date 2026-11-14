@@ -1111,7 +1111,10 @@ model open work, and summary closure never changes receipt state or installs glo
   placeholders and the person's binding are untouched, a Current (tool-boundary) check-in never adopts or
   registers it, a `launch:` session is never a caller, C1 continuity never matches it, and it never supersedes
   a session of the same process (it is no session). The launch keeps the seat generation, so no generation
-  allowance exists (ht-54r.4).
+  allowance exists (ht-54r.4). A launch whose started process already holds a connected lifecycle-claimed
+  top-level binding of the same harness on the seat (same pid and start: the launched agent checked in first)
+  records no placeholder and reports that binding (`recorded: false`), so no placeholder outlives its own
+  session's check-in (ht-t17l).
 - *Agent to human*: the daemon refuses a human lifecycle check-in while any agent binding of the seat
   (`cooperative_*` or `managed_launch`) is connected, unless the request is `--operator`; a successful
   `ht human me init` ends the seat's disconnected agent bindings (`ended_at`), and with `--operator` also the

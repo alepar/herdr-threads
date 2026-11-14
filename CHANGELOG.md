@@ -5,6 +5,7 @@
 ### Fixed
 
 - **A restarted session no longer replays the seat's backlog.** A new session's binding starts past the seat's own sent messages and at the seat's furthest-offered notice, so it is no longer offered (or woken on) its own earlier sends and old warnings. A successor still gets sibling mail its predecessor had not read, and a still-open warning condition (an overdue receipt or invitation, an open unavailability) is offered to the new session once (ht-y3iv).
+- **A launched agent that checks in before `launch` records it is no longer woken by its own sends.** `launch` recorded a `managed_launch` placeholder beside the agent's own session binding when the agent's check-in won the race; the placeholder never read mail, so each of the agent's own p0 sends woke it with `attention pending` and an empty `inbox`. The launch now records no placeholder when the started process already holds a session binding (ht-t17l).
 
 ## v3.1.0
 

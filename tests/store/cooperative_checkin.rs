@@ -3064,6 +3064,35 @@ fn launch_into_a_pane_with_a_connected_agent_records_a_placeholder() {
     assert_eq!(seat_generation(&conn), 0);
 }
 
+/// ht-t17l (wake survey D2): the launched agent's lifecycle check-in can land before `launch`
+/// records its placeholder. The started process then already has its session binding, so the
+/// launch records nothing and reports that binding. Kills: a late placeholder beside the session
+/// of its own process (never replaced, it held the seat's own sends as unread and woke the seat
+/// on each of its p0 sends), and a launch that records nothing when only another process, or a
+/// session of another harness, is bound.
+#[test]
+fn a_launch_recorded_after_its_agent_checked_in_adds_no_placeholder() {
+    let (store, conn, _) = fixture();
+    let mut launched = claim();
+    launched.liveness = Some(LIVENESS_OF_LAUNCH);
+    check_in(&store, lifecycle(launched, "launched")).unwrap();
+    let before = bindings(&conn);
+    let record = record_launch(&store, managed_launch()).unwrap();
+    assert!(!record.recorded);
+    assert_eq!(record.provenance, "cooperative_top_level");
+    assert_eq!(record.binding_generation, 0);
+    assert_eq!(bindings(&conn), before, "no placeholder beside the session");
+    // The same process bound under another harness is no session of the launched one.
+    let mut claude_launch = managed_launch();
+    claude_launch.harness = Harness::Claude;
+    assert!(record_launch(&store, claude_launch).unwrap().recorded);
+    // A session of another process leaves the launch its placeholder.
+    let (store, conn, _) = fixture();
+    check_in(&store, lifecycle(claim(), "other")).unwrap();
+    assert!(record_launch(&store, managed_launch()).unwrap().recorded);
+    assert_eq!(bindings(&conn).len(), 2);
+}
+
 /// The launched agent's first lifecycle check-in replaces only the placeholder
 /// of its own harness. Kills: a check-in that ends the agent binding that was
 /// already connected, a placeholder of another harness, or no placeholder.

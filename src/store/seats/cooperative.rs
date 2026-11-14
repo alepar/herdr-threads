@@ -1220,7 +1220,8 @@ pub fn register_available(
 /// availability, receipt timer or wake binding generation: it authorizes
 /// nothing but a wake prompt to the bound harness. The launched agent's first
 /// lifecycle check-in replaces only the placeholders of its own harness
-/// (`bindings::launch_placeholder_replace`).
+/// (`bindings::launch_placeholder_replace`); when that check-in came first (the
+/// started process already holds such a binding), none is recorded (ht-t17l).
 pub fn record_managed_launch(
     context: &StoreContext,
     conn: &mut Connection,
@@ -1297,6 +1298,41 @@ pub fn record_managed_launch(
             ))
         },
         |tx, at, (generation, seat_target_generation, boot, epoch, terminal, incarnation)| {
+            // The launched agent's lifecycle check-in can land before this record (ht-t17l). Its
+            // process then already has a session binding, the one the same-process rule would
+            // keep over a placeholder: record none, so no placeholder holds the seat's own sends.
+            let checked_in: Option<(i64, String)> = tx
+                .query_row(
+                    "SELECT generation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND harness=?2 \
+                     AND ended_at IS NULL AND liveness='connected' AND role='top_level' AND concurrent_session=0 \
+                     AND liveness_pid=?3 AND liveness_start=?4 AND observation_provenance NOT IN (?5,?6) \
+                     ORDER BY ordinal DESC LIMIT 1",
+                    params![
+                        command.seat.as_str(),
+                        command.harness.as_str(),
+                        i64::from(command.fingerprint.pid),
+                        i64::try_from(command.fingerprint.start).map_err(|_| {
+                            api_error(ErrorCode::InvalidRequest, "liveness start out of range")
+                        })?,
+                        crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE,
+                        crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE,
+                    ],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            if let Some((binding_generation, provenance)) = checked_in {
+                return Ok(CommandResult::ManagedLaunchRecorded(
+                    crate::protocol::results::ManagedLaunchRecord {
+                        seat: command.seat.clone(),
+                        recorded: false,
+                        binding_generation: u64::try_from(binding_generation).map_err(|_| {
+                            api_error(ErrorCode::StoreCorrupt, "negative binding generation")
+                        })?,
+                        provenance,
+                    },
+                ));
+            }
             // The seat may already hold agent bindings, connected or not: the placeholder is one
             // more binding, keyed by its own `launch:` session, and changes none of them. The seat
             // generation stays: only the launched agent's own check-in replaces the placeholder.
