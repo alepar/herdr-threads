@@ -205,6 +205,26 @@ impl VerifiedConfigIdentity {
         )
         .into_bytes()
     }
+    /// Whether `bytes` is this root's marker recorded while its volume had another device
+    /// number: backend, inode and root path all match. A pause/resume or reboot can renumber the
+    /// device of a volume that keeps its inodes (ht-1nva).
+    fn renumbered_marker(&self, bytes: &[u8]) -> bool {
+        let Some(device) = std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| text.split('\n').nth(2))
+            .and_then(|line| line.split_once(':'))
+            .and_then(|(device, _)| device.parse::<u64>().ok())
+        else {
+            return false;
+        };
+        device != self.device
+            && Self {
+                device,
+                ..self.clone()
+            }
+            .marker()
+                == bytes
+    }
 }
 /// Stable owned inode, no unlink. Advisory exclusion covers cooperating writers;
 /// backend final-check/rename still cannot detect a noncooperating editor in that interval.
@@ -292,6 +312,7 @@ impl OwnedConfigWriteGuard {
             }
             Err(e) => return Err(e),
         };
+        renew_renumbered_marker(&file, identity)?;
         let guard = Self {
             file,
             identity: identity.clone(),
@@ -313,6 +334,19 @@ impl OwnedConfigWriteGuard {
         }
         Ok(())
     }
+}
+/// Under the held lock, rewrite in place (same inode) a marker that differs from this root's only
+/// in the device number. Any other content is left for `revalidate` to refuse.
+fn renew_renumbered_marker(file: &File, identity: &VerifiedConfigIdentity) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    let current = read_bounded(&identity.lock_path(), MAX_PATH_BYTES as u64 + 128)?;
+    if identity.renumbered_marker(&current) {
+        let marker = identity.marker();
+        file.write_all_at(&marker, 0)?;
+        file.set_len(marker.len() as u64)?;
+        file.durable_sync()?;
+    }
+    Ok(())
 }
 fn acquire_config_lock(file: &File, deadline: Instant) -> io::Result<()> {
     loop {
@@ -486,6 +520,56 @@ mod tests {
         fs::write(&path, id.marker()).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(guard.revalidate().is_err());
+    }
+    /// A pause/resume or reboot can give the config root's volume a new device
+    /// number while the directory keeps its path and inode (ht-1nva). Under the
+    /// lock, a marker that differs only in that device is this root's own and is
+    /// rewritten for the current device, on the same inode. A marker naming
+    /// another root, inode or backend still refuses and is left as is.
+    /// Kills: refusing every setup after a device renumbering, or adopting a
+    /// marker of another config root.
+    #[test]
+    fn owned_config_guard_renews_a_marker_whose_device_alone_changed() {
+        let f = Fixture::new();
+        let id = f.identity();
+        let path = id.lock_path();
+        let write = |marker: &[u8]| {
+            fs::write(&path, marker).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        let renumbered = VerifiedConfigIdentity {
+            device: id.device ^ 1,
+            ..id.clone()
+        };
+        write(&renumbered.marker());
+        let inode = fs::metadata(&path).unwrap().ino();
+        let guard = OwnedConfigWriteGuard::acquire(&id, Duration::ZERO).unwrap();
+        guard.revalidate().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), id.marker());
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        drop(guard);
+        fs::remove_file(&path).unwrap();
+        let other_root = VerifiedConfigIdentity {
+            root: f.0.join("elsewhere"),
+            device: id.device ^ 1,
+            ..id.clone()
+        };
+        let other_inode = VerifiedConfigIdentity {
+            device: id.device ^ 1,
+            inode: id.inode + 1,
+            ..id.clone()
+        };
+        let other_backend = VerifiedConfigIdentity {
+            backend: PermissionBackend::new("Other"),
+            device: id.device ^ 1,
+            ..id.clone()
+        };
+        for foreign in [other_root, other_inode, other_backend] {
+            write(&foreign.marker());
+            assert!(OwnedConfigWriteGuard::acquire(&id, Duration::ZERO).is_err());
+            assert_eq!(fs::read(&path).unwrap(), foreign.marker());
+            fs::remove_file(&path).unwrap();
+        }
     }
     // Child test re-entry uses per-command environment only, never parent-global state.
     #[cfg(feature = "test-support")]
