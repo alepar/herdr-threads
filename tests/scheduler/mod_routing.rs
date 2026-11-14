@@ -842,3 +842,29 @@ fn channel_only_targets_get_no_poke_and_composer_targets_do() {
         assert_eq!(wake.reserves.load(Ordering::SeqCst), reserves, "{harness}");
     }
 }
+
+// Kills: a mixed seat keeping its channel-only binding in the native reservation: the composer
+// target is attempted, and the opencode target (no host can type into it) is not in what the host
+// is asked to type to.
+#[test]
+fn mixed_seat_reserves_only_the_composer_target() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let store = cooperative(store(&events));
+    let notifier = TargetNotifier::default();
+    let channels = BindingChannels::default();
+    let mut runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    runner.mod_channels = &channels;
+    let candidate = candidate_with(vec![
+        harness_target("oc", "opencode", 10, false),
+        harness_target("cl", "claude", 20, false),
+    ]);
+    assert_eq!(
+        runner.try_candidate(&candidate, &budget()).unwrap(),
+        Some(WakeOutcome::Submitted)
+    );
+    assert_eq!(
+        *notifier.typed.lock().unwrap(),
+        vec![vec![crate::protocol::ids::BindingId::new("cl")]],
+        "only the composer target is typed to"
+    );
+}

@@ -1220,7 +1220,8 @@ model open work, and summary closure never changes receipt state or installs glo
   and no composer policy, `wakes_only_through_channel`) is no native wake or poke target, dormant or
   connected: with its channel down nothing is reserved, attempted or refused, so no refusal ladder runs; the
   channel wakes it once registered, its turn hook delivers on its next turn, and its sender reads
-  `wake=no_wake`. A seat with any target the host can type into keeps the rules below.
+  `wake=no_wake`. A seat with any target the host can type into keeps the rules below, and its
+  channel-only targets are left out of the reservation, so the host is never asked to type into them.
   *Per binding* (ht-54r.13): a seat may hold several bindings, and a wake is decided per connected
   top-level binding. A wake is reserved per seat (the fence is the seat's mapping generation, so a binding
   enrolling or reading its mail does not void it) and names as targets the open, connected, top-level,
