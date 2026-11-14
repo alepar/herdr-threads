@@ -8239,11 +8239,24 @@ mod live {
                 let parsed =
                     parse_argv(["ht", "retry", peer.reference.recovery_ref().as_str()]).unwrap();
                 assert!(matches!(parsed.action, CliAction::Retry(_)));
-                assert_eq!(
+                let frozen =
                     crate::cli::topology_runtime::target_endpoint(&parsed, &peer.base.journal)
                         .unwrap()
-                        .as_deref(),
-                    Some(world.fake.socket()),
+                        .expect("a V3 record names its host");
+                assert_eq!(
+                    Some(frozen.as_path()),
+                    // The frozen endpoint is canonical (macOS `/var` -> `/private/var`).
+                    Some(
+                        world
+                            .fake
+                            .socket()
+                            .parent()
+                            .unwrap()
+                            .canonicalize()
+                            .unwrap()
+                            .join(world.fake.socket().file_name().unwrap())
+                            .as_path()
+                    ),
                     "a V3 record names its host in the frozen namespace"
                 );
                 crate::cli::topology_runtime::run_target(
@@ -8256,7 +8269,8 @@ mod live {
                     &peer,
                     &(Arc::new(crate::app::SystemClock::new())
                         as Arc<dyn crate::protocol::time::Clock>),
-                    world.fake.socket().to_path_buf(),
+                    // As `run` passes it: the frozen endpoint `target_endpoint` read.
+                    frozen,
                     &mut Vec::new(),
                 )
                 .unwrap();

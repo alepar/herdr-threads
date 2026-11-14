@@ -1006,7 +1006,8 @@ fn installer_reports_a_recorded_profile_skill_shared_once_its_skills_is_a_symlin
             text.contains(&format!(
                 "codex skill (CODEX_HOME={}): shared (shared via symlink; managed at {})",
                 profile.display(),
-                f.skill("codex").display()
+                // The symlink is resolved, so the managed dir is canonical (macOS `/private`).
+                f.skill("codex").canonicalize().unwrap().display()
             )),
             "{text}"
         );
@@ -1527,7 +1528,13 @@ fn install_sh_with_stub_herdr_byte_identical() {
     let claude = fs::read_to_string(site.root().join("claude/settings.json")).unwrap_or_default();
     let got = format!(
         "exit={code:?}\n{output}\n--- claude settings.json\n{}\n",
-        claude.replace(site.root().to_str().unwrap(), "<root>")
+        // Setup bakes canonical paths (macOS `/var` -> `/private/var`): mask that spelling first.
+        claude
+            .replace(
+                site.root().canonicalize().unwrap().to_str().unwrap(),
+                "<root>"
+            )
+            .replace(site.root().to_str().unwrap(), "<root>")
     );
     let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/golden/setup/install_sh_stub_herdr.txt");

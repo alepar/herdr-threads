@@ -567,3 +567,42 @@ fn is_own_pane_needs_the_callers_server() {
     assert!(!caller.is_own_pane(&own, false), "same id, another server");
     assert!(!caller.is_own_pane(&HostTargetId::new("w1:p2"), true));
 }
+
+// Kills: a terminal site that sends its core socket as written, so a socket under a symlinked
+// directory (macOS `/var` -> `/private/var`) names another host than its hook claimed (the claim
+// host is canonical) and every CLI command misses the hook's seat.
+#[test]
+fn terminal_socket_is_spelled_canonically() {
+    use std::os::unix::fs::symlink;
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "ht-cl-sym-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    ));
+    std::fs::create_dir_all(root.join("real")).unwrap();
+    symlink(root.join("real"), root.join("link")).unwrap();
+    let written = root.join("link/core.sock");
+    let canonical = root.join("real").canonicalize().unwrap().join("core.sock");
+    let located = env(&[
+        ("HC_TERMINAL_ID", "t1"),
+        ("HC_TERMINAL_SOCKET", written.to_str().unwrap()),
+    ])
+    .locate(EnvMode::Cli)
+    .unwrap();
+    assert_eq!(
+        located,
+        Some(Located::One(terminal(canonical.to_str().unwrap(), "t1")))
+    );
+    // A socket whose directory does not resolve is kept as written.
+    let missing = root.join("absent/core.sock");
+    let located = env(&[
+        ("HC_TERMINAL_ID", "t1"),
+        ("HC_TERMINAL_SOCKET", missing.to_str().unwrap()),
+    ])
+    .locate(EnvMode::Cli)
+    .unwrap();
+    assert_eq!(
+        located,
+        Some(Located::One(terminal(missing.to_str().unwrap(), "t1")))
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}

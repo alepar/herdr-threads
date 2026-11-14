@@ -227,7 +227,7 @@ impl CallerEnv {
         self.named()?;
         let terminal = self
             .text(HC_TERMINAL_ID_ENV)
-            .zip(self.text(HC_TERMINAL_SOCKET_ENV))
+            .zip(self.terminal_socket())
             .map(|(id, socket)| format!("{socket}:{id}"));
         let pane = self.text(native::ENV_PANE_ID);
         let host = pane
@@ -241,13 +241,16 @@ impl CallerEnv {
     /// The Herdr server of this process's pane, spelled as `RuntimeContext` spells a host: a
     /// canonical parent and the file name, so it equals `herdr_hosts.endpoint`.
     fn pane_host(&self) -> Option<String> {
-        let socket = std::path::PathBuf::from(self.text(HERDR_SOCKET_ENV)?);
-        let endpoint = socket
-            .parent()?
-            .canonicalize()
-            .ok()?
-            .join(socket.file_name()?);
-        endpoint.to_str().map(str::to_owned)
+        canonical_endpoint(&self.text(HERDR_SOCKET_ENV)?)
+    }
+
+    /// The herdr-core socket spelled as `RuntimeContext` spells a host (see
+    /// [`canonical_endpoint`]), so a CLI request's scope names the host its hook claimed (a
+    /// socket under a symlinked directory, such as macOS `/var` -> `/private/var`, would
+    /// otherwise name two hosts); as given when its directory cannot be resolved.
+    fn terminal_socket(&self) -> Option<String> {
+        let socket = self.text(HC_TERMINAL_SOCKET_ENV)?;
+        Some(canonical_endpoint(&socket).unwrap_or(socket))
     }
 
     /// The tmux wake hint `tmux:<socket>:<server_pid>:<pane>` of a named caller that runs inside
@@ -275,10 +278,7 @@ impl CallerEnv {
             .text(native::ENV_PANE_ID)
             .filter(|_| mode == EnvMode::Cli || self.herdr_env())
             .map(|id| CallerLocator::Pane { id });
-        let terminal = match (
-            self.text(HC_TERMINAL_ID_ENV),
-            self.text(HC_TERMINAL_SOCKET_ENV),
-        ) {
+        let terminal = match (self.text(HC_TERMINAL_ID_ENV), self.terminal_socket()) {
             (Some(id), Some(socket)) => Some(CallerLocator::Terminal { socket, id }),
             (Some(_), None) if pane.is_none() => return Err(LocatorError::TerminalWithoutSocket),
             _ => None,
@@ -444,6 +444,18 @@ impl<'a> CallerSite<'a> {
             }
         }
     }
+}
+
+/// A socket path as `RuntimeContext` spells a host: its parent canonicalized, then the file name.
+/// `None` when the parent cannot be resolved or the result is not UTF-8.
+fn canonical_endpoint(socket: &str) -> Option<String> {
+    let socket = std::path::Path::new(socket);
+    let endpoint = socket
+        .parent()?
+        .canonicalize()
+        .ok()?
+        .join(socket.file_name()?);
+    endpoint.to_str().map(str::to_owned)
 }
 
 /// A herdr-core terminal as the refusal line and the locator hint print it, `<session>:<tN>`;

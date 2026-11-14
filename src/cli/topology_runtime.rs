@@ -73,18 +73,28 @@ pub(super) fn herdr_endpoint(
     herdr_endpoint_io(selected, output, site).map_err(super::context_error)
 }
 
-/// [`herdr_endpoint`] with the raw error, for a caller that words its own refusal.
+/// [`herdr_endpoint`] with the raw error, for a caller that words its own refusal. A non-Pane
+/// site's lazily resolved endpoint (a flag or the environment, as written) is spelled as
+/// `RuntimeContext` spells a selected host, so it names the host row a pane caller on that
+/// server claims (a socket under a symlinked directory, such as macOS `/tmp` -> `/private/tmp`,
+/// would otherwise name two); as written when its directory cannot be resolved.
 pub(super) fn herdr_endpoint_io(
     selected: &RuntimeContext,
     output: &OutputSpec,
     site: Option<&super::caller_location::CallerLocator>,
 ) -> std::io::Result<std::path::PathBuf> {
-    super::instance::InstanceInputs::for_site(
+    let endpoint = super::instance::InstanceInputs::for_site(
         None,
         output.context.host.as_ref().map(std::path::PathBuf::from),
         site,
     )
-    .herdr_endpoint(selected.require_host().ok())
+    .herdr_endpoint(selected.require_host().ok())?;
+    let canonical = endpoint
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .zip(endpoint.file_name())
+        .map(|(parent, name)| parent.join(name));
+    Ok(canonical.unwrap_or(endpoint))
 }
 fn recovery_origin_host_matches(
     semantic: &SemanticMutation,
@@ -406,8 +416,18 @@ pub(crate) fn try_run_automatic_new_with_ports(
         ),
         Some(target) => {
             super::topology_handoff::require_target_capability(client, clock)?;
+            // Spelled as `prepare` freezes it (`RuntimeContext` canonicalizes the socket's
+            // parent), so the resume's exact-namespace check matches its own record when the
+            // selected socket sits under a symlinked directory (macOS `/var` -> `/private/var`).
+            let host_endpoint = crate::daemon::paths::RuntimeContext::explicit(
+                namespace.state_dir.clone(),
+                target.endpoint.clone(),
+                None,
+            )?
+            .require_host()?
+            .to_path_buf();
             selected_namespace = HandoffNamespace {
-                host_endpoint: target.endpoint.clone(),
+                host_endpoint,
                 ..namespace.clone()
             };
             let topology = match target.placement {

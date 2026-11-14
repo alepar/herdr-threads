@@ -14,7 +14,7 @@ impl Layout {
     fn new() -> Self {
         let root = crate::test_support::scratch::temp_path(format!(
             "ht-disc-{}",
-            uuid::Uuid::new_v4().simple()
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
         ));
         std::fs::create_dir_all(root.join("run/herdr-core")).unwrap();
         std::fs::create_dir_all(root.join("state/herdr-core")).unwrap();

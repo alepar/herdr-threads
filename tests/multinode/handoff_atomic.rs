@@ -247,12 +247,14 @@ fn assert_record(record: &serde_json::Value, sender: &Seat, profile: Option<&Pat
             .as_str()
             .map(PathBuf::from)
             .as_deref(),
-        Some(profile.canonicalize().unwrap().as_path()),
+        // A remote `--profile-dir` names a path on that machine and is carried verbatim, as
+        // `--cwd` is (on macOS the scratch dir is not canonical: `/var` -> `/private/var`).
+        Some(profile),
         "{context}"
     );
     let env = context["env"].to_string();
     assert!(
-        env.contains(profile.canonicalize().unwrap().to_str().unwrap()),
+        env.contains(profile.to_str().unwrap()),
         "the profile env points at the directory: {env}"
     );
 }
@@ -409,7 +411,7 @@ fn handoff_new_tab_atomic() {
     assert!(all[1].contains("peer-handoff-launch"), "{}", all[1]);
     assert_record(&record, &rig.a, Some(&rig.profile));
     // The frozen context rides into the tab create (its env is what the tab receives).
-    let profile = rig.profile.canonicalize().unwrap();
+    let profile = &rig.profile;
     let flag = all[0]
         .lines()
         .find_map(|l| l.strip_prefix("--directory-context="))

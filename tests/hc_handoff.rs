@@ -363,7 +363,10 @@ struct Discovery {
 }
 impl Discovery {
     fn new() -> Self {
-        let root = temp_path(format!("ht-hch-{}", uuid::Uuid::new_v4().simple()));
+        let root = temp_path(format!(
+            "ht-hch-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
+        ));
         std::fs::create_dir_all(root.join("run/herdr-core")).unwrap();
         std::fs::create_dir_all(root.join("state/herdr-core")).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();

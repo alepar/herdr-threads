@@ -453,7 +453,7 @@ fn retry_of_a_journaled_intent_needs_no_herdr() {
     use herdr_threads::protocol::ids::{HostLocator, HostTargetId};
     let rig = Rig::standalone("ns-retry");
     rig.enroll("alice", "s-alice");
-    let herdr = rig.isolation.path("retry-herdr.sock");
+    let herdr = rig.isolation.socket_path("retry-herdr.sock");
     let fake = herdr_threads::test_support::fake_herdr::FakeHerdr::start("ns", &herdr, &["w1:p3"]);
     let node_dir = rig.state.join("node");
     let instance = herdr_threads::node::json::read_hint(&node_dir.join("node.json"))

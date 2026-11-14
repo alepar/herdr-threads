@@ -214,7 +214,10 @@ impl Rig {
             command
                 .env("HERDR_PANE_ID", pane)
                 .env("HERDR_ENV", "1")
-                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"));
+                .env(
+                    "HERDR_SOCKET_PATH",
+                    self.isolation.socket_path("herdr.sock"),
+                );
         }
         if stdin.is_some() {
             command.stdin(Stdio::piped());
@@ -261,7 +264,10 @@ impl Rig {
             command
                 .env("HERDR_PANE_ID", pane)
                 .env("HERDR_ENV", "1")
-                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"));
+                .env(
+                    "HERDR_SOCKET_PATH",
+                    self.isolation.socket_path("herdr.sock"),
+                );
         }
         run_with_stdin(command, None)
     }
@@ -285,7 +291,10 @@ impl Rig {
             command
                 .env("HERDR_PANE_ID", pane)
                 .env("HERDR_ENV", "1")
-                .env("HERDR_SOCKET_PATH", self.isolation.path("herdr.sock"));
+                .env(
+                    "HERDR_SOCKET_PATH",
+                    self.isolation.socket_path("herdr.sock"),
+                );
         }
         command
             .stdin(Stdio::null())
@@ -316,7 +325,7 @@ impl Rig {
             .query_row(
                 "SELECT s.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
                  WHERE s.target_id=?1 AND h.endpoint=?2 AND s.state<>'retired'",
-                [terminal, &socket.to_string_lossy()],
+                [terminal, &canonical_endpoint(socket)],
                 |r| r.get(0),
             )
             .unwrap_or_else(|e| panic!("a seat on {terminal} of {}: {e}", socket.display()))
@@ -335,6 +344,16 @@ impl Drop for Rig {
         let _ = self.plain(&["daemon", "stop"]);
         self.daemon.take();
     }
+}
+
+/// `socket` as the daemon records a host endpoint: its parent canonicalized, then the file name
+/// (macOS temp dirs sit under a symlink, `/var` -> `/private/var`, `/tmp` -> `/private/tmp`).
+fn canonical_endpoint(socket: &Path) -> String {
+    let parent = socket.parent().unwrap().canonicalize().unwrap();
+    parent
+        .join(socket.file_name().unwrap())
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn finish(command: std::process::Command) -> Ran {
@@ -821,7 +840,7 @@ done
         .query_row(
             "SELECT COUNT(*) FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
              WHERE s.id=?1 AND h.endpoint=?2",
-            [&t2, &rig.socket().to_string_lossy().into_owned()],
+            [&t2, &canonical_endpoint(rig.socket())],
             |r| r.get(0),
         )
         .unwrap();
@@ -1001,7 +1020,7 @@ fn assert_me_init_bound_its_own_core(rig: &Rig, a: &Path, b1: &str, ran: &Ran) {
             |r| r.get(0),
         )
         .unwrap();
-    assert_ne!(host_of_b1, a.to_string_lossy());
+    assert_ne!(host_of_b1, canonical_endpoint(a));
 }
 
 // Kills: `human me init` looking its seat up by a bare `tN` (the other core's `t1` seat is bound
@@ -1183,7 +1202,7 @@ fn two_family_pane_forms_never_dial_the_core() {
 fn terminal_site_pane_forms_with_host_endpoint_reach_the_herdr_path() {
     let rig = Rig::start("hcm-host-flag", &["t1"]);
     assert_eq!(rig.session_start("t1", "s-t1").code, Some(0));
-    let herdr = rig.isolation.path("herdr.sock");
+    let herdr = rig.isolation.socket_path("herdr.sock");
     let fake = herdr_threads::test_support::fake_herdr::FakeHerdr::start("hcm", &herdr, &["w1:p3"]);
     let endpoint = herdr.to_string_lossy().into_owned();
     let created = rig.agent(
@@ -1213,7 +1232,7 @@ fn terminal_site_pane_forms_with_host_endpoint_reach_the_herdr_path() {
         .query_row(
             "SELECT COUNT(*) FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
              WHERE s.target_id='w1:p3' AND h.endpoint=?1",
-            [herdr.to_string_lossy()],
+            [canonical_endpoint(&herdr)],
             |r| r.get(0),
         )
         .unwrap();
@@ -1267,7 +1286,7 @@ fn two_family_installer_integrations_passes() {
 #[test]
 fn two_family_pane_form_reaches_the_herdr_server() {
     let rig = verified_two_family("hcm-2f-herdr");
-    let herdr = rig.isolation.path("herdr.sock");
+    let herdr = rig.isolation.socket_path("herdr.sock");
     let fake = herdr_threads::test_support::fake_herdr::FakeHerdr::start("hcm", &herdr, &["w1:p3"]);
     let ran = two_family_in(&rig, Some(&herdr), &["seat", "resolve", "--pane", "w1:p3"]);
     let _ = &fake;
@@ -1279,7 +1298,7 @@ fn two_family_pane_form_reaches_the_herdr_server() {
         .query_row(
             "SELECT COUNT(*) FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
              WHERE s.target_id='w1:p3' AND h.endpoint=?1",
-            [herdr.to_string_lossy()],
+            [canonical_endpoint(&herdr)],
             |r| r.get(0),
         )
         .unwrap();
@@ -1326,7 +1345,7 @@ fn usage_error_never_asks_the_daemon() {
     command
         .arg("--no-such-flag")
         .env("HC_TERMINAL_ID", "t1")
-        .env("HC_TERMINAL_SOCKET", isolation.path("core.sock"))
+        .env("HC_TERMINAL_SOCKET", isolation.socket_path("core.sock"))
         .env("HERDR_PANE_ID", "w9:p9")
         .env("HERDR_ENV", "1");
     let ran = finish(command);
@@ -1343,7 +1362,7 @@ fn two_family_doctor_selects_the_core() {
         serde_json::from_str(&ran.stdout).unwrap_or_else(|e| panic!("{e}: {ran:?}"));
     assert_eq!(
         report["doctor"]["context"]["host_endpoint"],
-        rig.socket().to_string_lossy().as_ref(),
+        canonical_endpoint(rig.socket()),
         "{report}"
     );
     assert_eq!(
@@ -1378,7 +1397,10 @@ fn two_family_setup_does_not_need_a_herdr_endpoint() {
     let settings = std::fs::read_to_string(rig.isolation.home().join(".claude/settings.json"))
         .unwrap_or_else(|e| panic!("settings written: {e}: {ran:?}"));
     assert!(
-        settings.contains(&format!("'--host-endpoint' '{}'", rig.socket().display())),
+        settings.contains(&format!(
+            "'--host-endpoint' '{}'",
+            canonical_endpoint(rig.socket())
+        )),
         "the hook argv names the core socket: {settings}"
     );
 }
@@ -1412,7 +1434,7 @@ fn two_family_watch_marker_pins_no_core() {
         "the marker names the command: {text}"
     );
     assert!(
-        !text.contains(&format!("--host-endpoint {}", socket.display())),
+        !text.contains(&format!("--host-endpoint {}", canonical_endpoint(&socket))),
         "{text}"
     );
 }
@@ -1425,7 +1447,7 @@ fn retry_of_a_journaled_intent_needs_no_herdr() {
     use herdr_threads::protocol::ids::{HostLocator, HostTargetId};
     let rig = Rig::start("hcm-retry", &["t1"]);
     assert_eq!(rig.session_start("t1", "s-t1").code, Some(0));
-    let herdr = rig.isolation.path("herdr.sock");
+    let herdr = rig.isolation.socket_path("herdr.sock");
     let fake = herdr_threads::test_support::fake_herdr::FakeHerdr::start("hcm", &herdr, &["w1:p3"]);
     let node_dir = rig.state.join("node");
     let instance = herdr_threads::node::json::read_hint(&node_dir.join("node.json"))
@@ -1442,7 +1464,7 @@ fn retry_of_a_journaled_intent_needs_no_herdr() {
             },
             SemanticMutation::ResolveSeat {
                 continuity_key: None,
-                host: HostLocator::parse(herdr.to_string_lossy()).unwrap(),
+                host: HostLocator::parse(canonical_endpoint(&herdr)).unwrap(),
                 target,
             },
             0,

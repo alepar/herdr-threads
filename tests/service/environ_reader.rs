@@ -195,12 +195,33 @@ fn context() -> HostCallContext {
     }
 }
 
+/// Set only in a [`server_child`]: its run of [`server_child_stand_in`] waits to be killed.
+const STAND_IN_VAR: &str = "HT_TEST_SERVER_CHILD_STAND_IN";
+
+// Not a check: the long-lived process [`server_child`] runs, a non-platform executable whose
+// environment the reader can see on every OS. Outside a `server_child` it returns at once.
+#[test]
+fn server_child_stand_in() {
+    if std::env::var_os(STAND_IN_VAR).is_some() {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+}
+
 /// A long-lived owned child whose environment may carry the seat name; returns once `exec` has
 /// replaced the forked copy of the parent's environment (the variable is then visible, or, for
 /// a child without it, the child's own `/proc` entry is the post-exec one).
 pub(crate) fn server_child(name: Option<&str>) -> OwnedChild {
-    let mut cmd = command("sleep");
-    cmd.arg("60");
+    // Not `sleep`: macOS hides a platform binary's environment from `KERN_PROCARGS2`, so the
+    // stand-in is this test binary, re-run on `server_child_stand_in`.
+    let mut cmd = command(std::env::current_exe().expect("the test binary"));
+    cmd.args([
+        "--exact",
+        "service::locate::environ_reader_tests::server_child_stand_in",
+        "--test-threads=1",
+    ])
+    .env(STAND_IN_VAR, "1")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
     cmd.env_remove(NAME_VAR);
     if let Some(name) = name {
         cmd.env(NAME_VAR, name);

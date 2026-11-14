@@ -6689,7 +6689,13 @@ fn baked_state_dir_equals_named_discovery() {
         value
             .as_str()
             .unwrap_or_else(|| panic!("{report}"))
-            .strip_prefix(s.home.to_str().unwrap())
+            .strip_prefix(s.home.canonicalize().unwrap().to_str().unwrap())
+            .or_else(|| {
+                value
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix(s.home.to_str().unwrap())
+            })
             .unwrap()
             .to_owned()
     };
@@ -6736,9 +6742,14 @@ fn hc_only_setup_bakes_state_dir_no_host_endpoint() {
         .unwrap();
     let found: serde_json::Value = serde_json::from_slice(&doctor.stdout)
         .unwrap_or_else(|e| panic!("{e}: {}{}", text(&doctor.stdout), text(&doctor.stderr)));
+    // `doctor` reports the canonical dir (macOS temp dirs sit under `/var` -> `/private/var`).
     assert_eq!(
         found["doctor"]["context"]["state_dir"],
-        standalone_state(&d).display().to_string()
+        standalone_state(&d)
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string()
     );
 }
 
