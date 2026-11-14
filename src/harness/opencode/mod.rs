@@ -6,6 +6,7 @@
 pub mod contract;
 pub mod decode;
 pub mod delivery;
+pub mod launch;
 pub mod witness;
 
 pub use decode::OpencodeEvent;
@@ -49,6 +50,11 @@ static METADATA: AdapterMetadata = AdapterMetadata {
 };
 
 static DELIVERY: delivery::OpencodeDelivery = delivery::OpencodeDelivery;
+
+static TEXT: AdapterText = AdapterText {
+    launch_notes: launch::LAUNCH_NOTES,
+    ..AdapterText::NONE
+};
 
 /// ht-vxdp.3: the not-yet-implemented setup operations.
 fn unsupported(operation: &'static str) -> UnsupportedOperation {
@@ -178,6 +184,12 @@ impl HarnessAdapter for OpencodeAdapter {
     }
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         Some(&DELIVERY)
+    }
+    fn text(&self) -> &'static AdapterText {
+        &TEXT
+    }
+    fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
+        Some(&launch::OpencodeLaunch)
     }
     /// A hook-registered binding is served by the plugin (channel or turn hook), so its wake is
     /// content-free; other evidence keeps the `inbox` marker.

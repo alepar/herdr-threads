@@ -2592,6 +2592,7 @@ fn stage_a_options_declaration_is_optional_and_provider_owned() {
         ("claude", Some("HERDR_THREADS_CLAUDE_OPTS")),
         ("codex", Some("HERDR_THREADS_CODEX_OPTS")),
         ("agy", Some("HERDR_THREADS_AGY_OPTS")),
+        ("opencode", Some("HERDR_THREADS_OPENCODE_OPTS")),
         ("hermes", None),
     ] {
         let registration = registry.by_id(registry.agent(name).unwrap()).unwrap();
@@ -2609,7 +2610,7 @@ fn stage_a_help_lists_registered_options_keys_in_registry_order() {
     let builtin = crate::cli::help::launch_help();
     assert!(
         builtin.contains(
-            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS are prepended"
+            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS / HERDR_THREADS_OPENCODE_OPTS are prepended"
         ),
         "{builtin}"
     );
@@ -2634,15 +2635,15 @@ fn stage_a_help_lists_registered_options_keys_in_registry_order() {
     assert!(handoff.contains("--pane PANE --kind claude|codex|synthetic_fourth launches"));
     assert!(handoff.contains("--new-tab LABEL --kind claude|codex|synthetic_fourth creates"));
     // The builtin handoff help names the V1 pair and every builtin launch-capable adapter,
-    // and the options keys of all of them, agy included, in registry order.
+    // and the options keys of all of them, agy and opencode included, in registry order.
     let builtin = crate::cli::help::handoff_help();
     assert!(
-        builtin.contains("--kind claude|codex|hermes|agy"),
+        builtin.contains("--kind claude|codex|hermes|agy|opencode"),
         "{builtin}"
     );
     assert!(
         builtin.contains(
-            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS prepend"
+            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS / HERDR_THREADS_OPENCODE_OPTS prepend"
         ),
         "{builtin}"
     );
