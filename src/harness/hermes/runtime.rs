@@ -165,17 +165,19 @@ fn run_capture(
     started: Instant,
 ) -> Result<Vec<u8>, ProbeFailure> {
     match run_output(command, clock, budget, started)? {
-        (true, out, _) => Ok(out),
+        (Some(0), out, _) => Ok(out),
         _ => Err(ProbeFailure::ChildFailed),
     }
 }
-/// Run one bounded child: (exit success, stdout, stderr), each stream capped at 16 KiB.
+/// (exit code, None when killed by a signal; stdout; stderr).
+type ChildOutput = (Option<i32>, Vec<u8>, Vec<u8>);
+/// Run one bounded child, each stream capped at 16 KiB.
 fn run_output(
     mut command: Command,
     clock: &dyn crate::protocol::time::Clock,
     budget: &crate::protocol::time::CallBudget,
     started: Instant,
-) -> Result<(bool, Vec<u8>, Vec<u8>), ProbeFailure> {
+) -> Result<ChildOutput, ProbeFailure> {
     check_budget(clock, budget, started)?;
     let mut child = OwnedProbe(command.spawn().map_err(|_| ProbeFailure::ChildFailed)?);
     let mut stdout = child.0.stdout.take().ok_or(ProbeFailure::ChildFailed)?;
@@ -198,7 +200,7 @@ fn run_output(
             && let Some(status) = status
         {
             check_budget(clock, budget, started)?;
-            return Ok((status.success(), out, err));
+            return Ok((status.code(), out, err));
         }
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -220,7 +222,7 @@ fn native_config(
     args: &[&str],
     env: &crate::harness::adapter::SetupEnvironment,
     budget: &crate::protocol::time::CallBudget,
-) -> Result<(bool, Vec<u8>, Vec<u8>), ProbeFailure> {
+) -> Result<ChildOutput, ProbeFailure> {
     let started = Instant::now();
     if !absolute(launcher) || !safe(profile, 256) || !env.cwd.is_absolute() {
         return Err(ProbeFailure::Malformed);
@@ -250,7 +252,7 @@ fn native_config(
 /// Ensure the profile's `terminal.client_env_passthrough` lists [`PASSTHROUGH_NAMES`]
 /// through Hermes's own `config get` / `config set`: merge only (listed names kept in
 /// order, missing ones appended), no write when complete. Any failure leaves the
-/// config as it was and is reported by the caller with the manual command.
+/// config as it was and is reported by the caller.
 pub fn ensure_passthrough(
     launcher: &Path,
     profile: &str,
@@ -264,7 +266,7 @@ pub fn ensure_passthrough(
         env,
         budget,
     )? {
-        (true, out, _) => {
+        (Some(0), out, _) => {
             match serde_json::from_slice(&out).map_err(|_| ProbeFailure::Malformed)? {
                 serde_json::Value::Null => vec![],
                 serde_json::Value::Array(names) => names
@@ -277,8 +279,10 @@ pub fn ensure_passthrough(
                 _ => return Err(ProbeFailure::Malformed),
             }
         }
-        // An absent key lists nothing (older Hermes without a default).
-        (false, _, err) if String::from_utf8_lossy(&err).contains("not set") => vec![],
+        // An absent key lists nothing (older Hermes without a default). Only Hermes's own
+        // absent-key exit counts (exit 1, last stderr line `Config key not set: <key>`);
+        // any other failure writes nothing.
+        (Some(1), _, err) if absent_key(&err) => vec![],
         _ => return Err(ProbeFailure::ChildFailed),
     };
     if listed.len() > 256 {
@@ -301,9 +305,19 @@ pub fn ensure_passthrough(
         env,
         budget,
     )? {
-        (true, _, _) => Ok(PassthroughChange::Added(missing)),
+        (Some(0), _, _) => Ok(PassthroughChange::Added(missing)),
         _ => Err(ProbeFailure::ChildFailed),
     }
+}
+
+/// Hermes's absent-key report for [`PASSTHROUGH_KEY`] (`hermes_cli/config.py`
+/// `get_config_value`): the last stderr line is exactly `Config key not set: <key>`.
+fn absent_key(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim_end() == format!("Config key not set: {PASSTHROUGH_KEY}"))
 }
 
 #[derive(Debug)]
@@ -745,13 +759,15 @@ mod tests {
     fn passthrough_is_merged_through_hermes_config_get_and_set_only() {
         // $1..$4 = --profile P config get|set; every call is logged, `set`
         // records its value; GET_OUT/GET_RC/SET_RC script each case.
-        let body = |get: &str, get_rc: u8, set_rc: u8| {
+        // GET_ERR is the `get` stderr; Hermes's own absent-key form is ABSENT.
+        const ABSENT: &str = "Config key not set: terminal.client_env_passthrough";
+        let body = |get: &str, get_rc: u8, set_rc: u8, get_err: &str| {
             format!(
-                "printf '%s\\n' \"$*\" >> calls\n[ \"$1 $2 $3\" = '--profile work config' ] || exit 70\ncase \"$4\" in\n get) [ \"$5 $6\" = 'terminal.client_env_passthrough --json' ] || exit 71; printf '%s' '{get}'; [ {get_rc} = 1 ] && printf 'Config key not set: x' >&2; exit {get_rc} ;;\n set) [ \"$5\" = terminal.client_env_passthrough ] || exit 72; printf '%s' \"$6\" > value; exit {set_rc} ;;\nesac\nexit 73"
+                "printf '%s\\n' \"$*\" >> calls\n[ \"$1 $2 $3\" = '--profile work config' ] || exit 70\ncase \"$4\" in\n get) [ \"$5 $6\" = 'terminal.client_env_passthrough --json' ] || exit 71; printf '%s' '{get}'; printf '%s\\n' '{get_err}' >&2; exit {get_rc} ;;\n set) [ \"$5\" = terminal.client_env_passthrough ] || exit 72; printf '%s' \"$6\" > value; exit {set_rc} ;;\nesac\nexit 73"
             )
         };
-        let run = |get: &str, get_rc: u8, set_rc: u8| {
-            let (tmp, launch, env, budget) = launcher(&body(get, get_rc, set_rc));
+        let run_err = |get: &str, get_rc: u8, set_rc: u8, get_err: &str| {
+            let (tmp, launch, env, budget) = launcher(&body(get, get_rc, set_rc, get_err));
             let result = ensure_passthrough(&launch, "work", &env, &budget);
             let read = |name: &str| std::fs::read_to_string(tmp.path().join(name)).ok();
             (
@@ -759,6 +775,9 @@ mod tests {
                 read("calls").unwrap_or_default().lines().count(),
                 read("value"),
             )
+        };
+        let run = |get: &str, get_rc: u8, set_rc: u8| {
+            run_err(get, get_rc, set_rc, if get_rc == 1 { ABSENT } else { "" })
         };
         let (result, calls, value) = run(r#"[" PATH ","HERDR_ENV"]"#, 0, 0);
         assert_eq!(
@@ -790,6 +809,22 @@ mod tests {
                 (1, None),
                 "a failed or odd read never writes"
             );
+        }
+        // Only Hermes's exact absent-key exit reads as an empty list: a failure that
+        // merely mentions "not set", the key under another name or another exit code
+        // never writes.
+        let (result, _, value) = run_err("", 1, 0, &format!("warning: x\n{ABSENT}"));
+        assert!(result.is_ok(), "load warnings before the absent-key line");
+        assert_eq!(value.as_deref(), Some(r#"["HERDR_PANE_ID","HERDR_ENV"]"#));
+        for (get_rc, get_err) in [
+            (1, "Environment variable OPENAI_API_KEY is not set"),
+            (1, "Config key not set: terminal"),
+            (2, ABSENT),
+            (1, ""),
+        ] {
+            let (result, calls, value) = run_err("", get_rc, 0, get_err);
+            assert_eq!(result.unwrap_err(), ProbeFailure::ChildFailed, "{get_err}");
+            assert_eq!((calls, value), (1, None), "{get_err}: never written");
         }
         let (result, calls, _) = run("[]", 0, 1);
         assert_eq!(result.unwrap_err(), ProbeFailure::ChildFailed);

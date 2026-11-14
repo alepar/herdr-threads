@@ -1254,7 +1254,7 @@ impl HarnessAdapter for HermesAdapter {
         let mut status = assets::status(&o, state).map_err(asset_error)?;
         // The shared gateway learns a session's pane only from these client env
         // names. Added through Hermes's own CLI, merge only; a failure never fails
-        // setup, it leaves the manual command.
+        // setup, it names what to merge.
         let mut passthrough = None;
         if o.passthrough_missing.as_ref().is_none_or(|m| !m.is_empty()) {
             let native = request
@@ -1272,9 +1272,9 @@ impl HarnessAdapter for HermesAdapter {
                     Some(format!("added {} (new sessions only)", names.join(", ")))
                 }
                 Err(_) => Some(format!(
-                    "not added (new sessions only): merge {} into the listed names: `{}`",
+                    "not added (new sessions only): merge {} into {}",
                     runtime::PASSTHROUGH_NAMES.join(", "),
-                    passthrough_manual(&o.profile)
+                    runtime::PASSTHROUGH_KEY
                 )),
             };
             if passthrough
@@ -1385,42 +1385,15 @@ fn status_diagnostics(s: &assets::AssetStatus) -> Vec<SetupDiagnostic> {
         ));
     }
     if let Some(line) = passthrough_line(s) {
-        let row = SetupDiagnostic::new(
+        // No manual argv: a ready-to-run `config set` would replace the listed
+        // names; `setup hermes` merges.
+        rows.push(SetupDiagnostic::new(
             "hermes_client_env_passthrough",
             DiagnosticSeverity::Warning,
             &line,
-        );
-        rows.push(if s.passthrough_missing.is_some() {
-            row.clone()
-                .with_manual_argv(
-                    passthrough_manual_argv(&s.profile)
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
-                )
-                .unwrap_or(row)
-        } else {
-            row
-        });
+        ));
     }
     rows
-}
-/// `hermes --profile P config set terminal.client_env_passthrough '[...]'`, the
-/// documented form: the operator merges it with the names already listed.
-fn passthrough_manual_argv(profile: &str) -> Vec<String> {
-    vec![
-        "hermes".into(),
-        "--profile".into(),
-        profile.into(),
-        "config".into(),
-        "set".into(),
-        runtime::PASSTHROUGH_KEY.into(),
-        format!("[{}]", runtime::PASSTHROUGH_NAMES.join(", ")),
-    ]
-}
-fn passthrough_manual(profile: &str) -> String {
-    let argv = passthrough_manual_argv(profile);
-    format!("{} '{}'", argv[..6].join(" "), argv[6])
 }
 /// Model-visible (setup-status, doctor; nothing when complete): which required
 /// passthrough names a shared-gateway session lacks, and how to add them.
@@ -1428,10 +1401,9 @@ fn passthrough_line(s: &assets::AssetStatus) -> Option<String> {
     match &s.passthrough_missing {
         Some(missing) if missing.is_empty() => None,
         Some(missing) => Some(format!(
-            "missing {} (new sessions only): run `herdr-threads setup hermes --profile {}`, or merge them into the listed names: `{}`",
+            "missing {} (new sessions only): run `herdr-threads setup hermes --profile {}`",
             missing.join(", "),
-            s.profile,
-            passthrough_manual(&s.profile)
+            s.profile
         )),
         None => Some(format!(
             "unknown: profile config unreadable; new sessions need {} in {}",
@@ -2635,7 +2607,7 @@ mod adapter_tests {
         // `config get/set` stand in for Hermes's own CLI over FIXTURE_PASSTHROUGH;
         // a `.fail` sibling makes both fail, and every call is logged.
         let script = format!(
-            "#!{}\nimport json,os,sys\nif 'config' in sys.argv:\n verb=sys.argv[sys.argv.index('config')+1];p=os.environ['FIXTURE_PASSTHROUGH']\n open(p+'.calls','a').write(verb+' '+sys.argv[2]+'\\n')\n if os.path.exists(p+'.fail'): sys.exit(3)\n if verb=='get':\n  if not os.path.exists(p): sys.stderr.write('Config key not set\\n');sys.exit(1)\n  print(open(p).read());sys.exit(0)\n open(p,'w').write(sys.argv[-1]);sys.exit(0)\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n",
+            "#!{}\nimport json,os,sys\nif 'config' in sys.argv:\n verb=sys.argv[sys.argv.index('config')+1];p=os.environ['FIXTURE_PASSTHROUGH']\n open(p+'.calls','a').write(verb+' '+sys.argv[2]+'\\n')\n if os.path.exists(p+'.fail'): sys.exit(3)\n if verb=='get':\n  if not os.path.exists(p): sys.stderr.write('Config key not set: terminal.client_env_passthrough\\n');sys.exit(1)\n  print(open(p).read());sys.exit(0)\n open(p,'w').write(sys.argv[-1]);sys.exit(0)\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n",
             interpreter.display(),
             serde_json::to_string(interpreter.to_str().unwrap()).unwrap(),
             serde_json::to_string(&bootstrap).unwrap()
@@ -2767,16 +2739,14 @@ mod adapter_tests {
         let again = HermesAdapter.setup(&request, &budget()).unwrap();
         assert!(again.projection.get("client_env_passthrough").is_none());
         assert_eq!(calls(), "get work\nset work\n");
-        // A failing Hermes CLI never fails setup; it leaves the manual command.
+        // A failing Hermes CLI never fails setup; it names what to merge, never a
+        // ready-to-run `config set` (that would replace the listed names).
         std::fs::write(&passthrough, r#"["PATH"]"#).unwrap();
         std::fs::write(iso.path("passthrough.json.fail"), "").unwrap();
         let failed = HermesAdapter.setup(&request, &budget()).unwrap();
-        let manual = "hermes --profile work config set terminal.client_env_passthrough '[HERDR_PANE_ID, HERDR_ENV]'";
         assert_eq!(
             failed.projection["client_env_passthrough"],
-            format!(
-                "not added (new sessions only): merge HERDR_PANE_ID, HERDR_ENV into the listed names: `{manual}`"
-            )
+            "not added (new sessions only): merge HERDR_PANE_ID, HERDR_ENV into terminal.client_env_passthrough"
         );
         let SetupStatus::Detailed(missing) = HermesAdapter.status(
             &StatusRequest {
@@ -2788,16 +2758,13 @@ mod adapter_tests {
         ) else {
             panic!("status refused missing passthrough names")
         };
-        let line = format!(
-            "missing HERDR_PANE_ID, HERDR_ENV (new sessions only): run `herdr-threads setup hermes --profile work`, or merge them into the listed names: `{manual}`"
-        );
+        let line = "missing HERDR_PANE_ID, HERDR_ENV (new sessions only): run `herdr-threads setup hermes --profile work`";
         assert_eq!(missing.projection["client_env_passthrough"], line);
         assert_eq!(missing.diagnostics.len(), 1);
         assert_eq!(missing.diagnostics[0].text, line);
-        assert_eq!(
-            missing.diagnostics[0].manual_argv().unwrap().len(),
-            7,
-            "the manual argv is the documented `config set` form"
+        assert!(
+            missing.diagnostics[0].manual_argv().is_none(),
+            "no `config set` argv: it would replace the listed names"
         );
         std::fs::remove_file(iso.path("passthrough.json.fail")).unwrap();
         HermesAdapter.setup(&request, &budget()).unwrap();

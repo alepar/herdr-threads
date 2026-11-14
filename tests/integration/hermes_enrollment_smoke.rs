@@ -743,7 +743,7 @@ fn hermes_gateway_sessions_bind_their_client_pane() {
         if step > 4 {
             assert_eq!(
                 *driven.result(step),
-                json!({"context": "herdr-threads: this session has no pane; ask your user to run \"herdr-threads setup hermes\" and start a new session"}),
+                json!({"context": "herdr-threads: no pane; in a Herdr pane, ask your user to run \"herdr-threads setup hermes\" and start a new session"}),
                 "{}",
                 driven.steps[step]
             );

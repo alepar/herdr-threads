@@ -590,7 +590,10 @@ class BridgeTests(unittest.TestCase):
         sys.modules.pop(SLOT, None)
         def refuse(names, resolver):
             raise ValueError("session env 'HERDR_PANE_ID' is already registered by 'other'")
-        self.load(session_env=refuse)
+        with self.assertLogs(level="WARNING") as logs:
+            self.load(session_env=refuse)
+        self.assertEqual(len(logs.records), 1, "one warning when Hermes refuses the registration")
+        self.assertIn("session tool env not registered", logs.output[0])
         self.assertEqual(set(self.ctx.hooks), set(self.module.HOOKS) | {"pre_tool_call"})
         self.assertIsNotNone(self.request())
 
@@ -619,6 +622,25 @@ class BridgeTests(unittest.TestCase):
             self.request("on_session_finalize", {"session_id": "session-Ω", "platform": "cli"})
             self.assertEqual(resolve("session-Ω"), dict.fromkeys(self.pane_names() + self.FOREIGN))
             self.assertIsNone(resolve(["unhashable"]), "the resolver never raises")
+
+    def test_session_env_drops_a_pane_the_client_no_longer_sends(self):
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1", "_HERMES_GATEWAY": "1"}):
+            [(_, resolve)] = self.load_session_env()
+            token = bound.set({"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1"})
+            try:
+                self.request()
+            finally:
+                bound.reset(token)
+            self.assertEqual(resolve("session-Ω")["HERDR_PANE_ID"], "w1:p2")
+            # A later callback of the same session whose bound client env names no pane.
+            token = bound.set({"PATH": "/bin"})
+            try:
+                self.assertEqual(self.request(), {"context": self.module.NO_PANE_NOTICE})
+            finally:
+                bound.reset(token)
+            self.assertEqual(resolve("session-Ω"), dict.fromkeys(self.pane_names() + self.FOREIGN),
+                             "the stale pane is never served")
 
     def test_session_env_unsets_no_pane_outside_the_gateway(self):
         with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1"}):
