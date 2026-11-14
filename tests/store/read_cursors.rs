@@ -473,3 +473,87 @@ fn enrollment_is_flat_in_other_seats_cursors_and_thread_history() {
         );
     }
 }
+
+/// Seat `s` holds bindings `b1`, `b2`, `b3` (and seat `s2` holds `b0`, the lowest id) with cursors
+/// and display marks chosen so that every inheritance rule decides one mark:
+/// - `t` (joined by both seats): `b1` and `b2` tie at seq 1, so `b1` (lowest id) is inherited; `b1`'s
+///   `m2` is above the cursor (inherited), its `m1` is at it (not); `b2`'s `m3` (the tie loser) and
+///   `b3`'s `m4` (below the maximum) are not; `b0` ties too, with a lower id, but is another seat's.
+/// - `u`: the maximum is `b3` (seq 2), a different binding than in `t`; its `u3` is inherited, its
+///   `u2` (at the cursor) and `b1`'s `u4` (not the maximum) are not.
+/// - `v` (left) and `w` (invited): `b1`'s marks there are never inherited.
+fn inheritance_fixture() -> Connection {
+    let db = db();
+    let i = "'34750f98bd59fcfc946da45aaabe933b'";
+    db.execute_batch(&format!(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s2',{i},'resolved','native',4,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u',{i},'tu','g',0,0,0),('v',{i},'tv','g',0,0,0),('w',{i},'tw','g',0,0,0);
+         INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',1),('u','s','joined',1),('v','s','left',1),('w','s','invited',NULL);
+         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES
+           ({i},'m3','t',3,'ordinary','b',3,3),({i},'m4','t',4,'ordinary','b',4,4),
+           ({i},'u1','u',1,'ordinary','b',5,5),({i},'u2','u',2,'ordinary','b',6,6),({i},'u3','u',3,'ordinary','b',7,7),({i},'u4','u',4,'ordinary','b',8,8),
+           ({i},'v1','v',1,'ordinary','b',9,9),({i},'v2','v',2,'ordinary','b',10,10),
+           ({i},'w1','w',1,'ordinary','b',11,11),({i},'w2','w',2,'ordinary','b',12,12);
+         INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES
+           ('b0','s2',4,'p2','b',1,'claude','n0','e0','cooperative_top_level',0,'term','inc'),
+           ('b1','s',4,'p','b',1,'claude','n1','e1','cooperative_top_level',0,'term','inc'),
+           ('b2','s',4,'p','b',1,'claude','n2','e2','cooperative_top_level',0,'term','inc'),
+           ('b3','s',4,'p','b',1,'claude','n3','e3','cooperative_top_level',0,'term','inc');
+         INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES
+           ('b0','t',1),('b1','t',1),('b2','t',1),('b3','t',0),
+           ('b1','u',1),('b3','u',2),('b1','v',0),('b1','w',0);
+         INSERT INTO binding_row_displays(binding_id,message_id) VALUES
+           ('b0','m3'),('b0','m4'),('b1','m1'),('b1','m2'),('b1','u4'),('b1','v2'),('b1','w1'),
+           ('b2','m3'),('b3','m4'),('b3','u2'),('b3','u3');"
+    ))
+    .unwrap();
+    db
+}
+
+fn marks(db: &Connection, binding: &BindingId) -> Vec<String> {
+    let mut stmt = db
+        .prepare(
+            "SELECT message_id FROM binding_row_displays WHERE binding_id=?1 ORDER BY message_id",
+        )
+        .unwrap();
+    stmt.query_map([binding.as_str()], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+// Pins the exact mark set a new binding inherits (ht-6oev): the rewrite must select the same rows
+// as the statement it replaced, rule by rule (see `inheritance_fixture`).
+#[test]
+fn a_new_binding_inherits_exactly_the_seat_maximum_bindings_marks_above_its_cursor() {
+    let db = inheritance_fixture();
+    let fresh = open(&db, "sess-N");
+    assert_eq!(marks(&db, &fresh), ["m2", "u3"]);
+    assert_eq!(cursor_for(&db, &fresh, &t()).unwrap(), Some(1));
+    assert_eq!(
+        cursor_for(&db, &fresh, &ThreadId::new("u")).unwrap(),
+        Some(2)
+    );
+    assert_eq!(cursor_for(&db, &fresh, &ThreadId::new("v")).unwrap(), None);
+    assert_eq!(cursor_for(&db, &fresh, &ThreadId::new("w")).unwrap(), None);
+}
+
+// A readopted binding that already holds a cursor in `t` inherits nothing there; `u`, where it has
+// none, is inherited as for a new binding.
+#[test]
+fn a_readopted_binding_inherits_only_the_threads_it_has_no_cursor_in() {
+    let db = inheritance_fixture();
+    db.execute_batch(
+        "INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('b9','s',4,'p','b',1,'claude','n9','e9','cooperative_top_level',0,'term','inc');
+         INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('b9','t',0);",
+    )
+    .unwrap();
+    let readopted = BindingId::new("b9");
+    assert_eq!(init_for_new_binding(&db, &readopted).unwrap(), 1);
+    assert_eq!(marks(&db, &readopted), ["u3"]);
+    assert_eq!(cursor_for(&db, &readopted, &t()).unwrap(), Some(0));
+    assert_eq!(
+        cursor_for(&db, &readopted, &ThreadId::new("u")).unwrap(),
+        Some(2)
+    );
+}
