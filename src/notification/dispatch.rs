@@ -245,9 +245,15 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             expected_boot: Some(reservation.host_boot.clone()),
             expected_epoch: Some(reservation.host_epoch),
         };
-        // Only a poke classifies the composer; an ordinary wake never pays for
-        // (or depends on) that read.
-        let observed = if poke.is_some() {
+        // A poke classifies the composer, and so does a cooperative wake of several targets,
+        // whose gate below needs the pane read idle (TRUST-POLICY A4; ht-esl: the ordinary
+        // read's UI is `Unknown` unless blocked, so that gate could never pass). A single-target
+        // wake never pays for (or depends on) that read.
+        let several_targets = matches!(
+            &reservation.authority,
+            ReservedWakeAuthority::Cooperative { targets, .. } if targets.len() > 1
+        );
+        let observed = if poke.is_some() || several_targets {
             self.host
                 .observe_current_target_for_poke(&reservation.target, &read_context)
         } else {
@@ -352,9 +358,9 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             };
             let choice = reservation.authority.composer_choice(&foreground);
             // One process is one composer (ht-327): like a single target it needs no idle
-            // classification here (an ordinary wake never reads the composer, so its
-            // observation is `Unknown`); the adapter's final composer read before submission
-            // still refuses typed input and a busy agent.
+            // classification here (a composer read that cannot classify it leaves it
+            // `Unknown`); the adapter's final composer read before submission still refuses
+            // typed input and a busy agent.
             if gated && !matches!(choice, ComposerChoice::Process(_)) {
                 return refuse(
                     RefusalCause::Unsafe,

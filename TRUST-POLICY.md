@@ -1215,7 +1215,8 @@ model open work, and summary closure never changes receipt state or installs glo
   only to the one target whose fingerprint pid is among Herdr's pane foreground processes (the non-shell
   entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness
   runs in its foreground process group, are all foreground), and with several targets only when Herdr
-  reports the pane idle. Membership is exact pid equality: an ancestor or descendant of a foreground
+  reports the pane idle (its agent status idle or done and its composer read empty: a wake of several
+  targets classifies the composer as a poke does, ht-esl). Membership is exact pid equality: an ancestor or descendant of a foreground
   process is not a match. No match, several matches, no fingerprint or no foreground report means no composer wake, with
   no fallback to the latest claim or touch, even for a seat with one target (nothing is guessed, and the
   refusal is pre-send so the reminder ladder does not climb). One exception (ht-327): several matching targets
@@ -1223,8 +1224,8 @@ model open work, and summary closure never changes receipt state or installs glo
   same-process rule leaves connected, such as the in-process `/side` sessions of a Codex TUI), and a wake for
   seat-level attention (an invitation, receipt or warning, or a receipt's soft-deadline poke) types once into
   that process's composer: the item reaches whichever of its bindings takes the turn, so no binding is
-  chosen. Like a single target it is not held to the several-targets idle condition (an ordinary wake
-  reads no composer before that point); the adapter's final composer read immediately before submission
+  chosen. Like a single target it is not held to the several-targets idle condition (a composer read
+  that cannot classify it leaves it `Unknown`); the adapter's final composer read immediately before submission
   still refuses typed input and a busy agent. After that read, and immediately before typing, the wake asks again whether it is still owed: a turn that served the item and ended while the attempt was in flight gets no wake (a pre-send refusal; ht-78f6). For a receipt or invitation it is owed only while one is still pending (an ACK or accept since the reservation owes no wake; ht-j3by) and every binding of the process is
   unserved (one served in its turn served the process), and a binding whose mod channel woke it takes its process's other bindings off the composer
   targets. Seat-level attention includes a delivery row the seat's nudge threshold admitted (reason `lazy`,

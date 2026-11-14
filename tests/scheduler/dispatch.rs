@@ -5119,6 +5119,9 @@ struct CooperativeRecordingHost {
     prompted: std::sync::Mutex<Vec<SafeWakeTarget>>,
     /// What `foreground_pids` answers (Herdr's pane foreground processes).
     foreground: Vec<u32>,
+    /// The UI state a composer-classified read (`observe_current_target_for_poke`) reports;
+    /// `None`: the same as the ordinary observation.
+    composer_ui: Option<HostUiState>,
 }
 impl HostPort for CooperativeRecordingHost {
     fn live_topology(
@@ -5150,6 +5153,15 @@ impl HostPort for CooperativeRecordingHost {
         _: &HostCallContext,
     ) -> Result<HostObservation, ApiError> {
         Ok(self.observation.clone())
+    }
+    fn observe_current_target_for_poke(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        let mut observation = self.observation.clone();
+        observation.ui = self.composer_ui.unwrap_or(observation.ui);
+        Ok(observation)
     }
     fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         unreachable!()
@@ -5232,6 +5244,7 @@ fn dispatcher_passes_bound_harness_to_prompt_target() {
         observation.execution = ExecutionEvidence::Unknown;
         let host = CooperativeRecordingHost {
             observation,
+            composer_ui: None,
             prompted: std::sync::Mutex::new(vec![]),
             foreground: Vec::new(),
         };
@@ -5294,6 +5307,7 @@ fn a_dormant_target_is_prompted_on_the_panes_foreground_with_its_harness() {
         observation.execution = ExecutionEvidence::Unknown;
         let host = CooperativeRecordingHost {
             observation,
+            composer_ui: None,
             prompted: std::sync::Mutex::new(vec![]),
             foreground: foreground.clone(),
         };
@@ -5339,6 +5353,7 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
     observation.execution = ExecutionEvidence::Unknown;
     let host = CooperativeRecordingHost {
         observation,
+        composer_ui: None,
         prompted: std::sync::Mutex::new(vec![]),
         foreground: Vec::new(),
     };
@@ -5381,6 +5396,17 @@ fn composer_wake_among(
     ui: HostUiState,
     foreground: &[u32],
 ) -> (WakeOutcome, Vec<SafeWakeTarget>) {
+    composer_wake_classified(targets, ui, foreground, None)
+}
+
+/// [`composer_wake_among`] whose composer-classified read reports `composer_ui` while the
+/// ordinary read reports `ui` (production: `Unknown`, ht-esl).
+fn composer_wake_classified(
+    targets: Vec<crate::ports::WakeTarget>,
+    ui: HostUiState,
+    foreground: &[u32],
+    composer_ui: Option<HostUiState>,
+) -> (WakeOutcome, Vec<SafeWakeTarget>) {
     let clock = FakeClock(AtomicU64::new(0));
     let context = HostCallContext {
         budget: CallBudget {
@@ -5405,6 +5431,7 @@ fn composer_wake_among(
     observation.execution = ExecutionEvidence::Unknown;
     let host = CooperativeRecordingHost {
         observation,
+        composer_ui,
         prompted: std::sync::Mutex::new(vec![]),
         foreground: foreground.to_vec(),
     };
@@ -5525,6 +5552,7 @@ fn composer_wake_seen(
     observation.execution = ExecutionEvidence::Unknown;
     let host = CooperativeRecordingHost {
         observation,
+        composer_ui: None,
         prompted: std::sync::Mutex::new(vec![]),
         foreground: foreground.to_vec(),
     };
@@ -5817,6 +5845,39 @@ fn composer_wake_refuses_an_ambiguous_or_absent_match_in_the_foreground_set() {
     }
 }
 
+/// Kills ht-esl: a wake of two bindings in distinct processes refused forever because the
+/// several-targets idle gate read the ordinary observation, whose UI is always `Unknown` in
+/// production. The gate reads the composer-classified observation: an idle pane with an empty
+/// composer is woken (once, to the foreground binding); typed input or a busy turn is not.
+#[test]
+fn several_target_wake_reads_the_composer_classified_idle() {
+    let two = || {
+        vec![
+            binding_target("a", "codex", Some(10)),
+            binding_target("b", "claude", Some(20)),
+        ]
+    };
+    let (outcome, prompted) =
+        composer_wake_classified(two(), HostUiState::Unknown, &[10], Some(HostUiState::Idle));
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted.len(), 1);
+    assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
+    for composer in [
+        HostUiState::Unknown,
+        HostUiState::HumanInput,
+        HostUiState::ActiveTurn,
+        HostUiState::ApprovalOrQuestion,
+    ] {
+        let (outcome, prompted) =
+            composer_wake_classified(two(), HostUiState::Unknown, &[10], Some(composer));
+        assert!(
+            matches!(outcome, WakeOutcome::Refused(_) | WakeOutcome::Unsafe),
+            "{composer:?}: {outcome:?}"
+        );
+        assert!(prompted.is_empty(), "{composer:?}");
+    }
+}
+
 /// Kills: typing into a multi-binding pane Herdr does not report idle.
 #[test]
 fn composer_wake_requires_idle() {
@@ -5926,6 +5987,7 @@ impl ComposerReadHost {
         Self {
             inner: CooperativeRecordingHost {
                 observation,
+                composer_ui: None,
                 prompted: std::sync::Mutex::new(vec![]),
                 foreground: Vec::new(),
             },
@@ -6416,6 +6478,7 @@ impl HostPort for PokeHost {
         if observation.occupant.is_none() {
             return CooperativeRecordingHost {
                 observation: observation.clone(),
+                composer_ui: None,
                 prompted: std::sync::Mutex::new(vec![]),
                 foreground: Vec::new(),
             }
