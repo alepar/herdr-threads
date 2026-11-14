@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- **A restarted session no longer replays the seat's backlog.** A new session's binding starts past the seat's own sent messages and at the seat's furthest-offered notice, so it is no longer offered (or woken on) its own earlier sends and old warnings. A successor still gets sibling mail its predecessor had not read (ht-y3iv).
+- **A restarted session no longer replays the seat's backlog.** A new session's binding starts past the seat's own sent messages and at the seat's furthest-offered notice, so it is no longer offered (or woken on) its own earlier sends and old warnings. A successor still gets sibling mail its predecessor had not read, and a still-open warning condition (an overdue receipt or invitation, an open unavailability) is offered to the new session once (ht-y3iv).
 
 ## v3.1.0
 

@@ -1243,6 +1243,53 @@ mod resolution {
         assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 1);
     }
 
+    // ht-y3iv. Kills: a reopened binding left at notice frontier 0 (re-offered every notice the
+    // seat was shown) while the pre-enrolment digest predicted the seat's frontier, and a reopen
+    // that moves its cursors.
+    #[test]
+    fn reopen_after_unresolve_starts_at_the_seats_notice_frontier() {
+        let db = db();
+        let c = claim("sess-A", None);
+        let id = resolve(&db, &c, true).unwrap().binding().binding_id.clone();
+        let before = read_cursors::cursor_for(&db, &id, &thread()).unwrap();
+        let mut sibling = claim("sess-X", None);
+        sibling.liveness =
+            Some(crate::protocol::authority::LivenessFingerprint { pid: 8, start: 9 });
+        let other = resolve(&db, &sibling, true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        db.execute(
+            "INSERT INTO digest_notice_offer(binding_id,seat_id,offered_ordinal) VALUES (?1,'s',5)",
+            [other.as_str()],
+        )
+        .unwrap();
+        end_open_bindings(
+            &db,
+            &SeatId::new("s"),
+            DisconnectReason::SeatUnresolved,
+            UtcMillis(20),
+        )
+        .unwrap();
+        let predicted = crate::store::attention::seat_seed_notice_frontier(&db, "s").unwrap();
+        assert_eq!(predicted, 5);
+        let r = resolve(&db, &c, true).unwrap();
+        let Resolution::Reopened(binding) = r else {
+            panic!("expected Reopened, got {r:?}");
+        };
+        assert_eq!(binding.binding_id, id);
+        assert_eq!(
+            crate::store::attention::binding_notice_frontier(&db, id.as_str()).unwrap(),
+            predicted
+        );
+        assert_eq!(
+            read_cursors::cursor_for(&db, &id, &thread()).unwrap(),
+            before,
+            "a reopened binding keeps its own read position"
+        );
+    }
+
     #[test]
     fn rows_ended_as_replaced_are_never_reopened() {
         let db = db();
@@ -2393,6 +2440,53 @@ mod lineage {
         set_cursor(&db, &successor, 1);
         link_lineage(&db, &successor.binding_id, &predecessor.binding_id).unwrap();
         assert_eq!(cursor(&db, &successor), Some(1));
+    }
+
+    /// A published delivery row of message `msg-<n>` (thread sequence n) for seat `s`, sent by
+    /// `sender`, a binding of `s` (the author-seat row of sibling delivery).
+    fn own_send(db: &Connection, n: i64, sender: &BindingRow) {
+        let tx = db.unchecked_transaction().unwrap();
+        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)",rusqlite::params![format!("prep-{n}")]).unwrap();
+        tx.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,'t','s',1)",rusqlite::params![format!("prep-{n}"),format!("msg-{n}")]).unwrap();
+        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id,priority,sender_binding_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?2,'b',0,'lazy','s',1,?3)",rusqlite::params![format!("msg-{n}"),n,sender.binding_id.as_str()]).unwrap();
+        tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'34750f98bd59fcfc946da45aaabe933b','t',?3,0,?3,0,1,0)",rusqlite::params![format!("prep-{n}"),format!("msg-{n}"),n]).unwrap();
+        crate::store::lazy_delivery::note_published(&tx, &format!("prep-{n}")).unwrap();
+        tx.commit().unwrap();
+    }
+    fn unread(db: &Connection, binding: &BindingRow) -> Vec<String> {
+        crate::store::lazy_delivery::binding_lazy_unread(db, &binding.binding_id, 100)
+            .unwrap()
+            .into_iter()
+            .map(|u| u.message.as_str().to_owned())
+            .collect()
+    }
+
+    // ht-y3iv. Kills: a validated lineage successor seeing its predecessor's sends as unread, and
+    // a successor that also skips what a still-live predecessor sends after the successor exists.
+    #[test]
+    fn a_validated_successor_passes_its_predecessors_sends_only() {
+        let db = db();
+        let predecessor = resolve(&db, &claim("sess-A", 7), None);
+        own_send(&db, 3, &predecessor);
+        let successor_claim = claim("sess-B", 7);
+        assert!(validate_lineage(&db, &successor_claim, &predecessor.binding_id).unwrap());
+        let successor = resolve(&db, &successor_claim, Some(&predecessor.binding_id));
+        assert_eq!(successor.lineage_from, Some(predecessor.binding_id.clone()));
+        assert!(unread(&db, &successor).is_empty());
+        assert_eq!(cursor(&db, &successor), Some(3));
+        // The predecessor speaks again (its process reconnects): sibling mail to the successor.
+        db.execute(
+            "UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL WHERE binding_id=?1",
+            [predecessor.binding_id.as_str()],
+        )
+        .unwrap();
+        own_send(&db, 4, &predecessor);
+        assert_eq!(unread(&db, &successor), ["msg-4"]);
+        // A successor of the successor keeps that unread sibling mail.
+        let third_claim = claim("sess-C", 7);
+        let third = resolve(&db, &third_claim, Some(&successor.binding_id));
+        assert_eq!(third.lineage_from, Some(successor.binding_id.clone()));
+        assert_eq!(unread(&db, &third), ["msg-4"]);
     }
 }
 

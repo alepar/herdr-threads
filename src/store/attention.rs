@@ -972,29 +972,50 @@ pub fn binding_notice_frontier(db: &Connection, binding_id: &str) -> Result<i64,
     Ok(frontier.unwrap_or(0))
 }
 
-/// The seat's furthest-offered notice: the highest frontier any of its bindings reached, else 0.
-/// A session new to the seat starts there (ht-y3iv), as its cursors start at the seat maximum.
-pub fn seat_notice_high_water(db: &Connection, seat_id: &str) -> Result<i64, ApiError> {
+/// Where a session new to the seat starts its notice frontier (ht-y3iv): the seat's
+/// furthest-offered notice (the highest frontier any of its bindings reached), as its cursors
+/// start at the seat maximum, but never past a still-open warning condition the seat was
+/// notified of (its open transition not yet cleared): the new session gets each open condition
+/// once, together with the notices after the oldest one. 0 when the seat has offered nothing.
+/// One read of the seat's frontier rows and one walk of the open conditions.
+pub fn seat_seed_notice_frontier(db: &Connection, seat_id: &str) -> Result<i64, ApiError> {
     db.query_row(
-        "SELECT COALESCE(MAX(offered_ordinal),0) FROM digest_notice_offer WHERE seat_id=?1",
+        "SELECT MIN(\
+            COALESCE((SELECT MAX(offered_ordinal) FROM digest_notice_offer WHERE seat_id=?1),0),\
+            COALESCE((SELECT MIN(d.ordinal)-1 FROM warning_conditions c \
+                JOIN digest_programmatic_warnings d ON d.seat_id=?1 AND d.warning_id=c.open_warning_id \
+                WHERE c.clear_warning_id IS NULL),9223372036854775807))",
         [seat_id],
         |r| r.get(0),
     )
     .map_err(store_error)
 }
 
-/// Start a newly enrolled top-level binding's notice frontier at the seat's high water
-/// (`seat_notice_high_water`), so notices already offered to the seat are not offered again. A
-/// subagent gets no row: it reads its parent's frontier until it has one of its own.
+/// Raise a top-level binding's notice frontier to `seat_seed_notice_frontier` when it enrols or
+/// is reopened, so notices already offered to the seat are not offered again; a frontier of its
+/// own that is further stays. A subagent gets no row: it reads its parent's frontier until it
+/// has one of its own.
 pub fn seed_notice_frontier(tx: &Connection, binding: &BindingId) -> Result<(), ApiError> {
-    tx.execute(
-        "INSERT OR IGNORE INTO digest_notice_offer(binding_id,seat_id,offered_ordinal) \
-         SELECT b.binding_id,b.seat_id,MAX(o.offered_ordinal) FROM occupant_bindings b \
-         JOIN digest_notice_offer o ON o.seat_id=b.seat_id \
-         WHERE b.binding_id=?1 AND b.role='top_level' GROUP BY b.binding_id,b.seat_id",
-        [binding.as_str()],
-    )
-    .map_err(store_error)?;
+    let seat: Option<String> = tx
+        .query_row(
+            "SELECT seat_id FROM occupant_bindings WHERE binding_id=?1 AND role='top_level'",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(seat) = seat else {
+        return Ok(());
+    };
+    let frontier = seat_seed_notice_frontier(tx, &seat)?;
+    if frontier > 0 {
+        tx.execute(
+            "INSERT INTO digest_notice_offer(binding_id,seat_id,offered_ordinal) VALUES (?1,?2,?3) \
+             ON CONFLICT(binding_id) DO UPDATE SET offered_ordinal=MAX(digest_notice_offer.offered_ordinal,excluded.offered_ordinal)",
+            params![binding.as_str(), seat, frontier],
+        )
+        .map_err(store_error)?;
+    }
     Ok(())
 }
 

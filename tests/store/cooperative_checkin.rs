@@ -2566,13 +2566,14 @@ fn builtin_warning_dedup_manifest_backed_transition_is_carried_without_message_r
 // 17..20, the third carries none. A projected notice published later is
 // carried by the next offer; a notice still in the projection backlog counts
 // as pending but is never carried (so never settled) until it is projected.
-// A replacement occupant's frontier starts empty: its lifecycle offer carries
-// the oldest page again.
+// A replacement occupant's frontier starts at the seat's furthest-offered
+// notice (ht-y3iv): its lifecycle offer carries nothing already offered, and a
+// later notice reaches it.
 // Kills: M-delete-all-settlement (settlement deleting the seat's projection
 // rows: the kept-row counts fall), M-settle-beyond-page (the frontier jumps
 // past the carried page: 0 pending after the first offer instead of 4), and
-// M-frontier-not-occupant-scoped (the successor inherits the predecessor's
-// frontier: its first offer carries nothing instead of notices 1..16).
+// M-successor-from-zero (the successor starts an empty frontier: its first
+// offer carries notices 1..16 again).
 #[test]
 fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     use crate::protocol::results::MAX_NOTICE_PAGE_ITEMS;

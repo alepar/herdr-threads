@@ -1757,6 +1757,7 @@ fn resolve_claim_inner(
             Ok(((), true))
         })?;
         read_cursors::seed(tx, &ended.binding_id, SeedMode::Readopt)?;
+        super::attention::seed_notice_frontier(tx, &ended.binding_id)?;
         let binding =
             get(tx, &ended.binding_id)?.ok_or_else(|| corrupt("reopened binding vanished"))?;
         run_enroll_hooks(

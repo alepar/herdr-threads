@@ -505,7 +505,7 @@ fn attention_digest(
                 None => {
                     // No binding yet: the digest its binding will start from. A subagent that has
                     // not enrolled reads its parent session's notice frontier; a top-level session
-                    // starts at the seat's furthest-offered notice (`seed_notice_frontier`).
+                    // starts where its enrolment will seed it (`seat_seed_notice_frontier`).
                     let frontier = if claim.is_subagent() {
                         let parent = super::bindings::BindingKey {
                             agent_id: None,
@@ -516,10 +516,13 @@ fn attention_digest(
                                 db,
                                 row.binding_id.as_str(),
                             )?,
-                            None => 0,
+                            // Enrolling the subagent enrols its parent, seeded at the seat's frontier.
+                            None => {
+                                super::attention::seat_seed_notice_frontier(db, q.seat.as_str())?
+                            }
                         }
                     } else {
-                        super::attention::seat_notice_high_water(db, q.seat.as_str())?
+                        super::attention::seat_seed_notice_frontier(db, q.seat.as_str())?
                     };
                     let hash = crate::protocol::attention::binding_token_hash(
                         claim.seat.as_str(),

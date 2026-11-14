@@ -292,3 +292,41 @@ fn no_turn_delivery_follows_the_claimed_binding_and_its_channel() {
     let (live, _dir2) = service(Arc::new(ByBinding(vec![("s", "bind-c")])));
     assert_eq!(hint_flags(&live, codex), (false, false));
 }
+
+/// ht-y3iv. Kills: a pre-enrolment digest for a new session (top-level, or a subagent whose parent
+/// has not enrolled) that counts notices the seat was already offered, i.e. predicts another
+/// frontier than enrolment seeds.
+#[test]
+fn a_new_sessions_digest_skips_notices_the_seat_was_offered() {
+    let (service, dir) = service(Arc::new(ByBinding(vec![])));
+    let db = rusqlite::Connection::open(dir.0.join("store.db")).unwrap();
+    db.execute_batch("\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,0);\
+        INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1);\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('n1','34750f98bd59fcfc946da45aaabe933b','t',1,'warn','{}',0,21,1),('n2','34750f98bd59fcfc946da45aaabe933b','t',2,'warn','{}',0,22,1);\
+        INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','n1','t',21,1),('s','n2','t',22,1);\
+        INSERT INTO digest_notice_offer(binding_id,seat_id,offered_ordinal) SELECT 'bind-a','s',MAX(ordinal) FROM digest_programmatic_warnings;\
+    ").unwrap();
+    let warnings = |claim: CallerClaim| match service
+        .handle(
+            Command::AttentionDigest(AttentionDigestQuery {
+                seat: SeatId::new("s"),
+                lazy: false,
+                claim: Some(claim),
+                cli_hint: false,
+            }),
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    {
+        CommandResult::AttentionDigest(digest) => digest.warnings.count,
+        other => panic!("unexpected {other:?}"),
+    };
+    assert_eq!(warnings(claim("sess-b")), 2, "bind-b was offered nothing");
+    assert_eq!(warnings(claim("sess-new")), 0);
+    let mut subagent = claim("sess-new");
+    subagent.role = CallerRole::Subagent;
+    subagent.agent_id = Some(crate::protocol::ids::AgentId::new("agent-1"));
+    assert_eq!(warnings(subagent), 0);
+}

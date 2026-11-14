@@ -1682,6 +1682,15 @@ fn a_new_session_starts_at_the_seats_furthest_offered_notice() {
     let page = crate::store::attention::notice_offer_page_for(&db, "s", &old, 16).unwrap();
     crate::store::attention::settle_offered_notices(&db, "s", &old, &page).unwrap();
     assert!(notices(&db, &old).is_empty());
+    // A newer sibling that was offered only n1: the seed is the seat's furthest, not the newest
+    // binding's or the lowest frontier.
+    let lagging = enroll_binding(&db, "lagging", None);
+    db.execute(
+        "UPDATE digest_notice_offer SET offered_ordinal=(SELECT ordinal FROM digest_programmatic_warnings WHERE warning_id='n1') WHERE binding_id=?1",
+        [lagging.as_str()],
+    )
+    .unwrap();
+    assert_eq!(notices(&db, &lagging), ["n2"]);
     disconnect_now(&db, &old, DisconnectReason::ProcessExit);
     let fresh = enroll_binding(&db, "fresh", None);
     assert!(
@@ -1708,7 +1717,104 @@ fn a_new_session_starts_at_the_seats_furthest_offered_notice() {
         );
     }
     assert_eq!(
-        crate::store::attention::seat_notice_high_water(&db, "s").unwrap(),
+        crate::store::attention::seat_seed_notice_frontier(&db, "s").unwrap(),
         crate::store::attention::binding_notice_frontier(&db, old.as_str()).unwrap()
     );
+}
+
+// ht-y3iv. Kills: a new session's frontier passing a still-open warning condition its seat was
+// already offered (an open overdue receipt offered once to a dead session would never reach the
+// live one), and a pre-enrolment digest that predicts another frontier than enrolment seeds.
+#[test]
+fn a_new_session_gets_a_still_open_condition_once() {
+    let db = db();
+    let old = enroll_binding(&db, "old", None);
+    for n in 1..=3 {
+        notice(&db, n);
+    }
+    // n2 opened a receipt condition that is still open; n1 and n3 are informational.
+    db.execute(
+        "INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t','c2','s','n2',102)",
+        [],
+    )
+    .unwrap();
+    let page = crate::store::attention::notice_offer_page_for(&db, "s", &old, 16).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", &old, &page).unwrap();
+    let predicted = crate::store::attention::seat_seed_notice_frontier(&db, "s").unwrap();
+    let fresh = enroll_binding(&db, "fresh", None);
+    assert_eq!(
+        crate::store::attention::binding_notice_frontier(&db, fresh.as_str()).unwrap(),
+        predicted,
+        "the pre-enrolment digest predicts the seeded frontier"
+    );
+    assert_eq!(
+        notices(&db, &fresh),
+        ["n2", "n3"],
+        "the open condition and what follows it"
+    );
+    let page = crate::store::attention::notice_offer_page_for(&db, "s", &fresh, 16).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", &fresh, &page).unwrap();
+    assert!(notices(&db, &fresh).is_empty(), "once");
+    // Cleared: a later session starts past it.
+    db.execute(
+        "UPDATE warning_conditions SET clear_warning_id='n3',cleared_seq=103 WHERE open_warning_id='n2'",
+        [],
+    )
+    .unwrap();
+    let later = enroll_binding(&db, "later", None);
+    assert!(notices(&db, &later).is_empty());
+}
+
+// ht-y3iv. Kills: an own send left unread because a peer's ACK-request row below it holds the
+// new binding's cursor (the mark must hold it, not the cursor).
+#[test]
+fn an_own_send_behind_a_peer_ack_request_is_not_unread() {
+    let db = db();
+    let old = enroll_binding(&db, "old", None);
+    ordinary(&db, 3, Some("a"), true);
+    lazy_in_from(&db, "t", 4, 0, Some(&old));
+    let tx = db.unchecked_transaction().unwrap();
+    note_published(&tx, "prep-4").unwrap();
+    tx.commit().unwrap();
+    disconnect_now(&db, &old, DisconnectReason::ProcessExit);
+    let new = enroll_binding(&db, "new", None);
+    assert!(unread(&db, &new).is_empty());
+    assert!(
+        read_cursors::has_unread(&db, &new).unwrap(),
+        "the ACK request is"
+    );
+    assert_eq!(
+        read_cursors::cursor_for(&db, &new, &ThreadId::new("t")).unwrap(),
+        Some(2),
+        "held below the ACK request"
+    );
+    assert_eq!(
+        read_cursors::advance_through_displayed(&db, &new, &ThreadId::new("t"), &[3]).unwrap(),
+        4,
+        "displaying the ACK request passes the own send too"
+    );
+}
+
+// ht-y3iv. Kills: a fresh session's pass consuming a live sibling's unread copy of the seat's
+// own send, or skipping nothing.
+#[test]
+fn a_fresh_session_skips_own_sends_a_live_sibling_still_has_unread() {
+    let db = db();
+    let sender = enroll_binding(&db, "sender", None);
+    let sibling = enroll_binding(&db, "sibling", None);
+    lazy_in_from(&db, "t", 3, 1, Some(&sender));
+    let tx = db.unchecked_transaction().unwrap();
+    note_published(&tx, "prep-3").unwrap();
+    tx.commit().unwrap();
+    let fresh = enroll_binding(&db, "fresh", None);
+    assert!(unread(&db, &fresh).is_empty());
+    assert_eq!(view(&db, &fresh), 0);
+    assert_eq!(unread(&db, &sibling), [msg(3)]);
+    assert_eq!(view(&db, &sibling), 1);
+    // A send after the fresh session enrolled reaches it as sibling mail.
+    lazy_in_from(&db, "t", 4, 1, Some(&sender));
+    let tx = db.unchecked_transaction().unwrap();
+    note_published(&tx, "prep-4").unwrap();
+    tx.commit().unwrap();
+    assert_eq!(unread(&db, &fresh), [msg(4)]);
 }

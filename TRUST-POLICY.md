@@ -1629,11 +1629,15 @@ warning cutoff and informational-notice view against the reading binding's own f
 (wake, receipts, an unbound inbox) follow the seat's newest open top-level binding, a connected
 one first. The mod channel is held per connected top-level binding of a push-channel harness,
 not per seat. A global decision watermark cannot settle uncarried events, including late attribution.
-History and immutable operation results remain readable. A newly enrolled top-level binding's notice
-frontier starts at the seat's highest offered frontier (as its cursors start at the seat maximum), and so
-does a not-yet-enrolled session's digest, so a restarted session is not offered notices the seat was already
-offered (ht-y3iv); concurrent bindings still each get every notice that arrives after they enrolled. A
-successor occupant gets its own offers of later notices;
+History and immutable operation results remain readable. A newly enrolled or reopened top-level binding's
+notice frontier starts at the seat's highest offered frontier (as its cursors start at the seat maximum), and
+so does a not-yet-enrolled session's digest (`seat_seed_notice_frontier`, one rule for both), so a restarted
+session is not offered informational notices the seat was already offered (ht-y3iv). Accepted limit,
+informational notices only: one offered to a session that then ended unseen is not offered to its successor.
+A still-open warning condition (an open overdue-receipt, overdue-invitation or unavailable transition not yet
+cleared) is never skipped this way: the seed stops below the oldest one, so the new session gets each open
+condition once, with the notices after it. Concurrent bindings still each get every notice that arrives after
+they enrolled. A successor occupant gets its own offers of later notices;
 response loss can lose an informational offer after commitment, and so can a hook-pull injection
 that the harness accepts but the model never sees (an agy `systemMessage` that silently misses;
 notices are not transcript-confirmed, ht-7jh); an explicit operation retry

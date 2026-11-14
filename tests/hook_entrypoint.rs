@@ -4911,11 +4911,12 @@ impl Fixture {
 /// only carried pages settle, and delivery readiness vanishes when drained. SessionStart
 /// `clear` starts a new session, whose frontier starts at the seat's
 /// furthest-offered notice (ht-y3iv): its lifecycle offer carries the next
-/// page, never the pages already offered.
+/// page, never the pages already offered. (Per-binding independence of
+/// concurrent sessions is pinned in tests/store/attention.rs.)
 /// Kills: M-delete-all-settlement (projection rows deleted, or the emitting
 /// call exceeds the tool budget at scale as in fix5 B1), M-settle-beyond-page
-/// (the frontier passes the carried page) and M-frontier-not-occupant-scoped
-/// (the `clear` occupant's offer carries page 4, not the oldest page).
+/// (the frontier passes the carried page) and M-successor-from-zero (the
+/// `clear` session's offer carries the oldest page again, not page 5).
 fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     let (tool_budget, lifecycle_budget) = (
         backlog_budget(n, TOOL_BUDGET),

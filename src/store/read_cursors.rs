@@ -40,7 +40,10 @@ pub fn seed(tx: &Connection, binding: &BindingId, mode: SeedMode) -> Result<Seed
     if let SeedMode::Lineage(from) = &mode {
         threads += copy_lineage(tx, from, binding)?;
         // The successor continues its predecessor: what the predecessor sent is not news to it,
-        // while sibling mail the predecessor had not read stays unread (ht-y3iv).
+        // while sibling mail the predecessor had not read stays unread (ht-y3iv). Earlier
+        // predecessors' sends need no pass: the predecessor's own seed passed those that existed
+        // then, and its cursors and marks came along; what a still-live predecessor sends later
+        // is sibling mail to the predecessor, and so to its successor.
         for thread in cursor_threads(tx, binding)? {
             pass_own_sends(tx, binding, &thread, Some(from))?;
         }
