@@ -1,0 +1,12 @@
+{"claim_id": "a8de8cc5c13b3883", "digest": "f04410e07b191f0e", "verdict": "supported", "reason": "Non-verbatim summaries and tag-specific source locators describe both queue implementations and watchers.", "model": "GPT-6"}
+{"claim_id": "9508dd84e57422f0", "digest": "54bd1f539e5c19c7", "verdict": "supported", "reason": "Non-verbatim summaries describe initialization, conditional service, persistent backend, and watcher.", "model": "GPT-6"}
+{"claim_id": "3e0f55c5f67f73b2", "digest": "72dd51a68ed08088", "verdict": "supported", "reason": "Non-verbatim summaries support the architecture; testing the proposed marker is a reasonable qualification.", "model": "GPT-6"}
+{"claim_id": "3ffc1b8e914f4187", "digest": "8279a750ec69c116", "verdict": "supported", "reason": "Non-verbatim summary describes idle-only dispatch and suppressed states; successful enqueue need not mean dispatch.", "model": "GPT-6"}
+{"claim_id": "a1b1270029be3123", "digest": "120be90c4406852b", "verdict": "supported", "reason": "Non-verbatim summaries support the sender behavior; refusal alone does not establish absence of a watcher.", "model": "GPT-6"}
+{"claim_id": "8e1941340511ea29", "digest": "8ff02862c540bb29", "verdict": "supported", "reason": "Non-verbatim summaries describe a TUI and controller on the same server and no embedded remote endpoint.", "model": "GPT-6"}
+{"claim_id": "bd08d5f643aa1835", "digest": "f5de4653aa0e2cc3", "verdict": "supported", "reason": "The non-verbatim summary states toolOutput behavior; inject_items is supported by the quoted passage.", "model": "GPT-6"}
+{"claim_id": "2d4a6334d2f2bb73", "digest": "49d10812b4efca24", "verdict": "supported", "reason": "The verbatim passage states this directly.", "model": "GPT-6"}
+{"claim_id": "1163ef2f7233d880", "digest": "6a39d1e9826ef8eb", "verdict": "supported", "reason": "The verbatim passage states this directly.", "model": "GPT-6"}
+{"claim_id": "6c45cb72a36e63d5", "digest": "ed50b60349593460", "verdict": "supported", "reason": "The non-verbatim summary describes Stop continuation; the verbatim passage covers idle background hooks.", "model": "GPT-6"}
+{"claim_id": "6cd6f41455d78245", "digest": "27e799c1245f825a", "verdict": "supported", "reason": "The non-verbatim summary states the notification behavior.", "model": "GPT-6"}
+{"claim_id": "00267bc09c7dd9cf", "digest": "b588374d1f5d2880", "verdict": "supported", "reason": "Non-verbatim excerpts and source paths associate each mode with its handler; the shared implementation resolves and sends.", "model": "GPT-6"}

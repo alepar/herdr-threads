@@ -1,0 +1,191 @@
+{
+  "mode": "deep",
+  "date": "2026-11-14",
+  "search_preflight": {
+    "status": "ok",
+    "reason": "search 0.14.1 agent-info inspected; deep scoped live query succeeded",
+    "selected_tool": "search CLI"
+  },
+  "provider_config": {
+    "primary": "search CLI"
+  },
+  "budget": "Bounded document investigation plus two independent facet workers; no live authenticated experiments",
+  "artifact_shape_reason": "Report plus transport/features dossiers; evidence ledgers retained",
+  "retrieval_stop": {
+    "reason": "budget-exhausted",
+    "at": "2026-11-14",
+    "round": 1,
+    "unresolved_high_priority_facet_ids": [
+      "F2",
+      "F3"
+    ],
+    "remaining_gaps": [
+      "F2: Complete incoming MCP notification and extension APIs unqualified after source retrieval failures.",
+      "F3: Authenticated isolated qualification was explicitly excluded without further approval; race, cancellation, retry and storage matching remain open."
+    ],
+    "basis": "Bounded research allocation completed with tagged source and documentation; no saturation claim, no live experiment authorized."
+  },
+  "query": "Newer Codex features for a channel-style herdr-threads integration without send-keys; research only",
+  "artifact_paths": {
+    "queries": "queries.jsonl",
+    "retrievals": "retrievals.jsonl",
+    "sources": "sources.jsonl",
+    "evidence": "evidence.jsonl",
+    "claims": "claims.jsonl",
+    "coverage": "coverage.json"
+  },
+  "accounting_note": "Retained attempt logs include failures and document identities; initial batched per-query result counts and successful screening-only worker accesses are incomplete. Counts describe logged work, not exhaustive access totals. Repeated source navigations may be grouped. No live test.",
+  "research_plan": {
+    "facets": [
+      "F1",
+      "F2",
+      "F3"
+    ],
+    "source_order": "official documentation, tagged released source, local integration policy",
+    "counterevidence": "Interrupted queues; busy deferred wake; daemon pane environment; alternative plugin ingress",
+    "limits": "No production changes or real configuration writes; no authenticated live experiment."
+  },
+  "claim_support": {
+    "method": "model",
+    "judge_models": [
+      "GPT-6",
+      "gpt-6"
+    ],
+    "claims_judged_by_model": 18,
+    "claims_unverified_by_model": 0,
+    "judge_unavailable_reason": null,
+    "contradicted": 0,
+    "verified_at": "2026-11-14T22:53:00.720313+00:00"
+  },
+  "reporting": {
+    "output_mode": "markdown",
+    "requested_formats": [],
+    "final_report_path": "report.md",
+    "dossiers": [
+      {
+        "id": "transport",
+        "path": "transport.md",
+        "facet_ids": [
+          "F1",
+          "F3"
+        ],
+        "claim_ids": [
+          "a8de8cc5c13b3883",
+          "9508dd84e57422f0",
+          "3e0f55c5f67f73b2",
+          "3ffc1b8e914f4187",
+          "a1b1270029be3123",
+          "8e1941340511ea29",
+          "bd08d5f643aa1835",
+          "1d9d8b5ef8d5a5a8"
+        ],
+        "evidence_ids": [
+          "ET1",
+          "ET2",
+          "ET4",
+          "ET5",
+          "ET6",
+          "ET7",
+          "ET8",
+          "ET9",
+          "ET10",
+          "ET11",
+          "ET3",
+          "EP3",
+          "EP1",
+          "EP4"
+        ],
+        "source_ids": [
+          "ccf1c40aed4d58eb",
+          "bb0fe00f469c037d",
+          "434284b476b8086b",
+          "f6e9a5e69ee38000",
+          "52dc09fca4afafb1",
+          "962a3b54e68d71dd",
+          "f1b3d1c70fd83aec",
+          "26d5c282b865cb4f",
+          "34fad268ac39aa64",
+          "809b401cdb59208d",
+          "b6b094dc064f3ee6",
+          "b86fe73675b0f8f5",
+          "533f3b185a693d99"
+        ],
+        "status": "partial"
+      },
+      {
+        "id": "features",
+        "path": "features.md",
+        "facet_ids": [
+          "F2"
+        ],
+        "claim_ids": [
+          "2d4a6334d2f2bb73",
+          "1163ef2f7233d880",
+          "6c45cb72a36e63d5",
+          "6cd6f41455d78245",
+          "00267bc09c7dd9cf",
+          "5103640117c37025",
+          "1480e0ee29b4769f",
+          "20ef7739e8423f11",
+          "bea4e144b747ddf9"
+        ],
+        "evidence_ids": [
+          "EP2",
+          "WFE3",
+          "WFE2",
+          "WFE4",
+          "WFE6",
+          "WFE7",
+          "WFE8",
+          "WFE5",
+          "WFE9",
+          "WFE10",
+          "WFE11",
+          "WFE12",
+          "WFE13",
+          "EP5"
+        ],
+        "source_ids": [
+          "99bc0cb8da0c7a35",
+          "3d9c8f85945796db",
+          "d86b461fa19da88c",
+          "a32056287a323046",
+          "682d2ddea4eabea3",
+          "572d149a48152eb4",
+          "8994ef1678838607",
+          "82447ff6412101bb",
+          "3df9a5e82ff956cc",
+          "d29e87e06f5c8298"
+        ],
+        "status": "partial"
+      }
+    ]
+  },
+  "local_observations": {
+    "codex_cli_version": "0.167.0",
+    "commands_read_only": [
+      "codex --version",
+      "codex --help",
+      "codex queue --help",
+      "codex app-server --help",
+      "codex app-server proxy --help",
+      "codex app-server daemon --help",
+      "codex remote-control --help"
+    ],
+    "live_authenticated_experiment": false
+  },
+  "validation": {
+    "claim_support": "18/18 supported by independent judge",
+    "coverage": "pass, qualified budget stop",
+    "package": "pass",
+    "markdown": "pass",
+    "citation_identity": "pass",
+    "citation_url_probe": "29/29 unavailable: local DNS failure; primary source retrieval used hosted tools",
+    "cargo_clippy": "pass: locked all-targets all-features warnings denied, 56.95s",
+    "harness_neutral": "pass",
+    "wire_compat": "pass",
+    "cargo_fmt_check": "pass",
+    "default_features": "pass",
+    "live_tests": "not run; research-only task"
+  }
+}

@@ -1,0 +1,564 @@
+{
+  "worker": "features_research",
+  "status": "qualified: no supported channel proven",
+  "sources": [
+    {
+      "source_id": "WF1",
+      "url": "https://learn.chatgpt.com/docs/hooks",
+      "title": "Hooks",
+      "revision": "release-reference"
+    },
+    {
+      "source_id": "WF2",
+      "url": "https://learn.chatgpt.com/docs/developer-commands",
+      "title": "Developer commands",
+      "revision": "release-reference"
+    },
+    {
+      "source_id": "WF3",
+      "url": "https://learn.chatgpt.com/docs/config-file/config-advanced",
+      "title": "Advanced configuration",
+      "revision": "release-reference"
+    },
+    {
+      "source_id": "WF4",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/features/src/lib.rs",
+      "title": "Feature registry",
+      "revision": "rust-v0.169.0"
+    },
+    {
+      "source_id": "WF5",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs",
+      "title": "V2 send_message",
+      "revision": "rust-v0.169.0"
+    },
+    {
+      "source_id": "WF6",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs",
+      "title": "V2 followup_task",
+      "revision": "rust-v0.169.0"
+    },
+    {
+      "source_id": "WF7",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+      "title": "V2 messaging dispatch",
+      "revision": "rust-v0.169.0"
+    },
+    {
+      "source_id": "WF8",
+      "url": "https://github.com/openai/codex/releases/tag/rust-v0.169.0",
+      "title": "Release 0.169.0",
+      "revision": "rust-v0.169.0"
+    },
+    {
+      "source_id": "WF9",
+      "url": "https://github.com/openai/codex/pull/60032",
+      "title": "Extension footer rows",
+      "revision": "included in rust-v0.169.0 release list"
+    },
+    {
+      "source_id": "WF10",
+      "url": "https://github.com/openai/codex/pull/59993",
+      "title": "Message board fixed views",
+      "revision": "included in rust-v0.169.0 release list"
+    },
+    {
+      "source_id": "WF11",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/features/src/feature_configs.rs",
+      "title": "Remote board configuration",
+      "revision": "rust-v0.169.0"
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "WFE1",
+      "source_id": "WF1",
+      "locator": "How background hooks run",
+      "quote": "If no turn is active, Codex waits until the next user turn. Finishing a background hook doesn\u2019t start a new turn.",
+      "verbatim": true,
+      "capture_tool": "search -m extract",
+      "retrieval_id": "WFR12"
+    },
+    {
+      "evidence_id": "WFE2",
+      "source_id": "WF1",
+      "locator": "Stop",
+      "quote": "decision: \"block\" does not reject the turn; it creates a continuation prompt acting as new user input using the reason.",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR1"
+    },
+    {
+      "evidence_id": "WFE3",
+      "source_id": "WF1",
+      "locator": "PreModelRequest and PostModelRequest",
+      "quote": "Hook output is diagnostic only. It can\u2019t change the model\u2019s context or block a request.",
+      "verbatim": true,
+      "capture_tool": "search -m extract",
+      "retrieval_id": "WFR12"
+    },
+    {
+      "evidence_id": "WFE4",
+      "source_id": "WF3",
+      "locator": "Notifications lines 1458-1460",
+      "quote": "Use notify to trigger an external program whenever Codex emits supported events (currently only agent-turn-complete).",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR3"
+    },
+    {
+      "evidence_id": "WFE5",
+      "source_id": "WF4",
+      "locator": "lines 1619-1672",
+      "quote": "multi_agent_v2: Stable, default_enabled false. wake_on_agent_messages, defer_mailbox_preemption, agent_message_board, agent_message_board_mcp: UnderDevelopment, default_enabled false.",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR4"
+    },
+    {
+      "evidence_id": "WFE6",
+      "source_id": "WF5",
+      "locator": "lines 36-44",
+      "quote": "MessageDeliveryMode::QueueOnly",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR5"
+    },
+    {
+      "evidence_id": "WFE7",
+      "source_id": "WF6",
+      "locator": "lines 36-44",
+      "quote": "MessageDeliveryMode::TriggerTurn",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR6"
+    },
+    {
+      "evidence_id": "WFE8",
+      "source_id": "WF7",
+      "locator": "lines 52-72",
+      "quote": "The receiver is resolved in the calling session, then session.services.agent_control.send receives caller session.thread_id and AgentTarget::Id(receiver_thread_id).",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR7"
+    },
+    {
+      "evidence_id": "WFE9",
+      "source_id": "WF2",
+      "locator": "Start a side chat with /side",
+      "quote": "Codex opens a side chat whose transcript is separate from the parent chat.",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR2"
+    },
+    {
+      "evidence_id": "WFE10",
+      "source_id": "WF4",
+      "locator": "lines 2183-2188",
+      "quote": "Goals: key goals, Stable, default_enabled true.",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR4"
+    },
+    {
+      "evidence_id": "WFE11",
+      "source_id": "WF9",
+      "locator": "What changed",
+      "quote": "Extension status content can reserve up to four footer rows. The PR describes rendering, not model context or turn submission.",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR9"
+    },
+    {
+      "evidence_id": "WFE12",
+      "source_id": "WF4",
+      "locator": "lines 262-265",
+      "quote": "AgentMessageBoardMcp: Expose a tree-scoped in-memory message board through HTTP MCP.",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR4"
+    },
+    {
+      "evidence_id": "WFE13",
+      "source_id": "WF11",
+      "locator": "lines 10-20",
+      "quote": "RemoteMessageBoardConfigToml is a connection to a board provisioned by the research host; fields are url, bearer_token and bearer_token_env_var.",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR11"
+    },
+    {
+      "evidence_id": "WFE14",
+      "source_id": "WF8",
+      "locator": "New Features lines 139-140",
+      "quote": "The opt-in terminal workspace supports multiple side-chat tabs and reopening saved local side chats after restarting.",
+      "verbatim": false,
+      "capture_tool": "web.run",
+      "retrieval_id": "WFR8"
+    }
+  ],
+  "retrievals": [
+    {
+      "retrieval_id": "WFR1",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://learn.chatgpt.com/docs/hooks",
+      "document_key": "https://learn.chatgpt.com/docs/hooks",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR2",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://learn.chatgpt.com/docs/developer-commands",
+      "document_key": "https://learn.chatgpt.com/docs/developer-commands",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR3",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://learn.chatgpt.com/docs/config-file/config-advanced",
+      "document_key": "https://learn.chatgpt.com/docs/config-file/config-advanced",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR4",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/features/src/lib.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/features/src/lib.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR5",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR6",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR7",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR8",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://github.com/openai/codex/releases/tag/rust-v0.169.0",
+      "document_key": "https://github.com/openai/codex/releases/tag/rust-v0.169.0",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR9",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://github.com/openai/codex/pull/60032",
+      "document_key": "https://github.com/openai/codex/pull/60032",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR10",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://github.com/openai/codex/pull/59993",
+      "document_key": "https://github.com/openai/codex/pull/59993",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR11",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/features/src/feature_configs.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/features/src/feature_configs.rs",
+      "status": "retrieved",
+      "content_scope": "partial",
+      "error": null,
+      "error_category": null,
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR12",
+      "query_id": null,
+      "tool": "search -m extract",
+      "url": "https://learn.chatgpt.com/docs/hooks",
+      "document_key": "https://learn.chatgpt.com/docs/hooks",
+      "status": "retrieved",
+      "content_scope": "full",
+      "error": null,
+      "error_category": null,
+      "verbatim": true
+    },
+    {
+      "retrieval_id": "WFR13",
+      "query_id": null,
+      "tool": "search -m extract",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/mcp_connection_manager.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/mcp_connection_manager.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "all_providers_failed: network",
+      "error_category": "network",
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR14",
+      "query_id": null,
+      "tool": "search -m extract",
+      "url": "https://github.com/openai/codex/releases/tag/rust-v0.169.0",
+      "document_key": "https://github.com/openai/codex/releases/tag/rust-v0.169.0",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "all_providers_failed: network",
+      "error_category": "network",
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR15",
+      "query_id": null,
+      "tool": "search -m extract",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/features/src/lib.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/features/src/lib.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "all_providers_failed: network",
+      "error_category": "network",
+      "verbatim": false
+    },
+    {
+      "retrieval_id": "WFR16",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/mcp_connection_manager.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/mcp_connection_manager.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "not_found"
+    },
+    {
+      "retrieval_id": "WFR17",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/mcp-client/src/lib.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/mcp-client/src/lib.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "not_found"
+    },
+    {
+      "retrieval_id": "WFR18",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/mcp/mod.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/mcp/mod.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "WFR19",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/mcp_connection_manager/mod.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/core/src/mcp_connection_manager/mod.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "WFR20",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/rmcp-client/src/logging_client_handler.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/rmcp-client/src/logging_client_handler.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "WFR21",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/rmcp-client/src/event_notification_transport.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/rmcp-client/src/event_notification_transport.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "WFR22",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://learn.chatgpt.com/docs/subagents",
+      "document_key": "https://learn.chatgpt.com/docs/subagents",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "not_found"
+    },
+    {
+      "retrieval_id": "WFR23",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/rmcp-client/src/logging_client_handler.rs?x=1",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/rmcp-client/src/logging_client_handler.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "WFR24",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/rmcp-client/src/logging_client_handler.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/rmcp-client/src/logging_client_handler.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "WFR25",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/extensions.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/tui/src/extensions.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "WFR26",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/agent-message-board/src/lib.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/agent-message-board/src/lib.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "WFR27",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://github.com/openai/codex/tree/rust-v0.169.0/codex-rs/tui/src",
+      "document_key": "https://github.com/openai/codex/tree/rust-v0.169.0/codex-rs/tui/src",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    },
+    {
+      "retrieval_id": "WFR28",
+      "query_id": null,
+      "tool": "web.run open",
+      "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/agent-message-board-host/src/lib.rs",
+      "document_key": "https://raw.githubusercontent.com/openai/codex/rust-v0.169.0/codex-rs/agent-message-board-host/src/lib.rs",
+      "status": "failed",
+      "content_scope": "none",
+      "error": "not_found or web cache miss (see worker limitation)",
+      "error_category": "other"
+    }
+  ],
+  "queries": [
+    {
+      "query_id": "WFQ1",
+      "query": "site:learn.chatgpt.com Codex goals side mailbox send_message notification MCP",
+      "tool": "search -m deep",
+      "status": "failed",
+      "results_considered": 0,
+      "error": "all provider network failure",
+      "error_category": "network"
+    },
+    {
+      "query_id": "WFQ2",
+      "query": "site:github.com/openai/codex \"message boards\" \"agents\" mailbox",
+      "tool": "web.run search_query",
+      "status": "success",
+      "results_considered": 0
+    },
+    {
+      "query_id": "WFQ3",
+      "query": "site:learn.chatgpt.com \"multi_agent\" \"goals\" feature",
+      "tool": "web.run search_query",
+      "status": "success",
+      "results_considered": 4
+    },
+    {
+      "query_id": "WFQ4",
+      "query": "site:learn.chatgpt.com \"channels\" \"Codex\" MCP push",
+      "tool": "web.run search_query",
+      "status": "success",
+      "results_considered": 5
+    }
+  ],
+  "gaps": [
+    "MCP logger/resource notification implementation unavailable at guessed tagged paths; cannot prove negative about every MCP notification.",
+    "TUI extension runtime source unavailable at guessed path; status-only PR does not establish entire API surface.",
+    "No authenticated live experiments; no real config written.",
+    "Source freshness: docs are current references; only named tagged sources prove presence in 0.169.0.",
+    "Read-only metadata/docs opened but unused in evidence not all included in candidate source list. Retrieval logs include failed guesses; considered-result counts reflect only screened entries, source totals are not coverage."
+  ]
+}

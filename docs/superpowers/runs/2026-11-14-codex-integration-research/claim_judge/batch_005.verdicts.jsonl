@@ -1,0 +1,1 @@
+{"claim_id": "0eb15ad185af2b35", "digest": "8e45714617c29a89", "verdict": "supported", "reason": "The non-verbatim summaries describe storage dependencies, suppressed and periodic dispatch, and warning-on-success; testing these behaviors is reasonable.", "model": "gpt-6"}
