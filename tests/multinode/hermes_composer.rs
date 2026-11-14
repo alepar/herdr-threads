@@ -8,6 +8,8 @@
 //! TRUST-POLICY A4), which the gateway test below drives.
 
 use crate::support::{self, P1, P2, P3};
+use herdr_threads::test_support::spawn::{self as spawn, SpawnOwned};
+use std::os::unix::process::CommandExt;
 
 const P4: &str = "w1:p4";
 const P5: &str = "w1:p5";
@@ -109,4 +111,62 @@ fn hermes_gateway_wake_types_only_into_the_recipient_pane() {
     assert_eq!(host.prompts_for(P1), 1, "the first pane was woken again");
     assert_eq!(host.prompts_for(P2), 1, "the sibling pane was woken twice");
     assert_eq!(host.prompts_for(P3), 0, "the sender is not woken");
+}
+
+/// A real process named `argv0` (a `sleep` in disguise) to stand as a pane's root process.
+fn root_process(argv0: &str) -> spawn::OwnedChild {
+    spawn::command("sleep")
+        .arg0(argv0)
+        .arg("120")
+        .spawn_owned()
+        .expect("spawn a stand-in root process")
+}
+
+/// ht-fr7c.7: a Hermes `exec`ed as the pane's program is the pane's root process and its only
+/// foreground process, so Herdr reports no other foreground process. Its gateway binding is
+/// still woken in its own pane, because that root process is recognisably Hermes; a pane whose
+/// root process is a plain shell with nothing in the foreground is never typed into.
+#[test]
+fn hermes_exec_as_pane_root_is_woken_and_a_bare_shell_root_is_not() {
+    let cluster = support::cluster_with_panes("mn-hermes-root", 1, &[], &[0], &[P1, P2, P3]);
+    let host = cluster.host(0);
+    let (detection, styled) = capture!("idle-empty");
+    for pane in [P1, P2] {
+        host.set_agent(pane, "hermes");
+        host.set_screen(pane, detection, Some(styled));
+    }
+    let mut hermes = root_process("hermes");
+    let mut shell = root_process("bash");
+    host.set_root_process(P1, hermes.id());
+    host.set_root_process(P2, shell.id());
+    let a = cluster.seat_in_process(0, P1, "hermes", "gateway");
+    let b = cluster.seat_in_process(0, P2, "hermes", "gateway");
+    let sender = cluster.seat(0, P3);
+    support::wait_seats(&cluster, 0, 3);
+
+    support::send(
+        &cluster,
+        &sender,
+        &["--seat", &a.id, "--body", "for-a", "--nudge"],
+    );
+    support::wait_wakes(&cluster, 0, P1, 1);
+    support::send(
+        &cluster,
+        &sender,
+        &["--seat", &b.id, "--body", "for-b", "--nudge"],
+    );
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(
+        host.prompts_for(P2),
+        0,
+        "a bare shell root with no foreground child was woken"
+    );
+    assert_eq!(
+        host.prompts_for(P1),
+        1,
+        "the Hermes root pane was woken again"
+    );
+    assert_eq!(host.prompts_for(P3), 0, "the sender is not woken");
+    hermes.stop();
+    shell.stop();
 }

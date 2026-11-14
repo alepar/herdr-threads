@@ -2950,6 +2950,59 @@ fn composer_choice_is_pane_scoped_for_a_process_spanning_seats() {
     );
 }
 
+/// ht-fr7c.7. A seat-spanning harness `exec`ed as the pane's program leaves no non-shell
+/// foreground process; the host classifies the pane's root process instead. Kills: matching it
+/// for a harness that does not span seats, for a root of another harness, or with two targets
+/// of that harness.
+#[test]
+fn root_composer_choice_matches_one_seat_spanning_target_of_the_root_harness() {
+    let target = |binding: &str, harness: &str, pid: u32| crate::ports::WakeTarget {
+        provenance: String::new(),
+        binding: crate::protocol::ids::BindingId::new(binding),
+        harness: harness.into(),
+        fingerprint_pid: Some(pid),
+        dormant: false,
+    };
+    let authority = |targets| crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "34750f98bd59fcfc946da45aaabe933b".into(),
+        binding_generation: None,
+        harness: None,
+        targets,
+    };
+    let gateway = authority(vec![target("g", "hermes", 7)]);
+    match gateway.root_composer_choice("hermes") {
+        crate::ports::ComposerChoice::Binding(t) => assert_eq!(t.binding.as_str(), "g"),
+        other => panic!("the Hermes root process is the gateway session's composer, got {other:?}"),
+    }
+    assert_eq!(
+        gateway.root_composer_choice("claude"),
+        crate::ports::ComposerChoice::NoMatch,
+        "a root of a harness that does not span seats matches nothing"
+    );
+    assert_eq!(
+        authority(vec![target("c", "claude", 10)]).root_composer_choice("claude"),
+        crate::ports::ComposerChoice::NoMatch,
+        "the exact-pid rule still holds for every other harness"
+    );
+    assert_eq!(
+        authority(vec![target("g1", "hermes", 7), target("g2", "hermes", 7)])
+            .root_composer_choice("hermes"),
+        crate::ports::ComposerChoice::NoMatch,
+        "two bindings of the harness: no unique composer"
+    );
+    match authority(vec![target("g", "hermes", 7), target("c", "claude", 10)])
+        .root_composer_choice("hermes")
+    {
+        crate::ports::ComposerChoice::Binding(t) => assert_eq!(t.binding.as_str(), "g"),
+        other => panic!("the one Hermes target, got {other:?}"),
+    }
+    assert_eq!(
+        authority(vec![]).root_composer_choice("hermes"),
+        crate::ports::ComposerChoice::Unspecified
+    );
+}
+
 /// Kills: a composer predicate that guesses (latest touch, first row) instead of requiring
 /// exactly one connected top-level binding whose fingerprint pid is the foreground pid. This is
 /// the production pair: `wake_targets` filters, `ReservedWakeAuthority::composer_choice` decides.

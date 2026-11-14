@@ -2650,6 +2650,25 @@ impl ReservedWakeAuthority {
             }
         }
     }
+
+    /// The composer-wake target when Herdr reports no non-shell foreground process and the
+    /// pane's root process is a registered harness ([`HostPort::pane_root_harness`]): a harness
+    /// `exec`ed as the pane's program. Only a harness whose process spans seats is matched this
+    /// way (its binding's fingerprint is its shared server, never the pane's process), and only
+    /// when exactly one target is of that harness; every other case is no match.
+    pub fn root_composer_choice(&self, root_harness: &str) -> ComposerChoice<'_> {
+        if self.targets().is_empty() {
+            return ComposerChoice::Unspecified;
+        }
+        if !crate::store::bindings::process_spans_seats(root_harness) {
+            return ComposerChoice::NoMatch;
+        }
+        let mut matching = self.targets().iter().filter(|t| t.harness == root_harness);
+        match (matching.next(), matching.next()) {
+            (Some(found), None) => ComposerChoice::Binding(found),
+            _ => ComposerChoice::NoMatch,
+        }
+    }
 }
 impl WakeReservation {
     /// Whether the wake is for seat-level attention (an invitation, receipt or warning, a
@@ -4698,6 +4717,18 @@ pub trait HostPort: Send + Sync {
         _context: &HostCallContext,
     ) -> Result<Vec<u32>, ApiError> {
         Ok(Vec::new())
+    }
+    /// The registered harness the pane's own root process is, when that process is the pane's
+    /// only foreground process (a harness `exec`ed as the pane's program, so
+    /// [`Self::foreground_pids`] reports nothing): classified by the adapters' declared process
+    /// shapes through the registry. `None` for a shell, an unrecognized process, any other
+    /// foreground process, or an adapter that cannot ask.
+    fn pane_root_harness(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Option<String>, ApiError> {
+        Ok(None)
     }
     /// The pid of the process Herdr started in the pane (its shell or launched program), for
     /// C1 process continuity. `None` when Herdr reports none or the adapter cannot ask: the

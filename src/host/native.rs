@@ -1426,6 +1426,34 @@ impl HostPort for NativeCli {
             .unwrap_or_default())
     }
 
+    /// The registered harness the pane's root process (`shell_pid`) is, when it is the pane's only
+    /// foreground process (a harness `exec`ed as the pane's program). Advisory and unfenced, like
+    /// [`Self::foreground_pids`]; the process is classified from the host process table by the
+    /// adapters' declared shapes (a shell or unknown program classifies as nothing).
+    fn pane_root_harness(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<Option<String>, ApiError> {
+        use crate::ports::ProcessInfo as _;
+        self.check_context(context)?;
+        let raw = self.run_unfenced(
+            &["pane", "process-info", target.as_str()],
+            &context.budget,
+            Duration::from_millis(750),
+        )?;
+        let Some(pid) = serde_json::from_str(&raw)
+            .ok()
+            .and_then(|response: serde_json::Value| root_only_foreground_pid(&response))
+        else {
+            return Ok(None);
+        };
+        Ok(crate::host::process_table::HostProcessTable
+            .process(pid)
+            .and_then(|record| crate::harness::caller_env::classify(&record, None))
+            .map(str::to_owned))
+    }
+
     /// The pane's own process (`shell_pid`). Without an expected boot the read is advisory and
     /// unwitnessed. With one, the epoch is checked before I/O and again after the response, and
     /// the responding server's boot (from the witness of the read's own connection) must be the
@@ -2775,6 +2803,21 @@ fn pane_shell_pid(response: &serde_json::Value) -> Option<u32> {
         .and_then(serde_json::Value::as_u64)
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|pid| *pid != 0)
+}
+
+/// The pane's root process (`shell_pid`) when Herdr reports it as the pane's only foreground
+/// process: the program the pane runs in its foreground with no child of its own there (a
+/// harness `exec`ed as the pane's program, or a shell at its prompt; the caller tells them
+/// apart by the process's shape).
+fn root_only_foreground_pid(response: &serde_json::Value) -> Option<u32> {
+    let shell = pane_shell_pid(response)?;
+    let foreground = response
+        .pointer("/result/process_info/foreground_processes")?
+        .as_array()?;
+    let mut pids = foreground
+        .iter()
+        .map(|process| process.get("pid").and_then(serde_json::Value::as_u64));
+    (pids.next()? == Some(u64::from(shell)) && pids.next().is_none()).then_some(shell)
 }
 
 fn foreground_process_pids(response: &serde_json::Value) -> Vec<u32> {
@@ -7154,6 +7197,29 @@ pub(crate) mod tests {
     /// helper while it starts), so the pane's foreground is a set. The composer wake matches a
     /// binding's fingerprint pid against the whole set. Kills: reading the set as `None` when
     /// it has several members, keeping the shell, or keeping a zero or oversized pid.
+    /// ht-fr7c.7: a harness `exec`ed as the pane's program is its root process (`shell_pid`) and
+    /// its only foreground process. Kills: taking the root when anything else is foreground, or
+    /// when the root is not foreground at all (a shell running a child).
+    #[test]
+    fn root_only_foreground_pid_is_the_root_alone_in_the_foreground() {
+        let info = |shell: u64, pids: &[u64]| {
+            serde_json::json!({"result":{"type":"pane_process_info","process_info":{
+                "shell_pid":shell,
+                "foreground_processes":pids.iter().map(|pid| serde_json::json!({"pid":pid}))
+                    .collect::<Vec<_>>()
+            }}})
+        };
+        assert_eq!(root_only_foreground_pid(&info(10, &[10])), Some(10));
+        assert_eq!(root_only_foreground_pid(&info(10, &[10, 20])), None);
+        assert_eq!(root_only_foreground_pid(&info(10, &[20])), None);
+        assert_eq!(root_only_foreground_pid(&info(10, &[])), None);
+        assert_eq!(root_only_foreground_pid(&info(0, &[0])), None);
+        assert_eq!(
+            root_only_foreground_pid(&serde_json::json!({"error":{}})),
+            None
+        );
+    }
+
     #[test]
     fn foreground_process_pids_are_every_non_shell_foreground_process() {
         let info = |shell: u64, pids: &[u64]| {

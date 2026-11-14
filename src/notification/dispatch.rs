@@ -354,7 +354,17 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 }
                 Err(err) => return refuse_error(err),
             };
-            let choice = reservation.authority.composer_choice(&foreground);
+            let mut choice = reservation.authority.composer_choice(&foreground);
+            // No foreground child: the pane's program may be the harness itself (`exec`ed as
+            // the pane's root process). Only a seat-spanning harness's sole target matches it.
+            if foreground.is_empty()
+                && matches!(choice, ComposerChoice::NoMatch)
+                && let Ok(Some(root)) = self
+                    .host
+                    .pane_root_harness(&reservation.target, &read_context)
+            {
+                choice = reservation.authority.root_composer_choice(&root);
+            }
             // One process is one composer (ht-327): like a single target it needs no idle
             // classification here (a composer read that cannot classify it leaves it
             // `Unknown`); the adapter's final composer read before submission still refuses

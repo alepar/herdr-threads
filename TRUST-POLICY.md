@@ -1258,7 +1258,12 @@ model open work, and summary closure never changes receipt state or installs glo
   running its own client: the Hermes 0.22.1+ gateway) is never a pane's foreground process, so its match is
   pane-scoped: when no target matches by exact pid, it matches when Herdr reports any non-shell foreground
   process in the pane (an exact-pid match always takes precedence, so a stale gateway binding never hides
-  the pane's live foreground binding of another harness). The pane is
+  the pane's live foreground binding of another harness). When Herdr reports no non-shell foreground process
+  because the pane's root process (`shell_pid`) is alone in its foreground, that root process is classified by
+  the adapters' declared process shapes (`CallerEnvShape` process names and match, through the registry): when it
+  is a harness that spans seats and exactly one target is of that harness, that target matches (a client
+  `exec`ed as the pane's program, ht-fr7c.7); a root that is a shell, an unrecognized program or a harness that
+  does not span seats, or two targets of the harness, is no match. The pane is
   still the binding's own (targets are the bindings placed on the observed terminal, by their cooperative
   A1 pane claim); the native recheck still requires Herdr's agent kind there to be the bound harness, and
   the adapter's composer read still requires an empty, idle composer. Several matches follow the rules

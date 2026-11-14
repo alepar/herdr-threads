@@ -48,6 +48,9 @@ struct World {
     reads: Mutex<Vec<(String, String)>>,
     /// Every `tab.create` params, in order.
     tabs_created: Mutex<Vec<Value>>,
+    /// A pane whose root process (`shell_pid`) is this pid and is its only foreground process
+    /// (a harness `exec`ed as the pane's program).
+    roots: Mutex<HashMap<String, u32>>,
 }
 
 impl World {
@@ -84,6 +87,18 @@ impl World {
             // The pane's foreground process is its agent's stand-in process: the
             // composer wake types only to the binding with that fingerprint pid.
             "pane.process_info" => match self.pane(&params["pane_id"]) {
+                Some(pane)
+                    if let Some(root) = self
+                        .roots
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(pane["pane_id"].as_str().unwrap_or(""))
+                        .copied() =>
+                {
+                    json!({"id":id,"result":{"type":"pane_process_info","process_info":{
+                        "pane_id":pane["pane_id"],"shell_pid":root,
+                        "foreground_processes":[{"pid":root}]}}})
+                }
                 Some(pane) => {
                     let session = session_of(&self.label, pane["pane_id"].as_str().unwrap_or(""));
                     let agent = pane["agent"].as_str().unwrap_or("claude");
@@ -199,6 +214,7 @@ impl FakeHerdr {
             screens: Mutex::new(HashMap::new()),
             reads: Mutex::new(Vec::new()),
             tabs_created: Mutex::new(Vec::new()),
+            roots: Mutex::new(HashMap::new()),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let (serving, stopped) = (Arc::clone(&world), Arc::clone(&stop));
@@ -313,6 +329,15 @@ impl FakeHerdr {
                 entry["agent"] = json!(agent);
             }
         }
+    }
+
+    /// Makes `pid` the root process of `pane` and its only foreground process.
+    pub fn set_root_process(&self, pane: &str, pid: u32) {
+        self.world
+            .roots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pane.to_owned(), pid);
     }
 
     /// Sets the Herdr agent status (`idle`, `working`, ...) of `pane`.
