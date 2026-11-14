@@ -816,6 +816,9 @@ pub struct ProfileObservation {
     pub config_quality: ConfigQuality,
     pub enabled: Option<Vec<String>>,
     pub disabled: Option<Vec<String>>,
+    /// The plugin API the bridge uses was recognized by callability. `false` only
+    /// degrades launch to an unverified API and adds a diagnostic; it never refuses.
+    pub api_recognized: bool,
 }
 impl ProfileObservation {
     pub fn configured_enabled(&self) -> Option<bool> {
@@ -838,10 +841,6 @@ struct NativeOrigins {
     version: PathBuf,
     #[serde(rename = "hermes_cli.config")]
     config: PathBuf,
-    #[serde(default, rename = "hermes_cli.plugins")]
-    plugins: Option<PathBuf>,
-    #[serde(default, rename = "hermes_cli.plugins_dispatch")]
-    dispatch: Option<PathBuf>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -866,10 +865,10 @@ struct ProfileResult {
     cli_scratch_rehomed: bool,
     identity_provenance: String,
     evidence_stage: String,
-    #[serde(default)]
-    api: Option<PrelaunchApi>,
+    api: Option<PluginApi>,
 }
-/// Strict complete schema2. Legacy API facts are intentionally absent.
+/// Strict complete schema2. `api` is the callability-only plugin API shape (null:
+/// not recognized); legacy callback-qualification facts are intentionally absent.
 pub fn decode_profile_observation(
     bytes: &[u8],
     expected: &MetadataScope,
@@ -900,6 +899,7 @@ pub fn decode_profile_observation(
         "cli_scratch_rehomed",
         "identity_provenance",
         "evidence_stage",
+        "api",
     ];
     if !value
         .as_object()
@@ -921,6 +921,7 @@ pub fn decode_profile_observation(
         if r.reason.as_deref() != Some("inspection_unavailable")
             || r.evidence_stage != "unavailable"
             || r.config_quality != ConfigQuality::Unknown
+            || r.api.is_some()
             || fields[3..13].iter().any(|k| !value[*k].is_null())
         {
             return Err(ProbeFailure::Malformed);
@@ -998,7 +999,7 @@ pub fn decode_profile_observation(
         return Err(ProbeFailure::Malformed);
     }
     let origins = r.module_origins.ok_or(ProbeFailure::Malformed)?;
-    if origins.plugins.is_some() || origins.dispatch.is_some() {
+    if r.api.as_ref().is_some_and(|api| !api.complete()) {
         return Err(ProbeFailure::Malformed);
     }
     let names = [
@@ -1049,6 +1050,7 @@ pub fn decode_profile_observation(
         config_quality: r.config_quality,
         enabled: r.enabled,
         disabled: r.disabled,
+        api_recognized: r.api.is_some(),
     })
 }
 
@@ -1072,13 +1074,28 @@ impl ProfileInspection<'_> {
     }
 }
 
+/// The helper reports the API only as recognized (every fact true) or null.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PrelaunchApi {
+struct PluginApi {
     register_hook: bool,
     on_unload: bool,
     invoke_hook: bool,
     callbacks: Vec<String>,
+}
+impl PluginApi {
+    fn complete(&self) -> bool {
+        self.register_hook
+            && self.on_unload
+            && self.invoke_hook
+            && self.callbacks
+                == [
+                    "pre_llm_call",
+                    "post_tool_call",
+                    "on_session_start",
+                    "on_session_reset",
+                ]
+    }
 }
 /// Source/API/profile observation for launch alone; never a runtime witness.
 #[derive(Debug)]
@@ -1103,37 +1120,12 @@ pub fn decode_prelaunch_observation(
         serde_json::from_slice(bytes).map_err(|_| ProbeFailure::Malformed)?;
     let mut value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|_| ProbeFailure::Malformed)?;
-    if value.as_object().is_none_or(|v| v.len() != 21) || typed.schema_version != 3 {
+    if value.as_object().is_none_or(|v| v.len() != 21)
+        || typed.schema_version != 3
+        || (typed.status != "unavailable"
+            && typed.evidence_stage != "prelaunch_api_profile_observation")
+    {
         return Err(ProbeFailure::Malformed);
-    }
-    if typed.status == "unavailable" {
-        if typed.api.is_some() {
-            return Err(ProbeFailure::Malformed);
-        }
-    } else {
-        let api = typed.api.ok_or(ProbeFailure::Malformed)?;
-        let origins = typed.module_origins.ok_or(ProbeFailure::Malformed)?;
-        let root = typed.source_root.as_ref().ok_or(ProbeFailure::Malformed)?;
-        if !absolute(root)
-            || !api.register_hook
-            || !api.on_unload
-            || !api.invoke_hook
-            || api.callbacks
-                != [
-                    "pre_llm_call",
-                    "post_tool_call",
-                    "on_session_start",
-                    "on_session_reset",
-                ]
-            || typed.evidence_stage != "prelaunch_api_profile_observation"
-            || origins.plugins.as_ref() != Some(&root.join("hermes_cli/plugins.py"))
-            || origins.dispatch.as_ref() != Some(&root.join("hermes_cli/plugins_dispatch.py"))
-            || value["module_origins"]
-                .as_object()
-                .is_none_or(|v| v.len() != 7)
-        {
-            return Err(ProbeFailure::Malformed);
-        }
     }
     let stamp = crate::harness::setup::fingerprint(
         &serde_json::to_vec(&value).map_err(|_| ProbeFailure::Malformed)?,
@@ -1150,18 +1142,10 @@ pub fn decode_prelaunch_observation(
     let launch_input_fingerprint = crate::harness::setup::fingerprint(
         &serde_json::to_vec(&launch_inputs).map_err(|_| ProbeFailure::Malformed)?,
     );
-    value
-        .as_object_mut()
-        .ok_or(ProbeFailure::Malformed)?
-        .remove("api");
+    // The profile projection (including the API shape) is validated as schema2.
     value["schema_version"] = 2.into();
     if typed.status != "unavailable" {
         value["evidence_stage"] = "startup_profile_observation".into();
-        let origins = value["module_origins"]
-            .as_object_mut()
-            .ok_or(ProbeFailure::Malformed)?;
-        origins.remove("hermes_cli.plugins");
-        origins.remove("hermes_cli.plugins_dispatch");
     }
     let observed = decode_discovered_profile(
         &serde_json::to_vec(&value).map_err(|_| ProbeFailure::Malformed)?,
@@ -1345,12 +1329,6 @@ mod profile_observation_tests {
         value["enabled"] = serde_json::json!(["herdr-threads"]);
         value["disabled"] = serde_json::json!([]);
         value["evidence_stage"] = "prelaunch_api_profile_observation".into();
-        value["api"] = serde_json::json!({"register_hook":true,"on_unload":true,"invoke_hook":true,
-            "callbacks":["pre_llm_call","post_tool_call","on_session_start","on_session_reset"]});
-        value["module_origins"]["hermes_cli.plugins"] =
-            "/fixture/native source/hermes_cli/plugins.py".into();
-        value["module_origins"]["hermes_cli.plugins_dispatch"] =
-            "/fixture/native source/hermes_cli/plugins_dispatch.py".into();
         value
     }
     #[test]
@@ -1360,6 +1338,7 @@ mod profile_observation_tests {
         let scope = fixture_scope();
         let observed = decode_prelaunch_observation(&bytes, &scope.interpreter, "default").unwrap();
         assert_eq!(observed.profile.configured_enabled(), Some(true));
+        assert!(observed.profile.api_recognized);
         assert!(decode_profile_observation(&bytes, &scope).is_err());
         assert!(decode_runtime_helper(&bytes, &scope).is_err());
         assert!(
@@ -1371,7 +1350,6 @@ mod profile_observation_tests {
             .is_err()
         );
         for (field, replacement) in [
-            ("api", serde_json::Value::Null),
             (
                 "evidence_stage",
                 serde_json::json!("startup_profile_observation"),
@@ -1416,9 +1394,10 @@ mod profile_observation_tests {
                 .is_err()
             );
         }
+        // Plugin module origins are not part of the observation.
         let mut changed = value.clone();
         changed["module_origins"]["hermes_cli.plugins_dispatch"] =
-            "/foreign/plugins_dispatch.py".into();
+            "/fixture/native source/hermes_cli/plugins_dispatch.py".into();
         assert!(
             decode_prelaunch_observation(
                 &serde_json::to_vec(&changed).unwrap(),
@@ -1437,6 +1416,60 @@ mod profile_observation_tests {
         assert!(
             decode_prelaunch_observation(&vec![b' '; 16385], &scope.interpreter, "default")
                 .is_err()
+        );
+    }
+    #[test]
+    fn unrecognized_api_degrades_to_unverified_with_a_deterministic_fingerprint() {
+        let mut value = prelaunch_fixture();
+        value["api"] = serde_json::Value::Null;
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let scope = fixture_scope();
+        let first = decode_prelaunch_observation(&bytes, &scope.interpreter, "default").unwrap();
+        let again = decode_prelaunch_observation(&bytes, &scope.interpreter, "default").unwrap();
+        assert!(!first.profile.api_recognized);
+        assert_eq!(first.profile.home, Path::new("/fixture/custom home"));
+        assert_eq!(
+            first.launch_input_fingerprint,
+            again.launch_input_fingerprint
+        );
+        let verified = decode_prelaunch_observation(
+            &serde_json::to_vec(&prelaunch_fixture()).unwrap(),
+            &scope.interpreter,
+            "default",
+        )
+        .unwrap();
+        assert_ne!(
+            first.launch_input_fingerprint, verified.launch_input_fingerprint,
+            "an API change between observation and submission must be visible"
+        );
+        // An unavailable profile still refuses, whatever the API.
+        let mut unavailable = value.clone();
+        for key in [
+            "runtime_descriptor",
+            "profile",
+            "home",
+            "physical_home",
+            "interpreter",
+            "source_root",
+            "module_origins",
+            "dependency_paths",
+            "enabled",
+            "disabled",
+        ] {
+            unavailable[key] = serde_json::Value::Null;
+        }
+        unavailable["status"] = "unavailable".into();
+        unavailable["reason"] = "inspection_unavailable".into();
+        unavailable["evidence_stage"] = "unavailable".into();
+        unavailable["config_quality"] = "unknown".into();
+        assert_eq!(
+            decode_prelaunch_observation(
+                &serde_json::to_vec(&unavailable).unwrap(),
+                &scope.interpreter,
+                "default"
+            )
+            .unwrap_err(),
+            ProbeFailure::Unavailable("inspection_unavailable".into())
         );
     }
     #[test]

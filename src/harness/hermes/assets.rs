@@ -37,6 +37,8 @@ pub struct AssetStatus {
     pub manual_argv: Vec<String>,
     pub launch_hook: Option<crate::ports::ConfiguredHook>,
     pub launch_settings: Option<LaunchAssetSettings>,
+    /// The profile observation recognized the plugin API shape (diagnostic only).
+    pub api_recognized: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -891,6 +893,7 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
         manual_argv: guidance(&o.profile, "enable"),
         launch_hook: None,
         launch_settings: None,
+        api_recognized: o.api_recognized,
     };
     if matches!(fs::symlink_metadata(o.physical_home.join("plugins")),Err(e) if e.kind()==std::io::ErrorKind::NotFound)
     {
@@ -1120,6 +1123,7 @@ mod tests {
                 config_quality: ConfigQuality::Successful,
                 enabled: Some(vec!["herdr-threads".into()]),
                 disabled: Some(vec!["herdr-threads".into()]),
+                api_recognized: true,
             }
         }
         fn install(&self) -> Result<(), SetupError> {

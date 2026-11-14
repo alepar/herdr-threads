@@ -1835,7 +1835,7 @@ mod task23_tests {
         assert_eq!(seats.recorded.lock().unwrap().len(), 1);
     }
     #[test]
-    fn hermes_readiness_is_diagnostic_but_missing_native_api_refuses() {
+    fn hermes_readiness_and_unrecognized_native_api_are_diagnostic() {
         for kind in ["foreign", "partial", "api", "settings"] {
             let mut s = hermes_fixture();
             let home = Path::new(s.env.declared_environment["FIXTURE_HOME"].to_str().unwrap());
@@ -1864,10 +1864,12 @@ mod task23_tests {
             let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
             let result = s.launch(&host, &seats, &handoff, request(harness, &[]));
             if kind == "api" {
-                assert!(result.is_err(), "missing selected native API refuses");
-                assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
-                assert!(host.submitted().is_empty());
-                assert!(s.records().is_empty());
+                // An unrecognizable plugin API (here plugins.py fails to import)
+                // degrades launch to an unverified API; it never refuses it.
+                let report = result.expect("an unrecognized native API must not refuse launch");
+                assert_eq!(report.report["hermes"]["api"], "unverified");
+                assert_eq!(host.submitted().len(), 1);
+                assert!(host.submitted()[0].configured_hook.is_some());
             } else {
                 assert!(result.is_ok(), "diagnostic {kind}: {result:?}");
                 assert_eq!(host.submitted().len(), 1);

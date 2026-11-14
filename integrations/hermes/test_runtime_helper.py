@@ -59,54 +59,90 @@ class RuntimeHelperTests(unittest.TestCase):
         self.assertLessEqual(len(child.stdout), 16384)
         return json.loads(child.stdout)
 
-    def make_api(self):
+    def make_api(self, layout="0.21"):
+        """A source-shaped plugin API. "0.21" defines PluginContext in plugins.py;
+        "0.23.1" (Hermes 26f1f47fca) moves it to plugins_context.py, re-exported by
+        plugins.py; both keep invoke_hook on a dispatch mixin."""
         package = self.native / "hermes_cli"
         (package / "plugins_dispatch.py").write_text(
             "class PluginDispatchMixin:\n def invoke_hook(self,*a,**kw): raise AssertionError('invoked')\n")
+        context = ("class PluginContext:\n def __init__(self): raise AssertionError('instantiated')\n"
+                   " def register_hook(self,*a): raise AssertionError('registered')\n"
+                   " def on_unload(self,*a): raise AssertionError('registered')\n")
+        if layout == "0.23.1":
+            (package / "plugins_context.py").write_text(
+                "from hermes_cli.plugins_dispatch import PluginDispatchMixin as _unused\n" + context)
+            context = "from hermes_cli.plugins_context import PluginContext\n"
         (package / "plugins.py").write_text(
             "from .plugins_dispatch import PluginDispatchMixin\n"
             "VALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n"
-            "class PluginContext:\n def __init__(self): raise AssertionError('instantiated')\n"
-            " def register_hook(self,*a): raise AssertionError('registered')\n"
-            " def on_unload(self,*a): raise AssertionError('registered')\n"
+            + context +
             "class PluginManager(PluginDispatchMixin):\n def __init__(self): raise AssertionError('instantiated')\n")
 
-    def test_prelaunch_observes_api_without_discovery_or_callback_activation(self):
-        # Removing the separate API observation, invoking native registration or
-        # accepting a foreign dispatcher must prevent a launch-only observation.
-        self.make_api()
-        package = self.native / "hermes_cli"
-        result = self.probe("work", prelaunch=True)
-        self.assertEqual(result['status'], 'observed', 'launch-only API producer is missing')
-        self.assertEqual(result['schema_version'], 3)
-        self.assertEqual(result['evidence_stage'], 'prelaunch_api_profile_observation')
-        self.assertEqual(result['api'], {'register_hook': True, 'on_unload': True,
-                         'invoke_hook': True, 'callbacks': ['pre_llm_call','post_tool_call',
-                                                          'on_session_start','on_session_reset']})
-        self.assertEqual(result['module_origins']['hermes_cli.plugins_dispatch'], str(package / 'plugins_dispatch.py'))
-        self.assertEqual(self.probe()['schema_version'], 2)
-        with (package / 'plugins.py').open('a') as f:
-            f.write("PluginContext.on_unload=None\n")
-        refused = self.probe(prelaunch=True)
-        self.assertEqual(refused['status'], 'unavailable')
-        self.assertIsNone(refused['api'])
+    API = {'register_hook': True, 'on_unload': True, 'invoke_hook': True,
+           'callbacks': ['pre_llm_call', 'post_tool_call', 'on_session_start', 'on_session_reset']}
 
-    def test_prelaunch_rejects_foreign_api_and_missing_hook_without_activation(self):
-        self.make_api()
+    def test_prelaunch_observes_api_without_discovery_or_callback_activation(self):
+        # Invoking native registration or instantiating a class raises in the
+        # fixture, so a verified API proves callability-only observation.
+        for layout in ("0.21", "0.23.1"):
+            with self.subTest(layout=layout):
+                self.make_api(layout)
+                result = self.probe("work", prelaunch=True)
+                self.assertEqual(result['status'], 'observed', 'launch-only API producer is missing')
+                self.assertEqual(result['schema_version'], 3)
+                self.assertEqual(result['evidence_stage'], 'prelaunch_api_profile_observation')
+                self.assertEqual(result['api'], self.API)
+                self.assertNotIn('hermes_cli.plugins', result['module_origins'])
+                discovered = self.probe()
+                self.assertEqual(discovered['schema_version'], 2)
+                self.assertEqual(discovered['api'], self.API)
+
+    def test_api_check_is_callability_only_not_location_or_identity(self):
+        # A moved definition, a foreign __module__ or a replaced invoke_hook is
+        # still a callable API: no location or class-identity check.
+        self.make_api("0.23.1")
         plugins = self.native / "hermes_cli" / "plugins.py"
         original = plugins.read_text()
         for mutation in (
             "PluginContext.register_hook.__module__='foreign'\n",
             "PluginManager.invoke_hook=lambda *a: None\n",
-            "VALID_HOOKS.remove('post_tool_call')\n",
         ):
             with self.subTest(mutation=mutation):
                 plugins.write_text(original + mutation)
-                refused = self.probe(prelaunch=True)
-                self.assertEqual(refused['status'], 'unavailable')
-                self.assertEqual(refused['schema_version'], 3)
-                self.assertIsNone(refused['api'])
-        plugins.write_text(original)
+                self.assertEqual(self.probe(prelaunch=True)['api'], self.API)
+        (self.native / "hermes_cli" / "plugins_dispatch.py").unlink()
+        plugins.write_text("class PluginDispatchMixin:\n def invoke_hook(self): pass\n"
+                           + original.replace("from .plugins_dispatch import PluginDispatchMixin\n", "")
+                           .replace("from hermes_cli.plugins_context import PluginContext\n",
+                                    "class PluginContext:\n def register_hook(self): pass\n def on_unload(self): pass\n"))
+        self.assertEqual(self.probe(prelaunch=True)['api'], self.API, 'plugins_dispatch must not be required')
+
+    def test_unrecognized_api_keeps_the_profile_observation(self):
+        # Launch degrades to an unverified API; only the profile must be observed.
+        self.make_api()
+        plugins = self.native / "hermes_cli" / "plugins.py"
+        original = plugins.read_text()
+        for mutation in (
+            "PluginContext.on_unload=None\n",
+            "VALID_HOOKS.remove('post_tool_call')\n",
+            "del PluginManager\n",
+            "raise ImportError('private /path')\n",
+            "print('noise')\nraise SystemExit(3)\n",
+        ):
+            with self.subTest(mutation=mutation):
+                plugins.write_text(original + mutation)
+                for prelaunch in (True, False):
+                    result = self.probe("work", prelaunch=prelaunch)
+                    self.assertEqual(result['status'], 'observed')
+                    self.assertEqual(result['home'], str(self.home / 'profiles' / 'work'))
+                    self.assertIsNone(result['api'])
+                    self.assertNotIn('private', json.dumps(result))
+        plugins.unlink()
+        self.assertIsNone(self.probe(prelaunch=True)['api'])
+        self.assertEqual(self.probe(prelaunch=True)['status'], 'observed')
+        self.assertIsNone(self.probe('missing', prelaunch=True)['api'])
+        self.assertEqual(self.probe('missing', prelaunch=True)['status'], 'unavailable')
 
     def test_discovery_produces_actual_root_and_named_home_without_prior_scope(self):
         result = self.probe("work", discovery=True)

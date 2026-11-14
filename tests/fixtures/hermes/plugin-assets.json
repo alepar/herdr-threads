@@ -38,5 +38,16 @@
   "cli_dotenv_loaded": false,
   "cli_scratch_rehomed": false,
   "identity_provenance": "startup_captured",
-  "evidence_stage": "startup_profile_observation"
+  "evidence_stage": "startup_profile_observation",
+  "api": {
+    "register_hook": true,
+    "on_unload": true,
+    "invoke_hook": true,
+    "callbacks": [
+      "pre_llm_call",
+      "post_tool_call",
+      "on_session_start",
+      "on_session_reset"
+    ]
+  }
 }

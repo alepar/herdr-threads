@@ -1281,7 +1281,7 @@ impl HarnessAdapter for HermesAdapter {
                 observed: None,
                 configured_hook: s.launch_hook.clone(),
                 fingerprint: s.launch_hook.as_ref().map(|h| h.fingerprint.clone()),
-                diagnostics: vec![],
+                diagnostics: status_diagnostics(&s),
                 repairs: vec![],
                 projection: asset_projection(&s),
             })),
@@ -1334,8 +1334,25 @@ impl HarnessAdapter for HermesAdapter {
         Ok(removal_outcome(removed))
     }
 }
+/// Model-visible (setup-status, doctor): the plugin API shape the bridge uses was not
+/// recognized by callability. Launch proceeds with the API reported `unverified`.
+const API_UNRECOGNIZED: &str = "Hermes plugin API shape not recognized; launch proceeds unverified";
+fn status_diagnostics(s: &assets::AssetStatus) -> Vec<SetupDiagnostic> {
+    let mut rows = vec![];
+    if !s.api_recognized {
+        rows.push(SetupDiagnostic::new(
+            "hermes_plugin_api_unrecognized",
+            DiagnosticSeverity::Warning,
+            API_UNRECOGNIZED,
+        ));
+    }
+    rows
+}
 fn asset_projection(s: &assets::AssetStatus) -> serde_json::Value {
     let mut projection = serde_json::json!({"installed":s.installed,"configured_enabled":s.configured_enabled,"repairable":s.repairable,"manual_argv":s.manual_argv,"native_acceptance":"unmet","bridge_current":s.bridge_current});
+    if !s.api_recognized {
+        projection["plugin_api"] = API_UNRECOGNIZED.into();
+    }
     if s.bridge_current == Some(false) || !s.bridge_missing_events.is_empty() {
         let fix = format!("herdr-threads setup hermes --profile {}", s.profile);
         projection["stale_install"] = serde_json::json!({
@@ -1413,18 +1430,28 @@ fn inspect_profile(
     runtime::discover_selected_profile(&native, &helper, profile, env, budget)
         .map_err(|_| SetupFailure::Invalid("Hermes profile inspection unavailable".into()))
 }
+/// The owned inspection helper's file name under `<state>/setup`, named by its content:
+/// an upgraded helper never meets an older build's file (an owned file is never
+/// overwritten), and that older file stays behind unused.
+pub fn runtime_helper_file_name() -> String {
+    let digest = super::setup::fingerprint(RUNTIME_HELPER);
+    let hex = digest.trim_start_matches("sha256:");
+    format!("hermes-runtime-helper-{}.py", &hex[..16])
+}
+const RUNTIME_HELPER: &[u8] = include_bytes!("../../integrations/hermes/runtime_helper.py");
 fn inspection_helper(env: &SetupEnvironment) -> Result<PathBuf, SetupFailure> {
     let helper = env
         .state_dir
         .as_ref()
         .ok_or_else(|| SetupFailure::Invalid("state unavailable".into()))?
-        .join("setup/hermes-runtime-helper.py");
+        .join("setup")
+        .join(runtime_helper_file_name());
     crate::daemon::paths::ensure_private_dir(helper.parent().unwrap()).map_err(SetupFailure::Io)?;
     use std::{
         io::Write,
         os::unix::fs::{MetadataExt, OpenOptionsExt},
     };
-    let expected = include_bytes!("../../integrations/hermes/runtime_helper.py");
+    let expected = RUNTIME_HELPER;
     let mut options = std::fs::OpenOptions::new();
     options
         .write(true)
@@ -2384,7 +2411,7 @@ mod adapter_tests {
         let iso = crate::test_support::isolation::TestIsolation::new("hermes-helper-ownership");
         let setup = iso.path("setup");
         crate::daemon::paths::ensure_private_dir(&setup).unwrap();
-        let helper = setup.join("hermes-runtime-helper.py");
+        let helper = setup.join(runtime_helper_file_name());
         std::fs::write(&helper, b"foreign helper bytes").unwrap();
         let environment = SetupEnvironment {
             state_dir: Some(iso.state_root().into()),
@@ -2450,9 +2477,15 @@ mod adapter_tests {
                 package.join("plugins_dispatch.py"),
                 "class PluginDispatchMixin:\n def invoke_hook(self): pass\n",
             ),
+            // The 0.23.1 layout (Hermes 26f1f47fca): PluginContext lives in
+            // plugins_context.py and plugins.py re-exports it.
+            (
+                package.join("plugins_context.py"),
+                "class PluginContext:\n def register_hook(self): pass\n def on_unload(self): pass\n",
+            ),
             (
                 package.join("plugins.py"),
-                "from hermes_cli.plugins_dispatch import PluginDispatchMixin\nclass PluginContext:\n def register_hook(self): pass\n def on_unload(self): pass\nclass PluginManager(PluginDispatchMixin): pass\nVALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n",
+                "from hermes_cli.plugins_dispatch import PluginDispatchMixin\nfrom hermes_cli.plugins_context import PluginContext\nclass PluginManager(PluginDispatchMixin): pass\nVALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n",
             ),
             (
                 package.join("config.py"),
@@ -2617,9 +2650,59 @@ mod adapter_tests {
         assert_eq!(prepared.report["hermes"]["api"], "presence_only");
         assert_eq!(prepared.report["hermes"]["native_acceptance"], "unmet");
         assert_eq!(prepared.report["hermes"]["callback_qualified"], false);
-        policy
+        assert!(status.diagnostics.is_empty());
+        assert!(status.projection.get("plugin_api").is_none());
+        let stamp = policy
             .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget())
             .unwrap();
+        assert_eq!(
+            stamp,
+            policy
+                .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget())
+                .unwrap()
+        );
+        // An unrecognizable plugin API degrades launch to `unverified`; the profile
+        // observation, the owned hook and a deterministic recheck remain.
+        let plugins = std::fs::read(package.join("plugins.py")).unwrap();
+        std::fs::write(package.join("plugins.py"), "PluginContext = None\n").unwrap();
+        let unverified = policy
+            .observe_prelaunch(&launch_request, &scope, &budget())
+            .expect("an unrecognized plugin API must not refuse launch");
+        let degraded = policy
+            .prepare_prelaunch(
+                &launch_request,
+                &scope,
+                unverified.as_ref(),
+                &status,
+                &NoShell,
+                &budget(),
+            )
+            .unwrap();
+        assert_eq!(degraded.report["hermes"]["api"], "unverified");
+        assert_eq!(degraded.hook, prepared.hook);
+        let unverified_stamp = policy
+            .recheck_prelaunch(&launch_request, &scope, unverified.as_ref(), &budget())
+            .unwrap();
+        assert_eq!(
+            unverified_stamp,
+            policy
+                .recheck_prelaunch(&launch_request, &scope, unverified.as_ref(), &budget())
+                .unwrap()
+        );
+        let SetupStatus::Detailed(degraded_status) = HermesAdapter.status(
+            &StatusRequest {
+                scope: request.scope.clone(),
+                environment: environment.clone(),
+                native_binary: request.native_binary.clone(),
+            },
+            &budget(),
+        ) else {
+            panic!("status refused an unrecognized plugin API")
+        };
+        assert_eq!(degraded_status.diagnostics.len(), 1);
+        assert_eq!(degraded_status.diagnostics[0].text, API_UNRECOGNIZED);
+        assert_eq!(degraded_status.projection["plugin_api"], API_UNRECOGNIZED);
+        std::fs::write(package.join("plugins.py"), plugins).unwrap();
         std::fs::write(package.join("config.py"), "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':[],'disabled':['herdr-threads']}}\n").unwrap();
         assert_eq!(
             policy

@@ -1,4 +1,5 @@
-//! Pinned37daf85 source grammar and separately observed prelaunch API/profile.
+//! Pinned37daf85 source grammar and separately observed prelaunch profile (API by
+//! callability; an unrecognized API shape degrades to unverified, never refuses).
 //! No synthetic success is native recognition, callback admission or receipt.
 use super::{assets, runtime};
 use crate::harness::adapter::*;
@@ -135,7 +136,7 @@ fn observe(
         .map_err(|_| {
             error(
                 ErrorCode::UnsupportedHarness,
-                "source-bound prelaunch API/profile observation unavailable",
+                "source-bound prelaunch profile observation unavailable",
             )
         })?;
     if observed.profile.home != *home {
@@ -341,7 +342,10 @@ impl LaunchPolicy for HermesLaunch {
             environment_overrides: BTreeMap::new(),
             report: serde_json::json!({"hermes":{"profile":captured.observation.profile.profile,"home":captured.observation.profile.home,
             "identity":captured.observation.profile.identity,"identity_provenance":"startup_captured_prelaunch_observation",
-            "environment_scope":"declared_child_input_plus_native_bootstrap_profile_effects","api":"presence_only","callback_qualified":false,"native_acceptance":"unmet"}}),
+            "environment_scope":"declared_child_input_plus_native_bootstrap_profile_effects",
+            // An unrecognized plugin API shape degrades launch, never refuses it.
+            "api":if captured.observation.profile.api_recognized {"presence_only"} else {"unverified"},
+            "callback_qualified":false,"native_acceptance":"unmet"}}),
         })
     }
     fn recheck_prelaunch(

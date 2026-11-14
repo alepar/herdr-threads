@@ -4,7 +4,9 @@ Only the official completed-bootstrap trace entry is accepted. Native inspection
 may initialize/recover Hermes-owned state. CLI dotenv and post-profile scratch
 re-home are deliberately absent. No registrars, auth/model or plugin discovery.
 """
+import contextlib
 import importlib
+import io
 import json
 import os
 from pathlib import Path
@@ -15,6 +17,7 @@ import unicodedata
 SCOPE = 'declared_child_input_plus_native_bootstrap_profile_effects'
 FIELDS = ('runtime_descriptor', 'profile', 'home', 'physical_home', 'interpreter',
           'source_root', 'module_origins', 'dependency_paths', 'enabled', 'disabled')
+HOOKS = ('pre_llm_call', 'post_tool_call', 'on_session_start', 'on_session_reset')
 
 
 def opaque(value, limit=256):
@@ -50,10 +53,30 @@ def empty(reason, prelaunch=False):
             **dict.fromkeys(FIELDS), 'config_quality': 'unknown', 'fallback_kind': None,
             'environment_scope': SCOPE, 'cli_dotenv_loaded': False,
             'cli_scratch_rehomed': False, 'identity_provenance': 'startup_captured',
-            'evidence_stage': 'unavailable'}
-    if prelaunch:
-        result['api'] = None
+            'evidence_stage': 'unavailable', 'api': None}
     return result
+
+
+def api_facts():
+    """The plugin API the bridge uses, by callability through hermes_cli.plugins' public
+    names only: where Hermes defines a class or method is not part of the contract. None
+    when the shape is not recognized; launch then proceeds with the API unverified.
+    Membership/callability only: no instance, registrar, manager getter, catalog scan,
+    callback, authentication or model operation."""
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):  # stdout carries only the result
+            plugins = importlib.import_module('hermes_cli.plugins')
+        context = getattr(plugins, 'PluginContext', None)
+        manager = getattr(plugins, 'PluginManager', None)
+        valid = getattr(plugins, 'VALID_HOOKS', None)
+        if (callable(getattr(context, 'register_hook', None))
+                and callable(getattr(context, 'on_unload', None))
+                and callable(getattr(manager, 'invoke_hook', None))
+                and isinstance(valid, (set, frozenset)) and all(h in valid for h in HOOKS)):
+            return {'register_hook': True, 'on_unload': True, 'invoke_hook': True, 'callbacks': list(HOOKS)}
+    except (Exception, SystemExit):
+        pass  # Never the error text: it can name private paths or values.
+    return None
 
 
 def inspect(profile):
@@ -155,44 +178,14 @@ def inspect(profile):
                     enabled, disabled = lists
     except Exception:
         pass  # Only allowlisted quality, never config values/errors or inferred fallback.
-    api = None
-    if prelaunch:
-        plugins = importlib.import_module('hermes_cli.plugins')
-        dispatch = importlib.import_module('hermes_cli.plugins_dispatch')
-        for name, module in (('hermes_cli.plugins', plugins), ('hermes_cli.plugins_dispatch', dispatch)):
-            path = origin(module)
-            if path != root / (name.replace('.', '/') + '.py'):
-                raise ValueError('origin')
-            origins[name] = str(path)
-        # Membership/callability only: no instance, registrar, manager getter,
-        # catalog scan, callback, authentication or model operation.
-        for name, module in tuple(sys.modules.items()):
-            if name.startswith('hermes_cli.') or name in ('hermes_cli', 'utils', 'registration_lifecycle', 'hermes_yaml'):
-                path = origin(module)
-                stem = root / name.replace('.', '/')
-                if path not in (stem.with_suffix('.py'), stem / '__init__.py'):
-                    raise ValueError('mixed_origin')
-        context, manager = plugins.PluginContext, plugins.PluginManager
-        hooks = ['pre_llm_call', 'post_tool_call', 'on_session_start', 'on_session_reset']
-        if (not isinstance(context, type) or not isinstance(manager, type)
-                or context.__module__ != plugins.__name__ or manager.__module__ != plugins.__name__
-                or getattr(context.register_hook, '__module__', None) != plugins.__name__
-                or getattr(context.on_unload, '__module__', None) != plugins.__name__
-                or not callable(getattr(context, 'register_hook', None))
-                or not callable(getattr(context, 'on_unload', None))
-                or not callable(getattr(manager, 'invoke_hook', None))
-                or getattr(manager, 'invoke_hook') is not dispatch.PluginDispatchMixin.invoke_hook
-                or type(plugins.VALID_HOOKS) not in (set, frozenset)
-                or not all(hook in plugins.VALID_HOOKS for hook in hooks)):
-            raise ValueError('api')
-        api = {'register_hook': True, 'on_unload': True, 'invoke_hook': True, 'callbacks': hooks}
+    api = api_facts()
     result = empty(None, prelaunch)
     result.update(status='observed', runtime_descriptor=descriptor, profile=profile,
                   home=home, physical_home=physical, interpreter=str(interpreter), source_root=str(root),
                   module_origins=origins, dependency_paths=[selected], enabled=enabled, disabled=disabled,
-                  config_quality=quality, evidence_stage='startup_profile_observation')
+                  config_quality=quality, api=api, evidence_stage='startup_profile_observation')
     if prelaunch:
-        result.update(api=api, evidence_stage='prelaunch_api_profile_observation')
+        result.update(evidence_stage='prelaunch_api_profile_observation')
     return result
 
 
