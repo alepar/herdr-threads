@@ -463,8 +463,20 @@ function createCore(io) {
     startChild()
   }
 
+  /** The SDK call a channel cannot run without, or null (D8, detected before any watch runs). */
+  function channelMissing() {
+    const api = sessionApi()
+    if (!hasFn(api, 'prompt')) return 'append'
+    if (!hasFn(api, 'promptAsync')) return 'wake'
+    return null
+  }
+
   function startChild() {
     if (S.disposed || S.channelless || !S.chanSid) return
+    // No channel the daemon would count on: it then sees no wake path (the sender reads
+    // wake=no_wake) and the turn hook delivers.
+    const missing = channelMissing()
+    if (missing) return goChannelless(missing)
     S.run++
     const run = S.run
     const sid = S.chanSid
@@ -741,7 +753,10 @@ function createCore(io) {
     }
   }
 
-  /** The SDK cannot deliver as designed: stop the channel; the turn hook delivers from now on (D8). */
+  /**
+   * The SDK cannot deliver or wake as designed: stop the channel; the turn hook delivers from now
+   * on, and with no channel the daemon reports the seat wake=no_wake (D8).
+   */
   function goChannelless(capability) {
     degrade(capability)
     S.channelless = true
@@ -817,12 +832,8 @@ function createCore(io) {
     if (!S.bound || w.sid !== S.bound.sid || w.sid !== S.chanSid) return
     if (io.now() < S.wakeBackoffUntil || !idle(w.sid)) return
     const api = sessionApi()
-    if (!hasFn(api, 'promptAsync')) {
-      // No wake on this opencode: the item stays appended for the next turn (D8).
-      degrade('wake')
-      S.wakePending = null
-      return
-    }
+    // No wake on this opencode: no channel either, so senders are told (D8).
+    if (!hasFn(api, 'promptAsync')) return goChannelless('wake')
     S.wakeInflight = true
     const gen = S.gen
     ledger('submit', { via: 'submit', reason: 'wake' })

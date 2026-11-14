@@ -145,7 +145,7 @@ No `installer_policy` in this epic: `install.sh` keeps handling Claude and Codex
 | `opencode serve` + `attach` | Plugins run in the server process, so its sessions are attributed to the server's pane, not the attaching client's. Existing accepted limit "foreground harness execution is user managed". |
 | Channel stalled (10-minute cooldown), or `mod_delivery` off | Items arrive at the next turn start through the turn hook; no wake; the sender sees `wake=no_wake`. CLI calls show the `N pending` hint. |
 | No permission consent | opencode asks the user per command until "Allow always". |
-| A future opencode renames a hook or SDK call | Versionless: the plugin feature-detects each call. A missing `shell.env` loses CLI attribution only; a missing `noReply` falls back to hook injection; a missing `promptAsync` loses the wake only (`wake=no_wake`). Doctor reports the degraded capability from the heartbeat record. |
+| A future opencode renames a hook or SDK call | Versionless: the plugin feature-detects each call. A missing `shell.env` loses CLI attribution only; a missing `noReply` falls back to hook injection; a missing `session.prompt` or `promptAsync` (detected before the first `watch`, or at the first wake) stops the channel, so the turn hook delivers and the daemon, seeing no channel, reports the seat `wake=no_wake`. Doctor reports the degraded capability from the heartbeat record. |
 
 ### D9. Delivery-contract check
 

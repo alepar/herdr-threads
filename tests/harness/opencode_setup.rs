@@ -741,8 +741,8 @@ fn doctor_reads_the_heartbeat() {
     assert_eq!(hooks["heartbeat"]["state"], "inert");
     for expected in [
         "opencode loaded a second herdr-threads plugin copy, which stays inert; remove the extra copy",
-        "opencode plugin degraded: no wake (no idle wake (wake=no_wake))",
-        "opencode plugin degraded: no append_row (appends are acked without the stored message id)",
+        "opencode plugin degraded: no wake (channel stopped: messages arrive through the turn hook, no idle wake (wake=no_wake))",
+        "opencode plugin degraded: no append_row (channel stopped: messages arrive through the turn hook, no idle wake (wake=no_wake))",
         "opencode permission rule denies \"ht *\": the plugin adds no allow for it",
     ] {
         assert!(

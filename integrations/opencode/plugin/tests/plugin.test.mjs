@@ -87,7 +87,6 @@ function harness(opts = {}) {
     },
     status: async () => ({ data: h.statusMap }),
   }
-  if (opts.noAsync) delete session.promptAsync
   h.client = { session, tui: { showToast: async ({ body }) => (h.toasts.push(body), { data: true }) } }
   h.io = {
     now: () => h.t,
@@ -656,12 +655,38 @@ test('an append API that returns no stored id stops the channel and falls back t
   assert.deepEqual(h.hookEvents(), ['SessionStart:startup', 'UserPromptSubmit'])
 })
 
-test('no promptAsync: items are appended and no wake is attempted', async () => {
-  const h = await harness({ noAsync: true }).boot(A)
+test('no promptAsync or no prompt: no channel at all, so the daemon sees no wake path', async () => {
+  for (const [missing, capability] of [['promptAsync', 'wake'], ['prompt', 'append']]) {
+    const h = harness()
+    delete h.client.session[missing]
+    h.top(A)
+    await h.created(A)
+    await h.turn(A)
+    // bound, but no watch was ever started: no registration, so senders read wake=no_wake
+    assert.equal(h.core.snapshot().bound.sid, A)
+    assert.equal(h.spawns.length, 0)
+    assert.equal(h.core.snapshot().channelless, true)
+    assert.deepEqual(h.core.snapshot().degraded, [capability])
+    // the turn hook delivers from now on, and nothing is appended or woken
+    h.hookReply = (event) => ({ code: 0, stdout: event === 'UserPromptSubmit' ? '<pending>' : CHECKIN })
+    const out = await h.turn(A)
+    assert.equal(out.parts[1].text, '<pending>')
+    h.t += 60_000
+    await h.core.onTick()
+    assert.equal(h.spawns.length, 0)
+    assert.equal(h.calls.length, 0)
+    assert.deepEqual(h.hookEvents(), ['SessionStart:startup', 'UserPromptSubmit'])
+  }
+})
+
+test('promptAsync gone after the channel started: the channel stops at the first wake', async () => {
+  const h = await harness().boot(A)
+  delete h.client.session.promptAsync
   await h.line(waking('m1'))
   assert.deepEqual(h.calls.map((c) => c.kind), ['append'])
-  assert.equal(h.acks().length, 1)
+  assert.equal(h.core.snapshot().channelless, true)
   assert.deepEqual(h.core.snapshot().degraded, ['wake'])
+  assert.equal(h.watch().stopped, true)
 })
 
 test('after /new the previous session stays bound and is still the wake target', async () => {

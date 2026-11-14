@@ -49,8 +49,10 @@ always".
   seat's `nudge-threshold`, ACK requests and invitations) is followed by the prompt
   `herdr-threads: wake up`, submitted in-process; it shows as a user message, and a typed draft
   stays in the composer.
-- With the channel down (stalled, `mod_delivery` off, watch refused), pending items arrive at the
-  next turn start through the plugin's turn hook, and there is no wake.
+- With the channel down (stalled, `mod_delivery` off, watch refused, or an opencode without
+  `session.prompt` or `session.promptAsync`, where the plugin runs no channel), pending items
+  arrive at the next turn start through the plugin's turn hook; there is no wake, and senders see
+  `wake=no_wake`.
 - Subagents (`task` child sessions) get the subagent restriction, read-only, and are never woken.
 
 See the [delivery contract](../../AGENTS.md#delivery-contract).
@@ -88,7 +90,8 @@ the plugin writes `<state>/opencode/plugin-heartbeat.json` at the end of its loa
   (`failed to load plugin`);
 - not loaded since setup wrote it (restart opencode);
 - a second plugin copy installed in another opencode config directory (it stays inert);
-- a capability this opencode lacks (for example no wake: `wake=no_wake`);
+- a capability this opencode lacks (without `prompt` or `promptAsync` the channel stops:
+  delivery by turn hook, `wake=no_wake`);
 - a user `deny` rule on a grant key.
 
 A heartbeat whose process has exited reads `heartbeat exited`, with no limitation: no opencode

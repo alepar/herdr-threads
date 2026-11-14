@@ -194,12 +194,14 @@ pub fn skill_copies(root: &Path, env: &SetupEnvironment) -> Vec<PathBuf> {
     out
 }
 
+/// Without one of these the plugin runs no channel (design D8).
+const CHANNELLESS: &str =
+    "channel stopped: messages arrive through the turn hook, no idle wake (wake=no_wake)";
+
 /// What each capability's absence costs (design D8).
 fn capability_effect(name: &str) -> &'static str {
     match name {
-        "append" => "messages arrive through the turn hook only",
-        "append_row" => "appends are acked without the stored message id",
-        "wake" => "no idle wake (wake=no_wake)",
+        "append" | "append_row" | "wake" => CHANNELLESS,
         "status" => "busy state unknown, no idle wake",
         "session_get" => "subagent parent lookup unavailable",
         "toast" => "no toast for a hidden woken turn's prompt",
