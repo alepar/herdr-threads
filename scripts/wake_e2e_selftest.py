@@ -1058,6 +1058,21 @@ class HermesSetup(TempDir):
         self.assertFalse(set(W.HERMES_ROOT_ENV) & set(captured[0]))
         self.assertTrue(r.launch_line("hermes").startswith("unset CODEX_HOME HERMES_HOME HERMES_PROFILE; "))
 
+    def test_status_retries_a_blank_startup_read(self):
+        """Herdr detects Hermes by its process before the TUI draws: one blank detection read is retried, a screen
+        that stays blank still fails (live 2026-11-14: he-t0 failed every case on one blank read)."""
+        reads = []
+        run = SimpleNamespace(herdr=lambda *argv, check=True: {"raw": reads.pop(0) if reads else ""})
+        rec = W.Recipient(run, "he-t0", "hermes", 0, "w1:p3", "s1")
+        idle = "x\n" * 3
+        reads[:] = ["", " \n", idle]
+        with mock.patch.object(W, "hermes_idle", return_value=True), mock.patch.object(W.time, "sleep"):
+            self.assertEqual(rec.status(), "idle")
+        self.assertEqual(reads, [], "read until the screen is drawn")
+        with mock.patch.object(W, "HERMES_BLANK_READ_S", 0.0):
+            with self.assertRaisesRegex(RuntimeError, "unreadable Hermes screen"):
+                rec.status()
+
     def test_layout_seats_a_hermes_recipient_per_threshold(self):
         r = object.__new__(W.Run)
         r.state, r.endpoint, r.bin, r.cwd, r.run_id = self.tmp / "state", "/fake/sock", "/fake/ht", "/repo", "x"
