@@ -3516,11 +3516,12 @@ fn attention_beyond_the_check_in_page_is_emitted_and_then_coalesced() {
         inbox["result"]["data"]["next_argv"],
         serde_json::Value::Null
     );
-    // Check the original boundary through the independent check-in response,
-    // whose legacy inbox still scans at most 100 instance threads.
+    // The check-in's legacy inbox walks at most 100 instance threads per page; with nothing
+    // pending seat-wide its offer is complete, not an empty page with a v1 continuation
+    // (ht-2alm).
     let checked = fx.cooperative("seat", "w9:p1", &["check-in"]);
     assert_eq!(
-        checked["result"]["data"]["inbox"]["has_more"], true,
+        checked["result"]["data"]["inbox"]["has_more"], false,
         "{checked}"
     );
     assert!(

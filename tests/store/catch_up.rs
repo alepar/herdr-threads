@@ -926,6 +926,16 @@ fn budget() -> CallBudget {
 
 /// A lifecycle check-in by `execution`: the production binding writer.
 fn check_in(store: &SqliteStore, execution: &str, expected_generation: u64) -> u64 {
+    check_in_result(store, execution, expected_generation)
+        .context
+        .binding_generation
+}
+
+fn check_in_result(
+    store: &SqliteStore,
+    execution: &str,
+    expected_generation: u64,
+) -> crate::protocol::results::CheckInResult {
     let command = CheckIn {
         readonly: false,
         lineage_parent: None,
@@ -971,7 +981,7 @@ fn check_in(store: &SqliteStore, execution: &str, expected_generation: u64) -> u
     else {
         panic!("wrong result")
     };
-    result.context.binding_generation
+    result
 }
 
 fn enter_in_store(conn: &mut Connection) {
@@ -1138,4 +1148,63 @@ fn due_phase_continuation_clears_with_many_ended_lapsed_rows() {
             "already ended sessions are not revisited as active maintenance"
         );
     }
+}
+
+/// Wake survey G (ht-2alm): the check-in's inbox page walks every instance thread, a bounded
+/// number per page. On an instance with more threads than that bound, a pending row in a late
+/// thread must still be reachable from the offer: shown, or one `inbox.next` away on the plain
+/// (v2) inbox, never behind a chain of empty v1 pages.
+fn many_threads(conn: &Connection, count: usize) {
+    for i in 0..count {
+        conn.execute(
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",
+            [format!("bulk{i:03}")],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn check_in_offer_reaches_a_pending_row_past_the_thread_walk_bound() {
+    let f = store();
+    check_in(&f.store, EXEC_1, 0);
+    many_threads(&f.conn, 150);
+    f.conn.execute_batch(
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('late','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('mlate','34750f98bd59fcfc946da45aaabe933b','late',1,'ordinary','b',0,1,'agent');\
+         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('mlate','late','s','pending',100);",
+    )
+    .unwrap();
+    let offer = check_in_result(&f.store, EXEC_2, 0);
+    let shown = offer
+        .inbox
+        .items
+        .iter()
+        .any(|item| item.thread.as_str() == "late");
+    if !shown {
+        assert!(
+            offer.inbox.has_more,
+            "the pending row is neither shown nor continued"
+        );
+        let argv = offer.inbox.next_argv.clone().expect("continuation argv");
+        assert!(
+            !argv.iter().any(|arg| arg == "--cursor"),
+            "the offer continues a bounded v1 thread walk instead of the plain inbox: {argv:?}"
+        );
+    }
+}
+
+#[test]
+fn check_in_offer_with_nothing_pending_is_complete_past_the_thread_walk_bound() {
+    let f = store();
+    check_in(&f.store, EXEC_1, 0);
+    many_threads(&f.conn, 150);
+    let offer = check_in_result(&f.store, EXEC_2, 0);
+    assert!(offer.inbox.items.is_empty());
+    assert!(
+        !offer.inbox.has_more,
+        "an offer with nothing pending advertises more: {:?}",
+        offer.inbox.next_argv
+    );
+    offer.inbox.validate().unwrap();
 }

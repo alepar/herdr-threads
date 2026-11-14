@@ -2536,7 +2536,7 @@ impl StorePort for SqliteStore {
                     max_bytes: 8_000,
                     ..PageRequest::default()
                 };
-                let inbox = queries::inbox_in_transaction(
+                let inbox = queries::check_in_inbox_in_transaction(
                     tx,
                     &self.instance,
                     seat,

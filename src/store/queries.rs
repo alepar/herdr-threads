@@ -5383,6 +5383,63 @@ fn inbox(
 /// The check-in builder calls this on its writer Transaction after the
 /// provisional binding is visible. It shares that transaction's snapshot and
 /// returns an exact count for every included thread or an explicit error.
+/// The inbox page a check-in offer carries (wave-survey G, ht-2alm). It is the v1 summary page,
+/// but its thread walk visits every instance thread, `CANDIDATE_LIMIT` per page, so past that
+/// many threads it stops on work with nothing shown and its `c3:` continuation keeps the reader
+/// on v1, several empty pages from a late thread's row. The offer therefore judges `has_more`
+/// from the seat-wide pending counts, and continues on the plain (v2) inbox first page, which
+/// shows every pending item. The v1 cursor stays for machine readers.
+pub fn check_in_inbox_in_transaction(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    request: &PageRequest,
+    output: &OutputSpec,
+    budget: &CallBudget,
+    clock: &dyn Clock,
+) -> Result<Page<InboxItem>, ApiError> {
+    let mut page = inbox_in_transaction(db, instance, seat, request, output, budget, clock)?;
+    // A row-bound stop shows rows and its v1 continuation shows the rest; only the thread
+    // walk's work stop can leave the offer empty in front of pending items.
+    if !page.has_more || page.stop_reason != StopReason::Work {
+        return Ok(page);
+    }
+    let check = || {
+        if budget.is_exhausted(clock) {
+            Err(api_error(
+                ErrorCode::ReadBudgetExhausted,
+                "inbox count budget exhausted",
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    let backlog = super::attention::warning_backlog(db, seat.as_str(), &check)?;
+    let sets = [
+        super::attention::pending_invitations(db, seat.as_str(), None, i64::MAX)?.count(),
+        super::attention::pending_receipts(db, seat.as_str(), None)?.count(),
+        super::attention::pending_warnings(db, seat.as_str(), None, &backlog, &check)?.count(),
+    ];
+    let shown: u64 = page
+        .items
+        .iter()
+        .map(|item| item.invitations + item.pending_receipts + item.warnings)
+        .sum();
+    let pending: u64 = sets.iter().map(|(count, _)| count).sum();
+    if sets.iter().any(|(_, saturated)| *saturated) || pending > shown {
+        page.next_argv = Some(contextual_argv(
+            inbox_request_argv(seat, None, request),
+            output,
+        ));
+    } else {
+        page.has_more = false;
+        page.next_cursor = None;
+        page.next_argv = None;
+        page.stop_reason = StopReason::Complete;
+    }
+    Ok(page)
+}
+
 pub fn inbox_in_transaction(
     db: &Connection,
     instance: &str,
