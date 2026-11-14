@@ -1080,6 +1080,44 @@ pub fn informational_notice_pending_for(
     Ok(Some(ordinal > frontier))
 }
 
+/// Does `warning` alone explain an attention for `seat`, so that `inbox`
+/// would show nothing for it (wake survey D1)? True only when the seat is the
+/// origin of the warning's still-open condition (the condition affects another
+/// seat), `binding` was already offered the warning as a notice, the seat is
+/// the affected seat of no open condition, and it has no pending required
+/// receipt: a seat that owes an ACK or is itself overdue keeps the `inbox`
+/// pointer. Read-only: at most seven indexed point or seek reads.
+pub fn notice_only_attention(
+    db: &Connection,
+    seat_id: &str,
+    binding: &str,
+    warning_id: &str,
+) -> Result<bool, ApiError> {
+    let origin: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND clear_warning_id IS NULL AND affected_seat_id!=?2)",
+            params![warning_id, seat_id],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !origin {
+        return Ok(false);
+    }
+    let owes: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM warning_conditions INDEXED BY presentation_conditions_affected WHERE affected_seat_id=?1 AND clear_warning_id IS NULL) \
+             OR EXISTS(SELECT 1 FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1) \
+             OR EXISTS(SELECT 1 FROM receipts INDEXED BY receipts_required_seat_pending WHERE seat_id=?1 AND state='pending' AND ack_required=1)",
+            [seat_id],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if owes {
+        return Ok(false);
+    }
+    Ok(informational_notice_pending_for(db, seat_id, warning_id, Some(binding))? == Some(false))
+}
+
 /// One seat-leading indexed probe of attributed notices above the exact
 /// current occupant's carried frontier. Projection backlog is intentionally
 /// absent: it cannot be carried by a CheckIn until attribution publishes it.
@@ -1861,3 +1899,7 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
 #[cfg(test)]
 #[path = "../../tests/store/attention.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../tests/store/notice_only_attention.rs"]
+mod notice_only_attention_tests;

@@ -5718,6 +5718,79 @@ fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
     assert!(bystander.running() && affected.running());
 }
 
+/// Wake survey D1: the sender of an overdue ACK request is the warning's
+/// origin, so its open condition still wakes it (attention) after the warning
+/// was carried to it as a notice. `inbox` never shows an offered notice again,
+/// so that attention line names the notice instead of `run herdr-threads inbox`.
+#[test]
+fn origin_attention_for_a_carried_notice_names_the_notice_not_inbox() {
+    let rig = Rig::new();
+    rig.host.set_panes(vec![
+        pane(PANE_A, "term-a"),
+        claude(PANE_B, "term-b", SESSION_B),
+        claude(PANE_C, "term-c", SESSION_C),
+    ]);
+    let c = rig.seat_resolve(PANE_C);
+    rig.session_start_hook(PANE_C, SESSION_C, "startup");
+    rig.cli(
+        Some((&rig.a, PANE_A)),
+        &["invite", &rig.thread, "--seat", &c],
+    )
+    .data("invite c");
+    rig.cli(Some((&c, PANE_C)), &["accept", &rig.thread])
+        .data("accept c");
+    let mut origin = rig.watch(SESSION_B);
+    origin.wait_connected();
+    let mut affected = rig.watch_with(PANE_C, SESSION_C, &[]);
+    affected.wait_connected();
+
+    rig.cli(
+        Some((&rig.b, PANE_B)),
+        &[
+            "send",
+            &rig.thread,
+            "--body",
+            "needs your ack",
+            "--require-ack",
+            &c,
+            "--deadline",
+            "60",
+        ],
+    )
+    .text("send with deadline");
+    rig.advance(2 * MINUTE_MS);
+    rig.probe.kick_registered(Lane::Deadlines);
+    let warning = wait_until("C's overdue condition to open", STEP, || {
+        rig.db()
+            .query_row(
+                "SELECT open_warning_id FROM warning_conditions WHERE clear_warning_id IS NULL",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+    });
+    let notice = origin.wait_line("the overdue notice", STEP, |l| l["kind"] == "notice");
+    assert_eq!(notice["id"], format!("notice:{warning}"), "{notice}");
+    let attention = origin.wait_attention_marker();
+    let text = attention["text"].as_str().unwrap();
+    assert!(
+        !text.contains("inbox"),
+        "attention for an offered notice must not send the model to inbox: {attention}"
+    );
+    assert_eq!(
+        text,
+        format!("herdr-threads: see notice {warning}"),
+        "{attention}"
+    );
+    // The affected seat owes the ACK, which its inbox shows: it keeps the marker.
+    let owed = affected.wait_attention_marker();
+    assert!(
+        owed["text"].as_str().unwrap().ends_with(" inbox"),
+        "the affected seat keeps the inbox marker: {owed}"
+    );
+    assert!(origin.running() && affected.running());
+}
+
 /// The stand-in host joins every serving thread on drop: a connection whose
 /// request never arrives (its thread blocked in the read, with a 10 s read
 /// timeout) is shut and joined at once, and the client sees the close.

@@ -139,6 +139,13 @@ pub fn attention_marker_for(prefix: &[String]) -> String {
     )
 }
 
+/// The attention block's text when what wakes the seat is a warning it was
+/// already offered as a notice: `inbox` would not show it again, so the text
+/// points at the notice already in context. One line, 26 bytes plus the id.
+pub fn attention_notice_marker(warning: &str) -> String {
+    format!("herdr-threads: see notice {warning}")
+}
+
 /// The body of a hook-pull `notice` block: an informational warning, shown
 /// once, with no ACK. `prefix` spells the invocation as for
 /// [`attention_marker_for`]. One line.

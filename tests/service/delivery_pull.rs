@@ -14636,3 +14636,153 @@ fn a_named_author_reads_as_its_name_in_a_pulled_notice_header() {
     assert!(header.contains(" from reviewer"), "{header}");
     assert!(!page.text.contains("from x"), "{}", page.text);
 }
+
+// ---- wake survey D1: origin attention after a carried notice (hook render profile) ----
+
+/// Seat `s` (checked in, hook consumer) sent `origin-d1`, whose ACK `c` owed
+/// by 500 ms; with `owes`, `s` also owes `c`'s `owed-d1` by then. The clock
+/// is past both deadlines: the due scan opens the receipt conditions and the
+/// warnings are materialized. Returns `s`'s claim and the origin warning id.
+fn d1_overdue_origin(f: &mut Fixture, owes: bool) -> (CallerClaim, String) {
+    let s = pull_seat(f);
+    let mut rows = vec![("origin-d1", "s", "c")];
+    if owes {
+        rows.push(("owed-d1", "c", "s"));
+    }
+    for (id, author, recipient) in rows {
+        let seq = next_sequence(&f.db);
+        bump(&f.db, seq);
+        f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','native',?3,'needs an ack',0,?4)", params![id, seq, author, seq + 2]).unwrap();
+        f.db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t',?2,'pending',1,0,500)", params![id, recipient]).unwrap();
+    }
+    let shared: Arc<dyn Clock> = f.clock.clone();
+    let context = StoreContext::new(f.directory.join("store.db"), shared).with_test_host();
+    crate::store::receipts::scan_due(
+        &context,
+        &mut f.db,
+        100,
+        &mut crate::store::receipts::ReceiptDueCursor::default(),
+    )
+    .unwrap();
+    let warnings: Vec<String> = {
+        let mut stmt =
+            f.db.prepare(
+                "SELECT open_warning_id FROM warning_conditions WHERE condition_kind='receipt'",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    for warning in &warnings {
+        while crate::store::materialization::advance_work(
+            &mut f.db,
+            &format!("work:{warning}"),
+            crate::ports::DurableWorkAdmission::new(16).unwrap(),
+            &budget(),
+            context.clock(),
+        )
+        .unwrap()
+        .has_more
+        {}
+    }
+    let origin: String = f
+        .db
+        .query_row(
+            "SELECT open_warning_id FROM warning_conditions WHERE condition_kind='receipt' AND affected_seat_id='c'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    (s, origin)
+}
+
+/// The text of the next Attention in `claim`'s hook presentation pulls (each
+/// page confirmed, so none is replayed), with whether a notice for `warning` was carried by then.
+fn d1_attention_text(f: &Fixture, claim: &CallerClaim, warning: &str) -> (String, bool) {
+    use crate::protocol::delivery::{DeliveryPullReplyV2, PresentationItemV2};
+    let mut carried = false;
+    for _ in 0..8 {
+        let DeliveryPullReplyV2::Page(page) = presentation_test_pull(f, claim) else {
+            continue;
+        };
+        let mut attention = None;
+        for item in &page.items {
+            match item {
+                PresentationItemV2::Notice { warning: w, .. } if w.as_str() == warning => {
+                    carried = true;
+                }
+                PresentationItemV2::Attention { text, .. } => attention = Some(text.clone()),
+                _ => {}
+            }
+        }
+        presentation_test_confirm(f, claim, &page);
+        if let Some(text) = attention {
+            return (text, carried);
+        }
+    }
+    panic!("no Attention for {}", claim.seat.as_str())
+}
+
+// Kills: the D1 inbox hint after the origin's notice was carried (inbox
+// then prints `empty`) on the hook render profile.
+#[test]
+fn d1_hook_pull_names_the_carried_origin_notice() {
+    let mut f = fixture(0);
+    let (s, warning) = d1_overdue_origin(&mut f, false);
+    let (text, carried) = d1_attention_text(&f, &s, &warning);
+    assert!(carried, "the notice rides the same or an earlier page");
+    assert_eq!(text, format!("herdr-threads: see notice {warning}"));
+}
+
+// Kills: F1 (main review), the notice wording hiding an ACK the origin
+// itself owes, and the wording under a pending confirming invitation.
+#[test]
+fn d1_hook_pull_keeps_the_inbox_marker_when_the_origin_owes_or_is_invited() {
+    let marker = crate::protocol::watch::attention_marker_for(&[]);
+    let mut f = fixture(0);
+    let (s, warning) = d1_overdue_origin(&mut f, true);
+    assert_eq!(d1_attention_text(&f, &s, &warning).0, marker, "owes an ACK");
+
+    // After the first episode the origin witness stays cached. A confirming
+    // invitation then answers Open without re-evaluating it, so the text of
+    // an Attention emitted later (a deferred one) must not name the notice.
+    let mut f = fixture(0);
+    let (s, warning) = d1_overdue_origin(&mut f, false);
+    assert_ne!(d1_attention_text(&f, &s, &warning).0, marker);
+    let binding = binding_for_claim(&f, &s);
+    let text = |f: &Fixture| {
+        crate::store::invitation_content::attention_text(
+            &f.db,
+            &s,
+            crate::protocol::delivery::PresentationConsumer::Hook,
+            &binding,
+            &[],
+        )
+        .unwrap()
+    };
+    assert_eq!(text(&f), format!("herdr-threads: see notice {warning}"));
+    pending_invitation(&f);
+    assert_eq!(text(&f), marker, "a confirming invitation is pending");
+
+    // F1 (main review): the origin witness stays cached while the seat comes
+    // to owe an ACK of its own; the text must not hide that inbox row.
+    let mut f = fixture(0);
+    let (s, warning) = d1_overdue_origin(&mut f, false);
+    assert_ne!(d1_attention_text(&f, &s, &warning).0, marker);
+    let binding = binding_for_claim(&f, &s);
+    let text = |f: &Fixture| {
+        crate::store::invitation_content::attention_text(
+            &f.db,
+            &s,
+            crate::protocol::delivery::PresentationConsumer::Hook,
+            &binding,
+            &[],
+        )
+        .unwrap()
+    };
+    assert_eq!(text(&f), format!("herdr-threads: see notice {warning}"));
+    ordinary_message_from(&f, "owed-later", "ack me", Some("c"));
+    assert_eq!(text(&f), marker, "the seat now owes an ACK");
+}

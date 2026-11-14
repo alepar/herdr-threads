@@ -773,6 +773,32 @@ fn advance_ordinary_publications(
     Ok(work)
 }
 
+/// The text of a new Attention item. A seat woken only as the origin of an
+/// open warning (wake survey D1: the sender of an overdue ACK request) that
+/// this binding was already offered as a notice would find nothing in
+/// `inbox`, which shows an offered notice once: the text names that notice.
+/// Otherwise (anything else may be in `inbox`) the `run inbox` marker.
+pub(crate) fn attention_text(
+    db: &Connection,
+    claim: &CallerClaim,
+    consumer: PresentationConsumer,
+    binding: &BindingId,
+    prefix: &[String],
+) -> Result<String, ApiError> {
+    if let Some(warning) =
+        super::presentation_relevance::cached_witness_warning(db, claim, binding, consumer)?
+        && super::attention::notice_only_attention(
+            db,
+            claim.seat.as_str(),
+            binding.as_str(),
+            &warning,
+        )?
+    {
+        return Ok(crate::protocol::watch::attention_notice_marker(&warning));
+    }
+    Ok(crate::protocol::watch::attention_marker_for(prefix))
+}
+
 fn control_stamp(
     item: &crate::protocol::delivery::PresentationItemV2,
 ) -> Option<crate::protocol::delivery::PresentationControlStampV2> {
@@ -2762,7 +2788,7 @@ pub(super) fn pull(
             Stamp::Attention { epoch, version } => OutputItem::Attention {
                 epoch: epoch.clone(),
                 attention_version: *version,
-                text: crate::protocol::watch::attention_marker_for(&input.pull.marker_prefix),
+                text: attention_text(db, claim, consumer, &binding, &input.pull.marker_prefix)?,
             },
             Stamp::Cleared { epoch, version } => OutputItem::AttentionCleared {
                 epoch: epoch.clone(),

@@ -465,6 +465,38 @@ struct Warning {
     episode: Option<i64>,
     programmatic: bool,
 }
+/// The warning behind this binding's cached relevance witness, else None:
+/// no proof, a proof of another claim or binding, a notification-job witness
+/// (slots 10, 11 name a preparation, not a warning), or a pending confirming
+/// invitation (`advance` answers Open for it without re-evaluating the
+/// witness, so the witness is not the reason). Whether the warning alone
+/// explains the attention is `attention::notice_only_attention`.
+/// Read-only: one confirming probe, one proof load, one keyed source row.
+pub(super) fn cached_witness_warning(
+    db: &Connection,
+    claim: &CallerClaim,
+    binding: &BindingId,
+    consumer: PresentationConsumer,
+) -> Result<Option<String>, ApiError> {
+    if confirming(db, claim)? {
+        return Ok(None);
+    }
+    let Some(state) = load(db, claim, binding, consumer)? else {
+        return Ok(None);
+    };
+    if state.claim != *claim || state.binding_id != *binding {
+        return Ok(None);
+    }
+    let Some(w) = state
+        .witness
+        .as_ref()
+        .filter(|w| w.slot != 10 && w.slot != 11)
+    else {
+        return Ok(None);
+    };
+    let mut points = Points { db, count: 0 };
+    source_id(&mut points, claim, w.slot, w.key)
+}
 fn source_id(
     points: &mut Points<'_>,
     claim: &CallerClaim,
