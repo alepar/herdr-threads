@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v3.2.0
 
-Minor release: a new harness.
+Minor release: a new harness. No store schema or peer wire change.
 
 ### Changed
 
