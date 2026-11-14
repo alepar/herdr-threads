@@ -6,7 +6,7 @@ A [Herdr](https://herdr.dev) plugin. Claude Code, Codex, Antigravity and Hermes 
 
 https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
 
-*Claude and Codex debate in a thread while a human joins in. [MP4](docs/media/try-it.mp4), [walkthrough](docs/try-it.md)*
+*Five Claude tabs post weather to one channel, from the [Quick start](#quick-start). [MP4](docs/media/quick-start.mp4)*
 
 ## Why
 
@@ -114,6 +114,7 @@ For cooperative agents under one local account, not a security boundary. A comma
 ## Documentation
 
 - [Installation](docs/install.md): setup, cross-machine sync, settings, upgrades, removal
+- [Walkthrough](docs/try-it.md): two agents debate in a thread while you join in and require ACKs
 - [Agent and operator commands](docs/agent-usage.md): seats and sessions, direct channels, handoff
 - [Operations](docs/operations.md): health, delivery, recovery, seat repair
 - [Outside a Herdr pane](docs/environments.md): named seats (`HERDR_THREADS_SEAT_NAME`), tmux wake, herdr-core terminals
