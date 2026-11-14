@@ -179,9 +179,11 @@ pub fn init_for_new_binding(tx: &Connection, binding: &BindingId) -> Result<usiz
     // Before the cursors are written, while "no cursor yet" still identifies the threads this call
     // inherits: take the out-of-order display marks, still above the inherited cursor, of the one
     // binding whose cursor is inherited (the seat maximum; ties go to the lowest binding id).
-    // Driven from the inherited binding, once per thread, so the cost is that binding's marks: the
-    // seat-maximum probe walks the seat's own bindings, never every cursor in a shared thread, and no
-    // probe runs per message (ht-6oev: per message, it scanned the thread's cursors of every seat).
+    // The CROSS JOINs pin the join order: per joined thread, the seat maximum walks the seat's own
+    // bindings (never every seat's cursors in a shared thread), then the inherited binding's marks
+    // are joined. Cost: joined threads x (seat bindings + that binding's marks), flat in other
+    // seats and in thread history (ht-6oev). A plain JOIN let the planner drive from the thread's
+    // messages and probe every cursor of the thread per message.
     tx.execute(
         "INSERT OR IGNORE INTO binding_row_displays(binding_id,message_id) \
          WITH inherit(thread_id,from_binding) AS (\

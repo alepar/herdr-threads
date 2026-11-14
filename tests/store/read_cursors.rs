@@ -458,6 +458,7 @@ fn enrollment_units(others: u64, messages: u64) -> u64 {
 // turn: seconds on the live store, enough to push every other store call past its deadline.
 #[test]
 fn enrollment_is_flat_in_other_seats_cursors_and_thread_history() {
+    // Slack for fixed per-statement overhead; the unfixed SQL grew about 6.5x (947 -> 6329).
     const C: u64 = 50;
     let base = enrollment_units(20, 20);
     for (axis, others, messages) in [
