@@ -4645,11 +4645,11 @@ pub trait HostPort: Send + Sync {
         context: &HostCallContext,
     ) -> Result<HostObservation, ApiError>;
     /// [`Self::observe_current_target`] for an attempt that carries a
-    /// soft-deadline poke: the one place the adapter may spend a composer read
-    /// to classify the UI (`Idle`, `HumanInput`, `ActiveTurn`). An ordinary
-    /// wake never calls this, so it decides on Herdr's agent status and the
-    /// structural identity alone (TRUST-POLICY A4). The default is the plain
-    /// observation.
+    /// soft-deadline poke or a cooperative wake of several targets: the places
+    /// the adapter may spend a composer read to classify the UI (`Idle`,
+    /// `HumanInput`, `ActiveTurn`). A single-target wake never calls this, so it
+    /// decides on Herdr's agent status and the structural identity alone
+    /// (TRUST-POLICY A4; ht-esl). The default is the plain observation.
     fn observe_current_target_for_poke(
         &self,
         target: &HostTargetId,

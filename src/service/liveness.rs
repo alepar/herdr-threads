@@ -11,8 +11,9 @@
 //! below every lifecycle-claimed session (it can lose, never win), and a group with no
 //! lifecycle-claimed session is left as it is. Every write
 //! goes through `bindings::disconnect`, the sole transition: the worker never ends a binding,
-//! retires, moves or merges (TRUST-POLICY: liveness evidence is structural). Human bindings and
-//! seats that are unresolved, retired or under a recovery hold are never judged
+//! retires, moves or merges (TRUST-POLICY: liveness evidence is structural). Human bindings,
+//! seats that are unresolved or retired, and seats of a host under a recovery hold until its
+//! reconciliation marker names its current recovery boot/epoch are never judged
 //! (`bindings::liveness_candidates`), so a Herdr restart cannot disconnect through here.
 //! An idle pass (every process alive) is one read and no write.
 use crate::{

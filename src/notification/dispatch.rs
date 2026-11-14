@@ -329,9 +329,7 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         // The bindings the composer wake reaches: one, or every binding of one process.
         let mut composer_bindings: Vec<crate::protocol::ids::BindingId> = Vec::new();
         if cooperative && !reservation.authority.targets().is_empty() {
-            let gated = reservation.authority.targets().len() > 1
-                && !poke_only
-                && observation.ui != HostUiState::Idle;
+            let gated = several_targets && !poke_only && observation.ui != HostUiState::Idle;
             // Only a seat-attention wake can be exempt (one process, below): any other gated
             // wake is refused as before, with no host read.
             if gated && !reservation.for_seat_attention() {

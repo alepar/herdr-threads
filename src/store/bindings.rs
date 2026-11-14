@@ -701,7 +701,7 @@ pub struct LivenessDecision {
 /// hold) until that host's reconciliation pass for its current recovery boot/epoch finished: a
 /// Herdr restart never leads to a disconnect from here (the reconciler owns those seats), while a
 /// seat left unresolved after the pass, which keeps the hold armed, no longer silences the
-/// host's resolved seats (ht-j9yc). `seat` narrows the read to one seat.
+/// host's resolved seats (ht-hrbx). `seat` narrows the read to one seat.
 pub fn liveness_candidates(
     db: &Connection,
     seat: Option<&SeatId>,
@@ -739,7 +739,7 @@ pub fn liveness_candidates(
 
 /// Applies liveness verdicts inside the caller's transaction, each through the sole disconnect
 /// transition. A verdict whose binding is no longer a candidate (reconnected with another
-/// fingerprint, seat now held, unresolved or retired) is dropped. Returns how many bindings
+/// fingerprint, seat now held before reconciliation, unresolved or retired) is dropped. Returns how many bindings
 /// changed. Never ends a binding, moves a seat or merges seats.
 pub fn apply_liveness(
     tx: &Connection,

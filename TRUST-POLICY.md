@@ -1042,7 +1042,7 @@ model open work, and summary closure never changes receipt state or installs glo
   server's current recovery boot and epoch, so a Herdr restart never disconnects through the
   worker: the reconciler's C2 path owns those seats. Past the marker every seat still resolved is proven in
   the current incarnation, so a seat left unresolved, which keeps the hold armed until it is repaired or
-  retired, never silences the liveness of the server's resolved seats (ht-j9yc). A verdict is applied only if the binding is still
+  retired, never silences the liveness of the server's resolved seats (ht-hrbx). A verdict is applied only if the binding is still
   connected with the fingerprint it was judged on. Availability follows liveness per binding (C4).
 - *Refusals*: an agent call without a harness session id (empty, a `launch:` placeholder, and from
   a `plugin_context:` session), reads included, is refused with `session_claim_required`. An agent

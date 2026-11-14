@@ -595,7 +595,7 @@ fn held_unresolved_or_retired_seats_are_skipped() {
 
 #[test]
 fn an_unresolved_seat_past_reconciliation_does_not_silence_the_hosts_resolved_seats() {
-    // Wake survey issue B (ht-j9yc): one seat unresolved after the host's reconciliation pass
+    // Wake survey issue B (ht-hrbx): one seat unresolved after the host's reconciliation pass
     // keeps the baseline hold armed indefinitely. The resolved seats are proven in the current
     // incarnation by then, so their dead bindings must still be judged.
     let fx = Fx::new("liveness-reconciled-hold");
@@ -631,6 +631,31 @@ fn an_unresolved_seat_past_reconciliation_does_not_silence_the_hosts_resolved_se
         fx.connected(&on_unresolved),
         "unresolved seats stay skipped"
     );
+    // A new recovery (another epoch, or another boot) leaves the marker stale: silenced again.
+    for (label, boot, epoch) in [("new epoch", "b", 2), ("new boot", "b2", 1)] {
+        let revived = fx.bind("s", "claude", label, Some((104, 5)), 20);
+        db.execute(
+            "UPDATE herdr_hosts SET recovery_boot=?1, recovery_epoch=?2",
+            rusqlite::params![boot, epoch],
+        )
+        .unwrap();
+        assert_eq!(
+            fx.worker.pass(&budget()).unwrap(),
+            PassOutcome::default(),
+            "{label}: a stale marker keeps the hold's silence"
+        );
+        assert!(fx.connected(&revived), "{label}");
+        db.execute(
+            "UPDATE herdr_hosts SET recovery_boot='b', recovery_epoch=1",
+            [],
+        )
+        .unwrap();
+        fx.worker.pass(&budget()).unwrap();
+        assert!(
+            !fx.connected(&revived),
+            "{label}: judged once the marker is current"
+        );
+    }
 }
 
 #[test]

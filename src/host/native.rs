@@ -2266,10 +2266,11 @@ impl NativeCli {
         })
     }
 
-    /// One fresh witnessed read. Only `composer_ui` (a soft-deadline poke)
-    /// spends the composer read that classifies the UI; an ordinary wake never
-    /// does, so a composer read that Herdr cannot answer cannot change a wake
-    /// structural selection. Ordinary delivery still requires its own final
+    /// One fresh witnessed read. Only `composer_ui` (a soft-deadline poke, or a
+    /// wake of several targets whose idle gate needs it) spends the composer
+    /// read that classifies the UI; a single-target wake never does, so a
+    /// composer read that Herdr cannot answer cannot change its structural
+    /// selection. Ordinary delivery still requires its own final
     /// composer read in `submit_prompt_mode`.
     fn observe_target(
         &self,
