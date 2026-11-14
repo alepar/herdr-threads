@@ -318,7 +318,8 @@ def read_settings(asset):
     if len(raw) > 65536:
         raise ValueError("config_too_large")
     settings = strict_json(raw)
-    if (not isinstance(settings, dict) or set(settings) != {
+    # foreign_session_env (the other harnesses' session variables) is absent in an older install.
+    if (not isinstance(settings, dict) or set(settings) - {"foreign_session_env"} != {
             "schema_version", "rust_executable", "state_root", "host_endpoint",
             "bridge_schema_version", "installation_token"}
             or type(settings["schema_version"]) is not int or settings["schema_version"] != 1
@@ -328,7 +329,26 @@ def read_settings(asset):
     for key in ("rust_executable", "state_root", "host_endpoint"):
         if not opaque(settings[key], limit=4096) or not os.path.isabs(settings[key]):
             raise ValueError("config_unavailable")
+    foreign = settings.setdefault("foreign_session_env", [])
+    if (not isinstance(foreign, list) or len(foreign) > 64
+            or any(not opaque(name, limit=128) or name in PANE_ENV or name.upper().startswith("HERMES_")
+                   for name in foreign)):
+        raise ValueError("config_unavailable")
     return settings
+
+
+def session_pane():
+    """The bound session client's pane values (name -> str, None for a name it did not send), False
+    when that client sent no pane, None when no client env is bound (classic CLI, or unbound)."""
+    scope = sys.modules.get("agent.session_client_env")
+    bound = getattr(scope, "bound_client_env", None)
+    client = bound() if callable(bound) else None
+    if not isinstance(client, dict):
+        return None
+    if not (opaque(client.get("HERDR_PANE_ID")) or opaque(client.get("HERDR_THREADS_SEAT_NAME"))
+            or (opaque(client.get("HC_TERMINAL_ID")) and opaque(client.get("HC_TERMINAL_SOCKET")))):
+        return False
+    return {key: client[key] if isinstance(client.get(key), str) else None for key in PANE_ENV}
 
 
 def pane_env():
@@ -343,15 +363,12 @@ def pane_env():
     (agent.session_client_env, carried by terminal.client_env_passthrough). A gateway turn without
     one refuses rather than claim the gateway's pane. The native module is observed, never imported.
     """
-    scope = sys.modules.get("agent.session_client_env")
-    bound = getattr(scope, "bound_client_env", None)
-    client = bound() if callable(bound) else None
-    if isinstance(client, dict):
-        if not (opaque(client.get("HERDR_PANE_ID")) or opaque(client.get("HERDR_THREADS_SEAT_NAME"))
-                or (opaque(client.get("HC_TERMINAL_ID")) and opaque(client.get("HC_TERMINAL_SOCKET")))):
-            return False
+    pane = session_pane()
+    if pane is False:
+        return False
+    if pane is not None:
         env = {key: value for key, value in os.environ.items() if key not in PANE_ENV}
-        env.update({key: client[key] for key in PANE_ENV if isinstance(client.get(key), str)})
+        env.update({key: value for key, value in pane.items() if value is not None})
         return env
     if os.environ.get("_HERMES_GATEWAY") == "1":
         return False
@@ -371,11 +388,85 @@ def shape(kwargs):
                   "type": kind(kwargs[key]) if key in kwargs else "absent"} for key in IDS}
 
 
+class Sessions:
+    """Per-session pane values for the session's tool subprocesses (``ctx.register_session_env``).
+
+    In the gateway every session's tools inherit the gateway's pane, so the resolver gives a session
+    the pane its client sent (recorded by its hooks, which run before its first tool) and unsets the
+    pane names for a session with none; a delegated child resolves to its parent. A classic CLI
+    process is its pane's own: nothing is recorded and no pane name is touched. The other harnesses'
+    session variables are never a Hermes session's own, so they are always unset.
+    """
+    LIMIT = 256
+
+    def __init__(self, foreign):
+        self.lock = threading.Lock()
+        self.panes = OrderedDict()  # top-level session -> pane values
+        self.parents = OrderedDict()  # delegated child session -> parent session
+        self.foreign = tuple(foreign)
+        self.names = PANE_ENV + self.foreign
+
+    def put(self, table, key, value):
+        with self.lock:
+            table[key] = value
+            table.move_to_end(key)
+            while len(table) > self.LIMIT:
+                table.popitem(last=False)
+
+    def observe(self, name, kwargs):
+        """Record what a callback says about its session; never raises, never blocks for long."""
+        try:
+            if name in CHILD_EVENTS:
+                child = kwargs.get("child_session_id", kwargs.get("session_id"))
+                parent = kwargs.get("parent_session_id")
+                if opaque(child) and opaque(parent) and child != parent:
+                    if name == "subagent_start":
+                        self.put(self.parents, child, parent)
+                    else:
+                        with self.lock:
+                            self.parents.pop(child, None)
+                return
+            session, platform = kwargs.get("session_id"), kwargs.get("platform")
+            if not opaque(session):
+                return
+            if platform == "subagent":
+                parent = kwargs.get("parent_session_id")
+                if name == "pre_llm_call" and opaque(parent) and parent != session:
+                    self.put(self.parents, session, parent)
+            elif platform in (None, "", "cli"):
+                if name == "on_session_finalize":
+                    with self.lock:
+                        self.panes.pop(session, None)
+                    return
+                pane = session_pane()
+                if isinstance(pane, dict):
+                    self.put(self.panes, session, pane)
+        except Exception:
+            pass
+
+    def resolve(self, session_id):
+        try:
+            with self.lock:
+                session, hops = session_id, 0
+                while session not in self.panes and session in self.parents and hops < 8:
+                    session, hops = self.parents[session], hops + 1
+                pane = self.panes.get(session)
+            values = dict.fromkeys(self.foreign)
+            if pane is not None:
+                values.update(pane)
+            elif os.environ.get("_HERMES_GATEWAY") == "1":
+                values.update(dict.fromkeys(PANE_ENV))
+            return values
+        except Exception:
+            return None
+
+
 class Bridge:
     """Metadata/role projection only; Rust owns durable lifecycle and all authority."""
     def __init__(self, settings, reader):
         self.settings = settings
         self.reader = reader
+        self.sessions = Sessions(settings.get("foreign_session_env", ()))
         self.role_lock = threading.Lock()
         self.roles = OrderedDict()
         self.entry_lock = threading.Lock()
@@ -478,6 +569,7 @@ class Bridge:
         return self.callback("subagent_stop", kwargs)
 
     def callback(self, name, kwargs):
+        self.sessions.observe(name, kwargs)
         try:
             return self._callback(name, kwargs)
         except Exception:
@@ -801,6 +893,14 @@ def register(ctx):
         ctx.on_unload(bridge.close)
         for name in HOOKS:
             ctx.register_hook(name, getattr(bridge, name))
+        # Hermes with per-session tool env (feature-detected, never version-gated); without it a
+        # session's tools keep the gateway's environment.
+        register_env = getattr(ctx, "register_session_env", None)
+        if callable(register_env):
+            try:
+                register_env(list(bridge.sessions.names), bridge.sessions.resolve)
+            except Exception:
+                pass
     except Exception:
         if bridge is not None:
             bridge.close()

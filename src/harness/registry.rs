@@ -1534,6 +1534,19 @@ impl Registry {
             .iter()
             .filter_map(|r| Some((r.metadata().id, r.caller_env()?)))
     }
+    /// The session variables (`CallerEnvShape::session_vars`) of every harness but `own`, in
+    /// registry order, deduplicated: what a session of `own` never inherits as its own.
+    pub fn foreign_session_vars(&self, own: &str) -> Vec<&'static str> {
+        let mut vars = Vec::new();
+        for (_, shape) in self.caller_shapes().filter(|(id, _)| *id != own) {
+            for var in shape.session_vars() {
+                if !vars.contains(&var) {
+                    vars.push(var);
+                }
+            }
+        }
+        vars
+    }
     /// The prompt a native idle wake types for a harness id: the marker unless its delivery
     /// policy injects the pending items at turn start.
     pub fn wake_text(&self, harness_id: &str) -> &'static str {

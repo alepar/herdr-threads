@@ -2663,9 +2663,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   `terminal.client_env_passthrough`. It is the same cooperative A1 pane claim with a new carrier, so it adds
   no provenance value. A gateway process (`_HERMES_GATEWAY=1`) whose turn has no bound pane runs no hook:
   refused, never attributed to the gateway's own pane. A process without the marker (classic Hermes) keeps
-  its inherited environment. Accepted limit: without the passthrough the session's tool subprocesses
-  inherit the gateway's pane, so a model-issued `herdr-threads` call names that pane with its own
-  `HERMES_SESSION_ID`; setup documents the setting but does not write native YAML.
+  its inherited environment. On a Hermes with `ctx.register_session_env` (feature-detected) the
+  bridge gives each session's tool subprocesses the pane its client sent (a delegated child: its
+  parent's, as recorded by the bridge's own hooks, which run before the session's first tool) and
+  unsets the pane variables for a gateway session with none, so a model-issued call there answers
+  "no pane"; it also unsets other harnesses' session variables (from the registry, via
+  `bridge_config.json`). Accepted limit: on a Hermes without that API, a session without the
+  passthrough has tool subprocesses that inherit the gateway's pane, so a model-issued
+  `herdr-threads` call names that pane with its own `HERMES_SESSION_ID`; setup documents the setting but does not write native YAML.
   The gateway's sessions share its process fingerprint, so Hermes declares `process_spans_seats`
   (ht-gagu): the same-process rule (supersede, plain-reconnect hold, the liveness worker) holds only
   within one seat, and a session in another pane no longer disconnects the first pane's session. A new
